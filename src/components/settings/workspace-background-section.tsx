@@ -16,11 +16,13 @@ import {
 import { useWorkspaceBackground } from "@/hooks/use-appearance"
 import {
   MAX_WORKSPACE_BG_BYTES,
+  WORKSPACE_BG_ACCEPT,
   WORKSPACE_BG_FILL_MODES,
   WORKSPACE_BG_IMAGE_BLUR_RANGE,
   WORKSPACE_BG_MASK_OPACITY_RANGE,
   WORKSPACE_BG_PANEL_OPACITY_RANGE,
   arrayBufferToBase64,
+  sniffWorkspaceBgMime,
   type WorkspaceBgFillMode,
 } from "@/lib/workspace-background"
 import { cn } from "@/lib/utils"
@@ -55,9 +57,16 @@ export function WorkspaceBackgroundSection() {
     }
     setBusy(true)
     try {
-      const buffer = await file.arrayBuffer()
-      const base64 = arrayBufferToBase64(new Uint8Array(buffer))
-      await setWorkspaceBackgroundImage(base64)
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      // Sniff before the round trip: the backend rejects anything outside the
+      // allowlist anyway, but it does so behind a generic failure. Catching it
+      // here — off the real bytes, not the extension-derived `File.type` —
+      // lets us name the formats that would have worked.
+      if (sniffWorkspaceBgMime(bytes) === null) {
+        setError(t("workspaceBackground.errorUnsupportedFormat"))
+        return
+      }
+      await setWorkspaceBackgroundImage(arrayBufferToBase64(bytes))
     } catch {
       setError(t("workspaceBackground.errorUploadFailed"))
     } finally {
@@ -131,7 +140,7 @@ export function WorkspaceBackgroundSection() {
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/png,image/jpeg,image/webp,image/*"
+              accept={WORKSPACE_BG_ACCEPT}
               className="hidden"
               onChange={(e) => {
                 const file = e.target.files?.[0]
@@ -163,6 +172,9 @@ export function WorkspaceBackgroundSection() {
             )}
           </div>
         </div>
+        <p className="text-[11px] text-muted-foreground leading-4">
+          {t("workspaceBackground.formatHint")}
+        </p>
         {error && <p className="text-[11px] text-destructive">{error}</p>}
       </div>
 

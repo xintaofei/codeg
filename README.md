@@ -19,7 +19,7 @@
 
 Codeg (Code Generation) is a multi-agent coding workspace: run every AI coding agent in one place — and let them work together.
 
-It aggregates your sessions from every supported agent CLI into one searchable workspace, and lets a main agent delegate to sub-agents of other types within a single task. Work you'd rather not sit through goes on a to-do board instead — each task in its own branch, running unattended, waiting for your review before it lands. Codeg runs as a desktop app, a standalone server, or a Docker container, with native iOS and Android clients for when you're away from your desk; fourteen agents come built in, and you can register any other ACP-compatible agent yourself.
+It aggregates your sessions from every supported agent CLI into one searchable workspace, and lets a main agent delegate to sub-agents of other types within a single task. Work you'd rather not sit through goes on a to-do board instead — each task in its own branch, running unattended, waiting for your review before it lands. Codeg runs as a desktop app, a standalone server, or a Docker container, with native iOS and Android clients for when you're away from your desk; fifteen agents come built in, and you can register any other ACP-compatible agent yourself.
 
 ![workspace](./docs/images/workspace-light.png#gh-light-mode-only)
 ![workspace](./docs/images/workspace-dark.png#gh-dark-mode-only)
@@ -59,13 +59,20 @@ It aggregates your sessions from every supported agent CLI into one searchable w
     </td>
     <td>Thanks to OneHop for sponsoring this project! OneHop gives Codeg users one OpenAI-compatible API key for hundreds of leading models, including GPT, Claude, Gemini, DeepSeek, Kimi, and Qwen. Switch models without managing multiple provider accounts or repeatedly changing your code, and pay only for what you use. <a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta">Sign up through Codeg</a> to receive $1 in credit, then join the OneHop community and participate in the welcome activity for an additional $5 — up to $6 in test credit in total.</td>
   </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://console.lqapi.xyz/sign-up?aff=KPy9" target="_blank"><img src="./docs/images/lq-router.png" alt="LQ router" width="160" /></a><br/>
+      <strong><a href="https://console.lqapi.xyz/sign-up?aff=KPy9">LQ router</a></strong>
+    </td>
+    <td>Thanks to the LQ router relay service for sponsoring this project! LQ router is an enterprise-grade API aggregation gateway for independent developers and technical teams. It provides access to leading models including GPT, Claude, Grok, and Gemini, is compatible with existing clients and the OpenAI SDK, and uses a dynamic account pool for intelligent routing; one endpoint handles all your model calls. <a href="https://console.lqapi.xyz/sign-up?aff=KPy9">Sign up through the official website to receive $1 in trial credit</a>.</td>
+  </tr>
 </table>
 
 > Want to become a Codeg sponsor? [Reach out to us by email.](mailto:itpkcn@gmail.com)
 
 ## 🤖 Supported Agents
 
-Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor · DeepSeek Harness · Qoder
+Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor · DeepSeek Harness · Qoder · Google Antigravity
 
 Codeg installs, pins, and updates most of them for you. See [Supported Agents](https://docs.codeg.app/guide/supported-agents) for the full roster, each agent's runtime requirements, and where it keeps its sessions on disk.
 

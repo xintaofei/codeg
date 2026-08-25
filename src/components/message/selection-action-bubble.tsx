@@ -3,10 +3,16 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import { CopyIcon, TextQuote } from "lucide-react"
+import {
+  ArrowUp,
+  CopyIcon,
+  MessageCircleQuestionMark,
+  TextQuote,
+} from "lucide-react"
 
 import { Button } from "@/components/ui/button"
-import { copyTextToClipboard } from "@/lib/utils"
+import { useImeGuard } from "@/hooks/use-ime-guard"
+import { cn, copyTextToClipboard } from "@/lib/utils"
 
 /** Vertical gap between the selection box and the bubble. */
 const GAP = 8
@@ -66,13 +72,21 @@ interface SelectionActionBubbleProps {
    * action then simply isn't offered and only "copy" remains.
    */
   onQuote?: (text: string) => void
+  /**
+   * Ask a question ABOUT the selection: the host opens a fresh conversation on
+   * the same agent and sends the quoted selection followed by `question`.
+   * Omitted wherever a new conversation can't be opened, and the action then
+   * isn't offered — same rule as `onQuote`.
+   */
+  onAsk?: (selection: string, question: string) => void
 }
 
 /**
  * Floating quick-action toolbar for a text selection inside a message
- * transcript: copy the selected text, or quote it into the composer. Either way
- * the action dismisses the toolbar and drops the selection; copy confirms with a
- * toast, since the toolbar it would otherwise confirm on is gone by then.
+ * transcript: copy the selected text, quote it into the composer, or ask a
+ * question about it in a new conversation. Every action dismisses the toolbar
+ * and drops the selection; copy confirms with a toast, since the toolbar it
+ * would otherwise confirm on is gone by then.
  *
  * Rendered IN-TREE (not portalled to `body`) on purpose. Inactive conversation
  * tabs stay mounted and are hidden with `visibility: hidden`, which is
@@ -82,11 +96,23 @@ interface SelectionActionBubbleProps {
 export function SelectionActionBubble({
   containerRef,
   onQuote,
+  onAsk,
 }: SelectionActionBubbleProps) {
   const t = useTranslations("Folder.chat.messageList")
+  const ime = useImeGuard()
   const [state, setState] = useState<SelectionState>(NO_SELECTION)
   const stateRef = useRef<SelectionState>(NO_SELECTION)
   const bubbleRef = useRef<HTMLDivElement | null>(null)
+  // The "ask" composer is open. While it is, the toolbar FREEZES: the selection
+  // text is already captured in `state`, and every tracker below stands down.
+  // It has to — focusing the input collapses the page selection, so a live
+  // tracker would measure nothing and tear the input down under the user
+  // mid-sentence. The ref is the synchronous copy the document-level handlers
+  // and the frame loop read.
+  const [asking, setAsking] = useState(false)
+  const askingRef = useRef(false)
+  const [question, setQuestion] = useState("")
+  const inputRef = useRef<HTMLInputElement | null>(null)
   // A pointer is down somewhere: the user is (probably) dragging out a
   // selection, so hold the bubble back until they let go.
   const draggingRef = useRef(false)
@@ -101,6 +127,13 @@ export function SelectionActionBubble({
     if (sameState(stateRef.current, next)) return
     stateRef.current = next
     setState(next)
+  }, [])
+
+  /** Close the ask composer and throw away whatever was typed. */
+  const closeAsk = useCallback(() => {
+    askingRef.current = false
+    setAsking(false)
+    setQuestion("")
   }, [])
 
   const measure = useCallback((): SelectionState => {
@@ -161,8 +194,16 @@ export function SelectionActionBubble({
 
     const handleSelectionChange = () => {
       // Mid-drag the selection is still growing and the bubble would chase the
-      // cursor; `pointerup` takes the final reading.
-      if (draggingRef.current || pressedInsideRef.current) return
+      // cursor; `pointerup` takes the final reading. While the ask composer is
+      // open the toolbar is frozen — and the very act of focusing its input
+      // fires this with an empty selection.
+      if (
+        draggingRef.current ||
+        pressedInsideRef.current ||
+        askingRef.current
+      ) {
+        return
+      }
       apply(measure())
     }
     const handlePointerDown = (event: PointerEvent) => {
@@ -178,6 +219,9 @@ export function SelectionActionBubble({
       }
       pressedInsideRef.current = false
       draggingRef.current = true
+      // A press anywhere outside is the dismissal gesture for the ask composer
+      // too — it abandons the question, same as pressing Escape.
+      closeAsk()
       apply(NO_SELECTION)
     }
     const handlePointerUp = (event: PointerEvent) => {
@@ -186,7 +230,7 @@ export function SelectionActionBubble({
       // The browser finalises the selection after dispatching pointerup (a
       // double/triple click in particular), so read it on the next task.
       window.setTimeout(() => {
-        if (draggingRef.current) return
+        if (draggingRef.current || askingRef.current) return
         apply(measure())
       }, 0)
     }
@@ -220,7 +264,7 @@ export function SelectionActionBubble({
       document.removeEventListener("pointercancel", handlePointerCancel, true)
       document.removeEventListener("click", handleClick, true)
     }
-  }, [apply, measure])
+  }, [apply, closeAsk, measure])
 
   // Keep the bubble glued to the selection while anything moves it: thread
   // scrolling, the window resizing, a sidebar animating, or new streamed content
@@ -232,7 +276,13 @@ export function SelectionActionBubble({
     if (!live) return
     let frame = requestAnimationFrame(function tick() {
       frame = requestAnimationFrame(tick)
-      if (draggingRef.current || pressedInsideRef.current) return
+      if (
+        draggingRef.current ||
+        pressedInsideRef.current ||
+        askingRef.current
+      ) {
+        return
+      }
       apply(measure())
     })
     return () => cancelAnimationFrame(frame)
@@ -251,9 +301,10 @@ export function SelectionActionBubble({
    */
   const dismiss = useCallback(() => {
     pressedInsideRef.current = false
+    closeAsk()
     window.getSelection()?.removeAllRanges()
     apply(NO_SELECTION)
-  }, [apply])
+  }, [apply, closeAsk])
 
   const handleCopy = useCallback(() => {
     const current = stateRef.current
@@ -280,6 +331,46 @@ export function SelectionActionBubble({
     dismiss()
   }, [onQuote, dismiss])
 
+  /**
+   * Swap the buttons for the question input. `askingRef` is set synchronously
+   * (not just via state) because the frame loop and the document handlers read
+   * it, and the very next thing that happens is the input taking focus — which
+   * collapses the page selection and would otherwise dismiss us.
+   */
+  const handleAskOpen = useCallback(() => {
+    if (stateRef.current.kind !== "visible" || !onAsk) return
+    pressedInsideRef.current = false
+    askingRef.current = true
+    setAsking(true)
+  }, [onAsk])
+
+  // Re-clamp for the ask row's (much wider) box, THEN take focus — in that
+  // order, because focusing collapses the page selection and `measure` would
+  // have nothing left to read. This is the last measurement the toolbar takes
+  // before it freezes, so getting it wrong here strands the input hanging over
+  // the container edge, where the panel's overflow-hidden shears it.
+  //
+  // A measurement that no longer finds the selection is DISCARDED rather than
+  // applied: on touch there is no mousedown to preventDefault, so the tap that
+  // opened the composer has already dropped the selection — applying that would
+  // unmount the input the user is about to type into.
+  useEffect(() => {
+    if (!asking) return
+    const next = measure()
+    if (next.kind === "visible") apply(next)
+    inputRef.current?.focus()
+  }, [apply, asking, measure])
+
+  const handleAskSubmit = useCallback(() => {
+    const current = stateRef.current
+    const trimmed = question.trim()
+    if (current.kind === "none" || !onAsk || !trimmed) return
+    // The selection goes over verbatim; turning it into a quote is the host's
+    // job, exactly as for `onQuote`.
+    onAsk(current.text, trimmed)
+    dismiss()
+  }, [dismiss, onAsk, question])
+
   if (state.kind !== "visible") return null
 
   return (
@@ -287,7 +378,14 @@ export function SelectionActionBubble({
       ref={bubbleRef}
       role="toolbar"
       aria-label={t("selectionActions")}
-      className="absolute z-30 flex items-center gap-0.5 rounded-full border border-border bg-popover p-0.5 shadow-md select-none"
+      className={cn(
+        "absolute z-30 flex items-center gap-0.5 rounded-full border border-border bg-popover p-0.5 shadow-md select-none",
+        // Only the ask row can outgrow a narrow tiled column. Capping it against
+        // the container (the bubble's containing block) lets the input shrink
+        // instead of being sheared off by the panel's overflow-hidden; the
+        // button row is left to size itself, where a cap would squeeze labels.
+        asking && "max-w-[calc(100%-1rem)]"
+      )}
       style={{
         left: state.x,
         top: state.y,
@@ -297,7 +395,19 @@ export function SelectionActionBubble({
       // pressed. Without this the press collapses the selection, the resulting
       // `selectionchange` tears the toolbar down, and the button unmounts before
       // its `click` is ever dispatched — the action would simply never run.
-      onMouseDown={(event) => event.preventDefault()}
+      //
+      // The ask input is the one exception: it NEEDS the default (focus, caret
+      // placement, drag-selecting what you typed), and by then the toolbar is
+      // frozen and no longer cares about the page selection.
+      onMouseDown={(event) => {
+        if (
+          event.target instanceof Element &&
+          event.target.closest("input, textarea")
+        ) {
+          return
+        }
+        event.preventDefault()
+      }}
       // Touch/pen presses arm the conversation panel's long-press context menu.
       // Stop them here so a slow tap on a bubble button doesn't pop that menu.
       onPointerDown={(event) => {
@@ -305,27 +415,86 @@ export function SelectionActionBubble({
       }}
       onContextMenu={(event) => event.stopPropagation()}
     >
-      <Button
-        type="button"
-        variant="ghost"
-        size="xs"
-        onClick={handleCopy}
-        aria-label={t("selectionCopy")}
-      >
-        <CopyIcon />
-        {t("selectionCopy")}
-      </Button>
-      {onQuote && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
-          onClick={handleQuote}
-          aria-label={t("selectionQuote")}
-        >
-          <TextQuote />
-          {t("selectionQuote")}
-        </Button>
+      {asking ? (
+        <>
+          <input
+            ref={inputRef}
+            type="text"
+            value={question}
+            onChange={(event) => setQuestion(event.target.value)}
+            placeholder={t("selectionAskPlaceholder")}
+            aria-label={t("selectionAskPlaceholder")}
+            // `select-text` undoes the toolbar's `select-none`, which some
+            // engines otherwise inherit into the field and make untouchable.
+            className="h-6 w-56 min-w-0 bg-transparent px-2 text-xs outline-none select-text placeholder:text-muted-foreground"
+            {...ime.props}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                // Swallow it: the conversation pane and any surrounding overlay
+                // treat Escape as their own dismissal.
+                event.preventDefault()
+                event.stopPropagation()
+                dismiss()
+                return
+              }
+              if (event.key !== "Enter") return
+              // Mid-composition Enter belongs to the IME (it commits the
+              // candidate); submitting on it would send a half-typed question,
+              // which is the common case for every CJK input method.
+              if (ime.isComposing(event)) return
+              event.preventDefault()
+              event.stopPropagation()
+              handleAskSubmit()
+            }}
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            disabled={question.trim().length === 0}
+            onClick={handleAskSubmit}
+            aria-label={t("selectionAskSubmit")}
+          >
+            <ArrowUp />
+          </Button>
+        </>
+      ) : (
+        <>
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            onClick={handleCopy}
+            aria-label={t("selectionCopy")}
+          >
+            <CopyIcon />
+            {t("selectionCopy")}
+          </Button>
+          {onQuote && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              onClick={handleQuote}
+              aria-label={t("selectionQuote")}
+            >
+              <TextQuote />
+              {t("selectionQuote")}
+            </Button>
+          )}
+          {onAsk && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              onClick={handleAskOpen}
+              aria-label={t("selectionAsk")}
+            >
+              <MessageCircleQuestionMark />
+              {t("selectionAsk")}
+            </Button>
+          )}
+        </>
       )}
     </div>
   )

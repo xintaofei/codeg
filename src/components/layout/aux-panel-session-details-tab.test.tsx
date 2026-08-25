@@ -44,6 +44,7 @@ const mockWorkspace = useAppWorkspaceStore as unknown as Mock
 type TabSlice = {
   tabs: Array<{
     id: number
+    kind: "conversation"
     conversationId: number | null
     runtimeConversationId?: number
   }>
@@ -79,7 +80,9 @@ function setupScene(opts: { hasActiveConversation: boolean }) {
   mockAux.mockReturnValue({ isOpen: true, activeTab: "session_details" })
 
   const tabState: TabSlice = {
-    tabs: opts.hasActiveConversation ? [{ id: 1, conversationId: 7 }] : [],
+    tabs: opts.hasActiveConversation
+      ? [{ id: 1, kind: "conversation", conversationId: 7 }]
+      : [],
     activeTabId: opts.hasActiveConversation ? 1 : null,
   }
   mockTabs.mockImplementation((sel: (s: TabSlice) => unknown) => sel(tabState))

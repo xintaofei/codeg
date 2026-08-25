@@ -1,4 +1,4 @@
-/** The fourteen agents codeg ships hand-written support for. */
+/** The fifteen agents codeg ships hand-written support for. */
 export type BuiltinAgentType =
   | "claude_code"
   | "codex"
@@ -14,6 +14,7 @@ export type BuiltinAgentType =
   | "cursor"
   | "deepseek"
   | "qoder"
+  | "antigravity"
 
 /**
  * Which agent backs a conversation.
@@ -417,6 +418,9 @@ export interface DbConversationSummary {
    *  worktree path it originally ran in. Drives the "source worktree removed"
    *  badge. */
   origin_cwd?: string | null
+  /** The PK arena round this contestant session belongs to. Set only when
+   *  `kind === "pk"`; drives the sidebar's per-round grouping. */
+  pk_round_id?: number | null
 }
 
 export type SearchMatchLocationKind = "title" | "content"
@@ -685,8 +689,81 @@ export type ConversationStatus =
 
 /** Mirrors Rust `ConversationKind` (src-tauri/src/db/entities/conversation.rs).
  *  `loop` rows belong to the Loop Engineering workbench and never appear in
- *  the sidebar list; `delegate` rows nest under their parent's tool-call view. */
-export type ConversationKind = "regular" | "chat" | "loop" | "delegate"
+ *  the sidebar list; `delegate` rows nest under their parent's tool-call view;
+ *  `pk` rows are PK-arena contestant sessions grouped under their round. */
+export type ConversationKind = "regular" | "chat" | "loop" | "delegate" | "pk"
+
+/** Mirrors Rust `PkRoundStatus` (src-tauri/src/db/entities/pk_round.rs). */
+export type PkRoundStatus =
+  | "ready"
+  | "running"
+  | "finished"
+  | "canceled"
+  | "interrupted"
+
+/** Mirrors Rust `PkContestantEntry` (src-tauri/src/models/pk_round.rs).
+ * Plain strings are legacy entries; objects can pin per-slot ACP config. */
+export type PkContestantEntry =
+  | string
+  | {
+      agent: string
+      label?: string
+      config_values?: Record<string, string>
+    }
+
+/** Mirrors Rust `PkRoundConfig` (src-tauri/src/models/pk_round.rs). Stored as
+ *  JSON in `pk_round.config`. */
+export interface PkRoundConfig {
+  /** Contestants in slot order, optionally carrying per-slot ACP config. */
+  agents: PkContestantEntry[]
+  /** Round-level permission policy applied to every contestant. */
+  permission_mode: string
+  /** Bare mode: contestants are instructed to use no skills at all. */
+  bare_mode: boolean
+  /** Uniform reasoning-effort request applied to every contestant. */
+  effort: string
+  /** Optional judge agent type — reads all diffs and produces a verdict. */
+  judge_agent?: string
+  /** Optional custom judge evaluation dimensions. Each entry is a free-form
+   *  line replacing the default 4 (Correctness / Code quality / Completeness /
+   *  Efficiency). Empty or absent = use the defaults. */
+  judge_dimensions?: string[]
+  /** Git ref each contestant worktree is branched from. Absent = current HEAD.
+   *  When the launcher picks commit X as the task source, this is `X^` so the
+   *  worktree starts before X — physical isolation, not a prompt rule. */
+  base_commit?: string
+}
+
+/** Mirrors Rust `PkRoundInfo` (src-tauri/src/models/pk_round.rs). */
+export interface PkRoundInfo {
+  id: number
+  folder_id: number
+  task: string
+  config: PkRoundConfig
+  status: PkRoundStatus
+  failure_reason: string | null
+  judge_result?: PkJudgeResultDto | null
+  judge_status: string
+  created_at: string
+  updated_at: string
+  finished_at: string | null
+}
+
+/** Serialized judge verdict shape stored in the DB. */
+export interface PkJudgeResultDto {
+  scores: PkJudgeScoreDto[]
+  summary: string
+  rawText: string
+}
+
+/** One contestant's judge verdict. */
+export interface PkJudgeScoreDto {
+  slot?: number
+  agentType: string
+  score: number
+  rank: number
+  comment: string
+}
 
 /** Mirrors Rust `FolderKind` (src-tauri/src/db/entities/folder.rs).
  *  `loop_worktree` is reserved for M2+ — add it here when the variant lands. */
@@ -728,6 +805,7 @@ export const AGENT_DISPLAY_ORDER: BuiltinAgentType[] = [
   "cursor",
   "deepseek",
   "qoder",
+  "antigravity",
 ]
 
 const AGENT_DISPLAY_ORDER_INDEX = new Map<AgentType, number>(
@@ -761,6 +839,7 @@ export const ALL_AGENT_TYPES: BuiltinAgentType[] = [
   "cursor",
   "deepseek",
   "qoder",
+  "antigravity",
 ]
 
 export const MODEL_PROVIDER_AGENT_TYPES: BuiltinAgentType[] = [
@@ -1071,6 +1150,7 @@ export const AGENT_LABELS: Record<BuiltinAgentType, string> = {
   cursor: "Cursor",
   deepseek: "DeepSeek Harness",
   qoder: "Qoder",
+  antigravity: "Google Antigravity",
 }
 
 export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
@@ -1088,6 +1168,7 @@ export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
   cursor: "bg-zinc-800",
   deepseek: "bg-[#4D6BFE]",
   qoder: "bg-[#6C4CF1]",
+  antigravity: "bg-[#1A73E8]",
 }
 
 // ACP connection status (matches Rust ConnectionStatus)
@@ -1487,6 +1568,9 @@ export interface ForgeSourceMeta {
   head_repo?: string | null
   /** URL of the PR created by the delivery acceptance path (P1). */
   result_pr?: string | null
+  /** The trigger dialog's write-back answer, frozen at trigger time. Absent on
+   *  rows minted before the choice lived here — those stay silent. */
+  writeback?: boolean | null
 }
 
 export type ForgeTab = "issues" | "prs"
@@ -1582,6 +1666,20 @@ export interface ForgeTaskLink {
   updated_at: string
 }
 
+/** How the trigger dialog asks the work item to be handled. A template NAME
+ *  the server resolves into its own instruction text — prompt text never
+ *  crosses the wire. `fix`/`plan_first` are issue scenarios,
+ *  `review_fix`/`review_only` are PR/MR scenarios.
+ *
+ *  Both issue templates confirm the reported problem is real before acting on
+ *  it, which is why there is no "investigate only" entry: the server refuses
+ *  that retired name rather than mapping it onto one of these. */
+export type ForgeScenarioId =
+  | "fix"
+  | "plan_first"
+  | "review_fix"
+  | "review_only"
+
 /** Trigger payload (client supplies coordinates + display snapshot only —
  *  the server derives everything trusted). */
 export interface ForgeTaskDraftInput {
@@ -1600,10 +1698,59 @@ export interface ForgeTaskDraftInput {
     labels?: string[]
     author?: string | null
   }
+  /** Absent/null = the kind's default (`fix` for issues, `review_fix` for
+   *  proposed changes). */
+  scenario?: ForgeScenarioId | null
   instruction?: string | null
+  /** Comment the outcome back on this item once the task finishes — the
+   *  trigger dialog's own box, recorded on the task and frozen at trigger
+   *  time. Always sent explicitly by the dialog; ABSENT is read server-side as
+   *  "silent", not as the dialog's default, because a request without it came
+   *  from a client that never showed the question. */
+  writeback?: boolean | null
   agent_type?: string | null
   force?: boolean
 }
+
+/** One scope's repository-panel preferences — mirrors
+ *  `forge::settings::ForgePanelSettings`.
+ *
+ *  What lives here is the dimension this page adds on top of a folder's
+ *  task-settings stage prompts: how you like an ISSUE handled, and what you
+ *  always want said for a review as opposed to a fix. */
+export interface ForgePanelSettings {
+  /** Scenario the trigger dialog preselects for an issue; null = the built-in
+   *  default. Consumed by the DIALOG — the request it then sends always names
+   *  a scenario outright. */
+  default_issue_scenario?: ForgeScenarioId | null
+  /** Same, for a pull/merge request. */
+  default_pr_scenario?: ForgeScenarioId | null
+  /** What the trigger dialog's write-back switch starts as. Only the starting
+   *  position: the switch is on screen every time, and what it says when the
+   *  user presses Create is what the task records. */
+  writeback_default: boolean
+  /** Standing instructions appended after a scenario's built-in wording,
+   *  keyed by scenario id plus the reserved `all` (every scenario). */
+  scenario_prompts: Record<string, string>
+}
+
+/** Every scope of the panel's preferences — mirrors
+ *  `forge::settings::ForgeSettingsStore`.
+ *
+ *  Scoped the same way task settings are: a global row plus optional per-folder
+ *  overrides, and an override wins WHOLESALE rather than merging field by
+ *  field. Sent as one value because the settings dialog shows one folder while
+ *  saying whether that folder is following the global row, which takes both. */
+export interface ForgeSettingsStore {
+  global: ForgePanelSettings
+  /** Keyed by folder id (JSON has no integer keys, so they arrive as strings).
+   *  A folder with no entry follows `global` — absence IS the answer, so there
+   *  is no separate "follows global" flag to keep in sync. */
+  folders: Record<string, ForgePanelSettings>
+}
+
+/** Reserved `scenario_prompts` key applied to every scenario. */
+export const FORGE_SCENARIO_PROMPT_ALL = "all"
 
 /** Discriminated trigger outcome — duplicate/mismatch are answers, not errors. */
 export type ForgeCreateResult =
@@ -1616,6 +1763,9 @@ export interface WorkTaskQueuedMerge {
   /** The commit message the user typed; null = the agent writes it. */
   message: string | null
   delete_worktree: boolean
+  /** Extra directions for the merge agent, kept so a merge that waited its turn
+   *  lands under what the user asked for when they queued it. */
+  instructions?: string | null
   /** Place in line (ISO instant) — the order the engine's pump dispatches in. */
   queued_at: string
 }
@@ -1690,10 +1840,6 @@ export interface WorkTaskFolderSettings {
    *  Keys are the engine's stage ids (`work` | `retry` | `return` | `merge`)
    *  plus the reserved `all`, which applies to every stage. */
   stage_prompts?: Record<string, string> | null
-  /** Comment the outcome back on the issue/PR a task came from once it
-   *  finishes. Optional here (and off in the backend's default) because it is
-   *  the only setting that writes where other people are watching. */
-  forge_writeback?: boolean
 }
 
 /** Changed file of a task worktree vs its recorded base. */
@@ -2008,6 +2154,13 @@ export type AcpEvent =
       folder_id: number
     }
   | {
+      // Agent published a live ACP session title. The backend writes the
+      // conversation row and broadcasts `conversation://changed`; the
+      // frontend does not apply this event itself.
+      type: "native_session_title"
+      title: string
+    }
+  | {
       type: "conversation_status_changed"
       conversation_id: number
       status: ConversationStatus
@@ -2081,9 +2234,19 @@ export type AcpEvent =
       // `codexErrorInfo` carried one. With AIR advertised, codex 1.2+ replaces
       // this channel with severity-"warning" `session_failure` records, so it
       // now serves only legacy paths.
+      //
+      // pi shares this channel (#525): pi-acp announces `auto_retry_start` as
+      // ordinary prose, so the backend classifies it out of the transcript and
+      // routes it here. pi sends an EMPTY `message` — it forwards no error text,
+      // only the counters below — and the banner renders its own localized line
+      // in that case. All three counters are absent for codex, which reports
+      // none of them.
       type: "turn_retrying"
       message: string
       error_status?: number
+      attempt?: number
+      max_retries?: number
+      retry_delay_ms?: number
     }
   | {
       // JetBrains AIR typed session failure upsert
@@ -2547,6 +2710,17 @@ export interface AcpAgentInfo {
   skills_capable: boolean
   registry_id: string
   registry_version: string | null
+  /**
+   * Whether "install a specific version" can actually fetch that version.
+   *
+   * NOT the same as `registry_version != null`, which is what this page used to
+   * infer it from: a binary agent's custom install substitutes the requested
+   * version into the pinned download URL, and Antigravity's URLs carry a Google
+   * build id rather than its registry version — so the substitution is a no-op
+   * and the install would relabel the same bytes under a version that was never
+   * fetched. The backend answers per-platform.
+   */
+  supports_custom_version: boolean
   name: string
   description: string
   available: boolean
@@ -3199,6 +3373,7 @@ export type McpAppType =
   | "cursor"
   | "deepseek"
   | "qoder"
+  | "antigravity"
 
 export interface LocalMcpServer {
   id: string

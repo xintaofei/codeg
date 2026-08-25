@@ -21,6 +21,8 @@ pub enum ConversationStatus {
 /// excluded from the sidebar list entirely (no write path yet — reserved for
 /// the loop engine); `delegate` is a delegation child nested under its
 /// parent's tool-call view. Invariant: `kind == Delegate` ⟺ `parent_id IS NOT
+/// NULL`. `pk` is a PK-arena contestant session — grouped under its round in
+/// the sidebar's PK section. Invariant: `kind == Pk` ⟺ `pk_round_id IS NOT
 /// NULL`. Written once at insert, never updated.
 #[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
 #[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
@@ -34,6 +36,8 @@ pub enum ConversationKind {
     Loop,
     #[sea_orm(string_value = "delegate")]
     Delegate,
+    #[sea_orm(string_value = "pk")]
+    Pk,
 }
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
@@ -58,6 +62,9 @@ pub struct Model {
     pub parent_id: Option<i32>,
     pub parent_tool_use_id: Option<String>,
     pub delegation_call_id: Option<String>,
+    /// The PK arena round this contestant session belongs to. NULL for every
+    /// other kind; always set when `kind == Pk`. Written once at insert.
+    pub pk_round_id: Option<i32>,
     pub message_count: i32,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,

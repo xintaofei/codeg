@@ -71,7 +71,8 @@ mod tauri_app {
         experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
         folder_links, office_tools as office_tools_commands,
         folders, logging as logging_commands, mcp as mcp_commands,
-        model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
+        model_provider as model_provider_commands, notification, pet as pet_commands, pk as pk_commands,
+        project_boot,
         question as question_commands, quick_messages as quick_messages_commands,
         remote_proxy as remote_proxy_commands,
         remote_workspace as remote_workspace_commands, science as science_commands,
@@ -507,6 +508,19 @@ mod tauri_app {
                             tracing::info!("[folders] labeled {n} worktree folder(s) by branch");
                         }
                     });
+                }
+
+                // Hand the chat-channel manager to the connection manager
+                // BEFORE the chat background tasks below start accepting
+                // messages: a `/new` that lands first would write its live ACP
+                // title against an `install_chat_channel` that hasn't happened
+                // yet, and skip the topic rename for good (the later
+                // reconciliation passes only sync titles their own conditional
+                // UPDATE wrote, and this one already converged).
+                {
+                    let cm = app.state::<ConnectionManager>();
+                    let ccm = app.state::<ChatChannelManager>();
+                    cm.install_chat_channel(ccm.clone_ref());
                 }
 
                 // Start chat channel background tasks
@@ -1027,6 +1041,7 @@ mod tauri_app {
                 conversations::get_stats,
                 conversations::get_sidebar_data,
                 conversations::create_conversation,
+                conversations::create_pk_conversation,
                 conversations::create_chat_conversation,
                 conversations::create_chat_dir,
                 conversations::update_conversation_status,
@@ -1128,6 +1143,7 @@ mod tauri_app {
                 folders::git_search_authors,
                 folders::git_commit_branches,
                 windows::open_folder_window,
+                windows::open_pk_round_window,
                 windows::open_commit_window,
                 windows::open_settings_window,
                 windows::open_merge_window,
@@ -1272,6 +1288,7 @@ mod tauri_app {
                 acp_commands::acp_update_pi_config,
                 acp_commands::acp_load_pi_config,
                 acp_commands::acp_validate_pi_command,
+                acp_commands::acp_sync_antigravity_settings,
                 acp_commands::acp_pi_project_trust_state,
                 acp_commands::acp_pi_set_project_trust,
                 acp_commands::acp_pi_acknowledge_project_trust,
@@ -1395,12 +1412,22 @@ mod tauri_app {
                 work_task_commands::work_task_template_list,
                 work_task_commands::work_task_template_save,
                 work_task_commands::work_task_template_delete,
+                pk_commands::pk_round_list,
+                pk_commands::pk_round_get,
+                pk_commands::pk_round_create,
+                pk_commands::pk_round_update_status,
+                pk_commands::pk_round_delete,
+                pk_commands::pk_round_update_judge,
+                pk_commands::pk_round_save_report_snapshot,
+                pk_commands::pk_round_get_report_snapshot,
                 forge_commands::folder_forge_remote,
                 forge_commands::forge_list_issues,
                 forge_commands::forge_tab_count,
                 forge_commands::forge_list_labels,
                 forge_commands::work_task_create_from_forge,
                 forge_commands::work_task_lookup_by_source,
+                forge_commands::forge_settings_get,
+                forge_commands::forge_settings_set,
                 terminal_commands::terminal_spawn,
                 terminal_commands::terminal_write,
                 terminal_commands::terminal_resize,

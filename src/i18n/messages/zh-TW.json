@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "視窗縮放",
-      "sectionDescription": "整體放大或縮小介面，立即生效，依裝置分別儲存。",
+      "sectionDescription": "整體放大或縮小介面，立即生效，依裝置分別儲存。⌘/Ctrl + 和 - 依與此選單相同的檔位調節（⌘/Ctrl 0 恢復為 100%）。",
       "placeholder": "請選擇縮放檔位",
       "default": "預設",
       "current": "目前縮放：{zoom}%"
@@ -181,6 +181,7 @@
       "chooseImage": "選擇圖片",
       "replaceImage": "更換圖片",
       "removeImage": "移除",
+      "formatHint": "支援 PNG、JPEG、WebP、GIF；動圖會自動播放。",
       "fillMode": "填滿方式",
       "fillModes": {
         "cover": "覆蓋",
@@ -194,13 +195,18 @@
       "panelOpacity": "面板不透明度",
       "panelOpacityHint": "側邊欄、面板與標籤列的不透明程度。越低，透出的圖片越多。",
       "errorTooLarge": "圖片太大（最大 16 MB）。",
+      "errorUnsupportedFormat": "不支援的圖片格式，請選擇 PNG、JPEG、WebP 或 GIF。",
       "errorUploadFailed": "設定背景圖片失敗。"
     }
   },
   "SystemSettings": {
     "loading": "載入中...",
     "sectionTitle": "系統管理",
-    "sectionDescription": "管理網路代理、應用升級與語言偏好。",
+    "sectionDescription": "管理應用升級、開機自動啟動、網路代理與語言偏好。",
+    "autostartTitle": "開機自動啟動",
+    "autostartDescription": "登入這台電腦後自動啟動，不必每次手動開啟。",
+    "autostartSaveFailed": "開機自動啟動設定儲存失敗：{message}",
+    "autostartUnavailable": "無法讀取本機的開機自動啟動狀態：{message}",
     "proxyTitle": "網路代理",
     "proxyDescription": "啟用後，後續網路請求將優先走該代理（包含 ACP 對話、Agent 安裝、Git 遠端操作等）。",
     "loadFailed": "載入失敗：{message}",
@@ -353,6 +359,7 @@
     "resetDefault": "恢復預設",
     "recordInstruction": "點擊右側按鈕後按下組合鍵即可修改。建議使用 Ctrl/Cmd、Alt、Shift 的組合。按 Esc 可取消錄製。",
     "recording": "按下快捷鍵...",
+    "unassigned": "未指派",
     "toasts": {
       "conflict": "快捷鍵已被「{title}」占用",
       "updated": "快捷鍵已更新",
@@ -423,6 +430,18 @@
       "toggle_custom_style": {
         "title": "停用/恢復自訂樣式",
         "description": "逃生艙：一鍵關閉全部自訂配色與 CSS，再按一次恢復"
+      },
+      "zoom_in": {
+        "title": "放大",
+        "description": "把視窗縮放提高一檔"
+      },
+      "zoom_out": {
+        "title": "縮小",
+        "description": "把視窗縮放降低一檔"
+      },
+      "zoom_reset": {
+        "title": "重設縮放",
+        "description": "把視窗縮放恢復為 100%"
       }
     }
   },
@@ -814,6 +833,33 @@
       "advancedHint": "完整的 settings.json，儲存時會按原文寫入——這也是唯一能刪除某個鍵的入口。",
       "saveRawConfig": "儲存檔案"
     },
+    "antigravity": {
+      "configDescription": "Antigravity 必须先选定认证方式才能开始会话。所选方式会写入 $GEMINI_HOME/antigravity-acp/settings.json 的 auth.type —— 这是 ACP 服务端唯一读取的位置，不写就每次新建会话都会报 “Authentication required”。模型与会话模式不在这里：Antigravity 通过 ACP 上报它们，由输入框的选择器按会话管理。",
+      "methodLabel": "认证方式",
+      "methods": {
+        "oauth-personal": "使用 Google 账号登录",
+        "oauth-business": "Gemini Enterprise",
+        "gemini-api-key": "Gemini API Key",
+        "agent-platform": "Gemini Enterprise Agent Platform"
+      },
+      "methodHints": {
+        "oauth-personal": "你的 Google 账号，任意 Antigravity 套餐（含免费版）均可。首次新建会话会自动打开浏览器完成登录，之后令牌会被缓存复用。",
+        "oauth-business": "你的 Gemini Enterprise 账号。需要填 GCP 项目与区域，首次新建会话会打开浏览器。",
+        "gemini-api-key": "Gemini Developer API 的密钥，以 GEMINI_API_KEY 传给智能体。",
+        "agent-platform": "即原 Vertex AI。可用 API Key，或用项目 + 区域配合应用默认凭据（gcloud auth application-default login）。"
+      },
+      "geminiApiKeyLabel": "Gemini API Key",
+      "googleApiKeyLabel": "Google API Key",
+      "googleApiKeyHint": "可选。填了就单独使用它，下面的项目与区域会被忽略；留空则改用应用默认凭据认证。",
+      "gcpProjectLabel": "GCP 项目",
+      "gcpLocationLabel": "GCP 区域",
+      "missingGeminiApiKey": "请填写 Gemini API Key，或改用其他认证方式 —— 否则会话无法启动。",
+      "missingAgentPlatformConfig": "请填写 API Key，或同时填写项目与区域 —— 二者缺一不可，否则会话无法启动。",
+      "missingEnterpriseConfig": "Gemini Enterprise 需要同时填写项目与区域。",
+      "settingsFileHint": "auth.type 会保存到该文件；你自己写在里面的其他键会原样保留。",
+      "syncSkipped": "Your choice was saved, but codeg could not write it to the ACP server's settings.json, so Antigravity will keep authenticating the way that file says. Set auth.type in it yourself, or move it aside and save again.",
+      "save": "保存"
+    },
     "deepseek": {
       "configManagement": "DeepSeek Harness 設定",
       "configDescription": "端點與金鑰是 deepseek-acp 啟動時讀取的環境變數。模型與推理等級是工作階段層級的選擇器，在輸入框裡切換。",
@@ -836,6 +882,9 @@
       "enableWebsocketAria": "Codex Provider 啟用 WebSocket",
       "enableSkills": "啟用 Skills",
       "enableSkillsAria": "Codex 啟用 Skills",
+      "enableDefaultModeRequestUserInput": "預設模式下允許提問",
+      "enableDefaultModeRequestUserInputAria": "允許 Codex 在預設模式下提問",
+      "enableDefaultModeRequestUserInputHint": "Codex 的 request_user_input 工具預設只在 Plan 模式可用。開啟後，一般回合也能向你提問。會寫入 ~/.codex/config.toml 的 [features].default_mode_request_user_input；該開關在上游仍處於開發中。下次新建工作階段生效。",
       "enableFast": "啟用 Fast",
       "enableFastAria": "Codex 啟用 Fast 服務等級",
       "sandboxGroupTitle": "沙箱與審批",
@@ -1263,7 +1312,10 @@
       "piBinaryUninstallFailed": "pi 解除安裝失敗",
       "savePiTrustFailed": "儲存工作區信任失敗",
       "qoderSaved": "Qoder 設定已儲存",
-      "saveQoderConfigFailed": "儲存 Qoder 設定失敗"
+      "saveQoderConfigFailed": "儲存 Qoder 設定失敗",
+      "antigravitySaved": "已保存 Antigravity 配置",
+      "antigravitySyncSkipped": "Saved, but Antigravity's settings.json was left alone",
+      "saveAntigravityConfigFailed": "保存 Antigravity 配置失败"
     },
     "version": {
       "statusLabel": "版本狀態",
@@ -1441,11 +1493,7 @@
   "GeneralSettings": {
     "loading": "載入中...",
     "sectionTitle": "一般",
-    "sectionDescription": "集中管理開機自動啟動、預設終端機、渲染加速以及多智能體協同等通用偏好。",
-    "autostartTitle": "開機自動啟動",
-    "autostartDescription": "登入這台電腦後自動啟動 codeg。",
-    "autostartSaveFailed": "開機自動啟動設定儲存失敗：{message}",
-    "autostartUnavailable": "無法讀取本機的開機自動啟動狀態：{message}",
+    "sectionDescription": "集中管理預設終端機、渲染加速、通知提示音以及多智能體協同等通用偏好。",
     "terminalTitle": "預設終端",
     "terminalDescription": "選擇從終端列或檔案樹開啟新終端分頁時使用的 Shell。智慧代理請求 codeg 代為執行整條命令列時也會使用它。",
     "terminalSystemDefault": "系統預設",
@@ -1626,9 +1674,11 @@
       "openFolder": "開啟資料夾",
       "searchPlaceholder": "搜尋對話...",
       "viewOptions": "顯示選項",
+      "listOptions": "會話列表",
       "showCompleted": "顯示已完成對話",
       "showWorktrees": "顯示工作樹資料夾",
       "showRecent": "顯示「最近」分組",
+      "navigationItems": "選單導覽項目",
       "moreOptions": "更多選項",
       "sortBy": "排序方式",
       "sortByCreatedAt": "按建立時間排序",
@@ -1693,8 +1743,17 @@
       "sectionFolders": "資料夾",
       "sectionChats": "聊天",
       "sectionRecent": "最近",
+      "sectionPk": "PK 競技場",
       "noChats": "沒有聊天",
       "noRecent": "暫無最近對話",
+      "noPk": "暫無 PK 對話",
+      "pkOpenArena": "Open this PK arena",
+      "pkArchive": "Archive the PK round",
+      "pkArchiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
+      "pkArchiveSuccess": "PK round archived",
+      "pkArchiveFailed": "Archive failed: {message}",
+      "pkExpand": "Expand agent sessions",
+      "pkCollapse": "Collapse agent sessions",
       "showMoreRecent": "顯示更多（{count}）",
       "noFolders": "沒有開啟的資料夾",
       "newChatAction": "新增聊天",
@@ -1820,7 +1879,8 @@
       "search": "搜尋",
       "openSettings": "打開設定",
       "backToConversations": "返回會話",
-      "withShortcut": "{label}（{shortcut}）"
+      "withShortcut": "{label}（{shortcut}）",
+      "pkArena": "智慧體 PK 競技場"
     },
     "statusBar": {
       "connection": {
@@ -2665,6 +2725,8 @@
           "nextRetryIn": "{seconds} 秒後重試",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}，{delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}，{delay}",
           "httpStatus": "（HTTP {status}）"
         },
         "configOptionAdjusted": "{agent} 把{option}設成了 {actual}，而不是 {requested}"
@@ -2755,7 +2817,8 @@
         "mentionGroupAgent": "智能體",
         "mentionGroupSession": "工作階段",
         "mentionGroupCommit": "提交",
-        "mentionGroupSkill": "技能"
+        "mentionGroupSkill": "技能",
+        "startPk": "智慧體 PK"
       },
       "messageQueue": {
         "addToQueue": "加入佇列",
@@ -2987,6 +3050,9 @@
         "selectionCopied": "已複製",
         "selectionCopyFailed": "複製失敗",
         "selectionQuote": "引用",
+        "selectionAsk": "提問",
+        "selectionAskPlaceholder": "針對選取內容提問…",
+        "selectionAskSubmit": "在新建會話中提問",
         "downloadImage": "下載圖片",
         "copyImage": "複製圖片",
         "copiedImage": "已複製圖片",
@@ -3437,7 +3503,11 @@
       "hunkLabel": "區塊 {index}",
       "loadingHunk": "正在載入區塊...",
       "noDiffData": "無差異資料",
-      "showRemainingLines": "顯示剩餘 {count} 行"
+      "showRemainingLines": "顯示剩餘 {count} 行",
+      "viewMode": {
+        "split": "切換為左右分欄視圖",
+        "unified": "切換為內聯視圖"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "工作資料夾",
@@ -4570,6 +4640,7 @@
     "actionEdit": "編輯",
     "actionDelete": "刪除",
     "actionRetryCleanup": "重試清理",
+    "actionDeleteWorktree": "刪除 worktree",
     "actionMerge": "合併",
     "actionUnqueueMerge": "取消排隊",
     "actionEditQueuedMerge": "修改排隊的合併",
@@ -4663,6 +4734,8 @@
     "strategySquashHint": "任務的所有修改壓縮成一筆提交記錄併入主分支，歷史更簡潔。",
     "strategyMerge": "保留完整提交歷史",
     "strategyMergeHint": "保留任務過程中的每一筆提交，另加一筆合併記錄，每一步都可追溯。",
+    "mergeInstructions": "補充說明（可選）",
+    "mergeInstructionsPlaceholder": "例如：衝突時以本分支為準",
     "mergeDeleteWorktree": "合併後刪除 worktree",
     "mergeSubmit": "合併",
     "mergeSubmitQueue": "加入合併佇列",
@@ -4693,8 +4766,6 @@
     "settingsAutoMergeHint": "任務進入待驗收且有可合併改動時自動落地，與點擊「合併」相同：提交訊息由 agent 自動產生，是否刪除 worktree 沿用下方預設。預檢未通過或合併失敗的任務會留下等你處理。",
     "settingsDeleteWorktree": "合併後刪除 worktree",
     "settingsDeleteWorktreeHint": "合併對話框裡預設勾選，仍可臨時更改。",
-    "settingsForgeWriteback": "完成後回寫留言",
-    "settingsForgeWritebackHint": "來自 Issue/PR 的任務完成後，codeg 會在原討論串發一則留言：結果、連結與變更行數——絕不包含 agent 寫的任何文字。預設關閉，因為它會寫到別人正在看的地方。",
     "settingsWorktreeRoot": "Worktree 位置",
     "settingsWorktreeRootHint": "新任務的 worktree 會建立在該目錄下，每個任務一個。留空則建立在專案資料夾的同層目錄；「~」表示家目錄，相對路徑相對於專案資料夾。",
     "settingsWorktreeRootPlaceholder": "~/codeg-worktrees",
@@ -4746,6 +4817,8 @@
     "deleteConfirmTitle": "刪除任務？",
     "deleteConfirmBody": "「{title}」將從看板移除。進行中的執行會先被取消。",
     "deleteWithWorktree": "同時刪除其 worktree",
+    "deleteWorktreeConfirmTitle": "刪除 worktree？",
+    "deleteWorktreeConfirmBody": "worktree 目錄及其工作分支將被徹底刪除。任務仍留在看板上，其會話會移到專案資料夾下。",
     "eventCreated": "已建立",
     "eventStatusChanged": "狀態變更",
     "eventConfigEffective": "啟動配置",
@@ -4775,6 +4848,7 @@
     "deliverPrTitleLabel": "PR 標題",
     "deliverPrTitleLabelMr": "合併請求標題",
     "deliverPrDraft": "建立為草稿",
+    "deliverPrDeleteWorktree": "交付後刪除 worktree",
     "deliverPrSubmit": "推送並建立",
     "deliverPrSubmitting": "推送中…",
     "deliverPrDone": "PR 已建立",
@@ -4784,6 +4858,7 @@
     "deliverPrBackTitleMr": "推回該合併請求",
     "deliverPrBackDescription": "把這個任務的提交推到 {repo}#{number} 的頭分支 {branch}。不會新建任何東西——工作直接進入已經存在的那個審查。",
     "deliverPrBackDescriptionMr": "把這個任務的提交推到 {repo}!{number} 的來源分支 {branch}。不會新建任何東西——工作直接進入已經存在的那個審查。",
+    "deliverPrBackDeleteWorktree": "推回後刪除 worktree",
     "deliverPrBackSubmit": "推送",
     "deliverPrBackDone": "已推回 PR",
     "deliverPrBackDoneMr": "已推回合併請求"
@@ -5066,6 +5141,179 @@
     "loadFailed": "用量載入失敗",
     "truncatedNotice": "此範圍過大 —— 下面的數字只涵蓋其中最近的一段。"
   },
+  "PkArena": {
+    "launcher": {
+      "title": "智慧體 PK",
+      "description": "同一任務同時發給多個智慧體,對比結果",
+      "contestantsLabel": "參賽選手（{min}–{max} 個）",
+      "noFolderHint": "競技場需要一個 git 儲存庫資料夾——請先開啟一個。",
+      "needMore": "至少選擇 {count} 個智慧體才能開賽。",
+      "taskLabel": "任務",
+      "taskPlaceholder": "所有選手收到的同一任務,例如\"用單一 HTML 檔寫一個貪吃蛇遊戲\"",
+      "selectedCount": "已選 {selected}/{max}(最少 {min})",
+      "cancel": "取消",
+      "start": "開始比賽",
+      "notAGitRepo": "該資料夾不是 git 儲存庫——競技場需要儲存庫來為每位選手建立隔離的 worktree。",
+      "initGitRepo": "git init",
+      "initializing": "初始化中…",
+      "permissionLabel": "權限",
+      "permissionOptions": {
+        "default": "每步詢問",
+        "acceptEdits": "自動接受編輯",
+        "bypassPermissions": "全自動"
+      },
+      "permissionHints": {
+        "default": "每次審批都會打斷選手",
+        "acceptEdits": "檔案編輯不再詢問",
+        "bypassPermissions": "完全不彈審批"
+      },
+      "permissionNote": "開賽時對每位選手生效;不支援的智慧體仍會詢問。",
+      "bareModeLabel": "裸機模式(禁用技能)",
+      "bareModeHint": "選手被明確要求只使用基礎能力,不載入任何全域或專案技能。",
+      "effortLabel": "思考等級(所有選手統一)",
+      "effortOptions": {
+        "default": "預設",
+        "low": "低",
+        "medium": "中",
+        "high": "高",
+        "max": "最高"
+      },
+      "effortNote": "按各選手通告的最近檔位套用;不支援的選手保持預設。",
+      "agentNotReady": "{agent} 未就緒(請先在智慧體設定中安裝)。",
+      "agentCheckFailed": "無法校驗 {agent} 的安裝狀態。",
+      "templates": {
+        "pelican": "鵜鶘騎車",
+        "bouncingBall": "彈球",
+        "jellyBlob": "果凍 Blob",
+        "snake": "貪吃蛇",
+        "flappyBird": "Flappy Bird",
+        "voiceChat": "語音聊天",
+        "blackHole": "黑洞"
+      },
+      "judgeLabel": "裁判(可選)",
+      "judgeNone": "無裁判",
+      "judgeHint": "所有選手完成後,裁判 agent 會讀取每個選手的 diff,給出結構化評分和排名。",
+      "startPoint": "📍 起點",
+      "fromHead": "從目前 HEAD 開始",
+      "startPointHint": "選手從此提交的前一次提交開始,看不到這次提交的改動,只把它的提交訊息當任務——等於獨立重做同一個目標。",
+      "loadingCommits": "載入提交中…",
+      "noCommits": "未找到提交。",
+      "creativeTemplates": "創意 PK",
+      "realEngineering": "真實工程 PK",
+      "loadMore": "加載更多",
+      "judgeDimensionsLabel": "評分維度（可選）",
+      "judgeDimensionsPlaceholder": "正確性 — 是否完成任務?\n程式碼品質 — 可可讀性、結構、邊界處理\n完整度 — 完成了多少?\n效率 — 程式碼層面效率（忽略 token 數和耗時）",
+      "judgeDimensionsHint": "每行一個維度。留空使用預設。每個維度會成為裁判提示詞中的編號評分標準。",
+      "addContestant": "加入 {agent} 為選手",
+      "slotLabelPlaceholder": "標籤(如 Sonnet、Opus)",
+      "slotNumber": "選手 {number}",
+      "modelLoading": "正在讀取模型…",
+      "modelUnavailable": "此智慧體使用預設模型",
+      "modelLoadFailed": "模型清單讀取失敗",
+      "retryModelLoad": "重新讀取模型清單",
+      "removeSlot": "移除該選手位置"
+    },
+    "scoreboard": {
+      "status": {
+        "preparing": "準備中",
+        "connecting": "連線中",
+        "running": "執行中",
+        "done": "完成",
+        "error": "失敗",
+        "canceled": "已取消",
+        "ready": "就緒"
+      },
+      "tokensUnit": "tok",
+      "tokensUnavailable": "Token not reported",
+      "tokensUnavailableHint": "This agent did not return token usage; this does not mean zero tokens.",
+      "turnsUnit": "輪"
+    },
+    "history": {
+      "title": "Round history",
+      "hint": "Search, open, and archive complete rounds.",
+      "trigger": "History {count}",
+      "searchPlaceholder": "Search tasks or agents…",
+      "empty": "No matching rounds",
+      "agents": "{count} agents",
+      "archive": "Archive round",
+      "archiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
+      "archiveSuccess": "PK round archived",
+      "archiveFailed": "Archive failed: {message}",
+      "status": {
+        "ready": "Ready",
+        "running": "Running",
+        "finished": "Finished",
+        "canceled": "Canceled",
+        "interrupted": "Interrupted"
+      }
+    },
+    "arena": {
+      "title": "智慧體 PK 競技場",
+      "description": "一個任務,多個智慧體,同場競技",
+      "roundStatus": {
+        "running": "進行中",
+        "finished": "已結束",
+        "canceled": "已取消",
+        "interrupted": "因重啟中斷",
+        "ready": "就緒"
+      },
+      "roundPicker": "回合",
+      "cancelRound": "取消本輪",
+      "cleanupWorktrees": "清理 worktree",
+      "cleanupHint": "移除選手的 worktree(保留分支)",
+      "share": "分享",
+      "sharing": "匯出中…",
+      "tabs": {
+        "battle": "對戰",
+        "diff": "Diff"
+      },
+      "preparing": "正在準備選手…",
+      "noRound": "未選擇回合",
+      "contestantsUnit": "個智慧體",
+      "newRound": "新一局",
+      "startMatch": "開始比賽",
+      "readyNote": "選擇每位選手的模型與思考等級,然後開始比賽。",
+      "modelLabel": "模型",
+      "effortLabel": "思考等級",
+      "effortUnsupported": "此智能體不支援思考等級設定,將使用自身預設值",
+      "effortOptions": {
+        "off": "關閉",
+        "minimal": "最低",
+        "low": "低",
+        "medium": "中",
+        "high": "高",
+        "max": "最高"
+      },
+      "minimize": "縮小",
+      "exportReport": "匯出報告",
+      "exporting": "產生中…",
+      "shareReport": "Save / share report",
+      "reportSaved": "HTML report saved",
+      "reportFailed": "Report export failed: {message}",
+      "persistenceFailed": "部分回合狀態未能儲存，請在關閉頁面前重試對應操作。",
+      "retrySave": "重試儲存",
+      "readyTag": "就緒",
+      "deleteRound": "刪除",
+      "deleteConfirm": "刪除這個回合?worktree 會留在磁碟上,可用「清理 worktree」移除。",
+      "followUp": "追加",
+      "followUpPlaceholder": "只對這名選手發追加訊息(⌘↩ 傳送)"
+    },
+    "diff": {
+      "loading": "正在載入 diff…",
+      "empty": "該 worktree 沒有變更"
+    },
+    "judge": {
+      "title": "裁判裁決",
+      "running": "評審中…",
+      "error": "裁判失敗",
+      "rerun": "重新評分"
+    },
+    "minimized": {
+      "restore": "回到競技場",
+      "live": "PK 進行中",
+      "dismiss": "隱藏"
+    }
+  },
   "Forge": {
     "title": "儲存庫面板",
     "pickFolder": "選擇專案資料夾",
@@ -5112,12 +5360,18 @@
     "incompleteResults": "搜尋逾時，本頁可能有遺漏。",
     "reachableCap": "只能翻閱前 {count} 筆，其餘的請縮小篩選範圍後查看。",
     "openRepo": "開啟儲存庫",
+    "openItem": "在瀏覽器中開啟",
+    "detailDescription": "該項目的描述，以及可以對它執行的操作。",
+    "detailUpdated": "更新於 {time}",
+    "detailNoBody": "沒有描述",
     "stateFilter": "狀態",
     "emptyPage": "本頁沒有內容",
     "dialogDescription": "將在 {repo} 對應的資料夾建立一個待辦任務——智慧體在獨立工作樹裡工作，你驗收後才落地。",
     "dialogDescriptionPr": "將在 {repo} 對應的資料夾建立一個待辦任務，工作樹直接檢出到這個 PR 的頭提交——智能體的提交疊在它上面，驗收後推回同一個 PR。",
     "dialogDescriptionMr": "將在 {repo} 對應的資料夾建立一個待辦任務，工作樹直接檢出到這個合併請求的頭提交——智能體的提交疊在它上面，驗收後推回同一個合併請求。",
     "instructionPlaceholder": "給智慧體的補充說明（可選）…",
+    "writebackLabel": "完成後回寫留言",
+    "writebackHint": "任務完成後，在這個項目下發一則留言：結果、連結與變更行數。",
     "previewToggle": "預覽任務將攜帶的 Issue 內容",
     "previewEmpty": "（無描述）",
     "duplicateBody": "已有一個進行中的任務在處理該條目：{title}（{status}）。仍要再建一個嗎？",
@@ -5126,6 +5380,38 @@
     "create": "建立待辦任務",
     "creating": "建立中…",
     "createAnyway": "仍要新建",
-    "viewExisting": "檢視既有任務"
+    "viewExisting": "檢視既有任務",
+    "scenarioLabel": "處理方式",
+    "scenarioFix": "直接修復 / 實作",
+    "scenarioFixHint": "智慧體先在工作樹裡確認問題真實存在，再動手修復；確認不了就如實回報，不會硬改程式碼。",
+    "scenarioPlanFirst": "先出方案",
+    "scenarioPlanFirstHint": "先確認問題真實存在，再產出實作方案就停——你確認後退回任務，於同一工作樹實作。",
+    "scenarioReviewFix": "審查並修復",
+    "scenarioReviewFixHint": "審查改動並順手修掉問題，驗收後提交推回原分支。",
+    "scenarioReviewOnly": "僅審查",
+    "scenarioReviewOnlyHint": "只出審查報告（問題、位置、建議），不改程式碼——需要修時退回任務即可。",
+    "settingsTitle": "面板設定",
+    "settingsDescription": "{folder} 中 Issue 與變更的處理方式。",
+    "settingsScope": "套用範圍",
+    "settingsScopeGlobal": "全部資料夾（全域預設）",
+    "settingsScopeGlobalHint": "未單獨設定的資料夾將使用這份全域預設。",
+    "settingsSource": "設定來源",
+    "settingsSourceGlobal": "使用全域預設",
+    "settingsSourceCustom": "單獨設定",
+    "settingsSourceCustomHint": "為此資料夾儲存獨立設定，不再跟隨全域預設。",
+    "settingsSourceGlobalFollow": "跟隨全域面板設定，全域改動會自動生效。",
+    "settingsIssueDefault": "Issue 預設處理方式",
+    "settingsIssueDefaultHint": "開啟 Issue 的處理對話框時預先選取的方式。",
+    "settingsPrDefault": "PR / MR 預設處理方式",
+    "settingsPrDefaultHint": "開啟 PR 或 MR 的處理對話框時預先選取的方式。",
+    "settingsWritebackDefault": "預設回寫留言",
+    "settingsWritebackDefaultHint": "處理對話框裡那個開關的初始狀態，每個項目仍可單獨調整。",
+    "settingsPromptsIntro": "常駐提示詞會接在所選情境的內建指令之後、你在處理對話框裡填的補充說明之前，內建指令不需在這裡重複。它只隨任務的第一輪送出；每一輪都要帶的內容請寫在待辦任務設定的提示詞裡。",
+    "settingsPromptsLabel": "情境",
+    "settingsPromptAll": "所有情境",
+    "settingsPromptAllHint": "這個面板建立的每個任務都會帶上，不分情境。",
+    "settingsPromptScenarioHint": "只有這個情境建立的任務才會帶上。",
+    "settingsPromptPlaceholder": "例如：用繁體中文回覆；完成前先跑一次專案的測試。",
+    "save": "儲存"
   }
 }

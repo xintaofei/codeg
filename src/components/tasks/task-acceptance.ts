@@ -26,6 +26,28 @@ export function worktreeWasRemoved(task: WorkTask): boolean {
 }
 
 /**
+ * Whether the drawer should offer to remove the worktree on its own — a task
+ * that FINISHED still sitting on the checkout it ran in. Both acceptances
+ * (merge, complete) offer to take the worktree along and both let the user say
+ * no, so a `done` task can keep a checkout nobody will open again; this is how
+ * that disk is reclaimed without deleting the task itself.
+ *
+ * Two exclusions, both about not offering the same call twice:
+ * - a worktree already gone (`isWorktreeGone`) has nothing to remove — the card
+ *   says so with its own badge, and a button contradicting it would only
+ *   confuse;
+ * - a cleanup that FAILED already shows its retry entry in the same bar. Same
+ *   backend call, and that one names the failure.
+ */
+export function canRemoveWorktree(task: WorkTask): boolean {
+  return (
+    task.status === "done" &&
+    !isWorktreeGone(task) &&
+    task.cleanup_state !== "failed"
+  )
+}
+
+/**
  * Whether a reviewed task has no merge to offer, so "complete" takes the
  * primary slot instead:
  * - the run settled with an empty diff against the recorded base — only `0`

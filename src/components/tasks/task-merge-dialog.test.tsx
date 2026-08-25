@@ -116,7 +116,9 @@ describe("TaskMergeDialog", () => {
     )
 
     await userEvent.click(screen.getByRole("button", { name: "Merge" }))
-    await waitFor(() => expect(mergeMock).toHaveBeenCalledWith(7, null, true))
+    await waitFor(() =>
+      expect(mergeMock).toHaveBeenCalledWith(7, null, true, null)
+    )
   })
 
   it("unchecking auto reveals the title-prefilled message and sends it", async () => {
@@ -136,7 +138,29 @@ describe("TaskMergeDialog", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Merge" }))
     await waitFor(() =>
-      expect(mergeMock).toHaveBeenCalledWith(7, "Fix login", false)
+      expect(mergeMock).toHaveBeenCalledWith(7, "Fix login", false, null)
+    )
+  })
+
+  // Optional in both directions: typing goes through verbatim, and leaving it
+  // alone must not start gating the button the way the commit message does.
+  it("sends extra instructions when typed, and never blocks on them", async () => {
+    settingsMock.mockResolvedValue(settings())
+    renderDialog()
+
+    const extra = await screen.findByLabelText(/Extra instructions/)
+    expect((extra as HTMLTextAreaElement).value).toBe("")
+    expect(screen.getByRole("button", { name: "Merge" })).toBeEnabled()
+
+    await userEvent.type(extra, "  prefer ours on conflict  ")
+    await userEvent.click(screen.getByRole("button", { name: "Merge" }))
+    await waitFor(() =>
+      expect(mergeMock).toHaveBeenCalledWith(
+        7,
+        null,
+        true,
+        "prefer ours on conflict"
+      )
     )
   })
 
@@ -180,7 +204,9 @@ describe("TaskMergeDialog", () => {
     await userEvent.click(
       screen.getByRole("button", { name: "Add to merge queue" })
     )
-    await waitFor(() => expect(mergeMock).toHaveBeenCalledWith(7, null, true))
+    await waitFor(() =>
+      expect(mergeMock).toHaveBeenCalledWith(7, null, true, null)
+    )
     // Closed, and the queued outcome is announced where it can be read.
     expect(onOpenChange).toHaveBeenCalledWith(false)
     expect(toastSuccess).toHaveBeenCalledTimes(1)
@@ -238,6 +264,7 @@ describe("TaskMergeDialog", () => {
             merge_queued: {
               message: "fix: the login redirect",
               delete_worktree: false,
+              instructions: "prefer ours on conflict",
               queued_at: "2026-08-01T00:30:00Z",
             },
           }}
@@ -259,6 +286,9 @@ describe("TaskMergeDialog", () => {
         screen.getByRole("checkbox", { name: /Delete worktree after merge/ })
       ).not.toBeChecked()
     )
+    expect(
+      (screen.getByLabelText(/Extra instructions/) as HTMLTextAreaElement).value
+    ).toBe("prefer ours on conflict")
 
     // Submitting re-sends exactly what is on screen.
     mergeMock.mockResolvedValue(true)
@@ -269,7 +299,8 @@ describe("TaskMergeDialog", () => {
       expect(mergeMock).toHaveBeenCalledWith(
         7,
         "fix: the login redirect",
-        false
+        false,
+        "prefer ours on conflict"
       )
     )
   })

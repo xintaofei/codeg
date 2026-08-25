@@ -15,6 +15,7 @@ import {
   type LucideIcon,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { BrowserLink } from "@/components/ui/browser-link"
 import { Button } from "@/components/ui/button"
 import { statusLabelKey } from "@/components/tasks/task-card"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
@@ -22,7 +23,7 @@ import { formatRelative } from "@/components/conversations/sidebar-conversation-
 import { cn } from "@/lib/utils"
 import { labelSwatch } from "@/lib/forge-label-color"
 import { chipStateForLink } from "@/lib/forge-task-chip"
-import type { ForgeIssueRow, ForgeTaskLink } from "@/lib/types"
+import type { ForgeIssueRow, ForgeLabel, ForgeTaskLink } from "@/lib/types"
 
 /** Render-time "now" is fine here: the list re-renders on every refresh. */
 function relative(iso: string): string {
@@ -43,8 +44,12 @@ type StateLabelKey = "stateOpen" | "stateClosed" | "stateMerged" | "stateDraft"
  *
  * Draft outranks the state on purpose: an open draft is not ready for review,
  * which is the thing a triage list is scanning for.
+ *
+ * Exported for the detail panel, which spells the same state out in words next
+ * to the same glyph in the same colour — one vocabulary across both surfaces
+ * (the same reason `task-card` hands `StatusChip` to the task detail sheet).
  */
-function stateGlyph(row: ForgeIssueRow): {
+export function stateGlyph(row: ForgeIssueRow): {
   Icon: LucideIcon
   className: string
   labelKey: StateLabelKey
@@ -97,20 +102,68 @@ const LABEL_CAP_COMPACT = 1
 const LABEL_CAP = 4
 
 /**
+ * One label, in the project's own colour.
+ *
+ * Shared with the detail panel — which is where the labels the row had to drop
+ * finally show — so that WHICH treatment a colour gets is decided once. The
+ * project's colour arrives raw from the forge and only `labelSwatch` knows how
+ * to make it survive both themes; a label the forge gave no usable colour keeps
+ * the neutral chip rather than an invented one. Size is the caller's, because
+ * the row and the panel are set at different scales.
+ */
+export function ForgeLabelChip({
+  label,
+  className,
+}: {
+  label: ForgeLabel
+  className?: string
+}) {
+  const swatch = labelSwatch(label.color)
+  return (
+    <Badge
+      variant="outline"
+      style={swatch}
+      title={label.name}
+      className={cn(
+        "shrink-0 rounded-full font-normal",
+        swatch == null ? "text-muted-foreground" : "forge-label border",
+        className
+      )}
+    >
+      {label.name}
+    </Badge>
+  )
+}
+
+/**
  * ONE shape for the row's action, whichever of the two it is showing. "Start"
  * and the status chip occupy the same slot on successive rows, so a difference
  * in height or radius between them reads down the list as a ragged column;
  * BACKGROUND is what separates them — an offer to act, versus a task already
  * under way. Same reason the geometry is a constant and not two class strings
  * that happen to agree today.
+ *
+ * The detail panel's footer borrows it too: it offers the same two actions on
+ * the same item, and a pill that changed shape on the way into the panel would
+ * read as a different control.
  */
-const ROW_ACTION = "h-7 shrink-0 gap-1.5 rounded-full px-3 text-xs font-medium"
+export const ROW_ACTION =
+  "h-7 shrink-0 gap-1.5 rounded-full px-3 text-xs font-medium"
 
 /** Both actions' glyph. Spelled out on the icon rather than folded into
  *  `ROW_ACTION`: `Button`'s own `[&_svg:not([class*='size-'])]:size-4` carries
  *  a `:not()` and so outranks a plain `[&_svg]:` rule — an explicit class on
  *  the icon is the escape hatch that variant is written around. */
-const ROW_ACTION_GLYPH = "size-3.5"
+export const ROW_ACTION_GLYPH = "size-3.5"
+
+/** The live task chip's two fills, shared with the detail panel's footer: an
+ *  accent for a task still under way, neutral once it has settled. */
+export const CHIP_FILL = {
+  active:
+    "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary dark:hover:bg-primary/15",
+  settled:
+    "bg-muted text-muted-foreground hover:bg-muted/80 dark:hover:bg-muted/80",
+} as const
 
 /**
  * One workbench row: `#number title labels · author · updated` plus the
@@ -121,12 +174,15 @@ export function ForgeIssueRowItem({
   row,
   link,
   compact = false,
+  onOpenDetail,
   onStart,
 }: {
   row: ForgeIssueRow
   link: ForgeTaskLink | null
   /** Phone width: fewer labels, since the title has to stay readable. */
   compact?: boolean
+  /** Opens the right-side detail panel on this item. */
+  onOpenDetail: () => void
   onStart: () => void
 }) {
   const t = useTranslations("Forge")
@@ -156,42 +212,47 @@ export function ForgeIssueRowItem({
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-1.5">
-          <a
-            href={row.html_url}
-            target="_blank"
-            rel="noreferrer"
-            className="truncate text-sm font-medium hover:underline"
+          {/* The title opens the panel on the right rather than the forge's
+              own web page. Reading an issue used to mean leaving the app for a
+              browser and coming back to find your place in the list again; the
+              panel keeps the list, the filters and the scroll position exactly
+              where they were, and the way out to the forge stays one click
+              away on the number below and in the panel's footer.
+
+              A `<button>`, not a clickable div: Enter and Space, the focus
+              ring and the role all come with it. `text-start` because a button
+              centres its text by default, which would break the column the
+              titles line up in. */}
+          <button
+            type="button"
+            onClick={onOpenDetail}
             title={row.title}
+            className="truncate text-start text-sm font-medium hover:underline"
           >
             {row.title}
-          </a>
+          </button>
           {row.labels
             .slice(0, compact ? LABEL_CAP_COMPACT : LABEL_CAP)
-            .map((label) => {
-              // The project's own colour, in the treatment that survives both
-              // themes (see `labelSwatch`). A label the forge gave no usable
-              // colour keeps the neutral chip rather than an invented one.
-              const swatch = labelSwatch(label.color)
-              return (
-                <Badge
-                  key={label.name}
-                  variant="outline"
-                  style={swatch}
-                  title={label.name}
-                  className={cn(
-                    "h-4 shrink-0 rounded-full px-2 text-[0.625rem] font-normal",
-                    swatch == null
-                      ? "text-muted-foreground"
-                      : "forge-label border"
-                  )}
-                >
-                  {label.name}
-                </Badge>
-              )
-            })}
+            .map((label) => (
+              <ForgeLabelChip
+                key={label.name}
+                label={label}
+                className="h-4 px-2 text-[0.625rem]"
+              />
+            ))}
         </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
-          <span className="font-mono">#{row.number}</span>
+          {/* Where the title's old link went. The number is the item's name on
+              the forge — both forges render it as the link to the item — so it
+              is the natural place for the trip out, and putting it here keeps
+              the affordance on the row for anyone who wants the real page. */}
+          <BrowserLink
+            href={row.html_url}
+            title={t("openItem")}
+            className="font-mono transition-colors hover:text-foreground hover:underline"
+          >
+            #{row.number}
+          </BrowserLink>
           {row.author ? <span>· {row.author}</span> : null}
           {row.updated_at ? <span>· {relative(row.updated_at)}</span> : null}
         </div>
@@ -243,9 +304,7 @@ export function ForgeIssueRowItem({
               title={t("viewTask")}
               className={cn(
                 ROW_ACTION,
-                active
-                  ? "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary dark:hover:bg-primary/15"
-                  : "bg-muted text-muted-foreground hover:bg-muted/80 dark:hover:bg-muted/80"
+                active ? CHIP_FILL.active : CHIP_FILL.settled
               )}
             >
               {/* The sidebar's own to-do glyph, so "Running" reads as the

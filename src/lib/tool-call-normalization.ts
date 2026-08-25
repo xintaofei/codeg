@@ -20,6 +20,14 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   // Terminal card. Cursor's other tool names (read/edit/grep/glob/ls) already
   // match their canonical kinds verbatim.
   shell: "bash",
+  // Antigravity calls its terminal tool `run_command`, which is the name its
+  // history parser reads back out of the trajectory (`parsers/antigravity.rs`).
+  // The LIVE stream never sends it: `tools.py::extract_tool_display_title`
+  // replaces the title with the command string itself ("so IDEs render the
+  // command inside the terminal box"), so the live path has to classify on the
+  // input shape instead — see the `command_line` / `CommandLine` keys in
+  // `inferFromInput`. Both paths land on the same Terminal card.
+  run_command: "bash",
   exec_command: "exec_command",
   "functions.exec_command": "exec_command",
   "functions.read": "read",
@@ -351,6 +359,15 @@ function inferFromInput(
       "args",
       "argv",
       "command_args",
+      // Antigravity's exec tools, in both spellings that reach a client: the
+      // SDK hands the EXECUTED call `command_line`/`working_dir`, while the
+      // model's own envelope — what a permission-prompt frame carries, and
+      // what the trajectory stores — is PascalCase `CommandLine`/`Cwd`. Input
+      // shape is the only signal available: the live title IS the command
+      // (see the `run_command` alias above), so every title-based rule would
+      // name the tool "pnpm build".
+      "command_line",
+      "CommandLine",
     ])
   )
     return "bash"

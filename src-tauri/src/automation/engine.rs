@@ -382,6 +382,7 @@ impl AutomationEngine {
             mode_id: cfg.mode_id.clone(),
             config_values: cfg.config_values.clone(),
             label_snapshot: cfg.label_snapshot.clone(),
+            deliverable: None,
         };
         let draft = crate::models::WorkTaskDraft {
             folder_id,
@@ -607,12 +608,13 @@ impl AutomationEngine {
                 // Fresh isolated worktree per run; names carry the automation +
                 // run id so `git worktree list` / the branch tree groups them.
                 let branch = format!("automation/{}/run-{}", auto.id, run_id);
-                let dir = format!(
-                    "{}-automation-{}-run-{}",
-                    basename(&root.path),
-                    auto.id,
-                    run_id
-                );
+                // A repo checked out at a drive / share root has no name of
+                // its own to prefix with.
+                let repo_name = match basename(&root.path) {
+                    "" => "workspace",
+                    name => name,
+                };
+                let dir = format!("{}-automation-{}-run-{}", repo_name, auto.id, run_id);
                 let mut wt_path = sibling_path(&root.path, &dir);
 
                 // Retry once with a short suffix if a leftover collides (a prior
@@ -1052,17 +1054,78 @@ fn first_chars(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
-fn basename(path: &str) -> &str {
-    path.trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or(path)
+/// The separator `path` writes its own segments with, so a derived sibling
+/// stays in the same form the folder was registered under instead of mixing
+/// `C:\work\repo` with a `/`. A bare drive designator (`C:`) carries no
+/// separator yet but is still Windows.
+fn path_separator(path: &str) -> char {
+    if path.contains('\\') {
+        '\\'
+    } else if path.contains('/') {
+        '/'
+    } else if is_drive_designator(path) {
+        '\\'
+    } else {
+        '/'
+    }
 }
 
+/// `C:` — a Windows drive, which names a root rather than a directory.
+fn is_drive_designator(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+/// True when `trimmed` (already stripped of trailing separators) is a root
+/// with no parent to hang a sibling off: a drive (`C:`), a UNC share
+/// (`\\server\share`), or the POSIX root (empty after trimming).
+fn is_root_designator(trimmed: &str) -> bool {
+    if trimmed.is_empty() || is_drive_designator(trimmed) {
+        return true;
+    }
+    // `\\server\share` (or `//server/share`) — the host and share are both
+    // part of the root designator, so a "sibling" of the share would be a
+    // DIFFERENT share, not a directory.
+    let unc = trimmed
+        .strip_prefix("\\\\")
+        .or_else(|| trimmed.strip_prefix("//"));
+    match unc {
+        Some(rest) => rest.split(['/', '\\']).filter(|s| !s.is_empty()).count() <= 2,
+        None => false,
+    }
+}
+
+/// Last segment of an OS path, accepting either separator — a `/`-only split
+/// handed back the whole of `C:\work\repo` on Windows, which then went into a
+/// directory name. Returns `""` at a root, which has no name of its own, so
+/// callers substitute their own label rather than building a directory called
+/// `C:` (a colon is not even legal in a Windows file name).
+fn basename(path: &str) -> &str {
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    if is_drive_designator(trimmed) {
+        return "";
+    }
+    match trimmed.rfind(['/', '\\']) {
+        Some(idx) => &trimmed[idx + 1..],
+        None => trimmed,
+    }
+}
+
+/// `name` placed next to `root_path`.
+///
+/// At a root there is no sibling, so `name` lands INSIDE the root instead.
+/// Staying absolute is what matters: a bare relative name makes git resolve
+/// the worktree inside the repository and the run then registers that
+/// unresolved string as its working directory. `\\server\share` is a root too
+/// — a literal sibling of it addresses another share, not a directory.
 fn sibling_path(root_path: &str, name: &str) -> String {
-    let trimmed = root_path.trim_end_matches('/');
-    match trimmed.rfind('/') {
-        Some(idx) => format!("{}/{}", &trimmed[..idx], name),
+    let trimmed = root_path.trim_end_matches(['/', '\\']);
+    let separator = path_separator(root_path);
+    if is_root_designator(trimmed) {
+        return format!("{trimmed}{separator}{name}");
+    }
+    match trimmed.rfind(['/', '\\']) {
+        Some(idx) => format!("{}{}{}", &trimmed[..idx], separator, name),
         None => name.to_string(),
     }
 }
@@ -1090,6 +1153,57 @@ mod tests {
         assert_eq!(basename("/home/me/repo"), "repo");
         assert_eq!(basename("/home/me/repo/"), "repo");
         assert_eq!(sibling_path("/home/me/repo", "repo-automation-3-run-7"), "/home/me/repo-automation-3-run-7");
+    }
+
+    // Windows folders are registered with backslashes, so a `/`-only split
+    // used to yield the whole path as the "name" and a bare relative sibling
+    // — git would then have planted the worktree inside the repo.
+    #[test]
+    fn worktree_names_follow_windows_separators() {
+        assert_eq!(basename("C:\\work\\repo"), "repo");
+        assert_eq!(basename("C:\\work\\repo\\"), "repo");
+        assert_eq!(
+            sibling_path("C:\\work\\repo", "repo-automation-3-run-7"),
+            "C:\\work\\repo-automation-3-run-7"
+        );
+        // A repo directly on the drive root still gets an absolute sibling.
+        assert_eq!(sibling_path("C:\\repo", "repo-run"), "C:\\repo-run");
+        // Forward slashes typed on Windows stay forward slashes.
+        assert_eq!(sibling_path("C:/work/repo", "repo-run"), "C:/work/repo-run");
+    }
+
+    // Roots have no sibling, so the worktree lands inside them. What must
+    // never happen is a RELATIVE result: git would resolve it inside the repo
+    // and the run would then register that unresolved string as its cwd.
+    #[test]
+    fn worktree_paths_stay_absolute_at_roots() {
+        assert_eq!(sibling_path("C:\\", "workspace-run"), "C:\\workspace-run");
+        assert_eq!(sibling_path("C:", "workspace-run"), "C:\\workspace-run");
+        assert_eq!(sibling_path("/", "workspace-run"), "/workspace-run");
+        // A share root's "sibling" would be another share, not a directory.
+        assert_eq!(
+            sibling_path("\\\\server\\share", "share-run"),
+            "\\\\server\\share\\share-run"
+        );
+        assert_eq!(
+            sibling_path("//server/share", "share-run"),
+            "//server/share/share-run"
+        );
+        // A directory inside a share still gets a true sibling.
+        assert_eq!(
+            sibling_path("\\\\server\\share\\repo", "repo-run"),
+            "\\\\server\\share\\repo-run"
+        );
+    }
+
+    // `C:` is not a directory name — a colon is not legal in a Windows file
+    // name — so the root cases yield no basename and the caller labels them.
+    #[test]
+    fn basename_is_empty_at_a_drive_root() {
+        assert_eq!(basename("C:\\"), "");
+        assert_eq!(basename("C:"), "");
+        assert_eq!(basename("/"), "");
+        assert_eq!(basename("\\\\server\\share"), "share");
     }
 
     #[test]

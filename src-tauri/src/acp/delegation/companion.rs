@@ -1597,7 +1597,7 @@ mod tests {
         let agents = delegate["inputSchema"]["properties"]["agent_type"]["enum"]
             .as_array()
             .unwrap();
-        assert_eq!(agents.len(), 14);
+        assert_eq!(agents.len(), 15);
         assert!(agents.iter().any(|a| a == "hermes"));
         assert!(agents.iter().any(|a| a == "code_buddy"));
         assert!(agents.iter().any(|a| a == "kimi_code"));
@@ -1606,6 +1606,7 @@ mod tests {
         assert!(agents.iter().any(|a| a == "cursor"));
         assert!(agents.iter().any(|a| a == "deepseek"));
         assert!(agents.iter().any(|a| a == "qoder"));
+        assert!(agents.iter().any(|a| a == "antigravity"));
         // get_delegation_status takes a single id param — task_ids (required) —
         // plus wait_ms. The legacy single `task_id` param is gone.
         let status = tools
@@ -1645,11 +1646,11 @@ mod tests {
             .as_array()
             .unwrap()
             .clone();
-        assert_eq!(agents.len(), 16, "14 builtins + 2 distinct customs");
+        assert_eq!(agents.len(), 17, "15 builtins + 2 distinct customs");
         // Builtins keep the embedded order and come first.
         assert_eq!(agents[0], "claude_code");
-        assert_eq!(agents[14], "custom:goose");
-        assert_eq!(agents[15], "custom:amp");
+        assert_eq!(agents[15], "custom:goose");
+        assert_eq!(agents[16], "custom:amp");
         // The other delegation tools carry no agent_type and are untouched.
         let status = tools
             .as_array()
@@ -1684,13 +1685,13 @@ mod tests {
             .as_array()
             .unwrap()
             .clone();
-        assert_eq!(agents.len(), 13, "14 builtins - 2 disabled + 1 custom");
+        assert_eq!(agents.len(), 14, "15 builtins - 2 disabled + 1 custom");
         assert!(!agents.contains(&serde_json::json!("codex")));
         assert!(!agents.contains(&serde_json::json!("grok")));
         // Survivors keep the embedded order, customs still come last.
         assert_eq!(agents[0], "claude_code");
         assert_eq!(agents[1], "open_code");
-        assert_eq!(agents[12], "custom:goose");
+        assert_eq!(agents[13], "custom:goose");
     }
 
     // An empty disabled list (the parent omitted `--disabled-agents`) leaves
@@ -1712,9 +1713,9 @@ mod tests {
             .as_array()
             .unwrap()
             .clone();
-        assert_eq!(agents.len(), 14);
+        assert_eq!(agents.len(), 15);
         assert_eq!(agents[0], "claude_code");
-        assert_eq!(agents[13], "qoder");
+        assert_eq!(agents[14], "antigravity");
     }
 
     #[tokio::test]

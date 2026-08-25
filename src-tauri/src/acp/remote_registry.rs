@@ -488,6 +488,10 @@ mod tests {
         // duplicate — see the assertion below.
         assert!(is_builtin_registry_id("qoder"));
         assert!(is_builtin_registry_id("qoder-cli"));
+        // Antigravity needs NO alias: codeg's registry id is byte-identical
+        // to the one the ACP registry publishes, so the picker resolves it
+        // through the built-in table and never offers a duplicate entry.
+        assert!(is_builtin_registry_id("antigravity-acp"));
         assert!(!is_builtin_registry_id("goose"));
         assert!(!is_builtin_registry_id("qwen-code"));
     }

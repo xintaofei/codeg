@@ -11,6 +11,7 @@ import {
 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
+import { BrowserLink } from "@/components/ui/browser-link"
 import { Button } from "@/components/ui/button"
 import {
   Collapsible,
@@ -271,15 +272,13 @@ export function OpenCodePermissionsSection({
             {t("openCode.permissions.description")}
           </p>
         </div>
-        <a
+        <BrowserLink
           href={DOCS_URL}
-          target="_blank"
-          rel="noreferrer"
           className="inline-flex shrink-0 items-center gap-1 text-[11px] text-primary hover:underline"
         >
           {t("openCode.permissions.docsLink")}
           <ExternalLink className="h-3 w-3" />
-        </a>
+        </BrowserLink>
       </div>
 
       {!editable && (

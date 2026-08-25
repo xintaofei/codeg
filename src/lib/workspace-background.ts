@@ -16,6 +16,89 @@ export type WorkspaceBgFillMode = "cover" | "contain" | "center" | "tile"
 /** camelCase mirror of the Rust `BackgroundAsset` returned by `background_read`. */
 export type BackgroundAsset = { mime: string; dataBase64: string }
 
+// ─── Accepted image formats ───
+
+/**
+ * The formats `backgrounds::validate_background` allowlists (src-tauri). Keep
+ * the two lists in step — the backend stays the authoritative gate; this copy
+ * exists only so the picker can reject a wrong file *before* a ~21 MiB base64
+ * round trip, and name the reason instead of the generic failure toast.
+ *
+ * GIF is here for animated backgrounds. Animation needs no separate opt-in
+ * anywhere in the stack: the bytes are stored verbatim and painted by the
+ * webview, so an animated GIF / APNG (sniffs as PNG) / animated WebP plays on
+ * its own. See the note on `validate_background`.
+ */
+export const SUPPORTED_WORKSPACE_BG_MIMES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+] as const
+
+export type WorkspaceBgMime = (typeof SUPPORTED_WORKSPACE_BG_MIMES)[number]
+
+/**
+ * `accept` for the file input. Deliberately wider than the sniff list above,
+ * because `accept` filters the native dialog by *name*, not by content:
+ *
+ * - Extensions ride along with the mime types because some platforms hand a
+ *   picked file an empty `File.type`, which would otherwise grey it out.
+ * - `.apng` / `image/apng` are listed even though APNG is not a distinct sniff
+ *   result — its bytes are a PNG and it animates, but a file actually *named*
+ *   `.apng` maps to `image/apng` on some platforms and so would not match the
+ *   `image/png` entry. Omitting it would hide a working animated background
+ *   from the picker.
+ *
+ * Anything that slips through by name is still checked by bytes on selection
+ * (`sniffWorkspaceBgMime`) and again by the backend, so widening this is safe.
+ */
+export const WORKSPACE_BG_ACCEPT = [
+  ...SUPPORTED_WORKSPACE_BG_MIMES,
+  "image/apng",
+  ".png",
+  ".apng",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".gif",
+].join(",")
+
+/**
+ * Magic-byte sniff mirroring the Rust `sniff_mime`, returning `null` for
+ * anything outside the allowlist. Bytes, not `File.type`: the browser derives
+ * that from the file extension, so a renamed `.png` that is really a BMP would
+ * pass a type check and then be rejected by the backend.
+ */
+export function sniffWorkspaceBgMime(
+  bytes: Uint8Array
+): WorkspaceBgMime | null {
+  const startsWith = (sig: readonly number[], offset = 0): boolean =>
+    bytes.length >= offset + sig.length &&
+    sig.every((b, i) => bytes[offset + i] === b)
+
+  // 0x89 "PNG" CR LF SUB LF — also covers APNG, which shares the signature.
+  if (startsWith([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
+    return "image/png"
+  }
+  if (startsWith([0xff, 0xd8, 0xff])) return "image/jpeg"
+  // "RIFF" ....(size).... "WEBP" — the animated variant shares this header.
+  if (
+    startsWith([0x52, 0x49, 0x46, 0x46]) &&
+    startsWith([0x57, 0x45, 0x42, 0x50], 8)
+  ) {
+    return "image/webp"
+  }
+  // "GIF89a" (animation-capable) and the static original "GIF87a".
+  if (
+    startsWith([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]) ||
+    startsWith([0x47, 0x49, 0x46, 0x38, 0x37, 0x61])
+  ) {
+    return "image/gif"
+  }
+  return null
+}
+
 // ─── Presets / defaults / ranges ───
 
 export const WORKSPACE_BG_FILL_MODES = [

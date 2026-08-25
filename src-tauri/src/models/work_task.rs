@@ -166,7 +166,18 @@ pub struct WorkTaskConfig {
     pub config_values: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub label_snapshot: Option<serde_json::Value>,
+    /// What the task's original work order produces. `Some("report")` marks a
+    /// task whose first turn delivers findings in the reply rather than code
+    /// changes (forge "plan first" / "review only" scenarios);
+    /// the engine swaps the worktree guard's commit licence to match. `None`
+    /// or an unrecognized value reads as a normal change-producing task — a
+    /// config written by a newer build must still launch here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deliverable: Option<String>,
 }
+
+/// The one recognized [`WorkTaskConfig::deliverable`] value.
+pub const DELIVERABLE_REPORT: &str = "report";
 
 /// Per-folder defaults stored in `work_task_settings.config`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -228,12 +239,6 @@ pub struct WorkTaskFolderSettings {
     /// keys are ignored, so a future stage needs no schema change.
     #[serde(default)]
     pub stage_prompts: std::collections::BTreeMap<String, String>,
-    /// Comment the outcome back on the issue/PR a task came from, once it
-    /// finishes. OFF by default on purpose: this is the only setting in here
-    /// that writes to a place other people are watching, so it stays an
-    /// explicit opt-in rather than something a codeg update starts doing.
-    #[serde(default)]
-    pub forge_writeback: bool,
 }
 
 impl Default for WorkTaskFolderSettings {
@@ -253,7 +258,6 @@ impl Default for WorkTaskFolderSettings {
             preflight_command: None,
             init_command: None,
             stage_prompts: Default::default(),
-            forge_writeback: false,
         }
     }
 }
@@ -382,6 +386,12 @@ pub struct WorkTaskMergeState {
     /// The agent writes the commit message itself (`message` is empty then).
     #[serde(default)]
     pub auto_message: bool,
+    /// Land only: free-form instructions the user typed for THIS landing (how
+    /// to resolve conflicts, what else to touch on the way). Persisted with the
+    /// rest of the dispatch so a merge generation relaunched from this row is
+    /// told the same thing the first one was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
     /// Delivery only: the branch name pushed to the source repository.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_branch: Option<String>,
@@ -410,6 +420,11 @@ pub struct WorkTaskQueuedMerge {
     pub message: Option<String>,
     #[serde(default)]
     pub delete_worktree: bool,
+    /// Extra instructions for the merge agent, kept with the parked intent so a
+    /// merge that waited its turn lands under the same directions the user gave
+    /// when they queued it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
     /// When the task took its place in line — the pump's ordering key, kept
     /// across a re-queue so changing the options doesn't jump the line.
     pub queued_at: DateTime<Utc>,
@@ -454,15 +469,17 @@ mod tests {
             "max_concurrent": 3,
             "merge_strategy": "merge",
             "delete_worktree_default": false,
-            "init_command": "pnpm install"
+            "init_command": "pnpm install",
+            "forge_writeback": true
         }"#;
+        // `forge_writeback` above is a RETIRED key: the write-back choice moved
+        // onto each task's own source metadata (the trigger dialog asks per work
+        // item). A folder configured while it existed must still decode, and the
+        // stale value must not resurrect itself anywhere.
         let settings: WorkTaskFolderSettings =
             serde_json::from_str(legacy).expect("legacy settings decode");
         assert!(settings.stage_prompts.is_empty());
         assert!(!settings.auto_merge);
-        // Writing back to the forge must never turn itself on for a folder
-        // that was configured before the setting existed.
-        assert!(!settings.forge_writeback);
         assert_eq!(settings.max_concurrent, 3);
         assert_eq!(settings.merge_strategy, "merge");
         assert!(settings.auto_process);

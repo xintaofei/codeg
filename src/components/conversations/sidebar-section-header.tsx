@@ -82,11 +82,13 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
   const label =
     section === "pinned"
       ? t("sectionPinned")
-      : section === "chats"
-        ? t("sectionChats")
-        : section === "recent"
-          ? t("sectionRecent")
-          : t("sectionFolders")
+      : section === "pk"
+        ? t("sectionPk")
+        : section === "chats"
+          ? t("sectionChats")
+          : section === "recent"
+            ? t("sectionRecent")
+            : t("sectionFolders")
   // "Recent" gets the same right-edge affordance as "Chats": it is a section
   // people scan to resume work, so "start a new one" belongs at its head too.
   // The label differs — Chats starts a folderless chat, Recent starts a

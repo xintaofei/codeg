@@ -60,6 +60,12 @@ vi.mock("@/components/ai-elements/message", () => ({
 vi.mock("@/components/diff/unified-diff-preview", () => ({
   UnifiedDiffPreview: () => <div />,
 }))
+// The nested session viewer the sheet now hosts. Never opened here, but its
+// module graph reaches the tab store, which reads the app-workspace store at
+// module scope — and that store is stubbed above down to a bare hook.
+vi.mock("./task-transcript-dialog", () => ({
+  TaskTranscriptDialog: () => null,
+}))
 
 /**
  * The composer, stubbed down to what the drawer talks to: a handle whose text
@@ -116,7 +122,6 @@ function mount(row: WorkTask) {
         onOpenChange={() => {}}
         task={row}
         folderName="repo"
-        onViewSession={() => {}}
         onMerge={() => {}}
         onComplete={() => {}}
         onDeliverPr={() => {}}

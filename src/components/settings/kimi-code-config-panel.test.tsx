@@ -432,6 +432,7 @@ function makeAgent(
     skills_capable: true,
     registry_id: "kimi-code",
     registry_version: null,
+    supports_custom_version: false,
     name: "Kimi Code",
     description: "",
     available: true,

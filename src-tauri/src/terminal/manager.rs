@@ -207,6 +207,12 @@ pub struct SpawnOptions {
     pub temp_files: Vec<std::path::PathBuf>,
 }
 
+impl Default for TerminalManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TerminalManager {
     pub fn new() -> Self {
         Self {

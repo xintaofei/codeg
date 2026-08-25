@@ -1,6 +1,6 @@
 [package]
 name = "codeg"
-version = "0.26.2"
+version = "0.28.1"
 description = "Agent Code Generation App"
 authors = ["feitao"]
 edition = "2021"
@@ -128,7 +128,7 @@ tokio-util = { version = "0.7", features = ["io", "rt"] }
 prost = "0.13"
 rand = "0.8"
 qrcode = "0.14"
-image = { version = "0.25", default-features = false, features = ["png", "webp", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "webp", "jpeg", "gif"] }
 include_dir = "0.7"
 sha2 = "0.10"
 aes-gcm = { version = "0.10", features = ["stream"] }

@@ -16,6 +16,7 @@ use crate::parsers::cline::ClineParser;
 use crate::parsers::codebuddy::CodeBuddyParser;
 use crate::parsers::codex::CodexParser;
 use crate::parsers::deepseek::DeepSeekParser;
+use crate::parsers::antigravity::AntigravityParser;
 use crate::parsers::qoder::QoderParser;
 use crate::parsers::gemini::GeminiParser;
 use crate::parsers::cursor::CursorParser;
@@ -250,6 +251,7 @@ fn list_conversations_sync(
         (AgentType::Cursor, Box::new(CursorParser::new())),
         (AgentType::DeepSeek, Box::new(DeepSeekParser::new())),
         (AgentType::Qoder, Box::new(QoderParser::new())),
+        (AgentType::Antigravity, Box::new(AntigravityParser::new())),
     ];
     // Registered custom agents read back from codeg's own ACP transcripts, so
     // their sessions participate in folder grouping and stats like any other.
@@ -366,6 +368,7 @@ pub async fn get_conversation(
             AgentType::Cursor => Box::new(CursorParser::new()),
             AgentType::DeepSeek => Box::new(DeepSeekParser::new()),
             AgentType::Qoder => Box::new(QoderParser::new()),
+            AgentType::Antigravity => Box::new(AntigravityParser::new()),
             // Custom ACP agents have no native store to reverse-engineer;
             // their history is codeg's own ACP transcript.
             AgentType::Custom(_) => Box::new(AcpNativeParser::new(agent_type)),
@@ -1177,6 +1180,7 @@ pub async fn get_folder_conversation_core(
                 AgentType::Cursor => Box::new(CursorParser::new()),
                 AgentType::DeepSeek => Box::new(DeepSeekParser::new()),
                 AgentType::Qoder => Box::new(QoderParser::new()),
+                AgentType::Antigravity => Box::new(AntigravityParser::new()),
                 AgentType::Custom(_) => Box::new(AcpNativeParser::new(at)),
             };
             match parser.get_conversation(&eid) {
@@ -1752,6 +1756,20 @@ async fn sync_conversation_title_until_current(
     }
 }
 
+/// Detach a chat-channel title sync so a live title write cannot sit on
+/// Telegram's 60s `editForumTopic` timeout. Callers that already upserted
+/// the sidebar should use this rather than awaiting `sync_conversation_title`.
+pub(crate) fn spawn_sync_conversation_title_until_current(
+    conn: sea_orm::DatabaseConnection,
+    chat_channel_manager: crate::chat_channel::manager::ChatChannelManager,
+    conversation_id: i32,
+) {
+    tokio::spawn(async move {
+        sync_conversation_title_until_current(&conn, &chat_channel_manager, conversation_id)
+            .await;
+    });
+}
+
 /// Broadcast and propagate title changes discovered outside codeg (for
 /// example, Codex's session index or an import scan). Both operations are
 /// best-effort: the database update has already committed, so notification
@@ -1886,6 +1904,49 @@ pub async fn create_conversation(
     title: Option<String>,
 ) -> Result<i32, AppCommandError> {
     let id = create_conversation_core(&db.conn, folder_id, agent_type, title).await?;
+    emit_conversation_upsert(&EventEmitter::Tauri(app), &db.conn, id).await;
+    Ok(id)
+}
+
+/// Create a PK arena contestant conversation: `kind = Pk` + `pk_round_id` set,
+/// so the sidebar routes it to the per-round PK section instead of the folder
+/// list. The git branch is detected from the folder path just like a regular
+/// conversation (contestants run inside a worktree under that folder).
+pub async fn create_pk_conversation_core(
+    conn: &sea_orm::DatabaseConnection,
+    folder_id: i32,
+    agent_type: AgentType,
+    title: Option<String>,
+    pk_round_id: i32,
+) -> Result<i32, AppCommandError> {
+    let git_branch = if let Some(folder) = folder_service::get_folder_by_id(conn, folder_id)
+        .await
+        .map_err(AppCommandError::from)?
+    {
+        detect_git_branch(&folder.path).await
+    } else {
+        None
+    };
+
+    let model =
+        conversation_service::create_pk(conn, folder_id, agent_type, title, git_branch, pk_round_id)
+            .await
+            .map_err(AppCommandError::from)?;
+    Ok(model.id)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn create_pk_conversation(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    agent_type: AgentType,
+    title: Option<String>,
+    pk_round_id: i32,
+) -> Result<i32, AppCommandError> {
+    let id =
+        create_pk_conversation_core(&db.conn, folder_id, agent_type, title, pk_round_id).await?;
     emit_conversation_upsert(&EventEmitter::Tauri(app), &db.conn, id).await;
     Ok(id)
 }
@@ -2477,6 +2538,7 @@ mod tests {
             parent_tool_use_id: Some(parent_tool_use_id.into()),
             delegation_call_id: Some("call-1".into()),
             origin_cwd: None,
+            pk_round_id: None,
         }
     }
 
@@ -5484,6 +5546,7 @@ mod tests {
                 parent_tool_use_id: None,
                 delegation_call_id: None,
                 origin_cwd: None,
+                pk_round_id: None,
             },
             turns,
             session_stats: None,

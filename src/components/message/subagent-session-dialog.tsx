@@ -18,6 +18,12 @@
  * neither. This renders the parsed turns directly with the shared
  * `ContentPartsRenderer`, which is what the main thread uses for each turn's
  * body anyway.
+ *
+ * Chrome-wise it is the same side drawer as the other two session viewers:
+ * non-modal (the parent thread stays live behind it — this one keeps polling
+ * a running child, so watching both at once is the point), no pointer
+ * dismissal, and stackable when the card it opens from is itself inside a
+ * drawer.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react"
@@ -27,11 +33,12 @@ import { Loader2 } from "lucide-react"
 import { AgentIcon } from "@/components/agent-icon"
 import { ContentPartsRenderer } from "@/components/message/content-parts-renderer"
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from "@/components/ui/dialog"
+  Drawer,
+  DrawerContent,
+  DrawerDescription,
+  DrawerTitle,
+  SIDE_PANEL_CONTENT_CLASS,
+} from "@/components/ui/drawer"
 import {
   adaptMessageTurns,
   type AdaptedMessage,
@@ -181,17 +188,17 @@ export function SubagentSessionDialog({
   const subtitle = [subagentType, description].filter(Boolean).join(" · ")
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        closeButtonClassName="top-2 right-2"
-        className="flex h-[85vh] w-full max-w-3xl flex-col gap-0 overflow-hidden rounded-2xl p-0 lg:max-w-4xl"
+    <Drawer open={open} onOpenChange={onOpenChange} swipeDirection="right">
+      <DrawerContent
+        closeButtonClassName="top-2.5 right-3"
+        className={SIDE_PANEL_CONTENT_CLASS}
       >
-        <DialogTitle className="sr-only">{t("agentSessionTitle")}</DialogTitle>
-        <DialogDescription className="sr-only">
+        <DrawerTitle className="sr-only">{t("agentSessionTitle")}</DrawerTitle>
+        <DrawerDescription className="sr-only">
           {t("agentSessionTitle")}
-        </DialogDescription>
+        </DrawerDescription>
 
-        <header className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-3 pr-10">
+        <header className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-3 pr-12">
           <AgentIcon agentType={agentType} className="size-4 shrink-0" />
           <div className="flex min-w-0 flex-col">
             <span className="truncate text-sm font-medium">
@@ -247,7 +254,7 @@ export function SubagentSessionDialog({
             </p>
           )}
         </div>
-      </DialogContent>
-    </Dialog>
+      </DrawerContent>
+    </Drawer>
   )
 }

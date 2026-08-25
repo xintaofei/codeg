@@ -422,8 +422,9 @@ impl AgentParser for HermesParser {
 
 /// Hermes config/data directory. Mirrors `commands::acp::hermes_home_dir`
 /// semantics exactly so the history path resolves to the same DB the live ACP
-/// path uses: honors `HERMES_HOME` (trimmed; `~`/`~/` expanded), defaults to
-/// `~/.hermes`, falls back to `.` when the home dir is unknown.
+/// path uses: honors `HERMES_HOME` (trimmed, then taken VERBATIM — Hermes'
+/// own `get_hermes_home` does NOT expand `~`), defaults to `~/.hermes`, falls
+/// back to `.` when the home dir is unknown.
 pub(crate) fn resolve_hermes_home_dir() -> PathBuf {
     resolve_hermes_home(std::env::var("HERMES_HOME").ok(), dirs::home_dir())
 }
@@ -440,14 +441,21 @@ fn resolve_hermes_home(env: Option<String>, home: Option<PathBuf>) -> PathBuf {
     });
 
     match configured {
-        Some(value) if value == "~" => home_dir(),
-        Some(value) => {
-            if let Some(remain) = value.strip_prefix("~/") {
-                home_dir().join(remain)
-            } else {
-                PathBuf::from(value)
-            }
-        }
+        // VERBATIM — no tilde expansion. Hermes' own `get_hermes_home`
+        // (`hermes_constants.py`, the file it calls "the single source of
+        // truth") is `Path(os.environ["HERMES_HOME"].strip())` with no
+        // `expanduser`, so `HERMES_HOME=~/somewhere` really does make Hermes
+        // create and use a directory LITERALLY named `~`, next to wherever it
+        // was launched. Expanding here pointed codeg at `$HOME/somewhere`
+        // instead — a directory Hermes never touches — so the session list came
+        // back empty and the `.env` base-URL reconcile
+        // (`commands::acp::reconcile_hermes_runtime_env`) patched a file the
+        // agent never read. That reconcile's own resolver,
+        // `hermes_home_for_launch`, already had this right; the two now agree.
+        //
+        // Contrast Antigravity and DeepSeek, whose upstreams DO expand — see
+        // `parsers::expand_home_prefix` for who is who.
+        Some(value) => PathBuf::from(value),
         None => home_dir().join(".hermes"),
     }
 }
@@ -800,13 +808,21 @@ mod tests {
             resolve_hermes_home(Some("   ".to_string()), home.clone()),
             PathBuf::from("/Users/demo/.hermes")
         );
+        // A tilde is NOT expanded, because Hermes does not expand it: its own
+        // `get_hermes_home` (`hermes_constants.py`) is
+        // `Path(os.environ["HERMES_HOME"].strip())`, so it creates and uses a
+        // directory literally named `~`. This used to answer `/Users/demo` and
+        // `/Users/demo/work` — directories Hermes never opens — which is why
+        // the session list came back empty for anyone who set it that way,
+        // while `commands::acp::hermes_home_for_launch` (the same resolution,
+        // written from the same source) disagreed with this one all along.
         assert_eq!(
             resolve_hermes_home(Some("~".to_string()), home.clone()),
-            PathBuf::from("/Users/demo")
+            PathBuf::from("~")
         );
         assert_eq!(
             resolve_hermes_home(Some("~/work".to_string()), home.clone()),
-            PathBuf::from("/Users/demo/work")
+            PathBuf::from("~/work")
         );
         assert_eq!(
             resolve_hermes_home(Some("/custom/hermes".to_string()), home),

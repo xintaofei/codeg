@@ -9,6 +9,7 @@ pub mod deliver;
 pub mod envelope;
 pub mod github;
 pub mod gitlab;
+pub mod settings;
 
 use std::sync::RwLock;
 
@@ -343,6 +344,17 @@ pub struct ForgeSourceMeta {
     pub head_repo: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_pr: Option<String>,
+    /// Whether this task comments its outcome back on the item when it
+    /// finishes — the answer the user gave in the trigger dialog, frozen here.
+    /// It lives on the task rather than in folder settings because it is a
+    /// decision about THIS work item, taken while looking at it: a switch
+    /// somewhere else would publish to a thread other people are reading on
+    /// behalf of a task whose author never saw the question.
+    ///
+    /// Absent on rows minted before the choice moved here; those stay silent,
+    /// which is the posture the old folder setting shipped with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writeback: Option<bool>,
 }
 
 /// List rows carry the body for the trigger snapshot; cap it so a megabyte

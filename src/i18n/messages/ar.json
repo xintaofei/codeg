@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "تكبير النافذة",
-      "sectionDescription": "تكبير أو تصغير الواجهة بالكامل. يتم تطبيقه فوراً ويُحفظ لكل جهاز على حدة.",
+      "sectionDescription": "تكبير أو تصغير الواجهة بالكامل. يتم تطبيقه فوراً ويُحفظ لكل جهاز على حدة. ⌘/Ctrl + و - ينتقلان بين نفس مستويات التكبير في هذه القائمة (⌘/Ctrl 0 يعيد الضبط إلى 100%).",
       "placeholder": "اختر مستوى التكبير",
       "default": "افتراضي",
       "current": "التكبير الحالي: {zoom}%"
@@ -181,6 +181,7 @@
       "chooseImage": "اختيار صورة",
       "replaceImage": "استبدال الصورة",
       "removeImage": "إزالة",
+      "formatHint": "‏PNG وJPEG وWebP وGIF. تُشغَّل الصور المتحركة تلقائيًا.",
       "fillMode": "وضع الملء",
       "fillModes": {
         "cover": "تغطية",
@@ -194,13 +195,18 @@
       "panelOpacity": "عتامة اللوحات",
       "panelOpacityHint": "مدى عتامة الشريط الجانبي واللوحات وأشرطة التبويب. الأقل يُظهر المزيد من الصورة.",
       "errorTooLarge": "الصورة كبيرة جدًا (16 ميجابايت كحد أقصى).",
+      "errorUnsupportedFormat": "صيغة صورة غير مدعومة. اختر ملف PNG أو JPEG أو WebP أو GIF.",
       "errorUploadFailed": "فشل تعيين صورة الخلفية."
     }
   },
   "SystemSettings": {
     "loading": "جارٍ التحميل...",
     "sectionTitle": "إدارة النظام",
-    "sectionDescription": "إدارة وكيل الشبكة وتحديثات التطبيق وتفضيلات اللغة.",
+    "sectionDescription": "إدارة تحديثات التطبيق والتشغيل عند تسجيل الدخول ووكيل الشبكة وتفضيلات اللغة.",
+    "autostartTitle": "التشغيل عند تسجيل الدخول",
+    "autostartDescription": "يبدأ التشغيل تلقائيًا بعد تسجيل الدخول إلى هذا الجهاز.",
+    "autostartSaveFailed": "فشل حفظ إعدادات التشغيل عند تسجيل الدخول: {message}",
+    "autostartUnavailable": "تعذّر قراءة إدخال بدء التشغيل على هذا الجهاز: {message}",
     "proxyTitle": "وكيل الشبكة",
     "proxyDescription": "عند التفعيل، ستُفضَّل إعدادات هذا الوكيل في طلبات الشبكة اللاحقة (بما في ذلك دردشة ACP وتثبيت الوكلاء وعمليات Git البعيدة).",
     "loadFailed": "فشل التحميل: {message}",
@@ -353,6 +359,7 @@
     "resetDefault": "استعادة الإعدادات الافتراضية",
     "recordInstruction": "انقر الزر في الجهة اليمنى ثم اضغط تركيبة مفاتيح. استخدم Ctrl/Cmd وAlt وShift. اضغط Esc لإلغاء التسجيل.",
     "recording": "اضغط اختصارًا...",
+    "unassigned": "غير معيَّن",
     "toasts": {
       "conflict": "الاختصار مستخدم بالفعل بواسطة \"{title}\"",
       "updated": "تم تحديث الاختصار",
@@ -423,6 +430,18 @@
       "toggle_custom_style": {
         "title": "إيقاف/استئناف النمط المخصص",
         "description": "مخرج طوارئ: يوقف كل الألوان المخصصة وCSS، ويعيد تفعيلها"
+      },
+      "zoom_in": {
+        "title": "تكبير",
+        "description": "اجعل النافذة أكبر بدرجة واحدة"
+      },
+      "zoom_out": {
+        "title": "تصغير",
+        "description": "اجعل النافذة أصغر بدرجة واحدة"
+      },
+      "zoom_reset": {
+        "title": "إعادة ضبط التكبير",
+        "description": "أعد تكبير النافذة إلى 100%"
       }
     }
   },
@@ -814,6 +833,33 @@
       "advancedHint": "ملف settings.json كاملًا، ويُكتب حرفيًا عند الحفظ — وهو أيضًا السبيل الوحيد لحذف مفتاح.",
       "saveRawConfig": "حفظ الملف"
     },
+    "antigravity": {
+      "configDescription": "Antigravity needs an authentication method before it can start a session. The choice is written to auth.type in $GEMINI_HOME/antigravity-acp/settings.json, which is the only place the ACP server looks — without it every new session fails with \"Authentication required\". Model and session mode are not here: Antigravity reports them over ACP, so the composer's own selectors own them per session.",
+      "methodLabel": "Authentication method",
+      "methods": {
+        "oauth-personal": "Sign in with Google",
+        "oauth-business": "Gemini Enterprise",
+        "gemini-api-key": "Gemini API key",
+        "agent-platform": "Gemini Enterprise Agent Platform"
+      },
+      "methodHints": {
+        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused.",
+        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser.",
+        "gemini-api-key": "A key for the Gemini Developer API, passed to the agent as GEMINI_API_KEY.",
+        "agent-platform": "Formerly Vertex AI. Use an API key, or a project and location with Application Default Credentials (gcloud auth application-default login)."
+      },
+      "geminiApiKeyLabel": "Gemini API key",
+      "googleApiKeyLabel": "Google API key",
+      "googleApiKeyHint": "Optional. When set it is used on its own — the project and location below are ignored. Leave it empty to authenticate with Application Default Credentials instead.",
+      "gcpProjectLabel": "GCP project",
+      "gcpLocationLabel": "GCP location",
+      "missingGeminiApiKey": "Enter a Gemini API key, or pick a different authentication method — sessions will fail to start without it.",
+      "missingAgentPlatformConfig": "Enter an API key, or both a project and a location — sessions will fail to start without one of the two.",
+      "missingEnterpriseConfig": "Gemini Enterprise needs both a project and a location.",
+      "settingsFileHint": "Saved to auth.type in this file. Any other keys you put there are preserved.",
+      "syncSkipped": "Your choice was saved, but codeg could not write it to the ACP server's settings.json, so Antigravity will keep authenticating the way that file says. Set auth.type in it yourself, or move it aside and save again.",
+      "save": "Save"
+    },
     "deepseek": {
       "configManagement": "إعدادات DeepSeek Harness",
       "configDescription": "نقطة النهاية والمفتاح متغيّرا بيئة يقرأهما deepseek-acp عند الإقلاع. أما النموذج ومستوى الاستدلال فمحدِّدان على مستوى الجلسة، ويُختاران من حقل الإدخال.",
@@ -836,6 +882,9 @@
       "enableWebsocketAria": "تفعيل WebSocket لـ Codex Provider",
       "enableSkills": "تفعيل Skills",
       "enableSkillsAria": "تفعيل Skills لـ Codex",
+      "enableDefaultModeRequestUserInput": "السماح بالأسئلة في وضع Default",
+      "enableDefaultModeRequestUserInputAria": "السماح لـ Codex بطرح الأسئلة في وضع Default",
+      "enableDefaultModeRequestUserInputHint": "لا يستطيع Codex استدعاء أداة request_user_input إلا في وضع Plan. فعّل هذا الخيار ليتمكن من سؤالك في الجولات العادية أيضًا. يُكتب [features].default_mode_request_user_input في ~/.codex/config.toml، وما زال هذا الخيار قيد التطوير في المشروع الأصلي. يسري ابتداءً من الجلسة التالية.",
       "enableFast": "تفعيل Fast",
       "enableFastAria": "تفعيل مستوى خدمة Fast لـ Codex",
       "sandboxGroupTitle": "بيئة العزل والموافقات",
@@ -1263,7 +1312,10 @@
       "piBinaryUninstallFailed": "فشل إلغاء تثبيت pi",
       "savePiTrustFailed": "فشل حفظ الثقة بمساحة العمل",
       "qoderSaved": "تم حفظ إعدادات Qoder",
-      "saveQoderConfigFailed": "تعذّر حفظ إعدادات Qoder"
+      "saveQoderConfigFailed": "تعذّر حفظ إعدادات Qoder",
+      "antigravitySaved": "Antigravity config saved",
+      "antigravitySyncSkipped": "Saved, but Antigravity's settings.json was left alone",
+      "saveAntigravityConfigFailed": "Failed to save Antigravity config"
     },
     "version": {
       "statusLabel": "حالة الإصدار",
@@ -1441,11 +1493,7 @@
   "GeneralSettings": {
     "loading": "جارٍ التحميل...",
     "sectionTitle": "عام",
-    "sectionDescription": "تفضيلات موحّدة للتشغيل عند تسجيل الدخول والطرفية الافتراضية وتسريع العرض وتفويض الوكلاء المتعدّدين.",
-    "autostartTitle": "التشغيل عند تسجيل الدخول",
-    "autostartDescription": "تشغيل codeg تلقائيًا بعد تسجيل الدخول إلى هذا الجهاز.",
-    "autostartSaveFailed": "فشل حفظ إعدادات التشغيل عند تسجيل الدخول: {message}",
-    "autostartUnavailable": "لم يُبلِّغ هذا النظام عن إدخال بدء تشغيل codeg: {message}",
+    "sectionDescription": "تفضيلات موحّدة للطرفية الافتراضية وتسريع العرض وأصوات الإشعارات وتفويض الوكلاء المتعدّدين.",
     "terminalTitle": "الطرفية الافتراضية",
     "terminalDescription": "اختر الصدفة المستخدمة عند فتح علامات تبويب طرفية جديدة من شريط الطرفية أو شجرة الملفات. تستخدمها الوكلاء أيضًا عندما تطلب من codeg تنفيذ سطر أوامر كامل نيابةً عنها.",
     "terminalSystemDefault": "افتراضي النظام",
@@ -1626,9 +1674,11 @@
       "openFolder": "فتح مجلد",
       "searchPlaceholder": "بحث عن محادثات...",
       "viewOptions": "خيارات العرض",
+      "listOptions": "قائمة المحادثات",
       "showCompleted": "عرض المحادثات المكتملة",
       "showWorktrees": "عرض مجلدات worktree",
       "showRecent": "عرض مجموعة الأحدث",
+      "navigationItems": "عناصر التنقل",
       "moreOptions": "المزيد من الخيارات",
       "sortBy": "الترتيب حسب",
       "sortByCreatedAt": "وقت الإنشاء",
@@ -1693,8 +1743,17 @@
       "sectionFolders": "المجلدات",
       "sectionChats": "محادثة",
       "sectionRecent": "الأحدث",
+      "sectionPk": "ساحة PK",
       "noChats": "لا توجد محادثات",
       "noRecent": "لا توجد محادثات حديثة",
+      "noPk": "لا توجد جلسات PK",
+      "pkOpenArena": "Open this PK arena",
+      "pkArchive": "Archive the PK round",
+      "pkArchiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
+      "pkArchiveSuccess": "PK round archived",
+      "pkArchiveFailed": "Archive failed: {message}",
+      "pkExpand": "Expand agent sessions",
+      "pkCollapse": "Collapse agent sessions",
       "showMoreRecent": "عرض المزيد ({count})",
       "noFolders": "لا توجد مجلدات مفتوحة",
       "newChatAction": "محادثة جديدة",
@@ -1820,7 +1879,8 @@
       "search": "بحث",
       "openSettings": "فتح الإعدادات",
       "backToConversations": "العودة إلى المحادثات",
-      "withShortcut": "{label} (اختصار: {shortcut})"
+      "withShortcut": "{label} (اختصار: {shortcut})",
+      "pkArena": "ساحة منافسة الوكلاء"
     },
     "statusBar": {
       "connection": {
@@ -2665,6 +2725,8 @@
           "nextRetryIn": "المحاولة التالية خلال {seconds}ث",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}، {delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}، {delay}",
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "ضبط {agent} {option} على {actual} بدلاً من {requested}"
@@ -2755,7 +2817,8 @@
         "mentionGroupAgent": "الوكلاء",
         "mentionGroupSession": "الجلسات",
         "mentionGroupCommit": "عمليات الإيداع",
-        "mentionGroupSkill": "المهارات"
+        "mentionGroupSkill": "المهارات",
+        "startPk": "منافسة الوكلاء"
       },
       "messageQueue": {
         "addToQueue": "إضافة للقائمة",
@@ -2987,6 +3050,9 @@
         "selectionCopied": "تم النسخ",
         "selectionCopyFailed": "فشل النسخ",
         "selectionQuote": "اقتباس",
+        "selectionAsk": "اسأل",
+        "selectionAskPlaceholder": "اسأل عن هذا التحديد…",
+        "selectionAskSubmit": "اطرح سؤالاً في محادثة جديدة",
         "downloadImage": "تنزيل الصورة",
         "copyImage": "نسخ الصورة",
         "copiedImage": "تم نسخ الصورة",
@@ -3437,7 +3503,11 @@
       "hunkLabel": "مقطع {index}",
       "loadingHunk": "جارٍ تحميل hunk...",
       "noDiffData": "لا توجد بيانات diff",
-      "showRemainingLines": "عرض {count} سطر إضافي"
+      "showRemainingLines": "عرض {count} سطر إضافي",
+      "viewMode": {
+        "split": "التبديل إلى العرض جنباً إلى جنب",
+        "unified": "التبديل إلى العرض المضمّن"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "مجلد العمل",
@@ -4570,6 +4640,7 @@
     "actionEdit": "تحرير",
     "actionDelete": "حذف",
     "actionRetryCleanup": "إعادة محاولة التنظيف",
+    "actionDeleteWorktree": "حذف الـ worktree",
     "actionMerge": "دمج",
     "actionUnqueueMerge": "مغادرة طابور الدمج",
     "actionEditQueuedMerge": "تعديل الدمج المنتظر",
@@ -4663,6 +4734,8 @@
     "strategySquashHint": "تصل جميع تغييرات المهمة إلى الفرع الرئيسي كسجل واحد — تاريخ أكثر ترتيبًا.",
     "strategyMerge": "الاحتفاظ بالتاريخ الكامل",
     "strategyMergeHint": "يُحتفظ بكل التزام أُنشئ أثناء المهمة، مع إضافة سجل دمج واحد — تبقى كل خطوة قابلة للتتبع.",
+    "mergeInstructions": "تعليمات إضافية (اختياري)",
+    "mergeInstructionsPlaceholder": "مثال: عند التعارض، رجّح هذا الفرع",
     "mergeDeleteWorktree": "حذف worktree بعد الدمج",
     "mergeSubmit": "دمج",
     "mergeSubmitQueue": "إضافة إلى طابور الدمج",
@@ -4693,8 +4766,6 @@
     "settingsAutoMergeHint": "المهمة التي تصل إلى المراجعة وفيها تغييرات قابلة للدمج تُدمج كما لو نقرت «دمج»: يكتب الوكيل رسالة الإيداع، ويتبع الـ worktree الإعداد الافتراضي أدناه. أما المهمة التي فشل فحصها المسبق أو فشل دمجها فتبقى بانتظارك.",
     "settingsDeleteWorktree": "حذف الـ worktree بعد الدمج",
     "settingsDeleteWorktreeHint": "يُفعّل الخيار مسبقًا في نافذة الدمج، ويمكنك تغييره هناك.",
-    "settingsForgeWriteback": "التعليق بالنتيجة على المشكلة",
-    "settingsForgeWritebackHint": "عند انتهاء مهمة جاءت من مشكلة أو طلب سحب، ينشر codeg تعليقًا واحدًا هناك: النتيجة والرابط وأرقام التغيير — ولا شيء مما كتبه الوكيل أبدًا. معطّل افتراضيًا لأنه ينشر في مكان يتابعه آخرون.",
     "settingsWorktreeRoot": "موقع الـ worktree",
     "settingsWorktreeRootHint": "المجلد الذي تُنشأ فيه worktrees المهام الجديدة، واحدة لكل مهمة. اتركه فارغًا لإنشائها بجوار مجلد المشروع؛ «~» هو مجلد المنزل، والمسار النسبي يُحسب انطلاقًا من مجلد المشروع.",
     "settingsWorktreeRootPlaceholder": "~/codeg-worktrees",
@@ -4746,6 +4817,8 @@
     "deleteConfirmTitle": "حذف المهمة؟",
     "deleteConfirmBody": "ستُزال “{title}” من اللوحة. يُلغى التشغيل النشط أولًا.",
     "deleteWithWorktree": "حذف الـ worktree الخاص بها أيضًا",
+    "deleteWorktreeConfirmTitle": "حذف الـ worktree؟",
+    "deleteWorktreeConfirmBody": "سيُحذف مجلد الـ worktree وفرع العمل الخاص به نهائيًا. تبقى المهمة على اللوحة، وتنتقل محادثتها إلى مجلد المشروع.",
     "eventCreated": "أُنشئت",
     "eventStatusChanged": "تغيّر الحالة",
     "eventConfigEffective": "إعداد الإطلاق",
@@ -4775,6 +4848,7 @@
     "deliverPrTitleLabel": "عنوان طلب السحب",
     "deliverPrTitleLabelMr": "عنوان طلب الدمج",
     "deliverPrDraft": "الفتح كمسودة",
+    "deliverPrDeleteWorktree": "حذف worktree بعد التسليم",
     "deliverPrSubmit": "الدفع والفتح",
     "deliverPrSubmitting": "جارٍ الدفع…",
     "deliverPrDone": "تم فتح طلب السحب",
@@ -4784,6 +4858,7 @@
     "deliverPrBackTitleMr": "الإعادة إلى طلب الدمج",
     "deliverPrBackDescription": "يدفع إيداعات هذه المهمة إلى {branch}، فرع رأس {repo}#{number}. لا يُفتح شيء جديد — المراجعة القائمة هي التي تستلم العمل.",
     "deliverPrBackDescriptionMr": "يدفع إيداعات هذه المهمة إلى {branch}، الفرع المصدر لـ {repo}!{number}. لا يُفتح شيء جديد — المراجعة القائمة هي التي تستلم العمل.",
+    "deliverPrBackDeleteWorktree": "حذف worktree بعد الدفع",
     "deliverPrBackSubmit": "ادفع",
     "deliverPrBackDone": "تم الدفع إلى طلب السحب",
     "deliverPrBackDoneMr": "تم الدفع إلى طلب الدمج"
@@ -5066,6 +5141,179 @@
     "loadFailed": "تعذّر تحميل بيانات الاستهلاك",
     "truncatedNotice": "هذا النطاق واسع جدًا — الأرقام تغطي أحدث جزء منه فقط."
   },
+  "PkArena": {
+    "launcher": {
+      "title": "منافسة الوكلاء الأذكياء",
+      "description": "أرسل مهمة واحدة إلى عدة وكلاء في آنٍ واحد وقارن النتائج",
+      "contestantsLabel": "المتنافسون ({min}–{max})",
+      "noFolderHint": "تحتاج الساحة إلى مجلد فيه مستودع git — افتح واحدًا أولًا.",
+      "needMore": "اختر {count} وكلاء على الأقل لبدء المنافسة.",
+      "taskLabel": "المهمة",
+      "taskPlaceholder": "المهمة نفسها التي يتلقاها كل متنافس، مثال: \"اكتب لعبة الثعبان في ملف HTML واحد\"",
+      "selectedCount": "تم اختيار {selected}/{max} (الحد الأدنى {min})",
+      "cancel": "إلغاء",
+      "start": "ابدأ المنافسة",
+      "notAGitRepo": "هذا المجلد ليس مستودع git — تحتاج الساحة إلى مستودع لمنح كل متنافس شجرة عمل معزولة.",
+      "initGitRepo": "git init",
+      "initializing": "جارٍ التهيئة…",
+      "permissionLabel": "الأذونات",
+      "permissionOptions": {
+        "default": "اسأل في كل مرة",
+        "acceptEdits": "اقبل التعديلات تلقائيًا",
+        "bypassPermissions": "تشغيل كامل"
+      },
+      "permissionHints": {
+        "default": "كل موافقة توقف المتنافس",
+        "acceptEdits": "تعديلات الملفات دون سؤال",
+        "bypassPermissions": "لا موافقات إطلاقًا"
+      },
+      "permissionNote": "تُطبق على كل متنافس عند بدء الجولة; الوكلاء غير الداعمة يستمرون في السؤال.",
+      "bareModeLabel": "الوضع الأساسي (بدون مهارات)",
+      "bareModeHint": "يُطلب من المتنافسين استخدام قدراتهم الأساسية فقط، دون أي مهارات عامة أو مشروع.",
+      "effortLabel": "مستوى التفكير (موحد لجميع المتنافسين)",
+      "effortOptions": {
+        "default": "افتراضي",
+        "low": "منخفض",
+        "medium": "متوسط",
+        "high": "مرتفع",
+        "max": "أقصى"
+      },
+      "effortNote": "يُطبق أقرب مستوى مُعلن لكل وكيل; الوكلاء غير الداعمين يحتفظون بإعداداتهم.",
+      "agentNotReady": "{agent} غير جاهز (ثبّته من إعدادات الوكلاء أولاً).",
+      "agentCheckFailed": "تعذّر التحقق من {agent}.",
+      "templates": {
+        "pelican": "بجعة",
+        "bouncingBall": "كرة",
+        "jellyBlob": "هلام",
+        "snake": "الثعبان",
+        "flappyBird": "Flappy Bird",
+        "voiceChat": "دردشة صوتية",
+        "blackHole": "ثقب أسود"
+      },
+      "judgeLabel": "حَكَم (اختياري)",
+      "judgeNone": "بدون حَكَم",
+      "judgeHint": "بعد انتهاء جميع المتسابقين، يقرأ هذا الوكيل كل فرق وينتج حكمًا منظماً بالدرجات والترتيب.",
+      "startPoint": "📍 نقطة البداية",
+      "fromHead": "من HEAD الحالي",
+      "startPointHint": "يبدأ المتسابقون من التزام قبل هذا — لا يرون تغييراته، بل رسالته كمهمة. يعيدون نفس الهدف بشكل مستقل.",
+      "loadingCommits": "جارٍ تحميل الالتزامات…",
+      "noCommits": "لم يتم العثور على التزامات.",
+      "creativeTemplates": "قوالب إبداعية",
+      "realEngineering": "هندسة حقيقية",
+      "loadMore": "تحميل المزيد",
+      "judgeDimensionsLabel": "أبعاد التقييم (اختياري)",
+      "judgeDimensionsPlaceholder": "Correctness — does it fulfill the task?\nCode quality — readability, structure, edge cases\nCompleteness — how much of the task is done?\nEfficiency — code-level efficiency (ignore token/time)",
+      "judgeDimensionsHint": "بُعد واحد لكل سطر. اتركه فارغًا لاستخدام الافتراضي.",
+      "addContestant": "إضافة {agent} كمتسابق",
+      "slotLabelPlaceholder": "تسمية (مثل Sonnet، Opus)",
+      "slotNumber": "المتنافس {number}",
+      "modelLoading": "جارٍ تحميل النماذج…",
+      "modelUnavailable": "يستخدم هذا الوكيل نموذجه الافتراضي",
+      "modelLoadFailed": "تعذر تحميل النماذج",
+      "retryModelLoad": "إعادة تحميل النماذج",
+      "removeSlot": "إزالة هذا المتسابق"
+    },
+    "scoreboard": {
+      "status": {
+        "preparing": "قيد التحضير",
+        "connecting": "قيد الاتصال",
+        "running": "قيد التشغيل",
+        "done": "تم",
+        "error": "فشل",
+        "canceled": "ملغى",
+        "ready": "جاهز"
+      },
+      "tokensUnit": "توكن",
+      "tokensUnavailable": "Token not reported",
+      "tokensUnavailableHint": "This agent did not return token usage; this does not mean zero tokens.",
+      "turnsUnit": "أدوار"
+    },
+    "history": {
+      "title": "Round history",
+      "hint": "Search, open, and archive complete rounds.",
+      "trigger": "History {count}",
+      "searchPlaceholder": "Search tasks or agents…",
+      "empty": "No matching rounds",
+      "agents": "{count} agents",
+      "archive": "Archive round",
+      "archiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
+      "archiveSuccess": "PK round archived",
+      "archiveFailed": "Archive failed: {message}",
+      "status": {
+        "ready": "Ready",
+        "running": "Running",
+        "finished": "Finished",
+        "canceled": "Canceled",
+        "interrupted": "Interrupted"
+      }
+    },
+    "arena": {
+      "title": "ساحة منافسة الوكلاء",
+      "description": "مهمة واحدة، عدة وكلاء، جنبًا إلى جنب",
+      "roundStatus": {
+        "running": "مباشر",
+        "finished": "انتهت",
+        "canceled": "ملغاة",
+        "interrupted": "قُطعت بإعادة التشغيل",
+        "ready": "جاهز"
+      },
+      "roundPicker": "الجولة",
+      "cancelRound": "إلغاء الجولة",
+      "cleanupWorktrees": "تنظيف أشجار العمل",
+      "cleanupHint": "إزالة أشجار عمل المتنافسين (تُحفظ الفروع)",
+      "share": "مشاركة",
+      "sharing": "جارٍ التصدير…",
+      "tabs": {
+        "battle": "المنافسة",
+        "diff": "الفروقات"
+      },
+      "preparing": "جارٍ تحضير المتنافس…",
+      "noRound": "لم تُحدد جولة",
+      "contestantsUnit": "وكلاء",
+      "newRound": "جولة جديدة",
+      "startMatch": "ابدأ المباراة",
+      "readyNote": "اختر نموذج ومستوى تفكير كل متنافس ثم ابدأ.",
+      "modelLabel": "النموذج",
+      "effortLabel": "مستوى التفكير",
+      "effortUnsupported": "هذا الوكيل لا يوفّر إعداد مستويات التفكير؛ ستُستخدم قيمته الافتراضية",
+      "effortOptions": {
+        "off": "إيقاف",
+        "minimal": "الحد الأدنى",
+        "low": "منخفض",
+        "medium": "متوسط",
+        "high": "مرتفع",
+        "max": "الأقصى"
+      },
+      "minimize": "تصغير",
+      "exportReport": "تصدير التقرير",
+      "exporting": "جارٍ الإنشاء…",
+      "shareReport": "Save / share report",
+      "reportSaved": "HTML report saved",
+      "reportFailed": "Report export failed: {message}",
+      "persistenceFailed": "تعذر حفظ بعض تغييرات الجولة. أعد المحاولة قبل إغلاق هذه الصفحة.",
+      "retrySave": "إعادة محاولة الحفظ",
+      "readyTag": "جاهز",
+      "deleteRound": "حذف",
+      "deleteConfirm": "حذف هذه الجولة? تبقى أشجار العمل على القرص — استخدم تنظيف أشجار العمل.",
+      "followUp": "متابعة",
+      "followUpPlaceholder": "إرسال إلى هذا المتسابق فقط (⌘↩ للإرسال)"
+    },
+    "diff": {
+      "loading": "جارٍ تحميل الفروقات…",
+      "empty": "لا تغييرات في شجرة العمل هذه"
+    },
+    "judge": {
+      "title": "حكم الحَكَم",
+      "running": "يقيم…",
+      "error": "فشل الحَكَم",
+      "rerun": "إعادة التقييم"
+    },
+    "minimized": {
+      "restore": "العودة إلى الساحة",
+      "live": "منافسة قيد التشغيل",
+      "dismiss": "إخفاء"
+    }
+  },
   "Forge": {
     "title": "لوحة المستودع",
     "pickFolder": "اختر مجلد مشروع",
@@ -5112,12 +5360,18 @@
     "incompleteResults": "انتهت مهلة البحث، لذا قد تكون هذه الصفحة ناقصة.",
     "reachableCap": "يمكن تصفّح أول {count} نتيجة فقط؛ ضيّق عوامل التصفية للوصول إلى البقية.",
     "openRepo": "فتح المستودع",
+    "openItem": "فتح في المتصفح",
+    "detailDescription": "وصف هذا العنصر والإجراءات المتاحة له.",
+    "detailUpdated": "حُدِّث {time}",
+    "detailNoBody": "بدون وصف",
     "stateFilter": "الحالة",
     "emptyPage": "لا شيء في هذه الصفحة",
     "dialogDescription": "ينشئ مهمة في مجلد {repo} — يعمل الوكيل في worktree مستقل وتراجع النتيجة قبل الدمج.",
     "dialogDescriptionPr": "ينشئ مهمة قيد الانتظار في مجلد {repo}، مع سحب شجرة العمل عند رأس طلب السحب هذا — تُبنى إيداعات الوكيل فوقه وتُدفع إلى طلب السحب نفسه بعد قبولك.",
     "dialogDescriptionMr": "ينشئ مهمة قيد الانتظار في مجلد {repo}، مع سحب شجرة العمل عند رأس طلب الدمج هذا — تُبنى إيداعات الوكيل فوقه وتُدفع إلى طلب الدمج نفسه بعد قبولك.",
     "instructionPlaceholder": "تعليمات إضافية للوكيل (اختياري)…",
+    "writebackLabel": "التعليق بالنتيجة على هذا العنصر",
+    "writebackHint": "عند انتهاء المهمة ينشر codeg تعليقًا على هذا العنصر: النتيجة والرابط وأرقام التغيير.",
     "previewToggle": "معاينة محتوى القضية الذي ستحمله المهمة",
     "previewEmpty": "(بدون وصف)",
     "duplicateBody": "توجد مهمة نشطة تعالج هذا العنصر بالفعل: {title} ({status}). إنشاء أخرى على أي حال؟",
@@ -5126,6 +5380,38 @@
     "create": "إنشاء مهمة",
     "creating": "جارٍ الإنشاء…",
     "createAnyway": "إنشاء على أي حال",
-    "viewExisting": "عرض المهمة الحالية"
+    "viewExisting": "عرض المهمة الحالية",
+    "scenarioLabel": "طريقة المعالجة",
+    "scenarioFix": "إصلاح / تنفيذ مباشرة",
+    "scenarioFixHint": "يتأكد الوكيل أولاً من أن المشكلة حقيقية داخل worktree ثم يصلحها — وإن تعذّر عليه التأكد أبلغ بالنتيجة بدل تعديل الشيفرة.",
+    "scenarioPlanFirst": "الخطة أولاً",
+    "scenarioPlanFirstHint": "يتأكد الوكيل من أن المشكلة حقيقية ثم يقدّم خطة تنفيذ ويتوقف — وافق عليها بإعادة المهمة لتنفيذها.",
+    "scenarioReviewFix": "مراجعة وإصلاح",
+    "scenarioReviewFixHint": "يراجع التغييرات ويصلح المشكلات فوقها؛ وعند القبول تُدفع الإيداعات إلى الفرع نفسه.",
+    "scenarioReviewOnly": "مراجعة فقط",
+    "scenarioReviewOnlyHint": "تقرير مراجعة بالملاحظات والاقتراحات دون أي إيداع — أعد المهمة إذا أردت تطبيق الإصلاحات.",
+    "settingsTitle": "إعدادات اللوحة",
+    "settingsDescription": "طريقة التعامل مع المشكلات والتغييرات في {folder}.",
+    "settingsScope": "النطاق",
+    "settingsScopeGlobal": "كل المجلدات (الإعدادات العامة)",
+    "settingsScopeGlobalHint": "المجلدات بلا إعدادات خاصة تستخدم هذه الإعدادات العامة.",
+    "settingsSource": "مصدر الإعدادات",
+    "settingsSourceGlobal": "الإعدادات العامة",
+    "settingsSourceCustom": "إعداد خاص",
+    "settingsSourceCustomHint": "يحفظ إعدادات خاصة بهذا المجلد ويتوقف عن اتباع الإعدادات العامة.",
+    "settingsSourceGlobalFollow": "يتبع إعدادات اللوحة العامة، وأي تغيير هناك يسري هنا تلقائيًا.",
+    "settingsIssueDefault": "الافتراضي للمشكلات",
+    "settingsIssueDefaultHint": "ما يكون محددًا مسبقًا عند فتح نافذة المعالجة لمشكلة.",
+    "settingsPrDefault": "الافتراضي لطلبات الدمج",
+    "settingsPrDefaultHint": "ما يكون محددًا مسبقًا عند فتح نافذة المعالجة لطلب دمج.",
+    "settingsWritebackDefault": "التعليق بالنتيجة افتراضيًا",
+    "settingsWritebackDefaultHint": "الوضع الابتدائي لذلك المفتاح في نافذة المعالجة، ويمكن تغييره لكل عنصر.",
+    "settingsPromptsIntro": "تُضاف التعليمات الدائمة بعد النص المدمج للسيناريو المختار وقبل ما تكتبه في نافذة المعالجة، ولا حاجة لتكرار النص المدمج هنا. وهي تُرسل مع الجولة الأولى من المهمة فقط؛ أما ما تريده في كل جولة فمكانه موجّهات إعدادات المهام.",
+    "settingsPromptsLabel": "السيناريو",
+    "settingsPromptAll": "كل السيناريوهات",
+    "settingsPromptAllHint": "تُرسل مع كل مهمة تنشئها هذه اللوحة، مهما كان السيناريو.",
+    "settingsPromptScenarioHint": "تُرسل فقط مع المهام المنشأة بهذا السيناريو.",
+    "settingsPromptPlaceholder": "مثال: أجب بالعربية. شغّل اختبارات المشروع قبل الإنهاء.",
+    "save": "حفظ"
   }
 }

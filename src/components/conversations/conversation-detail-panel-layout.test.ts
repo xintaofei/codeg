@@ -113,10 +113,16 @@ describe("ConversationDetailPanel new conversation layout", () => {
   })
 
   it("marks every hidden keep-alive subtree with the hardening class", () => {
-    // Under a full-page workbench route (desktop + mobile shells).
+    // Under a full-page workbench route (desktop + mobile shells) — both go
+    // through `KeptMountedSurface`, which is where the class now lives.
     expect(workspaceLayoutSource).toContain(
-      '!isConversations && "conversation-tab-hidden invisible"'
+      'hidden && "conversation-tab-hidden invisible"'
     )
+    expect(
+      workspaceLayoutSource.match(
+        /<KeptMountedSurface hidden=\{!isConversations\}>/g
+      )
+    ).toHaveLength(2)
     // The FILE column under the conversation overlay — this is the one that
     // hosts git-diff tabs.
     expect(workspaceLayoutSource).toContain(
@@ -125,6 +131,28 @@ describe("ConversationDetailPanel new conversation layout", () => {
     // The conversation column under the files-maximized overlay.
     expect(workspaceLayoutSource).toContain(
       'filesMaximized && "conversation-tab-hidden invisible"'
+    )
+  })
+
+  /**
+   * The class above only reaches what stays in the host's DOM subtree. A drawer
+   * portals to the body, so every hidden subtree that can host a CONVERSATION
+   * (and therefore a "查看会话" viewer) has to publish the flag too, or the
+   * viewer paints over whatever covered it. Three such subtrees exist; the file
+   * column is deliberately not one — no conversation lives there.
+   */
+  it("publishes the hidden flag from every conversation-hosting subtree", () => {
+    // Full-page workbench route, both shells.
+    expect(workspaceLayoutSource).toContain(
+      "<OverlayHostHiddenProvider hidden={hidden}>"
+    )
+    // Conversation column under the files-maximized overlay.
+    expect(workspaceLayoutSource).toContain(
+      "<OverlayHostHiddenProvider hidden={filesMaximized}>"
+    )
+    // A backgrounded conversation tab behind the selected one.
+    expect(source).toContain(
+      "<OverlayHostHiddenProvider hidden={!canTileG && !visible}>"
     )
   })
 
@@ -256,10 +284,12 @@ describe("ConversationDetailPanel split-group render model", () => {
   it("pairs every split group with its own title bar and gates the global one", () => {
     const shellStart = source.indexOf("const renderGroupShell = (groupId")
     const shellBody = source.slice(shellStart, shellStart + 6000)
-    expect(shellBody).toContain("{isSplit && selTab && (")
+    expect(shellBody).toContain("{isSplit && selConversationTab && (")
     expect(shellBody).toContain("<ConversationDetailHeader")
-    expect(shellBody).toContain("tabId={selTab.id}")
-    expect(source).toContain("{!isSplit && activeTab && (")
+    expect(shellBody).toContain("tabId={selConversationTab.id}")
+    expect(source).toContain(
+      "{!isSplit && activeTab && isConversationWorkspaceTab(activeTab) && ("
+    )
   })
 
   // While split the workspace layout drops its title-bar strip row ENTIRELY —
@@ -351,6 +381,32 @@ describe("ConversationDetailPanel send-path hardening", () => {
     // the readiness predicate (connected AND cwd matches), like the flush effect.
     expect(source).toContain("isConnectionReady(")
     expect(source).toContain("if (!connectionReady) return")
+  })
+
+  it("gates the queue auto-flush on the SAME readiness predicate as the send", () => {
+    // The flush DEQUEUES before handing the message to handleSend, so a gate
+    // weaker than handleSend's own check takes the message off the queue and
+    // then loses it when the send bails. The two drifted once already: the agent
+    // term was added to `connectionReady` while the flush kept its own inlined
+    // connStatus+cwd pair, so a draft whose agent had just been switched — its
+    // old connection still live at the same cwd — silently ate the message.
+    // Both must read the one variable.
+    //
+    // Scoped to the flush effect's own body: `connStatus` is a legitimate gate
+    // elsewhere in the file (answering a question, forking), so banning it
+    // outright would be wrong.
+    const start = source.indexOf("// Flush queued messages whenever the agent")
+    const end = source.indexOf("autoSendQueueRef.current()", start)
+    expect(start).toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    const flushEffect = source.slice(start, end)
+
+    expect(flushEffect).toContain("if (!connectionReady) return")
+    expect(flushEffect).toContain("if (!connectionReadyRef.current) return")
+    // No re-spelling of the predicate: the connection is judged ONLY through
+    // the shared variable.
+    expect(flushEffect).not.toContain("connStatus")
+    expect(flushEffect).not.toContain("connectedWorkingDir")
   })
 
   it("disables the welcome composer while connected-but-not-ready", () => {

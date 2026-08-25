@@ -69,6 +69,8 @@ pub enum McpAppType {
     /// Serializes as `qoder` — the same spelling `AgentType::as_wire` returns
     /// (snake_case would agree here; pinned by the wire-name test regardless).
     Qoder,
+    /// Serializes as `antigravity`, matching `AgentType::as_wire`.
+    Antigravity,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -424,15 +426,22 @@ pub async fn mcp_upsert_local_server(
         McpAppType::Cursor,
         McpAppType::DeepSeek,
         McpAppType::Qoder,
+        McpAppType::Antigravity,
     ];
 
-    for app in all_apps {
-        if target_set.contains(&app) {
-            upsert_server_for_app(app, &server_id, &canonical_spec)?;
-        } else {
-            let _ = remove_server_for_app(app, &server_id)?;
+    // Nothing below is reversible, and the walk REMOVES the server from every
+    // non-target agent, so a target whose config cannot take it has to be
+    // caught before the first write rather than halfway through.
+    with_upsert_preflight(&target_set, || {
+        for app in all_apps {
+            if target_set.contains(&app) {
+                upsert_server_for_app(app, &server_id, &canonical_spec)?;
+            } else {
+                let _ = remove_server_for_app(app, &server_id)?;
+            }
         }
-    }
+        Ok(())
+    })?;
 
     find_local_server(&server_id)?.ok_or_else(|| {
         mcp_configuration_invalid(format!(
@@ -469,13 +478,19 @@ pub async fn mcp_set_server_apps(
     }
     let current_set = current.apps.iter().copied().collect::<BTreeSet<_>>();
 
-    for app in current_set.difference(&target_set) {
-        remove_server_for_app(*app, &server_id)?;
-    }
-
-    for app in target_set.difference(&current_set) {
-        upsert_server_for_app(*app, &server_id, &current.spec)?;
-    }
+    // The removals land before the additions, so a newly-targeted agent whose
+    // config cannot take the server must stop the whole reassignment first —
+    // otherwise it is dropped from its old agents and added to none.
+    let added: BTreeSet<McpAppType> = target_set.difference(&current_set).copied().collect();
+    with_upsert_preflight(&added, || {
+        for app in current_set.difference(&target_set) {
+            remove_server_for_app(*app, &server_id)?;
+        }
+        for app in &added {
+            upsert_server_for_app(*app, &server_id, &current.spec)?;
+        }
+        Ok(())
+    })?;
 
     find_local_server(&server_id)
 }
@@ -501,6 +516,7 @@ pub async fn mcp_remove_server(
             McpAppType::Cursor,
             McpAppType::DeepSeek,
             McpAppType::Qoder,
+            McpAppType::Antigravity,
         ],
     };
 
@@ -2629,6 +2645,226 @@ fn remove_qoder_server_at(path: &Path, id: &str) -> Result<bool, AppCommandError
     Ok(removed)
 }
 
+// ---------------------------------------------------------------------------
+// Google Antigravity  (<GEMINI_HOME>/config/mcp_config.json → `mcpServers`)
+//
+// The ACP server reads `<home>/config/mcp_config.json` at session setup
+// (`acp_server/mcp_servers.py::load_global_mcp_configs`). That file is the
+// CROSS-SURFACE one: Antigravity Desktop and the Antigravity CLI read the same
+// path, which is why it lives under `config/` rather than the server's private
+// `antigravity-acp/`. Entries are Claude-shaped — `command`/`args`/`env` for
+// stdio, `url` for remote (the loader keys off which of the two is present) —
+// and it tolerates both `{"mcpServers": {...}}` and a bare top-level map;
+// codeg always writes the explicit `mcpServers` wrapper.
+//
+// Antigravity therefore sits ON the ACP forward skip list in `connection.rs`
+// (with Hermes/Kimi/Grok/Cursor/Qoder). The server would in fact MERGE the two
+// sources by name with the wire winning, so a double-mount is not possible —
+// but defining the same server twice is still noise, and the built-in
+// `codeg-mcp` companion is injected separately by `inject_codeg_mcp`, so
+// delegation keeps working either way.
+// ---------------------------------------------------------------------------
+
+fn antigravity_mcp_config_path() -> PathBuf {
+    crate::parsers::antigravity::resolve_antigravity_shared_config_dir().join("mcp_config.json")
+}
+
+/// Whether Antigravity's config holds an `mcpServers` value codeg refuses to
+/// touch (see [`antigravity_servers_object`]). Pure, and shared by the writer
+/// and the preflight below so the two can never disagree about what is
+/// editable.
+fn antigravity_config_blocks_edit(root: &Value) -> bool {
+    matches!(root.get("mcpServers"), Some(value) if !value.is_object())
+}
+
+/// Refuse a multi-app save BEFORE it mutates anything, when Antigravity is one
+/// of the targets and its config is not editable.
+///
+/// The multi-app commands walk the agents one at a time with a fail-fast `?`,
+/// so an error partway through leaves the earlier agents already written — and
+/// `mcp_upsert_local_server` REMOVES the server from every non-target agent in
+/// that same walk. Antigravity is last in the list, so without this preflight
+/// "assign this server to Antigravity only" could strip it from every other
+/// agent, then fail, leaving it nowhere.
+///
+/// Only the upsert direction needs the guard: removing from Antigravity is a
+/// no-op on an unreadable document, never an error, so an untargeted
+/// Antigravity can't abort anyone else's save.
+fn preflight_antigravity_upsert(targets: &BTreeSet<McpAppType>) -> Result<(), AppCommandError> {
+    if !targets.contains(&McpAppType::Antigravity) {
+        return Ok(());
+    }
+    let path = antigravity_mcp_config_path();
+    let root = read_json_file(&path)?;
+    if antigravity_config_blocks_edit(&root) {
+        return Err(mcp_configuration_invalid(format!(
+            "cannot edit {}: `mcpServers` is not an object. \
+             Fix or remove that key before assigning MCP servers to Google Antigravity.",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Run a multi-app config mutation behind the upsert preflight.
+///
+/// The ordering ("check every target BEFORE writing any of them") is enforced
+/// here by construction rather than left to each call site remembering it: the
+/// mutations are only reachable through `mutate`, which this runs after the
+/// preflight has passed. Adding another agent with a refusable config means
+/// extending [`preflight_antigravity_upsert`], not auditing the callers again.
+fn with_upsert_preflight<T>(
+    upsert_targets: &BTreeSet<McpAppType>,
+    mutate: impl FnOnce() -> Result<T, AppCommandError>,
+) -> Result<T, AppCommandError> {
+    with_preflight(|| preflight_antigravity_upsert(upsert_targets), mutate)
+}
+
+/// The ordering itself, with the check injected so a test can force a refusal
+/// (the real preflight's answer depends on the machine's own config, which
+/// would make an ordering test pass for the wrong reason).
+fn with_preflight<T>(
+    preflight: impl FnOnce() -> Result<(), AppCommandError>,
+    mutate: impl FnOnce() -> Result<T, AppCommandError>,
+) -> Result<T, AppCommandError> {
+    preflight()?;
+    mutate()
+}
+
+fn read_antigravity_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+    read_antigravity_servers_at(&antigravity_mcp_config_path())
+}
+
+/// Normalize a parsed `mcp_config.json` into the wrapped shape so a server can
+/// be inserted or removed.
+///
+/// The loader accepts BOTH `{"mcpServers": {...}}` and a bare top-level map —
+/// literally `data.get("mcpServers", data)`. That fallback is winner-take-all:
+/// the moment an `mcpServers` key exists, every bare sibling stops being read.
+/// So codeg cannot just add the wrapper to a bare document; doing that would
+/// silently unmount every server the user already had. Bare entries are moved
+/// INTO the wrapper instead, which is exactly the set the loader was returning
+/// before, so the agent sees no change.
+///
+/// A present-but-not-an-object `mcpServers` is an `Err`, not something to
+/// migrate around: the loader hands that value straight to its `isinstance`
+/// check and rejects the WHOLE file, so codeg cannot know what the key means,
+/// and dropping it to make room for a wrapper would destroy it. Refusing the
+/// edit leaves the file exactly as the user wrote it — the same fail-closed
+/// rule the Antigravity settings writer follows.
+fn antigravity_servers_object(root: &mut Value) -> Result<&mut Map<String, Value>, ()> {
+    if antigravity_config_blocks_edit(root) {
+        return Err(());
+    }
+    let Some(obj) = root.as_object_mut() else {
+        return Err(());
+    };
+    match obj.get("mcpServers") {
+        Some(Value::Object(_)) => obj
+            .get_mut("mcpServers")
+            .and_then(Value::as_object_mut)
+            .ok_or(()),
+        Some(_) => Err(()),
+        None => {
+            // Bare document: everything at the root is what the loader was
+            // reading, so all of it moves into the wrapper.
+            let migrated: Map<String, Value> = std::mem::take(obj).into_iter().collect();
+            obj.insert("mcpServers".to_string(), Value::Object(migrated));
+            obj.get_mut("mcpServers")
+                .and_then(Value::as_object_mut)
+                .ok_or(())
+        }
+    }
+}
+
+/// The servers a document declares, mirroring the loader exactly and without
+/// mutating anything.
+///
+/// `None` means "this file contributes no servers", which is what the loader
+/// reports both for a non-object root and for a malformed `mcpServers` —
+/// `data.get("mcpServers", data)` returns that malformed value and the
+/// `isinstance` check below it then rejects the file. It does NOT fall back to
+/// the root in that case, so neither may codeg: reporting the root's siblings
+/// as mounted servers would claim something the agent never sees.
+fn antigravity_servers_view(root: &Value) -> Option<&Map<String, Value>> {
+    match root.get("mcpServers") {
+        Some(Value::Object(map)) => Some(map),
+        Some(_) => None,
+        // Bare top-level map — the loader's `data.get("mcpServers", data)`
+        // fallback with the key absent.
+        None => root.as_object(),
+    }
+}
+
+fn read_antigravity_servers_at(path: &Path) -> Result<BTreeMap<String, Value>, AppCommandError> {
+    let root = read_json_file(path)?;
+    let mut out = BTreeMap::new();
+
+    let Some(servers) = antigravity_servers_view(&root) else {
+        return Ok(out);
+    };
+
+    for (id, spec) in servers {
+        match canonicalize_spec(spec, "Antigravity config") {
+            Ok(normalized) => {
+                out.insert(id.to_string(), normalized);
+            }
+            Err(err) => {
+                tracing::warn!("[MCP] skip invalid Antigravity MCP entry id={id}: {err}");
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn upsert_antigravity_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    upsert_antigravity_server_at(&antigravity_mcp_config_path(), id, spec)
+}
+
+fn upsert_antigravity_server_at(
+    path: &Path,
+    id: &str,
+    spec: &Value,
+) -> Result<(), AppCommandError> {
+    let mut root = read_json_file(path)?;
+    if !root.is_object() {
+        root = json!({});
+    }
+
+    let canonical = canonicalize_spec(spec, "Antigravity write")?;
+
+    let map = antigravity_servers_object(&mut root).map_err(|()| {
+        mcp_configuration_invalid(format!("invalid JSON root in {}", path.display()))
+    })?;
+    map.insert(id.to_string(), canonical);
+
+    write_json_file(path, &root)
+}
+
+fn remove_antigravity_server(id: &str) -> Result<bool, AppCommandError> {
+    remove_antigravity_server_at(&antigravity_mcp_config_path(), id)
+}
+
+fn remove_antigravity_server_at(path: &Path, id: &str) -> Result<bool, AppCommandError> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let mut root = read_json_file(path)?;
+    // Reaches a bare entry too — removing it must work whichever shape the
+    // document is in, and the migration keeps the remaining servers mounted.
+    let Ok(servers) = antigravity_servers_object(&mut root) else {
+        return Ok(false);
+    };
+
+    let removed = servers.remove(id).is_some();
+    if removed {
+        write_json_file(path, &root)?;
+    }
+    Ok(removed)
+}
+
 fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
     let mut merged: BTreeMap<String, (Value, BTreeSet<McpAppType>)> = BTreeMap::new();
 
@@ -2716,6 +2952,13 @@ fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
         entry.1.insert(McpAppType::DeepSeek);
     }
 
+    for (id, spec) in read_antigravity_servers()? {
+        let entry = merged
+            .entry(id)
+            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
+        entry.1.insert(McpAppType::Antigravity);
+    }
+
     for (id, spec) in read_qoder_servers()? {
         let entry = merged
             .entry(id)
@@ -2753,6 +2996,7 @@ fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), 
         McpAppType::Cursor => upsert_cursor_server(id, spec),
         McpAppType::DeepSeek => upsert_deepseek_server(id, spec),
         McpAppType::Qoder => upsert_qoder_server(id, spec),
+        McpAppType::Antigravity => upsert_antigravity_server(id, spec),
     }
 }
 
@@ -2785,6 +3029,10 @@ pub fn read_servers_for_agent_type(
         // (gemini-schema settings file) at startup — see the Qoder section
         // above for why it rides the forward skip list instead of the wire.
         AgentType::Qoder => read_qoder_servers(),
+        // Antigravity's ACP server reads `<GEMINI_HOME>/config/mcp_config.json`
+        // itself at session setup — see the Antigravity section above for why
+        // it rides the forward skip list rather than the wire.
+        AgentType::Antigravity => read_antigravity_servers(),
         // Custom agents get MCP purely over the ACP wire (`session/new`'s
         // `mcpServers`); codeg deliberately knows nothing about their native
         // config files, so there is no per-agent store to read back here.
@@ -3707,6 +3955,7 @@ fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, AppCommandEr
         McpAppType::Cursor => remove_cursor_server(id),
         McpAppType::DeepSeek => remove_deepseek_server(id),
         McpAppType::Qoder => remove_qoder_server(id),
+        McpAppType::Antigravity => remove_antigravity_server(id),
     }
 }
 
@@ -5726,6 +5975,167 @@ mod tests {
             0o640,
             "a deliberate group-shared mode is preserved"
         );
+    }
+
+    #[test]
+    fn antigravity_mcp_config_handles_both_document_shapes() {
+        // `mcp_servers.py::parse_mcp_config_file` does
+        // `servers_dict = data.get("mcpServers", data)` — a BARE top-level map
+        // is a first-class shape, and the fallback is winner-take-all. So
+        // adding an `mcpServers` wrapper next to bare entries would unmount
+        // every one of them. They have to be migrated INTO the wrapper.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp_config.json");
+
+        // A user's existing BARE document.
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&json!({
+                "ctx7": { "command": "npx", "args": ["-y", "ctx7"] },
+                "remote": { "url": "https://example.test/mcp" }
+            }))
+            .unwrap(),
+        )
+        .expect("seed bare config");
+
+        // Both bare entries are visible before any write.
+        let seen = read_antigravity_servers_at(&path).expect("read bare");
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert!(seen.contains_key("ctx7") && seen.contains_key("remote"));
+
+        upsert_antigravity_server_at(&path, "added", &json!({ "command": "added-bin" }))
+            .expect("upsert");
+
+        let root: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).expect("parse");
+        let servers = root
+            .get("mcpServers")
+            .and_then(Value::as_object)
+            .expect("wrapper created");
+        // The two pre-existing servers moved INTO the wrapper — the agent still
+        // sees exactly the set it saw before, plus the new one.
+        for id in ["ctx7", "remote", "added"] {
+            assert!(servers.contains_key(id), "{id} lost: {root}");
+        }
+        assert!(
+            root.as_object().unwrap().len() == 1,
+            "nothing may be left stranded at the root: {root}"
+        );
+
+        // Removal reaches a migrated entry too.
+        assert!(remove_antigravity_server_at(&path, "ctx7").expect("remove"));
+        let after = read_antigravity_servers_at(&path).expect("read back");
+        assert!(!after.contains_key("ctx7"));
+        assert_eq!(after.len(), 2);
+
+        // A MALFORMED `mcpServers` is not something to migrate around. The
+        // loader hands that value to its `isinstance` check and rejects the
+        // WHOLE file — it does NOT fall back to the root — so codeg must
+        // report no servers, and must refuse to edit rather than delete a key
+        // whose meaning it cannot read.
+        let malformed = dir.path().join("malformed.json");
+        let original = r#"{"mcpServers":"sentinel","legacy":{"command":"legacy-bin"}}"#;
+        std::fs::write(&malformed, original).expect("seed malformed");
+
+        let seen = read_antigravity_servers_at(&malformed).expect("read malformed");
+        assert!(
+            seen.is_empty(),
+            "the agent sees nothing here, so neither may codeg: {seen:?}"
+        );
+        assert!(
+            upsert_antigravity_server_at(&malformed, "x", &json!({ "command": "x" })).is_err(),
+            "editing must refuse rather than drop `mcpServers`"
+        );
+        assert!(!remove_antigravity_server_at(&malformed, "legacy").expect("remove is a no-op"));
+        assert_eq!(
+            std::fs::read_to_string(&malformed).unwrap(),
+            original,
+            "the file must be byte-identical after a refused edit"
+        );
+
+        // The preflight the multi-app commands run before touching ANY agent
+        // must agree exactly with what the writer will accept — otherwise a
+        // save either aborts for nothing, or gets halfway through and then
+        // discovers it cannot finish.
+        for (doc, blocks) in [
+            (json!({ "mcpServers": "sentinel" }), true),
+            (json!({ "mcpServers": ["a"] }), true),
+            (json!({ "mcpServers": { "a": { "command": "a" } } }), false),
+            (json!({ "bare": { "command": "b" } }), false),
+            (json!({}), false),
+        ] {
+            assert_eq!(
+                antigravity_config_blocks_edit(&doc),
+                blocks,
+                "preflight disagrees about {doc}"
+            );
+            let mut editable = doc.clone();
+            assert_eq!(
+                antigravity_servers_object(&mut editable).is_err(),
+                blocks,
+                "writer disagrees with the preflight about {doc}"
+            );
+        }
+
+        // A refused preflight must mean ZERO mutations, not a walk that stops
+        // partway. `mcp_upsert_local_server` removes the server from every
+        // non-target agent inside that walk, so a late failure would strip it
+        // from all of them and add it nowhere.
+        let mut mutated = false;
+        let refused = with_preflight(
+            || Err(mcp_configuration_invalid("nope")),
+            || {
+                mutated = true;
+                Ok(())
+            },
+        );
+        assert!(refused.is_err());
+        assert!(
+            !mutated,
+            "a refused preflight must not have run a single mutation"
+        );
+
+        // The approving direction still runs it, so the guard is not simply
+        // blocking everything.
+        let mut ran = false;
+        with_preflight(
+            || Ok(()),
+            || {
+                ran = true;
+                Ok(())
+            },
+        )
+        .expect("an approving preflight lets the mutation through");
+        assert!(ran);
+
+        // An agent that is not a target is never preflighted — a malformed
+        // Antigravity config must not block a save that never mentions it.
+        let mut other_ran = false;
+        with_upsert_preflight(&BTreeSet::from([McpAppType::ClaudeCode]), || {
+            other_ran = true;
+            Ok(())
+        })
+        .expect("an untargeted Antigravity cannot block another agent's save");
+        assert!(other_ran);
+
+        // And the already-wrapped shape keeps working, foreign keys intact.
+        let wrapped = dir.path().join("wrapped.json");
+        std::fs::write(
+            &wrapped,
+            serde_json::to_string_pretty(&json!({
+                "mcpServers": { "a": { "command": "a-bin" } },
+                "someOtherKey": { "kept": true }
+            }))
+            .unwrap(),
+        )
+        .expect("seed wrapped");
+        upsert_antigravity_server_at(&wrapped, "b", &json!({ "command": "b-bin" }))
+            .expect("upsert wrapped");
+        let root: Value =
+            serde_json::from_str(&std::fs::read_to_string(&wrapped).unwrap()).expect("parse");
+        assert_eq!(root["someOtherKey"]["kept"], true);
+        assert!(root["mcpServers"].get("a").is_some());
+        assert!(root["mcpServers"].get("b").is_some());
     }
 
     #[test]

@@ -1,4 +1,5 @@
 pub mod acp_native;
+pub mod antigravity;
 pub mod claude;
 pub mod cline;
 pub mod codebuddy;
@@ -168,6 +169,32 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             include_top: None,
         },
         ExternalSource {
+            // Since deepseek-acp 0.6.0 a prompt can carry images, and the log
+            // keeps only a `sha256:` reference — the pixels live in the
+            // content-addressed store at `$DSH_HOME/attachments/v1/objects/`.
+            // Without this source a backup restores every image as the
+            // `[image …]` placeholder `parsers::deepseek` falls back to, which
+            // is unrecoverable: the bytes exist nowhere else.
+            //
+            // A SEPARATE source rather than widening the one above, for two
+            // reasons. `DEEPSEEK_ACP_SESSIONS_ROOT` relocates the logs
+            // INDEPENDENTLY of `DSH_HOME`, so re-rooting both at `$DSH_HOME`
+            // would silently stop archiving the logs of any deployment that
+            // uses it. And `agent` is the restore key — `map_external_to_target`
+            // resolves `external/<agent>/…` by `find(|s| s.agent == agent)`, so
+            // two sources sharing a name would restore this one's entries under
+            // the sessions root.
+            //
+            // Scoped to `objects/`: the siblings are `tmp/` (upload staging)
+            // and `request-images/` (per-provider re-encodings derived from
+            // `objects/`), neither of which is conversation content, and both
+            // of which the agent rebuilds on demand.
+            agent: "deepseek-attachments",
+            root: deepseek::resolve_deepseek_attachments_root(),
+            is_file: false,
+            include_top: Some(&["objects"]),
+        },
+        ExternalSource {
             // Qoder keeps one JSONL per session under
             // `~/.qoder/projects/<encoded-cwd>/<sessionId>.jsonl` (relocatable
             // via `QODER_CONFIG_DIR`). The resolver already points at the
@@ -175,6 +202,18 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             // `security/` / `cache/` under `~/.qoder` are never archived.
             agent: "qoder",
             root: qoder::resolve_qoder_config_dir().join("projects"),
+            is_file: false,
+            include_top: None,
+        },
+        ExternalSource {
+            // Antigravity keeps one SQLite trajectory + `.meta` sidecar per
+            // session under `<GEMINI_HOME>/antigravity-acp/conversations`
+            // (default `~/.gemini/...`). The root points at `conversations`
+            // and NOT at `antigravity-acp` itself, whose siblings are the
+            // OAuth token files (`acp_token.json`, `acp_business_token.json`)
+            // — those must never end up in a backup archive.
+            agent: "antigravity",
+            root: antigravity::resolve_antigravity_sessions_dir(),
             is_file: false,
             include_top: None,
         },
@@ -215,6 +254,45 @@ pub enum ParseError {
 pub trait AgentParser {
     fn list_conversations(&self) -> Result<Vec<ConversationSummary>, ParseError>;
     fn get_conversation(&self, conversation_id: &str) -> Result<ConversationDetail, ParseError>;
+}
+
+/// Expand a leading `~` in a relocation env var, for the agents whose OWN
+/// resolver does that.
+///
+/// Handles a bare `~` and a `~/` — or, on Windows, `~\` — prefix.
+///
+/// A `~user` form is left VERBATIM, which is a deliberate divergence rather
+/// than a match: Python's `os.path.expanduser` does attempt a passwd lookup for
+/// it on unix, and Node's does not. Resolving another account's home here would
+/// mean duplicating that lookup to guess at a directory, so the value is passed
+/// through instead — and because a literal `~user/...` is not an absolute path,
+/// every consumer of this treats it as unresolvable and fails closed (the fs
+/// sandbox refuses the slot; the Antigravity settings sync refuses the write).
+/// The cost is that this rare form is unsupported, not that it resolves wrongly.
+///
+/// Deliberately NOT applied everywhere. Antigravity runs `os.path.expanduser`
+/// on `GEMINI_HOME` (`acp_server/paths.py`) and DeepSeek expands `DSH_HOME`
+/// (`dsh-home-paths`' `expandHomePath`), but Hermes's `get_hermes_home` is a
+/// bare `Path(val.strip())` and Codex, Claude and the rest are likewise
+/// verbatim. Expanding for one of those would point codeg at `$HOME/...` while
+/// the agent used a literal `~` directory — and, in the fs sandbox, would hand
+/// out `$HOME` as a writable root the user never selected.
+///
+/// Shared so the rule lives in ONE place: it is mirrored by
+/// `acp::file_system_runtime`'s root table (`EXPANDS_TILDE`), and a copy that
+/// drifts from the resolver it mirrors is exactly how the agent ends up unable
+/// to write its own directory.
+pub fn expand_home_prefix(value: &str, home_dir: Option<&PathBuf>) -> PathBuf {
+    let Some(home) = home_dir else {
+        return PathBuf::from(value);
+    };
+    if value == "~" {
+        return home.clone();
+    }
+    if let Some(rest) = value.strip_prefix("~/").or_else(|| value.strip_prefix("~\\")) {
+        return home.join(rest);
+    }
+    PathBuf::from(value)
 }
 
 /// Truncate a string to `max_len` characters, appending "..." if truncated.

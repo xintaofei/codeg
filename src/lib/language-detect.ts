@@ -213,6 +213,33 @@ export function isOfficePreviewable(path: string | null | undefined): boolean {
 }
 
 /**
+ * True when the file name is a Microsoft Office / WPS *owner file* — the
+ * `~$`-prefixed sidecar those suites drop beside a document the moment it is
+ * opened for editing, recording who holds it so a second opener gets the "file
+ * in use" dialog. It inherits the document's own extension (`~$report.docx`),
+ * so the office-extension filter alone waves it straight through.
+ *
+ * These track an external editing session rather than anything the agent did:
+ * opening a folder of documents in WPS drops one per document at once, and
+ * automatic surfacing would answer with a tab — and an `officecli watch`
+ * process — for every one. They are not documents either, just a few hundred
+ * bytes of owner metadata rather than OpenXML, so those tabs could only fail.
+ *
+ * The `~$` prefix is the whole test: Word, Excel, PowerPoint and the WPS suite
+ * that mirrors them all reserve it for this, and the rest of the name is the
+ * original's, truncated by rules that vary by suite and name length. Only the
+ * file name is examined — a directory is never an owner file, and one that
+ * happened to start with `~$` should not disqualify the documents beneath it.
+ * Dot-tilde spellings (LibreOffice's `.~lock.report.docx#`) are hidden by name
+ * and belong to `isHiddenPath` below.
+ */
+export function isOfficeOwnerFile(path: string | null | undefined): boolean {
+  if (!path) return false
+  const basename = path.split(/[\\/]/).pop() ?? ""
+  return basename.startsWith("~$")
+}
+
+/**
  * True when any segment of `path` is dot-prefixed — the conventional marker
  * for a hidden or machine-owned file: LibreOffice's `.~lock.report.docx#`,
  * macOS AppleDouble sidecars (`._report.docx`), and anything parked under

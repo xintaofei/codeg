@@ -113,16 +113,36 @@ function firePointer(
   })
 }
 
-function Harness({ onQuote }: { onQuote?: (text: string) => void }) {
+function Harness({
+  onQuote,
+  onAsk,
+}: {
+  onQuote?: (text: string) => void
+  onAsk?: (selection: string, question: string) => void
+}) {
   const ref = useRef<HTMLDivElement>(null)
   return (
     <NextIntlClientProvider locale="en" messages={enMessages}>
       <div ref={ref} data-testid="box">
         <p data-testid="para">hello world</p>
-        <SelectionActionBubble containerRef={ref} onQuote={onQuote} />
+        <SelectionActionBubble
+          containerRef={ref}
+          onQuote={onQuote}
+          onAsk={onAsk}
+        />
       </div>
     </NextIntlClientProvider>
   )
+}
+
+/** Select `text`, open the ask composer, and hand back its input. */
+function openAskComposer(container: HTMLElement, text = "hello") {
+  mockSelection(container.querySelector("[data-testid=para]"), text)
+  selectionChanged()
+  act(() => {
+    fireEvent.click(screen.getByRole("button", { name: "Ask" }))
+  })
+  return screen.getByRole("textbox", { name: "Ask about this selection…" })
 }
 
 let rectSpy: ReturnType<typeof vi.spyOn>
@@ -139,6 +159,33 @@ function mockToolbarWidth(width: number) {
   Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
     configurable: true,
     get: () => width,
+  })
+  return () => {
+    if (original) {
+      Object.defineProperty(HTMLElement.prototype, "offsetWidth", original)
+    } else {
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>)
+        .offsetWidth
+    }
+  }
+}
+
+/**
+ * Like {@link mockToolbarWidth}, but the toolbar reports a DIFFERENT width once
+ * the ask composer replaces the button row — which is the whole reason the
+ * clamp has to be recomputed when it opens. The mode is read off the element's
+ * own content, so no test has to sequence the two widths by hand.
+ */
+function mockToolbarWidthByMode(buttonsWidth: number, askWidth: number) {
+  const original = Object.getOwnPropertyDescriptor(
+    HTMLElement.prototype,
+    "offsetWidth"
+  )
+  Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.querySelector("input") ? askWidth : buttonsWidth
+    },
   })
   return () => {
     if (original) {
@@ -459,6 +506,192 @@ describe("SelectionActionBubble", () => {
     } as DOMRect)
     selectionChanged()
     expect(screen.getByRole("toolbar").style.top).toBe("152px") // 260 - 100 - 8
+  })
+
+  it("omits the ask action when no ask handler is given", () => {
+    const { container } = render(<Harness onQuote={vi.fn()} />)
+    mockSelection(container.querySelector("[data-testid=para]"), "hello")
+    selectionChanged()
+
+    expect(screen.queryByRole("button", { name: "Ask" })).toBeNull()
+  })
+
+  it("swaps the buttons for a question box and asks with the selection", () => {
+    const onAsk = vi.fn()
+    const { container } = render(<Harness onQuote={vi.fn()} onAsk={onAsk} />)
+    const input = openAskComposer(container, "first line\nsecond line")
+
+    // The composer replaces the actions — the toolbar can't do both at once.
+    expect(screen.queryByRole("button", { name: "Copy Text" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull()
+
+    act(() => {
+      fireEvent.change(input, { target: { value: "  what does this mean?  " } })
+      fireEvent.keyDown(input, { key: "Enter" })
+    })
+
+    // Selection verbatim (the host quotes it), question trimmed.
+    expect(onAsk).toHaveBeenCalledWith(
+      "first line\nsecond line",
+      "what does this mean?"
+    )
+    expect(removeAllRanges).toHaveBeenCalled()
+    expect(screen.queryByRole("toolbar")).toBeNull()
+  })
+
+  it("asks when the submit button is clicked", () => {
+    const onAsk = vi.fn()
+    const { container } = render(<Harness onAsk={onAsk} />)
+    const input = openAskComposer(container)
+
+    act(() => {
+      fireEvent.change(input, { target: { value: "why?" } })
+      fireEvent.click(
+        screen.getByRole("button", { name: "Ask in a new conversation" })
+      )
+    })
+
+    expect(onAsk).toHaveBeenCalledWith("hello", "why?")
+  })
+
+  it("does not ask on an empty or whitespace-only question", () => {
+    const onAsk = vi.fn()
+    const { container } = render(<Harness onAsk={onAsk} />)
+    const input = openAskComposer(container)
+
+    act(() => {
+      fireEvent.keyDown(input, { key: "Enter" })
+      fireEvent.change(input, { target: { value: "   " } })
+      fireEvent.keyDown(input, { key: "Enter" })
+    })
+
+    expect(onAsk).not.toHaveBeenCalled()
+    // The composer stays up rather than dismissing — there is nothing to send,
+    // so the press simply hasn't done anything yet.
+    expect(screen.queryByRole("textbox")).not.toBeNull()
+    expect(
+      screen.getByRole("button", { name: "Ask in a new conversation" })
+    ).toHaveProperty("disabled", true)
+  })
+
+  it("ignores Enter while an IME candidate is being composed", () => {
+    // Every CJK input method commits its candidate with Enter. Submitting on
+    // that would send a half-typed question.
+    const onAsk = vi.fn()
+    const { container } = render(<Harness onAsk={onAsk} />)
+    const input = openAskComposer(container)
+
+    act(() => {
+      fireEvent.change(input, { target: { value: "这是" } })
+      fireEvent.compositionStart(input)
+      fireEvent.keyDown(input, { key: "Enter" })
+    })
+    expect(onAsk).not.toHaveBeenCalled()
+
+    act(() => {
+      fireEvent.compositionEnd(input)
+      fireEvent.keyDown(input, { key: "Enter" })
+    })
+    expect(onAsk).toHaveBeenCalledWith("hello", "这是")
+  })
+
+  it("keeps the question box up after focusing it drops the page selection", () => {
+    // Focusing the input collapses the page selection, and the frame loop /
+    // selectionchange tracker would measure nothing and unmount the box the user
+    // is typing into. Opening the composer freezes both.
+    const onAsk = vi.fn()
+    const { container } = render(<Harness onAsk={onAsk} />)
+    const input = openAskComposer(container)
+
+    mockSelection(null, "")
+    selectionChanged()
+    expect(screen.queryByRole("textbox")).not.toBeNull()
+    expect(screen.getByRole("toolbar").style.top).toBe("92px")
+
+    act(() => {
+      fireEvent.change(input, { target: { value: "still here?" } })
+      fireEvent.keyDown(input, { key: "Enter" })
+    })
+    // The text was captured when the composer opened, so it survives the
+    // selection going away underneath.
+    expect(onAsk).toHaveBeenCalledWith("hello", "still here?")
+  })
+
+  it.each([
+    [
+      "Escape",
+      (input: HTMLElement) => {
+        act(() => {
+          fireEvent.keyDown(input, { key: "Escape" })
+        })
+      },
+    ],
+    [
+      "a press outside",
+      () => {
+        act(() => {
+          fireEvent.pointerDown(document.body)
+        })
+      },
+    ],
+  ])("abandons the question on %s", (_label, cancel) => {
+    const onAsk = vi.fn()
+    const { container } = render(<Harness onAsk={onAsk} />)
+    const input = openAskComposer(container)
+    act(() => {
+      fireEvent.change(input, { target: { value: "never mind" } })
+    })
+
+    cancel(input)
+
+    expect(onAsk).not.toHaveBeenCalled()
+    expect(screen.queryByRole("toolbar")).toBeNull()
+  })
+
+  it("opens a fresh question box after one was abandoned", () => {
+    // The abandoned text must not come back with the next selection — the
+    // composer is per-question, not a persistent draft.
+    const { container } = render(<Harness onAsk={vi.fn()} />)
+    const input = openAskComposer(container)
+    act(() => {
+      fireEvent.change(input, { target: { value: "never mind" } })
+      fireEvent.keyDown(input, { key: "Escape" })
+    })
+
+    expect(openAskComposer(container)).toHaveProperty("value", "")
+  })
+
+  it("re-clamps for the wider question box before it freezes", () => {
+    // The composer is much wider than the button row, and the frame loop is
+    // frozen from the moment it opens — so opening it is the last chance to keep
+    // it off the container edge, where overflow-hidden would shear it.
+    //
+    // 160 wide → half 80 → x clamped into [88, 312];
+    // 300 wide → half 150 → x clamped into [158, 242].
+    const restore = mockToolbarWidthByMode(160, 300)
+    try {
+      const { container } = render(<Harness onAsk={vi.fn()} />)
+      // Hard against the container's left edge, so both clamps actually bite.
+      mockSelection(container.querySelector("[data-testid=para]"), "hello", {
+        ...SELECTION_RECT,
+        left: 0,
+        right: 40,
+        width: 40,
+        x: 0,
+      } as DOMRect)
+      selectionChanged()
+      // The first measure runs before the toolbar exists (offsetWidth 0), so the
+      // clamped value settles on the second pass.
+      selectionChanged()
+      expect(screen.getByRole("toolbar").style.left).toBe("88px")
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: "Ask" }))
+      })
+      expect(screen.getByRole("toolbar").style.left).toBe("158px")
+    } finally {
+      restore()
+    }
   })
 
   it("stays hidden while a drag is in flight and appears on release", () => {

@@ -41,6 +41,7 @@ import { CloneDialog } from "./clone-dialog"
 import { RemoteWorkspaceManageDialog } from "./remote-workspace-manage-dialog"
 import { WorkspaceFolderDialog } from "./workspace-folder-dialog"
 import { ConversationManageDialog } from "@/components/conversations/conversation-manage-dialog"
+import { ForgeBetaBadge } from "@/components/forge/forge-beta-badge"
 
 /**
  * The quick-actions launcher pinned to the status bar's leading edge — the
@@ -251,6 +252,7 @@ export function QuickActionsDropdown() {
           <DropdownMenuItem onSelect={() => setRoute("forge")}>
             <LayoutTemplate />
             <span className="min-w-0 flex-1 truncate">{tSidebar("forge")}</span>
+            <ForgeBetaBadge />
           </DropdownMenuItem>
 
           {desktop && (

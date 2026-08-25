@@ -44,6 +44,7 @@ import {
 } from "@/lib/api"
 import type { HyperframesSkillAgent } from "@/lib/types"
 import { extractAppCommandError, toErrorMessage } from "@/lib/app-error"
+import { joinFsPath } from "@/lib/path-utils"
 import { DirectoryPathInput } from "@/components/shared/directory-path-input"
 import { PACKAGE_MANAGER_OPTIONS } from "../shadcn/constants"
 import {
@@ -255,7 +256,7 @@ export function HyperframesLauncher() {
               {saveDirectory && projectName.trim() && (
                 <p className="text-xs text-muted-foreground">
                   {t("createDialog.projectPath", {
-                    path: `${saveDirectory}/${projectName.trim()}`,
+                    path: joinFsPath(saveDirectory, projectName.trim()),
                   })}
                 </p>
               )}

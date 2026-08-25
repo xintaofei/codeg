@@ -35,6 +35,7 @@ import {
   detectPackageManager,
 } from "@/lib/api"
 import { extractAppCommandError, toErrorMessage } from "@/lib/app-error"
+import { joinFsPath } from "@/lib/path-utils"
 import { DirectoryPathInput } from "@/components/shared/directory-path-input"
 import {
   BASE_OPTIONS,
@@ -193,7 +194,7 @@ export function CreateProjectDialog({
             {saveDirectory && projectName.trim() && (
               <p className="text-xs text-muted-foreground">
                 {t("createDialog.projectPath", {
-                  path: `${saveDirectory}/${projectName.trim()}`,
+                  path: joinFsPath(saveDirectory, projectName.trim()),
                 })}
               </p>
             )}

@@ -70,6 +70,7 @@ import type {
   FolderHistoryEntry,
 } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
+import { joinFsPath } from "@/lib/path-utils"
 
 type SkillsTranslator = (
   key: string,
@@ -111,13 +112,6 @@ function defaultSkillLayoutForAgent(
   return null
 }
 
-function pathJoin(base: string, suffix: string): string {
-  if (base.endsWith("/") || base.endsWith("\\")) {
-    return `${base}${suffix}`
-  }
-  return `${base}/${suffix}`
-}
-
 function buildDraftPathPreview(params: {
   location: AgentSkillLocation | null
   id: string
@@ -129,11 +123,14 @@ function buildDraftPathPreview(params: {
   if (isExisting && selectedSkillPath) return selectedSkillPath
   if (!location || !id.trim()) return null
 
+  // `location.path` is a native OS path, so the preview has to be joined with
+  // that path's own separator — a hardcoded "/" made the Windows hint read
+  // `C:\Users\me\.claude\skills/my-skill/SKILL.md`.
   const trimmedId = id.trim()
   if (layout === "skill_directory") {
-    return pathJoin(location.path, `${trimmedId}/SKILL.md`)
+    return joinFsPath(location.path, `${trimmedId}/SKILL.md`)
   }
-  return pathJoin(location.path, `${trimmedId}.md`)
+  return joinFsPath(location.path, `${trimmedId}.md`)
 }
 
 function dirname(path: string): string {

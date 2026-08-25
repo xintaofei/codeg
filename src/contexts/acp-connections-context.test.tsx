@@ -354,7 +354,7 @@ describe("AcpConnectionsProvider cross-client viewer lifecycle", () => {
 
     // Start the viewer connect; it suspends on the pending snapshot AFTER
     // dispatching CONNECTION_CREATED (the entry now exists in the store).
-    let connectPromise: Promise<void> | undefined
+    let connectPromise: Promise<string | undefined> | undefined
     await act(async () => {
       connectPromise = h.actions!.connect(TAB, "claude_code", "/tmp/x", "s", 42)
     })
@@ -926,7 +926,7 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
         })
     )
 
-    let firstConnect: Promise<void> | undefined
+    let firstConnect: Promise<string | undefined> | undefined
     await act(async () => {
       firstConnect = h.actions!.connect(
         TAB,
@@ -1197,7 +1197,7 @@ describe("AcpConnectionsProvider abandoned connect tears down only what it creat
           resolveConnect = res
         })
     )
-    let connectPromise: Promise<void> | undefined
+    let connectPromise: Promise<string | undefined> | undefined
     await act(async () => {
       connectPromise = h.actions!.connect(
         OTHER_TAB,
@@ -1227,7 +1227,7 @@ describe("AcpConnectionsProvider abandoned connect tears down only what it creat
           resolveConnect = res
         })
     )
-    let connectPromise: Promise<void> | undefined
+    let connectPromise: Promise<string | undefined> | undefined
     await act(async () => {
       connectPromise = h.actions!.connect(
         OTHER_TAB,
@@ -3206,7 +3206,7 @@ describe("connect() teardown races", () => {
           resolveProbe = res
         })
     )
-    let connectPromise: Promise<void> | undefined
+    let connectPromise: Promise<string | undefined> | undefined
     await act(async () => {
       connectPromise = h.actions!.connect(
         TAB,
@@ -3251,7 +3251,7 @@ describe("connect() teardown races", () => {
           resolveConnect = res
         })
     )
-    let connectPromise: Promise<void> | undefined
+    let connectPromise: Promise<string | undefined> | undefined
     await act(async () => {
       connectPromise = h.actions!.connect(
         TAB,
@@ -3283,7 +3283,7 @@ describe("connect() teardown races", () => {
     mountDesktop()
     await act(async () => {})
 
-    let connectPromise: Promise<void> | undefined
+    let connectPromise: Promise<string | undefined> | undefined
     await act(async () => {
       connectPromise = h.actions!.connect(
         TAB,
@@ -3390,7 +3390,7 @@ describe("connect() teardown races", () => {
           resolveProbe = res
         })
     )
-    let stalePromise: Promise<void> | undefined
+    let stalePromise: Promise<string | undefined> | undefined
     await act(async () => {
       stalePromise = h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
     })
@@ -3455,7 +3455,7 @@ describe("connect() teardown races", () => {
         })
     )
     h.acpConnect.mockResolvedValue("rebuilt-conn")
-    let connectPromise: Promise<void> | undefined
+    let connectPromise: Promise<string | undefined> | undefined
     await act(async () => {
       connectPromise = h.actions!.connect(
         TAB,
@@ -3515,7 +3515,7 @@ describe("connect() teardown races", () => {
         })
     )
     h.acpConnect.mockResolvedValue("rebuilt-conn")
-    let connectPromise: Promise<void> | undefined
+    let connectPromise: Promise<string | undefined> | undefined
     await act(async () => {
       connectPromise = h.actions!.connect(
         TAB,
@@ -3576,7 +3576,7 @@ describe("connect() teardown races", () => {
           resolveProbe = res
         })
     )
-    let stalePromise: Promise<void> | undefined
+    let stalePromise: Promise<string | undefined> | undefined
     await act(async () => {
       stalePromise = h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
     })
@@ -3616,7 +3616,7 @@ describe("connect() teardown races", () => {
           resolvePreflight = res
         })
     )
-    let inflight: Promise<void> | undefined
+    let inflight: Promise<string | undefined> | undefined
     await act(async () => {
       inflight = h.actions!.connect(TAB, "claude_code", "/tmp/x")
     })
@@ -3661,5 +3661,98 @@ describe("connect() teardown races", () => {
     })
 
     expect(h.store!.getConnection(TAB)?.connectionId).toBe("replacement-conn")
+  })
+})
+
+// The retry banner is shared by three producers with three different shapes
+// (#525): Claude reports a cause, codex reports a cause, pi reports only
+// counters. `reportsError` is what keeps pi from borrowing Claude's
+// "authentication_failed" fallback wording for a retry that had nothing to do
+// with authentication.
+describe("AcpConnectionsProvider retry banner (turn_retrying)", () => {
+  async function connectOwner(): Promise<AttachHandlers> {
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    return latestAttachHandlers()
+  }
+
+  it("carries pi's counters and marks it as reporting no cause", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "turn_retrying",
+      message: "",
+      attempt: 2,
+      max_retries: 3,
+      retry_delay_ms: 4000,
+    })
+
+    const retry = h.store!.getConnection(TAB)?.claudeApiRetry
+    expect(retry?.attempt).toBe(2)
+    expect(retry?.maxRetries).toBe(3)
+    expect(retry?.retryDelayMs).toBe(4000)
+    // Empty message normalizes to null, and the banner is told not to invent a
+    // cause for it.
+    expect(retry?.error).toBeNull()
+    expect(retry?.reportsError).toBe(false)
+  })
+
+  it("keeps codex's error text and its fallback eligibility", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "turn_retrying",
+      message: "stream disconnected",
+      error_status: 503,
+    })
+
+    const retry = h.store!.getConnection(TAB)?.claudeApiRetry
+    expect(retry?.error).toBe("stream disconnected")
+    expect(retry?.errorStatus).toBe(503)
+    expect(retry?.reportsError).toBe(true)
+    // codex reports no counters; they must not be invented.
+    expect(retry?.attempt).toBeNull()
+    expect(retry?.maxRetries).toBeNull()
+    expect(retry?.retryDelayMs).toBeNull()
+  })
+
+  // Deltas are queued and applied in batches, and applying one clears the
+  // banner (`applyStreamingAction`). A delta that arrived just BEFORE the retry
+  // must not be flushed just AFTER it and wipe the banner — pi hits this
+  // routinely, retrying mid-stream between prose chunks.
+  it("survives a delta that was queued before the retry arrived", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "content_delta",
+      text: "是的，",
+    })
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "turn_retrying",
+      message: "",
+      attempt: 1,
+      max_retries: 3,
+      retry_delay_ms: 2000,
+    })
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 60))
+    })
+
+    expect(h.store!.getConnection(TAB)?.claudeApiRetry?.attempt).toBe(1)
   })
 })

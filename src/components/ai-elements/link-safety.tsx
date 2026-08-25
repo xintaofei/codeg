@@ -197,8 +197,28 @@ function getAllowedExternalProtocol(rawUrl: string): string | null {
 }
 
 /**
- * True when the current window has no access to the Tauri opener plugin
- * (pure web, or a Tauri window bound to a remote codeg-server).
+ * True when `window.open` actually opens something — i.e. a real browser.
+ *
+ * NOT the same question as `isWebOpenerEnvironment` below. A Tauri window bound
+ * to a remote codeg-server is still a TAURI WEBVIEW, and a webview that
+ * registers no new-window handler opens nothing at all for `window.open` (wry
+ * answers with nil on macOS, `SetHandled(true)` on Windows). Lumping remote
+ * windows in with web mode here left every http(s) link in a remote workspace
+ * silently dead; they must take the opener-plugin path instead, which
+ * `capabilities/default.json` grants to the `remote-*` windows.
+ */
+function windowOpenReachesABrowser(): boolean {
+  return !isDesktop()
+}
+
+/**
+ * True when a `mailto:`/`tel:` URL should be handed to the OS through a
+ * synthetic anchor rather than the Tauri opener plugin — pure web, or a Tauri
+ * window bound to a remote codeg-server.
+ *
+ * The remote arm stays deliberately: unlike `window.open`, a synthetic anchor
+ * DOES reach the OS handler from inside a webview, and it sidesteps the
+ * question of whether the opener capability covers non-http(s) schemes.
  */
 function isWebOpenerEnvironment(): boolean {
   return !isDesktop() || getActiveRemoteConnectionId() !== null
@@ -212,7 +232,9 @@ function shouldLetStreamdownOpenExternalUrl(rawUrl: string): boolean {
   // them via a synthetic anchor click — streamdown's `window.open(_, "_blank")`
   // would otherwise leave a blank tab behind.
   if (OS_HANDLER_PROTOCOLS.has(protocol)) return false
-  return isWebOpenerEnvironment()
+  // Streamdown opens what it is allowed to open with `window.open`, so hand it
+  // a link only where that reaches a browser.
+  return windowOpenReachesABrowser()
 }
 
 /**

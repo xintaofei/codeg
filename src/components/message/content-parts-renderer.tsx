@@ -71,6 +71,7 @@ import {
 } from "@/lib/shell-session-tool"
 import { COLLAB_AGENT_TOOL_NAME } from "@/lib/collab-tool"
 import { isCodegMcpWorkbenchTool } from "@/lib/codeg-mcp-tool"
+import { fsSeparator } from "@/lib/path-utils"
 import { DelegatedSubThread } from "./delegated-sub-thread"
 import { DelegationStatusCard } from "./delegation-status-card"
 import { DelegationStatusGroupCard } from "./delegation-status-group-card"
@@ -248,9 +249,17 @@ function isLikelyIdField(key: string): boolean {
   )
 }
 
-/** Shorten an absolute path to its last 2 segments. */
-function shortPath(p: string): string {
-  return p.split("/").slice(-2).join("/")
+/**
+ * Shorten an absolute path to its last 2 segments. Agents running on Windows
+ * report backslash paths (`C:\work\repo\src\a.ts`), so both separators have to
+ * split — otherwise the tool title fell back to the whole path — and the
+ * shortened form is rejoined with the path's own separator rather than mixing
+ * the two.
+ */
+export function shortPath(p: string): string {
+  const segments = p.split(/[\\/]/)
+  if (segments.length <= 2) return p
+  return segments.slice(-2).join(fsSeparator(p))
 }
 
 /** Truncate text to maxLen, appending "…" if truncated. */
@@ -408,6 +417,13 @@ function commandFromUnknownValue(value: unknown): string | null {
     "command",
     "cmd",
     "script",
+    // Antigravity's terminal arguments — `command_line` on the executed call,
+    // PascalCase `CommandLine` on the model's own envelope (the shape a
+    // permission-prompt frame and the stored trajectory both carry). Ahead of
+    // the argv-style keys so an envelope that has both keeps the full command
+    // line. See `inferFromInput` in `tool-call-normalization.ts`.
+    "command_line",
+    "CommandLine",
     "args",
     "argv",
     "command_args",

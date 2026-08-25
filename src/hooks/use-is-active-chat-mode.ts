@@ -2,6 +2,7 @@
 
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useTabStore } from "@/contexts/tab-context"
+import { isConversationWorkspaceTab } from "@/lib/workspace-tab"
 
 /**
  * True when the active conversation is folderless "chat mode" — either a bound
@@ -18,5 +19,9 @@ export function useIsActiveChatMode(): boolean {
   const activeTabId = useTabStore((s) => s.activeTabId)
   if (activeFolder?.kind === "chat") return true
   const activeTab = tabs.find((t) => t.id === activeTabId)
-  return activeTab?.isChat === true
+  return Boolean(
+    activeTab &&
+    isConversationWorkspaceTab(activeTab) &&
+    activeTab.isChat === true
+  )
 }

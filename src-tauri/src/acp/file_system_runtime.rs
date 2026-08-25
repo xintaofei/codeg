@@ -12,6 +12,7 @@ use sacp::schema::{
 use tokio::sync::Semaphore;
 
 use crate::models::agent::AgentType;
+use crate::parsers::expand_home_prefix;
 
 const FS_MAX_CONCURRENT_OPS: usize = 8;
 const FS_IO_TIMEOUT: Duration = Duration::from_secs(30);
@@ -282,10 +283,10 @@ fn agent_data_roots(agent_type: AgentType, runtime_env: &BTreeMap<String, String
 /// same mistake — hand-rolling one agent's env semantics slightly differently
 /// from its own resolver.
 struct RootSlot {
-    /// Ordered `(env key, sub-path appended to that key's value)` candidates, in
-    /// the agent resolver's OWN precedence order. First one that reaches the
-    /// child wins. An empty sub-path means the value IS the root.
-    candidates: &'static [(&'static str, &'static str)],
+    /// Ordered `(env key, sub-path appended to that key's value, tilde rule)`
+    /// candidates, in the agent resolver's OWN precedence order. First one that
+    /// reaches the child wins. An empty sub-path means the value IS the root.
+    candidates: &'static [(&'static str, &'static str, bool)],
     /// Home-relative default when none of the candidates reaches the child.
     default_rel: &'static [&'static str],
     /// Whether the agent's own resolver TRIMS the value before using it. Hermes
@@ -296,16 +297,44 @@ struct RootSlot {
     trims: bool,
 }
 
+/// The third element of a candidate: whether the agent's own resolver expands a
+/// leading `~` in THAT variable's value.
+///
+/// Per-candidate rather than per-slot because one slot can mix the two.
+/// DeepSeek's session-log root is the case: `resolve_deepseek_sessions_root_from`
+/// takes `DEEPSEEK_ACP_SESSIONS_ROOT` as a bare `PathBuf::from`, but falls back
+/// through `resolve_dsh_home_from`, which DOES expand `DSH_HOME`. A slot-level
+/// flag would have to be wrong for one of them.
+///
+/// Getting it wrong in either direction names a directory the child does not
+/// use. `EXPANDS_TILDE` where the upstream resolver runs the equivalent of
+/// `expanduser` — Antigravity's `acp_server/paths.py` on `GEMINI_HOME`,
+/// DeepSeek's `expandHomePath` on `DSH_HOME`. `VERBATIM` everywhere else, and
+/// notably for Hermes, whose `get_hermes_home` is a bare
+/// `Path(os.environ["HERMES_HOME"].strip())`: expanding there would invent
+/// `$HOME` as a writable root the user never selected, while NOT expanding for
+/// Antigravity left the agent unable to write its own directory, the literal
+/// `~/...` having been judged relative and refused.
+///
+/// Only the leading `~` and `~/` (or `~\`) forms. A `~user` form is passed
+/// through rather than resolved — see `parsers::expand_home_prefix`, which
+/// records why that is a deliberate divergence from `expanduser` and why it is
+/// safe: the unexpanded value is not absolute, so the slot is refused below.
+const VERBATIM: bool = false;
+const EXPANDS_TILDE: bool = true;
+
 /// Resolve one slot to the directory the LAUNCHED agent will actually use, or
 /// `None` when that directory cannot be named safely.
 ///
-/// The value is taken VERBATIM apart from the resolver's sub-path — no tilde
-/// expansion, because the launched CLIs treat `~` literally (see
-/// `commands::acp::hermes_home_for_launch`: "a non-empty value is used VERBATIM
-/// … Hermes does NOT expand `~`"). Expanding it here would invent `$HOME` as a
-/// writable root the user never selected.
+/// The value is taken VERBATIM apart from the resolver's sub-path and, for the
+/// candidates whose own resolver does it, a leading `~` (see [`EXPANDS_TILDE`]).
+/// Expanding for an agent that does not — Hermes reads `HERMES_HOME` as a bare
+/// `Path(val)` — would invent `$HOME` as a writable root the user never
+/// selected; NOT expanding for one that does left the agent unable to write its
+/// OWN directory, because the literal `~/...` was then judged relative and
+/// refused below.
 fn resolve_root_slot(slot: &RootSlot, runtime_env: &BTreeMap<String, String>) -> Option<PathBuf> {
-    for (key, suffix) in slot.candidates {
+    for (key, suffix, expands) in slot.candidates {
         // Absent for the child ⇒ try the next candidate, exactly as the agent's
         // own resolver would.
         let Some(value) = child_env_value(runtime_env, key, slot.trims) else {
@@ -325,7 +354,21 @@ fn resolve_root_slot(slot: &RootSlot, runtime_env: &BTreeMap<String, String>) ->
         // unwritable. So: refuse the slot. That is fail-closed (the agent's write
         // is rejected), and the user can still name the directory explicitly via
         // `CODEG_ACP_FS_EXTRA_ROOTS`.
-        let base = PathBuf::from(value);
+        // Expanded against the CHILD's home, for the same reason the
+        // `default_rel` branch below uses it: `merge_agent_env` copies every
+        // `runtime_env` entry into the child, `HOME` included, and overriding it
+        // is the classic way to isolate a CLI's config. With
+        // `HOME=/srv/agy GEMINI_HOME=~/profile` the child's `expanduser` answers
+        // `/srv/agy/profile`, so resolving against codeg's own home would
+        // authorize a directory the agent never opens while leaving the one it
+        // does use unwritable. `None` means the child's home cannot be named at
+        // all, which `child_home_dir` has already warned about — treat the slot
+        // as unresolvable rather than substituting codeg's answer for it.
+        let base = if *expands {
+            expand_home_prefix(&value.to_string_lossy(), child_home_dir(runtime_env).as_ref())
+        } else {
+            PathBuf::from(value)
+        };
         if !base.is_absolute() {
             tracing::warn!(
                 "[ACP] relative {key}={} cannot be used as an fs write root; \
@@ -336,11 +379,33 @@ fn resolve_root_slot(slot: &RootSlot, runtime_env: &BTreeMap<String, String>) ->
             return None;
         }
 
-        return Some(if suffix.is_empty() {
+        let root = if suffix.is_empty() {
             base
         } else {
             base.join(suffix)
-        });
+        };
+
+        // Same fail-closed rule one level up: a root this broad makes the gate
+        // meaningless, because every absolute path under it passes
+        // `starts_with`. `GEMINI_HOME=~` is a legal setting that really does put
+        // Antigravity's tree directly in the home directory, and honoring it
+        // here would hand the agent write access to every other agent's
+        // credentials as a side effect. The agent still runs; only codeg's own
+        // `fs/*` channel declines to authorize the whole home, and
+        // `CODEG_ACP_FS_EXTRA_ROOTS` can still name a narrower directory inside
+        // it.
+        if is_over_broad_root(&root, runtime_env) {
+            tracing::warn!(
+                "[ACP] {key}={} resolves to the home directory or the filesystem \
+                 root, which is too broad to authorize; the agent's own directory \
+                 is NOT writable this launch. Use a subdirectory (or \
+                 {FS_EXTRA_ROOTS_ENV}).",
+                root.display()
+            );
+            return None;
+        }
+
+        return Some(root);
     }
 
     // No relocation reaches the child, so it falls back to a home-relative
@@ -353,6 +418,36 @@ fn resolve_root_slot(slot: &RootSlot, runtime_env: &BTreeMap<String, String>) ->
     Some(root)
 }
 
+/// Whether a resolved root would swallow so much that the containment gate
+/// stops meaning anything: a home directory itself, the filesystem root, or any
+/// path with no parent (a bare `C:\` on Windows).
+///
+/// Judged on the CANONICAL form, because that is what the policy ultimately
+/// stores and compares with (`FsAccessPolicy::permissive` runs every root
+/// through `canonical_root`). A syntactic check is trivially bypassable: with
+/// `$HOME/work` present, `GEMINI_HOME=~/work/..` is not equal to `$HOME` as
+/// written, but canonicalizes to exactly it — and a symlink inside the
+/// configured directory pointing at `$HOME` or `/` does the same without any
+/// `..` at all.
+///
+/// BOTH homes are rejected. The child's is the one whose tree this is, and
+/// codeg's is the one holding every other agent's credentials; authorizing
+/// either wholesale defeats the isolation invariant, and they are only the same
+/// path when the launch does not relocate `HOME`.
+///
+/// Pinned by `no_agent_data_root_is_the_home_dir_or_filesystem_root` and
+/// `an_over_broad_root_is_refused_after_canonicalization`.
+fn is_over_broad_root(root: &Path, runtime_env: &BTreeMap<String, String>) -> bool {
+    let canonical = canonical_root(root);
+    if canonical.parent().is_none() || canonical == Path::new("/") {
+        return true;
+    }
+    [child_home_dir(runtime_env), dirs::home_dir()]
+        .into_iter()
+        .flatten()
+        .any(|home| canonical_root(&home) == canonical)
+}
+
 /// The home directory the CHILD resolves its defaults against.
 ///
 /// `merge_agent_env` copies EVERY `runtime_env` entry into the child — `HOME`
@@ -363,7 +458,7 @@ fn resolve_root_slot(slot: &RootSlot, runtime_env: &BTreeMap<String, String>) ->
 ///
 /// `None` when the child's home cannot be named as an absolute path, in which
 /// case the caller refuses the slot rather than guessing at a root.
-fn child_home_dir(runtime_env: &BTreeMap<String, String>) -> Option<PathBuf> {
+pub(crate) fn child_home_dir(runtime_env: &BTreeMap<String, String>) -> Option<PathBuf> {
     // `dirs::home_dir()` ignores `$HOME` on Windows, where the home var the
     // agents actually read is `USERPROFILE`.
     #[cfg(windows)]
@@ -482,7 +577,7 @@ fn child_env_value(
 fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
     match agent_type {
         AgentType::Grok => &[RootSlot {
-            candidates: &[("GROK_HOME", "")],
+            candidates: &[("GROK_HOME", "", VERBATIM)],
             trims: false,
             default_rel: &[".grok"],
         }],
@@ -490,56 +585,66 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
         // of the CLI's `--config-dir`); the sessions tree lives under
         // `projects/` inside it.
         AgentType::Qoder => &[RootSlot {
-            candidates: &[("QODER_CONFIG_DIR", "")],
+            candidates: &[("QODER_CONFIG_DIR", "", VERBATIM)],
             trims: false,
             default_rel: &[".qoder"],
         }],
+        // Antigravity's whole tree hangs off `GEMINI_HOME`, which — unlike
+        // Gemini CLI's `GEMINI_CLI_HOME` above — names the `.gemini` directory
+        // ITSELF rather than its parent, so nothing is joined onto it. The
+        // server's settings, conversations, skills and OAuth tokens all live
+        // under it (`acp_server/paths.py`).
+        AgentType::Antigravity => &[RootSlot {
+            candidates: &[("GEMINI_HOME", "", EXPANDS_TILDE)],
+            trims: false,
+            default_rel: &[".gemini"],
+        }],
         AgentType::ClaudeCode => &[RootSlot {
-            candidates: &[("CLAUDE_CONFIG_DIR", "")],
+            candidates: &[("CLAUDE_CONFIG_DIR", "", VERBATIM)],
             trims: false,
             default_rel: &[".claude"],
         }],
         AgentType::Codex => &[RootSlot {
-            candidates: &[("CODEX_HOME", "")],
+            candidates: &[("CODEX_HOME", "", VERBATIM)],
             trims: false,
             default_rel: &[".codex"],
         }],
         // `resolve_gemini_base_dir_from` joins `.gemini` onto GEMINI_CLI_HOME.
         AgentType::Gemini => &[RootSlot {
-            candidates: &[("GEMINI_CLI_HOME", ".gemini")],
+            candidates: &[("GEMINI_CLI_HOME", ".gemini", VERBATIM)],
             trims: false,
             default_rel: &[".gemini"],
         }],
         AgentType::CodeBuddy => &[RootSlot {
-            candidates: &[("CODEBUDDY_CONFIG_DIR", "")],
+            candidates: &[("CODEBUDDY_CONFIG_DIR", "", VERBATIM)],
             trims: false,
             default_rel: &[".codebuddy"],
         }],
         AgentType::KimiCode => &[RootSlot {
-            candidates: &[("KIMI_CODE_HOME", "")],
+            candidates: &[("KIMI_CODE_HOME", "", VERBATIM)],
             trims: false,
             default_rel: &[".kimi-code"],
         }],
         // `resolve_cursor_config_from` prefers CURSOR_CONFIG_DIR verbatim and
         // only then `<XDG_CONFIG_HOME>/cursor` — order matters.
         AgentType::Cursor => &[RootSlot {
-            candidates: &[("CURSOR_CONFIG_DIR", ""), ("XDG_CONFIG_HOME", "cursor")],
+            candidates: &[("CURSOR_CONFIG_DIR", "", VERBATIM), ("XDG_CONFIG_HOME", "cursor", VERBATIM)],
             trims: false,
             default_rel: &[".cursor"],
         }],
         AgentType::Hermes => &[RootSlot {
-            candidates: &[("HERMES_HOME", "")],
+            candidates: &[("HERMES_HOME", "", VERBATIM)],
             trims: true,
             default_rel: &[".hermes"],
         }],
         // `resolve_opencode_base_dir` is `<XDG_DATA_HOME>/opencode`.
         AgentType::OpenCode => &[RootSlot {
-            candidates: &[("XDG_DATA_HOME", "opencode")],
+            candidates: &[("XDG_DATA_HOME", "opencode", VERBATIM)],
             trims: false,
             default_rel: &[".local", "share", "opencode"],
         }],
         AgentType::Cline => &[RootSlot {
-            candidates: &[("CLINE_DIR", "")],
+            candidates: &[("CLINE_DIR", "", VERBATIM)],
             trims: true,
             default_rel: &[".cline", "data"],
         }],
@@ -554,14 +659,17 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
         // `$DSH_HOME/sessions`) — see `resolve_deepseek_sessions_root_from`.
         AgentType::DeepSeek => &[
             RootSlot {
-                candidates: &[("DSH_HOME", "")],
+                candidates: &[("DSH_HOME", "", EXPANDS_TILDE)],
                 trims: false,
                 default_rel: &[".dsh"],
             },
             RootSlot {
                 candidates: &[
-                    ("DEEPSEEK_ACP_SESSIONS_ROOT", ""),
-                    ("DSH_HOME", "sessions"),
+                    // The sessions override is taken as a bare path;
+                    // the DSH_HOME fallback routes through
+                    // `resolve_dsh_home_from`, which expands.
+                    ("DEEPSEEK_ACP_SESSIONS_ROOT", "", VERBATIM),
+                    ("DSH_HOME", "sessions", EXPANDS_TILDE),
                 ],
                 trims: false,
                 default_rel: &[".dsh", "sessions"],
@@ -573,14 +681,14 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
         // `<agent dir>/sessions`, else `~/.pi/agent/sessions`.
         AgentType::Pi => &[
             RootSlot {
-                candidates: &[("PI_CODING_AGENT_DIR", "")],
+                candidates: &[("PI_CODING_AGENT_DIR", "", VERBATIM)],
                 trims: false,
                 default_rel: &[".pi", "agent"],
             },
             RootSlot {
                 candidates: &[
-                    ("PI_CODING_AGENT_SESSION_DIR", ""),
-                    ("PI_CODING_AGENT_DIR", "sessions"),
+                    ("PI_CODING_AGENT_SESSION_DIR", "", VERBATIM),
+                    ("PI_CODING_AGENT_DIR", "sessions", VERBATIM),
                 ],
                 trims: false,
                 default_rel: &[".pi", "agent", "sessions"],
@@ -1424,12 +1532,17 @@ mod tests {
         }
     }
 
-    /// No relocation value may be tilde-expanded: the launched CLIs treat `~`
-    /// literally, so expanding it here would hand out `$HOME` as a writable root
-    /// the user never selected. Hermes' launch contract
-    /// (`commands::acp::hermes_home_for_launch`) is explicit that `~` is NOT
-    /// expanded, and a BLANK value falls back to `~/.hermes` rather than
-    /// re-inheriting the parent.
+    /// For the agents whose own resolver takes the value verbatim, `~` must NOT
+    /// be expanded: they treat it literally, so expanding here would hand out
+    /// `$HOME` as a writable root the user never selected. Hermes' contract is
+    /// the explicit one — `get_hermes_home` is `Path(val.strip())`, no
+    /// `expanduser`, which `commands::acp::hermes_home_for_launch` mirrors — and
+    /// a BLANK value falls back to `~/.hermes` rather than re-inheriting the
+    /// parent.
+    ///
+    /// The agents that DO expand are covered by
+    /// `relocation_expands_tilde_only_for_the_agents_that_do`; the rule is
+    /// per-candidate, not global.
     #[test]
     fn relocation_never_expands_tilde_into_home() {
         let home = dirs::home_dir().expect("home dir");
@@ -1461,6 +1574,123 @@ mod tests {
             assert!(
                 roots.is_empty(),
                 "{agent_type:?}: {key}=~ should yield no root at all, got {roots:?}"
+            );
+        }
+    }
+
+    /// A `~` follows the CHILD's home, not codeg's.
+    ///
+    /// `merge_agent_env` copies `HOME` into the child like any other variable,
+    /// and overriding it is the standard way to isolate a CLI's config — so
+    /// `HOME=/srv/agy GEMINI_HOME=~/profile` means `/srv/agy/profile` to the
+    /// server's own `expanduser` and nothing else. Expanding against
+    /// `dirs::home_dir()` authorized a directory the agent never opens while
+    /// leaving the one it does use unwritable. The `default_rel` branch already
+    /// went through `child_home_dir`; this makes the override branch agree.
+    #[test]
+    fn tilde_expands_against_the_childs_home_not_codegs() {
+        let codeg_home = dirs::home_dir().expect("home dir");
+        // Platform-native: `child_home_dir` refuses a relative home, and a
+        // unix-style `/srv/agy` is NOT absolute on Windows (no drive prefix),
+        // so a shared literal would make this pass on unix and fail in the
+        // Windows server CI cell, which runs these lib tests for real.
+        let (home_key, child_home) = CHILD_HOME_FIXTURE;
+
+        let runtime_env = BTreeMap::from([
+            (home_key.to_string(), child_home.to_string()),
+            ("GEMINI_HOME".to_string(), "~/profile".to_string()),
+        ]);
+        let roots = agent_data_roots(AgentType::Antigravity, &runtime_env);
+        assert!(
+            roots.contains(&PathBuf::from(child_home).join("profile")),
+            "the child's own home must anchor the expansion, got {roots:?}"
+        );
+        assert!(
+            !roots.contains(&codeg_home.join("profile")),
+            "codeg's home must not: {roots:?}"
+        );
+    }
+
+    /// The over-broad guard has to judge the CANONICAL root, because that is
+    /// what the policy stores and compares against.
+    ///
+    /// A syntactic check is trivially bypassable: `~/work/..` is not `$HOME` as
+    /// written but canonicalizes to exactly it, and `FsAccessPolicy::permissive`
+    /// canonicalizes every root before storing it — so the agent would have been
+    /// handed write access to the whole home, and with it every other agent's
+    /// credentials.
+    #[test]
+    fn an_over_broad_root_is_refused_after_canonicalization() {
+        let home = dirs::home_dir().expect("home dir");
+        if agent_relocated_by_process_env(AgentType::Antigravity) {
+            return;
+        }
+        // Needs a directory that really exists, since `canonicalize` is what
+        // collapses the `..` — a non-existent path stays syntactic.
+        let existing = std::fs::read_dir(&home)
+            .expect("readable home")
+            .flatten()
+            .find(|e| e.path().is_dir() && !e.path().is_symlink())
+            .map(|e| e.file_name().to_string_lossy().into_owned());
+        let Some(subdir) = existing else {
+            return; // no real subdirectory to build the alias from
+        };
+
+        for value in [format!("~/{subdir}/.."), format!("{}/{subdir}/..", home.display())] {
+            let runtime_env = BTreeMap::from([("GEMINI_HOME".to_string(), value.clone())]);
+            let roots = agent_data_roots(AgentType::Antigravity, &runtime_env);
+            for root in &roots {
+                assert_ne!(
+                    canonical_root(root),
+                    canonical_root(&home),
+                    "{value} aliases the home directory and must be refused, got {roots:?}"
+                );
+            }
+        }
+    }
+
+    /// The other half of the rule: Antigravity and DeepSeek DO expand, so their
+    /// relocated tree has to be authorized under the expanded path.
+    ///
+    /// Both upstreams run the equivalent of `expanduser` on their home variable
+    /// (`acp_server/paths.py`; `dsh-home-paths`' `expandHomePath`), so with
+    /// `GEMINI_HOME=~/relocated` the agent's files really are at
+    /// `$HOME/relocated`. Treating the value verbatim judged it RELATIVE and
+    /// refused the slot, which left the agent unable to write its own directory
+    /// — while codeg, separately, created a literal `~` folder next to wherever
+    /// it happened to be running.
+    ///
+    /// A BARE `~` is still refused. It is a legal setting that puts the tree
+    /// directly in the home directory, but authorizing `$HOME` wholesale would
+    /// make the containment gate meaningless and hand this agent every other
+    /// agent's credentials.
+    #[test]
+    fn relocation_expands_tilde_only_for_the_agents_that_do() {
+        let home = dirs::home_dir().expect("home dir");
+        for (agent_type, key) in [
+            (AgentType::Antigravity, "GEMINI_HOME"),
+            (AgentType::DeepSeek, "DSH_HOME"),
+        ] {
+            if agent_relocated_by_process_env(agent_type) {
+                continue;
+            }
+
+            let runtime_env = BTreeMap::from([(key.to_string(), "~/relocated".to_string())]);
+            let roots = agent_data_roots(agent_type, &runtime_env);
+            assert!(
+                roots.contains(&home.join("relocated")),
+                "{agent_type:?}: {key}=~/relocated must resolve to $HOME/relocated, got {roots:?}"
+            );
+            // And never as the literal, cwd-relative directory.
+            assert!(
+                !roots.iter().any(|r| r.starts_with("~")),
+                "{agent_type:?}: a literal ~ survived into {roots:?}"
+            );
+
+            let bare = BTreeMap::from([(key.to_string(), "~".to_string())]);
+            assert!(
+                !agent_data_roots(agent_type, &bare).contains(&home),
+                "{agent_type:?}: {key}=~ must not authorize the whole home directory"
             );
         }
     }
@@ -1516,7 +1746,7 @@ mod tests {
         agent_root_slots(agent_type)
             .iter()
             .flat_map(|slot| slot.candidates.iter())
-            .any(|(key, _)| std::env::var_os(key).is_some())
+            .any(|(key, _, _)| std::env::var_os(key).is_some())
     }
 
     /// Force every candidate key "absent for the child" (blank ⇒ `env_remove`)
@@ -1526,7 +1756,7 @@ mod tests {
         let blanked: BTreeMap<String, String> = agent_root_slots(agent_type)
             .iter()
             .flat_map(|slot| slot.candidates.iter())
-            .map(|(key, _)| ((*key).to_string(), String::new()))
+            .map(|(key, _, _)| ((*key).to_string(), String::new()))
             .collect();
         agent_data_roots(agent_type, &blanked)
     }
@@ -1926,7 +2156,7 @@ mod tests {
             let env_configured = agent_root_slots(agent_type)
                 .iter()
                 .flat_map(|slot| slot.candidates.iter())
-                .any(|(key, _)| std::env::var_os(key).is_some());
+                .any(|(key, _, _)| std::env::var_os(key).is_some());
             if env_configured {
                 continue;
             }
@@ -1989,7 +2219,7 @@ mod tests {
             .iter()
             .flat_map(|agent_type| agent_root_slots(*agent_type).iter())
             .flat_map(|slot| slot.candidates.iter())
-            .map(|(key, _)| ((*key).to_string(), "~".to_string()))
+            .map(|(key, _, _)| ((*key).to_string(), "~".to_string()))
             .collect();
 
         for env in [BTreeMap::new(), tilde_env] {
@@ -2004,6 +2234,15 @@ mod tests {
             }
         }
     }
+
+    /// `(home var, an absolute home path)` for the platform the test runs on.
+    /// `dirs::home_dir()` reads `USERPROFILE` on Windows and `HOME` elsewhere,
+    /// and `child_home_dir` rejects a home that is not absolute — which a
+    /// unix-style literal is not on Windows.
+    #[cfg(windows)]
+    const CHILD_HOME_FIXTURE: (&str, &str) = ("USERPROFILE", "C:\\srv\\agy");
+    #[cfg(not(windows))]
+    const CHILD_HOME_FIXTURE: (&str, &str) = ("HOME", "/srv/agy");
 
     const ALL_AGENT_TYPES: [AgentType; 13] = [
         AgentType::ClaudeCode,

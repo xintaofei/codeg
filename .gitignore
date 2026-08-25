@@ -55,3 +55,9 @@ src-tauri/binaries/
 
 # pnpm local store (pnpm 11+)
 .pnpm-store/
+
+# ZCode session artifacts
+.zcode/
+
+# PK Arena temporary worktrees
+.codeg-pk/

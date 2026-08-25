@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "ウィンドウズーム",
-      "sectionDescription": "インターフェイス全体を拡大・縮小します。すぐに反映され、デバイスごとに保存されます。",
+      "sectionDescription": "インターフェイス全体を拡大・縮小します。すぐに反映され、デバイスごとに保存されます。⌘/Ctrl + と - で、このメニューと同じ段階で拡大縮小します（⌘/Ctrl 0 で 100% に戻します）。",
       "placeholder": "ズームレベルを選択",
       "default": "デフォルト",
       "current": "現在のズーム：{zoom}%"
@@ -181,6 +181,7 @@
       "chooseImage": "画像を選択",
       "replaceImage": "画像を変更",
       "removeImage": "削除",
+      "formatHint": "PNG・JPEG・WebP・GIF に対応しています。アニメーション画像は自動で再生されます。",
       "fillMode": "表示方法",
       "fillModes": {
         "cover": "全体を覆う",
@@ -194,13 +195,18 @@
       "panelOpacity": "パネルの不透明度",
       "panelOpacityHint": "サイドバー・パネル・タブバーの不透明度です。低いほど画像が透けて見えます。",
       "errorTooLarge": "画像が大きすぎます（最大 16 MB）。",
+      "errorUnsupportedFormat": "対応していない画像形式です。PNG・JPEG・WebP・GIF から選んでください。",
       "errorUploadFailed": "背景画像の設定に失敗しました。"
     }
   },
   "SystemSettings": {
     "loading": "読み込み中...",
     "sectionTitle": "システム管理",
-    "sectionDescription": "ネットワークプロキシ、アプリ更新、言語設定を管理します。",
+    "sectionDescription": "アプリ更新、ログイン時の起動、ネットワークプロキシ、言語設定を管理します。",
+    "autostartTitle": "ログイン時に起動",
+    "autostartDescription": "このコンピューターにサインインすると自動的に起動します。",
+    "autostartSaveFailed": "ログイン時に起動する設定の保存に失敗しました: {message}",
+    "autostartUnavailable": "このコンピューターのスタートアップ登録状態を読み取れませんでした: {message}",
     "proxyTitle": "ネットワークプロキシ",
     "proxyDescription": "有効にすると、以降のネットワークリクエストはこのプロキシを優先して使用します（ACP チャット、エージェントのインストール、Git リモート操作を含む）。",
     "loadFailed": "読み込みに失敗しました: {message}",
@@ -353,6 +359,7 @@
     "resetDefault": "デフォルトに戻す",
     "recordInstruction": "右側のボタンをクリックしてからキーの組み合わせを押してください。Ctrl/Cmd、Alt、Shift が使用できます。Esc で記録をキャンセルします。",
     "recording": "ショートカットを入力...",
+    "unassigned": "未割り当て",
     "toasts": {
       "conflict": "ショートカットはすでに「{title}」で使用されています",
       "updated": "ショートカットを更新しました",
@@ -423,6 +430,18 @@
       "toggle_custom_style": {
         "title": "カスタムスタイルの停止/再開",
         "description": "緊急脱出用: カスタム配色と CSS をすべてオフにし、再度押すと元に戻します"
+      },
+      "zoom_in": {
+        "title": "拡大",
+        "description": "ウィンドウの表示倍率を一段階上げます"
+      },
+      "zoom_out": {
+        "title": "縮小",
+        "description": "ウィンドウの表示倍率を一段階下げます"
+      },
+      "zoom_reset": {
+        "title": "ズームをリセット",
+        "description": "ウィンドウのズームを 100% に戻します"
       }
     }
   },
@@ -814,6 +833,33 @@
       "advancedHint": "settings.json 全体です。保存するとそのまま書き込まれ、キーを削除できる唯一の手段でもあります。",
       "saveRawConfig": "ファイルを保存"
     },
+    "antigravity": {
+      "configDescription": "Antigravity needs an authentication method before it can start a session. The choice is written to auth.type in $GEMINI_HOME/antigravity-acp/settings.json, which is the only place the ACP server looks — without it every new session fails with \"Authentication required\". Model and session mode are not here: Antigravity reports them over ACP, so the composer's own selectors own them per session.",
+      "methodLabel": "Authentication method",
+      "methods": {
+        "oauth-personal": "Sign in with Google",
+        "oauth-business": "Gemini Enterprise",
+        "gemini-api-key": "Gemini API key",
+        "agent-platform": "Gemini Enterprise Agent Platform"
+      },
+      "methodHints": {
+        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused.",
+        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser.",
+        "gemini-api-key": "A key for the Gemini Developer API, passed to the agent as GEMINI_API_KEY.",
+        "agent-platform": "Formerly Vertex AI. Use an API key, or a project and location with Application Default Credentials (gcloud auth application-default login)."
+      },
+      "geminiApiKeyLabel": "Gemini API key",
+      "googleApiKeyLabel": "Google API key",
+      "googleApiKeyHint": "Optional. When set it is used on its own — the project and location below are ignored. Leave it empty to authenticate with Application Default Credentials instead.",
+      "gcpProjectLabel": "GCP project",
+      "gcpLocationLabel": "GCP location",
+      "missingGeminiApiKey": "Enter a Gemini API key, or pick a different authentication method — sessions will fail to start without it.",
+      "missingAgentPlatformConfig": "Enter an API key, or both a project and a location — sessions will fail to start without one of the two.",
+      "missingEnterpriseConfig": "Gemini Enterprise needs both a project and a location.",
+      "settingsFileHint": "Saved to auth.type in this file. Any other keys you put there are preserved.",
+      "syncSkipped": "Your choice was saved, but codeg could not write it to the ACP server's settings.json, so Antigravity will keep authenticating the way that file says. Set auth.type in it yourself, or move it aside and save again.",
+      "save": "Save"
+    },
     "deepseek": {
       "configManagement": "DeepSeek Harness の設定",
       "configDescription": "エンドポイントと API キーは deepseek-acp が起動時に読み込む環境変数です。モデルと推論レベルはセッションごとのセレクターなので、入力欄で切り替えます。",
@@ -836,6 +882,9 @@
       "enableWebsocketAria": "Codex Provider の WebSocket を有効化",
       "enableSkills": "Skills を有効化",
       "enableSkillsAria": "Codex の Skills を有効化",
+      "enableDefaultModeRequestUserInput": "デフォルトモードでの質問を許可",
+      "enableDefaultModeRequestUserInputAria": "デフォルトモードで Codex が質問できるようにする",
+      "enableDefaultModeRequestUserInputHint": "Codex の request_user_input ツールは既定では Plan モードでしか使えません。有効にすると通常のターンでも質問できるようになります。~/.codex/config.toml の [features].default_mode_request_user_input に書き込まれます。このフラグは上流ではまだ開発中です。次のセッションから反映されます。",
       "enableFast": "Fast を有効化",
       "enableFastAria": "Codex の Fast サービスティアを有効化",
       "sandboxGroupTitle": "サンドボックスと承認",
@@ -1263,7 +1312,10 @@
       "piBinaryUninstallFailed": "pi のアンインストールに失敗しました",
       "savePiTrustFailed": "ワークスペースの信頼設定の保存に失敗しました",
       "qoderSaved": "Qoder の設定を保存しました",
-      "saveQoderConfigFailed": "Qoder の設定の保存に失敗しました"
+      "saveQoderConfigFailed": "Qoder の設定の保存に失敗しました",
+      "antigravitySaved": "Antigravity config saved",
+      "antigravitySyncSkipped": "Saved, but Antigravity's settings.json was left alone",
+      "saveAntigravityConfigFailed": "Failed to save Antigravity config"
     },
     "version": {
       "statusLabel": "バージョン状態",
@@ -1441,11 +1493,7 @@
   "GeneralSettings": {
     "loading": "読み込み中...",
     "sectionTitle": "一般",
-    "sectionDescription": "ログイン時の起動、デフォルトターミナル、レンダリング高速化、マルチエージェント委譲などの共通設定をここで一括管理します。",
-    "autostartTitle": "ログイン時に起動",
-    "autostartDescription": "このコンピューターにサインインしたあと、codeg を自動的に起動します。",
-    "autostartSaveFailed": "ログイン時に起動する設定の保存に失敗しました: {message}",
-    "autostartUnavailable": "このシステムからログイン項目の登録状態を取得できませんでした: {message}",
+    "sectionDescription": "デフォルトターミナル、レンダリング高速化、通知音、マルチエージェント委譲などの共通設定をここで一括管理します。",
     "terminalTitle": "デフォルトターミナル",
     "terminalDescription": "ターミナルバーやファイルツリーから新しいターミナルタブを開くときに使用するシェルを選択します。エージェントが codeg にコマンドライン全体の実行を依頼するときにも使われます。",
     "terminalSystemDefault": "システムデフォルト",
@@ -1626,9 +1674,11 @@
       "openFolder": "フォルダを開く",
       "searchPlaceholder": "会話を検索...",
       "viewOptions": "表示オプション",
+      "listOptions": "会話リスト",
       "showCompleted": "完了した会話を表示",
       "showWorktrees": "ワークツリーフォルダを表示",
       "showRecent": "「最近」グループを表示",
+      "navigationItems": "ナビゲーション項目",
       "moreOptions": "その他のオプション",
       "sortBy": "並び替え",
       "sortByCreatedAt": "作成時刻順",
@@ -1693,8 +1743,17 @@
       "sectionFolders": "フォルダ",
       "sectionChats": "チャット",
       "sectionRecent": "最近",
+      "sectionPk": "PKアリーナ",
       "noChats": "チャットがありません",
       "noRecent": "最近の会話はありません",
+      "noPk": "PKセッションはありません",
+      "pkOpenArena": "Open this PK arena",
+      "pkArchive": "Archive the PK round",
+      "pkArchiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
+      "pkArchiveSuccess": "PK round archived",
+      "pkArchiveFailed": "Archive failed: {message}",
+      "pkExpand": "Expand agent sessions",
+      "pkCollapse": "Collapse agent sessions",
       "showMoreRecent": "さらに表示（{count}）",
       "noFolders": "開いているフォルダがありません",
       "newChatAction": "新しいチャット",
@@ -1820,7 +1879,8 @@
       "search": "検索",
       "openSettings": "設定を開く",
       "backToConversations": "会話に戻る",
-      "withShortcut": "{label}（{shortcut}）"
+      "withShortcut": "{label}（{shortcut}）",
+      "pkArena": "エージェントPKアリーナ"
     },
     "statusBar": {
       "connection": {
@@ -2665,6 +2725,8 @@
           "nextRetryIn": "{seconds}秒後に再試行",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}、{delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}、{delay}",
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "{agent} は{option}を {requested} ではなく {actual} にしました"
@@ -2755,7 +2817,8 @@
         "mentionGroupAgent": "エージェント",
         "mentionGroupSession": "セッション",
         "mentionGroupCommit": "コミット",
-        "mentionGroupSkill": "スキル"
+        "mentionGroupSkill": "スキル",
+        "startPk": "エージェントPK"
       },
       "messageQueue": {
         "addToQueue": "キューに追加",
@@ -2987,6 +3050,9 @@
         "selectionCopied": "コピーしました",
         "selectionCopyFailed": "コピーに失敗しました",
         "selectionQuote": "引用",
+        "selectionAsk": "質問",
+        "selectionAskPlaceholder": "選択範囲について質問…",
+        "selectionAskSubmit": "新規会話で質問する",
         "downloadImage": "画像をダウンロード",
         "copyImage": "画像をコピー",
         "copiedImage": "画像をコピーしました",
@@ -3437,7 +3503,11 @@
       "hunkLabel": "ハンク {index}",
       "loadingHunk": "Hunk を読み込み中...",
       "noDiffData": "Diff データがありません",
-      "showRemainingLines": "残り {count} 行を表示"
+      "showRemainingLines": "残り {count} 行を表示",
+      "viewMode": {
+        "split": "左右分割ビューに切り替え",
+        "unified": "インラインビューに切り替え"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "作業フォルダ",
@@ -4570,6 +4640,7 @@
     "actionEdit": "編集",
     "actionDelete": "削除",
     "actionRetryCleanup": "クリーンアップを再試行",
+    "actionDeleteWorktree": "worktree を削除",
     "actionMerge": "マージ",
     "actionUnqueueMerge": "マージ待ちを取り消す",
     "actionEditQueuedMerge": "待機中のマージを編集",
@@ -4663,6 +4734,8 @@
     "strategySquashHint": "タスクのすべての変更が1件の履歴としてメインブランチに取り込まれ、履歴がすっきりします。",
     "strategyMerge": "履歴をすべて残す",
     "strategyMergeHint": "タスク中の各コミットをそのまま残し、マージの記録を1件追加します。各ステップを追跡できます。",
+    "mergeInstructions": "追加の指示（任意）",
+    "mergeInstructionsPlaceholder": "例: 競合時はこのブランチ側を優先",
     "mergeDeleteWorktree": "マージ後に worktree を削除",
     "mergeSubmit": "マージ",
     "mergeSubmitQueue": "マージ待ちに追加",
@@ -4693,8 +4766,6 @@
     "settingsAutoMergeHint": "レビュー待ちに達しマージできる変更があるタスクは、「マージ」を押したときと同じように自動で取り込まれます。コミットメッセージはエージェントが生成し、worktree の扱いは下の既定に従います。プリフライトが赤のタスクやマージに失敗したタスクはそのまま残ります。",
     "settingsDeleteWorktree": "マージ後に worktree を削除",
     "settingsDeleteWorktreeHint": "マージ画面で既定でオンになります。その場で変更もできます。",
-    "settingsForgeWriteback": "完了時にコメントを書き戻す",
-    "settingsForgeWritebackHint": "Issue や PR から始まったタスクが完了すると、codeg がその場に 1 件だけコメントします。結果・リンク・差分の数値のみで、エージェントが書いた文章は一切含みません。他人が見ている場所への書き込みなので既定はオフです。",
     "settingsWorktreeRoot": "Worktree の作成先",
     "settingsWorktreeRootHint": "新しいタスクの worktree をこのディレクトリ配下にタスクごとに作成します。空欄ならプロジェクトフォルダーと同じ階層に作成されます。「~」はホームディレクトリ、相対パスはプロジェクトフォルダー基準です。",
     "settingsWorktreeRootPlaceholder": "~/codeg-worktrees",
@@ -4746,6 +4817,8 @@
     "deleteConfirmTitle": "タスクを削除しますか？",
     "deleteConfirmBody": "「{title}」をボードから削除します。実行中の場合は先にキャンセルされます。",
     "deleteWithWorktree": "worktree も削除する",
+    "deleteWorktreeConfirmTitle": "worktree を削除しますか？",
+    "deleteWorktreeConfirmBody": "worktree のディレクトリと作業ブランチを完全に削除します。タスクはボードに残り、会話はプロジェクトのフォルダへ移動します。",
     "eventCreated": "作成",
     "eventStatusChanged": "ステータス変更",
     "eventConfigEffective": "起動構成",
@@ -4775,6 +4848,7 @@
     "deliverPrTitleLabel": "プルリクエストのタイトル",
     "deliverPrTitleLabelMr": "マージリクエストのタイトル",
     "deliverPrDraft": "ドラフトとして作成",
+    "deliverPrDeleteWorktree": "デリバリー後に worktree を削除",
     "deliverPrSubmit": "プッシュして作成",
     "deliverPrSubmitting": "プッシュ中…",
     "deliverPrDone": "プルリクエストを作成しました",
@@ -4784,6 +4858,7 @@
     "deliverPrBackTitleMr": "マージリクエストに戻す",
     "deliverPrBackDescription": "このタスクのコミットを {repo}#{number} のヘッドブランチ {branch} に push します。新しく作るものはありません。既にあるレビューにそのまま反映されます。",
     "deliverPrBackDescriptionMr": "このタスクのコミットを {repo}!{number} のソースブランチ {branch} に push します。新しく作るものはありません。既にあるレビューにそのまま反映されます。",
+    "deliverPrBackDeleteWorktree": "プッシュ後に worktree を削除",
     "deliverPrBackSubmit": "push",
     "deliverPrBackDone": "プルリクエストに push しました",
     "deliverPrBackDoneMr": "マージリクエストに push しました"
@@ -5066,6 +5141,179 @@
     "loadFailed": "使用量を読み込めませんでした",
     "truncatedNotice": "期間が非常に長いため、表示中の数値は直近の一部のみを対象としています。"
   },
+  "PkArena": {
+    "launcher": {
+      "title": "エージェントPK",
+      "description": "同じタスクを複数のエージェントに同時に送り、結果を比較します",
+      "contestantsLabel": "出場者（{min}～{max}体）",
+      "noFolderHint": "アリーナには git リポジトリのフォルダが必要です。先に開いてください。",
+      "needMore": "対戦を開始するには最低 {count} 体選択してください。",
+      "taskLabel": "タスク",
+      "taskPlaceholder": "全出場者が受け取る同じタスク。例:「HTML ファイル1つでスネークゲームを作って」",
+      "selectedCount": "{selected}/{max} 選択中(最小 {min})",
+      "cancel": "キャンセル",
+      "start": "対戦開始",
+      "notAGitRepo": "このフォルダは git リポジトリではありません。アリーナは各出場者に隔離されたワークツリーを与えるためにリポジトリが必要です。",
+      "initGitRepo": "git init",
+      "initializing": "初期化中…",
+      "permissionLabel": "権限",
+      "permissionOptions": {
+        "default": "毎回確認",
+        "acceptEdits": "編集を自動許可",
+        "bypassPermissions": "完全自動"
+      },
+      "permissionHints": {
+        "default": "承認のたびに出場者が停止",
+        "acceptEdits": "ファイル編集は確認なし",
+        "bypassPermissions": "承認ダイアログなし"
+      },
+      "permissionNote": "ラウンド開始時に各出場者へ適用。未対応のエージェントは引き続き確認します。",
+      "bareModeLabel": "ベアモード(スキル無効)",
+      "bareModeHint": "出場者は基本機能のみ使用。グローバル・プロジェクトのスキルは使用禁止。",
+      "effortLabel": "思考レベル(全出場者統一)",
+      "effortOptions": {
+        "default": "デフォルト",
+        "low": "低",
+        "medium": "中",
+        "high": "高",
+        "max": "最大"
+      },
+      "effortNote": "各エージェントが通告する最寄りのレベルを適用。未対応はデフォルトのまま。",
+      "agentNotReady": "{agent} が未準備です(先に設定でインストール)。",
+      "agentCheckFailed": "{agent} を確認できませんでした。",
+      "templates": {
+        "pelican": "ペリカン",
+        "bouncingBall": "ボール",
+        "jellyBlob": "ゼリー",
+        "snake": "スネーク",
+        "flappyBird": "Flappy Bird",
+        "voiceChat": "音声チャット",
+        "blackHole": "ブラックホール"
+      },
+      "judgeLabel": "審査員(任意)",
+      "judgeNone": "審査員なし",
+      "judgeHint": "全選手の完了後、審査員エージェントが各選手の diff を読み、構造化された評価とランキングを生成します。",
+      "startPoint": "📍 開始点",
+      "fromHead": "現在の HEAD から",
+      "startPointHint": "選手はこのコミットの前から開始し、このコミットの変更を見ず、メッセージをタスクとして独立して再現します。",
+      "loadingCommits": "コミットを読み込み中…",
+      "noCommits": "コミットが見つかりません。",
+      "creativeTemplates": "クリエイティブテンプレート",
+      "realEngineering": "リアルエンジニアリング",
+      "loadMore": "もっと読み込む",
+      "judgeDimensionsLabel": "評価 dimension（任意）",
+      "judgeDimensionsPlaceholder": "正確性 — タスクを満たすか?\nコード品質 — 可読性・構造・エッジケース\n完成度 — どの程度完了したか?\n効率 — コード効率（token/時間は除外）",
+      "judgeDimensionsHint": "1 行 1 dimension。空欄でデフォルト使用。",
+      "addContestant": "{agent} を選手として追加",
+      "slotLabelPlaceholder": "ラベル(例: Sonnet、Opus)",
+      "slotNumber": "出場者 {number}",
+      "modelLoading": "モデルを読み込み中…",
+      "modelUnavailable": "このエージェントはデフォルトモデルを使用します",
+      "modelLoadFailed": "モデルを読み込めませんでした",
+      "retryModelLoad": "モデルを再読み込み",
+      "removeSlot": "この選手スロットを削除"
+    },
+    "scoreboard": {
+      "status": {
+        "preparing": "準備中",
+        "connecting": "接続中",
+        "running": "実行中",
+        "done": "完了",
+        "error": "失敗",
+        "canceled": "キャンセル済み",
+        "ready": "準備完了"
+      },
+      "tokensUnit": "tok",
+      "tokensUnavailable": "Token not reported",
+      "tokensUnavailableHint": "This agent did not return token usage; this does not mean zero tokens.",
+      "turnsUnit": "ターン"
+    },
+    "history": {
+      "title": "Round history",
+      "hint": "Search, open, and archive complete rounds.",
+      "trigger": "History {count}",
+      "searchPlaceholder": "Search tasks or agents…",
+      "empty": "No matching rounds",
+      "agents": "{count} agents",
+      "archive": "Archive round",
+      "archiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
+      "archiveSuccess": "PK round archived",
+      "archiveFailed": "Archive failed: {message}",
+      "status": {
+        "ready": "Ready",
+        "running": "Running",
+        "finished": "Finished",
+        "canceled": "Canceled",
+        "interrupted": "Interrupted"
+      }
+    },
+    "arena": {
+      "title": "エージェントPKアリーナ",
+      "description": "1つのタスク、複数のエージェント、横並び対決",
+      "roundStatus": {
+        "running": "進行中",
+        "finished": "終了",
+        "canceled": "キャンセル済み",
+        "interrupted": "再起動により中断",
+        "ready": "準備完了"
+      },
+      "roundPicker": "ラウンド",
+      "cancelRound": "ラウンドをキャンセル",
+      "cleanupWorktrees": "ワークツリーを削除",
+      "cleanupHint": "出場者のワークツリーを削除します(ブランチは保持)",
+      "share": "共有",
+      "sharing": "書き出し中…",
+      "tabs": {
+        "battle": "対戦",
+        "diff": "Diff"
+      },
+      "preparing": "出場者を準備中…",
+      "noRound": "ラウンド未選択",
+      "contestantsUnit": "体",
+      "newRound": "新しいラウンド",
+      "startMatch": "対戦開始",
+      "readyNote": "各出場者のモデルと思考レベルを選んでから対戦開始。",
+      "modelLabel": "モデル",
+      "effortLabel": "思考レベル",
+      "effortUnsupported": "このエージェントは思考レベル設定に対応していないため、既定値を使用します",
+      "effortOptions": {
+        "off": "オフ",
+        "minimal": "最小",
+        "low": "低",
+        "medium": "中",
+        "high": "高",
+        "max": "最大"
+      },
+      "minimize": "最小化",
+      "exportReport": "レポートをエクスポート",
+      "exporting": "生成中…",
+      "shareReport": "Save / share report",
+      "reportSaved": "HTML report saved",
+      "reportFailed": "Report export failed: {message}",
+      "persistenceFailed": "一部のラウンド状態を保存できませんでした。ページを閉じる前に操作を再試行してください。",
+      "retrySave": "保存を再試行",
+      "readyTag": "準備完了",
+      "deleteRound": "削除",
+      "deleteConfirm": "このラウンドを削除?ワークツリーは残ります(「ワークツリーを削除」で除去)",
+      "followUp": "追加",
+      "followUpPlaceholder": "この選手にのみ追加メッセージを送信(⌘↩ で送信)"
+    },
+    "diff": {
+      "loading": "diff を読み込み中…",
+      "empty": "このワークツリーに変更はありません"
+    },
+    "judge": {
+      "title": "審査員の評決",
+      "running": "評価中…",
+      "error": "審査員が失敗しました",
+      "rerun": "再評価"
+    },
+    "minimized": {
+      "restore": "アリーナに戻る",
+      "live": "PK 実行中",
+      "dismiss": "非表示"
+    }
+  },
   "Forge": {
     "title": "リポジトリパネル",
     "pickFolder": "プロジェクトフォルダを選択",
@@ -5112,12 +5360,18 @@
     "incompleteResults": "検索がタイムアウトしたため、このページには漏れがある可能性があります。",
     "reachableCap": "ページをたどれるのは先頭の {count} 件までです。残りは絞り込んでから確認してください。",
     "openRepo": "リポジトリを開く",
+    "openItem": "ブラウザーで開く",
+    "detailDescription": "この項目の説明と、実行できる操作。",
+    "detailUpdated": "更新 {time}",
+    "detailNoBody": "説明はありません",
     "stateFilter": "状態",
     "emptyPage": "このページには何もありません",
     "dialogDescription": "{repo} のフォルダに ToDo タスクを作成します。エージェントは独立したワークツリーで作業し、レビュー後に反映されます。",
     "dialogDescriptionPr": "{repo} のフォルダーに ToDo タスクを作成し、ワークツリーをこのプルリクエストのヘッドにチェックアウトします。エージェントのコミットはその上に積まれ、承認すると同じプルリクエストに push されます。",
     "dialogDescriptionMr": "{repo} のフォルダーに ToDo タスクを作成し、ワークツリーをこのマージリクエストのヘッドにチェックアウトします。エージェントのコミットはその上に積まれ、承認すると同じマージリクエストに push されます。",
     "instructionPlaceholder": "エージェントへの補足指示（任意）…",
+    "writebackLabel": "完了時にこの項目へコメントする",
+    "writebackHint": "タスクが完了すると、この項目に 1 件コメントします。結果・リンク・差分の行数です。",
     "previewToggle": "タスクに含まれる Issue 内容をプレビュー",
     "previewEmpty": "（説明なし）",
     "duplicateBody": "この項目はすでにアクティブなタスクが対応中です：{title}（{status}）。それでも作成しますか？",
@@ -5126,6 +5380,38 @@
     "create": "タスクを作成",
     "creating": "作成中…",
     "createAnyway": "それでも作成",
-    "viewExisting": "既存のタスクを表示"
+    "viewExisting": "既存のタスクを表示",
+    "scenarioLabel": "処理方法",
+    "scenarioFix": "修正・実装する",
+    "scenarioFixHint": "エージェントはまずワークツリーで問題が実在することを確認し、それから修正します。確認できなければコードを変えずに結果を報告します。",
+    "scenarioPlanFirst": "まず計画",
+    "scenarioPlanFirstHint": "問題が実在することを確認したうえで実装計画を出し、そこで停止します。確認後にタスクを差し戻すと同じワークツリーで実装します。",
+    "scenarioReviewFix": "レビューして修正",
+    "scenarioReviewFixHint": "変更をレビューして問題をその場で修正。承認するとコミットが元のブランチへプッシュされます。",
+    "scenarioReviewOnly": "レビューのみ",
+    "scenarioReviewOnlyHint": "指摘と提案をまとめたレビューレポートのみで、コミットはしません。修正させたい場合はタスクを差し戻します。",
+    "settingsTitle": "パネル設定",
+    "settingsDescription": "{folder} の Issue と変更の扱い方。",
+    "settingsScope": "適用範囲",
+    "settingsScopeGlobal": "すべてのフォルダ（グローバル既定）",
+    "settingsScopeGlobalHint": "個別設定のないフォルダはこのグローバル既定を使います。",
+    "settingsSource": "設定ソース",
+    "settingsSourceGlobal": "グローバル既定",
+    "settingsSourceCustom": "個別設定",
+    "settingsSourceCustomHint": "このフォルダ専用の設定を保存し、グローバル既定には従わなくなります。",
+    "settingsSourceGlobalFollow": "全体のパネル設定に従います。全体側の変更はここにも自動で反映されます。",
+    "settingsIssueDefault": "Issue の既定の処理方法",
+    "settingsIssueDefaultHint": "Issue の処理ダイアログを開いたときに選択済みになる方法です。",
+    "settingsPrDefault": "PR / MR の既定の処理方法",
+    "settingsPrDefaultHint": "PR または MR の処理ダイアログを開いたときに選択済みになる方法です。",
+    "settingsWritebackDefault": "既定でコメントを書き戻す",
+    "settingsWritebackDefaultHint": "処理ダイアログにあるスイッチの初期状態です。項目ごとに変更できます。",
+    "settingsPromptsIntro": "常設の指示は、選んだシナリオの組み込み文の後ろ、処理ダイアログで入力した補足の前に追加されます（組み込み文をここで繰り返す必要はありません）。付くのはタスクの最初のターンだけです。毎ターン必要な文はタスク設定のプロンプトに書いてください。",
+    "settingsPromptsLabel": "シナリオ",
+    "settingsPromptAll": "すべてのシナリオ",
+    "settingsPromptAllHint": "シナリオを問わず、このパネルが作るすべてのタスクに付きます。",
+    "settingsPromptScenarioHint": "このシナリオで作られたタスクにだけ付きます。",
+    "settingsPromptPlaceholder": "例：日本語で回答する。終了前にプロジェクトのテストを実行する。",
+    "save": "保存"
   }
 }

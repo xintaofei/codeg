@@ -129,6 +129,10 @@ pub struct MergeParams {
     #[serde(default)]
     pub message: Option<String>,
     pub delete_worktree: bool,
+    /// Extra directions for the merge agent; absent from every client that
+    /// predates the field, which is what `default` covers.
+    #[serde(default)]
+    pub instructions: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -147,6 +151,11 @@ pub struct DeliverPrParams {
     pub pr_title: Option<String>,
     #[serde(default)]
     pub draft: bool,
+    /// Take the checkout along once the delivery lands. Defaults to `false`,
+    /// so a client that predates the field keeps its worktree — the harmless
+    /// half of a choice nobody made.
+    #[serde(default)]
+    pub delete_worktree: bool,
 }
 
 #[derive(Deserialize)]
@@ -352,9 +361,14 @@ pub async fn work_task_cancel(
 pub async fn work_task_merge(
     Json(params): Json<MergeParams>,
 ) -> Result<Json<bool>, AppCommandError> {
-    let queued = core::work_task_merge_core(params.id, params.message, params.delete_worktree)
-        .await
-        .map_err(AppCommandError::from)?;
+    let queued = core::work_task_merge_core(
+        params.id,
+        params.message,
+        params.delete_worktree,
+        params.instructions,
+    )
+    .await
+    .map_err(AppCommandError::from)?;
     Ok(Json(queued))
 }
 
@@ -373,9 +387,14 @@ pub async fn work_task_merge_unqueue(
 pub async fn work_task_deliver_pr(
     Json(params): Json<DeliverPrParams>,
 ) -> Result<Json<String>, AppCommandError> {
-    let url = core::work_task_deliver_pr_core(params.id, params.pr_title, params.draft)
-        .await
-        .map_err(AppCommandError::from)?;
+    let url = core::work_task_deliver_pr_core(
+        params.id,
+        params.pr_title,
+        params.draft,
+        params.delete_worktree,
+    )
+    .await
+    .map_err(AppCommandError::from)?;
     Ok(Json(url))
 }
 

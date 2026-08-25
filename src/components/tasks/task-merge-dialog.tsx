@@ -57,6 +57,7 @@ export function TaskMergeDialog({
   const t = useTranslations("Tasks")
   const [autoMessage, setAutoMessage] = useState(true)
   const [message, setMessage] = useState("")
+  const [instructions, setInstructions] = useState("")
   const [deleteWorktree, setDeleteWorktree] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -72,6 +73,7 @@ export function TaskMergeDialog({
   // to change one thing must not silently discard the commit message and the
   // worktree choice made when it was queued.
   const queuedMessage = task?.merge_queued?.message ?? null
+  const queuedInstructions = task?.merge_queued?.instructions ?? null
   const queuedDeleteWorktree = task?.merge_queued?.delete_worktree ?? null
 
   useEffect(() => {
@@ -81,6 +83,7 @@ export function TaskMergeDialog({
     /* eslint-disable react-hooks/set-state-in-effect */
     setAutoMessage(queuedMessage == null)
     setMessage(queuedMessage ?? seedMessage)
+    setInstructions(queuedInstructions ?? "")
     setSubmitting(false)
     setError(null)
     if (queuedDeleteWorktree != null) {
@@ -101,7 +104,15 @@ export function TaskMergeDialog({
       cancelled = true
     }
     /* eslint-enable react-hooks/set-state-in-effect */
-  }, [open, taskId, folderId, seedMessage, queuedMessage, queuedDeleteWorktree])
+  }, [
+    open,
+    taskId,
+    folderId,
+    seedMessage,
+    queuedMessage,
+    queuedInstructions,
+    queuedDeleteWorktree,
+  ])
 
   // "Will be queued" as far as the client can tell. The engine re-checks under
   // the project's git lock, and the call reports what actually happened.
@@ -115,7 +126,8 @@ export function TaskMergeDialog({
       const queued = await workTaskMerge(
         task.id,
         autoMessage ? null : message.trim(),
-        deleteWorktree
+        deleteWorktree,
+        instructions.trim() || null
       )
       onOpenChange(false)
       // Only the queued outcome needs saying: a started merge is already
@@ -157,6 +169,26 @@ export function TaskMergeDialog({
             </p>
           ) : null}
 
+          {/* First, and above the two checkboxes: this is the only field that
+              takes free text about THIS landing, and the one the user is most
+              likely to have come here to fill. Optional all the same — it never
+              gates the button, because the standing recipe lands the task on
+              its own and an empty box just means "do that". */}
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="task-merge-instructions">
+              {t("mergeInstructions")}
+            </Label>
+            <Textarea
+              id="task-merge-instructions"
+              value={instructions}
+              onChange={(e) => setInstructions(e.target.value)}
+              placeholder={t("mergeInstructionsPlaceholder")}
+              rows={2}
+            />
+          </div>
+
+          {/* The two options, kept adjacent — splitting them around a text box
+              read as two unrelated sections rather than one set of choices. */}
           <Label className="text-sm font-normal">
             <Checkbox
               checked={autoMessage}

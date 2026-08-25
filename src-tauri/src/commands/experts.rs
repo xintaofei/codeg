@@ -805,6 +805,7 @@ fn supported_agents() -> Vec<AgentType> {
         AgentType::Cursor,
         AgentType::DeepSeek,
         AgentType::Qoder,
+        AgentType::Antigravity,
     ];
     // Custom agents that declared the shared skills store join the built-in
     // set — the same `skill_storage_spec` gate every skills surface uses, so

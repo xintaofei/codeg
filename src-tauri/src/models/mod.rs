@@ -7,6 +7,7 @@ pub mod folder;
 pub mod message;
 pub mod model_provider;
 pub mod pet;
+pub mod pk_round;
 pub mod quick_message;
 pub mod remote_workspace_connection;
 pub mod search;
@@ -36,6 +37,7 @@ pub use message::{
     TurnRole, TurnUsage, UnifiedMessage,
 };
 pub use quick_message::QuickMessageInfo;
+pub use pk_round::{PkRoundConfig, PkRoundInfo};
 pub use remote_workspace_connection::RemoteWorkspaceConnectionInfo;
 pub use search::{
     DbConversationSearchResult, SearchIndexStatus, SearchMatchLocation, SearchMatchLocationKind,
@@ -50,7 +52,7 @@ pub use work_task::{
     FollowUpIntent, WorkTaskChangedFile, WorkTaskConfig, WorkTaskDraft, WorkTaskEventInfo,
     WorkTaskFolderSettings, WorkTaskInfo, WorkTaskMergeOp, WorkTaskMergeState, WorkTaskPreflight,
     WorkTaskQueuedMerge, WorkTaskSource, WorkTaskStatus, WorkTaskTemplateDraft,
-    WorkTaskTemplateInfo, STAGE_PROMPT_ALL,
+    WorkTaskTemplateInfo, DELIVERABLE_REPORT, STAGE_PROMPT_ALL,
 };
 #[cfg(feature = "tauri-runtime")]
 pub use system::{SystemAutostartSettings, SystemRenderingSettings};

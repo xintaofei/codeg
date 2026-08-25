@@ -23,7 +23,9 @@ import type {
   ForgeCreateResult,
   ForgeIssueList,
   ForgeLabelList,
+  ForgePanelSettings,
   ForgeRemote,
+  ForgeSettingsStore,
   ForgeSort,
   ForgeTab,
   ForgeTaskDraftInput,
@@ -157,6 +159,10 @@ import type {
   TokenUsageReport,
   TokenUsageSyncResult,
   TokenUsageSyncStatus,
+  PkRoundConfig,
+  PkRoundInfo,
+  PkRoundStatus,
+  PkJudgeResultDto,
 } from "./types"
 
 export async function listConversations(params?: {
@@ -809,6 +815,35 @@ export type PiProjectTrustState = {
    * the backend refuses to launch pi there until it is answered.
    */
   acknowledged: boolean
+}
+
+/**
+ * What one settings.json sync did. Mirrors `AntigravitySyncReport` in
+ * src-tauri/src/acp/connection.rs.
+ *
+ * `skipped` is the one that matters: the file was left as it was, so the
+ * agent's auth is NOT what the panel now shows, and `reason` says why in the
+ * same words the log uses.
+ */
+export type AntigravitySyncReport = {
+  path: string
+  status: "written" | "already_current" | "skipped"
+  reason: string | null
+}
+
+/**
+ * Write the saved Antigravity auth choice into the ACP server's settings.json
+ * and report what happened.
+ *
+ * Call it right after saving the env row. The row is not what authenticates
+ * Antigravity — `<GEMINI_HOME>/antigravity-acp/settings.json` is — and the file
+ * can legitimately refuse to be rewritten (Hjson with comments, an `auth` key
+ * that is not an object). Reporting "saved" without asking would be claiming
+ * something that never happened: the launch would go on using the OLD
+ * auth.type with the NEW method's credentials scrubbed out from under it.
+ */
+export async function acpSyncAntigravitySettings(): Promise<AntigravitySyncReport> {
+  return getTransport().call("acp_sync_antigravity_settings", {})
 }
 
 /**
@@ -2115,12 +2150,14 @@ export async function gitNewBranch(
 export async function gitWorktreeAdd(
   path: string,
   branchName: string,
-  worktreePath: string
+  worktreePath: string,
+  base?: string | null
 ): Promise<void> {
   return getTransport().call("git_worktree_add", {
     path,
     branchName,
     worktreePath,
+    base: base ?? undefined,
   })
 }
 
@@ -2314,6 +2351,25 @@ async function openAppWindow(
     throw error
   }
   releaseAppWindow(name)
+}
+
+/** Open a PK round in its own workspace window. The target route reuses the
+ * normal workspace shell; `WorkspacePage` turns the query into a local PK tab
+ * once round hydration completes. */
+export async function openPkRoundWindow(
+  roundId: string,
+  title: string
+): Promise<void> {
+  if (isDesktop()) {
+    return getShellTransport().call("open_pk_round_window", {
+      roundId,
+      title,
+      remoteConnectionId: getActiveRemoteConnectionId(),
+    })
+  }
+  return openAppWindow(`pk-round-${roundId}`, async () => ({
+    path: `/workspace?pkRoundId=${encodeURIComponent(roundId)}`,
+  }))
 }
 
 export async function openMergeWindow(
@@ -2849,6 +2905,20 @@ export async function createConversation(
   })
 }
 
+export async function createPkConversation(
+  folderId: number,
+  agentType: AgentType,
+  pkRoundId: number,
+  title?: string
+): Promise<number> {
+  return getTransport().call("create_pk_conversation", {
+    folderId,
+    agentType,
+    title: title ?? null,
+    pkRoundId,
+  })
+}
+
 /**
  * Create a folderless "chat mode" conversation. The backend lazily creates a
  * dated per-conversation scratch dir and a dedicated hidden chat folder
@@ -3259,12 +3329,14 @@ export async function workTaskCancel(
 export async function workTaskMerge(
   id: number,
   message: string | null,
-  deleteWorktree: boolean
+  deleteWorktree: boolean,
+  instructions: string | null = null
 ): Promise<boolean> {
   return getTransport().call("work_task_merge", {
     id,
     message,
     deleteWorktree,
+    instructions,
   })
 }
 
@@ -3275,13 +3347,24 @@ export async function workTaskMerge(
  *
  *  Unlike the merge dispatch this awaits the WHOLE operation — no agent runs,
  *  just a push and two REST calls — so a rejection is the real reason and the
- *  task is already back in review by the time it surfaces. */
+ *  task is already back in review by the time it surfaces.
+ *
+ *  `deleteWorktree` takes the checkout along once the delivery lands — the
+ *  same offer the merge and complete acceptances make. It rides on the
+ *  delivery: a removal that fails leaves a retryable cleanup mark on the card
+ *  and this call still resolves with the URL. */
 export async function workTaskDeliverPr(
   id: number,
   prTitle: string | null,
-  draft: boolean
+  draft: boolean,
+  deleteWorktree: boolean
 ): Promise<string> {
-  return getTransport().call("work_task_deliver_pr", { id, prTitle, draft })
+  return getTransport().call("work_task_deliver_pr", {
+    id,
+    prTitle,
+    draft,
+    deleteWorktree,
+  })
 }
 
 /** Withdraw a merge waiting in the project's queue; the task stays in review. */
@@ -4888,6 +4971,70 @@ export async function scanExternalConflictsWeb(
   )
 }
 
+// ─── PK Arena Rounds ────────────────────────────────────────────────────────
+
+export async function pkRoundList(
+  folderId?: number | null
+): Promise<PkRoundInfo[]> {
+  return getTransport().call("pk_round_list", { folderId: folderId ?? null })
+}
+
+export async function pkRoundGet(id: number): Promise<PkRoundInfo> {
+  return getTransport().call("pk_round_get", { id })
+}
+
+export async function pkRoundCreate(
+  folderId: number,
+  task: string,
+  config: PkRoundConfig
+): Promise<PkRoundInfo> {
+  return getTransport().call("pk_round_create", { folderId, task, config })
+}
+
+export async function pkRoundUpdateStatus(
+  id: number,
+  status: PkRoundStatus
+): Promise<void> {
+  return getTransport().call("pk_round_update_status", { id, status })
+}
+
+export async function pkRoundDelete(id: number): Promise<void> {
+  return getTransport().call("pk_round_delete", { id })
+}
+
+export async function pkRoundUpdateJudge(
+  id: number,
+  judgeResult: PkJudgeResultDto | null,
+  judgeStatus: string
+): Promise<void> {
+  return getTransport().call("pk_round_update_judge", {
+    id,
+    judgeResult: judgeResult != null ? JSON.stringify(judgeResult) : null,
+    judgeStatus,
+  })
+}
+
+export async function pkRoundSaveReportSnapshot(
+  id: number,
+  snapshot: string
+): Promise<void> {
+  return getTransport().call(
+    "pk_round_save_report_snapshot",
+    { id, snapshot },
+    { timeoutMs: 60_000 }
+  )
+}
+
+export async function pkRoundGetReportSnapshot(
+  id: number
+): Promise<string | null> {
+  return getTransport().call(
+    "pk_round_get_report_snapshot",
+    { id },
+    { timeoutMs: 60_000 }
+  )
+}
+
 // ── Forge workbench (Issues/PR) ────────────────────────────────────────────
 
 /** The folder's `origin` remote parsed into forge coordinates, if any. */
@@ -4998,4 +5145,28 @@ export async function workTaskLookupBySource(
   sourceKeys: string[]
 ): Promise<ForgeTaskLink[]> {
   return getTransport().call("work_task_lookup_by_source", { sourceKeys })
+}
+
+/** The repository panel's preferences, every scope at once. Read once per page
+ *  mount (and again after the settings dialog saves) rather than per trigger:
+ *  the trigger dialog opens from a row click and must not wait on a round trip
+ *  to draw. */
+export async function forgeSettingsGet(): Promise<ForgeSettingsStore> {
+  return getTransport().call("forge_settings_get", {})
+}
+
+/**
+ * Save ONE scope and get back every scope as stored — trimmed, with blank
+ * instructions dropped.
+ *
+ * `folderId = null` writes the global row. `settings = null` drops a folder's
+ * own row so it follows the global one again, which is how "use global
+ * defaults" saves (the global row itself cannot be dropped — there is nothing
+ * behind it).
+ */
+export async function forgeSettingsSet(
+  folderId: number | null,
+  settings: ForgePanelSettings | null
+): Promise<ForgeSettingsStore> {
+  return getTransport().call("forge_settings_set", { folderId, settings })
 }

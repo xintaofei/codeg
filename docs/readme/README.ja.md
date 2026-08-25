@@ -19,7 +19,7 @@
 
 Codeg（Code Generation）はマルチエージェント・コーディングワークスペースです。あらゆる AI コーディングエージェントをひとつの場所で動かし、そして協働させます。
 
-対応するすべてのエージェント CLI のセッションを検索可能なワークスペースへ集約し、ひとつのタスクの中でメインエージェントが別種類のサブエージェントへ委譲できます。付きっきりで見ていたくない作業は ToDo タスクに書いておけば、それぞれが専用のブランチで無人のまま進み、あなたのレビューを待ってから取り込まれます。Codeg はデスクトップアプリ・スタンドアロンサーバー・Docker コンテナのいずれとしても動作し、ネイティブの iOS / Android クライアントもあるのでデスクを離れても作業を続けられます。エージェントは 14 種を内蔵し、ACP 互換の任意のエージェントを自分で登録することもできます。
+対応するすべてのエージェント CLI のセッションを検索可能なワークスペースへ集約し、ひとつのタスクの中でメインエージェントが別種類のサブエージェントへ委譲できます。付きっきりで見ていたくない作業は ToDo タスクに書いておけば、それぞれが専用のブランチで無人のまま進み、あなたのレビューを待ってから取り込まれます。Codeg はデスクトップアプリ・スタンドアロンサーバー・Docker コンテナのいずれとしても動作し、ネイティブの iOS / Android クライアントもあるのでデスクを離れても作業を続けられます。エージェントは 15 種を内蔵し、ACP 互換の任意のエージェントを自分で登録することもできます。
 
 ![ワークスペース](../images/workspace-light.png#gh-light-mode-only)
 ![ワークスペース](../images/workspace-dark.png#gh-dark-mode-only)
@@ -59,13 +59,20 @@ Codeg（Code Generation）はマルチエージェント・コーディングワ
     </td>
     <td>本プロジェクトをスポンサードしてくださった OneHop に感謝します！OneHop を使えば、Codeg ユーザーは OpenAI 互換の API キー 1 つで、GPT、Claude、Gemini、DeepSeek、Kimi、Qwen など数百もの主要モデルを利用できます。複数のプロバイダーアカウントを管理したり、コードを何度も書き換えたりすることなくモデルを切り替えられ、使った分だけの従量課金です。<a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta">Codeg 経由でサインアップ</a>すると $1 分のクレジットが付与され、さらに OneHop コミュニティに参加してウェルカムアクティビティに参加すると追加で $5 分——合計で最大 $6 分のテストクレジットを獲得できます。</td>
   </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://console.lqapi.xyz/sign-up?aff=KPy9" target="_blank"><img src="../images/lq-router.png" alt="LQ router" width="160" /></a><br/>
+      <strong><a href="https://console.lqapi.xyz/sign-up?aff=KPy9">LQ router</a></strong>
+    </td>
+    <td>本プロジェクトをスポンサードしてくださった LQ router 中継サービスに感謝します！LQ router は、個人開発者と技術チーム向けのエンタープライズ級 API 統合ゲートウェイです。GPT、Claude、Grok、Gemini などの主要モデルに接続し、既存のクライアントや OpenAI SDK と互換性があります。動的アカウントプールによるインテリジェントルーティングで、1 つのエンドポイントから複数モデルを呼び出せます。<a href="https://console.lqapi.xyz/sign-up?aff=KPy9">公式サイトからグループに参加すると $1 分の体験クレジットがもらえます</a>。</td>
+  </tr>
 </table>
 
 > Codeg のスポンサーになりませんか？[メールでお問い合わせください。](mailto:itpkcn@gmail.com)
 
 ## 🤖 対応エージェント
 
-Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor · DeepSeek Harness · Qoder
+Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor · DeepSeek Harness · Qoder · Google Antigravity
 
 その多くは Codeg がインストール・バージョン固定・更新まで面倒を見ます。全リスト、各エージェントの実行環境要件、セッションの保存場所は [対応エージェント](https://docs.codeg.app/guide/supported-agents) を参照してください。
 

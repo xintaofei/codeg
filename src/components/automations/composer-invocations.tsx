@@ -350,9 +350,9 @@ export function ComposerInvocationsPopup({
         // Hidden until the first measure positions it (avoids a flash at 0,0).
         visibility: pos ? "visible" : "hidden",
         zIndex: 50,
-        // The panel portals to `body`, and a modal Radix layer (the Dialog or
-        // Sheet hosting the composer) sets `pointer-events: none` on `body` —
-        // only the layer itself is re-enabled. Without this the panel is
+        // The panel portals to `body`, and a modal Radix layer (the Dialog
+        // hosting the composer) sets `pointer-events: none` on `body` — only
+        // the layer itself is re-enabled. Without this the panel is
         // click-dead there and the press lands on the document instead, which
         // the layer reads as an outside press and closes itself. Radix's
         // outside test walks the REACT tree, so a press that does reach the

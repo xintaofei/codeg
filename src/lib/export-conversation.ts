@@ -71,7 +71,7 @@ export interface ExportConversationData {
  * the browser owns the download manager and we have no per-call status
  * channel, so this path is always reported as `"saved"`.
  */
-async function saveTextFile(opts: {
+export async function saveTextFile(opts: {
   content: string
   suggestedName: string
   mimeType: string

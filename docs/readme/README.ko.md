@@ -19,7 +19,7 @@
 
 Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다. 모든 AI 코딩 에이전트를 한곳에서 실행하고, 서로 협업하게 만듭니다.
 
-지원되는 모든 에이전트 CLI의 세션을 검색 가능한 하나의 워크스페이스로 모으고, 하나의 작업 안에서 메인 에이전트가 다른 종류의 서브 에이전트에게 위임할 수 있습니다. 지켜보고 앉아 있기 아까운 일은 할 일 보드에 적어 두세요. 각 작업이 자기 브랜치에서 무인으로 돌아가고, 반영되기 전에 당신의 검토를 기다립니다. Codeg는 데스크톱 앱·독립 서버·Docker 컨테이너 어느 형태로든 실행되고, 네이티브 iOS·Android 클라이언트가 있어 자리를 비운 사이에도 작업을 이어갈 수 있습니다. 열네 개의 에이전트가 기본 내장되며, ACP를 지원하는 다른 에이전트를 직접 등록할 수도 있습니다.
+지원되는 모든 에이전트 CLI의 세션을 검색 가능한 하나의 워크스페이스로 모으고, 하나의 작업 안에서 메인 에이전트가 다른 종류의 서브 에이전트에게 위임할 수 있습니다. 지켜보고 앉아 있기 아까운 일은 할 일 보드에 적어 두세요. 각 작업이 자기 브랜치에서 무인으로 돌아가고, 반영되기 전에 당신의 검토를 기다립니다. Codeg는 데스크톱 앱·독립 서버·Docker 컨테이너 어느 형태로든 실행되고, 네이티브 iOS·Android 클라이언트가 있어 자리를 비운 사이에도 작업을 이어갈 수 있습니다. 열다섯 개의 에이전트가 기본 내장되며, ACP를 지원하는 다른 에이전트를 직접 등록할 수도 있습니다.
 
 ![워크스페이스](../images/workspace-light.png#gh-light-mode-only)
 ![워크스페이스](../images/workspace-dark.png#gh-dark-mode-only)
@@ -59,13 +59,20 @@ Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다
     </td>
     <td>본 프로젝트를 후원해 주신 OneHop에 감사드립니다! OneHop를 사용하면 Codeg 사용자는 OpenAI 호환 API 키 하나로 GPT, Claude, Gemini, DeepSeek, Kimi, Qwen을 비롯한 수백 개의 주요 모델을 이용할 수 있습니다. 여러 공급업체 계정을 관리하거나 코드를 반복해서 수정하지 않고도 모델을 전환할 수 있으며, 사용한 만큼만 지불합니다. <a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta">Codeg를 통해 가입</a>하면 $1 크레딧을 받고, 여기에 OneHop 커뮤니티에 참여하여 웰컴 이벤트에 참여하면 추가로 $5——최대 총 $6의 테스트 크레딧을 받을 수 있습니다.</td>
   </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://console.lqapi.xyz/sign-up?aff=KPy9" target="_blank"><img src="../images/lq-router.png" alt="LQ router" width="160" /></a><br/>
+      <strong><a href="https://console.lqapi.xyz/sign-up?aff=KPy9">LQ router</a></strong>
+    </td>
+    <td>본 프로젝트를 후원해 주신 LQ router 중계 서비스에 감사드립니다! LQ router는 개인 개발자와 기술 팀을 위한 엔터프라이즈급 API 통합 게이트웨이입니다. GPT, Claude, Grok, Gemini 등 주요 모델을 연동하고 기존 클라이언트 및 OpenAI SDK와 호환되며, 동적 계정 풀을 이용한 지능형 라우팅으로 하나의 엔드포인트에서 여러 모델을 호출할 수 있습니다. <a href="https://console.lqapi.xyz/sign-up?aff=KPy9">공식 웹사이트에서 그룹에 참여하면 1달러 체험 크레딧을 받을 수 있습니다</a>.</td>
+  </tr>
 </table>
 
 > Codeg의 스폰서가 되고 싶으신가요? [이메일로 문의해 주세요.](mailto:itpkcn@gmail.com)
 
 ## 🤖 지원 에이전트
 
-Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor · DeepSeek Harness · Qoder
+Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor · DeepSeek Harness · Qoder · Google Antigravity
 
 이 중 대부분은 Codeg가 대신 설치하고, 버전을 고정하고, 업데이트합니다. 전체 목록과 각 에이전트의 실행 환경 요구 사항, 세션이 디스크에 저장되는 위치는 [지원 에이전트](https://docs.codeg.app/guide/supported-agents)를 참고하세요.
 

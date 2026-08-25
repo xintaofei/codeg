@@ -15,6 +15,7 @@ import {
   ZOOM_LEVELS,
   DEFAULT_ZOOM_LEVEL,
   type ZoomLevel,
+  stepZoom,
 } from "@/lib/theme-presets"
 import {
   resolveFontStack,
@@ -65,7 +66,11 @@ import {
   type CustomThemeToken,
 } from "@/lib/custom-style"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
-import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
+import {
+  isShortcutRecorderArmed,
+  matchShortcutEvent,
+  resolveWindowZoomAction,
+} from "@/lib/keyboard-shortcuts"
 import {
   DEFAULT_WORKSPACE_BG_ENABLED,
   DEFAULT_WORKSPACE_BG_MASK_OPACITY,
@@ -466,12 +471,30 @@ export function AppearanceProvider({
     persist(STORAGE_KEY_THEME_COLOR, color)
   }, [])
 
+  // Written here rather than in a passive effect: a held zoom key repeats every
+  // ~33 ms and must never read a level the last repeat already superseded, or
+  // the burst drops steps. Keeping the assignment out of the state updater
+  // keeps that updater free of side effects, which StrictMode double-invokes.
+  const zoomLevelRef = useRef(zoomLevel)
+
   const setZoomLevel = useCallback((zoom: ZoomLevel) => {
+    // Re-applying the current level is not free: it reaches Tauri IPC and an
+    // on-disk SQLite upsert. Holding the key at either end of the range, or
+    // holding reset at 100%, would otherwise write once per repeat forever.
+    if (zoomLevelRef.current === zoom) return
+    zoomLevelRef.current = zoom
     setZoomLevelState(zoom)
     document.documentElement.style.fontSize = `${(16 * zoom) / 100}px`
     syncTrafficLightPosition(zoom)
     persist(STORAGE_KEY_ZOOM_LEVEL, String(zoom))
   }, [])
+
+  const stepZoomLevel = useCallback(
+    (direction: 1 | -1) => {
+      setZoomLevel(stepZoom(zoomLevelRef.current, direction))
+    },
+    [setZoomLevel]
+  )
 
   const setShowWelcomeQuickActions = useCallback((on: boolean) => {
     setShowWelcomeQuickActionsState(on)
@@ -744,10 +767,14 @@ export function AppearanceProvider({
   // 或某个组件吞掉了冒泡，这一路依然能把自定义样式整体停用。
   const { shortcuts } = useShortcutSettings()
   const toggleCustomStyleShortcut = shortcuts.toggle_custom_style
+  const zoomInShortcut = shortcuts.zoom_in
+  const zoomOutShortcut = shortcuts.zoom_out
+  const zoomResetShortcut = shortcuts.zoom_reset
   useEffect(() => {
     if (!toggleCustomStyleShortcut) return
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.repeat) return
+      if (isShortcutRecorderArmed()) return
       if (!matchShortcutEvent(event, toggleCustomStyleShortcut)) return
       event.preventDefault()
       setCustomStyleSuspended(!customStyleSuspended)
@@ -755,6 +782,54 @@ export function AppearanceProvider({
     window.addEventListener("keydown", onKeyDown, true)
     return () => window.removeEventListener("keydown", onKeyDown, true)
   }, [toggleCustomStyleShortcut, customStyleSuspended, setCustomStyleSuspended])
+
+  // Same levels as Settings → Window zoom. Capture-phase so the webview
+  // does not eat Ctrl/Cmd +/- as its own page zoom.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing) return
+      if (isShortcutRecorderArmed()) return
+      // Ctrl+- and Ctrl+= carry shell meaning inside the terminal, so decline
+      // there. Cmd+- does not, so on macOS the terminal keeps zooming.
+      if (
+        event.ctrlKey &&
+        !event.metaKey &&
+        event.target instanceof Element &&
+        event.target.closest('[data-terminal-panel-region="true"]')
+      ) {
+        return
+      }
+
+      const action = resolveWindowZoomAction(event, {
+        zoom_in: zoomInShortcut,
+        zoom_out: zoomOutShortcut,
+        zoom_reset: zoomResetShortcut,
+      })
+      if (!action) return
+
+      // Match first, then preventDefault, including on repeats. A held
+      // key should walk the zoom levels, and in the browser the un-
+      // prevented repeat would also trigger the page's own zoom.
+      event.preventDefault()
+      if (action === "in") {
+        stepZoomLevel(1)
+        return
+      }
+      if (action === "out") {
+        stepZoomLevel(-1)
+        return
+      }
+      setZoomLevel(DEFAULT_ZOOM_LEVEL)
+    }
+    window.addEventListener("keydown", onKeyDown, true)
+    return () => window.removeEventListener("keydown", onKeyDown, true)
+  }, [
+    setZoomLevel,
+    stepZoomLevel,
+    zoomInShortcut,
+    zoomOutShortcut,
+    zoomResetShortcut,
+  ])
 
   // 跨标签页同步：用户在另一个窗口改了设置时，本窗口实时跟进
   useEffect(() => {
@@ -818,6 +893,9 @@ export function AppearanceProvider({
       if (e.key === STORAGE_KEY_ZOOM_LEVEL && e.newValue) {
         const zoom = parseInt(e.newValue, 10) as ZoomLevel
         if ((ZOOM_LEVELS as readonly number[]).includes(zoom)) {
+          // Another window moved the level; keep the ref level with it so the
+          // next local step continues from there and the no-op guard is honest.
+          zoomLevelRef.current = zoom
           setZoomLevelState(zoom)
           document.documentElement.style.fontSize = `${(16 * zoom) / 100}px`
           syncTrafficLightPosition(zoom)

@@ -53,12 +53,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet"
+  Drawer,
+  DrawerContent,
+  DrawerDescription,
+  DrawerHeader,
+  DrawerTitle,
+} from "@/components/ui/drawer"
 import { cn } from "@/lib/utils"
 import { toErrorMessage } from "@/lib/app-error"
 import type {
@@ -856,22 +856,25 @@ export function SkillAgentMatrix({
       </AlertDialog>
 
       {/* Detail drawer: preview + per-agent toggles. */}
-      <Sheet
+      <Drawer
         open={detailSkill !== null}
         onOpenChange={(open) => {
           if (!open) setDetailSkillId(null)
         }}
+        swipeDirection="right"
       >
-        <SheetContent className="w-[min(680px,100vw)] sm:max-w-[680px] flex flex-col">
+        <DrawerContent className="w-[min(680px,calc(100vw-1rem))] sm:max-w-[680px] flex flex-col">
           {detailSkill && (
             <>
-              <SheetHeader>
-                <SheetTitle className="flex items-center gap-2">
+              {/* `pr-12` clears the close button (`right-4` + `size-8`), which
+                  the header's own `p-4` no longer does on its own. */}
+              <DrawerHeader className="pr-12">
+                <DrawerTitle className="flex items-center gap-2">
                   <detailSkill.icon className="h-5 w-5 text-primary/80" />
                   {detailSkill.displayName}
-                </SheetTitle>
-                <SheetDescription>{detailSkill.description}</SheetDescription>
-              </SheetHeader>
+                </DrawerTitle>
+                <DrawerDescription>{detailSkill.description}</DrawerDescription>
+              </DrawerHeader>
               <div className="flex-1 min-h-0 overflow-y-auto px-4 pb-4 space-y-4">
                 <div className="rounded-md border p-3">
                   <div className="text-[11px] text-muted-foreground mb-2">
@@ -954,8 +957,8 @@ export function SkillAgentMatrix({
               </div>
             </>
           )}
-        </SheetContent>
-      </Sheet>
+        </DrawerContent>
+      </Drawer>
     </TooltipProvider>
   )
 }

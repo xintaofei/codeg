@@ -421,10 +421,19 @@ pub async fn branch_holds_unlanded_work(
 /// Tolerant of a directory already gone (prunes the stale registration) and of
 /// a branch already deleted; `-D` is required because a squash-landed branch is
 /// unmerged in git's eyes.
+///
+/// `expected_tip` turns the branch delete into a COMPARE-AND-DELETE: the ref
+/// goes only if it still points at that commit, and a branch that moved is an
+/// error rather than a silent loss. Callers that have proved where the work
+/// went — a delivery knows the exact OID it published — pass it, because the
+/// only thing making `-D` safe for them is that the tip is that OID, and every
+/// read-then-delete leaves a window for it to stop being true. `None` keeps the
+/// unconditional delete the local-merge paths settle from git truth for.
 pub async fn remove_worktree_and_branch(
     repo_path: &str,
     worktree_path: &str,
     work_branch: Option<&str>,
+    expected_tip: Option<&str>,
 ) -> Result<(), AppCommandError> {
     let removed = run_git(repo_path, &["worktree", "remove", "--force", worktree_path]).await?;
     if !removed.status.success() {
@@ -438,7 +447,10 @@ pub async fn remove_worktree_and_branch(
             return Err(git_command_error("worktree prune", &prune.stderr));
         }
     }
-    if let Some(branch) = work_branch {
+    let Some(branch) = work_branch else {
+        return Ok(());
+    };
+    let Some(tip) = expected_tip else {
         let del = run_git(repo_path, &["branch", "-D", branch]).await?;
         if !del.status.success() {
             let msg = String::from_utf8_lossy(&del.stderr).to_lowercase();
@@ -446,6 +458,23 @@ pub async fn remove_worktree_and_branch(
                 return Err(git_command_error("branch -D", &del.stderr));
             }
         }
+        return Ok(());
+    };
+    // Asked for first, because `update-ref -d` cannot tell "already deleted"
+    // (fine — the caller's goal is met) from "moved" (must not be deleted)
+    // through its exit status alone. A branch that disappears between this
+    // read and the delete below still fails closed: the delete refuses, the
+    // caller flags a retryable cleanup, and the retry finds nothing to do.
+    let full_ref = format!("refs/heads/{branch}");
+    let exists = run_git(repo_path, &["rev-parse", "--verify", "--quiet", &full_ref]).await?;
+    if !exists.status.success() {
+        return Ok(());
+    }
+    // The compare and the delete in ONE git operation: no window between them
+    // for the ref to move, which is the whole reason a caller passes a tip.
+    let del = run_git(repo_path, &["update-ref", "-d", &full_ref, tip]).await?;
+    if !del.status.success() {
+        return Err(git_command_error("update-ref -d", &del.stderr));
     }
     Ok(())
 }
@@ -678,6 +707,78 @@ mod tests {
                 .expect("head"),
             base
         );
+    }
+
+    /// Both answers of the compare-and-delete, on one repository.
+    ///
+    /// A caller that passes `expected_tip` has PROVED where the work went —
+    /// a delivery knows the exact OID it pushed — and the branch is expendable
+    /// for exactly as long as it still points there. Checking that separately
+    /// and then running `branch -D` leaves a window; this is the pair fused
+    /// into one git operation, so a branch that moved keeps its commit and
+    /// says so instead.
+    #[tokio::test]
+    async fn a_branch_is_deleted_only_while_it_still_holds_the_expected_tip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("mkdir");
+        let repo_path = repo.to_str().expect("utf-8 path");
+        git_run(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\n").expect("write");
+        git_run(&repo, &["add", "-A"]);
+        git_run(&repo, &["commit", "-q", "-m", "base"]);
+
+        // ── the tip moved: the branch (and its commit) must survive ──
+        let moved = dir.path().join("wt-moved");
+        let moved_path = moved.to_str().expect("utf-8 path");
+        git_run(&repo, &["worktree", "add", "-q", "-b", "task/moved", moved_path]);
+        std::fs::write(moved.join("a.txt"), "one\ntwo\n").expect("write");
+        git_run(&moved, &["commit", "-qam", "published"]);
+        let published = rev_parse(moved_path, "HEAD").await.expect("published tip");
+        std::fs::write(moved.join("a.txt"), "one\ntwo\nthree\n").expect("write");
+        git_run(&moved, &["commit", "-qam", "never pushed"]);
+        let outran = rev_parse(moved_path, "HEAD").await.expect("later tip");
+        assert_ne!(published, outran);
+
+        remove_worktree_and_branch(repo_path, moved_path, Some("task/moved"), Some(&published))
+            .await
+            .expect_err("a branch that outran the published tip is not deletable");
+        assert_eq!(
+            rev_parse(repo_path, "refs/heads/task/moved").await.expect("branch alive"),
+            outran,
+            "the commit nobody published is still reachable"
+        );
+
+        // ── the tip is exactly what was published: the branch goes ──
+        let same = dir.path().join("wt-same");
+        let same_path = same.to_str().expect("utf-8 path");
+        git_run(&repo, &["worktree", "add", "-q", "-b", "task/same", same_path]);
+        std::fs::write(same.join("a.txt"), "one\nagain\n").expect("write");
+        git_run(&same, &["commit", "-qam", "published"]);
+        let tip = rev_parse(same_path, "HEAD").await.expect("tip");
+
+        remove_worktree_and_branch(repo_path, same_path, Some("task/same"), Some(&tip))
+            .await
+            .expect("removal");
+        assert!(!same.exists(), "the checkout is gone");
+        assert!(
+            rev_parse(repo_path, "refs/heads/task/same").await.is_err(),
+            "and so is its branch"
+        );
+
+        // ── an expected tip for a branch already gone is not an error ──
+        // The caller's goal is met, and a retried cleanup must be able to
+        // finish rather than flag the same failure forever.
+        let gone = dir.path().join("wt-gone");
+        let gone_path = gone.to_str().expect("utf-8 path");
+        git_run(&repo, &["worktree", "add", "-q", "-b", "task/gone", gone_path]);
+        let gone_tip = rev_parse(gone_path, "HEAD").await.expect("tip");
+        remove_worktree_and_branch(repo_path, gone_path, Some("task/gone"), Some(&gone_tip))
+            .await
+            .expect("first removal");
+        remove_worktree_and_branch(repo_path, gone_path, Some("task/gone"), Some(&gone_tip))
+            .await
+            .expect("a second pass finds nothing to do and says so quietly");
     }
 
     /// A retry after the checkout was removed must get the SAME branch back,

@@ -14,6 +14,7 @@ pub mod folder_link;
 pub mod message_search_document;
 pub mod model_provider;
 pub mod opened_tab;
+pub mod pk_round;
 pub mod prelude;
 pub mod quick_message;
 pub mod remote_workspace_connection;

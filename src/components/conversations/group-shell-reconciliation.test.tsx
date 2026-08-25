@@ -139,7 +139,7 @@ describe("split group shell source shape", () => {
     expect(shellStart).toBeGreaterThan(-1)
     const shellBody = source.slice(shellStart, shellStart + 6000)
     const stripIdx = shellBody.indexOf("{isSplit && (")
-    const headerIdx = shellBody.indexOf("{isSplit && selTab && (")
+    const headerIdx = shellBody.indexOf("{isSplit && selConversationTab && (")
     const contentIdx = shellBody.indexOf(
       '<div className="relative min-h-0 flex-1 overflow-hidden">'
     )

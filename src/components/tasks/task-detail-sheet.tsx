@@ -71,6 +71,7 @@ import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import {
   canDeliverToPr,
+  canRemoveWorktree,
   deliveredPrUrl,
   hasNothingToMerge,
   isMergeQueued,
@@ -82,6 +83,7 @@ import {
   TaskMessageComposer,
   type TaskMessageComposerHandle,
 } from "./task-message-composer"
+import { TaskTranscriptDialog } from "./task-transcript-dialog"
 import {
   duplicateActiveSource,
   duplicateActiveSourceLabel,
@@ -97,6 +99,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import { BrowserLink } from "@/components/ui/browser-link"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -115,12 +118,19 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet"
+  Drawer,
+  DrawerContent,
+  DrawerDescription,
+  DrawerHeader,
+  DrawerTitle,
+  SIDE_PANEL_CONTENT_CLASS,
+} from "@/components/ui/drawer"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import type {
   AgentType,
@@ -156,8 +166,6 @@ interface TaskDetailSheetProps {
   /** The live task row (already refreshed by the board's provider). */
   task: WorkTask | null
   folderName: string | null
-  /** Opens the page-owned read-only live session viewer. */
-  onViewSession: (task: WorkTask) => void
   onMerge: (task: WorkTask) => void
   /** Replaces merge when the task changed nothing (see `hasNothingToMerge`). */
   onComplete: (task: WorkTask) => void
@@ -173,7 +181,7 @@ interface TaskDetailSheetProps {
   onSchedule: (task: WorkTask) => void
 }
 
-/** One button of the sheet's action panel (see below). */
+/** One button of the drawer's action panel (see below). */
 interface ZoneAction {
   icon: typeof Play
   label: string
@@ -199,7 +207,6 @@ export function TaskDetailSheet({
   onOpenChange,
   task,
   folderName,
-  onViewSession,
   onMerge,
   onComplete,
   onDeliverPr,
@@ -233,6 +240,23 @@ export function TaskDetailSheet({
   const [intent, setIntent] = useState<FollowUpIntent>(DEFAULT_FOLLOW_UP_INTENT)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteWorktree, setDeleteWorktree] = useState(false)
+  /** Confirm for the footer's standalone worktree removal (`canRemoveWorktree`
+   *  decides who is offered it). */
+  const [cleanupOpen, setCleanupOpen] = useState(false)
+  /**
+   * The read-only live session viewer, owned HERE rather than by the board.
+   *
+   * It used to be raised through an `onViewSession` callback and rendered by
+   * `tasks-page.tsx` as a sibling of this sheet. Both are drawers, and Base UI
+   * only stacks a drawer that is a React DESCENDANT of the one it opens over
+   * (nesting rides `DialogRootContext` — see `useRenderDialogRoot`), so as
+   * siblings they could never stack: the viewer just landed on top with the
+   * sheet still at full size underneath. Mounting it inside our own `Drawer`
+   * gets the real thing — the sheet scales back and dims, and Escape unwinds
+   * one layer at a time. The board keeps its own top-level instance for the
+   * card's "查看会话" action, which opens with no sheet in play.
+   */
+  const [sessionOpen, setSessionOpen] = useState(false)
   const [diffFile, setDiffFile] = useState<string | null | false>(false)
   const [busy, setBusy] = useState(false)
   /** Synchronous in-flight latch for the follow-up send (see submitFollowUp). */
@@ -657,12 +681,9 @@ export function TaskDetailSheet({
 
   return (
     <>
-      <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent
-          side="right"
-          className="flex w-full flex-col gap-0 p-0 sm:max-w-[44rem]"
-        >
-          <SheetHeader className="shrink-0 gap-0 border-b border-border px-5 py-4">
+      <Drawer open={open} onOpenChange={onOpenChange} swipeDirection="right">
+        <DrawerContent className={SIDE_PANEL_CONTENT_CLASS}>
+          <DrawerHeader className="shrink-0 gap-0 border-b border-border px-5 py-4">
             {/* Agent glyph, then the title block. The status chip rides
                 directly beside the title rather than being pinned to the far
                 edge — it reads as part of the name, not as a separate
@@ -684,9 +705,9 @@ export function TaskDetailSheet({
               </span>
               <div className="flex min-w-0 flex-1 flex-col gap-1">
                 <div className="flex min-w-0 items-start gap-2">
-                  <SheetTitle className="min-w-0 break-words text-[0.9375rem] font-semibold leading-5">
+                  <DrawerTitle className="min-w-0 break-words text-[0.9375rem] font-semibold leading-5">
                     {task.title}
-                  </SheetTitle>
+                  </DrawerTitle>
                   {/* One title line tall, centring its own content: the chips
                       differ in height (pill vs bare spinner text), so a fixed
                       margin would only ever centre one of them — and a
@@ -729,10 +750,10 @@ export function TaskDetailSheet({
                 </div>
               </div>
             </div>
-            <SheetDescription className="sr-only">
+            <DrawerDescription className="sr-only">
               {t("detailDescription")}
-            </SheetDescription>
-          </SheetHeader>
+            </DrawerDescription>
+          </DrawerHeader>
 
           <ScrollArea className="min-h-0 flex-1">
             <div className="flex flex-col gap-5 px-5 py-4">
@@ -1084,10 +1105,8 @@ export function TaskDetailSheet({
                           : "detailPullRequest"
                       )}
                     >
-                      <a
+                      <BrowserLink
                         href={deliveredPr}
-                        target="_blank"
-                        rel="noopener noreferrer"
                         className="inline-flex min-w-0 items-center gap-1 truncate underline-offset-2 hover:underline"
                         title={deliveredPr}
                       >
@@ -1096,7 +1115,7 @@ export function TaskDetailSheet({
                           aria-hidden="true"
                         />
                         <span className="truncate">{deliveredPr}</span>
-                      </a>
+                      </BrowserLink>
                     </InfoRow>
                   ) : null}
                   {task.files_changed != null && task.files_changed > 0 ? (
@@ -1227,9 +1246,9 @@ export function TaskDetailSheet({
           {/* Footer: everything that does NOT advance the task's state — the
               status's own actions live in the action zone / acceptance panel
               above. Left: session viewer, edit (while editable), cleanup
-              retry; right: destructive delete (`merging` cannot be deleted).
-              Deleting offers the worktree checkbox in its confirm dialog, so
-              that is the only worktree affordance kept here. */}
+              retry; right: the worktree a finished task is still holding, then
+              the destructive delete (`merging` cannot be deleted), which takes
+              the worktree along as a checkbox in its own confirm. */}
           {task.conversation_id != null ||
           canEdit ||
           task.status !== "merging" ? (
@@ -1239,7 +1258,7 @@ export function TaskDetailSheet({
                   icon={MessageSquareText}
                   label={t("actionViewSession")}
                   busy={false}
-                  onClick={() => onViewSession(task)}
+                  onClick={() => setSessionOpen(true)}
                 />
               ) : null}
               {canEdit ? (
@@ -1259,6 +1278,18 @@ export function TaskDetailSheet({
                 />
               ) : null}
               <div className="flex-1" />
+              {/* Beside "delete", because that is the other way to be rid of
+                  this worktree — and glyph-only, because a done task's leftover
+                  checkout is a housekeeping detail, not a decision the drawer
+                  should press on the user every time they open it. */}
+              {canRemoveWorktree(task) ? (
+                <FooterIconAction
+                  icon={FolderX}
+                  label={t("actionDeleteWorktree")}
+                  busy={busy}
+                  onClick={() => setCleanupOpen(true)}
+                />
+              ) : null}
               {task.status !== "merging" ? (
                 <FooterAction
                   icon={Trash2}
@@ -1270,8 +1301,18 @@ export function TaskDetailSheet({
               ) : null}
             </div>
           ) : null}
-        </SheetContent>
-      </Sheet>
+        </DrawerContent>
+
+        {/* Inside the `Drawer` (so it nests) but outside `DrawerContent` (so
+            it escapes the content's `overflow-hidden` and the `opacity-0` the
+            content takes on while a nested drawer is open). Anywhere under
+            the root is enough — nesting is context, not DOM. */}
+        <TaskTranscriptDialog
+          open={sessionOpen}
+          onOpenChange={setSessionOpen}
+          task={task}
+        />
+      </Drawer>
 
       {/* Per-file / full diff viewer. */}
       <Dialog
@@ -1289,6 +1330,35 @@ export function TaskDetailSheet({
           ) : null}
         </DialogContent>
       </Dialog>
+
+      {/* Worktree removal confirm. Git takes the directory `--force` and the
+          work branch `-D`, so anything left uncommitted or unlanded in there
+          goes with it — too much to hang off one click on a bare glyph. */}
+      <AlertDialog open={cleanupOpen} onOpenChange={setCleanupOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("deleteWorktreeConfirmTitle")}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("deleteWorktreeConfirmBody")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() =>
+                run(async () => {
+                  await workTaskCleanup(task.id)
+                  setCleanupOpen(false)
+                })
+              }
+            >
+              {t("actionDeleteWorktree")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Delete confirm (optionally with the worktree). */}
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
@@ -1532,6 +1602,45 @@ function FooterAction({
       <Icon className="size-3.5" aria-hidden="true" />
       {label}
     </Button>
+  )
+}
+
+/**
+ * A footer action stripped to its glyph. The label lives on twice over: as an
+ * `aria-label` (a Radix tooltip only DESCRIBES its trigger — it never names it)
+ * and as the tooltip itself, which is the only way a pointer user reads it.
+ * Sized to `FooterAction`'s own h-7 so the row keeps one baseline.
+ */
+function FooterIconAction({
+  icon: Icon,
+  label,
+  onClick,
+  busy,
+}: {
+  icon: typeof Play
+  label: string
+  onClick: () => void
+  busy: boolean
+}) {
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            disabled={busy}
+            aria-label={label}
+            className="size-7 text-muted-foreground hover:text-foreground"
+            onClick={onClick}
+          >
+            <Icon className="size-3.5" aria-hidden="true" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="top">{label}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   )
 }
 

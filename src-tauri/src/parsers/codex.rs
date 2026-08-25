@@ -108,6 +108,17 @@ impl CodexParser {
         let mut has_real_user = false;
         let mut goal_objective: Option<String> = None;
         let mut goal_opens_session = false;
+        // Mirror of the detail parser's `response_item.message` promotion — see
+        // [`ResponseItemPromotion`]. The two must agree or the sidebar entry and
+        // the opened conversation disagree about count and title. Only the
+        // per-candidate PAYLOAD differs (the list path needs no blocks): here it
+        // is `(is_user, title_candidate)`, kept parallel to the shared tracker's
+        // own candidate vector.
+        let mut promotion = ResponseItemPromotion::new();
+        let mut pending_promotions: Vec<(bool, Option<String>)> = Vec::new();
+        let mut first_goal_ordinal: Option<u64> = None;
+        let mut title_source_ordinal: Option<u64> = None;
+        let mut title_from_thread_name = false;
 
         for line in reader.lines() {
             let line = match line {
@@ -124,6 +135,15 @@ impl CodexParser {
             };
 
             let msg_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+            let record_ordinal = promotion.note_record(
+                msg_type,
+                value
+                    .get("payload")
+                    .and_then(|p| p.get("type"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or(""),
+            );
 
             if let Some(ts_str) = value.get("timestamp").and_then(|t| t.as_str()) {
                 if let Ok(ts) = ts_str.parse::<DateTime<Utc>>() {
@@ -176,6 +196,9 @@ impl CodexParser {
                                         .get("message")
                                         .and_then(|m| m.as_str())
                                         .and_then(|text| extract_codex_title_candidate(text, true));
+                                    if title.is_some() {
+                                        title_source_ordinal = Some(record_ordinal);
+                                    }
                                 }
                             }
                             "agent_message" => {
@@ -208,8 +231,12 @@ impl CodexParser {
                                                     &marker.objective,
                                                     true,
                                                 );
+                                                if title.is_some() {
+                                                    title_source_ordinal = Some(record_ordinal);
+                                                }
                                             }
                                             goal_objective = Some(marker.objective);
+                                            first_goal_ordinal = Some(record_ordinal);
                                         }
                                     }
                                 }
@@ -227,6 +254,7 @@ impl CodexParser {
                                     .filter(|n| !n.is_empty())
                                 {
                                     title = Some(truncate_str(name, 100));
+                                    title_from_thread_name = true;
                                 }
                             }
                             _ => {}
@@ -239,28 +267,93 @@ impl CodexParser {
                             payload.get("type").and_then(|t| t.as_str()).unwrap_or("");
                         if payload_type == "message" {
                             let role = payload.get("role").and_then(|r| r.as_str()).unwrap_or("");
-                            // The detail parser only turns an IMAGE-bearing
+                            // The detail parser turns an IMAGE-bearing
                             // `response_item` user into a real user turn
-                            // (`extract_response_item_user_image_blocks`) and only
-                            // titles from that same turn. Text-only `response_item`
-                            // users are internal envelopes (`<environment_context>`,
-                            // `<codex_internal_context>`, `<turn_aborted>`, …) or
-                            // duplicates of `event_msg.user_message` — detail ignores
-                            // them for BOTH the turn and the title, so the summary
-                            // must too. Mirroring it here keeps the pure-`/goal`
-                            // fallback (title + count) in exact sync and stops
-                            // internal text from leaking into the list title.
+                            // (`extract_response_item_user_image_blocks`) and titles
+                            // from that same turn — unconditionally, because the
+                            // canonical channel never carries the image. Everything
+                            // else goes through the same held-back promotion the
+                            // detail parser uses, so the two stay in exact sync on
+                            // both the count and the pure-`/goal` fallback.
                             if role == "user" && response_item_user_has_image(payload) {
                                 has_real_user = true;
                                 if title.is_none() {
                                     title = extract_codex_text_content(payload)
                                         .and_then(|t| extract_codex_title_candidate(&t, false));
+                                    if title.is_some() {
+                                        title_source_ordinal = Some(record_ordinal);
+                                    }
+                                }
+                            } else if let Some(is_user) = match role {
+                                "user" => Some(true),
+                                "assistant" => Some(false),
+                                _ => None,
+                            } {
+                                if let Some(blocks) =
+                                    extract_response_item_message_blocks(payload, is_user)
+                                {
+                                    let text = first_text_block(&blocks).unwrap_or_default();
+                                    let promotable = if text.trim().is_empty() {
+                                        true
+                                    } else if is_user {
+                                        is_promotable_user_text(&text)
+                                    } else {
+                                        is_promotable_assistant_text(&text)
+                                    };
+                                    if promotable {
+                                        promotion.push_candidate(record_ordinal, is_user);
+                                        pending_promotions.push((
+                                            is_user,
+                                            is_user
+                                                .then(|| {
+                                                    extract_codex_title_candidate(&text, true)
+                                                })
+                                                .flatten(),
+                                        ));
+                                    }
                                 }
                             }
                         }
                     }
                 }
                 _ => {}
+            }
+        }
+
+        // Promote the held-back `response_item.message` records — see the twin
+        // block in `parse_conversation_detail`, whose `turns.len()` this count
+        // has to track.
+        let survivors = promotion.resolve();
+        let promoted_user_ordinal = promotion.first_surviving_user_ordinal(&survivors);
+        message_count += survivors.iter().filter(|keep| **keep).count() as u32;
+
+        if let (Some(goal_ordinal), Some(user_ordinal)) =
+            (first_goal_ordinal, promoted_user_ordinal)
+        {
+            if user_ordinal < goal_ordinal {
+                goal_opens_session = false;
+            }
+        }
+
+        // NOTE: `has_real_user` deliberately is NOT back-filled here. Its only
+        // consumer is the in-loop `goal_opens_session = !has_real_user`, whose
+        // outcome the ordinal comparison above already corrects; assigning it
+        // post-loop would be dead code that reads as if it did something.
+
+        if !title_from_thread_name {
+            if let Some(user_ordinal) = promoted_user_ordinal {
+                let promoted_title = pending_promotions
+                    .into_iter()
+                    .zip(&survivors)
+                    .find(|((is_user, _), keep)| **keep && *is_user)
+                    .and_then(|((_, candidate), _)| candidate);
+                if let Some(candidate) = promoted_title {
+                    if title.is_none()
+                        || title_source_ordinal.is_none_or(|current| user_ordinal < current)
+                    {
+                        title = Some(candidate);
+                    }
+                }
             }
         }
 
@@ -2193,6 +2286,22 @@ impl CodexParser {
         let mut pending_reasoning: Vec<String> = Vec::new();
         let mut pending_reasoning_ts: Option<DateTime<Utc>> = None;
 
+        // `response_item.message` records held back until EOF, when their turn
+        // segment's canonical-channel coverage is known. See
+        // [`ResponseItemPromotion`] for why the gate is per-segment.
+        let mut promotion = ResponseItemPromotion::new();
+        let mut pending_promotions: Vec<PendingPromotedMessage> = Vec::new();
+        // Ordinals of the two in-loop decisions that promoted records can
+        // legitimately override, recorded so they can be replayed POSITIONALLY
+        // once the survivors are known — never "does a user exist anywhere",
+        // which would cancel a valid goal opener answered by a later prompt.
+        let mut first_goal_ordinal: Option<u64> = None;
+        let mut title_source_ordinal: Option<u64> = None;
+        // codex's own thread name outranks any prompt-derived title, and its arm
+        // assigns unconditionally (newest wins), so it needs its own flag rather
+        // than an ordinal comparison.
+        let mut title_from_thread_name = false;
+
         for line in reader.lines() {
             let line = match line {
                 Ok(l) => l,
@@ -2208,6 +2317,18 @@ impl CodexParser {
             };
 
             let msg_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+            // Fed EVERY record, before the parser's own handling: segment
+            // boundaries, canonical-channel coverage and compaction adjacency
+            // are all positional properties of the raw stream.
+            let record_ordinal = promotion.note_record(
+                msg_type,
+                value
+                    .get("payload")
+                    .and_then(|p| p.get("type"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or(""),
+            );
 
             if let Some(ts_str) = value.get("timestamp").and_then(|t| t.as_str()) {
                 if let Ok(ts) = ts_str.parse::<DateTime<Utc>>() {
@@ -2341,6 +2462,9 @@ impl CodexParser {
 
                                 if title.is_none() {
                                     title = extract_codex_title_candidate(&text, true);
+                                    if title.is_some() {
+                                        title_source_ordinal = Some(record_ordinal);
+                                    }
                                 }
 
                                 if should_skip_duplicate_user_message(&messages, &blocks, timestamp)
@@ -2428,8 +2552,12 @@ impl CodexParser {
                                                 &marker.objective,
                                                 true,
                                             );
+                                            if title.is_some() {
+                                                title_source_ordinal = Some(record_ordinal);
+                                            }
                                         }
                                         first_goal_objective = Some(marker.objective.clone());
+                                        first_goal_ordinal = Some(record_ordinal);
                                     }
                                     // Occurrence id from the message index — unique
                                     // per goal event, stable across reparse, and
@@ -2483,6 +2611,7 @@ impl CodexParser {
                                     .filter(|n| !n.is_empty())
                                 {
                                     title = Some(truncate_str(name, 100));
+                                    title_from_thread_name = true;
                                 }
                             }
                             "agent_reasoning" => {
@@ -3335,6 +3464,9 @@ impl CodexParser {
                                                     text.as_str(),
                                                     true,
                                                 );
+                                                if title.is_some() {
+                                                    title_source_ordinal = Some(record_ordinal);
+                                                }
                                             }
                                         }
 
@@ -3348,8 +3480,57 @@ impl CodexParser {
                                             model: None,
                                             completed_at: Some(timestamp),
                                         });
+                                        continue;
                                     }
                                 }
+
+                                // Everything the arm above did not emit: text-only
+                                // users and EVERY assistant record. Normally these
+                                // are same-millisecond duplicates of the
+                                // `event_msg` channel and must stay dropped — but
+                                // in a rollout whose event channel never spoke for
+                                // this turn they are the only copy that exists.
+                                // Held back rather than pushed, because coverage is
+                                // not known until the segment (or the file) ends.
+                                let is_user = match role {
+                                    "user" => true,
+                                    "assistant" => false,
+                                    // `developer` / `system` / anything else is
+                                    // machinery, never a conversation turn.
+                                    _ => continue,
+                                };
+                                let Some(blocks) =
+                                    extract_response_item_message_blocks(payload, is_user)
+                                else {
+                                    continue;
+                                };
+                                // An image-only record has nothing for the
+                                // deny-lists (which are text rules) to judge.
+                                let text = first_text_block(&blocks).unwrap_or_default();
+                                let promotable = if text.trim().is_empty() {
+                                    true
+                                } else if is_user {
+                                    is_promotable_user_text(&text)
+                                } else {
+                                    is_promotable_assistant_text(&text)
+                                };
+                                if !promotable {
+                                    continue;
+                                }
+
+                                let title_candidate = if is_user {
+                                    extract_codex_title_candidate(&text, true)
+                                } else {
+                                    None
+                                };
+                                promotion.push_candidate(record_ordinal, is_user);
+                                pending_promotions.push(PendingPromotedMessage {
+                                    insert_at: messages.len(),
+                                    is_user,
+                                    blocks,
+                                    timestamp,
+                                    title_candidate,
+                                });
                             }
                             "image_generation_call" => {
                                 // codex 0.129+ writes the same generated image as both an
@@ -3487,6 +3668,90 @@ impl CodexParser {
                         }
                         _ => {}
                     }
+                }
+            }
+        }
+
+        // Promote the held-back `response_item.message` records, now that the
+        // whole file has been seen and every turn segment's canonical-channel
+        // coverage is known.
+        //
+        // Ordering matters and is load-bearing:
+        //   1. splice FIRST — `insert_at` indexes `messages` as it stood at EOF,
+        //      and both steps below mutate it;
+        //   2. then the `/goal` opener, which inserts at index 0;
+        //   3. then `fold_shell_session_polls`, which rebuilds all of its own
+        //      (message, block) indices from whatever vector it is handed.
+        let survivors = promotion.resolve();
+        let promoted_user_ordinal = promotion.first_surviving_user_ordinal(&survivors);
+        let mut kept: Vec<PendingPromotedMessage> = pending_promotions
+            .into_iter()
+            .zip(&survivors)
+            .filter(|(_, keep)| **keep)
+            .map(|(pending, _)| pending)
+            .collect();
+
+        // Resolved before the vector is drained by the splice below.
+        let promoted_title = kept
+            .iter()
+            .find(|pending| pending.is_user)
+            .and_then(|pending| pending.title_candidate.clone());
+
+        // Descending by insertion point so earlier indices stay valid — but
+        // GROUPED, because several records can share one `insert_at` (nothing
+        // was pushed between them) and splicing those one at a time in reverse
+        // would invert their transcript order.
+        while let Some(insert_at) = kept.last().map(|pending| pending.insert_at) {
+            let group_start = kept
+                .iter()
+                .rposition(|pending| pending.insert_at != insert_at)
+                .map(|index| index + 1)
+                .unwrap_or(0);
+            let group: Vec<UnifiedMessage> = kept
+                .split_off(group_start)
+                .into_iter()
+                .enumerate()
+                .map(|(offset, pending)| UnifiedMessage {
+                    // Namespaced so a promoted record can never collide with a
+                    // `user-N` / `assistant-N` id minted inside the loop.
+                    id: format!("codex-ri-{insert_at}-{offset}"),
+                    role: if pending.is_user {
+                        MessageRole::User
+                    } else {
+                        MessageRole::Assistant
+                    },
+                    content: pending.blocks,
+                    timestamp: pending.timestamp,
+                    usage: None,
+                    duration_ms: None,
+                    model: None,
+                    completed_at: Some(pending.timestamp),
+                })
+                .collect();
+            messages.splice(insert_at..insert_at, group);
+        }
+
+        // A promoted user that PRECEDES the goal means the goal did not open the
+        // session after all — the same positional rule the in-loop code applies
+        // to native users. One that comes AFTER it (the "确认" reply shape) must
+        // leave the opener intact, which is why this compares ordinals rather
+        // than asking whether a user exists anywhere.
+        if let (Some(goal_ordinal), Some(user_ordinal)) =
+            (first_goal_ordinal, promoted_user_ordinal)
+        {
+            if user_ordinal < goal_ordinal {
+                goal_opens_session = false;
+            }
+        }
+
+        // Same precedence the in-loop claims follow: codex's own thread name
+        // always wins, otherwise the EARLIEST prompt-shaped source does.
+        if !title_from_thread_name {
+            if let (Some(user_ordinal), Some(candidate)) = (promoted_user_ordinal, promoted_title) {
+                if title.is_none()
+                    || title_source_ordinal.is_none_or(|current| user_ordinal < current)
+                {
+                    title = Some(candidate);
                 }
             }
         }
@@ -3925,6 +4190,58 @@ fn is_codex_internal_context_message(input: &str) -> bool {
     input.trim_start().starts_with("<codex_internal_context")
 }
 
+/// Machine-authored `role: "user"` records that codex injects into the model's
+/// history but never shows as a prompt. They are unreachable on the canonical
+/// path (`event_msg.user_message` carries only what the human typed) and only
+/// become visible through [`ResponseItemPromotion`], so the list lives with the
+/// promotion logic rather than with the title helpers.
+///
+/// Derived from a census of every user-role `response_item.message` text in the
+/// local rollout corpus, not from guesswork: `<environment_context>` (1248),
+/// `<turn_aborted>` (152), `<codex_internal_context source="goal">` (52),
+/// `<subagent_notification>` (24), `<skill>` (10). The one untagged member is
+/// the correction codex injects when a model calls `apply_patch` through
+/// `exec_command` (34 occurrences) — matching English prose is admittedly
+/// brittle, but the failure mode is one stray user bubble in a rollout that
+/// would otherwise render nothing at all.
+const PROMOTED_USER_DENY_PREFIXES: &[&str] = &[
+    "<turn_aborted>",
+    "<subagent_notification",
+    "<skill",
+    "<user_instructions",
+    "<permissions instructions",
+    "<skills_instructions",
+    "Warning: apply_patch was requested via exec_command",
+];
+
+/// Whether a candidate user record is machine context rather than a prompt.
+fn is_promotable_user_text(input: &str) -> bool {
+    let trimmed = input.trim();
+    if trimmed.is_empty()
+        || is_agents_instruction_message(trimmed)
+        || is_environment_context_message(trimmed)
+        || is_codex_internal_context_message(trimmed)
+    {
+        return false;
+    }
+    !PROMOTED_USER_DENY_PREFIXES
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+}
+
+/// Whether a candidate assistant record is renderable prose.
+///
+/// `<proposed_plan>` is codex's plan-mode payload: it reaches the model history
+/// as a `response_item` but is announced to the UI as
+/// `event_msg.item_completed { item_type: "Plan" }`, which this parser has no
+/// arm for. Promoting it would dump raw XML into the timeline — a rendering
+/// surface this fix does not own. The compaction/handoff summary is excluded
+/// separately, by adjacency (see [`ResponseItemPromotion::note_record`]).
+fn is_promotable_assistant_text(input: &str) -> bool {
+    let trimmed = input.trim();
+    !trimmed.is_empty() && !trimmed.starts_with("<proposed_plan>")
+}
+
 fn extract_codex_title_candidate(input: &str, fallback_attached: bool) -> Option<String> {
     let trimmed = input.trim();
     if trimmed.is_empty()
@@ -4041,6 +4358,296 @@ fn should_skip_duplicate_user_message(
     }
 
     false
+}
+
+/// Canonical-channel coverage for one turn segment.
+#[derive(Debug, Default, Clone, Copy)]
+struct SegmentCoverage {
+    user: bool,
+    assistant: bool,
+}
+
+/// Bookkeeping for one held-back `response_item.message` record.
+#[derive(Debug, Clone, Copy)]
+struct PromotionCandidate {
+    /// Per-record counter. The ONLY safe key for "did this come before the
+    /// goal / before the title claim": several candidates can share one
+    /// insertion point in `messages`, so vector positions cannot order them.
+    ordinal: u64,
+    task_seg: usize,
+    ctx_seg: usize,
+    is_user: bool,
+    /// Set by the compaction-adjacency rule after the record was accepted.
+    denied: bool,
+}
+
+/// A held-back `response_item.message`, kept parallel to
+/// [`ResponseItemPromotion::candidates`] so one shared decision drives both.
+#[derive(Debug)]
+struct PendingPromotedMessage {
+    /// Where in `messages` this record would have been pushed. Valid only until
+    /// something else mutates `messages`, which is why the splice runs first in
+    /// the post-loop sequence.
+    insert_at: usize,
+    is_user: bool,
+    blocks: Vec<ContentBlock>,
+    timestamp: DateTime<Utc>,
+    /// Title this record would claim if it turns out to be the opening prompt.
+    /// `None` for assistants, and for a user whose text is not title-worthy.
+    title_candidate: Option<String>,
+}
+
+/// Decides which `response_item.payload.type == "message"` records may be
+/// promoted into the transcript.
+///
+/// # Why this exists
+///
+/// Every message codex writes to a rollout is recorded TWICE: once on the
+/// canonical event channel (`event_msg.user_message` / `event_msg.agent_message`)
+/// and once as a `response_item` for the model's own history. This parser has
+/// always read the event channel and ignored the `response_item` twin, which is
+/// correct — until a producer writes a rollout with no event channel at all
+/// (issue #452: a session created by an embedder that sets its own `CODEX_HOME`).
+/// Then the tool calls still parse from `response_item.function_call` while every
+/// user and assistant bubble vanishes, and the conversation renders as a bare
+/// "Used N tools".
+///
+/// # Why the gate is per-segment
+///
+/// The obvious rules both fail:
+///
+/// * *Per record, when no same-text twin exists* — 101 assistant records across
+///   60 files in the local corpus have no twin, and they are all `<proposed_plan>`
+///   blocks and compaction summaries, i.e. text codex deliberately keeps out of
+///   the chat. That rule regresses 60 existing conversations.
+/// * *Per file, when the event channel is absent anywhere* — this is inert on the
+///   corpus, but it evaporates the moment the user resumes the session in codeg:
+///   native `event_msg` records append to the SAME rollout, the gate flips off,
+///   and the whole imported prefix disappears again. That is exactly the workflow
+///   #452 reports.
+///
+/// So coverage is tracked per turn segment and per role: a `response_item`
+/// message is promoted only where the event channel never spoke for its role in
+/// its own turn. A resumed mixed file keeps the imported prefix AND the native
+/// suffix, each exactly once.
+///
+/// Verified inert: 0 promotions across all ~2.7k rollouts in the local corpus.
+#[derive(Debug)]
+struct ResponseItemPromotion {
+    ordinal: u64,
+    /// Coverage under each segmentation. Both are accumulated because which one
+    /// applies is only known at EOF (see [`Self::resolve`]).
+    task_segments: Vec<SegmentCoverage>,
+    ctx_segments: Vec<SegmentCoverage>,
+    saw_task_started: bool,
+    candidates: Vec<PromotionCandidate>,
+    /// Index of the assistant candidate that is still a compaction-summary
+    /// suspect — i.e. nothing but `token_count` has been seen since it.
+    compaction_watch: Option<usize>,
+}
+
+impl ResponseItemPromotion {
+    fn new() -> Self {
+        Self {
+            ordinal: 0,
+            task_segments: vec![SegmentCoverage::default()],
+            ctx_segments: vec![SegmentCoverage::default()],
+            saw_task_started: false,
+            candidates: Vec::new(),
+            compaction_watch: None,
+        }
+    }
+
+    /// Feed one parsed rollout record, BEFORE the parser's own handling of it.
+    /// Returns the record's ordinal.
+    fn note_record(&mut self, msg_type: &str, payload_type: &str) -> u64 {
+        self.ordinal += 1;
+
+        // Compaction adjacency. codex writes the pre-compaction handoff summary
+        // as an assistant message immediately followed by the `compacted`
+        // record, with at most a `token_count` between them. Denying by
+        // adjacency rather than "anywhere in this segment" matters: a rollout
+        // with no turn markers collapses into ONE segment, so a segment-wide
+        // rule would let a single compaction erase an entire imported prefix.
+        match (msg_type, payload_type) {
+            // Transparent — keeps the suspect under watch.
+            ("event_msg", "token_count") => {}
+            ("compacted", _) | ("event_msg", "context_compacted") => {
+                if let Some(index) = self.compaction_watch.take() {
+                    self.candidates[index].denied = true;
+                }
+            }
+            _ => self.compaction_watch = None,
+        }
+
+        // Segment boundaries. `task_started` fires exactly once per turn;
+        // `turn_context` is the weaker fallback because newer codex re-emits it
+        // MID-turn (same trade-off, same precedent as `backfill_turn_durations`).
+        if msg_type == "event_msg" && payload_type == "task_started" {
+            self.saw_task_started = true;
+            self.task_segments.push(SegmentCoverage::default());
+        } else if msg_type == "turn_context" {
+            self.ctx_segments.push(SegmentCoverage::default());
+        }
+
+        // Canonical-channel coverage — "did the event channel already speak for
+        // this role in this turn?".
+        //
+        // `thread_goal_updated` counts as USER input: newer codex consumes a
+        // typed `/goal <objective>` as a slash command and records it as this
+        // event INSTEAD of a `user_message`, and both parsers already synthesize
+        // the opening user turn from it. Without this, the `response_item` twin
+        // of that same prompt would be promoted alongside the synthesized turn
+        // and the opener would render twice.
+        //
+        // Deliberately not narrowed to an opening `create_goal` (which would
+        // mean threading the payload in and re-running `goal_marker`): a
+        // `goal: null` clear is ALSO something the user typed, and a
+        // terminal-status update is not, but suppressing a promotion after one
+        // needs a turn that carries a goal event yet no `user_message` — i.e. a
+        // rollout that HAS the event channel, which is exactly where promotion
+        // is not needed. Accepted, not overlooked.
+        //
+        // Notably absent: `item_completed`. It has no parsing arm here, so
+        // treating it as coverage would suppress a candidate and render nothing
+        // in its place.
+        let (user, assistant) = match (msg_type, payload_type) {
+            ("event_msg", "user_message") | ("event_msg", "thread_goal_updated") => (true, false),
+            ("event_msg", "agent_message") => (false, true),
+            _ => (false, false),
+        };
+        if user || assistant {
+            for segments in [&mut self.task_segments, &mut self.ctx_segments] {
+                if let Some(current) = segments.last_mut() {
+                    current.user |= user;
+                    current.assistant |= assistant;
+                }
+            }
+        }
+
+        self.ordinal
+    }
+
+    /// Register a record the caller has already accepted (role allowlisted,
+    /// deny-lists passed, blocks non-empty). Returns its candidate index, which
+    /// is also its index into the caller's own parallel payload vector.
+    fn push_candidate(&mut self, ordinal: u64, is_user: bool) -> usize {
+        let index = self.candidates.len();
+        self.candidates.push(PromotionCandidate {
+            ordinal,
+            task_seg: self.task_segments.len() - 1,
+            ctx_seg: self.ctx_segments.len() - 1,
+            is_user,
+            denied: false,
+        });
+        if !is_user {
+            self.compaction_watch = Some(index);
+        }
+        index
+    }
+
+    /// Which candidates survive, as a mask parallel to `candidates` (and to the
+    /// caller's payload vector). Callable only at EOF — the segmentation choice
+    /// depends on whether the whole file ever produced a `task_started`.
+    fn resolve(&self) -> Vec<bool> {
+        self.candidates
+            .iter()
+            .map(|candidate| {
+                if candidate.denied {
+                    return false;
+                }
+                let coverage = if self.saw_task_started {
+                    self.task_segments[candidate.task_seg]
+                } else {
+                    self.ctx_segments[candidate.ctx_seg]
+                };
+                if candidate.is_user {
+                    !coverage.user
+                } else {
+                    !coverage.assistant
+                }
+            })
+            .collect()
+    }
+
+    /// Ordinal of the earliest surviving user candidate, used to replay the
+    /// positional `/goal`-opener and title decisions the in-loop code made
+    /// before these records were known.
+    fn first_surviving_user_ordinal(&self, survivors: &[bool]) -> Option<u64> {
+        self.candidates
+            .iter()
+            .zip(survivors)
+            .filter(|(candidate, kept)| **kept && candidate.is_user)
+            .map(|(candidate, _)| candidate.ordinal)
+            .min()
+    }
+}
+
+/// Pull renderable blocks out of a `response_item.payload` of type `message`,
+/// deliberately WITHOUT keying on each content item's `type` tag.
+///
+/// codex's item vocabulary keeps growing upstream, and this path only ever runs
+/// for a rollout whose canonical channel is missing — the one situation where
+/// guessing the tag wrong costs the user the entire transcript. So `input_image`
+/// gets its handling and everything else carrying a string `text` is taken as
+/// text (`output_text`, `input_text`, `text`, `summary_text`, …); an item with
+/// neither is skipped rather than voiding the record.
+///
+/// `strip_blocked_resource_mentions` is applied to user text only. It collapses
+/// runs of whitespace, which is right for a typed prompt (and is what the
+/// `event_msg.user_message` arm does) but would mangle indentation in assistant
+/// markdown — the `event_msg.agent_message` arm passes its text through
+/// verbatim, and this must match it.
+fn extract_response_item_message_blocks(
+    payload: &serde_json::Value,
+    is_user: bool,
+) -> Option<Vec<ContentBlock>> {
+    let content = payload.get("content")?;
+
+    let mut blocks: Vec<ContentBlock> = Vec::new();
+    let mut text_parts: Vec<String> = Vec::new();
+
+    match content {
+        serde_json::Value::String(text) => text_parts.push(text.clone()),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                if item.get("type").and_then(|v| v.as_str()) == Some("input_image") {
+                    if let Some((mime_type, data)) = parse_input_image_data_uri(item) {
+                        blocks.push(ContentBlock::Image {
+                            data,
+                            mime_type,
+                            uri: None,
+                        });
+                    }
+                    continue;
+                }
+                let Some(text) = item.get("text").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                if text.is_empty() || text.trim() == "<image>" {
+                    continue;
+                }
+                text_parts.push(text.to_string());
+            }
+        }
+        _ => return None,
+    }
+
+    let joined = text_parts.join("\n");
+    let text = if is_user {
+        strip_blocked_resource_mentions(&joined)
+    } else {
+        joined
+    };
+    if !text.trim().is_empty() {
+        blocks.insert(0, ContentBlock::Text { text });
+    }
+
+    if blocks.is_empty() {
+        None
+    } else {
+        Some(blocks)
+    }
 }
 
 /// Whether a `response_item` user message carries an `input_image` — the exact
@@ -8645,5 +9252,440 @@ mod tests {
         );
         // No table label to show, so the chip has nothing to say.
         assert!(tool_metas(&detail).iter().all(|m| m.get("label").is_none()));
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // `response_item.message` promotion — issue #452
+    //
+    // A rollout written by a producer that never emits the `event_msg` channel
+    // (an embedder driving codex under its own `CODEX_HOME`) used to render as
+    // a bare "Used N tools": the tool calls parse from `response_item`, every
+    // user and assistant bubble did not. These tests pin BOTH directions — the
+    // recovery, and the silence on every rollout that already has the canonical
+    // channel.
+    // ───────────────────────────────────────────────────────────────────────
+
+    /// `(role, first text block)` per turn, the shape most of these assertions
+    /// want. Tool-only turns come back with `None`. The role is stringified
+    /// because `TurnRole` is not `PartialEq` and a production model should not
+    /// grow a derive to serve a test.
+    fn turn_texts(detail: &crate::models::ConversationDetail) -> Vec<(&'static str, Option<String>)> {
+        detail
+            .turns
+            .iter()
+            .map(|turn| {
+                let role = match turn.role {
+                    TurnRole::User => "user",
+                    TurnRole::Assistant => "assistant",
+                    TurnRole::System => "system",
+                };
+                (
+                    role,
+                    turn.blocks.iter().find_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    }),
+                )
+            })
+            .collect()
+    }
+
+    fn summary_of(label: &str, content: &str) -> crate::models::ConversationSummary {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time ok")
+            .as_nanos();
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-{label}-{nanos}.jsonl"));
+        fs::write(&path, content).expect("write test jsonl");
+        let summary = CodexParser::new()
+            .parse_jsonl_summary(&path)
+            .expect("parse summary ok")
+            .expect("summary present");
+        let _ = fs::remove_file(path);
+        summary
+    }
+
+    /// The reported rollout shape: `session_meta` + `turn_context` + nothing but
+    /// `response_item`s. Every text bubble here is the ONLY copy in the file.
+    const ORCA_ONLY: &str = concat!(
+        "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"orca-1\",\"cwd\":\"/tmp/demo\"}}\n",
+        "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5.1-codex\"}}\n",
+        "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"developer\",\"content\":[{\"type\":\"input_text\",\"text\":\"<permissions instructions>be careful</permissions instructions>\"}]}}\n",
+        "{\"timestamp\":\"2026-03-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<environment_context>\\n  <cwd>/tmp/demo</cwd>\\n</environment_context>\"}]}}\n",
+        "{\"timestamp\":\"2026-03-01T10:00:04Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"summarize the build script\"}]}}\n",
+        "{\"timestamp\":\"2026-03-01T10:00:05Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"name\":\"shell\",\"call_id\":\"c1\",\"arguments\":\"{\\\"command\\\":[\\\"cat\\\",\\\"build.sh\\\"]}\"}}\n",
+        "{\"timestamp\":\"2026-03-01T10:00:06Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"c1\",\"output\":\"#!/bin/sh\\nmake\"}}\n",
+        "{\"timestamp\":\"2026-03-01T10:00:07Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"commentary\",\"content\":[{\"type\":\"output_text\",\"text\":\"Reading it now.\"}]}}\n",
+        "{\"timestamp\":\"2026-03-01T10:00:08Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"It just runs make.\"}]}}\n"
+    );
+
+    #[test]
+    fn event_msg_less_rollout_recovers_user_and_assistant_text() {
+        let detail = parse_rollout("orca-only", ORCA_ONLY, "orca-1");
+
+        assert_eq!(
+            turn_texts(&detail),
+            vec![
+                ("user", Some("summarize the build script".into())),
+                // The tool call and its output fold into one assistant turn,
+                // which is what used to be the WHOLE transcript.
+                ("assistant", None),
+                ("assistant", Some("Reading it now.".into())),
+                ("assistant", Some("It just runs make.".into())),
+            ],
+            "both `phase` values render as assistant text, and the tool turn \
+             keeps its position between the prompt and the reply"
+        );
+        assert_eq!(
+            detail.summary.title.as_deref(),
+            Some("summarize the build script"),
+            "the promoted prompt supplies the title the event channel would have"
+        );
+    }
+
+    #[test]
+    fn event_msg_less_rollout_summary_matches_the_detail() {
+        // Summary/detail parity is what keeps the sidebar entry, the import
+        // picker row and the opened conversation telling the same story.
+        let summary = summary_of("orca-only-sum", ORCA_ONLY);
+
+        assert_eq!(summary.title.as_deref(), Some("summarize the build script"));
+        assert_eq!(
+            summary.message_count, 3,
+            "one prompt + two assistant messages; the envelopes and the \
+             developer record are not turns"
+        );
+    }
+
+    #[test]
+    fn canonical_channel_suppresses_the_response_item_twin() {
+        // THE anti-duplication test. A normal codex rollout records every
+        // message twice — `event_msg` first for the assistant, `response_item`
+        // first for the user — and only one copy may render.
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"twin-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5.1-codex\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"ping\"}]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:04Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"ping\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:05Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"pong\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:06Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"pong\"}]}}\n"
+        );
+        let detail = parse_rollout("twin", content, "twin-1");
+
+        assert_eq!(
+            turn_texts(&detail),
+            vec![
+                ("user", Some("ping".into())),
+                ("assistant", Some("pong".into())),
+            ]
+        );
+        assert_eq!(summary_of("twin-sum", content).message_count, 2);
+    }
+
+    #[test]
+    fn a_resumed_mixed_rollout_keeps_both_halves_exactly_once() {
+        // The reported workflow: the session is created elsewhere, then resumed
+        // in codeg — which appends NATIVE `event_msg` turns to the SAME file.
+        // A whole-file gate would drop the imported prefix the moment that
+        // happened; the per-segment gate keeps it.
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"mixed-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"imported prompt\"}]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"imported reply\"}]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:10Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:11Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"native prompt\"}]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:12Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"native prompt\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:13Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"native reply\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:14Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"native reply\"}]}}\n"
+        );
+        let detail = parse_rollout("mixed", content, "mixed-1");
+
+        assert_eq!(
+            turn_texts(&detail),
+            vec![
+                ("user", Some("imported prompt".into())),
+                ("assistant", Some("imported reply".into())),
+                ("user", Some("native prompt".into())),
+                ("assistant", Some("native reply".into())),
+            ],
+            "the imported prefix survives and the native suffix is not doubled"
+        );
+        assert_eq!(detail.summary.title.as_deref(), Some("imported prompt"));
+        assert_eq!(summary_of("mixed-sum", content).message_count, 4);
+    }
+
+    #[test]
+    fn compaction_summary_is_denied_by_adjacency_not_by_segment() {
+        // codex writes the pre-compaction handoff as an assistant message
+        // immediately before the `compacted` record (a `token_count` may sit
+        // between). Only THAT message is machine text — a segment-wide rule
+        // would reject every assistant message in a marker-less imported prefix
+        // and re-break #452 for any compacted session.
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"comp-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"before compaction\"}]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"real reply before\"}]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Handoff summary:\\n\\nCurrent state: …\"}]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:04Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{}}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:05Z\",\"type\":\"compacted\",\"payload\":{}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:06Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"real reply after\"}]}}\n"
+        );
+        let detail = parse_rollout("compaction", content, "comp-1");
+
+        assert_eq!(
+            turn_texts(&detail),
+            vec![
+                ("user", Some("before compaction".into())),
+                ("assistant", Some("real reply before".into())),
+                ("assistant", Some("real reply after".into())),
+            ],
+            "only the handoff summary is suppressed"
+        );
+    }
+
+    #[test]
+    fn machine_authored_records_never_become_turns() {
+        // Every class below is real: counted across the local rollout corpus,
+        // or (for `developer`) present in every single session.
+        let mut lines = String::from(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"deny-1\",\"cwd\":\"/tmp/demo\"}}\n",
+        );
+        for (index, text) in [
+            "# AGENTS.md instructions for /tmp/demo\n\n<INSTRUCTIONS>\nhi\n</INSTRUCTIONS>",
+            "<environment_context>\n  <cwd>/tmp/demo</cwd>\n</environment_context>",
+            "<codex_internal_context source=\"goal\">Continue working</codex_internal_context>",
+            "<turn_aborted>\nThe user interrupted the previous turn on purpose.\n</turn_aborted>",
+            "<subagent_notification>agent 3 finished</subagent_notification>",
+            "<skill name=\"pptx\">use this</skill>",
+            "Warning: apply_patch was requested via exec_command. Use the apply_patch tool instead.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            lines.push_str(&format!(
+                "{{\"timestamp\":\"2026-03-01T10:01:{:02}Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":{}}}]}}}}\n",
+                index,
+                serde_json::to_string(text).expect("encode")
+            ));
+        }
+        // Plan-mode payloads reach the model history but are announced to the UI
+        // as `item_completed { item_type: "Plan" }`, which this parser has no arm
+        // for — promoting the raw XML would invent a rendering surface.
+        lines.push_str("{\"timestamp\":\"2026-03-01T10:02:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"<proposed_plan>\\n# Plan\\n</proposed_plan>\"}]}}\n");
+        // …and a real message, so the test can tell "filtered everything" from
+        // "parsed nothing".
+        lines.push_str("{\"timestamp\":\"2026-03-01T10:03:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"a real answer\"}]}}\n");
+
+        let detail = parse_rollout("deny", &lines, "deny-1");
+        assert_eq!(
+            turn_texts(&detail),
+            vec![("assistant", Some("a real answer".into()))]
+        );
+        assert_eq!(summary_of("deny-sum", &lines).message_count, 1);
+        assert_eq!(detail.summary.title, None, "no envelope may become a title");
+    }
+
+    #[test]
+    fn a_promoted_user_after_a_goal_leaves_the_opener_intact() {
+        // The `/goal` opener is decided POSITIONALLY. A promoted user that
+        // arrives after the goal is the reply to it, not the prompt that opened
+        // the session, so the synthetic opener must survive.
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"gp-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Ship the page\",\"status\":\"active\"}}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5.1-codex\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"确认\"}]}}\n"
+        );
+        let detail = parse_rollout("goal-after", content, "gp-1");
+
+        let users: Vec<Option<String>> = turn_texts(&detail)
+            .into_iter()
+            .filter(|(role, _)| *role == "user")
+            .map(|(_, text)| text)
+            .collect();
+        assert_eq!(
+            users,
+            vec![Some("/goal Ship the page".into()), Some("确认".into())]
+        );
+        assert_eq!(
+            detail.summary.title.as_deref(),
+            Some("Ship the page"),
+            "the goal opened the session, so it keeps the title"
+        );
+        assert_eq!(summary_of("goal-after-sum", content).message_count, 2);
+    }
+
+    #[test]
+    fn a_goal_covers_the_user_channel_for_its_own_turn() {
+        // A typed `/goal <objective>` IS user input; newer codex records it as
+        // `thread_goal_updated` INSTEAD of a `user_message` and both parsers
+        // synthesize the opening turn from it. So the `response_item` twin of
+        // that same prompt must not ALSO be promoted — in either order — or the
+        // opener renders twice. (The goal-then-user order is pinned separately
+        // by `goal_with_text_only_response_item_titles_from_objective_in_both_paths`.)
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"gb-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"/goal Ship the page\"}]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Ship the page\",\"status\":\"active\"}}}\n"
+        );
+        let detail = parse_rollout("goal-before", content, "gb-1");
+
+        let users: Vec<Option<String>> = turn_texts(&detail)
+            .into_iter()
+            .filter(|(role, _)| *role == "user")
+            .map(|(_, text)| text)
+            .collect();
+        assert_eq!(users, vec![Some("/goal Ship the page".into())]);
+        assert_eq!(detail.summary.title.as_deref(), Some("Ship the page"));
+        assert_eq!(summary_of("goal-before-sum", content).message_count, 1);
+    }
+
+    #[test]
+    fn a_promoted_user_in_an_earlier_turn_cancels_the_opener_and_wins_the_title() {
+        // The mixed-file shape: an imported prefix with no event channel, then a
+        // native turn that opens a `/goal`. The goal did NOT open the session —
+        // a real prompt precedes it — so no synthetic opener is added and the
+        // earlier prompt outranks the objective for the title. This is what the
+        // ordinal comparison exists for: "is there a user anywhere" would answer
+        // the same for the reply-to-a-goal shape, which must keep its opener.
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"gb2-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"build me a page\"}]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"on it\"}]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:10Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:11Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Ship the page\",\"status\":\"active\"}}}\n"
+        );
+        let detail = parse_rollout("goal-later-turn", content, "gb2-1");
+
+        assert_eq!(
+            turn_texts(&detail),
+            vec![
+                ("user", Some("build me a page".into())),
+                ("assistant", Some("on it".into())),
+                // The goal card itself — no synthetic `/goal …` user turn.
+                ("assistant", None),
+            ]
+        );
+        assert_eq!(detail.summary.title.as_deref(), Some("build me a page"));
+
+        let summary = summary_of("goal-later-turn-sum", content);
+        assert_eq!(summary.title.as_deref(), Some("build me a page"));
+        assert_eq!(summary.message_count, 2, "no synthetic opener is counted");
+    }
+
+    #[test]
+    fn a_native_thread_name_outranks_a_promoted_prompt() {
+        // codex's own thread name is the strongest title source and its arm
+        // assigns unconditionally, so it needs a flag rather than an ordinal.
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"tn-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"the raw prompt\"}]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_name_updated\",\"thread_name\":\"Curated name\"}}\n"
+        );
+        let detail = parse_rollout("thread-name", content, "tn-1");
+
+        assert_eq!(detail.summary.title.as_deref(), Some("Curated name"));
+        assert_eq!(
+            summary_of("thread-name-sum", content).title.as_deref(),
+            Some("Curated name")
+        );
+    }
+
+    #[test]
+    fn consecutive_promotions_land_in_place_and_keep_their_order() {
+        // Several candidates share one insertion point when nothing was pushed
+        // between them. The splice walks insertion points in DESCENDING order,
+        // so a same-index group has to go back as a GROUP — one at a time would
+        // reverse it.
+        //
+        // The tool calls on either side are what give this teeth: they make the
+        // insertion point interior, so appending the promotions at the end and
+        // splicing them one by one BOTH produce a different transcript.
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"ord-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"name\":\"shell\",\"call_id\":\"before\",\"arguments\":\"{\\\"command\\\":[\\\"echo\\\",\\\"before\\\"]}\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"before\",\"output\":\"before\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"first\"}]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:04Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"second\"}]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:05Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"third\"}]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:06Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"name\":\"shell\",\"call_id\":\"after\",\"arguments\":\"{\\\"command\\\":[\\\"echo\\\",\\\"after\\\"]}\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:07Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"after\",\"output\":\"after\"}}\n"
+        );
+        let detail = parse_rollout("order", content, "ord-1");
+
+        assert_eq!(
+            turn_texts(&detail),
+            vec![
+                ("assistant", None),
+                ("assistant", Some("first".into())),
+                ("assistant", Some("second".into())),
+                ("assistant", Some("third".into())),
+                ("assistant", None),
+            ],
+            "the group lands between the two tool turns, in source order"
+        );
+    }
+
+    #[test]
+    fn an_image_bearing_user_still_takes_the_dedicated_path() {
+        // Image users are pushed in-loop, unconditionally, because the canonical
+        // channel never carries the image. The promotion path must not emit a
+        // second, text-only copy of the same record.
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"img-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"what is this\"},{\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,QUJD\"}]}}\n"
+        );
+        let detail = parse_rollout("image", content, "img-1");
+
+        assert_eq!(detail.turns.len(), 1);
+        assert!(matches!(detail.turns[0].role, TurnRole::User));
+        assert!(
+            detail.turns[0]
+                .blocks
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Image { .. })),
+            "the image survives"
+        );
+        assert_eq!(
+            turn_texts(&detail)[0].1.as_deref(),
+            Some("what is this"),
+            "and its text is not duplicated into a second turn"
+        );
+    }
+
+    #[test]
+    fn promoted_assistant_text_keeps_its_whitespace() {
+        // The `event_msg.agent_message` arm stores its text verbatim, while the
+        // user arms run `strip_blocked_resource_mentions` (which collapses runs
+        // of spaces — right for a typed prompt, ruinous for indented markdown).
+        // Promotion has to match each of them, not pick one.
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"ws-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"```sh\\n    indented\\n```\"}]}}\n"
+        );
+        let detail = parse_rollout("whitespace", content, "ws-1");
+
+        assert_eq!(
+            turn_texts(&detail)[0].1.as_deref(),
+            Some("```sh\n    indented\n```")
+        );
+    }
+
+    #[test]
+    fn an_unknown_content_tag_is_still_read_as_text() {
+        // codex's item vocabulary keeps growing upstream, and this path only
+        // runs where guessing wrong costs the user the whole transcript — so the
+        // extractor keys on the presence of `text`, not on the tag.
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"tag-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"some_future_tag\",\"text\":\"still readable\"},{\"type\":\"opaque\",\"blob\":1}]}}\n"
+        );
+        let detail = parse_rollout("future-tag", content, "tag-1");
+
+        assert_eq!(
+            turn_texts(&detail),
+            vec![("assistant", Some("still readable".into()))]
+        );
     }
 }

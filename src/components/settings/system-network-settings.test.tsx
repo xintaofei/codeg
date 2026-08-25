@@ -1,4 +1,4 @@
-import { render, screen, act, fireEvent } from "@testing-library/react"
+import { render, screen, act, fireEvent, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -24,6 +24,8 @@ vi.mock("@/lib/api", () => ({
   getSystemProxySettings: vi.fn(),
   updateSystemProxySettings: vi.fn(),
   updateSystemLanguageSettings: vi.fn(),
+  getSystemAutostartSettings: vi.fn(),
+  updateSystemAutostartSettings: vi.fn(),
   // The System page now embeds <BackupSettings/>, which subscribes to backup
   // progress on mount and imports the backup API surface; stub it all.
   listenBackupProgress: vi.fn(async () => () => {}),
@@ -42,7 +44,23 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), message: vi.fn() },
 }))
 
-vi.mock("@/lib/platform", () => ({ openUrl: vi.fn(), isDesktop: () => false }))
+// Launch at login is gated on a LOCAL desktop shell. Model the two axes
+// separately rather than as one "is desktop" flag, so a case can pin the gate
+// itself: a remote-workspace window IS a desktop shell, and asking it about
+// login items would ask the wrong machine — the regression a single flag
+// cannot catch. Both default to the web build (section hidden).
+//
+// The transport double above deliberately keeps its own `isDesktop` at false
+// whatever these say: `usesTauriUpdater()` reads it from there, and a true
+// would send the update provider into the Tauri updater plugin, which does not
+// exist under jsdom. Nothing in the section under test consults it.
+let desktopShell = false
+let remoteWorkspace = false
+vi.mock("@/lib/platform", () => ({
+  openUrl: vi.fn(),
+  isDesktop: () => desktopShell,
+  isLocalDesktop: () => desktopShell && !remoteWorkspace,
+}))
 
 vi.mock("@/components/i18n-provider", () => ({
   useAppI18n: () => ({
@@ -62,9 +80,15 @@ vi.mock("remark-gfm", () => ({ default: () => undefined }))
 import { SystemNetworkSettings } from "./system-network-settings"
 import { UpdateProvider } from "@/components/providers/update-provider"
 import enMessages from "@/i18n/messages/en.json"
-import { getSystemProxySettings } from "@/lib/api"
+import {
+  getSystemAutostartSettings,
+  getSystemProxySettings,
+  updateSystemAutostartSettings,
+} from "@/lib/api"
 
 const mockGetProxy = vi.mocked(getSystemProxySettings)
+const mockGetAutostart = vi.mocked(getSystemAutostartSettings)
+const mockSetAutostart = vi.mocked(updateSystemAutostartSettings)
 
 // The settings page reads the update lifecycle from the app-wide UpdateProvider
 // (settings/layout.tsx wraps it in production), so the test must too.
@@ -82,6 +106,10 @@ beforeEach(() => {
   call.mockReset()
   subscribe.mockClear()
   mockGetProxy.mockReset()
+  mockGetAutostart.mockReset()
+  mockSetAutostart.mockReset()
+  desktopShell = false
+  remoteWorkspace = false
   liveHandler = null
   // The provider caches the last availability check in localStorage, which
   // jsdom keeps across tests in a file — clear it so each case starts from a
@@ -331,5 +359,89 @@ describe("SystemNetworkSettings — update source outage", () => {
     expect(
       await screen.findByRole("button", { name: "Roll back" })
     ).toBeInTheDocument()
+  })
+})
+
+describe("SystemNetworkSettings — launch at login", () => {
+  beforeEach(() => {
+    mockGetProxy.mockResolvedValue({ enabled: false, proxy_url: null })
+    call.mockImplementation(liveServerCalls({ seq: 1, status: "idle" }))
+  })
+
+  it("hides the section on a web build", async () => {
+    // No login items to register from a browser, so the row must not render —
+    // and the machine must not be asked about them either.
+    mockGetAutostart.mockResolvedValue({ enabled: false })
+
+    renderWithIntl()
+
+    await screen.findByRole("heading", { name: "Network Proxy" })
+    expect(screen.queryByLabelText("Launch at login")).not.toBeInTheDocument()
+    expect(mockGetAutostart).not.toHaveBeenCalled()
+  })
+
+  it("hides the section in a remote-workspace window", async () => {
+    // A desktop shell, but every call lands on someone else's machine — whose
+    // login items are not the ones the user is looking at. Gating on "is a
+    // desktop app" instead of "is a LOCAL desktop app" fails right here.
+    desktopShell = true
+    remoteWorkspace = true
+    mockGetAutostart.mockResolvedValue({ enabled: false })
+
+    renderWithIntl()
+
+    await screen.findByRole("heading", { name: "Network Proxy" })
+    expect(screen.queryByLabelText("Launch at login")).not.toBeInTheDocument()
+    expect(mockGetAutostart).not.toHaveBeenCalled()
+  })
+
+  it("follows the OS's answer rather than the optimistic value", async () => {
+    // Windows can veto a Run entry through Task Manager, so a backend that
+    // reports "still off" has to win over the click that turned it on.
+    desktopShell = true
+    mockGetAutostart.mockResolvedValue({ enabled: false })
+    mockSetAutostart.mockResolvedValue({ enabled: false })
+
+    renderWithIntl()
+
+    const autostart = await screen.findByLabelText("Launch at login")
+    expect(autostart).toHaveAttribute("role", "switch")
+    expect(autostart).toHaveAttribute("data-state", "unchecked")
+
+    // The switch is inert for the duration of the write, so waiting for it to
+    // come back is waiting for the reply to have been applied — asserting on
+    // the value alone would pass against the pre-click state.
+    fireEvent.click(autostart)
+    await waitFor(() => expect(autostart).not.toBeDisabled())
+    expect(mockSetAutostart).toHaveBeenCalledWith({ enabled: true })
+    expect(autostart).toHaveAttribute("data-state", "unchecked")
+
+    // …and it does flip once the OS actually accepts the registration.
+    mockSetAutostart.mockResolvedValue({ enabled: true })
+    fireEvent.click(autostart)
+    await waitFor(() =>
+      expect(autostart).toHaveAttribute("data-state", "checked")
+    )
+  })
+
+  it("keeps the rest of the page alive when the OS won't report login items", async () => {
+    // A locked-down registry / missing home dir fails only this one read: the
+    // switch goes inert and explains itself, the proxy card still loads.
+    desktopShell = true
+    mockGetProxy.mockResolvedValue({
+      enabled: true,
+      proxy_url: "http://proxy.local:8080",
+    })
+    mockGetAutostart.mockRejectedValue(new Error("registry locked"))
+
+    renderWithIntl()
+
+    const autostart = await screen.findByLabelText("Launch at login")
+    expect(autostart).toBeDisabled()
+    expect(screen.getByText(/registry locked/)).toBeInTheDocument()
+    expect(
+      screen.getByDisplayValue("http://proxy.local:8080")
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Load failed/)).not.toBeInTheDocument()
   })
 })

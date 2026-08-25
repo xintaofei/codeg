@@ -545,7 +545,8 @@ pub async fn work_task_cancel_core(id: i32, reason: Option<String>) -> Result<()
 /// the outcome rides the `task://changed` events (merging → done, or back to
 /// review with a readable error). This awaits only the dispatch (validation +
 /// agent spawn), so refused merges surface directly in the dialog.
-/// `message: None` = the agent writes the commit message itself.
+/// `message: None` = the agent writes the commit message itself;
+/// `instructions: None` = the user added nothing beyond the standing recipe.
 ///
 /// Returns `true` when the merge was QUEUED instead of started — the folder was
 /// already landing another task, and this one goes in as soon as that finishes.
@@ -553,9 +554,10 @@ pub async fn work_task_merge_core(
     id: i32,
     message: Option<String>,
     delete_worktree: bool,
+    instructions: Option<String>,
 ) -> Result<bool, DbError> {
     engine()?
-        .merge_task(id, message, delete_worktree, false)
+        .merge_task(id, message, delete_worktree, instructions, false)
         .await
         .map(|dispatch| dispatch.is_queued())
         .map_err(DbError::Validation)
@@ -591,13 +593,19 @@ pub async fn work_task_merge_unqueue_core(
 /// REST calls, no agent — so both success and failure land in the caller's
 /// dialog. Every gate is inside the engine, where a direct API call cannot
 /// route around it.
+///
+/// `delete_worktree` takes the checkout along once the delivery lands, the
+/// same offer the merge and complete acceptances make. It never changes the
+/// result: a removal that fails leaves a retryable `cleanup_state` on the card
+/// and the delivered URL still comes back.
 pub async fn work_task_deliver_pr_core(
     id: i32,
     pr_title: Option<String>,
     draft: bool,
+    delete_worktree: bool,
 ) -> Result<String, DbError> {
     engine()?
-        .deliver_pr(id, pr_title, draft)
+        .deliver_pr(id, pr_title, draft, delete_worktree)
         .await
         .map_err(DbError::Validation)
 }
@@ -941,8 +949,9 @@ pub async fn work_task_merge(
     id: i32,
     message: Option<String>,
     delete_worktree: bool,
+    instructions: Option<String>,
 ) -> Result<bool, DbError> {
-    work_task_merge_core(id, message, delete_worktree).await
+    work_task_merge_core(id, message, delete_worktree, instructions).await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -961,8 +970,9 @@ pub async fn work_task_deliver_pr(
     id: i32,
     pr_title: Option<String>,
     draft: bool,
+    delete_worktree: bool,
 ) -> Result<String, DbError> {
-    work_task_deliver_pr_core(id, pr_title, draft).await
+    work_task_deliver_pr_core(id, pr_title, draft, delete_worktree).await
 }
 
 #[cfg(feature = "tauri-runtime")]

@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "Zoom da janela",
-      "sectionDescription": "Dimensiona toda a interface. Aplica imediatamente e é salvo por dispositivo.",
+      "sectionDescription": "Dimensiona toda a interface. Aplica imediatamente e é salvo por dispositivo. ⌘/Ctrl + e - percorrem os mesmos níveis de zoom deste menu (⌘/Ctrl 0 volta para 100%).",
       "placeholder": "Selecione o nível de zoom",
       "default": "Padrão",
       "current": "Zoom atual: {zoom}%"
@@ -181,6 +181,7 @@
       "chooseImage": "Escolher imagem",
       "replaceImage": "Substituir imagem",
       "removeImage": "Remover",
+      "formatHint": "PNG, JPEG, WebP e GIF. Imagens animadas são reproduzidas automaticamente.",
       "fillMode": "Modo de preenchimento",
       "fillModes": {
         "cover": "Preencher",
@@ -194,13 +195,18 @@
       "panelOpacity": "Opacidade dos painéis",
       "panelOpacityHint": "O quão opacos são a barra lateral, os painéis e as barras de abas. Mais baixo deixa a imagem transparecer mais.",
       "errorTooLarge": "A imagem é muito grande (máx. 16 MB).",
+      "errorUnsupportedFormat": "Formato de imagem não suportado. Escolha um PNG, JPEG, WebP ou GIF.",
       "errorUploadFailed": "Falha ao definir a imagem de fundo."
     }
   },
   "SystemSettings": {
     "loading": "Carregando...",
     "sectionTitle": "Gerenciamento do sistema",
-    "sectionDescription": "Gerencie proxy de rede, atualizações do app e preferências de idioma.",
+    "sectionDescription": "Gerencie atualizações do app, o início automático ao fazer login, o proxy de rede e as preferências de idioma.",
+    "autostartTitle": "Iniciar ao fazer login",
+    "autostartDescription": "Abre automaticamente depois de você entrar neste computador.",
+    "autostartSaveFailed": "Falha ao salvar as configurações de início automático: {message}",
+    "autostartUnavailable": "Não foi possível ler o registro de inicialização deste computador: {message}",
     "proxyTitle": "Proxy de rede",
     "proxyDescription": "Quando ativado, as solicitações de rede seguintes priorizam este proxy (incluindo chat ACP, instalação de agentes e operações remotas do Git).",
     "loadFailed": "Falha ao carregar: {message}",
@@ -353,6 +359,7 @@
     "resetDefault": "Restaurar padrões",
     "recordInstruction": "Clique no botão à direita e pressione uma combinação de teclas. Use Ctrl/Cmd, Alt e Shift. Pressione Esc para cancelar a gravação.",
     "recording": "Pressione um atalho...",
+    "unassigned": "Não atribuído",
     "toasts": {
       "conflict": "O atalho já está em uso por \"{title}\"",
       "updated": "Atalho atualizado",
@@ -423,6 +430,18 @@
       "toggle_custom_style": {
         "title": "Suspender/retomar estilo personalizado",
         "description": "Saída de emergência: desliga todas as cores e o CSS personalizados e volta a ligá-los"
+      },
+      "zoom_in": {
+        "title": "Aumentar zoom",
+        "description": "Aumenta a janela em um nível"
+      },
+      "zoom_out": {
+        "title": "Diminuir zoom",
+        "description": "Diminui a janela em um nível"
+      },
+      "zoom_reset": {
+        "title": "Redefinir zoom",
+        "description": "Restaura o zoom da janela para 100%"
       }
     }
   },
@@ -814,6 +833,33 @@
       "advancedHint": "O settings.json completo. Salvar grava o arquivo literalmente — e é também a única forma de apagar uma chave.",
       "saveRawConfig": "Salvar arquivo"
     },
+    "antigravity": {
+      "configDescription": "Antigravity needs an authentication method before it can start a session. The choice is written to auth.type in $GEMINI_HOME/antigravity-acp/settings.json, which is the only place the ACP server looks — without it every new session fails with \"Authentication required\". Model and session mode are not here: Antigravity reports them over ACP, so the composer's own selectors own them per session.",
+      "methodLabel": "Authentication method",
+      "methods": {
+        "oauth-personal": "Sign in with Google",
+        "oauth-business": "Gemini Enterprise",
+        "gemini-api-key": "Gemini API key",
+        "agent-platform": "Gemini Enterprise Agent Platform"
+      },
+      "methodHints": {
+        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused.",
+        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser.",
+        "gemini-api-key": "A key for the Gemini Developer API, passed to the agent as GEMINI_API_KEY.",
+        "agent-platform": "Formerly Vertex AI. Use an API key, or a project and location with Application Default Credentials (gcloud auth application-default login)."
+      },
+      "geminiApiKeyLabel": "Gemini API key",
+      "googleApiKeyLabel": "Google API key",
+      "googleApiKeyHint": "Optional. When set it is used on its own — the project and location below are ignored. Leave it empty to authenticate with Application Default Credentials instead.",
+      "gcpProjectLabel": "GCP project",
+      "gcpLocationLabel": "GCP location",
+      "missingGeminiApiKey": "Enter a Gemini API key, or pick a different authentication method — sessions will fail to start without it.",
+      "missingAgentPlatformConfig": "Enter an API key, or both a project and a location — sessions will fail to start without one of the two.",
+      "missingEnterpriseConfig": "Gemini Enterprise needs both a project and a location.",
+      "settingsFileHint": "Saved to auth.type in this file. Any other keys you put there are preserved.",
+      "syncSkipped": "Your choice was saved, but codeg could not write it to the ACP server's settings.json, so Antigravity will keep authenticating the way that file says. Set auth.type in it yourself, or move it aside and save again.",
+      "save": "Save"
+    },
     "deepseek": {
       "configManagement": "Configuração do DeepSeek Harness",
       "configDescription": "O endpoint e a chave são variáveis de ambiente que o deepseek-acp lê ao iniciar. O modelo e o nível de raciocínio são seletores por sessão — escolha-os no campo de mensagem.",
@@ -836,6 +882,9 @@
       "enableWebsocketAria": "Habilitar WebSocket para Codex Provider",
       "enableSkills": "Habilitar Skills",
       "enableSkillsAria": "Habilitar Skills para Codex",
+      "enableDefaultModeRequestUserInput": "Permitir perguntas no modo Default",
+      "enableDefaultModeRequestUserInputAria": "Permitir que o Codex faça perguntas no modo Default",
+      "enableDefaultModeRequestUserInputHint": "O Codex só pode usar a ferramenta request_user_input no modo Plan. Ative para que ele também possa perguntar em turnos comuns. Grava [features].default_mode_request_user_input em ~/.codex/config.toml; a opção ainda está em desenvolvimento no projeto original. Vale a partir da próxima sessão.",
       "enableFast": "Habilitar Fast",
       "enableFastAria": "Habilitar nível de serviço Fast para Codex",
       "sandboxGroupTitle": "Sandbox e aprovações",
@@ -1263,7 +1312,10 @@
       "piBinaryUninstallFailed": "Falha ao desinstalar o pi",
       "savePiTrustFailed": "Falha ao salvar a confiança do espaço de trabalho",
       "qoderSaved": "Configuração do Qoder salva",
-      "saveQoderConfigFailed": "Falha ao salvar a configuração do Qoder"
+      "saveQoderConfigFailed": "Falha ao salvar a configuração do Qoder",
+      "antigravitySaved": "Antigravity config saved",
+      "antigravitySyncSkipped": "Saved, but Antigravity's settings.json was left alone",
+      "saveAntigravityConfigFailed": "Failed to save Antigravity config"
     },
     "version": {
       "statusLabel": "Status da versão",
@@ -1441,11 +1493,7 @@
   "GeneralSettings": {
     "loading": "Carregando...",
     "sectionTitle": "Geral",
-    "sectionDescription": "Preferências centralizadas para o início automático ao fazer login, o terminal padrão, aceleração de renderização e delegação multi-agente.",
-    "autostartTitle": "Iniciar ao fazer login",
-    "autostartDescription": "Abre o codeg automaticamente depois de você entrar neste computador.",
-    "autostartSaveFailed": "Falha ao salvar as configurações de início automático: {message}",
-    "autostartUnavailable": "Este sistema não informou o registro de inicialização do codeg: {message}",
+    "sectionDescription": "Preferências centralizadas para o terminal padrão, aceleração de renderização, sons de notificação e delegação multi-agente.",
     "terminalTitle": "Terminal padrão",
     "terminalDescription": "Escolha o shell usado ao abrir novas abas de terminal pela barra de terminal ou pela árvore de arquivos. Os agentes também o usam quando pedem ao codeg para executar uma linha de comando inteira.",
     "terminalSystemDefault": "Padrão do sistema",
@@ -1626,9 +1674,11 @@
       "openFolder": "Abrir pasta",
       "searchPlaceholder": "Buscar conversas...",
       "viewOptions": "Opções de exibição",
+      "listOptions": "Lista de conversas",
       "showCompleted": "Mostrar conversas concluídas",
       "showWorktrees": "Mostrar pastas de worktree",
       "showRecent": "Mostrar grupo Recentes",
+      "navigationItems": "Itens de navegação",
       "moreOptions": "Mais opções",
       "sortBy": "Ordenar por",
       "sortByCreatedAt": "Data de criação",
@@ -1693,8 +1743,17 @@
       "sectionFolders": "Pastas",
       "sectionChats": "Chat",
       "sectionRecent": "Recentes",
+      "sectionPk": "Arena PK",
       "noChats": "Sem chats",
       "noRecent": "Sem conversas recentes",
+      "noPk": "Sem sessões PK",
+      "pkOpenArena": "Open this PK arena",
+      "pkArchive": "Archive the PK round",
+      "pkArchiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
+      "pkArchiveSuccess": "PK round archived",
+      "pkArchiveFailed": "Archive failed: {message}",
+      "pkExpand": "Expand agent sessions",
+      "pkCollapse": "Collapse agent sessions",
       "showMoreRecent": "Mostrar mais ({count})",
       "noFolders": "Nenhuma pasta aberta",
       "newChatAction": "Novo chat",
@@ -1820,7 +1879,8 @@
       "search": "Buscar",
       "openSettings": "Abrir configurações",
       "backToConversations": "Voltar às conversas",
-      "withShortcut": "{label} (atalho: {shortcut})"
+      "withShortcut": "{label} (atalho: {shortcut})",
+      "pkArena": "Arena PK de agentes"
     },
     "statusBar": {
       "connection": {
@@ -2665,6 +2725,8 @@
           "nextRetryIn": "próxima em {seconds}s",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}, {delay}",
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "O {agent} definiu {option} como {actual} em vez de {requested}"
@@ -2755,7 +2817,8 @@
         "mentionGroupAgent": "Agentes",
         "mentionGroupSession": "Sessões",
         "mentionGroupCommit": "Commits",
-        "mentionGroupSkill": "Habilidades"
+        "mentionGroupSkill": "Habilidades",
+        "startPk": "PK de agentes"
       },
       "messageQueue": {
         "addToQueue": "Adicionar à fila",
@@ -2987,6 +3050,9 @@
         "selectionCopied": "Copiado",
         "selectionCopyFailed": "Falha ao copiar",
         "selectionQuote": "Citar",
+        "selectionAsk": "Perguntar",
+        "selectionAskPlaceholder": "Pergunte sobre esta seleção…",
+        "selectionAskSubmit": "Perguntar em uma nova conversa",
         "downloadImage": "Baixar imagem",
         "copyImage": "Copiar imagem",
         "copiedImage": "Imagem copiada",
@@ -3437,7 +3503,11 @@
       "hunkLabel": "Bloco {index}",
       "loadingHunk": "Carregando hunk...",
       "noDiffData": "Sem dados de diff",
-      "showRemainingLines": "Mostrar mais {count} linhas"
+      "showRemainingLines": "Mostrar mais {count} linhas",
+      "viewMode": {
+        "split": "Alternar para a visualização lado a lado",
+        "unified": "Alternar para a visualização em linha"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "Pasta de trabalho",
@@ -4570,6 +4640,7 @@
     "actionEdit": "Editar",
     "actionDelete": "Excluir",
     "actionRetryCleanup": "Repetir limpeza",
+    "actionDeleteWorktree": "Excluir worktree",
     "actionMerge": "Merge",
     "actionUnqueueMerge": "Sair da fila de merge",
     "actionEditQueuedMerge": "Editar merge na fila",
@@ -4663,6 +4734,8 @@
     "strategySquashHint": "Todas as mudanças da tarefa entram na branch principal como um único registro — histórico mais limpo.",
     "strategyMerge": "Manter o histórico completo",
     "strategyMergeHint": "Cada commit feito durante a tarefa é mantido, mais um registro de merge — cada etapa fica rastreável.",
+    "mergeInstructions": "Instruções adicionais (opcional)",
+    "mergeInstructionsPlaceholder": "ex.: em caso de conflito, priorize este branch",
     "mergeDeleteWorktree": "Excluir o worktree após o merge",
     "mergeSubmit": "Merge",
     "mergeSubmitQueue": "Adicionar à fila",
@@ -4693,8 +4766,6 @@
     "settingsAutoMergeHint": "Uma tarefa que chega à revisão com mudanças a integrar recebe merge como se você clicasse em Merge: o agente escreve a mensagem de commit e o worktree segue o padrão abaixo. Se a pré-verificação falhar ou um merge tiver falhado, a tarefa fica esperando por você.",
     "settingsDeleteWorktree": "Excluir o worktree após o merge",
     "settingsDeleteWorktreeHint": "Marca a opção por padrão no diálogo de merge; ainda dá para alterar lá.",
-    "settingsForgeWriteback": "Comentar de volta na issue",
-    "settingsForgeWritebackHint": "Quando uma tarefa vinda de uma issue ou pull request termina, o codeg publica lá um comentário: o resultado, o link e os números do diff — nunca nada escrito pelo agente. Desligado por padrão, porque publica onde outras pessoas estão olhando.",
     "settingsWorktreeRoot": "Local do worktree",
     "settingsWorktreeRootHint": "Diretório onde os worktrees das novas tarefas são criados, um por tarefa. Deixe vazio para criá-los ao lado da pasta do projeto; \"~\" é a sua pasta pessoal e um caminho relativo é resolvido a partir da pasta do projeto.",
     "settingsWorktreeRootPlaceholder": "~/codeg-worktrees",
@@ -4746,6 +4817,8 @@
     "deleteConfirmTitle": "Excluir tarefa?",
     "deleteConfirmBody": "“{title}” será removida do quadro. Uma execução ativa é cancelada antes.",
     "deleteWithWorktree": "Excluir também o worktree",
+    "deleteWorktreeConfirmTitle": "Excluir o worktree?",
+    "deleteWorktreeConfirmBody": "O diretório do worktree e o seu branch de trabalho são excluídos em definitivo. A tarefa continua no quadro e a sua conversa passa para a pasta do projeto.",
     "eventCreated": "Criada",
     "eventStatusChanged": "Mudança de status",
     "eventConfigEffective": "Configuração de execução",
@@ -4775,6 +4848,7 @@
     "deliverPrTitleLabel": "Título do pull request",
     "deliverPrTitleLabelMr": "Título do merge request",
     "deliverPrDraft": "Abrir como rascunho",
+    "deliverPrDeleteWorktree": "Excluir o worktree após entregar",
     "deliverPrSubmit": "Enviar e abrir",
     "deliverPrSubmitting": "Enviando…",
     "deliverPrDone": "Pull request aberto",
@@ -4784,6 +4858,7 @@
     "deliverPrBackTitleMr": "Devolver ao merge request",
     "deliverPrBackDescription": "Envia os commits desta tarefa para {branch}, a branch de head de {repo}#{number}. Nada novo é aberto — a revisão que já existe recebe o trabalho.",
     "deliverPrBackDescriptionMr": "Envia os commits desta tarefa para {branch}, a branch de origem de {repo}!{number}. Nada novo é aberto — a revisão que já existe recebe o trabalho.",
+    "deliverPrBackDeleteWorktree": "Excluir o worktree após enviar",
     "deliverPrBackSubmit": "Enviar",
     "deliverPrBackDone": "Enviado ao pull request",
     "deliverPrBackDoneMr": "Enviado ao merge request"
@@ -5066,6 +5141,179 @@
     "loadFailed": "Não foi possível carregar o uso",
     "truncatedNotice": "Este período é muito amplo — os números cobrem apenas o trecho mais recente."
   },
+  "PkArena": {
+    "launcher": {
+      "title": "PK de agentes",
+      "description": "Envie uma tarefa para vários agentes de uma vez e compare os resultados",
+      "contestantsLabel": "Competidores ({min}–{max})",
+      "noFolderHint": "A arena precisa de uma pasta com um repositório git — abra uma primeiro.",
+      "needMore": "Escolha pelo menos {count} agentes para iniciar o duelo.",
+      "taskLabel": "Tarefa",
+      "taskPlaceholder": "A tarefa que cada competidor recebe, ex.: \"Escreva um jogo da cobrinha em um único arquivo HTML\"",
+      "selectedCount": "{selected}/{max} escolhidos (mín. {min})",
+      "cancel": "Cancelar",
+      "start": "Iniciar duelo",
+      "notAGitRepo": "Esta pasta não é um repositório git — a arena precisa de um para dar a cada competidor um worktree isolado.",
+      "initGitRepo": "git init",
+      "initializing": "Inicializando…",
+      "permissionLabel": "Permissões",
+      "permissionOptions": {
+        "default": "Perguntar sempre",
+        "acceptEdits": "Aceitar edições",
+        "bypassPermissions": "Tudo automático"
+      },
+      "permissionHints": {
+        "default": "cada aprovação interrompe o competidor",
+        "acceptEdits": "edições sem perguntar",
+        "bypassPermissions": "sem aprovações"
+      },
+      "permissionNote": "Aplicado a cada competidor no início; agentes sem suporte continuam perguntando.",
+      "bareModeLabel": "Modo básico (sem habilidades)",
+      "bareModeHint": "Os competidores usam apenas capacidades básicas, sem habilidades globais ou do projeto.",
+      "effortLabel": "Esforço de raciocínio (uniforme)",
+      "effortOptions": {
+        "default": "Padrão",
+        "low": "Baixo",
+        "medium": "Médio",
+        "high": "Alto",
+        "max": "Máximo"
+      },
+      "effortNote": "Aplica o nível anunciado mais próximo por agente; sem suporte, mantém o padrão.",
+      "agentNotReady": "{agent} não está pronto (instale nas configurações de agentes).",
+      "agentCheckFailed": "Não foi possível verificar {agent}.",
+      "templates": {
+        "pelican": "Pelicano",
+        "bouncingBall": "Bola",
+        "jellyBlob": "Geleia",
+        "snake": "Snake",
+        "flappyBird": "Flappy Bird",
+        "voiceChat": "Chat por voz",
+        "blackHole": "Buraco Negro"
+      },
+      "judgeLabel": "Juiz (opcional)",
+      "judgeNone": "Sem juiz",
+      "judgeHint": "Após todos os concorrentes terminarem, este agente lê cada diff e produz um veredito estruturado com pontuações e classificações.",
+      "startPoint": "📍 Ponto de partida",
+      "fromHead": "do HEAD atual",
+      "startPointHint": "Os competidores começam um commit antes deste — sem ver suas mudanças, apenas sua mensagem como tarefa. Refazem o mesmo objetivo de forma independente.",
+      "loadingCommits": "Carregando commits…",
+      "noCommits": "Nenhum commit encontrado.",
+      "creativeTemplates": "Modelos criativos",
+      "realEngineering": "Engenharia real",
+      "loadMore": "Carregar mais",
+      "judgeDimensionsLabel": "Dimensões de avaliação (opcional)",
+      "judgeDimensionsPlaceholder": "Correctness — cumpre a tarefa?\nCode quality — legibilidade, estrutura, casos-limite\nCompleteness — quanto está feito?\nEfficiency — eficiência do código (ignorar token/tempo)",
+      "judgeDimensionsHint": "Uma dimensão por linha. Deixe vazio para usar os padrões.",
+      "addContestant": "Adicionar {agent} como concorrente",
+      "slotLabelPlaceholder": "Rótulo (ex. Sonnet, Opus)",
+      "slotNumber": "Competidor {number}",
+      "modelLoading": "Carregando modelos…",
+      "modelUnavailable": "Este agente usa o modelo padrão",
+      "modelLoadFailed": "Não foi possível carregar os modelos",
+      "retryModelLoad": "Recarregar modelos",
+      "removeSlot": "Remover este slot de concorrente"
+    },
+    "scoreboard": {
+      "status": {
+        "preparing": "preparando",
+        "connecting": "conectando",
+        "running": "executando",
+        "done": "concluído",
+        "error": "falhou",
+        "canceled": "cancelado",
+        "ready": "pronto"
+      },
+      "tokensUnit": "tok",
+      "tokensUnavailable": "Token not reported",
+      "tokensUnavailableHint": "This agent did not return token usage; this does not mean zero tokens.",
+      "turnsUnit": "turnos"
+    },
+    "history": {
+      "title": "Round history",
+      "hint": "Search, open, and archive complete rounds.",
+      "trigger": "History {count}",
+      "searchPlaceholder": "Search tasks or agents…",
+      "empty": "No matching rounds",
+      "agents": "{count} agents",
+      "archive": "Archive round",
+      "archiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
+      "archiveSuccess": "PK round archived",
+      "archiveFailed": "Archive failed: {message}",
+      "status": {
+        "ready": "Ready",
+        "running": "Running",
+        "finished": "Finished",
+        "canceled": "Canceled",
+        "interrupted": "Interrupted"
+      }
+    },
+    "arena": {
+      "title": "Arena PK de agentes",
+      "description": "Uma tarefa, vários agentes, lado a lado",
+      "roundStatus": {
+        "running": "Ao vivo",
+        "finished": "Encerrada",
+        "canceled": "Cancelada",
+        "interrupted": "Interrompida por reinício",
+        "ready": "Pronta"
+      },
+      "roundPicker": "Rodada",
+      "cancelRound": "Cancelar rodada",
+      "cleanupWorktrees": "Limpar worktrees",
+      "cleanupHint": "Remove os worktrees dos competidores (as branches são mantidas)",
+      "share": "Compartilhar",
+      "sharing": "Exportando…",
+      "tabs": {
+        "battle": "Duelo",
+        "diff": "Diff"
+      },
+      "preparing": "Preparando competidor…",
+      "noRound": "Nenhuma rodada selecionada",
+      "contestantsUnit": "agentes",
+      "newRound": "Nova rodada",
+      "startMatch": "Iniciar duelo",
+      "readyNote": "Escolha modelo e esforço de cada competidor e inicie.",
+      "modelLabel": "Modelo",
+      "effortLabel": "Esforço",
+      "effortUnsupported": "Este agente não oferece níveis de raciocínio; o padrão dele será usado",
+      "effortOptions": {
+        "off": "Desativado",
+        "minimal": "Mínimo",
+        "low": "Baixo",
+        "medium": "Médio",
+        "high": "Alto",
+        "max": "Máximo"
+      },
+      "minimize": "Minimizar",
+      "exportReport": "Exportar relatório",
+      "exporting": "Gerando…",
+      "shareReport": "Save / share report",
+      "reportSaved": "HTML report saved",
+      "reportFailed": "Report export failed: {message}",
+      "persistenceFailed": "Algumas alterações da rodada não puderam ser salvas. Tente novamente antes de fechar esta página.",
+      "retrySave": "Tentar salvar novamente",
+      "readyTag": "Pronto",
+      "deleteRound": "Excluir",
+      "deleteConfirm": "Excluir esta rodada? Os worktrees permanecem — use Limpar worktrees.",
+      "followUp": "Continuar",
+      "followUpPlaceholder": "Enviar apenas a este concorrente (⌘↩ para enviar)"
+    },
+    "diff": {
+      "loading": "Carregando diff…",
+      "empty": "Sem alterações neste worktree"
+    },
+    "judge": {
+      "title": "Veredito do juiz",
+      "running": "Avaliando…",
+      "error": "O juiz falhou",
+      "rerun": "Reavaliar"
+    },
+    "minimized": {
+      "restore": "Voltar à arena",
+      "live": "PK em andamento",
+      "dismiss": "Ocultar"
+    }
+  },
   "Forge": {
     "title": "Painel do repositório",
     "pickFolder": "Escolha uma pasta de projeto",
@@ -5112,12 +5360,18 @@
     "incompleteResults": "A busca expirou, então esta página pode estar incompleta.",
     "reachableCap": "Só é possível paginar as primeiras {count} correspondências; refine os filtros para ver o resto.",
     "openRepo": "Abrir o repositório",
+    "openItem": "Abrir no navegador",
+    "detailDescription": "A descrição deste item e as ações disponíveis.",
+    "detailUpdated": "atualizado {time}",
+    "detailNoBody": "Sem descrição",
     "stateFilter": "Estado",
     "emptyPage": "Nada nesta página",
     "dialogDescription": "Cria uma tarefa pendente na pasta de {repo} — o agente trabalha em seu próprio worktree e você revisa antes de aplicar.",
     "dialogDescriptionPr": "Cria uma tarefa pendente na pasta de {repo}, com o worktree no head deste pull request — os commits do agente ficam por cima e são enviados ao mesmo pull request quando você aceita.",
     "dialogDescriptionMr": "Cria uma tarefa pendente na pasta de {repo}, com o worktree no head deste merge request — os commits do agente ficam por cima e são enviados ao mesmo merge request quando você aceita.",
     "instructionPlaceholder": "Instrução extra para o agente (opcional)…",
+    "writebackLabel": "Comentar o resultado neste item",
+    "writebackHint": "Quando a tarefa terminar, o codeg publica um comentário neste item: o resultado, o link e os números do diff.",
     "previewToggle": "Prévia do conteúdo do issue que a tarefa levará",
     "previewEmpty": "(sem descrição)",
     "duplicateBody": "Já existe uma tarefa ativa para este item: {title} ({status}). Criar outra mesmo assim?",
@@ -5126,6 +5380,38 @@
     "create": "Criar tarefa",
     "creating": "Criando…",
     "createAnyway": "Criar mesmo assim",
-    "viewExisting": "Ver a tarefa existente"
+    "viewExisting": "Ver a tarefa existente",
+    "scenarioLabel": "Como tratar",
+    "scenarioFix": "Corrigir / implementar",
+    "scenarioFixHint": "O agente primeiro confirma que o problema é real no worktree e só então corrige; se não conseguir confirmar, relata isso em vez de mexer no código.",
+    "scenarioPlanFirst": "Planejar primeiro",
+    "scenarioPlanFirstHint": "O agente confirma que o problema é real, entrega um plano de implementação e para — aprove devolvendo a tarefa para a implementação.",
+    "scenarioReviewFix": "Revisar e corrigir",
+    "scenarioReviewFixHint": "Revisa as mudanças e corrige os problemas em cima; ao aceitar, os commits voltam para o branch.",
+    "scenarioReviewOnly": "Apenas revisar",
+    "scenarioReviewOnlyHint": "Um relatório de revisão com achados e sugestões, sem commits — devolva a tarefa se quiser aplicar correções.",
+    "settingsTitle": "Configurações do painel",
+    "settingsDescription": "Como issues e alterações em {folder} são tratadas.",
+    "settingsScope": "Escopo",
+    "settingsScopeGlobal": "Todas as pastas (padrões globais)",
+    "settingsScopeGlobalHint": "Pastas sem configurações próprias usam estes padrões globais.",
+    "settingsSource": "Origem da configuração",
+    "settingsSourceGlobal": "Padrões globais",
+    "settingsSourceCustom": "Personalizada",
+    "settingsSourceCustomHint": "Salva configurações próprias desta pasta, que deixa de seguir os padrões globais.",
+    "settingsSourceGlobalFollow": "Segue as configurações globais do painel — mudanças lá se aplicam aqui automaticamente.",
+    "settingsIssueDefault": "Padrão para issues",
+    "settingsIssueDefaultHint": "O que vem pré-selecionado ao abrir a caixa de diálogo sobre uma issue.",
+    "settingsPrDefault": "Padrão para pull / merge requests",
+    "settingsPrDefaultHint": "O que vem pré-selecionado ao abrir a caixa de diálogo sobre um pull ou merge request.",
+    "settingsWritebackDefault": "Comentar o resultado por padrão",
+    "settingsWritebackDefaultHint": "A posição inicial daquele interruptor na caixa de diálogo — ainda dá para mudar item a item.",
+    "settingsPromptsIntro": "As instruções permanentes entram depois do texto embutido do cenário escolhido e antes do que você digitar na caixa de diálogo — não precisa repetir o texto embutido aqui. Elas vão só no primeiro turno da tarefa; o que você quer em todo turno vai nos prompts das configurações de tarefas.",
+    "settingsPromptsLabel": "Cenário",
+    "settingsPromptAll": "Todos os cenários",
+    "settingsPromptAllHint": "Vai em toda tarefa que este painel cria, seja qual for o cenário.",
+    "settingsPromptScenarioHint": "Vai só nas tarefas criadas com este cenário.",
+    "settingsPromptPlaceholder": "ex.: Responda em português. Rode os testes do projeto antes de terminar.",
+    "save": "Salvar"
   }
 }
