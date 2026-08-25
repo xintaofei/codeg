@@ -354,7 +354,7 @@ describe("AcpConnectionsProvider cross-client viewer lifecycle", () => {
 
     // Start the viewer connect; it suspends on the pending snapshot AFTER
     // dispatching CONNECTION_CREATED (the entry now exists in the store).
-    let connectPromise: Promise<string | undefined> | undefined
+    let connectPromise: Promise<void> | undefined
     await act(async () => {
       connectPromise = h.actions!.connect(TAB, "claude_code", "/tmp/x", "s", 42)
     })
@@ -926,7 +926,7 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
         })
     )
 
-    let firstConnect: Promise<string | undefined> | undefined
+    let firstConnect: Promise<void> | undefined
     await act(async () => {
       firstConnect = h.actions!.connect(
         TAB,
@@ -1197,7 +1197,7 @@ describe("AcpConnectionsProvider abandoned connect tears down only what it creat
           resolveConnect = res
         })
     )
-    let connectPromise: Promise<string | undefined> | undefined
+    let connectPromise: Promise<void> | undefined
     await act(async () => {
       connectPromise = h.actions!.connect(
         OTHER_TAB,
@@ -1227,7 +1227,7 @@ describe("AcpConnectionsProvider abandoned connect tears down only what it creat
           resolveConnect = res
         })
     )
-    let connectPromise: Promise<string | undefined> | undefined
+    let connectPromise: Promise<void> | undefined
     await act(async () => {
       connectPromise = h.actions!.connect(
         OTHER_TAB,
@@ -3206,7 +3206,7 @@ describe("connect() teardown races", () => {
           resolveProbe = res
         })
     )
-    let connectPromise: Promise<string | undefined> | undefined
+    let connectPromise: Promise<void> | undefined
     await act(async () => {
       connectPromise = h.actions!.connect(
         TAB,
@@ -3251,7 +3251,7 @@ describe("connect() teardown races", () => {
           resolveConnect = res
         })
     )
-    let connectPromise: Promise<string | undefined> | undefined
+    let connectPromise: Promise<void> | undefined
     await act(async () => {
       connectPromise = h.actions!.connect(
         TAB,
@@ -3283,7 +3283,7 @@ describe("connect() teardown races", () => {
     mountDesktop()
     await act(async () => {})
 
-    let connectPromise: Promise<string | undefined> | undefined
+    let connectPromise: Promise<void> | undefined
     await act(async () => {
       connectPromise = h.actions!.connect(
         TAB,
@@ -3390,7 +3390,7 @@ describe("connect() teardown races", () => {
           resolveProbe = res
         })
     )
-    let stalePromise: Promise<string | undefined> | undefined
+    let stalePromise: Promise<void> | undefined
     await act(async () => {
       stalePromise = h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
     })
@@ -3455,7 +3455,7 @@ describe("connect() teardown races", () => {
         })
     )
     h.acpConnect.mockResolvedValue("rebuilt-conn")
-    let connectPromise: Promise<string | undefined> | undefined
+    let connectPromise: Promise<void> | undefined
     await act(async () => {
       connectPromise = h.actions!.connect(
         TAB,
@@ -3515,7 +3515,7 @@ describe("connect() teardown races", () => {
         })
     )
     h.acpConnect.mockResolvedValue("rebuilt-conn")
-    let connectPromise: Promise<string | undefined> | undefined
+    let connectPromise: Promise<void> | undefined
     await act(async () => {
       connectPromise = h.actions!.connect(
         TAB,
@@ -3576,7 +3576,7 @@ describe("connect() teardown races", () => {
           resolveProbe = res
         })
     )
-    let stalePromise: Promise<string | undefined> | undefined
+    let stalePromise: Promise<void> | undefined
     await act(async () => {
       stalePromise = h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
     })
@@ -3616,7 +3616,7 @@ describe("connect() teardown races", () => {
           resolvePreflight = res
         })
     )
-    let inflight: Promise<string | undefined> | undefined
+    let inflight: Promise<void> | undefined
     await act(async () => {
       inflight = h.actions!.connect(TAB, "claude_code", "/tmp/x")
     })

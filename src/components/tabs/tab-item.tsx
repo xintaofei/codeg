@@ -23,7 +23,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { useLongPressDrag } from "@/hooks/use-long-press-drag"
-import type { WorkspaceTabItem as TabItemData } from "@/contexts/tab-context"
+import type { TabItem as TabItemData } from "@/contexts/tab-context"
 import type { SplitDirection } from "@/lib/tab-group-layout"
 
 /** A group this tab could move to (every group EXCEPT the tab's own), labeled
@@ -326,15 +326,9 @@ export const TabItem = memo(function TabItem({
                   ]
             )}
           >
-            {tab.kind === "pk" ? (
-              <span className="inline-flex h-4 shrink-0 items-center rounded border border-amber-500/35 bg-amber-500/10 px-1 font-mono text-[9px] font-bold tracking-[0.08em] text-amber-700 dark:text-amber-300">
-                PK
-              </span>
-            ) : (
-              <ConversationStatusDot
-                status={tab.status as ConversationStatus | undefined}
-              />
-            )}
+            <ConversationStatusDot
+              status={tab.status as ConversationStatus | undefined}
+            />
             <span
               className={cn(
                 // Embedded: grow + shrink as the tab tightens, but instead of an

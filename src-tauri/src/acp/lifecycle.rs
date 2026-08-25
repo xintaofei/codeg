@@ -280,28 +280,19 @@ pub(crate) async fn handle_event(
                 return Ok(());
             };
             if let Some(ts) = target_status.clone() {
-                // A system-owned caller (the PK judge) may mark the row
-                // Completed as soon as its verdict is parsed. Only advance a
-                // still-live row so this asynchronous worker cannot overwrite
-                // that terminal state back to PendingReview.
-                let changed = conversation_service::update_status_if(
-                    db_conn,
-                    cid,
-                    ConversationStatus::InProgress,
-                    ts.clone(),
+                // DB write before emit so any downstream subscriber that observes
+                // the ConversationStatusChanged event can assume the row is
+                // already at the target status.
+                conversation_service::update_status(db_conn, cid, ts.clone()).await?;
+                emit_with_state(
+                    &state_arc,
+                    &emitter,
+                    AcpEvent::ConversationStatusChanged {
+                        conversation_id: cid,
+                        status: ts,
+                    },
                 )
-                .await?;
-                if changed {
-                    emit_with_state(
-                        &state_arc,
-                        &emitter,
-                        AcpEvent::ConversationStatusChanged {
-                            conversation_id: cid,
-                            status: ts,
-                        },
-                    )
-                    .await;
-                }
+                .await;
             }
 
             // If this conversation was spawned by a delegation, resolve the
@@ -2095,48 +2086,6 @@ mod tests {
         assert_eq!(
             read_row_status(&db, conv.id).await,
             ConversationStatus::PendingReview
-        );
-    }
-
-    #[tokio::test]
-    async fn handle_event_turn_complete_preserves_already_completed_conversation() {
-        let db = test_helpers::fresh_in_memory_db().await;
-        let folder_id = test_helpers::seed_folder(&db, "/tmp/turn-complete-race").await;
-        let conv =
-            conversation_service::create(&db.conn, folder_id, AgentType::Codex, None, None)
-                .await
-                .unwrap();
-        conversation_service::update_status(
-            &db.conn,
-            conv.id,
-            ConversationStatus::Completed,
-        )
-        .await
-        .unwrap();
-
-        let mgr = ConnectionManager::new();
-        {
-            let mut map = mgr.connections.lock().await;
-            map.insert(
-                "judge".to_string(),
-                fake_connection_with_state("judge", Some(conv.id)),
-            );
-        }
-        let env = EventEnvelope {
-            seq: 1,
-            connection_id: "judge".to_string(),
-            payload: AcpEvent::TurnComplete {
-                session_id: "ext-judge".into(),
-                stop_reason: "end_turn".into(),
-                agent_type: "codex".into(),
-            },
-        };
-
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
-
-        assert_eq!(
-            read_row_status(&db, conv.id).await,
-            ConversationStatus::Completed
         );
     }
 

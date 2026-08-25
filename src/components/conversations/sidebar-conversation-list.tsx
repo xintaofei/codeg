@@ -21,7 +21,6 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
-  Archive,
   ExternalLink,
   FolderClosed,
   FolderGit2,
@@ -42,9 +41,7 @@ import {
 } from "lucide-react"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { usePkArenaStore } from "@/stores/pk-arena-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
-import { isConversationWorkspaceTab } from "@/lib/workspace-tab"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
 import { useThemeColor, useZoomLevel } from "@/hooks/use-appearance"
@@ -114,7 +111,6 @@ import {
   reuseSet,
   selectChatConversationsWithReuse,
   selectPinnedWithReuse,
-  selectPkConversationsWithReuse,
   selectRecentConversationsWithReuse,
   worktreeChildrenByParent,
   worktreeHeaderAlias,
@@ -801,8 +797,6 @@ export function SidebarConversationList({
   const tabs = useTabStore((s) => s.tabs)
   const {
     openTab,
-    openPkRoundTab,
-    closePkRoundTab,
     closeConversationTab,
     closeTabsByFolder,
     openNewConversationTab,
@@ -843,9 +837,7 @@ export function SidebarConversationList({
   const selectedConversation = useMemo(() => {
     const activeTab = tabs.find((tab) => tab.id === activeTabId)
     const next =
-      !activeTab ||
-      !isConversationWorkspaceTab(activeTab) ||
-      activeTab.conversationId == null
+      !activeTab || activeTab.conversationId == null
         ? null
         : { id: activeTab.conversationId, agentType: activeTab.agentType }
     const reused = reuseSelected(selectedConvRef.current, next)
@@ -857,7 +849,7 @@ export function SidebarConversationList({
   const openTabKeys = useMemo(() => {
     const next = new Set<string>()
     for (const tab of tabs) {
-      if (isConversationWorkspaceTab(tab) && tab.conversationId != null) {
+      if (tab.conversationId != null) {
         next.add(`${tab.agentType}:${tab.conversationId}`)
       }
     }
@@ -884,7 +876,6 @@ export function SidebarConversationList({
   const [sectionCollapsed, setSectionCollapsed] =
     useState<SidebarSectionCollapsed>({})
   const pinnedExpanded = !sectionCollapsed.pinned
-  const pkExpanded = !sectionCollapsed.pk
   const foldersExpanded = !sectionCollapsed.folders
   const chatsExpanded = !sectionCollapsed.chats
   const recentExpanded = !sectionCollapsed.recent
@@ -1109,7 +1100,7 @@ export function SidebarConversationList({
   // section, so exclude both here; then apply the completed filter as before.
   const folderConversations = useMemo(() => {
     const base = conversations.filter(
-      (c) => c.pinned_at == null && c.kind !== "chat" && c.kind !== "pk"
+      (c) => c.pinned_at == null && c.kind !== "chat"
     )
     if (showCompleted) return base
     return base.filter((c) => c.status !== "completed")
@@ -1128,84 +1119,6 @@ export function SidebarConversationList({
     chatConvsRef.current = next
     return next
   }, [conversations, showCompleted])
-
-  // PK-arena conversations grouped by round (hottest round first). Each round
-  // renders as a collapsible sub-group under the "PK" section header. The round
-  // task labels come from the PK arena store; a round not yet hydrated shows a
-  // generic "Round #N" fallback.
-  const pkConvsRef = useRef<Map<number, DbConversationSummary[]>>(new Map())
-  const pkConversations = useMemo(() => {
-    const next = selectPkConversationsWithReuse(
-      conversations,
-      pkConvsRef.current
-    )
-    pkConvsRef.current = next
-    return next
-  }, [conversations])
-  const pkRounds = usePkArenaStore((s) => s.rounds)
-  const [pkRoundCollapsed, setPkRoundCollapsed] = useState<Set<number>>(
-    new Set()
-  )
-  const pkRoundTasks = useMemo(() => {
-    const map = new Map<number, string>()
-    for (const r of pkRounds) {
-      map.set(Number(r.id), r.task)
-    }
-    return map
-  }, [pkRounds])
-  const togglePkRound = useCallback((roundId: number) => {
-    setPkRoundCollapsed((prev) => {
-      const next = new Set(prev)
-      if (next.has(roundId)) next.delete(roundId)
-      else next.add(roundId)
-      return next
-    })
-  }, [])
-  const openPkRound = useCallback(
-    (roundId: number) => {
-      const store = usePkArenaStore.getState()
-      const round = store.rounds.find((item) => Number(item.id) === roundId)
-      if (!round) return
-      store.setActiveRound(round.id)
-      openPkRoundTab(round.id, round.folderId, round.task)
-    },
-    [openPkRoundTab]
-  )
-  const archivePkRound = useCallback(
-    async (roundId: number) => {
-      const round = usePkArenaStore
-        .getState()
-        .rounds.find((item) => Number(item.id) === roundId)
-      if (
-        !round ||
-        !window.confirm(t("pkArchiveConfirm", { task: round.task }))
-      ) {
-        return
-      }
-      try {
-        await usePkArenaStore.getState().archiveRound(String(roundId))
-        closePkRoundTab(String(roundId))
-        for (const conversation of pkConversations.get(roundId) ?? []) {
-          closeConversationTab(
-            conversation.folder_id,
-            conversation.id,
-            conversation.agent_type
-          )
-        }
-        await refreshConversations()
-        toast.success(t("pkArchiveSuccess"))
-      } catch (error) {
-        toast.error(t("pkArchiveFailed", { message: String(error) }))
-      }
-    },
-    [
-      closeConversationTab,
-      closePkRoundTab,
-      pkConversations,
-      refreshConversations,
-      t,
-    ]
-  )
 
   // Pinned bucket: the FULL conversation list (ignores "Show completed" — a
   // pinned conversation stays visible regardless), sorted most-recently-pinned
@@ -1390,10 +1303,6 @@ export function SidebarConversationList({
       buildRows({
         pinned,
         pinnedExpanded,
-        pkConversations,
-        pkExpanded,
-        pkRoundTasks,
-        pkRoundCollapsed,
         // Top-level (reorderable) folders drive the outer order; buildRows nests
         // each container's root sub-group + worktrees via `containerChildren`.
         orderedFolderIds: reorderableFolderIds,
@@ -1417,10 +1326,6 @@ export function SidebarConversationList({
     [
       pinned,
       pinnedExpanded,
-      pkConversations,
-      pkExpanded,
-      pkRoundTasks,
-      pkRoundCollapsed,
       reorderableFolderIds,
       byFolder,
       folderExpanded,
@@ -2500,62 +2405,6 @@ export function SidebarConversationList({
         </div>
       )
     }
-    if (row.kind === "pk-empty") {
-      return (
-        <div className="px-[0.5rem] py-[0.375rem] text-[0.75rem] text-muted-foreground/70">
-          {t("noPk")}
-        </div>
-      )
-    }
-    if (row.kind === "pk-round") {
-      const collapsed = pkRoundCollapsed.has(row.roundId)
-      const roundStatus = pkRounds.find(
-        (round) => Number(round.id) === row.roundId
-      )?.status
-      const canArchive = roundStatus !== "running" && roundStatus !== "ready"
-      return (
-        <div className="group flex h-[1.75rem] w-full items-center rounded-md px-[0.25rem] hover:bg-sidebar-accent">
-          <button
-            type="button"
-            onClick={() => togglePkRound(row.roundId)}
-            aria-expanded={!collapsed}
-            className="rounded p-1 text-muted-foreground hover:text-sidebar-foreground"
-            title={collapsed ? t("pkExpand") : t("pkCollapse")}
-          >
-            <ChevronRight
-              className={cn(
-                "h-3 w-3 transition-transform",
-                !collapsed && "rotate-90"
-              )}
-            />
-          </button>
-          <button
-            type="button"
-            onClick={() => openPkRound(row.roundId)}
-            className="flex min-w-0 flex-1 items-center gap-1 py-1 text-left"
-            title={t("pkOpenArena")}
-          >
-            <span className="size-1.5 shrink-0 rounded-full bg-amber-400" />
-            <span className="truncate text-[0.75rem] font-medium text-sidebar-foreground/80">
-              {row.task}
-            </span>
-            <span className="ml-auto shrink-0 text-[0.6875rem] text-muted-foreground/70">
-              {row.count}
-            </span>
-          </button>
-          {canArchive ? (
-            <button
-              type="button"
-              onClick={() => void archivePkRound(row.roundId)}
-              className="rounded p-1 text-muted-foreground opacity-0 hover:bg-background/70 hover:text-sidebar-foreground focus:opacity-100 group-hover:opacity-100"
-              title={t("pkArchive")}
-            >
-              <Archive className="size-3" />
-            </button>
-          ) : null}
-        </div>
-      )
-    }
     if (row.kind === "recent-more") {
       // Footer of the paged Recent section — a row, not a hint: each click
       // reveals another page. Its geometry is the conversation card's, so the
@@ -2661,8 +2510,6 @@ export function SidebarConversationList({
     if (row.kind === "folders-empty") return "folders-empty"
     if (row.kind === "recent-empty") return "recent-empty"
     if (row.kind === "recent-more") return "recent-more"
-    if (row.kind === "pk-empty") return "pk-empty"
-    if (row.kind === "pk-round") return `pk-round-${row.roundId}`
     const prefix = row.recent ? "recent-" : ""
     if (row.kind === "subsession-loading") {
       return `${prefix}subloading-${row.parentId}`

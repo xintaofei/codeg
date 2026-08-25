@@ -284,12 +284,10 @@ describe("ConversationDetailPanel split-group render model", () => {
   it("pairs every split group with its own title bar and gates the global one", () => {
     const shellStart = source.indexOf("const renderGroupShell = (groupId")
     const shellBody = source.slice(shellStart, shellStart + 6000)
-    expect(shellBody).toContain("{isSplit && selConversationTab && (")
+    expect(shellBody).toContain("{isSplit && selTab && (")
     expect(shellBody).toContain("<ConversationDetailHeader")
-    expect(shellBody).toContain("tabId={selConversationTab.id}")
-    expect(source).toContain(
-      "{!isSplit && activeTab && isConversationWorkspaceTab(activeTab) && ("
-    )
+    expect(shellBody).toContain("tabId={selTab.id}")
+    expect(source).toContain("{!isSplit && activeTab && (")
   })
 
   // While split the workspace layout drops its title-bar strip row ENTIRELY —

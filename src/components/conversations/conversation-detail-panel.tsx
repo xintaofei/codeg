@@ -26,8 +26,6 @@ import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import { groupOfTab, isReparentUnmount } from "@/stores/tab-store"
-import { isConversationWorkspaceTab } from "@/lib/workspace-tab"
-import { PkArenaView } from "@/components/pk/pk-arena-view"
 import { computeRects, leafIds } from "@/lib/tab-group-layout"
 import { useTaskContext } from "@/contexts/task-context"
 import { cn, randomUUID } from "@/lib/utils"
@@ -266,10 +264,9 @@ const ConversationTabView = memo(function ConversationTabView({
   // `tabs` array — so a sibling tab changing, or a tab-switch (isActive rides in
   // as a prop), never re-renders this keep-alive panel. `find` returns the same
   // object reference across derives until this tab itself changes.
-  const ownTab = useTabStore((s) => {
-    const tab = s.tabs.find((item) => item.id === tabId)
-    return tab && isConversationWorkspaceTab(tab) ? tab : null
-  })
+  const ownTab = useTabStore(
+    (s) => s.tabs.find((tab) => tab.id === tabId) ?? null
+  )
   // Resolve this panel's folder from ITS OWN tab, not the global active folder.
   // A keep-alive panel for a background tab must NOT re-render when the active
   // tab switches to a different folder. For the active tab this equals the old
@@ -2262,8 +2259,7 @@ export function ConversationDetailPanel() {
   } = useTabActions()
   const newConversation = useMemo(() => {
     const activeTab = tabs.find((tab) => tab.id === activeTabId)
-    if (!activeTab || !isConversationWorkspaceTab(activeTab)) return null
-    if (activeTab.conversationId != null) return null
+    if (!activeTab || activeTab.conversationId != null) return null
     const workingDir = activeTab.workingDir ?? folder?.path
     if (!workingDir) return null
     return { workingDir, folderId: activeTab.folderId }
@@ -2329,10 +2325,9 @@ export function ConversationDetailPanel() {
         const dbId2 = summary?.id
         const isOpenInTabs = tabs.some(
           (tab) =>
-            isConversationWorkspaceTab(tab) &&
-            (tab.conversationId === matchedConversationId ||
-              tab.runtimeConversationId === matchedConversationId ||
-              (dbId2 != null && tab.conversationId === dbId2))
+            tab.conversationId === matchedConversationId ||
+            tab.runtimeConversationId === matchedConversationId ||
+            (dbId2 != null && tab.conversationId === dbId2)
         )
         if (isOpenInTabs) return
 
@@ -2351,12 +2346,13 @@ export function ConversationDetailPanel() {
   )
 
   const hasNoTabs = tabs.length === 0 && !activeTabId
-  const activeConversationTab = useMemo(() => {
-    const tab = tabs.find((item) => item.id === activeTabId)
-    return tab && isConversationWorkspaceTab(tab) && tab.conversationId != null
-      ? tab
-      : null
-  }, [tabs, activeTabId])
+  const activeConversationTab = useMemo(
+    () =>
+      tabs.find(
+        (tab) => tab.id === activeTabId && tab.conversationId != null
+      ) ?? null,
+    [tabs, activeTabId]
+  )
   const canReloadActiveConversation = activeConversationTab != null
   const handleReloadActiveConversation = useCallback(() => {
     if (!activeConversationTab) return
@@ -2582,21 +2578,18 @@ export function ConversationDetailPanel() {
     // Visible = tiled (all group members shown) or the group's selected tab.
     const visible = canTileG || tab.id === groupSelection[groupId]
     const folderPath = allFolders.find((f) => f.id === tab.folderId)?.path
-    const view =
-      tab.kind === "pk" ? (
-        <PkArenaView roundId={tab.roundId} tabId={tab.id} />
-      ) : (
-        <ConversationTabView
-          tabId={tab.id}
-          conversationId={tab.conversationId}
-          agentType={tab.agentType}
-          workingDir={tab.workingDir ?? folderPath}
-          isActive={active}
-          showActiveFlow={(isSplit || canTileG) && active}
-          reloadSignal={reloadByTabId[tab.id] ?? 0}
-          groupId={groupId}
-        />
-      )
+    const view = (
+      <ConversationTabView
+        tabId={tab.id}
+        conversationId={tab.conversationId}
+        agentType={tab.agentType}
+        workingDir={tab.workingDir ?? folderPath}
+        isActive={active}
+        showActiveFlow={(isSplit || canTileG) && active}
+        reloadSignal={reloadByTabId[tab.id] ?? 0}
+        groupId={groupId}
+      />
+    )
     return (
       <div
         key={tab.id}
@@ -2659,10 +2652,8 @@ export function ConversationDetailPanel() {
       groupTabs.find((tab) => tab.id === groupSelection[groupId]) ??
       groupTabs[0] ??
       null
-    const selConversationTab =
-      selTab && isConversationWorkspaceTab(selTab) ? selTab : null
-    const selTabFolder = selConversationTab
-      ? allFolders.find((f) => f.id === selConversationTab.folderId)
+    const selTabFolder = selTab
+      ? allFolders.find((f) => f.id === selTab.folderId)
       : undefined
     // NOTE: the strip / header / content stay PLAIN SIBLING SLOTS (no fragment
     // around any pair) — a `false` conditional is a reconciliation hole, so the
@@ -2690,7 +2681,7 @@ export function ConversationDetailPanel() {
             {touchesRight && <SplitStripCornerReserve side="right" />}
           </div>
         )}
-        {isSplit && selConversationTab && (
+        {isSplit && selTab && (
           <div
             className="shrink-0"
             // Clicking a non-focused group's title bar focuses that group
@@ -2704,26 +2695,20 @@ export function ConversationDetailPanel() {
             }}
           >
             <ConversationDetailHeader
-              tabId={selConversationTab.id}
-              conversationId={selConversationTab.conversationId}
-              runtimeConversationId={
-                selConversationTab.runtimeConversationId ?? null
-              }
-              folderId={selConversationTab.folderId}
+              tabId={selTab.id}
+              conversationId={selTab.conversationId}
+              runtimeConversationId={selTab.runtimeConversationId ?? null}
+              folderId={selTab.folderId}
               folderPath={selTabFolder?.path}
-              title={selConversationTab.title}
-              status={
-                selConversationTab.status as ConversationStatus | undefined
-              }
+              title={selTab.title}
+              status={selTab.status as ConversationStatus | undefined}
               searchMatch={
-                searchFocus?.conversationId ===
-                selConversationTab.conversationId
+                searchFocus?.conversationId === selTab.conversationId
                   ? (searchFocus.titleMatches[0] ?? null)
                   : null
               }
               searchQuery={
-                searchFocus?.conversationId ===
-                selConversationTab.conversationId
+                searchFocus?.conversationId === selTab.conversationId
                   ? searchFocus.query
                   : null
               }
@@ -2766,7 +2751,7 @@ export function ConversationDetailPanel() {
   return (
     <>
       <div className="flex h-full min-h-0 flex-col overflow-hidden">
-        {!isSplit && activeTab && isConversationWorkspaceTab(activeTab) && (
+        {!isSplit && activeTab && (
           <ConversationDetailHeader
             tabId={activeTab.id}
             conversationId={activeTab.conversationId}

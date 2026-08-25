@@ -94,10 +94,8 @@ export interface UseConnectionReturn {
     agentType: AgentType,
     workingDir?: string,
     sessionId?: string,
-    conversationId?: number,
-    modeIdOverride?: string | null,
-    configValuesOverride?: Record<string, string> | null
-  ) => Promise<string | undefined>
+    conversationId?: number
+  ) => Promise<void>
   disconnect: () => Promise<void>
   /** Restart the session (disconnect + resume same sessionId) so it picks up
    *  current agent/model settings. Returns `true` if it actually restarted,
@@ -241,18 +239,14 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       agentType: AgentType,
       workingDir?: string,
       sessionId?: string,
-      conversationId?: number,
-      modeIdOverride?: string | null,
-      configValuesOverride?: Record<string, string> | null
+      conversationId?: number
     ) =>
       actions.connect(
         contextKey,
         agentType,
         workingDir,
         sessionId,
-        conversationId,
-        modeIdOverride,
-        configValuesOverride
+        conversationId
       ),
     [actions, contextKey]
   )

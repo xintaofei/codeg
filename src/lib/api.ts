@@ -159,10 +159,6 @@ import type {
   TokenUsageReport,
   TokenUsageSyncResult,
   TokenUsageSyncStatus,
-  PkRoundConfig,
-  PkRoundInfo,
-  PkRoundStatus,
-  PkJudgeResultDto,
 } from "./types"
 
 export async function listConversations(params?: {
@@ -2150,14 +2146,12 @@ export async function gitNewBranch(
 export async function gitWorktreeAdd(
   path: string,
   branchName: string,
-  worktreePath: string,
-  base?: string | null
+  worktreePath: string
 ): Promise<void> {
   return getTransport().call("git_worktree_add", {
     path,
     branchName,
     worktreePath,
-    base: base ?? undefined,
   })
 }
 
@@ -2351,25 +2345,6 @@ async function openAppWindow(
     throw error
   }
   releaseAppWindow(name)
-}
-
-/** Open a PK round in its own workspace window. The target route reuses the
- * normal workspace shell; `WorkspacePage` turns the query into a local PK tab
- * once round hydration completes. */
-export async function openPkRoundWindow(
-  roundId: string,
-  title: string
-): Promise<void> {
-  if (isDesktop()) {
-    return getShellTransport().call("open_pk_round_window", {
-      roundId,
-      title,
-      remoteConnectionId: getActiveRemoteConnectionId(),
-    })
-  }
-  return openAppWindow(`pk-round-${roundId}`, async () => ({
-    path: `/workspace?pkRoundId=${encodeURIComponent(roundId)}`,
-  }))
 }
 
 export async function openMergeWindow(
@@ -2902,20 +2877,6 @@ export async function createConversation(
     folderId,
     agentType,
     title: title ?? null,
-  })
-}
-
-export async function createPkConversation(
-  folderId: number,
-  agentType: AgentType,
-  pkRoundId: number,
-  title?: string
-): Promise<number> {
-  return getTransport().call("create_pk_conversation", {
-    folderId,
-    agentType,
-    title: title ?? null,
-    pkRoundId,
   })
 }
 
@@ -4968,70 +4929,6 @@ export async function scanExternalConflictsWeb(
     "backup_scan_external_conflicts",
     { uploadId, passphrase: passphrase ?? null },
     { timeoutMs: BACKUP_LONG_CALL_TIMEOUT_MS }
-  )
-}
-
-// ─── PK Arena Rounds ────────────────────────────────────────────────────────
-
-export async function pkRoundList(
-  folderId?: number | null
-): Promise<PkRoundInfo[]> {
-  return getTransport().call("pk_round_list", { folderId: folderId ?? null })
-}
-
-export async function pkRoundGet(id: number): Promise<PkRoundInfo> {
-  return getTransport().call("pk_round_get", { id })
-}
-
-export async function pkRoundCreate(
-  folderId: number,
-  task: string,
-  config: PkRoundConfig
-): Promise<PkRoundInfo> {
-  return getTransport().call("pk_round_create", { folderId, task, config })
-}
-
-export async function pkRoundUpdateStatus(
-  id: number,
-  status: PkRoundStatus
-): Promise<void> {
-  return getTransport().call("pk_round_update_status", { id, status })
-}
-
-export async function pkRoundDelete(id: number): Promise<void> {
-  return getTransport().call("pk_round_delete", { id })
-}
-
-export async function pkRoundUpdateJudge(
-  id: number,
-  judgeResult: PkJudgeResultDto | null,
-  judgeStatus: string
-): Promise<void> {
-  return getTransport().call("pk_round_update_judge", {
-    id,
-    judgeResult: judgeResult != null ? JSON.stringify(judgeResult) : null,
-    judgeStatus,
-  })
-}
-
-export async function pkRoundSaveReportSnapshot(
-  id: number,
-  snapshot: string
-): Promise<void> {
-  return getTransport().call(
-    "pk_round_save_report_snapshot",
-    { id, snapshot },
-    { timeoutMs: 60_000 }
-  )
-}
-
-export async function pkRoundGetReportSnapshot(
-  id: number
-): Promise<string | null> {
-  return getTransport().call(
-    "pk_round_get_report_snapshot",
-    { id },
-    { timeoutMs: 60_000 }
   )
 }
 

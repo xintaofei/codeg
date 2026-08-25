@@ -24,13 +24,7 @@ import {
 import { Streamdown, defaultRemarkPlugins } from "streamdown"
 
 import { Shimmer } from "./shimmer"
-import type { Components } from "streamdown"
 import { markdownLinkComponents } from "./markdown-link"
-
-/** `<p>` → `<div>`: keeps paragraph spacing without the nesting violation. */
-function ReasoningParagraphSafe({ children }: { children: ReactNode }) {
-  return <div className="py-0.5">{children}</div>
-}
 import { normalizeMathDelimiters } from "./message"
 import { remarkTrimCjkAutolinkTail } from "./remark-cjk-autolink-tail"
 import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
@@ -263,15 +257,8 @@ export const ReasoningContent = memo(
           plugins={plugins}
           remarkPlugins={remarkPlugins}
           {...props}
-          // Enforce the link icon + safety override after spreading props,
-          // and render paragraphs as <div>: reasoning text frequently
-          // embeds raw HTML/SVG, and Streamdown's default <p> for the
-          // wrapper plus a nested element rendered as <p> trips React's
-          // nested-paragraph hydration error.
-          components={{
-            ...markdownLinkComponents,
-            p: ReasoningParagraphSafe as Components["p"],
-          }}
+          // Enforce the link icon + safety override after spreading props.
+          components={markdownLinkComponents}
         >
           {normalized}
         </Streamdown>

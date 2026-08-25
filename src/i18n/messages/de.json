@@ -1743,17 +1743,8 @@
       "sectionFolders": "Ordner",
       "sectionChats": "Chat",
       "sectionRecent": "Zuletzt",
-      "sectionPk": "PK-Arena",
       "noChats": "Keine Chats",
       "noRecent": "Keine kürzlichen Konversationen",
-      "noPk": "Keine PK-Sitzungen",
-      "pkOpenArena": "Open this PK arena",
-      "pkArchive": "Archive the PK round",
-      "pkArchiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
-      "pkArchiveSuccess": "PK round archived",
-      "pkArchiveFailed": "Archive failed: {message}",
-      "pkExpand": "Expand agent sessions",
-      "pkCollapse": "Collapse agent sessions",
       "showMoreRecent": "Mehr anzeigen ({count})",
       "noFolders": "Keine Ordner geöffnet",
       "newChatAction": "Neuer Chat",
@@ -1879,8 +1870,7 @@
       "search": "Suchen",
       "openSettings": "Einstellungen öffnen",
       "backToConversations": "Zurück zu Konversationen",
-      "withShortcut": "{label} (Tastenkürzel: {shortcut})",
-      "pkArena": "Agenten-PK-Arena"
+      "withShortcut": "{label} (Tastenkürzel: {shortcut})"
     },
     "statusBar": {
       "connection": {
@@ -2817,8 +2807,7 @@
         "mentionGroupAgent": "Agenten",
         "mentionGroupSession": "Sitzungen",
         "mentionGroupCommit": "Commits",
-        "mentionGroupSkill": "Fähigkeiten",
-        "startPk": "Agenten-PK"
+        "mentionGroupSkill": "Fähigkeiten"
       },
       "messageQueue": {
         "addToQueue": "Zur Warteschlange",
@@ -5140,179 +5129,6 @@
     "emptyAction": "Meine Sitzungen zählen",
     "loadFailed": "Verbrauch konnte nicht geladen werden",
     "truncatedNotice": "Dieser Zeitraum ist sehr groß — die Zahlen decken nur seinen jüngsten Abschnitt ab."
-  },
-  "PkArena": {
-    "launcher": {
-      "title": "Agenten-PK",
-      "description": "Eine Aufgabe gleichzeitig an mehrere Agenten senden und die Ergebnisse vergleichen",
-      "contestantsLabel": "Teilnehmer ({min}–{max})",
-      "noFolderHint": "Die Arena braucht einen Ordner mit einem Git-Repository — öffne zuerst einen.",
-      "needMore": "Wähle mindestens {count} Agenten für ein Duell.",
-      "taskLabel": "Aufgabe",
-      "taskPlaceholder": "Die Aufgabe, die jeder Teilnehmer erhält, z. B. \"Schreibe ein Snake-Spiel in einer einzigen HTML-Datei\"",
-      "selectedCount": "{selected}/{max} gewählt (min. {min})",
-      "cancel": "Abbrechen",
-      "start": "Kampf starten",
-      "notAGitRepo": "Dieser Ordner ist kein Git-Repository — die Arena braucht eines, um jedem Teilnehmer einen isolierten Worktree zu geben.",
-      "initGitRepo": "git init",
-      "initializing": "Initialisiere…",
-      "permissionLabel": "Berechtigungen",
-      "permissionOptions": {
-        "default": "Jedes Mal fragen",
-        "acceptEdits": "Bearbeitungen automatisch",
-        "bypassPermissions": "Vollautomatik"
-      },
-      "permissionHints": {
-        "default": "jede Freigabe unterbricht den Teilnehmer",
-        "acceptEdits": "Dateibearbeitungen ohne Nachfrage",
-        "bypassPermissions": "gar keine Freigaben"
-      },
-      "permissionNote": "Wird beim Start auf jeden Teilnehmer angewendet; Agenten ohne Unterstützung fragen weiter.",
-      "bareModeLabel": "Bare-Modus (keine Skills)",
-      "bareModeHint": "Teilnehmer dürfen nur ihre Grundfunktionen nutzen — keine globalen oder Projekt-Skills.",
-      "effortLabel": "Denkaufwand (einheitlich)",
-      "effortOptions": {
-        "default": "Standard",
-        "low": "Niedrig",
-        "medium": "Mittel",
-        "high": "Hoch",
-        "max": "Max"
-      },
-      "effortNote": "Wird als nächste verfügbare Stufe je Agent angewendet; ohne Unterstützung bleibt der Standard.",
-      "agentNotReady": "{agent} nicht bereit (zuerst in den Agent-Einstellungen installieren).",
-      "agentCheckFailed": "{agent} konnte nicht geprüft werden.",
-      "templates": {
-        "pelican": "Pelikan",
-        "bouncingBall": "Ball",
-        "jellyBlob": "Gelee",
-        "snake": "Snake",
-        "flappyBird": "Flappy Bird",
-        "voiceChat": "Sprachchat",
-        "blackHole": "Schwarzes Loch"
-      },
-      "judgeLabel": "Schiedsrichter (optional)",
-      "judgeNone": "Kein Schiedsrichter",
-      "judgeHint": "Nachdem alle Teilnehmer fertig sind, liest dieser Agent jeden Diff und erstellt ein strukturiertes Urteil mit Punktzahlen und Rängen.",
-      "startPoint": "📍 Startpunkt",
-      "fromHead": "ab aktuellem HEAD",
-      "startPointHint": "Teilnehmer beginnen einen Commit davor — sie sehen diese Änderungen nicht, nur die Commit-Nachricht als Aufgabe. Sie machen dasselbe Ziel unabhängig.",
-      "loadingCommits": "Commits laden…",
-      "noCommits": "Keine Commits gefunden.",
-      "creativeTemplates": "Kreative Vorlagen",
-      "realEngineering": "Echte Entwicklung",
-      "loadMore": "Mehr laden",
-      "judgeDimensionsLabel": "Bewertungsdimensionen (optional)",
-      "judgeDimensionsPlaceholder": "Correctness — erfüllt es die Aufgabe?\nCode quality — Lesbarkeit, Struktur, Randfälle\nCompleteness — wie viel ist erledigt?\nEfficiency — Code-Effizienz (ohne Token/Zeit)",
-      "judgeDimensionsHint": "Eine Dimension pro Zeile. Leer lassen für Standardwerte.",
-      "addContestant": "{agent} als Teilnehmer hinzufügen",
-      "slotLabelPlaceholder": "Label (z.B. Sonnet, Opus)",
-      "slotNumber": "Teilnehmer {number}",
-      "modelLoading": "Modelle werden geladen…",
-      "modelUnavailable": "Dieser Agent verwendet sein Standardmodell",
-      "modelLoadFailed": "Modelle konnten nicht geladen werden",
-      "retryModelLoad": "Modelle erneut laden",
-      "removeSlot": "Diesen Teilnehmer-Slot entfernen"
-    },
-    "scoreboard": {
-      "status": {
-        "preparing": "Vorbereitung",
-        "connecting": "Verbinde",
-        "running": "Läuft",
-        "done": "Fertig",
-        "error": "Fehlgeschlagen",
-        "canceled": "Abgebrochen",
-        "ready": "Bereit"
-      },
-      "tokensUnit": "Tok",
-      "tokensUnavailable": "Token not reported",
-      "tokensUnavailableHint": "This agent did not return token usage; this does not mean zero tokens.",
-      "turnsUnit": "Runden"
-    },
-    "history": {
-      "title": "Round history",
-      "hint": "Search, open, and archive complete rounds.",
-      "trigger": "History {count}",
-      "searchPlaceholder": "Search tasks or agents…",
-      "empty": "No matching rounds",
-      "agents": "{count} agents",
-      "archive": "Archive round",
-      "archiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
-      "archiveSuccess": "PK round archived",
-      "archiveFailed": "Archive failed: {message}",
-      "status": {
-        "ready": "Ready",
-        "running": "Running",
-        "finished": "Finished",
-        "canceled": "Canceled",
-        "interrupted": "Interrupted"
-      }
-    },
-    "arena": {
-      "title": "Agenten-PK-Arena",
-      "description": "Eine Aufgabe, mehrere Agenten, Seite an Seite",
-      "roundStatus": {
-        "running": "Live",
-        "finished": "Beendet",
-        "canceled": "Abgebrochen",
-        "interrupted": "Durch Neustart unterbrochen",
-        "ready": "Bereit"
-      },
-      "roundPicker": "Runde",
-      "cancelRound": "Runde abbrechen",
-      "cleanupWorktrees": "Worktrees bereinigen",
-      "cleanupHint": "Worktrees der Teilnehmer entfernen (Branches bleiben)",
-      "share": "Teilen",
-      "sharing": "Exportiere…",
-      "tabs": {
-        "battle": "Kampf",
-        "diff": "Diff"
-      },
-      "preparing": "Teilnehmer wird vorbereitet…",
-      "noRound": "Keine Runde ausgewählt",
-      "contestantsUnit": "Agenten",
-      "newRound": "Neue Runde",
-      "startMatch": "Kampf starten",
-      "readyNote": "Modell und Denkaufwand je Teilnehmer wählen, dann starten.",
-      "modelLabel": "Modell",
-      "effortLabel": "Denkaufwand",
-      "effortUnsupported": "Dieser Agent bietet keine Denkstufen an; sein Standardwert wird verwendet",
-      "effortOptions": {
-        "off": "Aus",
-        "minimal": "Minimal",
-        "low": "Niedrig",
-        "medium": "Mittel",
-        "high": "Hoch",
-        "max": "Maximum"
-      },
-      "minimize": "Minimieren",
-      "exportReport": "Bericht exportieren",
-      "exporting": "Erstelle…",
-      "shareReport": "Save / share report",
-      "reportSaved": "HTML report saved",
-      "reportFailed": "Report export failed: {message}",
-      "persistenceFailed": "Einige Änderungen der Runde konnten nicht gespeichert werden. Wiederhole die Aktion, bevor du diese Seite schließt.",
-      "retrySave": "Speichern wiederholen",
-      "readyTag": "Bereit",
-      "deleteRound": "Löschen",
-      "deleteConfirm": "Diese Runde löschen? Worktrees bleiben auf der Platte — über 'Worktrees bereinigen' entfernen.",
-      "followUp": "Nachfassen",
-      "followUpPlaceholder": "Nur an diesen Teilnehmer senden (⌘↩ zum Senden)"
-    },
-    "diff": {
-      "loading": "Diff wird geladen…",
-      "empty": "Keine Änderungen in diesem Worktree"
-    },
-    "judge": {
-      "title": "Schiedsrichterurteil",
-      "running": "Auswertung…",
-      "error": "Schiedsrichter fehlgeschlagen",
-      "rerun": "Neu bewerten"
-    },
-    "minimized": {
-      "restore": "Zurück zur Arena",
-      "live": "PK läuft",
-      "dismiss": "Ausblenden"
-    }
   },
   "Forge": {
     "title": "Repository-Panel",

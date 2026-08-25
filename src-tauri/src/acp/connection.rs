@@ -6402,17 +6402,11 @@ async fn apply_preferred_session_options(
     initial_config_options: Vec<SessionConfigOption>,
 ) -> Vec<SessionConfigOption> {
     if let Some(pref_mode) = preferred_mode_id {
-        let is_advertised = session
+        let needs_apply = session
             .modes()
             .as_ref()
-            .map(|m| m.available_modes.iter().any(|mode| mode.id.to_string() == pref_mode))
+            .map(|m| m.current_mode_id.to_string() != pref_mode)
             .unwrap_or(false);
-        let needs_apply = is_advertised
-            && session
-                .modes()
-                .as_ref()
-                .map(|m| m.current_mode_id.to_string() != pref_mode)
-                .unwrap_or(false);
         if needs_apply {
             if let Err(e) = set_session_mode(session, state, emitter, pref_mode.to_string()).await {
                 tracing::error!("[ACP] failed to apply preferred mode '{pref_mode}' on connect: {e}");

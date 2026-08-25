@@ -94,7 +94,6 @@
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
     "@testing-library/user-event": "^14.5.2",
-    "@types/jsdom": "^30.0.0",
     "@types/node": "25.2.2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",

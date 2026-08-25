@@ -1743,17 +1743,8 @@
       "sectionFolders": "フォルダ",
       "sectionChats": "チャット",
       "sectionRecent": "最近",
-      "sectionPk": "PKアリーナ",
       "noChats": "チャットがありません",
       "noRecent": "最近の会話はありません",
-      "noPk": "PKセッションはありません",
-      "pkOpenArena": "Open this PK arena",
-      "pkArchive": "Archive the PK round",
-      "pkArchiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
-      "pkArchiveSuccess": "PK round archived",
-      "pkArchiveFailed": "Archive failed: {message}",
-      "pkExpand": "Expand agent sessions",
-      "pkCollapse": "Collapse agent sessions",
       "showMoreRecent": "さらに表示（{count}）",
       "noFolders": "開いているフォルダがありません",
       "newChatAction": "新しいチャット",
@@ -1879,8 +1870,7 @@
       "search": "検索",
       "openSettings": "設定を開く",
       "backToConversations": "会話に戻る",
-      "withShortcut": "{label}（{shortcut}）",
-      "pkArena": "エージェントPKアリーナ"
+      "withShortcut": "{label}（{shortcut}）"
     },
     "statusBar": {
       "connection": {
@@ -2817,8 +2807,7 @@
         "mentionGroupAgent": "エージェント",
         "mentionGroupSession": "セッション",
         "mentionGroupCommit": "コミット",
-        "mentionGroupSkill": "スキル",
-        "startPk": "エージェントPK"
+        "mentionGroupSkill": "スキル"
       },
       "messageQueue": {
         "addToQueue": "キューに追加",
@@ -5140,179 +5129,6 @@
     "emptyAction": "セッションを集計",
     "loadFailed": "使用量を読み込めませんでした",
     "truncatedNotice": "期間が非常に長いため、表示中の数値は直近の一部のみを対象としています。"
-  },
-  "PkArena": {
-    "launcher": {
-      "title": "エージェントPK",
-      "description": "同じタスクを複数のエージェントに同時に送り、結果を比較します",
-      "contestantsLabel": "出場者（{min}～{max}体）",
-      "noFolderHint": "アリーナには git リポジトリのフォルダが必要です。先に開いてください。",
-      "needMore": "対戦を開始するには最低 {count} 体選択してください。",
-      "taskLabel": "タスク",
-      "taskPlaceholder": "全出場者が受け取る同じタスク。例:「HTML ファイル1つでスネークゲームを作って」",
-      "selectedCount": "{selected}/{max} 選択中(最小 {min})",
-      "cancel": "キャンセル",
-      "start": "対戦開始",
-      "notAGitRepo": "このフォルダは git リポジトリではありません。アリーナは各出場者に隔離されたワークツリーを与えるためにリポジトリが必要です。",
-      "initGitRepo": "git init",
-      "initializing": "初期化中…",
-      "permissionLabel": "権限",
-      "permissionOptions": {
-        "default": "毎回確認",
-        "acceptEdits": "編集を自動許可",
-        "bypassPermissions": "完全自動"
-      },
-      "permissionHints": {
-        "default": "承認のたびに出場者が停止",
-        "acceptEdits": "ファイル編集は確認なし",
-        "bypassPermissions": "承認ダイアログなし"
-      },
-      "permissionNote": "ラウンド開始時に各出場者へ適用。未対応のエージェントは引き続き確認します。",
-      "bareModeLabel": "ベアモード(スキル無効)",
-      "bareModeHint": "出場者は基本機能のみ使用。グローバル・プロジェクトのスキルは使用禁止。",
-      "effortLabel": "思考レベル(全出場者統一)",
-      "effortOptions": {
-        "default": "デフォルト",
-        "low": "低",
-        "medium": "中",
-        "high": "高",
-        "max": "最大"
-      },
-      "effortNote": "各エージェントが通告する最寄りのレベルを適用。未対応はデフォルトのまま。",
-      "agentNotReady": "{agent} が未準備です(先に設定でインストール)。",
-      "agentCheckFailed": "{agent} を確認できませんでした。",
-      "templates": {
-        "pelican": "ペリカン",
-        "bouncingBall": "ボール",
-        "jellyBlob": "ゼリー",
-        "snake": "スネーク",
-        "flappyBird": "Flappy Bird",
-        "voiceChat": "音声チャット",
-        "blackHole": "ブラックホール"
-      },
-      "judgeLabel": "審査員(任意)",
-      "judgeNone": "審査員なし",
-      "judgeHint": "全選手の完了後、審査員エージェントが各選手の diff を読み、構造化された評価とランキングを生成します。",
-      "startPoint": "📍 開始点",
-      "fromHead": "現在の HEAD から",
-      "startPointHint": "選手はこのコミットの前から開始し、このコミットの変更を見ず、メッセージをタスクとして独立して再現します。",
-      "loadingCommits": "コミットを読み込み中…",
-      "noCommits": "コミットが見つかりません。",
-      "creativeTemplates": "クリエイティブテンプレート",
-      "realEngineering": "リアルエンジニアリング",
-      "loadMore": "もっと読み込む",
-      "judgeDimensionsLabel": "評価 dimension（任意）",
-      "judgeDimensionsPlaceholder": "正確性 — タスクを満たすか?\nコード品質 — 可読性・構造・エッジケース\n完成度 — どの程度完了したか?\n効率 — コード効率（token/時間は除外）",
-      "judgeDimensionsHint": "1 行 1 dimension。空欄でデフォルト使用。",
-      "addContestant": "{agent} を選手として追加",
-      "slotLabelPlaceholder": "ラベル(例: Sonnet、Opus)",
-      "slotNumber": "出場者 {number}",
-      "modelLoading": "モデルを読み込み中…",
-      "modelUnavailable": "このエージェントはデフォルトモデルを使用します",
-      "modelLoadFailed": "モデルを読み込めませんでした",
-      "retryModelLoad": "モデルを再読み込み",
-      "removeSlot": "この選手スロットを削除"
-    },
-    "scoreboard": {
-      "status": {
-        "preparing": "準備中",
-        "connecting": "接続中",
-        "running": "実行中",
-        "done": "完了",
-        "error": "失敗",
-        "canceled": "キャンセル済み",
-        "ready": "準備完了"
-      },
-      "tokensUnit": "tok",
-      "tokensUnavailable": "Token not reported",
-      "tokensUnavailableHint": "This agent did not return token usage; this does not mean zero tokens.",
-      "turnsUnit": "ターン"
-    },
-    "history": {
-      "title": "Round history",
-      "hint": "Search, open, and archive complete rounds.",
-      "trigger": "History {count}",
-      "searchPlaceholder": "Search tasks or agents…",
-      "empty": "No matching rounds",
-      "agents": "{count} agents",
-      "archive": "Archive round",
-      "archiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
-      "archiveSuccess": "PK round archived",
-      "archiveFailed": "Archive failed: {message}",
-      "status": {
-        "ready": "Ready",
-        "running": "Running",
-        "finished": "Finished",
-        "canceled": "Canceled",
-        "interrupted": "Interrupted"
-      }
-    },
-    "arena": {
-      "title": "エージェントPKアリーナ",
-      "description": "1つのタスク、複数のエージェント、横並び対決",
-      "roundStatus": {
-        "running": "進行中",
-        "finished": "終了",
-        "canceled": "キャンセル済み",
-        "interrupted": "再起動により中断",
-        "ready": "準備完了"
-      },
-      "roundPicker": "ラウンド",
-      "cancelRound": "ラウンドをキャンセル",
-      "cleanupWorktrees": "ワークツリーを削除",
-      "cleanupHint": "出場者のワークツリーを削除します(ブランチは保持)",
-      "share": "共有",
-      "sharing": "書き出し中…",
-      "tabs": {
-        "battle": "対戦",
-        "diff": "Diff"
-      },
-      "preparing": "出場者を準備中…",
-      "noRound": "ラウンド未選択",
-      "contestantsUnit": "体",
-      "newRound": "新しいラウンド",
-      "startMatch": "対戦開始",
-      "readyNote": "各出場者のモデルと思考レベルを選んでから対戦開始。",
-      "modelLabel": "モデル",
-      "effortLabel": "思考レベル",
-      "effortUnsupported": "このエージェントは思考レベル設定に対応していないため、既定値を使用します",
-      "effortOptions": {
-        "off": "オフ",
-        "minimal": "最小",
-        "low": "低",
-        "medium": "中",
-        "high": "高",
-        "max": "最大"
-      },
-      "minimize": "最小化",
-      "exportReport": "レポートをエクスポート",
-      "exporting": "生成中…",
-      "shareReport": "Save / share report",
-      "reportSaved": "HTML report saved",
-      "reportFailed": "Report export failed: {message}",
-      "persistenceFailed": "一部のラウンド状態を保存できませんでした。ページを閉じる前に操作を再試行してください。",
-      "retrySave": "保存を再試行",
-      "readyTag": "準備完了",
-      "deleteRound": "削除",
-      "deleteConfirm": "このラウンドを削除?ワークツリーは残ります(「ワークツリーを削除」で除去)",
-      "followUp": "追加",
-      "followUpPlaceholder": "この選手にのみ追加メッセージを送信(⌘↩ で送信)"
-    },
-    "diff": {
-      "loading": "diff を読み込み中…",
-      "empty": "このワークツリーに変更はありません"
-    },
-    "judge": {
-      "title": "審査員の評決",
-      "running": "評価中…",
-      "error": "審査員が失敗しました",
-      "rerun": "再評価"
-    },
-    "minimized": {
-      "restore": "アリーナに戻る",
-      "live": "PK 実行中",
-      "dismiss": "非表示"
-    }
   },
   "Forge": {
     "title": "リポジトリパネル",

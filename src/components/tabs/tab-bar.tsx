@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
-import type { WorkspaceTabItem as TabItemData } from "@/contexts/tab-context"
+import type { TabItem as TabItemData } from "@/contexts/tab-context"
 import { groupOfTab } from "@/stores/tab-store"
 import {
   firstLeafId,
@@ -210,18 +210,14 @@ export function TabBar({ groupId }: TabBarProps) {
       const selFolder = selTab
         ? allFolders.find((f) => f.id === selTab.folderId)
         : undefined
-      if (
-        (selTab?.kind === "conversation" && selTab.isChat === true) ||
-        selFolder?.kind === "chat"
-      ) {
+      if (selTab?.isChat === true || selFolder?.kind === "chat") {
         openChatModeTab(groupOptions)
         return
       }
       if (selTab && selFolder) {
         openNewConversationTab(
           selFolder.id,
-          (selTab.kind === "conversation" ? selTab.workingDir : undefined) ??
-            selFolder.path,
+          selTab.workingDir ?? selFolder.path,
           groupOptions
         )
         return
@@ -324,8 +320,7 @@ export function TabBar({ groupId }: TabBarProps) {
         // Drafts are group-bound: no cross-group drag, no move / split-and-move
         // menu items. Within-group sorting (the Reorder.Group itself) is
         // untouched. See `moveTabToGroup` for why.
-        const isDraft =
-          tab.kind === "conversation" && tab.conversationId == null
+        const isDraft = tab.conversationId == null
         // Neighbours of the active tab inset their workspace-bg baseline so the
         // active tab's transparent reverse-corner foot (which flares over them)
         // doesn't leave a stray line under it (globals.css `data-adjacent-active`).

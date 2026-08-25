@@ -36,7 +36,6 @@ const store = vi.hoisted(() => ({
   activeTabId: null as string | null,
   tabSpec: [] as Array<{
     id: string
-    kind?: string
     conversationId: number | null
     agentType: string
     folderId: number
@@ -736,7 +735,6 @@ describe("SidebarConversationList — scrollToActive across a worktree merge", (
     store.activeTabId = "tab-21"
     store.tabSpec = [
       {
-        kind: "conversation",
         id: "tab-21",
         conversationId: 21,
         agentType: "claude_code",

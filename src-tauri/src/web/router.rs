@@ -152,10 +152,6 @@ pub fn build_router(
             post(handlers::conversations::create_conversation),
         )
         .route(
-            "/create_pk_conversation",
-            post(handlers::conversations::create_pk_conversation),
-        )
-        .route(
             "/create_chat_conversation",
             post(handlers::conversations::create_chat_conversation),
         )
@@ -1440,28 +1436,6 @@ pub fn build_router(
         .route(
             "/work_task_template_delete",
             post(handlers::work_task::work_task_template_delete),
-        )
-        // ─── PK arena rounds ───
-        .route("/pk_round_list", post(handlers::pk::pk_round_list))
-        .route("/pk_round_get", post(handlers::pk::pk_round_get))
-        .route("/pk_round_create", post(handlers::pk::pk_round_create))
-        .route(
-            "/pk_round_update_status",
-            post(handlers::pk::pk_round_update_status),
-        )
-        .route("/pk_round_delete", post(handlers::pk::pk_round_delete))
-        .route(
-            "/pk_round_update_judge",
-            post(handlers::pk::pk_round_update_judge),
-        )
-        .route(
-            "/pk_round_save_report_snapshot",
-            post(handlers::pk::pk_round_save_report_snapshot)
-                .layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
-        )
-        .route(
-            "/pk_round_get_report_snapshot",
-            post(handlers::pk::pk_round_get_report_snapshot),
         )
         // ─── Workspace background ───
         .route(

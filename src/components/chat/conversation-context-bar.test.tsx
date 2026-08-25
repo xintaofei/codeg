@@ -28,7 +28,6 @@ vi.mock("sonner", () => ({
 // branches) is seeded into the real zustand store in beforeEach.
 let tabs: Array<{
   id: string
-  kind: "conversation"
   folderId: number
   conversationId: number | null
   isChat?: boolean
@@ -94,14 +93,7 @@ describe("ConversationHeaderFolderPicker", () => {
       folders: [repo, other],
       allFolders: [repo, other],
     })
-    tabs = [
-      {
-        id: "tab-draft",
-        kind: "conversation",
-        folderId: 1,
-        conversationId: null,
-      },
-    ]
+    tabs = [{ id: "tab-draft", folderId: 1, conversationId: null }]
     activeTabId = "tab-draft"
 
     const user = userEvent.setup()
@@ -119,14 +111,7 @@ describe("ConversationHeaderFolderPicker", () => {
       folders: [repo, other],
       allFolders: [repo, other],
     })
-    tabs = [
-      {
-        id: "tab-1",
-        kind: "conversation",
-        folderId: 1,
-        conversationId: 42,
-      },
-    ]
+    tabs = [{ id: "tab-1", folderId: 1, conversationId: 42 }]
     activeTabId = "tab-1"
 
     const user = userEvent.setup()
@@ -140,13 +125,7 @@ describe("ConversationHeaderFolderPicker", () => {
 
   it("shows the chat-mode label for a folderless chat tab", () => {
     tabs = [
-      {
-        id: "tab-chat",
-        kind: "conversation",
-        folderId: 999,
-        conversationId: null,
-        isChat: true,
-      },
+      { id: "tab-chat", folderId: 999, conversationId: null, isChat: true },
     ]
     activeTabId = "tab-chat"
 

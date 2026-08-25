@@ -7,7 +7,6 @@ import { Check, ChevronDown, Folder, MessageSquare } from "lucide-react"
 import type { OverlayScrollbarsComponentRef } from "overlayscrollbars-react"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
-import { isConversationWorkspaceTab } from "@/lib/workspace-tab"
 import { Button } from "@/components/ui/button"
 import {
   Popover,
@@ -126,8 +125,7 @@ export const ConversationHeaderFolderPicker = memo(
 
     const ownTab = useMemo(() => {
       const lookupId = tabId ?? activeTabId
-      const tab = tabs.find((x) => x.id === lookupId)
-      return tab && isConversationWorkspaceTab(tab) ? tab : null
+      return tabs.find((x) => x.id === lookupId) ?? null
     }, [tabs, tabId, activeTabId])
 
     const ownFolder = useMemo(
@@ -252,8 +250,7 @@ export const ConversationFolderBranchPicker = memo(
 
     const ownTab = useMemo(() => {
       const lookupId = tabId ?? activeTabId
-      const tab = tabs.find((x) => x.id === lookupId)
-      return tab && isConversationWorkspaceTab(tab) ? tab : null
+      return tabs.find((x) => x.id === lookupId) ?? null
     }, [tabs, tabId, activeTabId])
 
     const ownFolder = useMemo(
@@ -372,9 +369,7 @@ export function useConversationFolderBranchPickerVisible(
   const activeTabId = useTabStore((s) => s.activeTabId)
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
   const lookupId = tabId ?? activeTabId
-  const matchedTab = tabs.find((x) => x.id === lookupId)
-  const ownTab =
-    matchedTab && isConversationWorkspaceTab(matchedTab) ? matchedTab : null
+  const ownTab = tabs.find((x) => x.id === lookupId) ?? null
   const ownFolder = ownTab
     ? (allFolders.find((f) => f.id === ownTab.folderId) ?? null)
     : null

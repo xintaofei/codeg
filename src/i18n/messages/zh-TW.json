@@ -1743,17 +1743,8 @@
       "sectionFolders": "資料夾",
       "sectionChats": "聊天",
       "sectionRecent": "最近",
-      "sectionPk": "PK 競技場",
       "noChats": "沒有聊天",
       "noRecent": "暫無最近對話",
-      "noPk": "暫無 PK 對話",
-      "pkOpenArena": "Open this PK arena",
-      "pkArchive": "Archive the PK round",
-      "pkArchiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
-      "pkArchiveSuccess": "PK round archived",
-      "pkArchiveFailed": "Archive failed: {message}",
-      "pkExpand": "Expand agent sessions",
-      "pkCollapse": "Collapse agent sessions",
       "showMoreRecent": "顯示更多（{count}）",
       "noFolders": "沒有開啟的資料夾",
       "newChatAction": "新增聊天",
@@ -1879,8 +1870,7 @@
       "search": "搜尋",
       "openSettings": "打開設定",
       "backToConversations": "返回會話",
-      "withShortcut": "{label}（{shortcut}）",
-      "pkArena": "智慧體 PK 競技場"
+      "withShortcut": "{label}（{shortcut}）"
     },
     "statusBar": {
       "connection": {
@@ -2817,8 +2807,7 @@
         "mentionGroupAgent": "智能體",
         "mentionGroupSession": "工作階段",
         "mentionGroupCommit": "提交",
-        "mentionGroupSkill": "技能",
-        "startPk": "智慧體 PK"
+        "mentionGroupSkill": "技能"
       },
       "messageQueue": {
         "addToQueue": "加入佇列",
@@ -5140,179 +5129,6 @@
     "emptyAction": "統計我的工作階段",
     "loadFailed": "用量載入失敗",
     "truncatedNotice": "此範圍過大 —— 下面的數字只涵蓋其中最近的一段。"
-  },
-  "PkArena": {
-    "launcher": {
-      "title": "智慧體 PK",
-      "description": "同一任務同時發給多個智慧體,對比結果",
-      "contestantsLabel": "參賽選手（{min}–{max} 個）",
-      "noFolderHint": "競技場需要一個 git 儲存庫資料夾——請先開啟一個。",
-      "needMore": "至少選擇 {count} 個智慧體才能開賽。",
-      "taskLabel": "任務",
-      "taskPlaceholder": "所有選手收到的同一任務,例如\"用單一 HTML 檔寫一個貪吃蛇遊戲\"",
-      "selectedCount": "已選 {selected}/{max}(最少 {min})",
-      "cancel": "取消",
-      "start": "開始比賽",
-      "notAGitRepo": "該資料夾不是 git 儲存庫——競技場需要儲存庫來為每位選手建立隔離的 worktree。",
-      "initGitRepo": "git init",
-      "initializing": "初始化中…",
-      "permissionLabel": "權限",
-      "permissionOptions": {
-        "default": "每步詢問",
-        "acceptEdits": "自動接受編輯",
-        "bypassPermissions": "全自動"
-      },
-      "permissionHints": {
-        "default": "每次審批都會打斷選手",
-        "acceptEdits": "檔案編輯不再詢問",
-        "bypassPermissions": "完全不彈審批"
-      },
-      "permissionNote": "開賽時對每位選手生效;不支援的智慧體仍會詢問。",
-      "bareModeLabel": "裸機模式(禁用技能)",
-      "bareModeHint": "選手被明確要求只使用基礎能力,不載入任何全域或專案技能。",
-      "effortLabel": "思考等級(所有選手統一)",
-      "effortOptions": {
-        "default": "預設",
-        "low": "低",
-        "medium": "中",
-        "high": "高",
-        "max": "最高"
-      },
-      "effortNote": "按各選手通告的最近檔位套用;不支援的選手保持預設。",
-      "agentNotReady": "{agent} 未就緒(請先在智慧體設定中安裝)。",
-      "agentCheckFailed": "無法校驗 {agent} 的安裝狀態。",
-      "templates": {
-        "pelican": "鵜鶘騎車",
-        "bouncingBall": "彈球",
-        "jellyBlob": "果凍 Blob",
-        "snake": "貪吃蛇",
-        "flappyBird": "Flappy Bird",
-        "voiceChat": "語音聊天",
-        "blackHole": "黑洞"
-      },
-      "judgeLabel": "裁判(可選)",
-      "judgeNone": "無裁判",
-      "judgeHint": "所有選手完成後,裁判 agent 會讀取每個選手的 diff,給出結構化評分和排名。",
-      "startPoint": "📍 起點",
-      "fromHead": "從目前 HEAD 開始",
-      "startPointHint": "選手從此提交的前一次提交開始,看不到這次提交的改動,只把它的提交訊息當任務——等於獨立重做同一個目標。",
-      "loadingCommits": "載入提交中…",
-      "noCommits": "未找到提交。",
-      "creativeTemplates": "創意 PK",
-      "realEngineering": "真實工程 PK",
-      "loadMore": "加載更多",
-      "judgeDimensionsLabel": "評分維度（可選）",
-      "judgeDimensionsPlaceholder": "正確性 — 是否完成任務?\n程式碼品質 — 可可讀性、結構、邊界處理\n完整度 — 完成了多少?\n效率 — 程式碼層面效率（忽略 token 數和耗時）",
-      "judgeDimensionsHint": "每行一個維度。留空使用預設。每個維度會成為裁判提示詞中的編號評分標準。",
-      "addContestant": "加入 {agent} 為選手",
-      "slotLabelPlaceholder": "標籤(如 Sonnet、Opus)",
-      "slotNumber": "選手 {number}",
-      "modelLoading": "正在讀取模型…",
-      "modelUnavailable": "此智慧體使用預設模型",
-      "modelLoadFailed": "模型清單讀取失敗",
-      "retryModelLoad": "重新讀取模型清單",
-      "removeSlot": "移除該選手位置"
-    },
-    "scoreboard": {
-      "status": {
-        "preparing": "準備中",
-        "connecting": "連線中",
-        "running": "執行中",
-        "done": "完成",
-        "error": "失敗",
-        "canceled": "已取消",
-        "ready": "就緒"
-      },
-      "tokensUnit": "tok",
-      "tokensUnavailable": "Token not reported",
-      "tokensUnavailableHint": "This agent did not return token usage; this does not mean zero tokens.",
-      "turnsUnit": "輪"
-    },
-    "history": {
-      "title": "Round history",
-      "hint": "Search, open, and archive complete rounds.",
-      "trigger": "History {count}",
-      "searchPlaceholder": "Search tasks or agents…",
-      "empty": "No matching rounds",
-      "agents": "{count} agents",
-      "archive": "Archive round",
-      "archiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
-      "archiveSuccess": "PK round archived",
-      "archiveFailed": "Archive failed: {message}",
-      "status": {
-        "ready": "Ready",
-        "running": "Running",
-        "finished": "Finished",
-        "canceled": "Canceled",
-        "interrupted": "Interrupted"
-      }
-    },
-    "arena": {
-      "title": "智慧體 PK 競技場",
-      "description": "一個任務,多個智慧體,同場競技",
-      "roundStatus": {
-        "running": "進行中",
-        "finished": "已結束",
-        "canceled": "已取消",
-        "interrupted": "因重啟中斷",
-        "ready": "就緒"
-      },
-      "roundPicker": "回合",
-      "cancelRound": "取消本輪",
-      "cleanupWorktrees": "清理 worktree",
-      "cleanupHint": "移除選手的 worktree(保留分支)",
-      "share": "分享",
-      "sharing": "匯出中…",
-      "tabs": {
-        "battle": "對戰",
-        "diff": "Diff"
-      },
-      "preparing": "正在準備選手…",
-      "noRound": "未選擇回合",
-      "contestantsUnit": "個智慧體",
-      "newRound": "新一局",
-      "startMatch": "開始比賽",
-      "readyNote": "選擇每位選手的模型與思考等級,然後開始比賽。",
-      "modelLabel": "模型",
-      "effortLabel": "思考等級",
-      "effortUnsupported": "此智能體不支援思考等級設定,將使用自身預設值",
-      "effortOptions": {
-        "off": "關閉",
-        "minimal": "最低",
-        "low": "低",
-        "medium": "中",
-        "high": "高",
-        "max": "最高"
-      },
-      "minimize": "縮小",
-      "exportReport": "匯出報告",
-      "exporting": "產生中…",
-      "shareReport": "Save / share report",
-      "reportSaved": "HTML report saved",
-      "reportFailed": "Report export failed: {message}",
-      "persistenceFailed": "部分回合狀態未能儲存，請在關閉頁面前重試對應操作。",
-      "retrySave": "重試儲存",
-      "readyTag": "就緒",
-      "deleteRound": "刪除",
-      "deleteConfirm": "刪除這個回合?worktree 會留在磁碟上,可用「清理 worktree」移除。",
-      "followUp": "追加",
-      "followUpPlaceholder": "只對這名選手發追加訊息(⌘↩ 傳送)"
-    },
-    "diff": {
-      "loading": "正在載入 diff…",
-      "empty": "該 worktree 沒有變更"
-    },
-    "judge": {
-      "title": "裁判裁決",
-      "running": "評審中…",
-      "error": "裁判失敗",
-      "rerun": "重新評分"
-    },
-    "minimized": {
-      "restore": "回到競技場",
-      "live": "PK 進行中",
-      "dismiss": "隱藏"
-    }
   },
   "Forge": {
     "title": "儲存庫面板",

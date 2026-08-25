@@ -68,11 +68,6 @@ pub struct DbConversationSummary {
     /// path (set when a removed task worktree's conversations were re-parented).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin_cwd: Option<String>,
-    /// Mirror of `conversation.pk_round_id`: the PK arena round this contestant
-    /// session belongs to. Set only when `kind == Pk`; drives the sidebar's
-    /// per-round grouping.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pk_round_id: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

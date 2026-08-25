@@ -28,11 +28,7 @@ vi.mock("@/lib/transport", () => ({
   notifyRemoteDesktopUnauthorized: mocks.notifyRemoteDesktopUnauthorized,
 }))
 
-import {
-  openCommitWindow,
-  openPkRoundWindow,
-  openSettingsWindow,
-} from "@/lib/api"
+import { openCommitWindow, openSettingsWindow } from "@/lib/api"
 
 /** Stand-in for the reserved WindowProxy: only `location.href` and `close`. */
 function fakePopup(initialHref = "about:blank") {
@@ -203,33 +199,6 @@ describe("web-mode app popup windows", () => {
       "open_commit_window",
       expect.objectContaining({ folderId: 7 })
     )
-    expect(open).not.toHaveBeenCalled()
-  })
-
-  it("opens a PK round directly in a reusable web workspace window", async () => {
-    const popup = fakePopup()
-    const open = vi.spyOn(window, "open").mockReturnValue(popup as never)
-
-    await openPkRoundWindow("42", "Build a game")
-
-    expect(open).toHaveBeenCalledWith("", "pk-round-42")
-    expect(popup.location.href).toBe("/workspace?pkRoundId=42")
-    expect(mocks.call).not.toHaveBeenCalled()
-  })
-
-  it("delegates PK windows to the desktop shell with remote scope", async () => {
-    const open = vi.spyOn(window, "open").mockReturnValue(null)
-    mocks.isDesktop.mockReturnValue(true)
-    mocks.getActiveRemoteConnectionId.mockReturnValue("8")
-    mocks.shellCall.mockResolvedValue(undefined)
-
-    await openPkRoundWindow("42", "Build a game")
-
-    expect(mocks.shellCall).toHaveBeenCalledWith("open_pk_round_window", {
-      roundId: "42",
-      title: "Build a game",
-      remoteConnectionId: "8",
-    })
     expect(open).not.toHaveBeenCalled()
   })
 })

@@ -43,8 +43,6 @@ mod m20260817_000001_work_task_conversation_title;
 mod m20260818_000001_short_fts_detail_column;
 mod m20260818_000001_work_task_source;
 mod m20260819_000001_work_task_completion_kind;
-mod m20260819_000001_pk_round;
-mod m20260819_000002_pk_round_judge;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -94,8 +92,6 @@ impl MigratorTrait for Migrator {
             Box::new(m20260818_000001_short_fts_detail_column::Migration),
             Box::new(m20260818_000001_work_task_source::Migration),
             Box::new(m20260819_000001_work_task_completion_kind::Migration),
-            Box::new(m20260819_000001_pk_round::Migration),
-            Box::new(m20260819_000002_pk_round_judge::Migration),
         ]
     }
 }

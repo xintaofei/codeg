@@ -21,9 +21,7 @@ const tabItem = readFileSync(
  */
 describe("tab strip draft gating", () => {
   it("keeps drafts out of every cross-group affordance", () => {
-    expect(tabBar).toContain(
-      'tab.kind === "conversation" && tab.conversationId == null'
-    )
+    expect(tabBar).toContain("const isDraft = tab.conversationId == null")
     expect(tabBar).toContain("canSplitMove={canSplitMove && !isDraft}")
     expect(tabBar).toContain("canMoveToGroup={!isDraft}")
     // Both drag callbacks are withheld for drafts, so a draft drag can never

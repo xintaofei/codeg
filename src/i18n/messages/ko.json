@@ -1743,17 +1743,8 @@
       "sectionFolders": "폴더",
       "sectionChats": "채팅",
       "sectionRecent": "최근",
-      "sectionPk": "PK 아레나",
       "noChats": "채팅 없음",
       "noRecent": "최근 대화 없음",
-      "noPk": "PK 세션 없음",
-      "pkOpenArena": "Open this PK arena",
-      "pkArchive": "Archive the PK round",
-      "pkArchiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
-      "pkArchiveSuccess": "PK round archived",
-      "pkArchiveFailed": "Archive failed: {message}",
-      "pkExpand": "Expand agent sessions",
-      "pkCollapse": "Collapse agent sessions",
       "showMoreRecent": "더 보기 ({count})",
       "noFolders": "열린 폴더 없음",
       "newChatAction": "새 채팅",
@@ -1879,8 +1870,7 @@
       "search": "검색",
       "openSettings": "설정 열기",
       "backToConversations": "대화로 돌아가기",
-      "withShortcut": "{label} ({shortcut} 단축키)",
-      "pkArena": "에이전트 PK 아레나"
+      "withShortcut": "{label} ({shortcut} 단축키)"
     },
     "statusBar": {
       "connection": {
@@ -2817,8 +2807,7 @@
         "mentionGroupAgent": "에이전트",
         "mentionGroupSession": "세션",
         "mentionGroupCommit": "커밋",
-        "mentionGroupSkill": "스킬",
-        "startPk": "에이전트 PK"
+        "mentionGroupSkill": "스킬"
       },
       "messageQueue": {
         "addToQueue": "대기열에 추가",
@@ -5140,179 +5129,6 @@
     "emptyAction": "내 세션 집계",
     "loadFailed": "사용량을 불러오지 못했습니다",
     "truncatedNotice": "기간이 매우 길어 표시된 수치는 가장 최근 구간만 반영합니다."
-  },
-  "PkArena": {
-    "launcher": {
-      "title": "에이전트 PK",
-      "description": "하나의 작업을 여러 에이전트에 동시에 보내고 결과를 비교합니다",
-      "contestantsLabel": "참가자({min}–{max}개)",
-      "noFolderHint": "아레나에는 git 저장소 폴더가 필요합니다. 먼저 열어 주세요.",
-      "needMore": "대결을 시작하려면 최소 {count}개를 선택하세요.",
-      "taskLabel": "작업",
-      "taskPlaceholder": "모든 참가자가 받을 동일한 작업. 예: \"HTML 파일 하나로 스네이크 게임 만들기\"",
-      "selectedCount": "{selected}/{max} 선택됨(최소 {min})",
-      "cancel": "취소",
-      "start": "대결 시작",
-      "notAGitRepo": "이 폴더는 git 저장소가 아닙니다. 아레나는 각 참가자에게 격리된 워크트리를 제공하기 위해 저장소가 필요합니다.",
-      "initGitRepo": "git init",
-      "initializing": "초기화 중…",
-      "permissionLabel": "권한",
-      "permissionOptions": {
-        "default": "매번 확인",
-        "acceptEdits": "편집 자동 허용",
-        "bypassPermissions": "완전 자동"
-      },
-      "permissionHints": {
-        "default": "승인마다 참가자가 중단됨",
-        "acceptEdits": "파일 편집 확인 없음",
-        "bypassPermissions": "승인 없음"
-      },
-      "permissionNote": "라운드 시작 시 각 참가자에 적용됩니다. 미지원 에이전트는 계속 확인합니다.",
-      "bareModeLabel": "베어 모드(스킬 비활성화)",
-      "bareModeHint": "참가자는 기본 기능만 사용하며 전역·프로젝트 스킬을 사용할 수 없습니다.",
-      "effortLabel": "추론 수준(모든 참가자 동일)",
-      "effortOptions": {
-        "default": "기본",
-        "low": "낮음",
-        "medium": "중간",
-        "high": "높음",
-        "max": "최대"
-      },
-      "effortNote": "각 에이전트가 공지한 가장 가까운 수준을 적용합니다. 미지원 시 기본 유지.",
-      "agentNotReady": "{agent}이 준비되지 않았습니다(설정에서 설치하세요).",
-      "agentCheckFailed": "{agent} 확인 실패.",
-      "templates": {
-        "pelican": "펠리컨",
-        "bouncingBall": "공",
-        "jellyBlob": "젤리",
-        "snake": "스네이크",
-        "flappyBird": "Flappy Bird",
-        "voiceChat": "음성 채팅",
-        "blackHole": "블랙홀"
-      },
-      "judgeLabel": "심판(선택)",
-      "judgeNone": "심판 없음",
-      "judgeHint": "모든 참가자가 완료되면 심판 에이전트가 각 참가자의 diff를 읽고 구조화된 평가와 순위를 생성합니다.",
-      "startPoint": "📍 시작점",
-      "fromHead": "현재 HEAD에서",
-      "startPointHint": "선수들은 이 커밋 이전부터 시작하여 이 커밋의 변경사항을 보지 못하고, 메시지만 과제로 받아 독립적으로 다시 수행합니다.",
-      "loadingCommits": "커밋 로딩 중…",
-      "noCommits": "커밋이 없습니다.",
-      "creativeTemplates": "크리에이티브 템플릿",
-      "realEngineering": "실제 엔지니어링",
-      "loadMore": "더 로드",
-      "judgeDimensionsLabel": "평가 차원 (선택)",
-      "judgeDimensionsPlaceholder": "정확성 — 작업을 충족하는가?\n코드 품질 — 가독성, 구조, 엣지 케이스\n완성도 — 얼마나 완료했는가?\n효율성 — 코드 수준 효율 (token/시간 제외)",
-      "judgeDimensionsHint": "한 줄에 하나씩. 비워두면 기본값 사용.",
-      "addContestant": "{agent}을(를) 참가자로 추가",
-      "slotLabelPlaceholder": "라벨(예: Sonnet, Opus)",
-      "slotNumber": "참가자 {number}",
-      "modelLoading": "모델 불러오는 중…",
-      "modelUnavailable": "이 에이전트는 기본 모델을 사용합니다",
-      "modelLoadFailed": "모델을 불러오지 못했습니다",
-      "retryModelLoad": "모델 다시 불러오기",
-      "removeSlot": "이 참가자 슬롯 제거"
-    },
-    "scoreboard": {
-      "status": {
-        "preparing": "준비 중",
-        "connecting": "연결 중",
-        "running": "실행 중",
-        "done": "완료",
-        "error": "실패",
-        "canceled": "취소됨",
-        "ready": "준비됨"
-      },
-      "tokensUnit": "tok",
-      "tokensUnavailable": "Token not reported",
-      "tokensUnavailableHint": "This agent did not return token usage; this does not mean zero tokens.",
-      "turnsUnit": "턴"
-    },
-    "history": {
-      "title": "Round history",
-      "hint": "Search, open, and archive complete rounds.",
-      "trigger": "History {count}",
-      "searchPlaceholder": "Search tasks or agents…",
-      "empty": "No matching rounds",
-      "agents": "{count} agents",
-      "archive": "Archive round",
-      "archiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
-      "archiveSuccess": "PK round archived",
-      "archiveFailed": "Archive failed: {message}",
-      "status": {
-        "ready": "Ready",
-        "running": "Running",
-        "finished": "Finished",
-        "canceled": "Canceled",
-        "interrupted": "Interrupted"
-      }
-    },
-    "arena": {
-      "title": "에이전트 PK 아레나",
-      "description": "하나의 작업, 여러 에이전트, 나란히 대결",
-      "roundStatus": {
-        "running": "진행 중",
-        "finished": "종료",
-        "canceled": "취소됨",
-        "interrupted": "재시작으로 중단됨",
-        "ready": "준비됨"
-      },
-      "roundPicker": "라운드",
-      "cancelRound": "라운드 취소",
-      "cleanupWorktrees": "워크트리 정리",
-      "cleanupHint": "참가자의 워크트리를 제거합니다(브랜치는 유지)",
-      "share": "공유",
-      "sharing": "내보내는 중…",
-      "tabs": {
-        "battle": "대결",
-        "diff": "Diff"
-      },
-      "preparing": "참가자 준비 중…",
-      "noRound": "라운드 미선택",
-      "contestantsUnit": "개",
-      "newRound": "새 라운드",
-      "startMatch": "대결 시작",
-      "readyNote": "각 참가자의 모델과 추론 수준을 선택한 후 시작하세요.",
-      "modelLabel": "모델",
-      "effortLabel": "추론 수준",
-      "effortUnsupported": "이 에이전트는 추론 수준 설정을 지원하지 않아 기본값을 사용합니다",
-      "effortOptions": {
-        "off": "끄기",
-        "minimal": "최소",
-        "low": "낮음",
-        "medium": "중간",
-        "high": "높음",
-        "max": "최대"
-      },
-      "minimize": "최소화",
-      "exportReport": "보고서 내보내기",
-      "exporting": "생성 중…",
-      "shareReport": "Save / share report",
-      "reportSaved": "HTML report saved",
-      "reportFailed": "Report export failed: {message}",
-      "persistenceFailed": "일부 라운드 상태를 저장하지 못했습니다. 페이지를 닫기 전에 작업을 다시 시도하세요.",
-      "retrySave": "저장 다시 시도",
-      "readyTag": "준비됨",
-      "deleteRound": "삭제",
-      "deleteConfirm": "이 라운드를 삭제? 워크트리는 남아 있습니다(정리로 제거)",
-      "followUp": "추가",
-      "followUpPlaceholder": "이 선수에게만 추가 메시지 전송 (⌘↩ 전송)"
-    },
-    "diff": {
-      "loading": "diff 불러오는 중…",
-      "empty": "이 워크트리에는 변경 사항이 없습니다"
-    },
-    "judge": {
-      "title": "심판 평결",
-      "running": "평가 중…",
-      "error": "심판 실패",
-      "rerun": "재평가"
-    },
-    "minimized": {
-      "restore": "아레나로 돌아가기",
-      "live": "PK 진행 중",
-      "dismiss": "숨기기"
-    }
   },
   "Forge": {
     "title": "리포지토리 패널",

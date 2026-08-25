@@ -26,10 +26,6 @@ import {
 } from "@/stores/tab-store"
 import { leafIds } from "@/lib/tab-group-layout"
 import {
-  isConversationDraft,
-  type ConversationWorkspaceTab,
-} from "@/lib/workspace-tab"
-import {
   buildNewConversationDraftStorageKey,
   loadMessageInputDraftV2,
   saveMessageInputDraftV2,
@@ -567,12 +563,8 @@ describe("TabProvider tab state transitions", () => {
     // Explicit caller intent, so the provisional-agent correction pass must not
     // "fix" it back to the resolved default once the agent list goes fresh.
     expect(
-      useTabStore
-        .getState()
-        .rawTabs.find(
-          (t): t is ConversationWorkspaceTab =>
-            t.kind === "conversation" && t.id === target?.tabId
-        )?.agentTypeProvisional
+      useTabStore.getState().rawTabs.find((t) => t.id === target?.tabId)
+        ?.agentTypeProvisional
     ).toBe(false)
   })
 
@@ -638,12 +630,8 @@ describe("TabProvider tab state transitions", () => {
     expect(draft?.agentType).toBe("codex")
     expect(draft?.isChat).toBe(true)
     expect(
-      useTabStore
-        .getState()
-        .rawTabs.find(
-          (t): t is ConversationWorkspaceTab =>
-            t.kind === "conversation" && t.id === chatDraftId
-        )?.agentTypeProvisional
+      useTabStore.getState().rawTabs.find((t) => t.id === chatDraftId)
+        ?.agentTypeProvisional
     ).toBe(false)
   })
 
@@ -1996,7 +1984,7 @@ describe("TabProvider tab groups", () => {
 
     expect(leaves()).toHaveLength(2)
     const g1 = newLeafBeside(home)
-    const draft = store().rawTabs.find(isConversationDraft)
+    const draft = store().rawTabs.find((t) => t.conversationId == null)
     expect(draft).toBeDefined()
     expect(draft?.folderId).toBe(1)
     expect(draft?.agentType).toBe("codex")
@@ -2020,7 +2008,7 @@ describe("TabProvider tab groups", () => {
       store().splitTab(chatDraftId, "right", { move: false })
     })
 
-    const drafts = store().rawTabs.filter(isConversationDraft)
+    const drafts = store().rawTabs.filter((t) => t.conversationId == null)
     expect(drafts).toHaveLength(2)
     const newDraft = drafts.find((t) => t.id !== chatDraftId)
     expect(newDraft?.isChat).toBe(true)
@@ -2231,59 +2219,24 @@ describe("TabProvider tab groups", () => {
       store().splitTab("conv-1-codex-1", "right", { move: false })
     })
     const g1 = newLeafBeside(home)
-    const draftInG1 = store().rawTabs.find(isConversationDraft)!
+    const draftInG1 = store().rawTabs.find((t) => t.conversationId == null)!
 
     // Focused group is g1 (the draft) — reuses that draft, no new tab.
     act(() => {
       store().openNewConversationTab(1, "/repo")
     })
-    expect(store().rawTabs.filter(isConversationDraft)).toHaveLength(1)
+    expect(
+      store().rawTabs.filter((t) => t.conversationId == null)
+    ).toHaveLength(1)
     expect(store().activeTabId).toBe(draftInG1.id)
 
     // Explicitly targeting the home group creates a second, per-group draft.
     act(() => {
       store().openNewConversationTab(1, "/repo", { targetGroup: home })
     })
-    const drafts = store().rawTabs.filter(isConversationDraft)
+    const drafts = store().rawTabs.filter((t) => t.conversationId == null)
     expect(drafts).toHaveLength(2)
     expect(drafts.map((d) => groupOfId(d.id)).sort()).toEqual([home, g1].sort())
-  })
-
-  it("keeps multiple PK rounds as local workspace tabs that can be split", async () => {
-    const first = await renderWithTabs([tabItem(1, 1, true)])
-    const home = leaves()[0]
-
-    act(() => {
-      store().openPkRoundTab("41", 1, "First battle")
-      store().openPkRoundTab("42", 1, "Second battle")
-    })
-
-    expect(
-      store()
-        .rawTabs.filter((tab) => tab.kind === "pk")
-        .map((tab) => tab.id)
-    ).toEqual(["pk-round-41", "pk-round-42"])
-
-    act(() => {
-      store().splitTab("pk-round-42", "right", { move: true })
-    })
-
-    expect(selectIsSplit(store())).toBe(true)
-    expect(groupOfId("pk-round-42")).not.toBe(home)
-    const blob = JSON.parse(localStorage.getItem("workspace:tab-groups:v1")!)
-    expect(blob.pkTabs).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ roundId: "41", group: home }),
-        expect.objectContaining({ roundId: "42" }),
-      ])
-    )
-
-    first.unmount()
-    act(() => resetTabStore())
-    await renderWithTabs([tabItem(1, 1, true)])
-
-    expect(store().rawTabs.filter((tab) => tab.kind === "pk")).toHaveLength(2)
-    expect(groupOfId("pk-round-42")).not.toBe(home)
   })
 
   it("persists the split layout and restores it across a restart", async () => {
@@ -2328,7 +2281,7 @@ describe("TabProvider tab groups", () => {
       store().splitTab("conv-1-codex-1", "right", { move: false })
     })
     const g1 = newLeafBeside(home)
-    const draft = store().rawTabs.find(isConversationDraft)!
+    const draft = store().rawTabs.find((t) => t.conversationId == null)!
     expect(groupOfId(draft.id)).toBe(g1)
 
     const blob = JSON.parse(localStorage.getItem("workspace:tab-groups:v1")!)
@@ -2343,7 +2296,7 @@ describe("TabProvider tab groups", () => {
     await renderWithTabs([tabItem(1, 1, true)])
 
     expect(selectIsSplit(store())).toBe(true)
-    const restoredDraft = store().rawTabs.find(isConversationDraft)
+    const restoredDraft = store().rawTabs.find((t) => t.conversationId == null)
     expect(restoredDraft?.id).toBe(draft.id)
     expect(restoredDraft?.folderId).toBe(1)
     expect(groupOfId(draft.id)).toBe(g1)
@@ -2363,7 +2316,7 @@ describe("TabProvider tab groups", () => {
       store().splitTab("conv-1-codex-1", "right", { move: false })
     })
     const g1 = newLeafBeside(home)
-    const draft = store().rawTabs.find(isConversationDraft)!
+    const draft = store().rawTabs.find((t) => t.conversationId == null)!
     const goodBlob = localStorage.getItem("workspace:tab-groups:v1")!
     // Unsent text in BOTH drafts' composers (per-tab keys).
     saveMessageInputDraftV2(buildNewConversationDraftStorageKey(draft.id), {
@@ -2416,7 +2369,7 @@ describe("TabProvider tab groups", () => {
       store().splitTab("conv-1-codex-1", "right", { move: false })
     })
     const g1 = newLeafBeside(home)
-    const draft = store().rawTabs.find(isConversationDraft)!
+    const draft = store().rawTabs.find((t) => t.conversationId == null)!
 
     first.unmount()
     act(() => {
@@ -2474,7 +2427,7 @@ describe("TabProvider tab groups", () => {
       // Draft on folder 2, moved into its own group.
       store().openNewConversationTab(2, "/other", { targetGroup: home })
     })
-    const draft = store().rawTabs.find(isConversationDraft)!
+    const draft = store().rawTabs.find((t) => t.conversationId == null)!
     act(() => {
       store().splitTab("conv-1-codex-1", "right", { move: true })
     })
@@ -2513,7 +2466,7 @@ describe("TabProvider tab groups", () => {
 
     expect(selectIsSplit(store())).toBe(true)
     expect(groupOfId("conv-1-codex-2")).toBe(movedGroup)
-    expect(store().rawTabs.some(isConversationDraft)).toBe(false)
+    expect(store().rawTabs.some((t) => t.conversationId == null)).toBe(false)
   })
 
   it("prunes a restored group whose tabs no longer exist after hydration", async () => {
@@ -2551,7 +2504,7 @@ describe("TabProvider tab groups", () => {
       store().splitTab("conv-1-codex-1", "right", { move: false })
     })
     const g1 = newLeafBeside(home)
-    const draft = store().rawTabs.find(isConversationDraft)!
+    const draft = store().rawTabs.find((t) => t.conversationId == null)!
     expect(groupOfId(draft.id)).toBe(g1)
 
     act(() => {
@@ -2574,7 +2527,7 @@ describe("TabProvider tab groups", () => {
       store().splitTab("conv-1-codex-1", "right", { move: false })
     })
     const g1 = newLeafBeside(home)
-    const draft = store().rawTabs.find(isConversationDraft)!
+    const draft = store().rawTabs.find((t) => t.conversationId == null)!
 
     act(() => {
       tabsChangedHandler?.({
@@ -2711,8 +2664,7 @@ describe("TabProvider tab groups", () => {
       })
       const g1 = newLeafBeside(home)
       const g1Draft = store().rawTabs.find(
-        (t): t is ConversationWorkspaceTab & { conversationId: null } =>
-          isConversationDraft(t) && groupOfId(t.id) === g1
+        (t) => t.conversationId == null && groupOfId(t.id) === g1
       )!
       expect(g1Draft).toBeTruthy()
 
@@ -2742,7 +2694,7 @@ describe("TabProvider tab groups", () => {
       act(() => {
         store().openNewConversationTab(1, "/w1", { targetGroup: home })
       })
-      const draft = store().rawTabs.find(isConversationDraft)!
+      const draft = store().rawTabs.find((t) => t.conversationId == null)!
       const homeTabs = store().tabs.filter((t) => groupOfId(t.id) === home)
       expect(homeTabs.map((t) => t.id)).toEqual([
         "conv-1-codex-1",

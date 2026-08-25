@@ -18,18 +18,12 @@ export const SIDEBAR_SECTION_IDS = ["folders", "chats", "recent"] as const
 
 export type SidebarSectionId = (typeof SIDEBAR_SECTION_IDS)[number]
 
-/** Every section that can own a header row — the always-on-top "Pinned" bucket,
- *  the always-on-top "PK" bucket (shown only when PK arena conversations
- *  exist), plus the reorderable ones, in render order. The one list every
- *  all-sections operation walks (collapse/expand all,
- *  {@link loadSectionCollapsed}), so a section added to
- *  {@link SIDEBAR_SECTION_IDS} is picked up by all of them rather than
- *  silently missed by whichever one forgot to grow a branch. */
-export const SIDEBAR_SECTION_KEYS = [
-  "pinned",
-  "pk",
-  ...SIDEBAR_SECTION_IDS,
-] as const
+/** Every section that can own a header row — the always-on-top "Pinned" bucket
+ *  plus the reorderable ones, in render order. The one list every all-sections
+ *  operation walks (collapse/expand all, {@link loadSectionCollapsed}), so a
+ *  section added to {@link SIDEBAR_SECTION_IDS} is picked up by all of them
+ *  rather than silently missed by whichever one forgot to grow a branch. */
+export const SIDEBAR_SECTION_KEYS = ["pinned", ...SIDEBAR_SECTION_IDS] as const
 
 export type SidebarSectionKey = (typeof SIDEBAR_SECTION_KEYS)[number]
 
@@ -50,7 +44,6 @@ export const DEFAULT_SECTION_ORDER: SidebarSectionOrder = SIDEBAR_SECTION_IDS
  *  (the default), so a fresh user sees every section open. */
 export interface SidebarSectionCollapsed {
   pinned?: boolean
-  pk?: boolean
   folders?: boolean
   chats?: boolean
   recent?: boolean

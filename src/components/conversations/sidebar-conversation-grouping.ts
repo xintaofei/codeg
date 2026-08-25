@@ -263,54 +263,6 @@ export function selectChatConversationsWithReuse(
 }
 
 /**
- * Select PK-arena contestant conversations (`kind === "pk"`), grouped by their
- * `pk_round_id`. Returns a Map keyed by round id → conversations (newest-first
- * within each round). Excludes pinned conversations (they surface in the
- * Pinned section). `prev` is the Map returned last call for reference reuse.
- *
- * Each round's conversations are sorted newest-first; the rounds themselves are
- * ordered by their newest conversation's `updated_at` (hottest round first) so
- * the active PK sits at the top.
- */
-export function selectPkConversationsWithReuse(
-  conversations: readonly DbConversationSummary[],
-  prev: Map<number, DbConversationSummary[]>
-): Map<number, DbConversationSummary[]> {
-  const grouped = new Map<number, DbConversationSummary[]>()
-  for (const conv of conversations) {
-    if (conv.pinned_at != null) continue
-    if (conv.kind !== "pk") continue
-    const rid = conv.pk_round_id
-    if (rid == null) continue
-    const bucket = grouped.get(rid)
-    if (bucket) bucket.push(conv)
-    else grouped.set(rid, [conv])
-  }
-  // Sort conversations within each round newest-first.
-  for (const bucket of grouped.values()) {
-    bucket.sort(compareByUpdatedAtDesc)
-  }
-  // Sort rounds by hottest conversation (newest updated_at among their
-  // conversations) first.
-  const sortedEntries = [...grouped.entries()].sort((a, b) => {
-    const aMax = a[1][0]?.updated_at ?? ""
-    const bMax = b[1][0]?.updated_at ?? ""
-    return bMax.localeCompare(aMax)
-  })
-  const next = new Map(sortedEntries)
-  return mapsShallowEqual(prev, next) ? prev : next
-}
-
-/** Shallow-equal for Map<number, V[]> — same keys and same array refs. */
-function mapsShallowEqual<K, V>(a: Map<K, V[]>, b: Map<K, V[]>): boolean {
-  if (a.size !== b.size) return false
-  for (const [k, v] of a) {
-    if (b.get(k) !== v) return false
-  }
-  return true
-}
-
-/**
  * Select the flat "Recent" bucket: every conversation the sidebar can reach,
  * folder-bound and chat alike, newest first — the whole point of the section is
  * that it does NOT distinguish the two. Reference reuse as in
@@ -345,7 +297,6 @@ export function selectRecentConversationsWithReuse(
   for (const conv of conversations) {
     if (conv.pinned_at != null) continue
     if (!showCompleted && conv.status === "completed") continue
-    if (conv.kind === "pk") continue
     if (conv.kind !== "chat" && !openFolderIds.has(conv.folder_id)) continue
     next.push(conv)
   }
@@ -543,33 +494,13 @@ export interface RecentMoreRow {
 }
 
 /**
- * A PK-arena round sub-group heading inside the "pk" section: shows the round's
- * task summary and gates its contestant conversations. Follows the section
- * header; each round is one collapsible group.
- */
-export interface PkRoundHeaderRow {
-  kind: "pk-round"
-  roundId: number
-  /** Task preview (truncated for the header) — identifies the round. */
-  task: string
-  /** Number of contestant conversations in this round. */
-  count: number
-}
-
-/** Empty hint for the PK section (no PK arena conversations at all). */
-export interface PkEmptyRow {
-  kind: "pk-empty"
-}
-
-/**
- * A collapsible section heading. Five exist: "pinned" and "pk" (always on top,
- * shown only when conversations of that kind exist) plus the three
- * user-reorderable ones — "folders" (wraps the whole folder list), "chats" (a
- * flat list of folderless chat-mode conversations), and "recent" (a flat,
- * folder-agnostic list of the newest conversations, shown only when the user
- * keeps it enabled). All live in the same flat row array so the single
- * Virtualizer windows them like any other row — there is no separate,
- * un-virtualized list.
+ * A collapsible section heading. Four exist: "pinned" (always on top, shown only
+ * when there are pinned conversations) plus the three user-reorderable ones —
+ * "folders" (wraps the whole folder list), "chats" (a flat list of folderless
+ * chat-mode conversations), and "recent" (a flat, folder-agnostic list of the
+ * newest conversations, shown only when the user keeps it enabled). All live in
+ * the same flat row array so the single Virtualizer windows them like any other
+ * row — there is no separate, un-virtualized list.
  */
 export interface SectionHeaderRow {
   kind: "section"
@@ -607,8 +538,6 @@ export type SidebarRow =
   | RecentEmptyRow
   | RecentMoreRow
   | SubsessionLoadingRow
-  | PkRoundHeaderRow
-  | PkEmptyRow
 
 const MAX_RENDER_DEPTH = 32
 
@@ -626,9 +555,6 @@ const EMPTY_CONTAINER_CHILDREN: ReadonlyMap<number, readonly number[]> =
 // the row output stays identical to the pre-Recent model for callers that don't
 // pass it.
 const EMPTY_CONVERSATIONS: readonly DbConversationSummary[] = []
-const EMPTY_PK_MAP: ReadonlyMap<number, readonly DbConversationSummary[]> =
-  new Map()
-const EMPTY_ROUND_TASKS: ReadonlyMap<number, string> = new Map()
 
 /**
  * Merge a freshly-fetched children snapshot with child summaries already applied
@@ -758,16 +684,6 @@ function pushConversationRow(
 export function buildRows(args: {
   pinned: readonly DbConversationSummary[]
   pinnedExpanded: boolean
-  /** PK-arena conversations grouped by round id (hottest round first). Empty
-   *  Map = no PK section. */
-  pkConversations?: Map<number, DbConversationSummary[]>
-  /** Whether the PK section's rows are shown. Optional — defaults to expanded. */
-  pkExpanded?: boolean
-  /** Round metadata for the PK section headers: id → task preview. Absent
-   *  entries fall back to a generic "Round N" label. */
-  pkRoundTasks?: ReadonlyMap<number, string>
-  /** Ids whose PK round sub-group is collapsed. Absent = expanded. */
-  pkRoundCollapsed?: ReadonlySet<number>
   orderedFolderIds: readonly number[]
   byFolder: Map<number, DbConversationSummary[]>
   folderExpanded: Record<number, boolean>
@@ -824,10 +740,6 @@ export function buildRows(args: {
   const {
     pinned,
     pinnedExpanded,
-    pkConversations = EMPTY_PK_MAP,
-    pkExpanded = true,
-    pkRoundTasks = EMPTY_ROUND_TASKS,
-    pkRoundCollapsed = EMPTY_EXPANDED,
     orderedFolderIds,
     byFolder,
     folderExpanded,
@@ -897,41 +809,6 @@ export function buildRows(args: {
         childrenByParent,
         childrenLoading
       )
-    }
-  }
-
-  const pushPk = () => {
-    if (pkConversations.size === 0) return
-    const totalConvs = [...pkConversations.values()].reduce(
-      (n, bucket) => n + bucket.length,
-      0
-    )
-    rows.push({
-      kind: "section",
-      section: "pk",
-      expanded: pkExpanded,
-      count: totalConvs,
-    })
-    if (!pkExpanded) return
-    for (const [roundId, convs] of pkConversations) {
-      const task = pkRoundTasks.get(roundId) ?? `Round #${roundId}`
-      rows.push({
-        kind: "pk-round",
-        roundId,
-        task,
-        count: convs.length,
-      })
-      if (pkRoundCollapsed.has(roundId)) continue
-      for (const conv of convs) {
-        pushConversationRow(
-          rows,
-          conv,
-          0,
-          conversationExpanded,
-          childrenByParent,
-          childrenLoading
-        )
-      }
     }
   }
 
@@ -1038,11 +915,6 @@ export function buildRows(args: {
     const remaining = recentConversations.length - shown.length
     if (remaining > 0) rows.push({ kind: "recent-more", remaining })
   }
-
-  // The PK section sits right below Pinned (above the reorderable sections).
-  // It is not part of `sectionOrder` — it is always-on-top like Pinned, shown
-  // only when PK arena conversations exist.
-  pushPk()
 
   // Normalized (not consumed raw) so a truncated / repeated / unknown-entry
   // order can never drop a section off the sidebar or emit one twice.

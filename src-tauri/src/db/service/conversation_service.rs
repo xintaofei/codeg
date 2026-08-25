@@ -78,46 +78,6 @@ pub async fn create_with_delegation(
     .await
 }
 
-/// Create a PK arena contestant session: `kind = Pk` + `pk_round_id` set,
-/// so the sidebar routes the row to the per-round PK section.
-pub async fn create_pk(
-    conn: &DatabaseConnection,
-    folder_id: i32,
-    agent_type: AgentType,
-    title: Option<String>,
-    git_branch: Option<String>,
-    pk_round_id: i32,
-) -> Result<conversation::Model, DbError> {
-    let at_str = serde_json::to_value(agent_type)
-        .ok()
-        .and_then(|v| v.as_str().map(String::from))
-        .unwrap_or_default();
-    let now = Utc::now();
-    let model = conversation::ActiveModel {
-        id: NotSet,
-        folder_id: Set(folder_id),
-        title: Set(title),
-        title_locked: Set(true),
-        agent_type: Set(at_str),
-        status: Set(conversation::ConversationStatus::InProgress),
-        kind: Set(ConversationKind::Pk),
-        model: Set(None),
-        git_branch: Set(git_branch),
-        external_id: Set(None),
-        parent_id: Set(None),
-        parent_tool_use_id: Set(None),
-        delegation_call_id: Set(None),
-        pk_round_id: Set(Some(pk_round_id)),
-        message_count: Set(0),
-        created_at: Set(now),
-        updated_at: Set(now),
-        deleted_at: Set(None),
-        pinned_at: Set(None),
-        origin_cwd: Set(None),
-    };
-    Ok(model.insert(conn).await?)
-}
-
 async fn create_inner(
     conn: &DatabaseConnection,
     folder_id: i32,
@@ -160,7 +120,6 @@ async fn create_inner(
         deleted_at: Set(None),
         pinned_at: Set(None),
         origin_cwd: Set(None),
-        pk_round_id: Set(None),
     };
     Ok(model.insert(conn).await?)
 }
@@ -895,7 +854,6 @@ struct CarriedOverRow {
     created_at: chrono::DateTime<Utc>,
     updated_at: chrono::DateTime<Utc>,
     origin_cwd: Option<String>,
-    pk_round_id: Option<i32>,
 }
 
 impl CarriedOverRow {
@@ -934,7 +892,6 @@ impl CarriedOverRow {
             // `origin_cwd ?? folder.path`, so dropping this would break
             // history lookup for a re-parented conversation.
             origin_cwd: row.origin_cwd.clone(),
-            pk_round_id: row.pk_round_id,
         }
     }
 
@@ -964,7 +921,6 @@ impl CarriedOverRow {
             // not to the history.
             pinned_at: Set(None),
             origin_cwd: Set(self.origin_cwd),
-            pk_round_id: Set(self.pk_round_id),
         }
     }
 }
@@ -1082,7 +1038,6 @@ fn conv_to_summary(r: conversation::Model) -> DbConversationSummary {
         parent_tool_use_id: r.parent_tool_use_id,
         delegation_call_id: r.delegation_call_id,
         origin_cwd: r.origin_cwd,
-        pk_round_id: r.pk_round_id,
     }
 }
 

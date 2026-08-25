@@ -418,9 +418,6 @@ export interface DbConversationSummary {
    *  worktree path it originally ran in. Drives the "source worktree removed"
    *  badge. */
   origin_cwd?: string | null
-  /** The PK arena round this contestant session belongs to. Set only when
-   *  `kind === "pk"`; drives the sidebar's per-round grouping. */
-  pk_round_id?: number | null
 }
 
 export type SearchMatchLocationKind = "title" | "content"
@@ -689,81 +686,8 @@ export type ConversationStatus =
 
 /** Mirrors Rust `ConversationKind` (src-tauri/src/db/entities/conversation.rs).
  *  `loop` rows belong to the Loop Engineering workbench and never appear in
- *  the sidebar list; `delegate` rows nest under their parent's tool-call view;
- *  `pk` rows are PK-arena contestant sessions grouped under their round. */
-export type ConversationKind = "regular" | "chat" | "loop" | "delegate" | "pk"
-
-/** Mirrors Rust `PkRoundStatus` (src-tauri/src/db/entities/pk_round.rs). */
-export type PkRoundStatus =
-  | "ready"
-  | "running"
-  | "finished"
-  | "canceled"
-  | "interrupted"
-
-/** Mirrors Rust `PkContestantEntry` (src-tauri/src/models/pk_round.rs).
- * Plain strings are legacy entries; objects can pin per-slot ACP config. */
-export type PkContestantEntry =
-  | string
-  | {
-      agent: string
-      label?: string
-      config_values?: Record<string, string>
-    }
-
-/** Mirrors Rust `PkRoundConfig` (src-tauri/src/models/pk_round.rs). Stored as
- *  JSON in `pk_round.config`. */
-export interface PkRoundConfig {
-  /** Contestants in slot order, optionally carrying per-slot ACP config. */
-  agents: PkContestantEntry[]
-  /** Round-level permission policy applied to every contestant. */
-  permission_mode: string
-  /** Bare mode: contestants are instructed to use no skills at all. */
-  bare_mode: boolean
-  /** Uniform reasoning-effort request applied to every contestant. */
-  effort: string
-  /** Optional judge agent type — reads all diffs and produces a verdict. */
-  judge_agent?: string
-  /** Optional custom judge evaluation dimensions. Each entry is a free-form
-   *  line replacing the default 4 (Correctness / Code quality / Completeness /
-   *  Efficiency). Empty or absent = use the defaults. */
-  judge_dimensions?: string[]
-  /** Git ref each contestant worktree is branched from. Absent = current HEAD.
-   *  When the launcher picks commit X as the task source, this is `X^` so the
-   *  worktree starts before X — physical isolation, not a prompt rule. */
-  base_commit?: string
-}
-
-/** Mirrors Rust `PkRoundInfo` (src-tauri/src/models/pk_round.rs). */
-export interface PkRoundInfo {
-  id: number
-  folder_id: number
-  task: string
-  config: PkRoundConfig
-  status: PkRoundStatus
-  failure_reason: string | null
-  judge_result?: PkJudgeResultDto | null
-  judge_status: string
-  created_at: string
-  updated_at: string
-  finished_at: string | null
-}
-
-/** Serialized judge verdict shape stored in the DB. */
-export interface PkJudgeResultDto {
-  scores: PkJudgeScoreDto[]
-  summary: string
-  rawText: string
-}
-
-/** One contestant's judge verdict. */
-export interface PkJudgeScoreDto {
-  slot?: number
-  agentType: string
-  score: number
-  rank: number
-  comment: string
-}
+ *  the sidebar list; `delegate` rows nest under their parent's tool-call view. */
+export type ConversationKind = "regular" | "chat" | "loop" | "delegate"
 
 /** Mirrors Rust `FolderKind` (src-tauri/src/db/entities/folder.rs).
  *  `loop_worktree` is reserved for M2+ — add it here when the variant lands. */

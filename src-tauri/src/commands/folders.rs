@@ -2021,42 +2021,6 @@ pub async fn git_worktree_add(
         );
     }
 
-    // An unborn HEAD (fresh `git init`, no commits yet) makes
-    // `worktree add -b <branch>` fail with "invalid reference: HEAD" — there
-    // is no commit for the new branch to point at. Recover by seeding an
-    // empty initial commit, which every subsequent worktree bases itself on.
-    // Only reachable in a state where the command would have errored anyway,
-    // so existing callers see strictly fewer failures.
-    let head_check = crate::process::tokio_command("git")
-        .args(["rev-parse", "--verify", "HEAD"])
-        .current_dir(&path)
-        .output()
-        .await
-        .map_err(AppCommandError::io)?;
-    if !head_check.status.success() {
-        // Inline identity overrides: a machine with no global user.name/
-        // user.email would otherwise fail the seed commit.
-        let seed = crate::process::tokio_command("git")
-            .args([
-                "-c",
-                "user.name=codeg",
-                "-c",
-                "user.email=codeg@local",
-                "commit",
-                "-q",
-                "--allow-empty",
-                "-m",
-                "codeg: initial commit (repository had no commits)",
-            ])
-            .current_dir(&path)
-            .output()
-            .await
-            .map_err(AppCommandError::io)?;
-        if !seed.status.success() {
-            return Err(git_command_error("commit (seed empty initial)", &seed.stderr));
-        }
-    }
-
     // 执行 git worktree add -b <branch> <path> [<base>]
     // 显式 base（提交/引用）消除「读分支 → 建 worktree」间用户切分支的漂移窗口；
     // 省略时沿用 HEAD（既有调用方行为不变）。
@@ -6461,36 +6425,6 @@ mod tests {
             "detached HEAD should expose a short sha, got {:?}",
             info.short_sha
         );
-    }
-
-    /// A fresh `git init` leaves HEAD unborn, and `worktree add -b <branch>`
-    /// fails against it ("invalid reference: HEAD") because the new branch
-    /// has no commit to point at. `git_worktree_add` must recover by seeding
-    /// an empty initial commit — with inline identity, so a machine without
-    /// global user.name/user.email still works.
-    #[tokio::test]
-    async fn git_worktree_add_seeds_empty_initial_commit_on_unborn_head() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        git_run(dir.path(), &["init", "-q"]);
-
-        let wt = dir.path().join("wt");
-        git_worktree_add(
-            dir.path().to_str().unwrap().to_string(),
-            "codeg-pk/r1/agent".to_string(),
-            wt.to_str().unwrap().to_string(),
-            None,
-        )
-        .await
-        .expect("worktree add must recover from an unborn HEAD");
-
-        assert!(wt.join(".git").exists(), "worktree must exist");
-        // The seeded commit landed on the default branch, so HEAD resolves.
-        let head = std::process::Command::new("git")
-            .args(["rev-parse", "--verify", "HEAD"])
-            .current_dir(dir.path())
-            .output()
-            .expect("spawn git");
-        assert!(head.status.success(), "HEAD must resolve after seeding");
     }
 
     #[tokio::test]
