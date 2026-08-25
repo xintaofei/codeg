@@ -663,6 +663,25 @@ export type ConversationKind = "regular" | "chat" | "loop" | "delegate"
  *  `loop_worktree` is reserved for M2+ — add it here when the variant lands. */
 export type FolderKind = "regular" | "chat"
 
+/** Mirrors Rust `AcceptState` (src-tauri/.../intent.rs). */
+export type AcceptState = "pending" | "accepted" | "denied" | "countered"
+
+/** Mirrors Rust `Op` (src-tauri/.../intent.rs). */
+export interface Op {
+  tool: string
+  params: unknown
+}
+
+/** Mirrors Rust `IntentEnvelope` (src-tauri/.../intent.rs). */
+export interface IntentEnvelope {
+  intent: string
+  why: string
+  ops: Op[]
+  accept: AcceptState
+  result: string | null
+  raw: string | null
+}
+
 export const STATUS_ORDER: ConversationStatus[] = [
   "in_progress",
   "pending_review",
