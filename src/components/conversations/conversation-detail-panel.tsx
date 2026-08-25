@@ -2716,12 +2716,14 @@ export function ConversationDetailPanel() {
                 selConversationTab.status as ConversationStatus | undefined
               }
               searchMatch={
-                searchFocus?.conversationId === selConversationTab.conversationId
+                searchFocus?.conversationId ===
+                selConversationTab.conversationId
                   ? (searchFocus.titleMatches[0] ?? null)
                   : null
               }
               searchQuery={
-                searchFocus?.conversationId === selConversationTab.conversationId
+                searchFocus?.conversationId ===
+                selConversationTab.conversationId
                   ? searchFocus.query
                   : null
               }
