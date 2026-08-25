@@ -713,8 +713,8 @@ mod tests {
         assert!(upgraded);
         let state = get_search_state(&db.conn).await.expect("state");
         assert_eq!(state.schema_version, SEARCH_SCHEMA_VERSION);
-        assert!(upgrade_schema_if_needed(&db.conn).await.expect("again") == false);
-        drop(conversation_id);
+        assert!(!upgrade_schema_if_needed(&db.conn).await.expect("again"));
+        let _ = conversation_id;
     }
 
     #[tokio::test]
