@@ -439,8 +439,7 @@ export const CONVERSATION_CHANGED_EVENT = "conversation://changed"
  *  `FolderChange` enum (serde `tag = "kind"`). Distinct from
  *  `folder://open-in-workspace`, whose listener also opens + focuses a tab. */
 export type FolderChange =
-  | { kind: "upsert"; folder: FolderDetail }
-  | { kind: "deleted"; id: number }
+  { kind: "upsert"; folder: FolderDetail } | { kind: "deleted"; id: number }
 
 export const FOLDER_CHANGED_EVENT = "folder://changed"
 
@@ -649,10 +648,7 @@ export interface ConversationTurnsPage {
 }
 
 export type ConversationStatus =
-  | "in_progress"
-  | "pending_review"
-  | "completed"
-  | "cancelled"
+  "in_progress" | "pending_review" | "completed" | "cancelled"
 
 /** Mirrors Rust `ConversationKind` (src-tauri/src/db/entities/conversation.rs).
  *  `loop` rows belong to the Loop Engineering workbench and never appear in
@@ -661,7 +657,7 @@ export type ConversationKind = "regular" | "chat" | "loop" | "delegate"
 
 /** Mirrors Rust `FolderKind` (src-tauri/src/db/entities/folder.rs).
  *  `loop_worktree` is reserved for M2+ — add it here when the variant lands. */
-export type FolderKind = "regular" | "chat"
+export type FolderKind = "regular" | "chat" | "semantic"
 
 /** Mirrors Rust `AcceptState` (src-tauri/.../intent.rs). */
 export type AcceptState = "pending" | "accepted" | "denied" | "countered"
@@ -1086,11 +1082,7 @@ export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
 
 // ACP connection status (matches Rust ConnectionStatus)
 export type ConnectionStatus =
-  | "connecting"
-  | "connected"
-  | "prompting"
-  | "disconnected"
-  | "error"
+  "connecting" | "connected" | "prompting" | "disconnected" | "error"
 
 export interface PromptCapabilitiesInfo {
   image: boolean
@@ -1278,11 +1270,7 @@ export interface AgentDelegationDefaults {
 export type AutomationTriggerKind = "schedule" | "manual"
 export type AutomationIsolation = "worktree_per_run" | "shared_in_root"
 export type AutomationRunStatus =
-  | "running"
-  | "succeeded"
-  | "failed"
-  | "cancelled"
-  | "skipped"
+  "running" | "succeeded" | "failed" | "cancelled" | "skipped"
 
 /** Display-only cache so the editor can render a value the live agent no longer
  *  offers (marked unavailable) instead of silently dropping it. */
@@ -1496,10 +1484,7 @@ export type ForgeItemState = "open" | "closed" | "merged"
  *  orders rather than a field/direction pair: the two forges spell their sort
  *  fields differently and accept different sets, so this is the intersection. */
 export type ForgeSort =
-  | "newest"
-  | "oldest"
-  | "recently_updated"
-  | "least_recently_updated"
+  "newest" | "oldest" | "recently_updated" | "least_recently_updated"
 
 /** One label as the forge paints it (mirrors Rust ForgeLabel). */
 export interface ForgeLabel {
@@ -1588,10 +1573,7 @@ export interface ForgeTaskLink {
  *  it, which is why there is no "investigate only" entry: the server refuses
  *  that retired name rather than mapping it onto one of these. */
 export type ForgeScenarioId =
-  | "fix"
-  | "plan_first"
-  | "review_fix"
-  | "review_only"
+  "fix" | "plan_first" | "review_fix" | "review_only"
 
 /** Trigger payload (client supplies coordinates + display snapshot only —
  *  the server derives everything trusted). */
@@ -3115,16 +3097,7 @@ export interface SystemProxySettings {
 }
 
 export type AppLocale =
-  | "en"
-  | "zh_cn"
-  | "zh_tw"
-  | "ja"
-  | "ko"
-  | "es"
-  | "de"
-  | "fr"
-  | "pt"
-  | "ar"
+  "en" | "zh_cn" | "zh_tw" | "ja" | "ko" | "es" | "de" | "fr" | "pt" | "ar"
 export type LanguageMode = "system" | "manual"
 
 export interface SystemLanguageSettings {
@@ -3832,10 +3805,7 @@ export interface AgentInstallEvent {
 }
 
 export type OfficecliInstallEventKind =
-  | "started"
-  | "log"
-  | "completed"
-  | "failed"
+  "started" | "log" | "completed" | "failed"
 
 export interface OfficecliInstallEvent {
   task_id: string
@@ -3854,10 +3824,7 @@ export interface WebhookConfig {
 }
 
 export type ChannelConnectionStatus =
-  | "connected"
-  | "connecting"
-  | "disconnected"
-  | "error"
+  "connected" | "connecting" | "disconnected" | "error"
 
 export interface ChatChannelInfo {
   id: number
