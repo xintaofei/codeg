@@ -106,6 +106,10 @@ pub fn build_router(
             post(handlers::conversations::get_folder_conversation),
         )
         .route(
+            "/semantic_submit",
+            post(handlers::semantic::semantic_submit_handler),
+        )
+        .route(
             "/get_folder_conversation_turns",
             post(handlers::conversations::get_folder_conversation_turns),
         )

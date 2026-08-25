@@ -5,11 +5,13 @@ use crate::acp::delegation::spawner::ConnectionSpawner;
 use crate::acp::delegation::types::{DelegationOutcome, DelegationRequest};
 use crate::models::agent::AgentType;
 use crate::semantic::envelope::{AcceptState, IntentEnvelope, Op};
+use serde::Deserialize;
 use std::sync::Arc;
 
 /// A semantic-mode request: an intent, the reason it matters, the set of
 /// concrete operations the operator sub-agent should run, and where to run
 /// them.
+#[derive(Debug, Clone, Deserialize)]
 pub struct SemanticRequest {
     pub intent: String,
     pub why: String,
