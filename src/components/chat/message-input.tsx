@@ -53,6 +53,7 @@ import type {
   AgentSkillItem,
   AgentType,
   AvailableCommandInfo,
+  FolderKind,
   PromptCapabilitiesInfo,
   PromptDraft,
   PromptInputBlock,
@@ -93,6 +94,7 @@ import {
   type ModelOptionGroup,
 } from "@/lib/model-config-groups"
 import { useAgentSkills } from "@/hooks/use-agent-skills"
+import { SemanticComposer } from "@/components/semantic/SemanticComposer"
 import { useScrollbarSafeDismiss } from "@/hooks/use-scrollbar-safe-dismiss"
 import {
   clearMessageInputDraftV2,
@@ -223,6 +225,9 @@ interface MessageInputProps {
   feedbackAddDisabled?: boolean
   injectContent?: ComposerInjectContent | null
   onInjectConsumed?: () => void
+  /** Folder kind of the session this composer is attached to. When `semantic`
+   *  the composer renders the semantic intent form instead of the rich editor. */
+  folderKind?: FolderKind
 }
 
 // Non-image files attach as inline file badges in the editor (like `@`-file
@@ -324,6 +329,7 @@ export function MessageInput({
   feedbackAddDisabled,
   injectContent,
   onInjectConsumed,
+  folderKind,
 }: MessageInputProps) {
   const t = useTranslations("Folder.chat.messageInput")
   const tQueue = useTranslations("Folder.chat.messageQueue")
@@ -1752,6 +1758,17 @@ export function MessageInput({
       <Send className="size-4" />
     </Button>
   )
+
+  if (folderKind === "semantic") {
+    return (
+      <SemanticComposer
+        workingDir={defaultPath ?? ""}
+        onSubmit={() => {
+          // Refresh the attached thread after a semantic submit.
+        }}
+      />
+    )
+  }
 
   return (
     <div
