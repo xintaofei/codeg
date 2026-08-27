@@ -6401,16 +6401,9 @@ async fn apply_preferred_session_options(
     preferred_config_values: &BTreeMap<String, String>,
     initial_config_options: Vec<SessionConfigOption>,
 ) -> Vec<SessionConfigOption> {
-    if let Some(pref_mode) = preferred_mode_id {
-        let needs_apply = session
-            .modes()
-            .as_ref()
-            .map(|m| m.current_mode_id.to_string() != pref_mode)
-            .unwrap_or(false);
-        if needs_apply {
-            if let Err(e) = set_session_mode(session, state, emitter, pref_mode.to_string()).await {
-                tracing::error!("[ACP] failed to apply preferred mode '{pref_mode}' on connect: {e}");
-            }
+    if let Some(pref_mode) = preferred_mode_to_apply(session.modes().as_ref(), preferred_mode_id) {
+        if let Err(e) = set_session_mode(session, state, emitter, pref_mode.to_string()).await {
+            tracing::error!("[ACP] failed to apply preferred mode '{pref_mode}' on connect: {e}");
         }
     }
 
@@ -6449,6 +6442,19 @@ async fn apply_preferred_session_options(
     }
 
     options
+}
+
+/// Return the preferred mode only when the freshly attached session advertises
+/// modes and currently differs. Keeping this decision separate makes the fork
+/// inheritance contract explicit: a differing parent mode produces exactly one
+/// `session/set_mode`, while equal or absent parent modes produce none.
+fn preferred_mode_to_apply<'a>(
+    session_modes: Option<&SessionModeState>,
+    preferred_mode_id: Option<&'a str>,
+) -> Option<&'a str> {
+    preferred_mode_id.filter(|preferred| {
+        session_modes.is_some_and(|modes| modes.current_mode_id.to_string() != *preferred)
+    })
 }
 
 const TERMINAL_POLL_INTERVAL_MS: u64 = 200;
@@ -7177,12 +7183,28 @@ fn map_prompt_blocks(blocks: Vec<PromptInputBlock>) -> Vec<ContentBlock> {
         .collect()
 }
 
+/// Read the event-backed mode selected on the live parent session, but only when
+/// that parent advertises modes. `SessionState` spans nested fork transitions,
+/// so its value alone may belong to an ancestor when the current session has no
+/// modes. The `ActiveSession` snapshot is used only as this capability gate;
+/// Codeg's `set_session_mode` path does not update its current-mode value.
+fn live_mode_for_fork(
+    state: &SessionState,
+    parent_modes: Option<&SessionModeState>,
+) -> Option<String> {
+    parent_modes.and(state.current_mode.clone())
+}
+
 /// Result when the conversation loop exits due to a fork request.
 struct ForkExitInfo {
     fork_response: sacp::schema::ForkSessionResponse,
     /// Raw top-level `models` from the fork response (Grok per-model effort data),
     /// captured before the typed deserialize drops it. `None` when absent.
     fork_models_raw: Option<serde_json::Value>,
+    /// The parent's live mode at the instant the fork was requested. A fork
+    /// response may reset to the agent default, so the child must re-apply this
+    /// before selectors become ready and queued prompts can run.
+    inherited_mode_id: Option<String>,
     original_session_id: String,
     reply: tokio::sync::oneshot::Sender<Result<crate::acp::types::ForkProtocolResult, AcpError>>,
     connection: ConnectionTo<Agent>,
@@ -7228,6 +7250,7 @@ async fn handle_fork_or_exit(
     let cx = fork_info.connection;
     let fork_resp = fork_info.fork_response;
     let fork_models_raw = fork_info.fork_models_raw;
+    let inherited_mode_id = fork_info.inherited_mode_id;
     let new_sid = fork_resp.session_id.0.to_string();
 
     tracing::info!(
@@ -7282,7 +7305,7 @@ async fn handle_fork_or_exit(
         agent_type,
         grok_meta.as_ref(),
         grok_model_specs.as_ref(),
-        None,
+        inherited_mode_id.as_deref(),
         &BTreeMap::new(),
         initial_config_options.unwrap_or_default(),
     )
@@ -8837,6 +8860,10 @@ async fn run_conversation_loop<'a>(
                 }
                 let cx = session.connection();
                 let sid = session.session_id().clone();
+                let inherited_mode_id = {
+                    let state = state.read().await;
+                    live_mode_for_fork(&state, session.modes().as_ref())
+                };
                 tracing::info!(
                     "[ACP] Sending session/fork for session_id={} cwd={}",
                     sid.0, cwd
@@ -8851,6 +8878,7 @@ async fn run_conversation_loop<'a>(
                         return Ok(Some(ForkExitInfo {
                             fork_response,
                             fork_models_raw,
+                            inherited_mode_id,
                             original_session_id: sid.0.to_string(),
                             reply,
                             connection: cx,
@@ -12114,7 +12142,7 @@ async fn emit_conversation_update(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sacp::schema::{Diff, SessionConfigId};
+    use sacp::schema::{Diff, SessionConfigId, SessionMode};
 
     /// Unwrap a select selector. The Grok synthesizers below only ever build
     /// selects, so any other kind is a test failure rather than a branch to
@@ -12126,6 +12154,113 @@ mod tests {
             SessionConfigKindInfo::Select(sel) => sel,
             other => panic!("expected a select config option, got {other:?}"),
         }
+    }
+
+    fn fork_test_modes(current: &str) -> SessionModeState {
+        SessionModeState::new(
+            current.to_string(),
+            vec![
+                SessionMode::new("manual", "Manual"),
+                SessionMode::new("auto", "Auto"),
+            ],
+        )
+    }
+
+    #[test]
+    fn fork_mode_inheritance_applies_a_different_parent_mode_once() {
+        let fork_modes = fork_test_modes("manual");
+
+        assert_eq!(
+            preferred_mode_to_apply(Some(&fork_modes), Some("auto")),
+            Some("auto"),
+            "a fork reset to Manual must schedule one set_mode back to the parent's Auto"
+        );
+    }
+
+    #[test]
+    fn fork_mode_inheritance_skips_an_already_matching_mode() {
+        let fork_modes = fork_test_modes("auto");
+
+        assert_eq!(
+            preferred_mode_to_apply(Some(&fork_modes), Some("auto")),
+            None,
+            "an already inherited mode must not produce a duplicate set_mode"
+        );
+    }
+
+    #[test]
+    fn fork_mode_inheritance_without_a_parent_mode_preserves_the_fork_default() {
+        let fork_modes = fork_test_modes("manual");
+
+        assert_eq!(preferred_mode_to_apply(Some(&fork_modes), None), None);
+        assert_eq!(
+            preferred_mode_to_apply(None, Some("auto")),
+            None,
+            "a session without advertised modes cannot accept an inherited mode"
+        );
+    }
+
+    #[test]
+    fn fork_mode_inheritance_reads_the_latest_live_session_state() {
+        let establishment_snapshot = fork_test_modes("manual");
+        let mut state = SessionState::new(
+            "conn-fork-mode".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "window".to_string(),
+            None,
+        );
+
+        assert_eq!(
+            live_mode_for_fork(&state, Some(&establishment_snapshot)),
+            None
+        );
+        state.apply_event(&AcpEvent::SessionModes {
+            modes: map_session_modes(&establishment_snapshot),
+        });
+        state.apply_event(&AcpEvent::ModeChanged {
+            mode_id: "auto".to_string(),
+        });
+        assert_eq!(
+            establishment_snapshot.current_mode_id.to_string(),
+            "manual",
+            "the ActiveSession-style establishment snapshot stays stale"
+        );
+        assert_eq!(
+            live_mode_for_fork(&state, Some(&establishment_snapshot)).as_deref(),
+            Some("auto")
+        );
+
+        // A nested fork must inherit the latest selection, not the mode captured
+        // for the previous fork or the original establishment response.
+        state.apply_event(&AcpEvent::ModeChanged {
+            mode_id: "manual".to_string(),
+        });
+        assert_eq!(
+            live_mode_for_fork(&state, Some(&establishment_snapshot)).as_deref(),
+            Some("manual")
+        );
+    }
+
+    #[test]
+    fn fork_mode_inheritance_ignores_stale_state_when_parent_has_no_modes() {
+        let mut state = SessionState::new(
+            "conn-fork-mode".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "window".to_string(),
+            None,
+        );
+        state.apply_event(&AcpEvent::ModeChanged {
+            mode_id: "auto".to_string(),
+        });
+
+        assert_eq!(state.current_mode.as_deref(), Some("auto"));
+        assert_eq!(
+            live_mode_for_fork(&state, None),
+            None,
+            "a modes-less current parent must not inherit an ancestor's stale mode"
+        );
     }
 
     // ── PermissionQueue (#442) ──────────────────────────────────────────────
