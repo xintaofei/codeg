@@ -378,6 +378,38 @@ ar = "يتحقق من الاختبارات ويقدم خيارات منظمة ل
 
 
 [[expert]]
+id = "agent-rules-picker"
+category = "meta"
+icon = "ListTodo"
+sort_order = 190
+activation = "agent_rules_picker"
+
+[expert.display_name]
+en = "Agent Rules Picker"
+"zh-CN" = "代理规则选择器"
+"zh-TW" = "代理規則選擇器"
+ja = "エージェントルール選択"
+ko = "에이전트 규칙 선택기"
+es = "Selector de reglas de agentes"
+de = "Agentenregel-Auswahl"
+fr = "Sélecteur de règles d’agent"
+pt = "Seletor de regras de agentes"
+ar = "منتقي قواعد الوكيل"
+
+[expert.description]
+en = "Choose optional workspace instructions, preview their exact text, and save reusable profiles without modifying native rule files."
+"zh-CN" = "选择可选的工作区指令、预览其原文并保存可复用配置，而无需修改原生规则文件。"
+"zh-TW" = "選擇可選的工作區指令、預覽其原文並儲存可重用設定，而無需修改原生規則檔案。"
+ja = "ネイティブのルールファイルを変更せず、任意のワークスペース指示を選択し、原文を確認して再利用可能なプロファイルを保存します。"
+ko = "기본 규칙 파일을 수정하지 않고 선택적 워크스페이스 지침을 고르고 원문을 미리 본 뒤 재사용 가능한 프로필로 저장합니다."
+es = "Elige instrucciones opcionales del espacio de trabajo, previsualiza su texto exacto y guarda perfiles reutilizables sin modificar los archivos de reglas nativos."
+de = "Wählt optionale Workspace-Anweisungen, zeigt ihren exakten Text an und speichert wiederverwendbare Profile, ohne native Regeldateien zu ändern."
+fr = "Sélectionne des instructions facultatives de l’espace de travail, affiche leur texte exact et enregistre des profils réutilisables sans modifier les fichiers de règles natifs."
+pt = "Escolhe instruções opcionais do workspace, mostra o texto exato e salva perfis reutilizáveis sem modificar arquivos de regras nativos."
+ar = "يختار تعليمات مساحة العمل الاختيارية ويعاين نصها بدقة ويحفظ ملفات تعريف قابلة لإعادة الاستخدام دون تعديل ملفات القواعد الأصلية."
+
+
+[[expert]]
 id = "using-superpowers"
 category = "meta"
 icon = "Sparkles"

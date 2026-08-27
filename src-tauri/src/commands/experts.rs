@@ -11,8 +11,10 @@
 //! database state, and updates propagate automatically when codeg upgrades
 //! and re-extracts the bundled files.
 //!
-//! `experts/skills/` is vendored from upstream `skills/` verbatim, so a
-//! version bump is an `rsync --delete` plus a `diff -rq` check. The one
+//! Most of `experts/skills/` is vendored from upstream `skills/` verbatim, so a
+//! version bump is an `rsync --delete` plus a `diff -rq` check followed by
+//! restoring the documented Codeg-owned additions. `agent-rules-picker/` is a
+//! Codeg-native Expert and must be preserved during that sync. The other
 //! deliberate exception is `writing-skills/package.json`: upstream declares
 //! `"type": "module"` once at its repo root, which covers `render-graphs.js`
 //! (ESM since v6.3.0). We extract skill directories standalone, so that
@@ -95,6 +97,7 @@ pub struct ExpertMetadata {
     pub category: String,
     pub icon: Option<String>,
     pub sort_order: i32,
+    pub activation: Option<String>,
     pub display_name: BTreeMap<String, String>,
     pub description: BTreeMap<String, String>,
     pub bundled_hash: String,
@@ -236,6 +239,8 @@ struct ExpertTomlEntry {
     #[serde(default)]
     sort_order: i32,
     #[serde(default)]
+    activation: Option<String>,
+    #[serde(default)]
     display_name: BTreeMap<String, String>,
     #[serde(default)]
     description: BTreeMap<String, String>,
@@ -270,6 +275,7 @@ fn load_bundled_metadata_inner() -> Result<Vec<ExpertMetadata>, ExpertsError> {
             category: entry.category,
             icon: entry.icon,
             sort_order: entry.sort_order,
+            activation: entry.activation,
             display_name: entry.display_name,
             description: entry.description,
             bundled_hash,

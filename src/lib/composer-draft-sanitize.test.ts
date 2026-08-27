@@ -29,6 +29,32 @@ function typesIn(doc: JSONContent): Set<string> {
 }
 
 describe("sanitizeComposerDraftDoc", () => {
+  it("preserves an agent rule selection atom in a v2 draft", () => {
+    const doc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "agentRuleSelection",
+              attrs: {
+                version: 1,
+                ruleIds: ["tests"],
+                sourceHash: "hash",
+                sources: [".codeg/rules/team.md"],
+                exactText: "Run tests.\n",
+                envelopeNonce: "nonce",
+              },
+            },
+          ],
+        },
+      ],
+    }
+
+    expect(sanitizeComposerDraftDoc(doc)).toBe(doc)
+  })
+
   it("returns a plain-schema doc untouched (identity)", () => {
     const doc: JSONContent = {
       type: "doc",

@@ -46,6 +46,11 @@ interface UseComposerInvocationsArgs {
   folderPath: string | null
   /** Slash commands from the agent-options probe (empty if none / not yet ready). */
   availableCommands: AvailableCommandInfo[]
+  /** Intercept a UI-backed invocation without mutating the live trigger. */
+  onSpecialInvocation?: (
+    id: string,
+    replaceRange: { from: number; to: number }
+  ) => boolean
 }
 
 export interface ComposerInvocations {
@@ -76,6 +81,7 @@ export function useComposerInvocations({
   agentType,
   folderPath,
   availableCommands,
+  onSpecialInvocation,
 }: UseComposerInvocationsArgs): ComposerInvocations {
   const isCodex = agentType === "codex"
   // Codex-only `$` skills (filesystem scan — no live session needed).
@@ -177,13 +183,47 @@ export function useComposerInvocations({
     [editorRef, close]
   )
 
+  const interceptSpecial = useCallback(
+    (id: string): boolean => {
+      if (!onSpecialInvocation) return false
+      const editor = editorRef.current?.getEditor()
+      if (!editor) return false
+      const { $from } = editor.state.selection
+      const before = $from.parent.textBetween(
+        0,
+        $from.parentOffset,
+        undefined,
+        " "
+      )
+      const match = before.match(/(^|\s)([/$])(\S*)$/)
+      if (!match) return false
+      const tokenLength = match[2].length + match[3].length
+      if (
+        !onSpecialInvocation(id, {
+          from: $from.pos - tokenLength,
+          to: $from.pos,
+        })
+      ) {
+        return false
+      }
+      close()
+      return true
+    },
+    [close, editorRef, onSpecialInvocation]
+  )
+
   const selectCommand = useCallback(
-    (cmd: AvailableCommandInfo) => replaceTrigger(commandToReference(cmd)),
-    [replaceTrigger]
+    (cmd: AvailableCommandInfo) => {
+      if (!interceptSpecial(cmd.name)) replaceTrigger(commandToReference(cmd))
+    },
+    [interceptSpecial, replaceTrigger]
   )
   const selectSkill = useCallback(
-    (skill: AgentSkillItem) => replaceTrigger(skillToReference(skill, "$")),
-    [replaceTrigger]
+    (skill: AgentSkillItem) => {
+      if (!interceptSpecial(skill.id))
+        replaceTrigger(skillToReference(skill, "$"))
+    },
+    [interceptSpecial, replaceTrigger]
   )
 
   const onKeyDown = useCallback(

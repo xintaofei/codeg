@@ -1,4 +1,5 @@
 pub mod acp;
+pub mod agent_rules;
 pub mod app_update;
 pub mod automation;
 pub mod background;

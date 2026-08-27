@@ -29,9 +29,11 @@ import type {
 } from "@/lib/types"
 
 import {
+  applyAgentRuleSelection,
   applyExpertReference,
   isComposerEmpty,
 } from "@/components/chat/composer/composer-commands"
+import type { AgentRuleSelectionAttrs } from "@/components/chat/composer/agent-rule-selection"
 import { commandToReference } from "@/components/chat/composer/invocation-reference"
 import type { RichComposerHandle } from "@/components/chat/composer/rich-composer"
 
@@ -63,6 +65,8 @@ export interface ComposerShortcuts {
   /** Whether codeg manages this agent's skill links at all (a custom-dir `pi`
    *  does not) — when false the skill families are hidden entirely. */
   skillManagementSupported: boolean
+  /** Whether a skill is linked and ready for the selected agent. */
+  isSkillEnabled: (id: string) => boolean
   isSkillLocked: (id: string) => boolean
   expertLabel: (item: ExpertListItem) => string
   scienceLabel: (item: ScienceListItem) => string
@@ -72,12 +76,22 @@ export interface ComposerShortcuts {
   insertExpert: (item: ExpertListItem) => void
   insertScience: (item: ScienceListItem) => void
   insertOffice: (action: OfficeAction) => void
+  agentRulesPicker: {
+    open: boolean
+    setOpen: (open: boolean) => void
+    rootPath: string | null
+    agentType: AgentType | null
+    openPicker: (replaceRange?: { from: number; to: number }) => void
+    apply: (attrs: AgentRuleSelectionAttrs) => void
+  }
 }
 
 export interface ComposerShortcutsOptions {
   editorRef: RefObject<RichComposerHandle | null>
   /** Decides the skill trigger (`$` on Codex, `/` elsewhere) and skill gating. */
   agentType: AgentType | null
+  /** Active workspace used by UI-backed Expert activations. */
+  rootPath?: string | null
   /** Run after a skill badge lands — hosts that mirror the editor's empty state
    *  (the conversation composer's send button) resync it here. */
   onAfterInsert?: () => void
@@ -87,6 +101,7 @@ export interface ComposerShortcutsOptions {
 export function useComposerShortcuts({
   editorRef,
   agentType,
+  rootPath = null,
   onAfterInsert,
   logLabel = "Composer",
 }: ComposerShortcutsOptions): ComposerShortcuts {
@@ -105,6 +120,10 @@ export function useComposerShortcuts({
 
   const [quickMessages, setQuickMessages] = useState<QuickMessage[]>([])
   const [quickMessagesLoading, setQuickMessagesLoading] = useState(false)
+  const [agentRulesPickerOpen, setAgentRulesPickerOpen] = useState(false)
+  const agentRulesReplaceRangeRef = useRef<{ from: number; to: number } | null>(
+    null
+  )
   // Held in a ref so `insertSkillShortcut` (and every handler built on it) stays
   // referentially stable across a host's re-renders — the callback fires a frame
   // later, so reading the latest value at call time is exactly right.
@@ -181,6 +200,15 @@ export function useComposerShortcuts({
     [agentType, skillStatusReady, enabledIds]
   )
 
+  const isSkillEnabled = useCallback(
+    (id: string) =>
+      !!agentType &&
+      skillStatusReady &&
+      skillManagementSupported &&
+      enabledIds.has(id),
+    [agentType, skillStatusReady, skillManagementSupported, enabledIds]
+  )
+
   const notifySkillNotEnabled = useCallback(
     (skillLabel: string, section: SettingsSection) => {
       const agentLabel = agentType ? getAgentLabel(agentType) : ""
@@ -254,10 +282,49 @@ export function useComposerShortcuts({
         notifySkillNotEnabled(label, "experts")
         return
       }
+      if (item.metadata.activation === "agent_rules_picker") {
+        agentRulesReplaceRangeRef.current = null
+        setAgentRulesPickerOpen(true)
+        return
+      }
       // Experts are open-ended: just the leading badge, no canned template.
       insertSkillShortcut({ id: item.metadata.id, label }, "")
     },
     [expertLabel, isSkillLocked, notifySkillNotEnabled, insertSkillShortcut]
+  )
+
+  const openAgentRulesPicker = useCallback(
+    (replaceRange?: { from: number; to: number }) => {
+      agentRulesReplaceRangeRef.current = replaceRange ?? null
+      setAgentRulesPickerOpen(true)
+    },
+    []
+  )
+
+  const setAgentRulesOpen = useCallback((open: boolean) => {
+    setAgentRulesPickerOpen(open)
+    if (!open) agentRulesReplaceRangeRef.current = null
+  }, [])
+
+  const applyAgentRules = useCallback(
+    (attrs: AgentRuleSelectionAttrs) => {
+      const handle = editorRef.current
+      const editor = handle?.getEditor()
+      if (!handle || !editor) return
+      const replaceRange = agentRulesReplaceRangeRef.current
+      if (replaceRange) {
+        editor
+          .chain()
+          .deleteRange(replaceRange)
+          .setMeta("addToHistory", false)
+          .run()
+      }
+      applyAgentRuleSelection(editor, attrs)
+      agentRulesReplaceRangeRef.current = null
+      onAfterInsertRef.current?.()
+      handle.focus()
+    },
+    [editorRef]
   )
 
   const insertScience = useCallback(
@@ -305,6 +372,7 @@ export function useComposerShortcuts({
     science: scienceSorted,
     officeActions: OFFICE_ACTIONS,
     skillManagementSupported,
+    isSkillEnabled,
     isSkillLocked,
     expertLabel,
     scienceLabel,
@@ -314,5 +382,13 @@ export function useComposerShortcuts({
     insertExpert,
     insertScience,
     insertOffice,
+    agentRulesPicker: {
+      open: agentRulesPickerOpen,
+      setOpen: setAgentRulesOpen,
+      rootPath,
+      agentType,
+      openPicker: openAgentRulesPicker,
+      apply: applyAgentRules,
+    },
   }
 }

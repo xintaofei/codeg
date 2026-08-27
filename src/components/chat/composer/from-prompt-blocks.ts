@@ -4,6 +4,10 @@ import { randomUUID } from "@/lib/utils"
 import type { InputAttachment } from "../message-input-attachments"
 import { parseCodegReferenceUri as parseReferenceUri } from "./reference-uri"
 import type { ReferenceAttrs } from "./types"
+import {
+  parseAgentRuleSelectionEnvelope,
+  type AgentRuleSelectionAttrs,
+} from "./agent-rule-selection"
 
 /**
  * Restore serialization (loose inverse of
@@ -35,6 +39,7 @@ import type { ReferenceAttrs } from "./types"
 export type RestoreSegment =
   | { kind: "text"; text: string }
   | { kind: "reference"; attrs: ReferenceAttrs }
+  | { kind: "agentRuleSelection"; attrs: AgentRuleSelectionAttrs }
 
 export interface RestoredDraft {
   segments: RestoreSegment[]
@@ -52,7 +57,18 @@ export function blocksToRestoredDraft(
     switch (block.type) {
       case "text": {
         if (block.text.trim().length > 0) {
-          segments.push({ kind: "text", text: block.text })
+          const selection = parseAgentRuleSelectionEnvelope(block.text)
+          if (selection) {
+            segments.push({
+              kind: "agentRuleSelection",
+              attrs: selection.attrs,
+            })
+            if (selection.remainder.length > 0) {
+              segments.push({ kind: "text", text: selection.remainder })
+            }
+          } else {
+            segments.push({ kind: "text", text: block.text })
+          }
         }
         break
       }

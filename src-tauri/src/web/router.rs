@@ -872,6 +872,21 @@ pub fn build_router(
             "/codex_poll_device_code",
             post(handlers::acp::codex_poll_device_code),
         )
+        // ─── Optional agent rules ───
+        .route("/agent_rules_inspect", post(handlers::agent_rules::inspect))
+        .route("/agent_rules_render", post(handlers::agent_rules::render))
+        .route(
+            "/agent_rules_save_profile",
+            post(handlers::agent_rules::save_profile),
+        )
+        .route(
+            "/agent_rules_rename_profile",
+            post(handlers::agent_rules::rename_profile),
+        )
+        .route(
+            "/agent_rules_delete_profile",
+            post(handlers::agent_rules::delete_profile),
+        )
         // ─── Experts ───
         .route("/experts_list", post(handlers::experts::experts_list))
         .route(

@@ -16,6 +16,7 @@ import {
 } from "@/components/automations/composer-invocations"
 import { useAgentOptions } from "@/components/automations/use-agent-options"
 import { ComposerAddMenu } from "@/components/chat/composer/composer-add-menu"
+import { AgentRulesPickerDialog } from "@/components/chat/agent-rules-picker-dialog"
 import { ComposerImageThumbnails } from "@/components/chat/composer/composer-image-thumbnails"
 import {
   isComposerChromeClick,
@@ -30,6 +31,7 @@ import { docToPromptBlocks } from "@/components/chat/composer/to-prompt-blocks"
 import { useComposerAttachments } from "@/components/chat/composer/use-composer-attachments"
 import { useComposerMentionLabels } from "@/components/chat/composer/use-composer-mention-labels"
 import { useComposerShortcuts } from "@/components/chat/composer/use-composer-shortcuts"
+import { AGENT_RULES_EXPERT_ID } from "@/components/chat/composer/agent-rule-selection"
 import { useReferenceSearch } from "@/components/chat/composer/use-reference-search"
 import { ServerFileBrowserDialog } from "@/components/shared/server-file-browser-dialog"
 import { useTranslations } from "next-intl"
@@ -163,13 +165,6 @@ export function TaskMessageComposer({
   const promptCapabilities =
     agentOptions.snapshot?.prompt_capabilities ?? ASSUMED_PROMPT_CAPABILITIES
 
-  const invocations = useComposerInvocations({
-    editorRef,
-    agentType,
-    folderPath,
-    availableCommands,
-  })
-
   const attach = useComposerAttachments({
     editorRef,
     containerRef,
@@ -180,8 +175,20 @@ export function TaskMessageComposer({
   const shortcuts = useComposerShortcuts({
     editorRef,
     agentType,
+    rootPath: folderPath,
     onAfterInsert: () => onChange(editorRef.current?.getText() ?? ""),
     logLabel: "TaskComposer",
+  })
+  const invocations = useComposerInvocations({
+    editorRef,
+    agentType,
+    folderPath,
+    availableCommands,
+    onSpecialInvocation: (id, replaceRange) => {
+      if (id !== AGENT_RULES_EXPERT_ID) return false
+      shortcuts.agentRulesPicker.openPicker(replaceRange)
+      return true
+    },
   })
 
   // Keep already-inserted skill badges on the current agent's trigger (`$` is
@@ -361,6 +368,13 @@ export function TaskMessageComposer({
           initialPath={folderPath ?? undefined}
         />
       )}
+      <AgentRulesPickerDialog
+        open={shortcuts.agentRulesPicker.open}
+        onOpenChange={shortcuts.agentRulesPicker.setOpen}
+        rootPath={shortcuts.agentRulesPicker.rootPath}
+        agentType={shortcuts.agentRulesPicker.agentType}
+        onApply={shortcuts.agentRulesPicker.apply}
+      />
     </div>
   )
 }

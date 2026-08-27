@@ -71,6 +71,8 @@ import type {
   AgentSkillContent,
   ExpertListItem,
   ExpertInstallStatus,
+  AgentRulesInspectResult,
+  AgentRulesRenderResult,
   LinkOp,
   LinkOpResult,
   ScienceListItem,
@@ -1269,6 +1271,49 @@ export async function acpDeleteAgentSkill(params: {
     skillId: params.skillId,
     workspacePath: params.workspacePath ?? null,
   })
+}
+
+// ─── Optional workspace agent rules ─────────────────────────────────────
+
+export async function agentRulesInspect(
+  rootPath: string
+): Promise<AgentRulesInspectResult> {
+  return getTransport().call("agent_rules_inspect", { rootPath })
+}
+
+export async function agentRulesRender(params: {
+  rootPath: string
+  ruleIds: string[]
+  expectedSourceHash: string
+}): Promise<AgentRulesRenderResult> {
+  return getTransport().call("agent_rules_render", params)
+}
+
+export async function agentRulesSaveProfile(params: {
+  rootPath: string
+  name: string
+  ruleIds: string[]
+  expectedSourceHash: string
+  setDefault: boolean
+  overwrite: boolean
+}): Promise<AgentRulesInspectResult> {
+  return getTransport().call("agent_rules_save_profile", params)
+}
+
+export async function agentRulesRenameProfile(params: {
+  rootPath: string
+  oldName: string
+  newName: string
+  overwrite: boolean
+}): Promise<AgentRulesInspectResult> {
+  return getTransport().call("agent_rules_rename_profile", params)
+}
+
+export async function agentRulesDeleteProfile(params: {
+  rootPath: string
+  name: string
+}): Promise<AgentRulesInspectResult> {
+  return getTransport().call("agent_rules_delete_profile", params)
 }
 
 // ─── Experts (built-in expert skills) ───────────────────────────────────

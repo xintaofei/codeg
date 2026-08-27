@@ -61,14 +61,20 @@ vi.mock("@/hooks/use-shortcut-settings", () => ({
 // scan mid-test; defaults to "no skills" for every other test in this file.
 const agentSkills = vi.hoisted(() => vi.fn(() => [] as unknown[]))
 vi.mock("@/hooks/use-agent-skills", () => ({ useAgentSkills: agentSkills }))
-vi.mock("@/hooks/use-built-in-experts", () => ({ useBuiltInExperts: () => [] }))
+const builtInExperts = vi.hoisted(() => vi.fn(() => [] as unknown[]))
+vi.mock("@/hooks/use-built-in-experts", () => ({
+  useBuiltInExperts: builtInExperts,
+}))
 vi.mock("@/hooks/use-built-in-science", () => ({ useBuiltInScience: () => [] }))
-vi.mock("@/hooks/use-enabled-skill-ids", () => ({
-  useEnabledSkillIds: () => ({
-    enabledIds: new Set(),
+const enabledSkillState = vi.hoisted(() =>
+  vi.fn(() => ({
+    enabledIds: new Set<string>(),
     ready: false,
     supported: true,
-  }),
+  }))
+)
+vi.mock("@/hooks/use-enabled-skill-ids", () => ({
+  useEnabledSkillIds: enabledSkillState,
 }))
 vi.mock("@/components/chat/composer/use-reference-search", () => ({
   useReferenceSearch: () => async () => [],
@@ -794,10 +800,31 @@ describe("MessageInput slash menu while the agent connects", () => {
   afterEach(() => {
     cleanup()
     composerHandle.current = null
+    builtInExperts.mockReturnValue([])
+    enabledSkillState.mockReturnValue({
+      enabledIds: new Set(),
+      ready: false,
+      supported: true,
+    })
   })
 
   const LOADING = enMessages.Folder.chat.messageInput.slashLoading
   const COMMANDS = [{ name: "compact", description: "Compact the thread" }]
+  const RULES_EXPERT = {
+    metadata: {
+      id: "agent-rules-picker",
+      category: "meta",
+      icon: "ListTodo",
+      sort_order: 190,
+      activation: "agent_rules_picker" as const,
+      display_name: { en: "Agent Rules Picker" },
+      description: { en: "Choose optional workspace instructions." },
+      bundled_hash: "hash",
+    },
+    installed_centrally: true,
+    user_modified: false,
+    central_path: "/skills/agent-rules-picker",
+  }
 
   async function mountAndType(
     props: Partial<React.ComponentProps<typeof MessageInput>>,
@@ -826,6 +853,49 @@ describe("MessageInput slash menu while the agent connects", () => {
       </NextIntlClientProvider>
     )
   }
+
+  it.each(["antigravity", "codex"] as const)(
+    "provides `/agent-rules-picker` locally for %s when ACP omits it",
+    async (agentType) => {
+      builtInExperts.mockReturnValue([RULES_EXPERT])
+      enabledSkillState.mockReturnValue({
+        enabledIds: new Set(["agent-rules-picker"]),
+        ready: true,
+        supported: true,
+      })
+
+      await mountAndType(
+        { agentType, commandsLoading: false, availableCommands: [] },
+        "/agent"
+      )
+
+      const menu = await screen.findByTestId("slash-menu")
+      expect(within(menu).getByText("/agent-rules-picker")).toBeInTheDocument()
+    }
+  )
+
+  it("keeps Agy's native slash commands beside the local picker", async () => {
+    builtInExperts.mockReturnValue([RULES_EXPERT])
+    enabledSkillState.mockReturnValue({
+      enabledIds: new Set(["agent-rules-picker"]),
+      ready: true,
+      supported: true,
+    })
+
+    await mountAndType({
+      agentType: "antigravity",
+      commandsLoading: false,
+      availableCommands: [
+        { name: "plan", description: "Plan before executing" },
+        { name: "logout", description: "Log out" },
+      ],
+    })
+
+    const menu = await screen.findByTestId("slash-menu")
+    expect(within(menu).getByText("/agent-rules-picker")).toBeInTheDocument()
+    expect(within(menu).getByText("/plan")).toBeInTheDocument()
+    expect(within(menu).getByText("/logout")).toBeInTheDocument()
+  })
 
   it("opens the panel on a loading row while commands are still on their way", async () => {
     await mountAndType({ commandsLoading: true, availableCommands: [] })

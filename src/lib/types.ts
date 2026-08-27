@@ -2990,9 +2990,45 @@ export interface ExpertMetadata {
   category: string
   icon: string | null
   sort_order: number
+  activation: "agent_rules_picker" | null
   display_name: Record<string, string>
   description: Record<string, string>
   bundled_hash: string
+}
+
+export interface AgentRuleSummary {
+  id: string
+  name: string
+  defaultOn: boolean
+  source: string
+  line: number
+}
+
+export interface AgentRuleProfileSummary {
+  ruleIds: string[]
+  sourceHash: string
+  stale: boolean
+  missingRuleIds: string[]
+}
+
+export interface AgentRulesInspectResult {
+  workspace: string
+  nativeSources: string[]
+  rules: AgentRuleSummary[]
+  defaultIds: string[]
+  sourceHash: string
+  profilePath: string
+  profilesExist: boolean
+  defaultProfile: string | null
+  profiles: Record<string, AgentRuleProfileSummary>
+}
+
+export interface AgentRulesRenderResult {
+  sourceHash: string
+  rules: AgentRuleSummary[]
+  sources: string[]
+  text: string
+  envelopeNonce: string
 }
 
 export interface ExpertListItem {

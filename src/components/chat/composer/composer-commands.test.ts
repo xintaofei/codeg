@@ -4,12 +4,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { PromptInputBlock } from "@/lib/types"
 
 import {
+  applyAgentRuleSelection,
   applyExpertReference,
   isComposerChromeClick,
   isComposerEmpty,
   restampSkillPrefixes,
   restoreBlocksIntoEditor,
 } from "./composer-commands"
+import type { AgentRuleSelectionAttrs } from "./agent-rule-selection"
 import { buildComposerExtensions } from "./editor-config"
 import { serializeDocToText } from "./to-prompt-blocks"
 import type { ReferenceAttrs } from "./types"
@@ -27,6 +29,17 @@ function expertAttrs(id: string, prefix: "/" | "$" = "/"): ReferenceAttrs {
     label: id,
     uri: null,
     meta: { scope: "expert", invocationPrefix: prefix },
+  }
+}
+
+function ruleSelectionAttrs(): AgentRuleSelectionAttrs {
+  return {
+    version: 1,
+    ruleIds: ["tests"],
+    sourceHash: "abc123",
+    sources: [".codeg/rules/team.md"],
+    exactText: "## Tests\nRun tests.\n",
+    envelopeNonce: "nonce123",
   }
 }
 
@@ -149,6 +162,38 @@ describe("applyExpertReference", () => {
   })
 })
 
+describe("applyAgentRuleSelection", () => {
+  let editor: Editor
+
+  beforeEach(() => {
+    editor = new Editor({ extensions: buildComposerExtensions() })
+  })
+  afterEach(() => editor?.destroy())
+
+  it("inserts one atom whose send text includes the exact selected body", () => {
+    editor.commands.setContent("please review")
+    applyAgentRuleSelection(editor, ruleSelectionAttrs())
+
+    expect(editor.getJSON().content?.[0].content?.[0].type).toBe(
+      "agentRuleSelection"
+    )
+    expect(serialized(editor)).toContain("/agent-rules-picker")
+    expect(serialized(editor)).toContain("## Tests\nRun tests.\n")
+    expect(serialized(editor)).toContain("please review")
+  })
+
+  it("replaces a leading expert and is replaced by another expert", () => {
+    applyExpertReference(editor, expertAttrs("reviewer"))
+    applyAgentRuleSelection(editor, ruleSelectionAttrs())
+    expect(serialized(editor)).not.toContain("/reviewer")
+
+    applyExpertReference(editor, expertAttrs("debugger"))
+    expect(serialized(editor)).toContain("/debugger")
+    expect(serialized(editor)).not.toContain("codeg-agent-rules-selection")
+    expect(editor.getJSON().content?.[0].content?.[0].type).toBe("reference")
+  })
+})
+
 describe("restampSkillPrefixes", () => {
   let editor: Editor
 
@@ -228,6 +273,13 @@ describe("restampSkillPrefixes", () => {
     applyExpertReference(editor, expertAttrs("reviewer", "$"))
     expect(restampSkillPrefixes(editor, "$")).toBe(false)
   })
+
+  it("keeps an agent rule selection on `/` when Codex skills change to `$`", () => {
+    applyAgentRuleSelection(editor, ruleSelectionAttrs())
+    expect(restampSkillPrefixes(editor, "$")).toBe(false)
+    expect(serialized(editor)).toContain("/agent-rules-picker")
+    expect(serialized(editor)).not.toContain("$agent-rules-picker")
+  })
 })
 
 describe("restoreBlocksIntoEditor", () => {
@@ -245,6 +297,21 @@ describe("restoreBlocksIntoEditor", () => {
     const attachments = restoreBlocksIntoEditor(editor, blocks)
     expect(serialized(editor)).toContain("**world**")
     expect(attachments).toEqual([])
+  })
+
+  it("restores a trusted selection envelope as one atom", () => {
+    applyAgentRuleSelection(editor, ruleSelectionAttrs())
+    editor.commands.insertContent("continue")
+    const text = serialized(editor)
+
+    const restored = new Editor({ extensions: buildComposerExtensions() })
+    restoreBlocksIntoEditor(restored, [{ type: "text", text }])
+
+    expect(restored.getJSON().content?.[0].content?.[0].type).toBe(
+      "agentRuleSelection"
+    )
+    expect(serialized(restored)).toBe(text)
+    restored.destroy()
   })
 
   it("restores a file resource_link as a reference badge", () => {

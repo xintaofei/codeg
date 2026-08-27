@@ -4,6 +4,7 @@ import StarterKit from "@tiptap/starter-kit"
 
 import { InactiveSelectionHighlight } from "./inactive-selection"
 import { Reference } from "./nodes/reference-node"
+import { AgentRuleSelection } from "./nodes/agent-rule-selection-node"
 import { QuoteLineDecoration } from "./quote-decoration"
 import {
   MentionSuggestion,
@@ -83,6 +84,7 @@ export function buildComposerExtensions(
       showOnlyWhenEditable: true,
     }),
     Reference,
+    AgentRuleSelection,
     // Keeps the selection visible when focus moves to the right-click menu.
     InactiveSelectionHighlight,
     // Paints line-leading `> ` markers as a blockquote rule. Decoration only —

@@ -23,7 +23,12 @@ import type { JSONContent } from "@tiptap/core"
 
 // Inline leaf types the plain-text schema keeps verbatim (see editor-config.ts).
 // `text` additionally has its marks stripped.
-const KEPT_INLINE = new Set(["text", "hardBreak", "reference"])
+const KEPT_INLINE = new Set([
+  "text",
+  "hardBreak",
+  "reference",
+  "agentRuleSelection",
+])
 
 // Block types whose children are INLINE (fold into one paragraph) vs BLOCK
 // (recurse). Unknown types are classified by inspecting their children.
@@ -57,6 +62,8 @@ function sanitizeInline(nodes: JSONContent[] | undefined): JSONContent[] {
       out.push({ type: "hardBreak" })
     } else if (type === "reference") {
       out.push({ type: "reference", attrs: node.attrs })
+    } else if (type === "agentRuleSelection") {
+      out.push({ type: "agentRuleSelection", attrs: node.attrs })
     } else if (Array.isArray(node?.content)) {
       out.push(...sanitizeInline(node.content))
     }

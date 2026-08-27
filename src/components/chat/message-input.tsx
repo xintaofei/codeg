@@ -133,6 +133,8 @@ import { ComposerAddMenu } from "@/components/chat/composer/composer-add-menu"
 import { ComposerImageThumbnails } from "@/components/chat/composer/composer-image-thumbnails"
 import { useComposerAttachments } from "@/components/chat/composer/use-composer-attachments"
 import { useComposerShortcuts } from "@/components/chat/composer/use-composer-shortcuts"
+import { AgentRulesPickerDialog } from "@/components/chat/agent-rules-picker-dialog"
+import { AGENT_RULES_EXPERT_ID } from "@/components/chat/composer/agent-rule-selection"
 
 /**
  * Payload pushed into the composer from outside (e.g. a welcome-page quick
@@ -383,6 +385,7 @@ export function MessageInput({
   const menuShortcuts = useComposerShortcuts({
     editorRef,
     agentType: agentType ?? null,
+    rootPath: defaultPath ?? null,
     onAfterInsert: syncComposerEmpty,
     logLabel: "MessageInput",
   })
@@ -718,10 +721,27 @@ export function MessageInput({
     null
   )
   const [slashFilter, setSlashFilter] = useState("")
-  const slashCommands = useMemo(
-    () => availableCommands ?? [],
-    [availableCommands]
-  )
+  const slashCommands = useMemo(() => {
+    const commands = availableCommands ?? []
+    const picker = menuShortcuts.experts.find(
+      (expert) => expert.metadata.id === AGENT_RULES_EXPERT_ID
+    )
+    if (!picker || !menuShortcuts.isSkillEnabled(AGENT_RULES_EXPERT_ID)) {
+      return commands
+    }
+    const otherCommands = commands.filter(
+      (command) =>
+        command.name !== AGENT_RULES_EXPERT_ID &&
+        command.name !== `$${AGENT_RULES_EXPERT_ID}`
+    )
+    return [
+      ...otherCommands,
+      {
+        name: AGENT_RULES_EXPERT_ID,
+        description: t("agentRulesPicker.description"),
+      },
+    ]
+  }, [availableCommands, menuShortcuts, t])
   const filteredSlashCommands = useMemo(() => {
     if (!slashMenuOpen || slashCommands.length === 0) return []
     if (slashTriggerChar !== "/") return []
@@ -734,7 +754,7 @@ export function MessageInput({
     if (slashTriggerChar !== "$") return []
     return rankByTextMatch(
       slashFilter,
-      availableSkills,
+      availableSkills.filter((skill) => skill.id !== AGENT_RULES_EXPERT_ID),
       (skill) => skill.name,
       (skill) => skill.id
     )
@@ -903,12 +923,40 @@ export function MessageInput({
 
   const handleSlashSelect = useCallback(
     (cmd: AvailableCommandInfo) => {
+      if (cmd.name === AGENT_RULES_EXPERT_ID) {
+        const editor = editorRef.current?.getEditor()
+        const { $from } = editor?.state.selection ?? {}
+        if (editor && $from) {
+          const before = $from.parent.textBetween(
+            0,
+            $from.parentOffset,
+            undefined,
+            " "
+          )
+          const match = before.match(/(^|\s)([/$])(\S*)$/)
+          if (match) {
+            const tokenLength = match[2].length + match[3].length
+            menuShortcuts.agentRulesPicker.openPicker({
+              from: $from.pos - tokenLength,
+              to: $from.pos,
+            })
+            closeSlashMenu()
+            return
+          }
+        }
+      }
       replaceTriggerWithReference(commandToReference(cmd))
     },
-    [replaceTriggerWithReference]
+    [
+      closeSlashMenu,
+      menuShortcuts.agentRulesPicker,
+      replaceTriggerWithReference,
+    ]
   )
 
-  // Codex uses `$<id>`, other agents `/<id>` — matching the trigger prefix.
+  // Codex uses `$<id>` for ordinary skills. Agent Rules Picker is deliberately
+  // absent here because Codeg exposes it as `/agent-rules-picker` for every
+  // agent through the local slash-command list above.
   const handleSkillAutocompleteSelect = useCallback(
     (skill: AgentSkillItem) => {
       replaceTriggerWithReference(skillToReference(skill, skillPrefix))
@@ -2127,6 +2175,13 @@ export function MessageInput({
           initialPath={defaultPath ?? undefined}
         />
       )}
+      <AgentRulesPickerDialog
+        open={menuShortcuts.agentRulesPicker.open}
+        onOpenChange={menuShortcuts.agentRulesPicker.setOpen}
+        rootPath={menuShortcuts.agentRulesPicker.rootPath}
+        agentType={menuShortcuts.agentRulesPicker.agentType}
+        onApply={menuShortcuts.agentRulesPicker.apply}
+      />
     </div>
   )
 }

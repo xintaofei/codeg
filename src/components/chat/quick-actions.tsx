@@ -488,7 +488,11 @@ export function QuickActions({ onSelect, agentType }: QuickActionsProps) {
       } => v !== null
     )
     const rest = experts
-      .filter((e) => !CODING_FEATURED_IDS.has(e.metadata.id))
+      .filter(
+        (e) =>
+          !CODING_FEATURED_IDS.has(e.metadata.id) &&
+          e.metadata.activation == null
+      )
       .sort(
         (a, b) =>
           (a.metadata.sort_order ?? 0) - (b.metadata.sort_order ?? 0) ||

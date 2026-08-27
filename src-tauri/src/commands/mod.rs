@@ -1,4 +1,5 @@
 pub mod acp;
+pub mod agent_rules;
 #[cfg(feature = "tauri-runtime")]
 pub mod app_update;
 pub mod automation;

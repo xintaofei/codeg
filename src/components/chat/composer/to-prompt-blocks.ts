@@ -6,6 +6,10 @@ import type { PromptInputBlock } from "@/lib/types"
 import { referenceToMarkdown } from "./reference-text"
 import { isEmbeddedReferenceUri } from "./reference-uri"
 import type { ReferenceAttrs } from "./types"
+import {
+  isAgentRuleSelectionAttrs,
+  serializeAgentRuleSelection,
+} from "./agent-rule-selection"
 
 /**
  * Send serialization: turn the (plain-text) composer document into the prose
@@ -70,6 +74,11 @@ export function composerLeafText(
     return referenceToMarkdown(attrs)
   }
   if (leaf.type.name === "hardBreak") return "\n"
+  if (leaf.type.name === "agentRuleSelection") {
+    return isAgentRuleSelectionAttrs(leaf.attrs)
+      ? serializeAgentRuleSelection(leaf.attrs)
+      : ""
+  }
   return ""
 }
 

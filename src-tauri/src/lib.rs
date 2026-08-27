@@ -62,8 +62,9 @@ mod tauri_app {
     use crate::acp::manager::ConnectionManager;
     use crate::chat_channel::manager::ChatChannelManager;
     use crate::commands::{
-        acp as acp_commands, app_update as app_update_commands,
-        automation as automation_commands, background as background_commands, backup,
+        acp as acp_commands, agent_rules as agent_rules_commands,
+        app_update as app_update_commands, automation as automation_commands,
+        background as background_commands, backup,
         chat_authoring as chat_authoring_commands, chat_channel as chat_channel_commands,
         conversations,
         custom_skills as custom_skills_commands, delegation as delegation_commands,
@@ -1303,6 +1304,11 @@ mod tauri_app {
                 acp_commands::opencode_uninstall_plugin,
                 acp_commands::codex_request_device_code,
                 acp_commands::codex_poll_device_code,
+                agent_rules_commands::agent_rules_inspect,
+                agent_rules_commands::agent_rules_render,
+                agent_rules_commands::agent_rules_save_profile,
+                agent_rules_commands::agent_rules_rename_profile,
+                agent_rules_commands::agent_rules_delete_profile,
                 experts_commands::experts_list,
                 experts_commands::experts_get_install_status,
                 experts_commands::experts_list_all_install_statuses,

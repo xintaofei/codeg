@@ -6,6 +6,10 @@ import type { InputAttachment } from "../message-input-attachments"
 import { blocksToRestoredDraft } from "./from-prompt-blocks"
 import { textToSeededInlineContent } from "./plain-text-content"
 import type { ReferenceAttrs } from "./types"
+import {
+  AGENT_RULE_SELECTION_NODE,
+  type AgentRuleSelectionAttrs,
+} from "./agent-rule-selection"
 
 /**
  * Whether the composer has nothing sendable. Stricter than `editor.isEmpty`,
@@ -19,7 +23,10 @@ export function isComposerEmpty(editor: Editor): boolean {
   let hasReference = false
   editor.state.doc.descendants((node) => {
     if (hasReference) return false
-    if (node.type.name === "reference") {
+    if (
+      node.type.name === "reference" ||
+      node.type.name === AGENT_RULE_SELECTION_NODE
+    ) {
       hasReference = true
       return false
     }
@@ -74,9 +81,10 @@ export function applyExpertReference(
   const first = editor.state.doc.firstChild
   const firstChild = first?.firstChild
   const isExpertBadge =
-    firstChild?.type.name === "reference" &&
-    firstChild.attrs.refType === "skill" &&
-    firstChild.attrs.meta?.scope === "expert"
+    (firstChild?.type.name === "reference" &&
+      firstChild.attrs.refType === "skill" &&
+      firstChild.attrs.meta?.scope === "expert") ||
+    firstChild?.type.name === AGENT_RULE_SELECTION_NODE
 
   let chain = editor.chain().focus()
   if (isExpertBadge) {
@@ -86,6 +94,34 @@ export function applyExpertReference(
     chain = chain.deleteRange({ from: 1, to: 2 + trailingSpace })
   }
   chain.insertContentAt(1, badge).setTextSelection(3).run()
+}
+
+/** Insert the confirmed optional rules as one leading atom. */
+export function applyAgentRuleSelection(
+  editor: Editor,
+  attrs: AgentRuleSelectionAttrs
+): void {
+  const first = editor.state.doc.firstChild
+  const firstChild = first?.firstChild
+  const isLeadingExpert =
+    firstChild?.type.name === AGENT_RULE_SELECTION_NODE ||
+    (firstChild?.type.name === "reference" &&
+      firstChild.attrs.refType === "skill" &&
+      firstChild.attrs.meta?.scope === "expert")
+
+  let chain = editor.chain().focus()
+  if (isLeadingExpert) {
+    const after = first?.maybeChild(1)
+    const trailingSpace = after?.isText && after.text?.startsWith(" ") ? 1 : 0
+    chain = chain.deleteRange({ from: 1, to: 2 + trailingSpace })
+  }
+  chain
+    .insertContentAt(1, [
+      { type: AGENT_RULE_SELECTION_NODE, attrs },
+      { type: "text", text: " " },
+    ])
+    .setTextSelection(3)
+    .run()
 }
 
 /**
@@ -107,8 +143,12 @@ export function restampSkillPrefixes(
   editor: Editor,
   prefix: "/" | "$"
 ): boolean {
-  const updates: { pos: number; attrs: ReferenceAttrs }[] = []
+  const updates: {
+    pos: number
+    attrs: ReferenceAttrs | AgentRuleSelectionAttrs
+  }[] = []
   editor.state.doc.descendants((node, pos) => {
+    if (node.type.name === AGENT_RULE_SELECTION_NODE) return true
     if (node.type.name !== "reference") return true
     const attrs = node.attrs as ReferenceAttrs
     if (
@@ -159,10 +199,13 @@ export function restoreBlocksIntoEditor(
   const { segments, attachments } = blocksToRestoredDraft(blocks)
   let chain = editor.chain().clearContent()
   for (const segment of segments) {
-    chain =
-      segment.kind === "text"
-        ? chain.insertContent(textToSeededInlineContent(segment.text))
-        : chain.insertReference(segment.attrs)
+    if (segment.kind === "text") {
+      chain = chain.insertContent(textToSeededInlineContent(segment.text))
+    } else if (segment.kind === "reference") {
+      chain = chain.insertReference(segment.attrs)
+    } else {
+      chain = chain.insertAgentRuleSelection(segment.attrs)
+    }
   }
   chain.focus("end").run()
   return attachments
