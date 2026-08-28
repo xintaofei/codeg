@@ -1,17 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const { listAgentsMock, getSettingsMock } = vi.hoisted(() => ({
-  listAgentsMock: vi.fn(),
+const { getSettingsMock } = vi.hoisted(() => ({
   getSettingsMock: vi.fn(),
 }))
 
 vi.mock("@/lib/api", () => ({
-  acpListAgents: (...args: unknown[]) => listAgentsMock(...args),
   getDelegationSettings: (...args: unknown[]) => getSettingsMock(...args),
 }))
 
+import type { AcpAgentInfo } from "@/lib/types"
+
 import {
   extractMentionedAgentTypes,
+  findBlockedAgentMentions,
   mentionedAgentTypesFromBlocks,
 } from "./agent-mention-hint"
 
@@ -61,41 +62,33 @@ describe("extractMentionedAgentTypes", () => {
 })
 
 describe("findBlockedAgentMentions", () => {
-  // Dynamic import per test: the module keeps a TTL cache in module state, and
-  // vi.resetModules() only affects imports resolved AFTER the reset — so each
-  // test needs its own fresh module instance to see its own mocked backend.
-  let findBlockedAgentMentions: typeof import("./agent-mention-hint").findBlockedAgentMentions
+  // Only the shape the classifier reads; the registry snapshot is supplied by
+  // the caller (`useAcpAgents`), never fetched here.
+  const AGENTS = [
+    { agent_type: "codex", name: "Codex", enabled: true },
+    { agent_type: "qoder", name: "Qoder", enabled: false },
+  ] as unknown as AcpAgentInfo[]
 
-  beforeEach(async () => {
-    vi.resetModules()
-    listAgentsMock.mockResolvedValue([
-      { agent_type: "codex", name: "Codex", enabled: true },
-      { agent_type: "qoder", name: "Qoder", enabled: false },
-    ])
-    getSettingsMock.mockResolvedValue({ enabled: true })
-    ;({ findBlockedAgentMentions } = await import("./agent-mention-hint"))
-  })
-
-  afterEach(() => {
+  beforeEach(() => {
     vi.clearAllMocks()
+    getSettingsMock.mockResolvedValue({ enabled: true })
   })
 
   it("short-circuits without mentions and never calls the backend", async () => {
-    const blocked = await findBlockedAgentMentions([])
+    const blocked = await findBlockedAgentMentions([], AGENTS)
     expect(blocked).toEqual({ delegationOff: false, disabledAgents: [] })
     expect(getSettingsMock).not.toHaveBeenCalled()
-    expect(listAgentsMock).not.toHaveBeenCalled()
   })
 
   it("reports delegationOff alone when multi-agent delegation is disabled", async () => {
     getSettingsMock.mockResolvedValue({ enabled: false })
-    const blocked = await findBlockedAgentMentions(["qoder", "codex"])
+    const blocked = await findBlockedAgentMentions(["qoder", "codex"], AGENTS)
     expect(blocked.delegationOff).toBe(true)
     expect(blocked.disabledAgents).toEqual([])
   })
 
   it("lists only the mentioned agents that are disabled", async () => {
-    const blocked = await findBlockedAgentMentions(["qoder", "codex"])
+    const blocked = await findBlockedAgentMentions(["qoder", "codex"], AGENTS)
     expect(blocked).toEqual({
       delegationOff: false,
       disabledAgents: [{ type: "qoder", label: "Qoder" }],
@@ -103,7 +96,25 @@ describe("findBlockedAgentMentions", () => {
   })
 
   it("returns nothing when every mentioned agent is enabled", async () => {
-    const blocked = await findBlockedAgentMentions(["codex"])
+    const blocked = await findBlockedAgentMentions(["codex"], AGENTS)
+    expect(blocked).toEqual({ delegationOff: false, disabledAgents: [] })
+  })
+
+  it("re-reads the delegation toggle on every call, so flipping it on stops the hint immediately", async () => {
+    getSettingsMock.mockResolvedValueOnce({ enabled: false })
+    expect(
+      (await findBlockedAgentMentions(["codex"], AGENTS)).delegationOff
+    ).toBe(true)
+    // The user opened the deep link and turned the switch on. The very next
+    // send must not repeat the warning — no TTL window may hide the new value.
+    expect(
+      (await findBlockedAgentMentions(["codex"], AGENTS)).delegationOff
+    ).toBe(false)
+    expect(getSettingsMock).toHaveBeenCalledTimes(2)
+  })
+
+  it("reports nothing disabled against a cold/empty registry snapshot", async () => {
+    const blocked = await findBlockedAgentMentions(["qoder"], [])
     expect(blocked).toEqual({ delegationOff: false, disabledAgents: [] })
   })
 })

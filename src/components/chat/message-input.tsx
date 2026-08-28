@@ -97,6 +97,7 @@ import {
   MODEL_LIST_VIRTUALIZE_THRESHOLD,
   type ModelOptionGroup,
 } from "@/lib/model-config-groups"
+import { acpAgentsSnapshot } from "@/hooks/use-acp-agents"
 import { useAgentSkills } from "@/hooks/use-agent-skills"
 import { useScrollbarSafeDismiss } from "@/hooks/use-scrollbar-safe-dismiss"
 import {
@@ -159,6 +160,9 @@ export interface ComposerInjectContent {
    */
   mode?: "replace" | "append"
 }
+
+/** Shared sonner id for the "@-mention can't delegate" warning (see `handleSend`). */
+const MENTION_DELEGATION_HINT_TOAST_ID = "agent-mention-delegation-hint"
 
 interface MessageInputProps {
   onSend: (draft: PromptDraft, modeId?: string | null) => void
@@ -1234,10 +1238,14 @@ export function MessageInput({
     // block or break the send.
     const mentionedTypes = mentionedAgentTypesFromBlocks(draft.blocks)
     if (mentionedTypes.length > 0) {
-      void findBlockedAgentMentions(mentionedTypes)
+      void findBlockedAgentMentions(mentionedTypes, acpAgentsSnapshot())
         .then((blocked) => {
+          // One stable id for both branches: they are mutually exclusive, and a
+          // user who keeps delegation off would otherwise stack an identical
+          // warning per send. Same id → sonner replaces rather than piles up.
           if (blocked.delegationOff) {
             toast.warning(t("mentionDelegateOffHint"), {
+              id: MENTION_DELEGATION_HINT_TOAST_ID,
               action: {
                 label: t("mentionHintOpenSettings"),
                 onClick: () => void openSettingsWindow("general"),
@@ -1253,6 +1261,7 @@ export function MessageInput({
             toast.warning(
               t("mentionDelegateDisabledAgentHint", { agent: names }),
               {
+                id: MENTION_DELEGATION_HINT_TOAST_ID,
                 action: {
                   label: t("mentionHintOpenSettings"),
                   onClick: () =>

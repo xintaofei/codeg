@@ -1,6 +1,6 @@
-import { acpListAgents, getDelegationSettings } from "@/lib/api"
+import { getDelegationSettings } from "@/lib/api"
 
-import type { PromptInputBlock } from "@/lib/types"
+import type { AcpAgentInfo, PromptInputBlock } from "@/lib/types"
 
 /**
  * An `@<agent>` mention delegates work to another agent only when BOTH gates
@@ -38,35 +38,6 @@ export function mentionedAgentTypesFromBlocks(
   return extractMentionedAgentTypes(prose)
 }
 
-interface GateSnapshot {
-  delegationEnabled: boolean
-  /** `agent_type → display name` for every agent disabled in Agents 管理. */
-  disabledAgents: Map<string, string>
-}
-
-const SNAPSHOT_TTL_MS = 30_000
-let cache: { at: number; value: Promise<GateSnapshot> } | null = null
-
-function gateSnapshot(): Promise<GateSnapshot> {
-  const now = Date.now()
-  if (cache && now - cache.at < SNAPSHOT_TTL_MS) return cache.value
-  const value = (async () => {
-    const [settings, agents] = await Promise.all([
-      getDelegationSettings(),
-      acpListAgents(),
-    ])
-    const disabledAgents = new Map<string, string>()
-    for (const agent of agents) {
-      if (!agent.enabled) {
-        disabledAgents.set(agent.agent_type, agent.name || agent.agent_type)
-      }
-    }
-    return { delegationEnabled: settings.enabled, disabledAgents }
-  })()
-  cache = { at: now, value }
-  return value
-}
-
 export interface BlockedAgentMentions {
   /** Multi-agent delegation is off — no mention can delegate. */
   delegationOff: boolean
@@ -75,27 +46,46 @@ export interface BlockedAgentMentions {
 }
 
 /**
- * Best-effort classification of the mentions in a sent draft. Throws only if
- * the settings/agents lookup fails — callers are expected to swallow that
- * (a missing hint must never break the send).
+ * Best-effort classification of the mentions in a sent draft.
+ *
+ * `agents` is the caller's already-subscribed registry snapshot
+ * (`useAcpAgents`) rather than a fetch of our own: `acp_list_agents` probes npm
+ * prefixes and shells out for binary versions, and the app deliberately
+ * coalesces it behind ONE ref-counted store that reloads on window focus,
+ * `app://acp-agents-updated` and transport reconnect. Reading that store keeps
+ * this free AND fresh — a private TTL cache would re-nag with stale gates for
+ * the whole TTL right after the user flipped the toggle the hint sent them to.
+ * An empty/cold list simply reports nothing disabled, which is the fail-safe
+ * direction (a missed hint, never a false one).
+ *
+ * The delegation toggle IS read per call: it is a handful of `app_metadata`
+ * reads, it has no change event to invalidate against, and this runs
+ * fire-and-forget off the send path. Throws only if that lookup fails —
+ * callers are expected to swallow that (a missing hint must never break the
+ * send).
  */
 export async function findBlockedAgentMentions(
-  mentionedTypes: string[]
+  mentionedTypes: string[],
+  agents: AcpAgentInfo[]
 ): Promise<BlockedAgentMentions> {
   if (mentionedTypes.length === 0) {
     return { delegationOff: false, disabledAgents: [] }
   }
-  const snapshot = await gateSnapshot()
-  if (!snapshot.delegationEnabled) {
+  const settings = await getDelegationSettings()
+  if (!settings.enabled) {
     return { delegationOff: true, disabledAgents: [] }
+  }
+  /** `agent_type → display name` for every agent disabled in Agents 管理. */
+  const disabled = new Map<string, string>()
+  for (const agent of agents) {
+    if (!agent.enabled) {
+      disabled.set(agent.agent_type, agent.name || agent.agent_type)
+    }
   }
   return {
     delegationOff: false,
     disabledAgents: mentionedTypes
-      .filter((type) => snapshot.disabledAgents.has(type))
-      .map((type) => ({
-        type,
-        label: snapshot.disabledAgents.get(type) ?? type,
-      })),
+      .filter((type) => disabled.has(type))
+      .map((type) => ({ type, label: disabled.get(type) ?? type })),
   }
 }
