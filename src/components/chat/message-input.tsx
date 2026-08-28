@@ -48,6 +48,11 @@ import { imageFilesFromClipboardApi } from "@/lib/clipboard-images"
 import { toErrorMessage } from "@/lib/app-error"
 import { isNoActiveTurnRejection } from "@/lib/turn-busy"
 import { ServerFileBrowserDialog } from "@/components/shared/server-file-browser-dialog"
+import {
+  findBlockedAgentMentions,
+  mentionedAgentTypesFromBlocks,
+} from "@/components/chat/composer/agent-mention-hint"
+import { openSettingsWindow } from "@/lib/api"
 import { toast } from "sonner"
 import type {
   AgentSkillItem,
@@ -1222,6 +1227,46 @@ export function MessageInput({
       return
     }
 
+    // An @-mention only delegates when multi-agent delegation is on and the
+    // target agent is enabled; with a gate closed the host model otherwise
+    // answers the mention itself and the sender never learns why (upstream
+    // #545). Best-effort and fire-and-forget — a lookup failure must never
+    // block or break the send.
+    const mentionedTypes = mentionedAgentTypesFromBlocks(draft.blocks)
+    if (mentionedTypes.length > 0) {
+      void findBlockedAgentMentions(mentionedTypes)
+        .then((blocked) => {
+          if (blocked.delegationOff) {
+            toast.warning(t("mentionDelegateOffHint"), {
+              action: {
+                label: t("mentionHintOpenSettings"),
+                onClick: () => void openSettingsWindow("general"),
+              },
+            })
+            return
+          }
+          const firstDisabled = blocked.disabledAgents[0]
+          if (firstDisabled) {
+            const names = blocked.disabledAgents
+              .map((agent) => agent.label)
+              .join(", ")
+            toast.warning(
+              t("mentionDelegateDisabledAgentHint", { agent: names }),
+              {
+                action: {
+                  label: t("mentionHintOpenSettings"),
+                  onClick: () =>
+                    void openSettingsWindow("agents", {
+                      agentType: firstDisabled.type,
+                    }),
+                },
+              }
+            )
+          }
+        })
+        .catch(() => {})
+    }
+
     // Prompting mode: enqueue instead of sending
     if (isPrompting && onEnqueue) {
       onEnqueue(draft, showModeSelector ? effectiveModeId : null)
@@ -1238,6 +1283,7 @@ export function MessageInput({
     disabled,
     hasUploadingImage,
     tAttach,
+    t,
     buildDraft,
     isEditingQueueItem,
     isPrompting,
