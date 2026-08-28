@@ -676,6 +676,14 @@ export function MessageInput({
     [configOptions]
   )
   const hasConfigOptions = availableConfigOptions.length > 0
+  const currentModelValue = useMemo(() => {
+    const modelOption = availableConfigOptions.find((option) =>
+      isModelConfigOption(option)
+    )
+    return modelOption?.kind.type === "select"
+      ? modelOption.kind.current_value
+      : undefined
+  }, [availableConfigOptions])
   const hasModes = availableModes.length > 0
 
   const effectiveModeId = useMemo(() => {
@@ -1465,6 +1473,7 @@ export function MessageInput({
                 key={option.id}
                 option={option}
                 groups={listGroups}
+                agentType={agentType}
                 onSelect={(configId, valueId) =>
                   onConfigOptionChange?.(configId, valueId)
                 }
@@ -1476,6 +1485,8 @@ export function MessageInput({
               key={option.id}
               option={option}
               derivedGroups={deriveModelGroups(option)}
+              agentType={agentType}
+              modelValue={currentModelValue}
               onSelect={(configId, valueId) =>
                 onConfigOptionChange?.(configId, valueId)
               }

@@ -14,8 +14,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { DropdownRadioItemContent } from "@/components/chat/dropdown-radio-item-content"
+import { KiloReasoningVariantsButton } from "@/components/chat/kilo-chat-model-manager"
 import type { ModelOptionGroup } from "@/lib/model-config-groups"
-import type { SessionConfigOptionInfo } from "@/lib/types"
+import {
+  isKiloAgentType,
+  type AgentType,
+  type SessionConfigOptionInfo,
+} from "@/lib/types"
 
 interface SessionConfigSelectorProps {
   option: SessionConfigOptionInfo
@@ -27,12 +32,16 @@ interface SessionConfigSelectorProps {
    * means "no grouping" — fall back to server groups, else the flat list.
    */
   derivedGroups?: ModelOptionGroup[] | null
+  agentType?: AgentType | null
+  modelValue?: string
 }
 
 export function InlineSessionConfigSelector({
   option,
   onSelect,
   derivedGroups,
+  agentType,
+  modelValue,
 }: SessionConfigSelectorProps) {
   if (option.kind.type !== "select") return null
 
@@ -62,71 +71,79 @@ export function InlineSessionConfigSelector({
   const currentLabel = selected?.name ?? option.kind.current_value
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size="xs"
-          title={option.name}
-          aria-label={
-            currentLabel ? `${option.name}: ${currentLabel}` : option.name
-          }
-          className="min-w-0 gap-0.5 px-1 text-muted-foreground"
+    <div className="flex items-center gap-0.5">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="xs"
+            title={option.name}
+            aria-label={
+              currentLabel ? `${option.name}: ${currentLabel}` : option.name
+            }
+            className="min-w-0 gap-0.5 px-1 text-muted-foreground"
+          >
+            <span className="max-w-[10rem] truncate">{currentLabel}</span>
+            <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          side="top"
+          align="start"
+          className="min-w-72 overflow-y-auto"
+          style={{
+            maxWidth: "min(20rem, calc(100vw - 1rem))",
+            maxHeight:
+              "min(60vh, var(--radix-dropdown-menu-content-available-height))",
+          }}
         >
-          <span className="max-w-[10rem] truncate">{currentLabel}</span>
-          <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        side="top"
-        align="start"
-        className="min-w-72 overflow-y-auto"
-        style={{
-          maxWidth: "min(20rem, calc(100vw - 1rem))",
-          maxHeight:
-            "min(60vh, var(--radix-dropdown-menu-content-available-height))",
-        }}
-      >
-        <DropdownMenuRadioGroup
-          value={option.kind.current_value}
-          onValueChange={(value) => onSelect(option.id, value)}
-        >
-          {renderGroups
-            ? renderGroups.map((group, index) => (
-                <Fragment key={group.key}>
-                  {index > 0 && <DropdownMenuSeparator />}
-                  {group.name !== null && (
-                    <DropdownMenuLabel>{group.name}</DropdownMenuLabel>
-                  )}
-                  {group.options.map((item) => (
-                    <DropdownMenuRadioItem
-                      key={`${group.key}-${item.value}`}
-                      value={item.value}
-                      title={item.name}
-                    >
-                      <DropdownRadioItemContent
-                        label={item.name}
-                        description={item.description}
-                      />
-                    </DropdownMenuRadioItem>
-                  ))}
-                </Fragment>
-              ))
-            : option.kind.options.map((item) => (
-                <DropdownMenuRadioItem
-                  key={item.value}
-                  value={item.value}
-                  title={item.name}
-                >
-                  <DropdownRadioItemContent
-                    label={item.name}
-                    description={item.description}
-                  />
-                </DropdownMenuRadioItem>
-              ))}
-        </DropdownMenuRadioGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
+          <DropdownMenuRadioGroup
+            value={option.kind.current_value}
+            onValueChange={(value) => onSelect(option.id, value)}
+          >
+            {renderGroups
+              ? renderGroups.map((group, index) => (
+                  <Fragment key={group.key}>
+                    {index > 0 && <DropdownMenuSeparator />}
+                    {group.name !== null && (
+                      <DropdownMenuLabel>{group.name}</DropdownMenuLabel>
+                    )}
+                    {group.options.map((item) => (
+                      <DropdownMenuRadioItem
+                        key={`${group.key}-${item.value}`}
+                        value={item.value}
+                        title={item.name}
+                      >
+                        <DropdownRadioItemContent
+                          label={item.name}
+                          description={item.description}
+                        />
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </Fragment>
+                ))
+              : option.kind.options.map((item) => (
+                  <DropdownMenuRadioItem
+                    key={item.value}
+                    value={item.value}
+                    title={item.name}
+                  >
+                    <DropdownRadioItemContent
+                      label={item.name}
+                      description={item.description}
+                    />
+                  </DropdownMenuRadioItem>
+                ))}
+          </DropdownMenuRadioGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {agentType &&
+        isKiloAgentType(agentType) &&
+        modelValue &&
+        /reasoning|thinking|effort/i.test(option.name + option.id) && (
+          <KiloReasoningVariantsButton modelValue={modelValue} />
+        )}
+    </div>
   )
 }
 

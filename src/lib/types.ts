@@ -44,6 +44,16 @@ export function customAgentId(agentType: AgentType): string | null {
     : null
 }
 
+/** True for the Kilo Code entry installed from the ACP registry. */
+export function isKiloAgentType(agentType: AgentType): boolean {
+  return customAgentId(agentType) === "kilo"
+}
+
+/** OpenCode and Kilo share provider, model, and native JSON configuration. */
+export function isOpenCodeFamily(agentType: AgentType): boolean {
+  return agentType === "open_code" || isKiloAgentType(agentType)
+}
+
 export type AppErrorCode =
   | "invalid_input"
   | "configuration_missing"

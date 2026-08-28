@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useId, useMemo, useRef, useState } from "react"
-import { Check, Search } from "lucide-react"
+import { Check, ChevronDown, ChevronRight, Search } from "lucide-react"
 import { Virtualizer, type VirtualizerHandle } from "virtua"
 import { useImeGuard } from "@/hooks/use-ime-guard"
 import { cn } from "@/lib/utils"
@@ -23,6 +23,8 @@ interface ModelOptionListProps {
   emptyLabel: string
   /** Focus the search box on mount (the wide popover opens straight into it). */
   autoFocus?: boolean
+  /** Collapse inactive provider groups until explicitly expanded. */
+  collapsibleGroups?: boolean
 }
 
 // Coarse per-row viewport estimate (headers are shorter, two-line options
@@ -48,10 +50,23 @@ export function ModelOptionList({
   listAriaLabel,
   emptyLabel,
   autoFocus = false,
+  collapsibleGroups = false,
 }: ModelOptionListProps) {
   const ime = useImeGuard()
   const [query, setQuery] = useState("")
   const [activeIndex, setActiveIndex] = useState(0)
+  // Show the active provider's models immediately; all other providers remain
+  // visible as compact, expandable rows until the user opens one.
+  const [expandedGroupKeys, setExpandedGroupKeys] = useState<Set<string>>(
+    () =>
+      new Set(
+        groups
+          .filter((group) =>
+            group.options.some((option) => option.value === currentValue)
+          )
+          .map((group) => group.key)
+      )
+  )
   const virtualizerRef = useRef<VirtualizerHandle>(null)
   // virtua scrolls the real OverlayScrollbars viewport (surfaced by ScrollArea's
   // `onViewportRef` once OS initializes). We keep both a ref (for the Virtualizer
@@ -70,9 +85,27 @@ export function ModelOptionList({
     [baseId]
   )
 
-  const rows = useMemo(
-    () => flattenModelGroups(filterModelGroups(groups, query)),
+  const filteredGroups = useMemo(
+    () => filterModelGroups(groups, query),
     [groups, query]
+  )
+  const searching = query.trim().length > 0
+  const rows = useMemo(
+    () =>
+      flattenModelGroups(
+        filteredGroups.map((group) =>
+          collapsibleGroups &&
+          group.name !== null &&
+          !searching &&
+          !expandedGroupKeys.has(group.key)
+            ? { ...group, options: [] }
+            : group
+        )
+      ),
+    [collapsibleGroups, expandedGroupKeys, filteredGroups, searching]
+  )
+  const hasMatchingOptions = filteredGroups.some(
+    (group) => group.options.length > 0
   )
   // Flat row indices that are options (skipping headers) — the keyboard cursor
   // walks these, and they map an option position back to its flat row index.
@@ -191,7 +224,7 @@ export function ModelOptionList({
         />
       </div>
 
-      {optionCount === 0 ? (
+      {!hasMatchingOptions ? (
         <div className="px-3 py-6 text-center text-sm text-muted-foreground">
           {emptyLabel}
         </div>
@@ -222,14 +255,43 @@ export function ModelOptionList({
                 >
                   {rows.map((row, flatIndex) => {
                     if (row.kind === "header") {
+                      if (!collapsibleGroups) {
+                        return (
+                          <div
+                            key={row.key}
+                            role="presentation"
+                            className="truncate px-2 pt-2 pb-0.5 text-xs font-medium text-muted-foreground"
+                          >
+                            {row.name}
+                          </div>
+                        )
+                      }
+                      const expanded =
+                        searching ||
+                        expandedGroupKeys.has(row.key.replace(/^header:/, ""))
                       return (
-                        <div
+                        <button
                           key={row.key}
-                          role="presentation"
-                          className="truncate px-2 pt-2 pb-0.5 text-xs font-medium text-muted-foreground"
+                          type="button"
+                          aria-expanded={expanded}
+                          onClick={() => {
+                            const groupKey = row.key.replace(/^header:/, "")
+                            setExpandedGroupKeys((keys) => {
+                              const next = new Set(keys)
+                              if (next.has(groupKey)) next.delete(groupKey)
+                              else next.add(groupKey)
+                              return next
+                            })
+                          }}
+                          className="flex w-full items-center gap-1 rounded-md px-2 py-1.5 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                         >
-                          {row.name}
-                        </div>
+                          {expanded ? (
+                            <ChevronDown className="size-3 shrink-0" />
+                          ) : (
+                            <ChevronRight className="size-3 shrink-0" />
+                          )}
+                          <span className="truncate">{row.name}</span>
+                        </button>
                       )
                     }
                     const optionIndex = optionIndexByRow.get(flatIndex) ?? 0

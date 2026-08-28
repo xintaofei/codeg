@@ -1025,13 +1025,19 @@
         "action": "接続",
         "editTitle": "プロバイダーを編集",
         "editDescription": "このプロバイダーの API キーまたは Base URL を更新します。",
-        "saveAction": "保存"
+        "saveAction": "保存",
+        "agentTitle": "{agent} のプロバイダーを接続",
+        "agentDescription": "models.dev カタログからプロバイダーを選択します。認証情報は {agent} の auth.json に保存されます。",
+        "agentEditTitle": "{agent} のプロバイダーを編集",
+        "agentEditDescription": "{agent} のネイティブ JSON ファイルにある、このプロバイダーの認証情報を更新します。"
       },
       "customProvider": {
         "title": "カスタムプロバイダーを追加",
         "description": "OpenAI 互換エンドポイントを定義します。API キーは auth.json に、provider ブロックは opencode.json に保存されます。",
         "action": "プロバイダーを追加",
-        "idInCatalog": "{providerId} は既知のプロバイダーです。「プロバイダーを接続」から接続してください。"
+        "idInCatalog": "{providerId} は既知のプロバイダーです。「プロバイダーを接続」から接続してください。",
+        "agentTitle": "カスタム {agent} プロバイダーを追加",
+        "agentDescription": "{agent} のネイティブ JSON ファイルに OpenAI 互換プロバイダーを設定します。"
       },
       "refreshCatalog": "カタログを更新",
       "reasoningBadge": "推論",
@@ -1085,7 +1091,24 @@
           "question": "あなたへの質問",
           "doom_loop": "同じ入力で同じ呼び出しが 3 回繰り返されたときに作動"
         }
-      }
+      },
+      "kiloConfiguration": "Kilo Code の設定",
+      "kiloConfigurationDescription": "Kilo Code のプロバイダーとモデルを管理します。変更は Kilo のネイティブ JSON ファイルに保存されます。",
+      "fetchProviderModels": "プロバイダーのモデルを取得",
+      "fetchModelsCredentialsRequired": "取得する前に、このプロバイダーの Base URL と API キーを入力してください。",
+      "fetchModelsAlreadyConfigured": "利用可能なモデルはすべて設定済みです。",
+      "fetchModelsFailed": "このプロバイダーからモデルを取得できませんでした。",
+      "modelsAdded": "{count} 個のモデルを追加しました。",
+      "chooseModelsTitle": "追加するモデルを選択",
+      "chooseModelsDescription": "{providerId} に追加するモデルを選択します。推論はデフォルトで有効です。",
+      "searchModels": "モデルを検索…",
+      "selectedModels": "{selected} / {total} 件を選択",
+      "selectAllModels": "すべて選択",
+      "clearSelectedModels": "クリア",
+      "addSelectedModels": "選択したモデルを追加",
+      "newModelIdPlaceholder": "new-model-id",
+      "kiloNativeJsonConfig": "Kilo Code ネイティブ JSON 設定",
+      "dragProvider": "ドラッグして {providerId} を並べ替え"
     },
     "openClaw": {
       "gatewayConfig": "Gateway 設定",
@@ -2816,7 +2839,8 @@
         "mentionGroupAgent": "エージェント",
         "mentionGroupSession": "セッション",
         "mentionGroupCommit": "コミット",
-        "mentionGroupSkill": "スキル"
+        "mentionGroupSkill": "スキル",
+        "manageKiloModels": "Kilo Code のモデルを管理"
       },
       "messageQueue": {
         "addToQueue": "キューに追加",
@@ -3507,6 +3531,21 @@
       "proposedPlan": {
         "title": "提案された計画",
         "planning": "計画中…"
+      },
+      "kiloModelManager": {
+        "title": "Kilo Code のモデルを管理",
+        "description": "モデルを追加し、それぞれで推論を使用するか選択します。",
+        "loadFailed": "Kilo Code のモデルを読み込めませんでした。",
+        "saveFailed": "Kilo Code のモデルを保存できませんでした。",
+        "providerPlaceholder": "provider-id",
+        "modelPlaceholder": "model-id",
+        "add": "追加",
+        "reasoning": "推論",
+        "empty": "設定済みのモデルはありません。",
+        "manageReasoningLevels": "推論レベルを管理",
+        "reasoningLevelsTitle": "推論レベル",
+        "reasoningLevelsDescription": "{model} に表示するレベルを追加または無効にします。",
+        "customLevel": "カスタムレベル"
       }
     },
     "diffPreview": {

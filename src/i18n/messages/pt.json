@@ -1025,13 +1025,19 @@
         "action": "Conectar",
         "editTitle": "Editar provedor",
         "editDescription": "Atualize a chave de API ou a Base URL deste provedor.",
-        "saveAction": "Salvar"
+        "saveAction": "Salvar",
+        "agentTitle": "Conectar um provedor {agent}",
+        "agentDescription": "Escolha um provedor no catálogo do models.dev. As credenciais são salvas no arquivo auth.json do {agent}.",
+        "agentEditTitle": "Editar provedor {agent}",
+        "agentEditDescription": "Atualize as credenciais deste provedor nos arquivos JSON nativos do {agent}."
       },
       "customProvider": {
         "title": "Adicionar um provedor personalizado",
         "description": "Defina um endpoint compatível com OpenAI. A API key é salva em auth.json; o bloco de provider vai para opencode.json.",
         "action": "Adicionar provedor",
-        "idInCatalog": "{providerId} é um provedor conhecido — conecte-o via Conectar provedor."
+        "idInCatalog": "{providerId} é um provedor conhecido — conecte-o via Conectar provedor.",
+        "agentTitle": "Adicionar um provedor {agent} personalizado",
+        "agentDescription": "Configure um provedor compatível com OpenAI nos arquivos JSON nativos do {agent}."
       },
       "refreshCatalog": "Atualizar catálogo",
       "reasoningBadge": "raciocínio",
@@ -1085,7 +1091,24 @@
           "question": "Fazer uma pergunta a você",
           "doom_loop": "Dispara quando a mesma chamada se repete três vezes com a mesma entrada"
         }
-      }
+      },
+      "kiloConfiguration": "Configuração do Kilo Code",
+      "kiloConfigurationDescription": "Gerencie provedores e modelos do Kilo Code. As alterações são salvas nos arquivos JSON nativos do Kilo.",
+      "fetchProviderModels": "Buscar modelos do provedor",
+      "fetchModelsCredentialsRequired": "Adicione a URL base e a chave de API deste provedor antes de buscar modelos.",
+      "fetchModelsAlreadyConfigured": "Todos os modelos disponíveis já estão configurados.",
+      "fetchModelsFailed": "Não foi possível buscar modelos deste provedor.",
+      "modelsAdded": "{count} modelos adicionados.",
+      "chooseModelsTitle": "Escolha os modelos para adicionar",
+      "chooseModelsDescription": "Selecione os modelos que deseja adicionar para {providerId}. O raciocínio fica ativado por padrão.",
+      "searchModels": "Pesquisar modelos…",
+      "selectedModels": "{selected} de {total} selecionados",
+      "selectAllModels": "Selecionar todos",
+      "clearSelectedModels": "Limpar seleção",
+      "addSelectedModels": "Adicionar modelos selecionados",
+      "newModelIdPlaceholder": "novo-id-do-modelo",
+      "kiloNativeJsonConfig": "Configuração JSON nativa do Kilo Code",
+      "dragProvider": "Arraste para reordenar {providerId}"
     },
     "openClaw": {
       "gatewayConfig": "Configuração de Gateway",
@@ -2816,7 +2839,8 @@
         "mentionGroupAgent": "Agentes",
         "mentionGroupSession": "Sessões",
         "mentionGroupCommit": "Commits",
-        "mentionGroupSkill": "Habilidades"
+        "mentionGroupSkill": "Habilidades",
+        "manageKiloModels": "Gerenciar modelos do Kilo Code"
       },
       "messageQueue": {
         "addToQueue": "Adicionar à fila",
@@ -3507,6 +3531,21 @@
       "proposedPlan": {
         "title": "Plano proposto",
         "planning": "A planear…"
+      },
+      "kiloModelManager": {
+        "title": "Gerenciar modelos do Kilo Code",
+        "description": "Adicione modelos e escolha se cada modelo usa raciocínio.",
+        "loadFailed": "Não foi possível carregar os modelos do Kilo Code.",
+        "saveFailed": "Não foi possível salvar os modelos do Kilo Code.",
+        "providerPlaceholder": "provider-id",
+        "modelPlaceholder": "id-do-modelo",
+        "add": "Adicionar",
+        "reasoning": "Raciocínio",
+        "empty": "Ainda não há modelos configurados.",
+        "manageReasoningLevels": "Gerenciar níveis de raciocínio",
+        "reasoningLevelsTitle": "Níveis de raciocínio",
+        "reasoningLevelsDescription": "Adicione ou desative os níveis exibidos para {model}.",
+        "customLevel": "Nível personalizado"
       }
     },
     "diffPreview": {

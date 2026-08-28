@@ -1025,13 +1025,19 @@
         "action": "Connect",
         "editTitle": "Edit provider",
         "editDescription": "Update this provider's API key or base URL.",
-        "saveAction": "Save"
+        "saveAction": "Save",
+        "agentTitle": "Connect a {agent} provider",
+        "agentDescription": "Choose a provider from the models.dev catalog. Credentials are saved to {agent}'s auth.json file.",
+        "agentEditTitle": "Edit {agent} provider",
+        "agentEditDescription": "Update this provider's credentials in {agent}'s native JSON files."
       },
       "customProvider": {
         "title": "Add a custom provider",
         "description": "Define an OpenAI-compatible endpoint. The API key is saved to auth.json; the provider block goes to opencode.json.",
         "action": "Add provider",
-        "idInCatalog": "{providerId} is a known provider — connect it via Connect Provider instead."
+        "idInCatalog": "{providerId} is a known provider — connect it via Connect Provider instead.",
+        "agentTitle": "Add a custom {agent} provider",
+        "agentDescription": "Configure an OpenAI-compatible provider in {agent}'s native JSON files."
       },
       "refreshCatalog": "Refresh catalog",
       "reasoningBadge": "reasoning",
@@ -1085,7 +1091,24 @@
           "question": "Ask you a question",
           "doom_loop": "Trips when the same call repeats three times with identical input"
         }
-      }
+      },
+      "kiloConfiguration": "Kilo Code Configuration",
+      "kiloConfigurationDescription": "Manage Kilo Code providers and models. Changes are saved to Kilo's native JSON files.",
+      "fetchProviderModels": "Fetch provider models",
+      "fetchModelsCredentialsRequired": "Add this provider's base URL and API key before fetching.",
+      "fetchModelsAlreadyConfigured": "All available models are already configured.",
+      "fetchModelsFailed": "Could not fetch models from this provider.",
+      "modelsAdded": "Added {count} models.",
+      "chooseModelsTitle": "Choose models to add",
+      "chooseModelsDescription": "Select the models you want to add for {providerId}. Reasoning is enabled by default.",
+      "searchModels": "Search models…",
+      "selectedModels": "{selected} of {total} selected",
+      "selectAllModels": "Select all",
+      "clearSelectedModels": "Clear",
+      "addSelectedModels": "Add selected models",
+      "newModelIdPlaceholder": "new-model-id",
+      "kiloNativeJsonConfig": "Kilo Code Native JSON Config",
+      "dragProvider": "Drag to reorder {providerId}"
     },
     "openClaw": {
       "gatewayConfig": "Gateway Config",
@@ -2816,7 +2839,8 @@
         "mentionGroupAgent": "Agents",
         "mentionGroupSession": "Sessions",
         "mentionGroupCommit": "Commits",
-        "mentionGroupSkill": "Skills"
+        "mentionGroupSkill": "Skills",
+        "manageKiloModels": "Manage Kilo Code models"
       },
       "messageQueue": {
         "addToQueue": "Queue message",
@@ -3507,6 +3531,21 @@
       "proposedPlan": {
         "title": "Proposed plan",
         "planning": "Planning…"
+      },
+      "kiloModelManager": {
+        "title": "Manage Kilo Code models",
+        "description": "Add models and choose whether each model uses reasoning.",
+        "loadFailed": "Could not load Kilo Code models.",
+        "saveFailed": "Could not save Kilo Code models.",
+        "providerPlaceholder": "provider-id",
+        "modelPlaceholder": "model-id",
+        "add": "Add",
+        "reasoning": "Reasoning",
+        "empty": "No configured models yet.",
+        "manageReasoningLevels": "Manage reasoning levels",
+        "reasoningLevelsTitle": "Reasoning levels",
+        "reasoningLevelsDescription": "Add or disable the levels shown for {model}.",
+        "customLevel": "Custom level"
       }
     },
     "diffPreview": {

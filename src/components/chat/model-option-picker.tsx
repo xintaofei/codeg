@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { ChevronDown } from "lucide-react"
+import { ChevronDown, Settings2 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
 import {
@@ -10,9 +10,14 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 import { ModelOptionList } from "@/components/chat/model-option-list"
+import { KiloChatModelManager } from "@/components/chat/kilo-chat-model-manager"
 import { useScrollbarSafeDismiss } from "@/hooks/use-scrollbar-safe-dismiss"
 import type { ModelOptionGroup } from "@/lib/model-config-groups"
-import type { SessionConfigOptionInfo } from "@/lib/types"
+import {
+  isKiloAgentType,
+  type AgentType,
+  type SessionConfigOptionInfo,
+} from "@/lib/types"
 
 interface ModelOptionPickerProps {
   option: SessionConfigOptionInfo
@@ -20,6 +25,7 @@ interface ModelOptionPickerProps {
    *  headerless group for a long flat list). */
   groups: ModelOptionGroup[]
   onSelect: (configId: string, valueId: string) => void
+  agentType?: AgentType | null
 }
 
 // Wide-form model picker for LONG model lists: a trigger button opening a
@@ -35,9 +41,11 @@ export function ModelOptionPicker({
   option,
   groups,
   onSelect,
+  agentType,
 }: ModelOptionPickerProps) {
   const t = useTranslations("Folder.chat.messageInput")
   const [open, setOpen] = useState(false)
+  const [manageOpen, setManageOpen] = useState(false)
   const { contentRef, onPointerDownOutside, onFocusOutside } =
     useScrollbarSafeDismiss()
   const kind = option.kind.type === "select" ? option.kind : null
@@ -89,8 +97,27 @@ export function ModelOptionPicker({
           listAriaLabel={t("modelListLabel")}
           emptyLabel={t("noModels")}
           autoFocus
+          collapsibleGroups={Boolean(agentType && isKiloAgentType(agentType))}
         />
+        {agentType && isKiloAgentType(agentType) && (
+          <div className="border-t p-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="w-full justify-start"
+              onClick={() => {
+                setOpen(false)
+                setManageOpen(true)
+              }}
+            >
+              <Settings2 className="size-3.5" />
+              {t("manageKiloModels")}
+            </Button>
+          </div>
+        )}
       </PopoverContent>
+      <KiloChatModelManager open={manageOpen} onOpenChange={setManageOpen} />
     </Popover>
   )
 }

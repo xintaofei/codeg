@@ -54,6 +54,8 @@ export interface OpenCodeConnectDialogProps {
   authJsonText: string
   /** When set, the dialog edits this already-connected (catalog) provider. */
   editProviderId?: string | null
+  /** User-facing agent name for forks sharing the OpenCode config schema. */
+  agentName?: string
   onConnect: (
     next: { configText: string; authJsonText: string },
     providerId: string
@@ -73,6 +75,7 @@ export function OpenCodeConnectDialog({
   configText,
   authJsonText,
   editProviderId,
+  agentName,
   onConnect,
 }: OpenCodeConnectDialogProps) {
   const t = useTranslations("AcpAgentSettings")
@@ -182,13 +185,23 @@ export function OpenCodeConnectDialog({
           <DialogTitle className="flex items-center gap-2">
             <Plug className="h-4 w-4" />
             {isEditMode
-              ? t("openCode.connect.editTitle")
-              : t("openCode.connect.title")}
+              ? agentName
+                ? t("openCode.connect.agentEditTitle", { agent: agentName })
+                : t("openCode.connect.editTitle")
+              : agentName
+                ? t("openCode.connect.agentTitle", { agent: agentName })
+                : t("openCode.connect.title")}
           </DialogTitle>
           <DialogDescription>
             {isEditMode
-              ? t("openCode.connect.editDescription")
-              : t("openCode.connect.description")}
+              ? agentName
+                ? t("openCode.connect.agentEditDescription", {
+                    agent: agentName,
+                  })
+                : t("openCode.connect.editDescription")
+              : agentName
+                ? t("openCode.connect.agentDescription", { agent: agentName })
+                : t("openCode.connect.description")}
           </DialogDescription>
         </DialogHeader>
 
@@ -344,6 +357,8 @@ export interface OpenCodeCustomProviderDialogProps {
   catalogIds: string[]
   configText: string
   authJsonText: string
+  /** User-facing agent name for forks sharing the OpenCode config schema. */
+  agentName?: string
   onConnect: (
     next: { configText: string; authJsonText: string },
     providerId: string
@@ -362,6 +377,7 @@ export function OpenCodeCustomProviderDialog({
   catalogIds,
   configText,
   authJsonText,
+  agentName,
   onConnect,
 }: OpenCodeCustomProviderDialogProps) {
   const t = useTranslations("AcpAgentSettings")
@@ -463,10 +479,16 @@ export function OpenCodeCustomProviderDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Plug className="h-4 w-4" />
-            {t("openCode.customProvider.title")}
+            {agentName
+              ? t("openCode.customProvider.agentTitle", { agent: agentName })
+              : t("openCode.customProvider.title")}
           </DialogTitle>
           <DialogDescription>
-            {t("openCode.customProvider.description")}
+            {agentName
+              ? t("openCode.customProvider.agentDescription", {
+                  agent: agentName,
+                })
+              : t("openCode.customProvider.description")}
           </DialogDescription>
         </DialogHeader>
 

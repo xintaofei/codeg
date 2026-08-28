@@ -741,6 +741,10 @@ pub fn build_router(
             post(handlers::acp::acp_fetch_kimi_models),
         )
         .route(
+            "/acp_fetch_kilo_provider_models",
+            post(handlers::acp::acp_fetch_kilo_provider_models),
+        )
+        .route(
             "/acp_update_pi_config",
             post(handlers::acp::acp_update_pi_config),
         )

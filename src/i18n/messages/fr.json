@@ -1025,13 +1025,19 @@
         "action": "Connecter",
         "editTitle": "Modifier le fournisseur",
         "editDescription": "Mettez à jour la clé API ou l''URL de base de ce fournisseur.",
-        "saveAction": "Enregistrer"
+        "saveAction": "Enregistrer",
+        "agentTitle": "Connecter un fournisseur {agent}",
+        "agentDescription": "Choisissez un fournisseur dans le catalogue models.dev. Les identifiants sont enregistrés dans le fichier auth.json de {agent}.",
+        "agentEditTitle": "Modifier le fournisseur {agent}",
+        "agentEditDescription": "Mettez à jour les identifiants de ce fournisseur dans les fichiers JSON natifs de {agent}."
       },
       "customProvider": {
         "title": "Ajouter un fournisseur personnalisé",
         "description": "Définissez un point de terminaison compatible OpenAI. La clé API est enregistrée dans auth.json ; le bloc provider va dans opencode.json.",
         "action": "Ajouter le fournisseur",
-        "idInCatalog": "{providerId} est un fournisseur connu — connectez-le plutôt via Connecter un fournisseur."
+        "idInCatalog": "{providerId} est un fournisseur connu — connectez-le plutôt via Connecter un fournisseur.",
+        "agentTitle": "Ajouter un fournisseur {agent} personnalisé",
+        "agentDescription": "Configurez un fournisseur compatible OpenAI dans les fichiers JSON natifs de {agent}."
       },
       "refreshCatalog": "Actualiser le catalogue",
       "reasoningBadge": "raisonnement",
@@ -1085,7 +1091,24 @@
           "question": "Vous poser une question",
           "doom_loop": "Se déclenche quand le même appel se répète trois fois avec la même entrée"
         }
-      }
+      },
+      "kiloConfiguration": "Configuration de Kilo Code",
+      "kiloConfigurationDescription": "Gérez les fournisseurs et les modèles Kilo Code. Les modifications sont enregistrées dans les fichiers JSON natifs de Kilo.",
+      "fetchProviderModels": "Récupérer les modèles du fournisseur",
+      "fetchModelsCredentialsRequired": "Ajoutez l’URL de base et la clé API de ce fournisseur avant de récupérer les modèles.",
+      "fetchModelsAlreadyConfigured": "Tous les modèles disponibles sont déjà configurés.",
+      "fetchModelsFailed": "Impossible de récupérer les modèles de ce fournisseur.",
+      "modelsAdded": "{count} modèles ajoutés.",
+      "chooseModelsTitle": "Choisir les modèles à ajouter",
+      "chooseModelsDescription": "Sélectionnez les modèles à ajouter pour {providerId}. Le raisonnement est activé par défaut.",
+      "searchModels": "Rechercher des modèles…",
+      "selectedModels": "{selected} sur {total} sélectionnés",
+      "selectAllModels": "Tout sélectionner",
+      "clearSelectedModels": "Effacer la sélection",
+      "addSelectedModels": "Ajouter les modèles sélectionnés",
+      "newModelIdPlaceholder": "nouvel-id-de-modèle",
+      "kiloNativeJsonConfig": "Configuration JSON native de Kilo Code",
+      "dragProvider": "Faire glisser pour réorganiser {providerId}"
     },
     "openClaw": {
       "gatewayConfig": "Configuration Gateway",
@@ -2816,7 +2839,8 @@
         "mentionGroupAgent": "Agents",
         "mentionGroupSession": "Sessions",
         "mentionGroupCommit": "Commits",
-        "mentionGroupSkill": "Compétences"
+        "mentionGroupSkill": "Compétences",
+        "manageKiloModels": "Gérer les modèles Kilo Code"
       },
       "messageQueue": {
         "addToQueue": "Mettre en file",
@@ -3507,6 +3531,21 @@
       "proposedPlan": {
         "title": "Plan proposé",
         "planning": "Planification…"
+      },
+      "kiloModelManager": {
+        "title": "Gérer les modèles Kilo Code",
+        "description": "Ajoutez des modèles et choisissez si chaque modèle utilise le raisonnement.",
+        "loadFailed": "Impossible de charger les modèles Kilo Code.",
+        "saveFailed": "Impossible d’enregistrer les modèles Kilo Code.",
+        "providerPlaceholder": "provider-id",
+        "modelPlaceholder": "id-de-modèle",
+        "add": "Ajouter",
+        "reasoning": "Raisonnement",
+        "empty": "Aucun modèle configuré pour le moment.",
+        "manageReasoningLevels": "Gérer les niveaux de raisonnement",
+        "reasoningLevelsTitle": "Niveaux de raisonnement",
+        "reasoningLevelsDescription": "Ajoutez ou désactivez les niveaux affichés pour {model}.",
+        "customLevel": "Niveau personnalisé"
       }
     },
     "diffPreview": {
