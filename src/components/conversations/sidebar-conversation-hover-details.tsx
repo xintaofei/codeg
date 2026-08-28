@@ -185,7 +185,7 @@ export function SidebarConversationHoverDetails({
             conversation lives NOW, so surface where it originally ran. */}
         {conversation.origin_cwd && (
           <InfoItem
-            label={tSidebar("worktreeRemovedBadge")}
+            label={tSidebar("originalWorkingDirectoryLabel")}
             className="col-span-2"
           >
             <LtrValue>{conversation.origin_cwd}</LtrValue>

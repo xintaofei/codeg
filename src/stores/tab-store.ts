@@ -207,6 +207,14 @@ export interface TabStoreState {
   closeOtherTabs: (tabId: string) => void
   closeAllTabs: () => void
   closeTabsByFolder: (folderId: number) => void
+  /** Retarget an already-bound conversation without changing its stable local
+   * tab id/runtime key. Used by the explicit workspace-move API and by its
+   * cross-client upsert echo. */
+  moveConversationTab: (
+    conversationId: number,
+    targetFolderId: number,
+    workingDir: string
+  ) => void
   switchTab: (tabId: string) => void
   pinTab: (tabId: string) => void
   toggleGroupTile: (groupId: string) => void
@@ -1303,6 +1311,34 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       rawTabs: remaining,
       activeTabId: stillActive ? currentActive : (remaining[0]?.id ?? null),
     })
+    recomputeTabs()
+  },
+
+  moveConversationTab: (conversationId, targetFolderId, workingDir) => {
+    const prevState = get()
+    const index = prevState.rawTabs.findIndex(
+      (tab) => tab.conversationId === conversationId
+    )
+    if (index < 0) return
+    const current = prevState.rawTabs[index]
+    if (
+      current.folderId === targetFolderId &&
+      current.workingDir === workingDir
+    ) {
+      return
+    }
+
+    const next = [...prevState.rawTabs]
+    next[index] = {
+      ...current,
+      folderId: targetFolderId,
+      workingDir,
+    }
+    // Keep `id` deliberately: a draft-origin tab may still carry its `new-*`
+    // runtime identity, and even a canonical tab is keyed throughout the live
+    // React tree. Re-keying either one would remount the panel and discard the
+    // connection/session state we are about to resume in the new cwd.
+    set({ rawTabs: next })
     recomputeTabs()
   },
 
@@ -2602,6 +2638,7 @@ export function useTabActions() {
       closeOtherTabs: s.closeOtherTabs,
       closeAllTabs: s.closeAllTabs,
       closeTabsByFolder: s.closeTabsByFolder,
+      moveConversationTab: s.moveConversationTab,
       switchTab: s.switchTab,
       pinTab: s.pinTab,
       toggleGroupTile: s.toggleGroupTile,
@@ -2752,9 +2789,13 @@ function applyRemoteSnapshot(change: TabsChanged) {
       prev.rawTabs.find(
         (tb) =>
           tb.conversationId === it.conversation_id &&
-          tb.folderId === it.folder_id &&
           tb.agentType === it.agent_type
       )
+    const targetWorkingDir =
+      useAppWorkspaceStore
+        .getState()
+        .allFolders.find((folder) => folder.id === it.folder_id)?.path ??
+      existing?.workingDir
     return {
       id: existing?.id ?? canonicalId,
       kind: "conversation",
@@ -2767,8 +2808,13 @@ function applyRemoteSnapshot(change: TabsChanged) {
       status: existing?.status,
       // Device-local per-tab fields the payload doesn't carry. Rebuilding the
       // tab from the snapshot must not blank them (a bound chat tab would lose
-      // the scratch working dir it is connected in).
-      workingDir: existing?.workingDir,
+      // the scratch working dir it is connected in). A server-authoritative
+      // folder change is the exception: retarget the cwd to that folder while
+      // preserving the tab's stable local id/runtime identity.
+      workingDir:
+        existing && existing.folderId !== it.folder_id
+          ? targetWorkingDir
+          : existing?.workingDir,
       isChat: existing?.isChat,
     }
   })

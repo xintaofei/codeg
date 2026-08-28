@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Circle,
   EllipsisVertical,
+  FolderInput,
   Info,
   Pencil,
   Pin,
@@ -62,6 +63,10 @@ import {
   type ActiveSessionDetails,
 } from "./active-session-details"
 import { SessionDetailsDialog } from "./session-details-dialog"
+import {
+  ConversationMoveDialog,
+  type ConversationMoveTarget,
+} from "./conversation-move-dialog"
 
 interface ConversationDetailHeaderProps {
   tabId: string
@@ -126,6 +131,11 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
       (s.conversations.find((c) => c.id === conversationId)?.pinned_at ??
         null) != null
   )
+  const moveEligible = useAppWorkspaceStore((s) => {
+    if (conversationId == null) return false
+    const summary = s.conversations.find((c) => c.id === conversationId)
+    return summary?.kind === "regular" && summary.parent_id == null
+  })
 
   const [details, setDetails] = useState<ActiveSessionDetails | null>(null)
   // Snapshot the action target when a dialog OPENS. The header is a SINGLE
@@ -143,6 +153,9 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
     tabId: string
     title: string
   } | null>(null)
+  const [moveTarget, setMoveTarget] = useState<ConversationMoveTarget | null>(
+    null
+  )
 
   const persisted = conversationId != null
   const displayTitle =
@@ -204,6 +217,16 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
     if (conversationId == null) return
     setDeleteTarget({ id: conversationId, tabId, title: displayTitle })
   }, [conversationId, tabId, displayTitle])
+
+  const handleMoveOpen = useCallback(() => {
+    if (conversationId == null || !moveEligible) return
+    setMoveTarget({
+      conversationId,
+      folderId,
+      folderPath,
+      title: displayTitle,
+    })
+  }, [conversationId, displayTitle, folderId, folderPath, moveEligible])
 
   const handleDeleteConfirm = useCallback(async () => {
     if (deleteTarget == null) return
@@ -298,6 +321,13 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
             >
               <Info className="h-4 w-4" />
               {tDetails("menuLabel")}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={!moveEligible}
+              onSelect={handleMoveOpen}
+            >
+              <FolderInput className="h-4 w-4" />
+              {t("moveConversation")}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuSub>
@@ -394,6 +424,13 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
           model={details.model}
         />
       )}
+
+      {moveTarget ? (
+        <ConversationMoveDialog
+          target={moveTarget}
+          onClose={() => setMoveTarget(null)}
+        />
+      ) : null}
     </div>
   )
 })

@@ -1062,6 +1062,13 @@ export async function updateConversationTitle(
   return invoke("update_conversation_title", { conversationId, title })
 }
 
+export async function moveConversation(
+  conversationId: number,
+  targetFolderId: number
+): Promise<DbConversationSummary> {
+  return invoke("move_conversation", { conversationId, targetFolderId })
+}
+
 export async function deleteConversation(
   conversationId: number
 ): Promise<void> {

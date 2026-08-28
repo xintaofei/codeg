@@ -24,6 +24,25 @@ fn version_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Hold the same process-wide guard used by every tab-version mutation while a
+/// higher-level operation changes both a conversation and its persisted tab in
+/// one database transaction. Keeping this accessor here prevents callers from
+/// accidentally introducing a second lock that would not serialize against
+/// [`save_all_tabs_cas`].
+pub(crate) async fn lock_version_mutations() -> tokio::sync::MutexGuard<'static, ()> {
+    version_lock().lock().await
+}
+
+/// Advance the tab-set clock inside a caller-owned transaction while
+/// [`lock_version_mutations`] is held. This is split from the public mutation
+/// helpers for compound operations that must commit another table change and
+/// the corresponding tab rewrite atomically.
+pub(crate) async fn bump_version_locked<C: ConnectionTrait>(conn: &C) -> Result<i64, DbError> {
+    let next = get_tabs_version(conn).await? + 1;
+    app_metadata_service::upsert_value(conn, OPENED_TABS_VERSION_KEY, &next.to_string()).await?;
+    Ok(next)
+}
+
 /// Workspace-global logical clock for the open-tab set, stored in the
 /// `app_metadata` KV table (survives restart, stays monotonic). Bumped on every
 /// accepted mutation; used for compare-and-set (lost-update prevention) and for

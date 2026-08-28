@@ -39,7 +39,10 @@ vi.mock("@/stores/app-workspace-store", () => {
   const state = {
     updateConversationLocal: h.updateConversationLocal,
     refreshConversations: h.refreshConversations,
-    conversations: [] as unknown[],
+    conversations: [
+      { id: 1, kind: "regular", parent_id: null, pinned_at: null },
+      { id: 2, kind: "regular", parent_id: null, pinned_at: null },
+    ],
   }
   const useStore = (selector: (s: typeof state) => unknown) => selector(state)
   useStore.getState = () => state
@@ -50,6 +53,17 @@ vi.mock("@/stores/conversation-runtime-store", () => ({
 }))
 vi.mock("./session-details-dialog", () => ({
   SessionDetailsDialog: () => null,
+}))
+vi.mock("./conversation-move-dialog", () => ({
+  ConversationMoveDialog: ({
+    target,
+  }: {
+    target: { conversationId: number; folderPath?: string }
+  }) => (
+    <output data-testid="move-target">
+      {target.conversationId}:{target.folderPath}
+    </output>
+  ),
 }))
 // The header now embeds the folder picker (self-contained, store-driven); stub
 // it so these tests exercise only the header's own menu/dialog logic.
@@ -134,5 +148,18 @@ describe("ConversationDetailHeader dialog target snapshot", () => {
       expect(h.updateConversationTitle).toHaveBeenCalledWith(1, "renamed")
     })
     expect(h.updateConversationTitle).not.toHaveBeenCalledWith(2, "renamed")
+  })
+
+  it("keeps the move target snapshotted when the active tab switches", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
+    const { rerender, getByLabelText, getByRole, getByTestId } = render(
+      withIntl(<ConversationDetailHeader {...A} />)
+    )
+
+    await user.click(getByLabelText("More actions"))
+    await user.click(getByRole("menuitem", { name: "Move to folder" }))
+    rerender(withIntl(<ConversationDetailHeader {...B} />))
+
+    expect(getByTestId("move-target")).toHaveTextContent("1:/a")
   })
 })

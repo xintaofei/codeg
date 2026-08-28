@@ -153,6 +153,48 @@ async fn open_folder_then_list_open_folders_shows_it() {
 }
 
 #[tokio::test]
+async fn move_conversation_route_accepts_camel_case_and_returns_the_new_folder() {
+    let (server, state, _data, _static) = build_test_server_with_state().await;
+    let source = tempfile::tempdir().expect("source tempdir");
+    let target = tempfile::tempdir().expect("target tempdir");
+    let source_path = source.path().to_string_lossy().to_string();
+    let source_folder =
+        codeg_lib::db::service::folder_service::add_folder(&state.db.conn, &source_path)
+            .await
+            .expect("source folder");
+    let target_folder = codeg_lib::db::service::folder_service::add_folder(
+        &state.db.conn,
+        &target.path().to_string_lossy(),
+    )
+    .await
+    .expect("target folder");
+    let conversation = codeg_lib::db::service::conversation_service::create(
+        &state.db.conn,
+        source_folder.id,
+        codeg_lib::models::AgentType::Codex,
+        Some("move over HTTP".into()),
+        None,
+    )
+    .await
+    .expect("conversation");
+
+    let response = server
+        .post("/api/move_conversation")
+        .add_header("authorization", format!("Bearer {TEST_TOKEN}"))
+        .json(&json!({
+            "conversationId": conversation.id,
+            "targetFolderId": target_folder.id,
+        }))
+        .await;
+
+    assert_eq!(response.status_code(), 200, "body: {}", response.text());
+    let body: Value = response.json();
+    assert_eq!(body["id"], conversation.id);
+    assert_eq!(body["folder_id"], target_folder.id);
+    assert_eq!(body["origin_cwd"], source_path);
+}
+
+#[tokio::test]
 async fn acp_find_connection_for_conversation_returns_null_when_none_live() {
     // No live ACP connection is bound to any conversation on a fresh server, so
     // discovery returns JSON `null` (Option::None) with 200 — the frontend

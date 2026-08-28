@@ -703,6 +703,44 @@ describe("TabProvider tab state transitions", () => {
     expect(screen.getByTestId("active")).toHaveTextContent("conv-1-codex-2")
     expect(replacedTabIds).toEqual([])
   })
+
+  it("retargets a moved conversation while preserving its stable tab and runtime ids", () => {
+    renderTabs()
+    openConversationTab(1, 1, "First")
+    act(() => {
+      latestContext?.setTabRuntimeConversationId("conv-1-codex-1", -77)
+      latestContext?.moveConversationTab(1, 2, "/other")
+    })
+
+    const moved = useTabStore
+      .getState()
+      .rawTabs.find((tab) => tab.conversationId === 1)
+    expect(moved).toMatchObject({
+      id: "conv-1-codex-1",
+      conversationId: 1,
+      runtimeConversationId: -77,
+      folderId: 2,
+      workingDir: "/other",
+    })
+    expect(screen.getByTestId("active")).toHaveTextContent("conv-1-codex-1")
+    expect(screen.getByTestId("active-folder")).toHaveTextContent("2")
+  })
+
+  it("does not allocate tab state for an idempotent move or an unopened conversation", () => {
+    renderTabs()
+    openConversationTab(1, 1, "First")
+    act(() => {
+      latestContext?.moveConversationTab(1, 2, "/other")
+    })
+    const afterMove = useTabStore.getState().rawTabs
+
+    act(() => {
+      latestContext?.moveConversationTab(1, 2, "/other")
+      latestContext?.moveConversationTab(999, 2, "/other")
+    })
+
+    expect(useTabStore.getState().rawTabs).toBe(afterMove)
+  })
 })
 
 function tabItem(
@@ -771,6 +809,35 @@ describe("TabProvider cross-client sync", () => {
     })
 
     expect(screen.getByTestId("tabs")).toHaveTextContent("conv-1-codex-1")
+  })
+
+  it("retargets a migrated remote tab without remounting its local runtime", async () => {
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true)],
+      version: 1,
+    })
+    await renderHydrated()
+    act(() => {
+      latestContext?.setTabRuntimeConversationId("conv-1-codex-1", -19)
+    })
+
+    act(() => {
+      tabsChangedHandler?.({
+        version: 2,
+        origin: "server",
+        tabs: [tabItem(2, 1, true)],
+      })
+    })
+
+    const moved = useTabStore.getState().rawTabs[0]
+    expect(moved).toMatchObject({
+      id: "conv-1-codex-1",
+      conversationId: 1,
+      runtimeConversationId: -19,
+      folderId: 2,
+      workingDir: "/other",
+    })
+    expect(screen.getByTestId("active")).toHaveTextContent("conv-1-codex-1")
   })
 
   it("preserves an active chat-mode draft across an inbound remote snapshot", async () => {

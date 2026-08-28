@@ -18,7 +18,8 @@ import {
   Pin,
   PinOff,
   CheckCircle2,
-  FolderX,
+  FolderInput,
+  History,
   Info,
   ChevronRight,
 } from "lucide-react"
@@ -68,6 +69,10 @@ import { ConversationStatusDot } from "./conversation-status-dot"
 import { SessionDetailsDialog } from "./session-details-dialog"
 import { SidebarConversationHoverDetails } from "./sidebar-conversation-hover-details"
 import { AgentIcon } from "@/components/agent-icon"
+import {
+  ConversationMoveDialog,
+  type ConversationMoveTarget,
+} from "./conversation-move-dialog"
 
 /**
  * Horizontal indent added per delegation-nesting level. Chosen so a child's
@@ -220,6 +225,9 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   const [renameValue, setRenameValue] = useState("")
   const [attachTabId, setAttachTabId] = useState<string | null>(null)
   const [hoverOpen, setHoverOpen] = useState(false)
+  const [moveTarget, setMoveTarget] = useState<ConversationMoveTarget | null>(
+    null
+  )
 
   const handleClick = useCallback(() => {
     onSelect(conversation.id, conversation.agent_type, conversation.folder_id)
@@ -430,20 +438,24 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                       {formatConversationTitle(conversation.title) ||
                         t("untitledConversation")}
                     </span>
-                    {/* Re-parented out of a removed worktree: history loads fine,
-                    but "continue" may need a fresh session (the agent's files
-                    were keyed to the old path). */}
+                    {/* The transcript originated in another working directory.
+                        History still loads from there while the next resume uses
+                        the conversation's current folder. */}
                     {conversation.origin_cwd ? (
                       <span
                         className="inline-flex shrink-0 items-center"
-                        title={tSidebar("worktreeRemovedBadge")}
+                        title={tSidebar("originalWorkingDirectoryBadge", {
+                          path: conversation.origin_cwd,
+                        })}
                       >
-                        <FolderX
+                        <History
                           className="h-3 w-3 text-muted-foreground/60"
                           aria-hidden
                         />
                         <span className="sr-only">
-                          {tSidebar("worktreeRemovedBadge")}
+                          {tSidebar("originalWorkingDirectoryBadge", {
+                            path: conversation.origin_cwd,
+                          })}
                         </span>
                       </span>
                     ) : null}
@@ -659,6 +671,23 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
               <Info className="h-4 w-4" />
               {tDetails("menuLabel")}
             </ContextMenuItem>
+            {conversation.kind === "regular" &&
+            conversation.parent_id == null ? (
+              <ContextMenuItem
+                onSelect={() =>
+                  setMoveTarget({
+                    conversationId: conversation.id,
+                    folderId: conversation.folder_id,
+                    title:
+                      formatConversationTitle(conversation.title) ||
+                      t("untitledConversation"),
+                  })
+                }
+              >
+                <FolderInput className="h-4 w-4" />
+                {t("moveConversation")}
+              </ContextMenuItem>
+            ) : null}
             {/* Mirrors the file tree's "add to session": inserts an `@`-style
               mention of THIS conversation into the active session's composer.
               Disabled only when no conversation tab is open — there is no
@@ -771,6 +800,13 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
           summary={conversation}
         />
       )}
+
+      {moveTarget ? (
+        <ConversationMoveDialog
+          target={moveTarget}
+          onClose={() => setMoveTarget(null)}
+        />
+      ) : null}
     </>
   )
 })

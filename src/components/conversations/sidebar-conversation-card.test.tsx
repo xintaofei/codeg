@@ -29,6 +29,14 @@ vi.mock("@/components/agent-icon", () => ({
   },
 }))
 
+vi.mock("./conversation-move-dialog", () => ({
+  ConversationMoveDialog: ({
+    target,
+  }: {
+    target: { conversationId: number; folderId: number; title: string }
+  }) => <output data-testid="move-target">{JSON.stringify(target)}</output>,
+}))
+
 const MINUTE = 60_000
 const NOW = 1_700_000_000_000
 
@@ -207,6 +215,45 @@ describe("SidebarConversationCard pin action", () => {
     fireEvent.contextMenu(getByText("conv-2"))
     fireEvent.click(getByText("Unpin"))
     expect(onTogglePin).toHaveBeenCalledWith(2, false)
+  })
+})
+
+describe("SidebarConversationCard move action", () => {
+  function renderCard(c: DbConversationSummary) {
+    return renderWithIntl(
+      <SidebarConversationCard
+        conversation={c}
+        isSelected={false}
+        timeLabel="5m"
+        onSelect={onSelect}
+        onDoubleClick={onDoubleClick}
+        onRename={onRename}
+        onDelete={onDelete}
+        onStatusChange={onStatusChange}
+      />
+    )
+  }
+
+  it("snapshots a top-level workspace conversation for the move dialog", () => {
+    const { getByText, getByTestId } = renderCard(conv(17))
+    fireEvent.contextMenu(getByText("conv-17"))
+    fireEvent.click(getByText("Move to folder"))
+
+    expect(JSON.parse(getByTestId("move-target").textContent ?? "{}")).toEqual({
+      conversationId: 17,
+      folderId: 1,
+      title: "conv-17",
+    })
+  })
+
+  it.each([
+    { label: "delegation child", summary: { ...conv(18), parent_id: 1 } },
+    { label: "chat", summary: { ...conv(19), kind: "chat" as const } },
+    { label: "loop", summary: { ...conv(20), kind: "loop" as const } },
+  ])("does not offer moving a $label", ({ summary }) => {
+    const { getByText, queryByText } = renderCard(summary)
+    fireEvent.contextMenu(getByText(summary.title ?? ""))
+    expect(queryByText("Move to folder")).toBeNull()
   })
 })
 

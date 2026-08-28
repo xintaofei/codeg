@@ -66,11 +66,11 @@ pub struct Model {
     /// the sidebar's "Pinned" section (sorted by this timestamp descending).
     /// Pinning never bumps `updated_at` — it is a view preference, not activity.
     pub pinned_at: Option<DateTimeUtc>,
-    /// The working directory this conversation actually ran in, when that
-    /// differs from its (current) folder's path — written when a deleted task
-    /// worktree's conversations are re-parented to the project folder. The
-    /// Gemini/Cline/OpenClaw stale-external-id fallback matches on
-    /// `origin_cwd ?? folder.path`. Always NULL for ordinary conversations.
+    /// The first working directory associated with this conversation's native
+    /// transcript when it differs from the current folder. Written by an
+    /// explicit conversation move or when a deleted task worktree is
+    /// re-parented. The Gemini/Cline/OpenClaw stale-external-id fallback matches
+    /// on `origin_cwd ?? folder.path`; moving back to the origin clears it.
     pub origin_cwd: Option<String>,
 }
 

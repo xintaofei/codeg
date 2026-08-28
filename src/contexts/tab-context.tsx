@@ -228,6 +228,11 @@ export interface TabContextValue {
   closeOtherTabs: (tabId: string) => void
   closeAllTabs: () => void
   closeTabsByFolder: (folderId: number) => void
+  moveConversationTab: (
+    conversationId: number,
+    targetFolderId: number,
+    workingDir: string
+  ) => void
   switchTab: (tabId: string) => void
   pinTab: (tabId: string) => void
   toggleGroupTile: (groupId: string) => void
@@ -290,6 +295,7 @@ export function useTabContext(): TabContextValue {
       closeOtherTabs: s.closeOtherTabs,
       closeAllTabs: s.closeAllTabs,
       closeTabsByFolder: s.closeTabsByFolder,
+      moveConversationTab: s.moveConversationTab,
       switchTab: s.switchTab,
       pinTab: s.pinTab,
       toggleGroupTile: s.toggleGroupTile,

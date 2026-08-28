@@ -216,11 +216,11 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        // conversation.origin_cwd: the working directory a conversation actually
-        // ran in when that differs from its (current) folder's path — written when
-        // a deleted task worktree's conversations are re-parented to the project
-        // folder. The Gemini/Cline/OpenClaw stale-external-id fallback matches on
-        // `origin_cwd ?? folder.path`. Always NULL for ordinary conversations.
+        // conversation.origin_cwd: the native transcript's first working
+        // directory when that differs from the current folder — written by an
+        // explicit conversation move or a deleted-worktree re-parent. The
+        // Gemini/Cline/OpenClaw stale-external-id fallback matches on
+        // `origin_cwd ?? folder.path`; moving back to the origin clears it.
         manager
             .alter_table(
                 Table::alter()

@@ -3011,6 +3011,16 @@ export async function updateConversationTitle(
   })
 }
 
+export async function moveConversation(
+  conversationId: number,
+  targetFolderId: number
+): Promise<DbConversationSummary> {
+  return getTransport().call("move_conversation", {
+    conversationId,
+    targetFolderId,
+  })
+}
+
 export async function updateConversationPinned(
   conversationId: number,
   pinned: boolean

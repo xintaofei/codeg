@@ -423,9 +423,9 @@ export interface DbConversationSummary {
   parent_id?: number | null
   parent_tool_use_id?: string | null
   delegation_call_id?: string | null
-  /** Set when the conversation was re-parented out of a removed worktree: the
-   *  worktree path it originally ran in. Drives the "source worktree removed"
-   *  badge. */
+  /** The native transcript's first working directory when it differs from the
+   *  conversation's current folder (explicit move or removed-worktree
+   *  re-parent). */
   origin_cwd?: string | null
 }
 

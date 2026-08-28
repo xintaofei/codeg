@@ -359,6 +359,28 @@ pub async fn update_conversation_title(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MoveConversationParams {
+    pub conversation_id: i32,
+    pub target_folder_id: i32,
+}
+
+pub async fn move_conversation(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<MoveConversationParams>,
+) -> Result<Json<DbConversationSummary>, AppCommandError> {
+    let summary = conv_commands::move_conversation_with_runtime_core(
+        &state.emitter,
+        &state.db.conn,
+        &state.connection_manager,
+        params.conversation_id,
+        params.target_folder_id,
+    )
+    .await?;
+    Ok(Json(summary))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateConversationPinnedParams {
     pub conversation_id: i32,
     pub pinned: bool,

@@ -4,8 +4,9 @@ use std::collections::{HashMap, HashSet};
 use tauri::Manager;
 
 use crate::app_error::AppCommandError;
-use crate::db::entities::conversation;
 use crate::db::entities::folder::FolderKind;
+use crate::db::entities::{conversation, folder, opened_tab};
+use crate::db::error::DbError;
 use crate::db::service::{conversation_service, folder_service, import_service, tab_service};
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
@@ -2201,6 +2202,221 @@ pub async fn update_conversation_title_core(
         .map_err(AppCommandError::from)
 }
 
+#[derive(Debug)]
+pub(crate) struct MoveConversationOutcome {
+    pub summary: DbConversationSummary,
+    pub tab_change: Option<(i64, Vec<OpenedTab>)>,
+}
+
+fn validate_conversation_move_models(
+    conversation: &conversation::Model,
+    target: &folder::Model,
+) -> Result<(), AppCommandError> {
+    if conversation.kind != conversation::ConversationKind::Regular
+        || conversation.parent_id.is_some()
+    {
+        return Err(AppCommandError::invalid_input(
+            "Only top-level workspace conversations can be moved",
+        ));
+    }
+    if target.kind == FolderKind::Chat {
+        return Err(AppCommandError::invalid_input(
+            "A conversation cannot be moved into a chat scratch folder",
+        ));
+    }
+    Ok(())
+}
+
+/// Read-only validation performed before an idle ACP connection is detached.
+/// The transaction repeats these checks so a concurrent delete cannot turn the
+/// subsequent write into a partial move.
+async fn validate_conversation_move_request(
+    conn: &sea_orm::DatabaseConnection,
+    conversation_id: i32,
+    target_folder_id: i32,
+) -> Result<(conversation::Model, folder::Model), AppCommandError> {
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+    let conversation = conversation::Entity::find_by_id(conversation_id)
+        .filter(conversation::Column::DeletedAt.is_null())
+        .one(conn)
+        .await
+        .map_err(DbError::from)?
+        .ok_or_else(|| AppCommandError::not_found("Conversation not found"))?;
+    let target = folder::Entity::find_by_id(target_folder_id)
+        .filter(folder::Column::DeletedAt.is_null())
+        .one(conn)
+        .await
+        .map_err(DbError::from)?
+        .ok_or_else(|| AppCommandError::not_found("Target folder not found"))?;
+
+    validate_conversation_move_models(&conversation, &target)?;
+    if conversation.folder_id != target_folder_id {
+        let metadata = tokio::fs::metadata(&target.path).await.map_err(|error| {
+            AppCommandError::invalid_input("Target folder is not accessible")
+                .with_detail(error.to_string())
+        })?;
+        if !metadata.is_dir() {
+            return Err(AppCommandError::invalid_input(
+                "Target folder path is not a directory",
+            ));
+        }
+    }
+    Ok((conversation, target))
+}
+
+/// Atomically rebind one historical conversation and its persisted open tab to
+/// another registered workspace folder.
+///
+/// The native transcript stays where the agent wrote it. `origin_cwd` keeps the
+/// first real working directory for path-keyed agent fallbacks, while the new
+/// folder becomes the cwd passed to the next ACP resume. Moving back to that
+/// original directory clears the marker. The tab version advances in the same
+/// SQLite transaction, preventing a stale client save from restoring the old
+/// folder id after the move.
+pub(crate) async fn move_conversation_core(
+    conn: &sea_orm::DatabaseConnection,
+    conversation_id: i32,
+    target_folder_id: i32,
+) -> Result<MoveConversationOutcome, AppCommandError> {
+    use chrono::Utc;
+    use sea_orm::sea_query::Expr;
+    use sea_orm::{
+        ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, Set,
+        TransactionTrait,
+    };
+
+    let (preflight, _) =
+        validate_conversation_move_request(conn, conversation_id, target_folder_id).await?;
+    if preflight.folder_id == target_folder_id {
+        return Ok(MoveConversationOutcome {
+            summary: conversation_service::get_by_id(conn, conversation_id)
+                .await
+                .map_err(AppCommandError::from)?,
+            tab_change: None,
+        });
+    }
+
+    let _tab_guard = tab_service::lock_version_mutations().await;
+    let txn = conn.begin().await.map_err(DbError::from)?;
+
+    let conversation = conversation::Entity::find_by_id(conversation_id)
+        .filter(conversation::Column::DeletedAt.is_null())
+        .one(&txn)
+        .await
+        .map_err(DbError::from)?
+        .ok_or_else(|| AppCommandError::not_found("Conversation not found"))?;
+    let target = folder::Entity::find_by_id(target_folder_id)
+        .filter(folder::Column::DeletedAt.is_null())
+        .one(&txn)
+        .await
+        .map_err(DbError::from)?
+        .ok_or_else(|| AppCommandError::not_found("Target folder not found"))?;
+    validate_conversation_move_models(&conversation, &target)?;
+
+    let source_path = folder::Entity::find_by_id(conversation.folder_id)
+        .one(&txn)
+        .await
+        .map_err(DbError::from)?
+        .map(|source| source.path);
+    let original_cwd = conversation.origin_cwd.clone().or(source_path);
+    let next_origin_cwd = original_cwd.filter(|path| !path_eq_for_matching(path, &target.path));
+
+    let mut active = conversation.into_active_model();
+    active.folder_id = Set(target_folder_id);
+    active.origin_cwd = Set(next_origin_cwd);
+    active.update(&txn).await.map_err(DbError::from)?;
+
+    opened_tab::Entity::update_many()
+        .col_expr(opened_tab::Column::FolderId, Expr::value(target_folder_id))
+        .col_expr(opened_tab::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(opened_tab::Column::ConversationId.eq(conversation_id))
+        .exec(&txn)
+        .await
+        .map_err(DbError::from)?;
+    let tabs_version = tab_service::bump_version_locked(&txn)
+        .await
+        .map_err(AppCommandError::from)?;
+    let tabs = tab_service::list_all_tabs(&txn)
+        .await
+        .map_err(AppCommandError::from)?;
+    txn.commit().await.map_err(DbError::from)?;
+
+    let summary = conversation_service::get_by_id(conn, conversation_id)
+        .await
+        .map_err(AppCommandError::from)?;
+    Ok(MoveConversationOutcome {
+        summary,
+        tab_change: Some((tabs_version, tabs)),
+    })
+}
+
+/// User-facing move orchestration: reject an in-flight turn, detach an idle
+/// ACP process whose cwd is immutable for its lifetime, then commit and
+/// broadcast the new conversation/tab location.
+pub async fn move_conversation_with_runtime_core(
+    emitter: &EventEmitter,
+    conn: &sea_orm::DatabaseConnection,
+    manager: &crate::acp::manager::ConnectionManager,
+    conversation_id: i32,
+    target_folder_id: i32,
+) -> Result<DbConversationSummary, AppCommandError> {
+    let (preflight, _) =
+        validate_conversation_move_request(conn, conversation_id, target_folder_id).await?;
+    if preflight.folder_id == target_folder_id {
+        return conversation_service::get_by_id(conn, conversation_id)
+            .await
+            .map_err(AppCommandError::from);
+    }
+    if manager
+        .pending_user_message_for_conversation(conversation_id)
+        .await
+        .is_some()
+    {
+        return Err(AppCommandError::new(
+            crate::app_error::AppErrorCode::TurnInProgress,
+            "Wait for the current turn to finish before moving this conversation",
+        ));
+    }
+    if let Some(connection_id) = manager
+        .find_connection_by_conversation_id(conversation_id)
+        .await
+    {
+        manager.disconnect(&connection_id).await.map_err(|error| {
+            AppCommandError::task_execution_failed(
+                "Failed to detach the conversation before moving it",
+            )
+            .with_detail(error.to_string())
+        })?;
+    }
+
+    let outcome = move_conversation_core(conn, conversation_id, target_folder_id).await?;
+    if let Some((version, tabs)) = outcome.tab_change {
+        emit_conversation_upsert(emitter, conn, conversation_id).await;
+        emit_tabs_changed(emitter, version, tabs, "server".to_string());
+    }
+    Ok(outcome.summary)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn move_conversation(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    manager: tauri::State<'_, crate::acp::manager::ConnectionManager>,
+    conversation_id: i32,
+    target_folder_id: i32,
+) -> Result<DbConversationSummary, AppCommandError> {
+    move_conversation_with_runtime_core(
+        &EventEmitter::Tauri(app),
+        &db.conn,
+        &manager,
+        conversation_id,
+        target_folder_id,
+    )
+    .await
+}
+
 /// Re-read the persisted conversation title and best-effort sync it to any
 /// bound chat-channel threads (e.g. Telegram forum topics). Lives in
 /// `commands/` so web handlers route through a `_core` helper instead of
@@ -3966,6 +4182,651 @@ mod tests {
             is_active: false,
             is_pinned: true,
         }
+    }
+
+    async fn conversation_row(
+        db: &crate::db::AppDatabase,
+        conversation_id: i32,
+    ) -> conversation::Model {
+        use sea_orm::EntityTrait;
+
+        conversation::Entity::find_by_id(conversation_id)
+            .one(&db.conn)
+            .await
+            .expect("query conversation")
+            .expect("conversation row")
+    }
+
+    #[tokio::test]
+    async fn move_conversation_core_rebinds_existing_source_and_open_tab_atomically() {
+        let db = fresh_in_memory_db().await;
+        let source = tempfile::tempdir().expect("source tempdir");
+        let target = tempfile::tempdir().expect("target tempdir");
+        let unrelated = tempfile::tempdir().expect("unrelated tempdir");
+        let source_path = source.path().to_string_lossy().to_string();
+        let target_path = target.path().to_string_lossy().to_string();
+        let source_id = seed_folder(&db, &source_path).await;
+        let target_id = seed_folder(&db, &target_path).await;
+        let unrelated_id = seed_folder(&db, &unrelated.path().to_string_lossy()).await;
+        let moved_id = create_conversation_core(
+            &db.conn,
+            source_id,
+            AgentType::Codex,
+            Some("move me".into()),
+        )
+        .await
+        .expect("moved conversation");
+        let unrelated_conversation = create_conversation_core(
+            &db.conn,
+            unrelated_id,
+            AgentType::ClaudeCode,
+            Some("leave me".into()),
+        )
+        .await
+        .expect("unrelated conversation");
+        let before_updated_at = conversation_row(&db, moved_id).await.updated_at;
+
+        let saved = save_opened_tabs_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            vec![
+                conv_tab(source_id, moved_id, AgentType::Codex),
+                conv_tab(unrelated_id, unrelated_conversation, AgentType::ClaudeCode),
+            ],
+            0,
+            "test".into(),
+        )
+        .await
+        .expect("seed tabs");
+        assert_eq!(saved.version, 1);
+
+        let outcome = move_conversation_core(&db.conn, moved_id, target_id)
+            .await
+            .expect("move conversation");
+        assert_eq!(outcome.summary.folder_id, target_id);
+        assert_eq!(
+            outcome.summary.origin_cwd.as_deref(),
+            Some(source_path.as_str())
+        );
+        assert_eq!(outcome.summary.updated_at, before_updated_at);
+        let (version, tabs) = outcome.tab_change.expect("move changes tabs");
+        assert_eq!(version, 2);
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(
+            tabs.iter()
+                .find(|tab| tab.conversation_id == Some(moved_id))
+                .expect("moved tab")
+                .folder_id,
+            target_id
+        );
+        assert_eq!(
+            tabs.iter()
+                .find(|tab| tab.conversation_id == Some(unrelated_conversation))
+                .expect("unrelated tab")
+                .folder_id,
+            unrelated_id,
+            "moving one conversation must not rewrite another tab"
+        );
+
+        let persisted = list_opened_tabs_core(&db.conn)
+            .await
+            .expect("persisted tabs");
+        assert_eq!(persisted.version, 2);
+        assert_eq!(persisted.items.len(), tabs.len());
+        assert_eq!(
+            persisted
+                .items
+                .iter()
+                .map(|tab| (tab.conversation_id, tab.folder_id))
+                .collect::<Vec<_>>(),
+            tabs.iter()
+                .map(|tab| (tab.conversation_id, tab.folder_id))
+                .collect::<Vec<_>>()
+        );
+
+        // A client save prepared before the move cannot restore the old folder.
+        let stale = save_opened_tabs_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            vec![
+                conv_tab(source_id, moved_id, AgentType::Codex),
+                conv_tab(unrelated_id, unrelated_conversation, AgentType::ClaudeCode),
+            ],
+            1,
+            "stale-client".into(),
+        )
+        .await
+        .expect("stale save returns current truth");
+        assert!(!stale.accepted);
+        assert_eq!(stale.version, 2);
+        assert_eq!(
+            stale
+                .tabs
+                .iter()
+                .find(|tab| tab.conversation_id == Some(moved_id))
+                .expect("moved tab survives")
+                .folder_id,
+            target_id
+        );
+    }
+
+    #[tokio::test]
+    async fn move_conversation_core_allows_a_missing_source_directory() {
+        let db = fresh_in_memory_db().await;
+        let source = tempfile::tempdir().expect("source tempdir");
+        let source_path = source.path().to_string_lossy().to_string();
+        let source_id = seed_folder(&db, &source_path).await;
+        let target = tempfile::tempdir().expect("target tempdir");
+        let target_id = seed_folder(&db, &target.path().to_string_lossy()).await;
+        let conversation_id = create_conversation_core(
+            &db.conn,
+            source_id,
+            AgentType::Gemini,
+            Some("orphaned workspace".into()),
+        )
+        .await
+        .expect("conversation");
+        drop(source);
+        assert!(!std::path::Path::new(&source_path).exists());
+
+        let outcome = move_conversation_core(&db.conn, conversation_id, target_id)
+            .await
+            .expect("a missing old directory must not block migration");
+        assert_eq!(outcome.summary.folder_id, target_id);
+        assert_eq!(
+            outcome.summary.origin_cwd.as_deref(),
+            Some(source_path.as_str())
+        );
+        assert_eq!(
+            outcome.tab_change.expect("version barrier").0,
+            1,
+            "a move without an open tab still advances the tab CAS barrier"
+        );
+    }
+
+    #[tokio::test]
+    async fn move_conversation_core_preserves_first_origin_and_clears_it_on_return() {
+        let db = fresh_in_memory_db().await;
+        let original = tempfile::tempdir().expect("original tempdir");
+        let second = tempfile::tempdir().expect("second tempdir");
+        let third = tempfile::tempdir().expect("third tempdir");
+        let original_path = original.path().to_string_lossy().to_string();
+        let original_id = seed_folder(&db, &original_path).await;
+        let second_id = seed_folder(&db, &second.path().to_string_lossy()).await;
+        let third_id = seed_folder(&db, &third.path().to_string_lossy()).await;
+        let conversation_id = create_conversation_core(
+            &db.conn,
+            original_id,
+            AgentType::ClaudeCode,
+            Some("round trip".into()),
+        )
+        .await
+        .expect("conversation");
+
+        let second_move = move_conversation_core(&db.conn, conversation_id, second_id)
+            .await
+            .expect("first move");
+        assert_eq!(
+            second_move.summary.origin_cwd.as_deref(),
+            Some(original_path.as_str())
+        );
+
+        let third_move = move_conversation_core(&db.conn, conversation_id, third_id)
+            .await
+            .expect("second move");
+        assert_eq!(third_move.summary.folder_id, third_id);
+        assert_eq!(
+            third_move.summary.origin_cwd.as_deref(),
+            Some(original_path.as_str()),
+            "later moves must retain the transcript's first working directory"
+        );
+
+        let returned = move_conversation_core(&db.conn, conversation_id, original_id)
+            .await
+            .expect("move back to origin");
+        assert_eq!(returned.summary.folder_id, original_id);
+        assert_eq!(returned.summary.origin_cwd, None);
+    }
+
+    #[tokio::test]
+    async fn move_conversation_core_same_folder_is_a_true_noop_even_if_path_is_missing() {
+        let db = fresh_in_memory_db().await;
+        let source_id = seed_folder(&db, "/definitely/missing/codeg-move-noop").await;
+        let conversation_id =
+            create_conversation_core(&db.conn, source_id, AgentType::Codex, Some("stay".into()))
+                .await
+                .expect("conversation");
+        save_opened_tabs_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            vec![conv_tab(source_id, conversation_id, AgentType::Codex)],
+            0,
+            "test".into(),
+        )
+        .await
+        .expect("seed tab");
+
+        let outcome = move_conversation_core(&db.conn, conversation_id, source_id)
+            .await
+            .expect("same-folder move");
+        assert_eq!(outcome.summary.folder_id, source_id);
+        assert_eq!(outcome.summary.origin_cwd, None);
+        assert!(outcome.tab_change.is_none());
+        assert_eq!(
+            list_opened_tabs_core(&db.conn).await.expect("tabs").version,
+            1,
+            "a no-op must not invalidate every client's tab version"
+        );
+    }
+
+    #[tokio::test]
+    async fn move_conversation_core_rejects_missing_file_and_deleted_targets_without_writes() {
+        let db = fresh_in_memory_db().await;
+        let source = tempfile::tempdir().expect("source tempdir");
+        let source_id = seed_folder(&db, &source.path().to_string_lossy()).await;
+        let conversation_id = create_conversation_core(
+            &db.conn,
+            source_id,
+            AgentType::Codex,
+            Some("do not move".into()),
+        )
+        .await
+        .expect("conversation");
+
+        let missing_path = source.path().join("missing-target");
+        let missing_id = seed_folder(&db, &missing_path.to_string_lossy()).await;
+        let missing_error = move_conversation_core(&db.conn, conversation_id, missing_id)
+            .await
+            .expect_err("missing target path");
+        assert!(matches!(
+            missing_error.code,
+            crate::app_error::AppErrorCode::InvalidInput
+        ));
+
+        let file_path = source.path().join("plain-file");
+        std::fs::write(&file_path, "not a directory").expect("write target file");
+        let file_id = seed_folder(&db, &file_path.to_string_lossy()).await;
+        let file_error = move_conversation_core(&db.conn, conversation_id, file_id)
+            .await
+            .expect_err("file target");
+        assert!(matches!(
+            file_error.code,
+            crate::app_error::AppErrorCode::InvalidInput
+        ));
+        assert!(file_error.message.contains("not a directory"));
+
+        let deleted = tempfile::tempdir().expect("deleted target tempdir");
+        let deleted_id = seed_folder(&db, &deleted.path().to_string_lossy()).await;
+        folder_service::soft_delete_folder(&db.conn, deleted_id)
+            .await
+            .expect("soft-delete target");
+        let deleted_error = move_conversation_core(&db.conn, conversation_id, deleted_id)
+            .await
+            .expect_err("deleted target");
+        assert!(matches!(
+            deleted_error.code,
+            crate::app_error::AppErrorCode::NotFound
+        ));
+
+        let after = conversation_service::get_by_id(&db.conn, conversation_id)
+            .await
+            .expect("conversation unchanged");
+        assert_eq!(after.folder_id, source_id);
+        assert_eq!(after.origin_cwd, None);
+        assert_eq!(
+            list_opened_tabs_core(&db.conn).await.expect("tabs").version,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn move_conversation_core_rejects_chat_loop_delegate_and_chat_target() {
+        use crate::acp::delegation::spawner::DelegationLink;
+        use sea_orm::{ActiveModelTrait, EntityTrait, IntoActiveModel, Set};
+
+        let db = fresh_in_memory_db().await;
+        let source = tempfile::tempdir().expect("source tempdir");
+        let target = tempfile::tempdir().expect("target tempdir");
+        let chat_target = tempfile::tempdir().expect("chat target tempdir");
+        let source_id = seed_folder(&db, &source.path().to_string_lossy()).await;
+        let target_id = seed_folder(&db, &target.path().to_string_lossy()).await;
+        let chat_target_id =
+            folder_service::add_chat_folder(&db.conn, &chat_target.path().to_string_lossy())
+                .await
+                .expect("chat folder")
+                .id;
+
+        let chat = conversation_service::create_chat(
+            &db.conn,
+            source_id,
+            AgentType::Codex,
+            Some("chat".into()),
+            None,
+        )
+        .await
+        .expect("chat conversation");
+        let parent = conversation_service::create(
+            &db.conn,
+            source_id,
+            AgentType::ClaudeCode,
+            Some("parent".into()),
+            None,
+        )
+        .await
+        .expect("parent");
+        let delegate = conversation_service::create_with_delegation(
+            &db.conn,
+            source_id,
+            AgentType::Codex,
+            Some("delegate".into()),
+            None,
+            Some(DelegationLink {
+                parent_conversation_id: parent.id,
+                parent_tool_use_id: "tool-1".into(),
+                delegation_call_id: "call-1".into(),
+            }),
+        )
+        .await
+        .expect("delegate");
+        let loop_conversation = conversation_service::create(
+            &db.conn,
+            source_id,
+            AgentType::Gemini,
+            Some("loop".into()),
+            None,
+        )
+        .await
+        .expect("loop seed");
+        let mut loop_active = conversation::Entity::find_by_id(loop_conversation.id)
+            .one(&db.conn)
+            .await
+            .expect("query loop")
+            .expect("loop row")
+            .into_active_model();
+        loop_active.kind = Set(conversation::ConversationKind::Loop);
+        loop_active.update(&db.conn).await.expect("mark loop");
+
+        for conversation_id in [chat.id, delegate.id, loop_conversation.id] {
+            let error = move_conversation_core(&db.conn, conversation_id, target_id)
+                .await
+                .expect_err("non-workspace conversation must be rejected");
+            assert!(matches!(
+                error.code,
+                crate::app_error::AppErrorCode::InvalidInput
+            ));
+            assert_eq!(
+                conversation_row(&db, conversation_id).await.folder_id,
+                source_id
+            );
+        }
+
+        let target_error = move_conversation_core(&db.conn, parent.id, chat_target_id)
+            .await
+            .expect_err("chat scratch target must be rejected");
+        assert!(matches!(
+            target_error.code,
+            crate::app_error::AppErrorCode::InvalidInput
+        ));
+        assert_eq!(conversation_row(&db, parent.id).await.folder_id, source_id);
+    }
+
+    #[tokio::test]
+    async fn move_conversation_core_rejects_missing_or_deleted_conversation() {
+        let db = fresh_in_memory_db().await;
+        let source = tempfile::tempdir().expect("source tempdir");
+        let target = tempfile::tempdir().expect("target tempdir");
+        let source_id = seed_folder(&db, &source.path().to_string_lossy()).await;
+        let target_id = seed_folder(&db, &target.path().to_string_lossy()).await;
+
+        let missing = move_conversation_core(&db.conn, 999_999, target_id)
+            .await
+            .expect_err("missing conversation");
+        assert!(matches!(
+            missing.code,
+            crate::app_error::AppErrorCode::NotFound
+        ));
+
+        let deleted_id = create_conversation_core(
+            &db.conn,
+            source_id,
+            AgentType::Codex,
+            Some("deleted".into()),
+        )
+        .await
+        .expect("conversation");
+        delete_conversation_core(&db.conn, deleted_id)
+            .await
+            .expect("soft delete conversation");
+        let deleted = move_conversation_core(&db.conn, deleted_id, target_id)
+            .await
+            .expect_err("deleted conversation");
+        assert!(matches!(
+            deleted.code,
+            crate::app_error::AppErrorCode::NotFound
+        ));
+    }
+
+    #[tokio::test]
+    async fn move_conversation_runtime_emits_authoritative_conversation_then_tabs() {
+        let db = fresh_in_memory_db().await;
+        let source = tempfile::tempdir().expect("source tempdir");
+        let target = tempfile::tempdir().expect("target tempdir");
+        let source_path = source.path().to_string_lossy().to_string();
+        let source_id = seed_folder(&db, &source_path).await;
+        let target_id = seed_folder(&db, &target.path().to_string_lossy()).await;
+        let conversation_id = create_conversation_core(
+            &db.conn,
+            source_id,
+            AgentType::Codex,
+            Some("broadcast move".into()),
+        )
+        .await
+        .expect("conversation");
+        save_opened_tabs_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            vec![conv_tab(source_id, conversation_id, AgentType::Codex)],
+            0,
+            "test".into(),
+        )
+        .await
+        .expect("seed tab");
+        let manager = crate::acp::manager::ConnectionManager::new();
+        let (broadcaster, emitter) = sync_test_emitter();
+        let mut events = broadcaster.subscribe();
+
+        let summary = move_conversation_with_runtime_core(
+            &emitter,
+            &db.conn,
+            &manager,
+            conversation_id,
+            target_id,
+        )
+        .await
+        .expect("runtime move");
+        assert_eq!(summary.folder_id, target_id);
+
+        let conversation_event = events.try_recv().expect("conversation event");
+        assert_eq!(conversation_event.channel, CONVERSATION_CHANGED_EVENT);
+        assert_eq!(conversation_event.payload["kind"], "upsert");
+        assert_eq!(
+            conversation_event.payload["summary"]["folder_id"],
+            target_id
+        );
+        assert_eq!(
+            conversation_event.payload["summary"]["origin_cwd"],
+            source_path
+        );
+
+        let tabs_event = events.try_recv().expect("tabs event");
+        assert_eq!(tabs_event.channel, TABS_CHANGED_EVENT);
+        assert_eq!(tabs_event.payload["version"], 2);
+        assert_eq!(tabs_event.payload["origin"], "server");
+        assert_eq!(tabs_event.payload["tabs"][0]["folder_id"], target_id);
+        assert!(events.try_recv().is_err(), "move emits exactly two events");
+    }
+
+    #[tokio::test]
+    async fn move_conversation_runtime_disconnects_an_idle_bound_connection() {
+        let db = fresh_in_memory_db().await;
+        let source = tempfile::tempdir().expect("source tempdir");
+        let target = tempfile::tempdir().expect("target tempdir");
+        let source_id = seed_folder(&db, &source.path().to_string_lossy()).await;
+        let target_id = seed_folder(&db, &target.path().to_string_lossy()).await;
+        let conversation_id =
+            create_conversation_core(&db.conn, source_id, AgentType::Codex, Some("idle".into()))
+                .await
+                .expect("conversation");
+        let manager = crate::acp::manager::ConnectionManager::new();
+        let mut commands = manager
+            .insert_test_connection_live(
+                "move-idle",
+                AgentType::Codex,
+                Some(source.path().to_path_buf()),
+                EventEmitter::Noop,
+            )
+            .await;
+        {
+            let state = manager.get_state("move-idle").await.expect("state");
+            state.write().await.conversation_id = Some(conversation_id);
+        }
+
+        move_conversation_with_runtime_core(
+            &EventEmitter::Noop,
+            &db.conn,
+            &manager,
+            conversation_id,
+            target_id,
+        )
+        .await
+        .expect("move idle conversation");
+        assert!(
+            manager
+                .find_connection_by_conversation_id(conversation_id)
+                .await
+                .is_none(),
+            "the old-cwd ACP process must be detached"
+        );
+        let command = tokio::time::timeout(std::time::Duration::from_secs(1), commands.recv())
+            .await
+            .expect("disconnect command timeout")
+            .expect("disconnect command");
+        assert!(matches!(
+            command,
+            crate::acp::connection::ConnectionCommand::Disconnect
+        ));
+    }
+
+    #[tokio::test]
+    async fn move_conversation_runtime_rejects_an_in_flight_turn_without_side_effects() {
+        let db = fresh_in_memory_db().await;
+        let source = tempfile::tempdir().expect("source tempdir");
+        let target = tempfile::tempdir().expect("target tempdir");
+        let source_id = seed_folder(&db, &source.path().to_string_lossy()).await;
+        let target_id = seed_folder(&db, &target.path().to_string_lossy()).await;
+        let conversation_id =
+            create_conversation_core(&db.conn, source_id, AgentType::Codex, Some("busy".into()))
+                .await
+                .expect("conversation");
+        let manager = crate::acp::manager::ConnectionManager::new();
+        let mut commands = manager
+            .insert_test_connection_live(
+                "move-busy",
+                AgentType::Codex,
+                Some(source.path().to_path_buf()),
+                EventEmitter::Noop,
+            )
+            .await;
+        {
+            let state = manager.get_state("move-busy").await.expect("state");
+            let mut state = state.write().await;
+            state.conversation_id = Some(conversation_id);
+            state.pending_user_message = Some(pending_text("message-1", "working"));
+            state.pending_user_message_started_at = Some(chrono::Utc::now());
+        }
+        let (broadcaster, emitter) = sync_test_emitter();
+        let mut events = broadcaster.subscribe();
+
+        let error = move_conversation_with_runtime_core(
+            &emitter,
+            &db.conn,
+            &manager,
+            conversation_id,
+            target_id,
+        )
+        .await
+        .expect_err("an in-flight turn must block migration");
+        assert!(matches!(
+            error.code,
+            crate::app_error::AppErrorCode::TurnInProgress
+        ));
+        assert_eq!(
+            conversation_row(&db, conversation_id).await.folder_id,
+            source_id
+        );
+        assert_eq!(
+            list_opened_tabs_core(&db.conn).await.expect("tabs").version,
+            0
+        );
+        assert_eq!(
+            manager
+                .find_connection_by_conversation_id(conversation_id)
+                .await
+                .as_deref(),
+            Some("move-busy"),
+            "a rejected move must leave the live ACP connection intact"
+        );
+        assert!(commands.try_recv().is_err());
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn move_conversation_runtime_same_folder_does_not_disconnect_a_busy_connection() {
+        let db = fresh_in_memory_db().await;
+        let source = tempfile::tempdir().expect("source tempdir");
+        let source_id = seed_folder(&db, &source.path().to_string_lossy()).await;
+        let conversation_id = create_conversation_core(
+            &db.conn,
+            source_id,
+            AgentType::Codex,
+            Some("same folder".into()),
+        )
+        .await
+        .expect("conversation");
+        let manager = crate::acp::manager::ConnectionManager::new();
+        let mut commands = manager
+            .insert_test_connection_live(
+                "move-noop",
+                AgentType::Codex,
+                Some(source.path().to_path_buf()),
+                EventEmitter::Noop,
+            )
+            .await;
+        {
+            let state = manager.get_state("move-noop").await.expect("state");
+            let mut state = state.write().await;
+            state.conversation_id = Some(conversation_id);
+            state.pending_user_message = Some(pending_text("message-1", "working"));
+        }
+
+        let summary = move_conversation_with_runtime_core(
+            &EventEmitter::Noop,
+            &db.conn,
+            &manager,
+            conversation_id,
+            source_id,
+        )
+        .await
+        .expect("same-folder move is a no-op");
+        assert_eq!(summary.folder_id, source_id);
+        assert_eq!(
+            manager
+                .find_connection_by_conversation_id(conversation_id)
+                .await
+                .as_deref(),
+            Some("move-noop")
+        );
+        assert!(commands.try_recv().is_err());
     }
 
     #[tokio::test]

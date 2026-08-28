@@ -31,6 +31,7 @@ const h = vi.hoisted(() => ({
   listOpenFolders: vi.fn(async () => [] as unknown[]),
   listAllFolders: vi.fn(async () => [] as unknown[]),
   closeTabsByFolder: vi.fn(),
+  moveConversationTab: vi.fn(),
 }))
 
 // The folder-delete branch reaches into the tab store imperatively; stub it so
@@ -38,7 +39,10 @@ const h = vi.hoisted(() => ({
 // sidebar's own remove-folder path).
 vi.mock("@/stores/tab-store", () => ({
   useTabStore: {
-    getState: () => ({ closeTabsByFolder: h.closeTabsByFolder }),
+    getState: () => ({
+      closeTabsByFolder: h.closeTabsByFolder,
+      moveConversationTab: h.moveConversationTab,
+    }),
   },
 }))
 
@@ -214,6 +218,7 @@ beforeEach(() => {
   h.listAllFolders.mockClear()
   h.listAllFolders.mockResolvedValue([])
   h.closeTabsByFolder.mockClear()
+  h.moveConversationTab.mockClear()
   // The store is a module-level singleton: restore pristine state (including
   // the delete tombstones) so state can't leak between tests.
   resetAppWorkspaceStore()
@@ -248,6 +253,25 @@ describe("AppWorkspaceProvider conversation://changed sync", () => {
     expect(screen.getByTestId("statuses")).toHaveTextContent(
       "2:in_progress,1:pending_review"
     )
+  })
+
+  it("retargets an open tab when an upsert moves its conversation to another folder", async () => {
+    await mountProvider()
+    const source = makeFolder({ id: 1, path: "/repo/source" })
+    const target = makeFolder({ id: 2, path: "/repo/target" })
+    act(() => {
+      useAppWorkspaceStore.setState({
+        folders: [source, target],
+        allFolders: [source, target],
+      })
+    })
+    emit({ kind: "upsert", summary: makeSummary({ id: 7, folder_id: 1 }) })
+    h.moveConversationTab.mockClear()
+
+    emit({ kind: "upsert", summary: makeSummary({ id: 7, folder_id: 2 }) })
+
+    expect(h.moveConversationTab).toHaveBeenCalledOnce()
+    expect(h.moveConversationTab).toHaveBeenCalledWith(7, 2, "/repo/target")
   })
 
   it("ignores delegation children (parent_id set) — not sidebar rows", async () => {

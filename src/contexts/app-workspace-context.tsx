@@ -63,6 +63,24 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
           const store = useAppWorkspaceStore.getState()
           if (change.kind === "upsert") {
             store.applyConversationUpsert(change.summary)
+            // A workspace migration changes the persisted conversation and its
+            // open-tab row in one backend transaction. Retarget this window's
+            // device-local tab too (notably its workingDir, which is absent from
+            // `tabs://changed`) while keeping the stable tab/runtime id. The
+            // action is equality-guarded, so ordinary title/status upserts are
+            // allocation-free no-ops.
+            const targetFolder = store.allFolders.find(
+              (folder) => folder.id === change.summary.folder_id
+            )
+            if (targetFolder) {
+              useTabStore
+                .getState()
+                .moveConversationTab(
+                  change.summary.id,
+                  targetFolder.id,
+                  targetFolder.path
+                )
+            }
             // This side-channel keeps the sidebar in sync but does NOT touch an
             // open conversation's detail. If THIS client is only viewing that
             // conversation (another client owns the live agent), a turn that
