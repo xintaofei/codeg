@@ -38,6 +38,7 @@ pub mod pets;
 #[cfg(feature = "tauri-runtime")]
 pub mod preferences;
 pub mod process;
+pub mod server_tray;
 pub mod supervise;
 mod terminal;
 pub mod turn_timings;
@@ -847,6 +848,19 @@ mod tauri_app {
                 if id.starts_with(windows::TRAY_MENU_ID_PREFIX) {
                     match id.as_str() {
                         windows::TRAY_MENU_ID_SHOW => windows::show_main_window(app),
+                        windows::TRAY_MENU_ID_LOGS => {
+                            use tauri_plugin_opener::OpenerExt;
+                            match crate::commands::logging::open_logs_dir_core() {
+                                Ok(path) => {
+                                    if let Err(err) = app.opener().open_path(path, None::<&str>) {
+                                        tracing::warn!("[Tray] failed to open log directory: {err}");
+                                    }
+                                }
+                                Err(err) => tracing::warn!(
+                                    "[Tray] failed to prepare log directory: {err}"
+                                ),
+                            }
+                        }
                         windows::TRAY_MENU_ID_QUIT => app.exit(0),
                         _ => {}
                     }

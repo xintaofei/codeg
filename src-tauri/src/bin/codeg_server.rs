@@ -581,8 +581,52 @@ async fn async_main() -> ExitCode {
         tracing::info!("  {}", addr);
     }
 
+    // Standalone Windows builds have no Tauri window to own a tray icon. Keep
+    // the native tray alive for the lifetime of the server and use its quit
+    // action to enter Axum's graceful shutdown path.
+    #[cfg(target_os = "windows")]
+    let tray_quit_rx = {
+        let tray_handle = match codeg_lib::server_tray::start(
+            addresses
+                .first()
+                .cloned()
+                .unwrap_or_else(|| format!("http://{}:{}", advertised_host, actual_port)),
+            codeg_lib::commands::logging::open_logs_dir_core()
+                .map(PathBuf::from)
+                .unwrap_or_else(|err| {
+                    tracing::warn!("[Tray] failed to prepare log directory: {}", err.message);
+                    codeg_lib::paths::codeg_logs_root()
+                }),
+        ) {
+            Ok(handle) => handle,
+            Err(err) => {
+                tracing::warn!("[Tray] disabled: {err}");
+                None
+            }
+        };
+        tray_handle.map(|handle| handle.into_quit_receiver())
+    };
+
     // Start serving
-    if let Err(e) = axum::serve(listener, router).await {
+    #[cfg(target_os = "windows")]
+    let shutdown_signal = state.web_server_state.shutdown_signal();
+    #[cfg(target_os = "windows")]
+    let graceful_shutdown = async move {
+        if let Some(quit_rx) = tray_quit_rx {
+            let _ = quit_rx.await;
+            shutdown_signal.trigger();
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(target_os = "windows")]
+    let server_result = axum::serve(listener, router)
+        .with_graceful_shutdown(graceful_shutdown)
+        .await;
+    #[cfg(not(target_os = "windows"))]
+    let server_result = axum::serve(listener, router).await;
+
+    if let Err(e) = server_result {
         tracing::error!("[SERVER] Server error: {}", e);
         return ExitCode::from(1);
     }
