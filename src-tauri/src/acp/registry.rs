@@ -427,6 +427,42 @@ pub fn goal_control_is_out_of_band(agent_type: AgentType) -> bool {
     matches!(agent_type, AgentType::Codex)
 }
 
+/// Whether this agent's resolved launch recipe runs Cursor's ACP adapter
+/// (`cursor-agent … acp`). Custom agents that wrap the same binary as the
+/// built-in Cursor entry must advertise the same client capabilities.
+pub fn uses_cursor_acp_backend(agent_type: AgentType) -> bool {
+    distribution_uses_cursor_acp(&get_agent_meta(agent_type).distribution)
+}
+
+fn distribution_uses_cursor_acp(distribution: &AgentDistribution) -> bool {
+    match distribution {
+        AgentDistribution::Npx { cmd, args, .. } | AgentDistribution::Binary { cmd, args, .. } => {
+            launch_spec_uses_cursor_acp(cmd, args)
+        }
+        AgentDistribution::Uvx {
+            cmd,
+            args,
+            system_cmd,
+            ..
+        } => {
+            launch_spec_uses_cursor_acp(cmd, args)
+                || system_cmd
+                    .is_some_and(|(c, a)| launch_spec_uses_cursor_acp(c, a))
+        }
+    }
+}
+
+/// True when the resolved executable basename is `cursor-agent` and the
+/// process is launched in ACP mode (`acp` argument present).
+fn launch_spec_uses_cursor_acp(cmd: &str, args: &[&str]) -> bool {
+    let trimmed = cmd.trim();
+    let base = std::path::Path::new(trimmed)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(trimmed);
+    base.eq_ignore_ascii_case("cursor-agent") && args.iter().any(|a| *a == "acp")
+}
+
 pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
     if let AgentType::Custom(id) = agent_type {
         return crate::acp::custom_registry::get(id)
@@ -1668,6 +1704,27 @@ mod tests {
             }
             other => panic!("expected npx distribution for Hermes, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn uses_cursor_acp_backend_matches_resolved_launch_spec() {
+        assert!(uses_cursor_acp_backend(AgentType::Cursor));
+        assert!(!uses_cursor_acp_backend(AgentType::Codex));
+        assert!(!uses_cursor_acp_backend(AgentType::ClaudeCode));
+        assert!(!uses_cursor_acp_backend(AgentType::Custom("acme")));
+
+        assert!(launch_spec_uses_cursor_acp("cursor-agent", &["acp"]));
+        assert!(launch_spec_uses_cursor_acp("cursor-agent.cmd", &["acp"]));
+        assert!(launch_spec_uses_cursor_acp(
+            "./dist-package/cursor-agent.cmd",
+            &["acp"]
+        ));
+        assert!(!launch_spec_uses_cursor_acp("cursor-agent", &[]));
+        assert!(!launch_spec_uses_cursor_acp("codex-acp", &[]));
+        assert!(!launch_spec_uses_cursor_acp(
+            "cursor-agent",
+            &["stdio"]
+        ));
     }
 
     // Only Claude Code and Codex ship as a third-party ACP adapter wrapping a

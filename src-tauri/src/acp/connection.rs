@@ -3719,6 +3719,16 @@ fn build_client_capabilities(
             }),
         );
     }
+    // Cursor ACP gates Composer 2.5's `fast` parameter behind this client
+    // capability. Without it the agent advertises only the default variant
+    // (Fast); with it the model picker splits into separate `model` and
+    // `fast` config options that `session/set_config_option` can set.
+    if registry::uses_cursor_acp_backend(agent_type) {
+        meta.insert(
+            "parameterizedModelPicker".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
     if !meta.is_empty() {
         client_capabilities = client_capabilities.meta(meta);
     }
@@ -13220,6 +13230,129 @@ mod tests {
     }
 
     #[test]
+    fn client_capabilities_advertise_parameterized_model_picker_for_cursor() {
+        let caps = serde_json::to_value(build_client_capabilities(
+            AgentType::Cursor,
+            HostToolsPolicy::Default,
+        ))
+        .unwrap();
+        assert_eq!(
+            caps.get("_meta")
+                .and_then(|m| m.get("parameterizedModelPicker"))
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "Cursor initialize must advertise parameterizedModelPicker"
+        );
+        // Cursor must not pick up Claude/Codex-only extensions.
+        assert!(caps
+            .get("_meta")
+            .and_then(|m| m.get("jetbrains"))
+            .is_none());
+        assert!(caps
+            .get("_meta")
+            .and_then(|m| m.get("subagent-transcript"))
+            .is_none());
+    }
+
+    #[test]
+    fn client_capabilities_advertise_parameterized_model_picker_for_custom_cursor_agent() {
+        use std::collections::BTreeMap;
+
+        use crate::acp::custom_registry::{
+            hydrate, hydrate_test_guard, BinaryPlatformSpec, CustomAgentDef, CustomAgentSpec,
+            CustomDistributionKind,
+        };
+
+        let _guard = hydrate_test_guard();
+        let def = CustomAgentDef {
+            registry_id: "test-cursor-acp".into(),
+            name: "Test Cursor ACP".into(),
+            description: String::new(),
+            version: "1.0.0".into(),
+            distribution_kind: CustomDistributionKind::Binary,
+            spec: CustomAgentSpec {
+                binary: BTreeMap::from([(
+                    "windows-x86_64".into(),
+                    BinaryPlatformSpec {
+                        archive: "https://downloads.cursor.com/lab/2026.08.11-e8db854/windows/x64/agent-cli-package.zip"
+                            .into(),
+                        cmd: "./dist-package/cursor-agent.cmd".into(),
+                        args: vec!["acp".into()],
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+            skills_dir: None,
+            source: Default::default(),
+            version_probe: None,
+            supports_mcp: true,
+        };
+        hydrate(&[def]);
+        let caps = serde_json::to_value(build_client_capabilities(
+            AgentType::Custom("test-cursor-acp"),
+            HostToolsPolicy::Default,
+        ))
+        .unwrap();
+        assert_eq!(
+            caps.get("_meta")
+                .and_then(|m| m.get("parameterizedModelPicker"))
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "custom cursor-agent acp must advertise parameterizedModelPicker"
+        );
+        hydrate(&[]);
+    }
+
+    #[test]
+    fn client_capabilities_skip_parameterized_model_picker_for_non_cursor_custom_agent() {
+        use crate::acp::custom_registry::{
+            hydrate, hydrate_test_guard, CustomAgentDef, CustomAgentSpec, CustomDistributionKind,
+            NpxSpec,
+        };
+
+        let _guard = hydrate_test_guard();
+        let def = CustomAgentDef {
+            registry_id: "test-codex-acp".into(),
+            name: "Test Codex ACP".into(),
+            description: String::new(),
+            version: "1.7.0".into(),
+            distribution_kind: CustomDistributionKind::Npx,
+            spec: CustomAgentSpec {
+                npx: Some(NpxSpec {
+                    package: "@agentclientprotocol/codex-acp@1.7.0".into(),
+                    args: vec![],
+                    env: Default::default(),
+                    cmd: Some("codex-acp".into()),
+                    node_required: None,
+                }),
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+            skills_dir: None,
+            source: Default::default(),
+            version_probe: None,
+            supports_mcp: true,
+        };
+        hydrate(&[def]);
+        let caps = serde_json::to_value(build_client_capabilities(
+            AgentType::Custom("test-codex-acp"),
+            HostToolsPolicy::Default,
+        ))
+        .unwrap();
+        assert!(
+            caps.get("_meta")
+                .and_then(|m| m.get("parameterizedModelPicker"))
+                .is_none(),
+            "non-cursor custom agents must not advertise parameterizedModelPicker"
+        );
+        hydrate(&[]);
+    }
+
+    #[test]
     fn version_at_least_is_strict_semver_and_fails_closed() {
         assert!(version_at_least("0.64.0", "0.64.0"));
         assert!(version_at_least("0.64.1", "0.64.0"));
@@ -14514,6 +14647,15 @@ mod tests {
         let deepseek = caps_of(AgentType::DeepSeek);
         assert!(deepseek.get("elicitation").is_some());
         assert!(deepseek.get("_meta").is_none());
+
+        // Cursor: parameterized model picker only (no elicitation / AIR).
+        let cursor = caps_of(AgentType::Cursor);
+        assert_eq!(
+            cursor["_meta"]["parameterizedModelPicker"],
+            serde_json::Value::Bool(true)
+        );
+        assert!(cursor.get("elicitation").is_none());
+        assert!(cursor["_meta"].get("jetbrains").is_none());
 
         // Everyone else: neither gate; fs + terminal always advertised.
         let other = caps_of(AgentType::Gemini);
