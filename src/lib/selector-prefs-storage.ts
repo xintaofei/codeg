@@ -28,11 +28,43 @@ interface SelectorPrefs {
 
 type AllPrefs = Record<string, SelectorPrefs>
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function parseConfigValues(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) return undefined
+
+  const entries = Object.entries(value).filter(
+    (entry): entry is [string, string] => typeof entry[1] === "string"
+  )
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined
+}
+
+function parseAllPrefs(value: unknown): AllPrefs {
+  if (!isRecord(value)) return {}
+
+  const entries: Array<[string, SelectorPrefs]> = []
+  for (const [agentType, rawPrefs] of Object.entries(value)) {
+    if (!isRecord(rawPrefs)) continue
+
+    const prefs: SelectorPrefs = {}
+    if (typeof rawPrefs.modeId === "string") {
+      prefs.modeId = rawPrefs.modeId
+    }
+    const configValues = parseConfigValues(rawPrefs.configValues)
+    if (configValues) prefs.configValues = configValues
+    entries.push([agentType, prefs])
+  }
+
+  return Object.fromEntries(entries)
+}
+
 function readAll(): AllPrefs {
   if (typeof window === "undefined") return {}
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    return raw ? (JSON.parse(raw) as AllPrefs) : {}
+    return raw ? parseAllPrefs(JSON.parse(raw) as unknown) : {}
   } catch {
     return {}
   }
@@ -67,7 +99,7 @@ function updatePrefs(
 
 // ── Read ──
 
-/** Read saved mode id for an agent (no validation, just the raw value). */
+/** Read the validated saved mode id for an agent. */
 export function getSavedModeId(agentType: string): string | null {
   const all = readAll()
   return all[agentType]?.modeId ?? null
