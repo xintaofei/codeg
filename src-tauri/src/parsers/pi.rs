@@ -141,6 +141,19 @@ impl PiParser {
         path: &Path,
         conversation_id: &str,
     ) -> Result<ConversationDetail, ParseError> {
+        // Serve repeat fetches of an unchanged session file (viewer polls, "load
+        // older" pages) from the detail cache instead of re-parsing the whole
+        // file. See `summary_cache::detail_get_or_parse` for the contract.
+        super::summary_cache::detail_get_or_parse(AgentType::Pi, path, || {
+            self.parse_detail_uncached(path, conversation_id)
+        })
+    }
+
+    fn parse_detail_uncached(
+        &self,
+        path: &Path,
+        conversation_id: &str,
+    ) -> Result<ConversationDetail, ParseError> {
         let parsed = parse_session(path);
 
         let mut turns = group_into_turns(parsed.messages);
@@ -1180,5 +1193,41 @@ mod tests {
             parser.get_conversation("nope"),
             Err(ParseError::ConversationNotFound(_))
         ));
+    }
+
+    #[test]
+    fn detail_parse_cache_hit_is_byte_identical_and_invalidates_on_growth() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path();
+        let id = "0f3c1d2e-1111-2222-3333-444455556666";
+        let dashed = "--Users-demo-my-app--";
+        let filename = "2026-06-27T10-00-00_0f3c1d2e.jsonl";
+        write_session(base, dashed, filename, &sample_records(id));
+        let path = base.join(dashed).join(filename);
+
+        let parser = PiParser::with_base_dir(base.to_path_buf());
+        let first = parser.parse_detail(&path, id).expect("first parse");
+        // Second parse of the unchanged file is served from the detail cache —
+        // it must be byte-identical to the fresh parse.
+        let second = parser.parse_detail(&path, id).expect("second parse");
+        assert!(!first.turns.is_empty());
+        assert_eq!(
+            serde_json::to_value(&first).unwrap(),
+            serde_json::to_value(&second).unwrap(),
+            "cache hit must be byte-identical to a fresh parse"
+        );
+
+        // Appending a record changes the fingerprint → cache miss → fresh parse.
+        let mut records = sample_records(id);
+        records.push(json!({"type":"message","id":"m5","parentId":"m4","timestamp":"2026-06-27T10:00:11.000Z",
+            "message":{"role":"user","content":"thanks"}}));
+        write_session(base, dashed, filename, &records);
+        let third = parser.parse_detail(&path, id).expect("third parse");
+        assert!(
+            third.turns.len() > first.turns.len(),
+            "growth must invalidate the cache ({} → {})",
+            first.turns.len(),
+            third.turns.len()
+        );
     }
 }

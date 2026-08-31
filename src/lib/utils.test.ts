@@ -1,7 +1,7 @@
 import type { MouseEvent } from "react"
 import { describe, expect, it, vi } from "vitest"
 
-import { handleMiddleClickClose } from "./utils"
+import { handleMiddleClickClose, randomUUID } from "./utils"
 
 function mouseEventWithButton(button: number) {
   const preventDefault = vi.fn()
@@ -38,5 +38,29 @@ describe("handleMiddleClickClose", () => {
 
     expect(onClose).not.toHaveBeenCalled()
     expect(preventDefault).not.toHaveBeenCalled()
+  })
+})
+
+const V4_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+describe("randomUUID", () => {
+  it("returns a valid v4 UUID when crypto.randomUUID is available", () => {
+    expect(randomUUID()).toMatch(V4_UUID_RE)
+  })
+
+  it("falls back to crypto.getRandomValues in non-secure contexts", () => {
+    // Simulate the server-over-HTTP-on-LAN case: a non-secure context where
+    // crypto.randomUUID is undefined but crypto.getRandomValues still works.
+    const realCrypto = globalThis.crypto
+    vi.stubGlobal("crypto", {
+      getRandomValues: (arr: Uint8Array) => realCrypto.getRandomValues(arr),
+    })
+    try {
+      const id = randomUUID()
+      expect(id).toMatch(V4_UUID_RE)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

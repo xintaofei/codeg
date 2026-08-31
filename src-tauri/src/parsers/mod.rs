@@ -19,6 +19,7 @@ mod summary_cache;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::OnceLock;
 
 /// A root of external agent-CLI transcript data, archived under
@@ -1024,6 +1025,9 @@ pub fn strip_numbered_lines(text: &str) -> Option<String> {
 /// file from disk and matches the context lines to calculate real line numbers.
 /// Falls back gracefully if the file doesn't exist or context doesn't match.
 pub fn resolve_patch_line_numbers(turns: &mut [MessageTurn], cwd: Option<&str>) {
+    // One cache for the whole pass: an edit-heavy session touches the same
+    // file from many patch blocks, and each block used to re-read it from disk.
+    let mut file_cache = FileLinesCache::new();
     for turn in turns.iter_mut() {
         for block in turn.blocks.iter_mut() {
             if let ContentBlock::ToolUse {
@@ -1041,7 +1045,9 @@ pub fn resolve_patch_line_numbers(turns: &mut [MessageTurn], cwd: Option<&str>) 
                 }
                 if let Some(ref text) = input_preview {
                     if text.contains("@@\n") || text.contains("@@\r\n") {
-                        if let Some(resolved) = resolve_patch_text(text, cwd) {
+                        if let Some(resolved) =
+                            resolve_patch_text_with_cache(text, cwd, &mut file_cache)
+                        {
                             *input_preview = Some(resolved);
                         }
                     }
@@ -1053,9 +1059,20 @@ pub fn resolve_patch_line_numbers(turns: &mut [MessageTurn], cwd: Option<&str>) 
 
 /// Resolve a single patch text, replacing bare `@@` with `@@ -N,M +N,M @@`.
 pub fn resolve_patch_text(patch: &str, cwd: Option<&str>) -> Option<String> {
+    resolve_patch_text_with_cache(patch, cwd, &mut FileLinesCache::new())
+}
+
+/// `resolve_patch_text` driven by a caller-supplied per-parse file cache, so a
+/// full `resolve_patch_line_numbers` pass reads each patched file from disk at
+/// most once no matter how many tool blocks touch it.
+fn resolve_patch_text_with_cache(
+    patch: &str,
+    cwd: Option<&str>,
+    cache: &mut FileLinesCache,
+) -> Option<String> {
     let mut output = String::with_capacity(patch.len() + 256);
     let mut current_file_path: Option<String> = None;
-    let mut file_lines: Option<Vec<String>> = None;
+    let mut file_lines: Option<Rc<Vec<String>>> = None;
     let mut any_resolved = false;
 
     let lines: Vec<&str> = patch.lines().collect();
@@ -1073,7 +1090,7 @@ pub fn resolve_patch_text(patch: &str, cwd: Option<&str>) -> Option<String> {
             };
             let path = line[marker_end..].trim();
             current_file_path = Some(path.to_string());
-            file_lines = load_file_lines(path, cwd);
+            file_lines = load_file_lines_cached(path, cwd, cache);
             output.push_str(line);
             output.push('\n');
             i += 1;
@@ -1134,6 +1151,28 @@ pub fn load_file_lines(path: &str, cwd: Option<&str>) -> Option<Vec<String>> {
         }
     }
     None
+}
+
+/// Per-parse cache of file contents for patch line-number resolution, keyed by
+/// the patch's file path. Caches hits AND misses, so a file patched across many
+/// tool blocks (or a referenced-but-missing file) is read from disk at most once
+/// per `resolve_patch_line_numbers` call instead of once per block. Resolution
+/// reads a point-in-time snapshot of the file, so sharing one read across the
+/// blocks of a single parse does not change the output.
+type FileLinesCache = HashMap<String, Option<Rc<Vec<String>>>>;
+
+/// `load_file_lines` through a per-parse `FileLinesCache`.
+fn load_file_lines_cached(
+    path: &str,
+    cwd: Option<&str>,
+    cache: &mut FileLinesCache,
+) -> Option<Rc<Vec<String>>> {
+    if let Some(cached) = cache.get(path) {
+        return cached.clone();
+    }
+    let loaded = load_file_lines(path, cwd).map(Rc::new);
+    cache.insert(path.to_string(), loaded.clone());
+    loaded
 }
 
 /// Collect lines belonging to a hunk (until next `@@` or `*** ` marker or end).
@@ -1304,8 +1343,9 @@ mod tests {
 
     use super::{
         backfill_turn_durations, fold_reference_links, infer_context_window_max_tokens,
-        is_safe_subagent_id, latest_turn_total_usage_tokens, merge_context_window_stats,
-        path_eq_for_matching, title_from_user_text,
+        is_safe_subagent_id, latest_turn_total_usage_tokens, load_file_lines,
+        load_file_lines_cached, merge_context_window_stats, path_eq_for_matching,
+        resolve_patch_text, title_from_user_text, FileLinesCache,
     };
     use crate::models::{MessageTurn, SessionStats, TurnRole, TurnUsage};
 
@@ -1681,5 +1721,58 @@ mod tests {
             "C:\\Users\\demo\\workspace\\codeg",
             "C:/Users/demo/workspace/codeg"
         ));
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("codeg-patch-{tag}-{nanos}"));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn resolve_patch_text_resolves_bare_hunk_against_file_on_disk() {
+        let dir = temp_dir("resolve");
+        let file = dir.join("demo.txt");
+        std::fs::write(&file, "line one\nline two\nline three\nline four\nline five\n")
+            .expect("write file");
+
+        let patch = format!(
+            "*** Update File: {}\n@@\n line two\n-line three\n+line THREE\n line four\n",
+            file.display()
+        );
+        let resolved = resolve_patch_text(&patch, None).expect("should resolve");
+        assert!(resolved.contains("@@ -2,3 +2,3 @@"), "got: {resolved}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_lines_cache_serves_repeated_reads_without_hitting_disk_again() {
+        let dir = temp_dir("cache");
+        let file = dir.join("demo.txt");
+        std::fs::write(&file, "alpha\nbeta\n").expect("write file");
+        let path = file.to_string_lossy().to_string();
+
+        let mut cache = FileLinesCache::new();
+        let first = load_file_lines_cached(&path, None, &mut cache);
+        assert!(first.is_some());
+
+        // Delete the file: a second cached read still succeeds (served from the
+        // cache), while a direct uncached read now fails.
+        std::fs::remove_file(&file).expect("remove file");
+        let second = load_file_lines_cached(&path, None, &mut cache);
+        assert_eq!(first, second, "cache should serve the deleted file");
+        assert!(load_file_lines(&path, None).is_none());
+
+        // Misses are cached as well.
+        let missing = dir.join("nope.txt").to_string_lossy().to_string();
+        assert!(load_file_lines_cached(&missing, None, &mut cache).is_none());
+        assert!(load_file_lines_cached(&missing, None, &mut cache).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -56,10 +56,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use super::ParseError;
-use crate::models::{AgentType, ConversationSummary};
+use crate::models::{AgentType, ConversationDetail, ConversationSummary};
 
 /// File-content fingerprint: `(mtime, size)`. `mtime` is `Option` because a
 /// platform may not report it; a `None`/`None` comparison then falls back to
@@ -70,6 +70,10 @@ struct CacheEntry {
     fingerprint: Fingerprint,
     /// Only positive summaries are stored — see `get_or_parse`.
     summary: ConversationSummary,
+    /// Last time this entry was served or written, for LRU eviction. The cache
+    /// is process-global and insert-only otherwise, so entries for long-deleted
+    /// session files would otherwise accumulate for the app's lifetime.
+    last_used: Instant,
 }
 
 /// Nested `AgentType → (path → entry)` so a lookup borrows `&Path` (no
@@ -87,6 +91,30 @@ fn cache() -> &'static Mutex<Cache> {
 fn fingerprint(path: &Path) -> Option<Fingerprint> {
     let meta = std::fs::metadata(path).ok()?;
     Some((meta.modified().ok(), meta.len()))
+}
+
+/// Bound on cached summaries per agent. Generous enough that eviction is rare in
+/// practice (a heavy user has hundreds of sessions of one agent, and a dormant
+/// hit costs only a `stat`), yet it stops the process-global map from growing
+/// for the app's lifetime as sessions are created and deleted. Eviction is never
+/// *incorrect*: the `(mtime, size)` fingerprint revalidates on the next access,
+/// so an evicted entry is simply re-parsed.
+const MAX_ENTRIES_PER_AGENT: usize = 1024;
+
+/// Make room for inserting `path` by evicting the least-recently-used entry when
+/// `per_agent` is already at `cap`. No-op when `path` is an existing key (a
+/// re-insert replaces in place and does not grow the map).
+fn evict_lru_for_insert(per_agent: &mut HashMap<PathBuf, CacheEntry>, cap: usize, path: &Path) {
+    if per_agent.len() < cap || per_agent.contains_key(path) {
+        return;
+    }
+    if let Some(oldest) = per_agent
+        .iter()
+        .min_by_key(|(_, entry)| entry.last_used)
+        .map(|(key, _)| key.clone())
+    {
+        per_agent.remove(&oldest);
+    }
 }
 
 /// Return the cached summary for `(agent_type, path)` if the file is unchanged
@@ -129,9 +157,10 @@ where
 
     // Fast path: a live fingerprint match returns the cached summary without
     // reading or parsing the file.
-    if let Ok(map) = cache().lock() {
-        if let Some(entry) = map.get(&agent_type).and_then(|m| m.get(path)) {
+    if let Ok(mut map) = cache().lock() {
+        if let Some(entry) = map.get_mut(&agent_type).and_then(|m| m.get_mut(path)) {
             if entry.fingerprint == fp_before {
+                entry.last_used = Instant::now();
                 return Ok(Some(entry.summary.clone()));
             }
         }
@@ -147,14 +176,130 @@ where
     if let Some(summary) = &parsed {
         if fingerprint(path) == Some(fp_before) {
             if let Ok(mut map) = cache().lock() {
-                map.entry(agent_type).or_default().insert(
+                let per_agent = map.entry(agent_type).or_default();
+                evict_lru_for_insert(per_agent, MAX_ENTRIES_PER_AGENT, path);
+                per_agent.insert(
                     path.to_path_buf(),
                     CacheEntry {
                         fingerprint: fp_before,
                         summary: summary.clone(),
+                        last_used: Instant::now(),
                     },
                 );
             }
+        }
+    }
+    Ok(parsed)
+}
+
+/// Process-global cache of FULL conversation details, keyed by `(AgentType, path)`.
+///
+/// `get_conversation` re-parses a session transcript on every detail fetch —
+/// viewer polls, and every "load older" page of the reverse-infinite scroll.
+/// For a long session that is a full read + per-line parse each time. This cache
+/// memoizes the parsed `ConversationDetail` per `(AgentType, path)`, invalidated
+/// by the same cheap `(mtime, size)` fingerprint as the summary cache, so a
+/// repeat fetch of an unchanged file skips the re-parse entirely.
+///
+/// Memory is bounded by `DETAIL_CACHE_BYTE_BUDGET` across all entries, using the
+/// transcript's byte length as a faithful per-entry footprint proxy; a single
+/// transcript larger than the budget is never cached (parsed fresh each fetch,
+/// exactly as before). Eviction is least-recently-used.
+///
+/// Freshness contract (per parser): the fingerprint covers the transcript file.
+/// Work that reads OTHER files must either be excluded from the cached region or
+/// accepted as last-parse state — e.g. Codex's sub-agent capsule stats and
+/// patch line numbers reflect the file as of the last parse; both are cosmetic
+/// and self-correct the moment the transcript itself changes (an active collab
+/// session appends to its rollout, so the fingerprint changes and a fresh parse
+/// runs). Records lacking a timestamp fall back to `Utc::now()` during a parse;
+/// a cached entry keeps the first such fallback, which keeps the window
+/// `prefix_hash` STABLE across fetches of an unchanged file — without the cache,
+/// each re-parse would mint a fresh `now()` and the frontend would misread the
+/// unchanged prefix as rewritten.
+const DETAIL_CACHE_BYTE_BUDGET: u64 = 64 * 1024 * 1024;
+
+struct DetailCacheEntry {
+    fingerprint: Fingerprint,
+    /// Transcript byte length — proxy for the detail's in-memory footprint.
+    size: u64,
+    detail: ConversationDetail,
+    last_used: Instant,
+}
+
+/// Keyed by `(AgentType, path)` — namespaced by parser like the summary cache.
+type DetailCache = HashMap<(AgentType, PathBuf), DetailCacheEntry>;
+
+fn detail_cache() -> &'static Mutex<DetailCache> {
+    static CACHE: OnceLock<Mutex<DetailCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Return the cached detail for `(agent_type, path)` when the transcript is
+/// unchanged; otherwise run `parse` (lock released) and cache a real (non-empty)
+/// result. The caller receives a CLONE, so it may freely mutate the result
+/// (inject delegation meta, set counts) without disturbing the cached entry.
+///
+/// Only a detail with at least one turn is cached: an empty/degenerate parse
+/// derives fields like `started_at` from `Utc::now()`, which a cache would
+/// otherwise freeze.
+pub(crate) fn detail_get_or_parse<F>(
+    agent_type: AgentType,
+    path: &Path,
+    parse: F,
+) -> Result<ConversationDetail, ParseError>
+where
+    F: FnOnce() -> Result<ConversationDetail, ParseError>,
+{
+    // Can't fingerprint ⇒ bypass the cache (parse fresh, store nothing).
+    let Some(fp) = fingerprint(path) else {
+        return parse();
+    };
+    let key = (agent_type, path.to_path_buf());
+
+    if let Ok(mut map) = detail_cache().lock() {
+        if let Some(entry) = map.get_mut(&key) {
+            if entry.fingerprint == fp {
+                entry.last_used = Instant::now();
+                return Ok(entry.detail.clone());
+            }
+        }
+    }
+
+    let parsed = parse()?;
+
+    // Cache only a real conversation, only if it fits the budget, and only if
+    // the file didn't change while we read it.
+    let size = fp.1;
+    if !parsed.turns.is_empty() && size <= DETAIL_CACHE_BYTE_BUDGET && fingerprint(path) == Some(fp)
+    {
+        if let Ok(mut map) = detail_cache().lock() {
+            let replaced = map.get(&key).map(|e| e.size).unwrap_or(0);
+            let mut total: u64 = map.values().map(|e| e.size).sum::<u64>() - replaced;
+            while total + size > DETAIL_CACHE_BYTE_BUDGET {
+                let oldest = map
+                    .iter()
+                    .filter(|(k, _)| **k != key)
+                    .min_by_key(|(_, e)| e.last_used)
+                    .map(|(k, _)| k.clone());
+                match oldest {
+                    Some(k) => {
+                        if let Some(e) = map.remove(&k) {
+                            total -= e.size;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            map.insert(
+                key,
+                DetailCacheEntry {
+                    fingerprint: fp,
+                    size,
+                    detail: parsed.clone(),
+                    last_used: Instant::now(),
+                },
+            );
         }
     }
     Ok(parsed)
@@ -381,5 +526,38 @@ mod tests {
         .unwrap();
         assert_eq!(cb2.id, "cb"); // served from cache, closure not run
         assert_eq!(cb_calls.get(), 0);
+    }
+
+    #[test]
+    fn evicts_the_least_recently_used_entry_at_capacity() {
+        let now = Instant::now();
+        let mut per_agent: HashMap<PathBuf, CacheEntry> = HashMap::new();
+        for (i, name) in ["a", "b", "c"].iter().enumerate() {
+            per_agent.insert(
+                PathBuf::from(name),
+                CacheEntry {
+                    fingerprint: (None, i as u64),
+                    summary: dummy(name),
+                    last_used: now + std::time::Duration::from_millis(i as u64),
+                },
+            );
+        }
+
+        // Full (cap 3), inserting a new key "d" evicts "a" (oldest last_used).
+        evict_lru_for_insert(&mut per_agent, 3, Path::new("d"));
+        assert!(!per_agent.contains_key(Path::new("a")));
+        assert!(per_agent.contains_key(Path::new("b")));
+        assert!(per_agent.contains_key(Path::new("c")));
+        assert_eq!(per_agent.len(), 2);
+
+        // Re-inserting an existing key never evicts (it replaces in place).
+        evict_lru_for_insert(&mut per_agent, 3, Path::new("b"));
+        assert_eq!(per_agent.len(), 2);
+        assert!(per_agent.contains_key(Path::new("b")));
+
+        // Below capacity, nothing is evicted.
+        evict_lru_for_insert(&mut per_agent, 3, Path::new("z"));
+        assert!(per_agent.contains_key(Path::new("b")));
+        assert!(per_agent.contains_key(Path::new("c")));
     }
 }

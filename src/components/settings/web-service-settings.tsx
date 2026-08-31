@@ -41,7 +41,7 @@ import {
 
 const DEFAULT_PORT = 3080
 import { openUrl } from "@/lib/platform"
-import { copyTextToClipboard } from "@/lib/utils"
+import { copyTextToClipboard, randomUUID } from "@/lib/utils"
 import { useCopiedFlag } from "@/hooks/use-copied-flag"
 
 // Remembers which reachable address the user last chose to display/open.
@@ -189,12 +189,10 @@ function AddressQrcodeDialog({
 }
 
 function generateRandomToken() {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID().replace(/-/g, "")
-  }
-  return Array.from({ length: 32 }, () =>
-    Math.floor(Math.random() * 16).toString(16)
-  ).join("")
+  // randomUUID() falls back to crypto.getRandomValues() in non-secure contexts
+  // (the server served over plain HTTP on a LAN), so the token stays
+  // cryptographically random there instead of degrading to Math.random().
+  return randomUUID().replace(/-/g, "")
 }
 
 function TokenEditor({

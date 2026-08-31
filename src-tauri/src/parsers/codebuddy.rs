@@ -151,6 +151,19 @@ impl CodeBuddyParser {
         path: &Path,
         conversation_id: &str,
     ) -> Result<ConversationDetail, ParseError> {
+        // Serve repeat fetches of an unchanged session file (viewer polls, "load
+        // older" pages) from the detail cache instead of re-parsing the whole
+        // file. See `summary_cache::detail_get_or_parse` for the contract.
+        super::summary_cache::detail_get_or_parse(AgentType::CodeBuddy, path, || {
+            self.parse_detail_uncached(path, conversation_id)
+        })
+    }
+
+    fn parse_detail_uncached(
+        &self,
+        path: &Path,
+        conversation_id: &str,
+    ) -> Result<ConversationDetail, ParseError> {
         let reader = BufReader::new(fs::File::open(path)?);
 
         let mut messages: Vec<UnifiedMessage> = Vec::new();
@@ -1900,6 +1913,45 @@ mod tests {
         assert!(
             parser.get_conversation(sid).is_ok(),
             "the session must be openable, not skipped as a transcript"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn detail_parse_cache_hit_is_byte_identical_and_invalidates_on_growth() {
+        let root = std::env::temp_dir().join(format!("codeg-cb-cache-{}", uuid::Uuid::new_v4()));
+        let sid = "sess-cache";
+        let records = vec![
+            json!({"type":"message","role":"user","timestamp":1781821844178i64,"cwd":"/Users/demo/app","sessionId":sid,
+                   "content":[{"type":"input_text","text":"hello"}]}),
+            json!({"type":"message","role":"assistant","timestamp":1781821848958i64,"cwd":"/Users/demo/app","sessionId":sid,
+                   "content":[{"type":"output_text","text":"hi"}]}),
+        ];
+        write_session(&root, "Users-demo-app", sid, &records);
+
+        let parser = CodeBuddyParser::with_base_dir(root.clone());
+        let first = parser.get_conversation(sid).expect("first parse");
+        // Second parse of the unchanged file is served from the detail cache.
+        let second = parser.get_conversation(sid).expect("second parse");
+        assert!(!first.turns.is_empty());
+        assert_eq!(
+            serde_json::to_value(&first).unwrap(),
+            serde_json::to_value(&second).unwrap(),
+            "cache hit must be byte-identical to a fresh parse"
+        );
+
+        // Appending a record changes the fingerprint → cache miss → fresh parse.
+        let mut grown = records.clone();
+        grown.push(json!({"type":"message","role":"user","timestamp":1781821849999i64,"cwd":"/Users/demo/app","sessionId":sid,
+            "content":[{"type":"input_text","text":"again"}]}));
+        write_session(&root, "Users-demo-app", sid, &grown);
+        let third = parser.get_conversation(sid).expect("third parse");
+        assert!(
+            third.turns.len() > first.turns.len(),
+            "growth must invalidate the cache ({} → {})",
+            first.turns.len(),
+            third.turns.len()
         );
 
         std::fs::remove_dir_all(&root).ok();

@@ -4,6 +4,7 @@ import type { ReactNode } from "react"
 
 import {
   DelegationProvider,
+  MAX_DELEGATION_BINDINGS,
   useDelegation,
 } from "@/contexts/delegation-context"
 import type { EventEnvelope } from "@/lib/types"
@@ -49,6 +50,28 @@ function renderProvider(children: ReactNode = null) {
       <BindingProbe parentToolUseId="pt-1" />
       {children}
     </DelegationProvider>
+  )
+}
+
+/** Probe that reports whether two specific parent_tool_use_ids resolve, so a
+ *  test can assert the oldest binding was evicted while the newest survives. */
+function EvictProbe({
+  oldestId,
+  newestId,
+}: {
+  oldestId: string
+  newestId: string
+}) {
+  const { findByParentToolUseId } = useDelegation()
+  return (
+    <div>
+      <div data-testid="oldest">
+        {findByParentToolUseId(oldestId)?.status ?? "none"}
+      </div>
+      <div data-testid="newest">
+        {findByParentToolUseId(newestId)?.status ?? "none"}
+      </div>
+    </div>
   )
 }
 
@@ -231,5 +254,34 @@ describe("DelegationProvider", () => {
     })
     // Detach was canceled by the re-arriving start event.
     expect(mockDetach).not.toHaveBeenCalled()
+  })
+
+  it("evicts the oldest live bindings once MAX_DELEGATION_BINDINGS is exceeded", async () => {
+    // Long-session leak guard: bindings were previously never removed, so a
+    // delegation-heavy session grew the map (and the O(n) clone per event)
+    // without bound. The oldest entries must be evicted; the newest resolve.
+    const newestId = `pt-${MAX_DELEGATION_BINDINGS + 9}`
+    render(
+      <DelegationProvider>
+        <EvictProbe oldestId="pt-0" newestId={newestId} />
+      </DelegationProvider>
+    )
+    await awaitHandlerCaptured()
+
+    act(() => {
+      for (let i = 0; i < MAX_DELEGATION_BINDINGS + 10; i++) {
+        capturedHandler!({
+          type: "delegation_started",
+          parent_connection_id: "p1",
+          parent_tool_use_id: `pt-${i}`,
+          child_connection_id: `c${i}`,
+          child_conversation_id: i,
+          agent_type: "codex",
+        } as unknown as EventEnvelope)
+      }
+    })
+
+    expect(screen.getByTestId("oldest")).toHaveTextContent("none")
+    expect(screen.getByTestId("newest")).toHaveTextContent("running")
   })
 })

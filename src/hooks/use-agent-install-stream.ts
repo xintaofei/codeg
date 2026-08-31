@@ -1,5 +1,6 @@
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { subscribe } from "@/lib/platform"
+import { appendInstallLogLine } from "@/lib/install-stream"
 import type { AgentInstallEvent, AgentInstallEventKind } from "@/lib/types"
 
 const AGENT_INSTALL_EVENT = "app://agent-install"
@@ -19,8 +20,13 @@ export function useAgentInstallStream() {
     error: null,
   })
   const unsubRef = useRef<(() => void) | null>(null)
+  // Flipped by reset()/unmount. Guards the gap between awaiting subscribe() and
+  // storing its unsubscribe fn: if the panel tore down meanwhile, we unsubscribe
+  // immediately instead of leaking the listener.
+  const cancelledRef = useRef(false)
 
   const start = useCallback(async (taskId: string) => {
+    cancelledRef.current = false
     setState({ status: "running", logs: [], error: null })
 
     unsubRef.current?.()
@@ -37,14 +43,14 @@ export function useAgentInstallStream() {
           case "log":
             setState((prev) => ({
               ...prev,
-              logs: [...prev.logs, event.payload],
+              logs: appendInstallLogLine(prev.logs, event.payload),
             }))
             break
           case "completed":
             setState((prev) => ({
               ...prev,
               status: "success",
-              logs: [...prev.logs, event.payload],
+              logs: appendInstallLogLine(prev.logs, event.payload),
             }))
             unsubRef.current?.()
             break
@@ -53,7 +59,7 @@ export function useAgentInstallStream() {
               ...prev,
               status: "failed",
               error: event.payload,
-              logs: [...prev.logs, `ERROR: ${event.payload}`],
+              logs: appendInstallLogLine(prev.logs, `ERROR: ${event.payload}`),
             }))
             unsubRef.current?.()
             break
@@ -61,13 +67,29 @@ export function useAgentInstallStream() {
       }
     )
 
+    if (cancelledRef.current) {
+      // reset()/unmount ran while subscribe() was resolving — don't leak.
+      unsub()
+      return
+    }
     unsubRef.current = unsub
   }, [])
 
   const reset = useCallback(() => {
+    cancelledRef.current = true
     unsubRef.current?.()
     unsubRef.current = null
     setState({ status: "idle", logs: [], error: null })
+  }, [])
+
+  // Unsubscribe on unmount: a panel closed mid-install must not leak the
+  // global event subscription (or setState after unmount).
+  useEffect(() => {
+    return () => {
+      cancelledRef.current = true
+      unsubRef.current?.()
+      unsubRef.current = null
+    }
   }, [])
 
   return { ...state, start, reset }
