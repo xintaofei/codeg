@@ -3451,7 +3451,11 @@
         "skip": "跳过",
         "next": "下一题",
         "submit": "提交",
-        "submitError": "提交失败，请重试。"
+        "submitError": "提交失败，请重试。",
+        "collapse": "折叠",
+        "expand": "展开",
+        "float": "浮窗",
+        "dock": "停回面板"
       },
       "planApproval": {
         "title": "智能体已给出计划——请审阅",

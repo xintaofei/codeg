@@ -3451,7 +3451,11 @@
         "skip": "Überspringen",
         "next": "Weiter",
         "submit": "Senden",
-        "submitError": "Senden fehlgeschlagen. Bitte versuche es erneut."
+        "submitError": "Senden fehlgeschlagen. Bitte versuche es erneut.",
+        "collapse": "Einklappen",
+        "expand": "Ausklappen",
+        "float": "Abtrennen",
+        "dock": "Andocken"
       },
       "planApproval": {
         "title": "Der Agent hat einen Plan – bitte prüfen",

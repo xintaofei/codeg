@@ -3451,7 +3451,11 @@
         "skip": "Omitir",
         "next": "Siguiente",
         "submit": "Enviar",
-        "submitError": "No se pudo enviar. Inténtalo de nuevo."
+        "submitError": "No se pudo enviar. Inténtalo de nuevo.",
+        "collapse": "Plegar",
+        "expand": "Desplegar",
+        "float": "Ventana flotante",
+        "dock": "Volver al panel"
       },
       "planApproval": {
         "title": "El agente tiene un plan: revísalo",
