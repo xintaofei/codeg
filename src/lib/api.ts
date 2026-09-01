@@ -52,6 +52,9 @@ import type {
   WorkTaskTemplate,
   ConversationSummary,
   ConversationDetail,
+  ComposerDraft,
+  ComposerDraftAttachment,
+  ComposerDraftPutResult,
   ConversationTurnsPage,
   DbConversationDetail,
   FolderInfo,
@@ -3211,6 +3214,49 @@ export async function updateConversationPinned(
   return getTransport().call("update_conversation_pinned", {
     conversationId,
     pinned,
+  })
+}
+
+export async function getComposerDraft(
+  conversationId: number
+): Promise<ComposerDraft | null> {
+  return getTransport().call("get_composer_draft", { conversationId })
+}
+
+export async function putComposerDraft(
+  conversationId: number,
+  text: string,
+  origin: string,
+  attachments?: ComposerDraftAttachment[]
+): Promise<ComposerDraftPutResult> {
+  return getTransport().call("put_composer_draft", {
+    conversationId,
+    text,
+    origin,
+    ...(attachments !== undefined ? { attachments } : {}),
+  })
+}
+
+export async function readUploadAttachment(path: string): Promise<{
+  data: string
+  name: string
+  size: number
+  mimeType?: string | null
+}> {
+  return getTransport().call("read_upload_attachment", { path })
+}
+
+export async function stageComposerAttachment(opts: {
+  fileName: string
+  mimeType?: string | null
+  sessionId?: string | null
+  dataBase64: string
+}): Promise<UploadAttachmentResult> {
+  return getTransport().call("stage_composer_attachment", {
+    fileName: opts.fileName,
+    mimeType: opts.mimeType ?? null,
+    sessionId: opts.sessionId ?? null,
+    dataBase64: opts.dataBase64,
   })
 }
 
