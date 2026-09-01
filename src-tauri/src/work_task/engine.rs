@@ -1430,8 +1430,9 @@ impl TaskEngine {
             }
         };
 
-        let branch = format!("task/{}", task.id);
-        let dir = format!("{}-task-{}", basename(&root.path), task.id);
+        let names = fresh_worktree_names(task, basename(&root.path));
+        let branch = names.branch;
+        let dir = names.directory;
         // A configured root that does not exist yet (the folder's first task)
         // needs no `mkdir`: `git worktree add` creates the leading directories
         // along with the checkout.
@@ -1657,7 +1658,7 @@ impl TaskEngine {
             worktree_path_in(
                 &root.path,
                 settings.worktree_root.as_deref(),
-                &format!("{}-task-{}", basename(&root.path), task.id),
+                &recreated_worktree_directory(task, basename(&root.path), branch),
             )
         });
         if Path::new(&path).exists() {
@@ -6658,6 +6659,122 @@ fn basename(path: &str) -> &str {
         .unwrap_or("")
 }
 
+/// Names minted for a task's first checkout. Forge issue tasks carry the
+/// source coordinate users know (provider + issue number), while the
+/// task id remains the final uniqueness boundary. Every other task keeps the
+/// historical names byte-for-byte.
+#[derive(Debug, PartialEq, Eq)]
+struct FreshWorktreeNames {
+    branch: String,
+    directory: String,
+}
+
+const WORKTREE_REPO_SLUG_MAX_CHARS: usize = 48;
+
+fn fresh_worktree_names(
+    task: &crate::db::entities::work_task::Model,
+    repo_name: &str,
+) -> FreshWorktreeNames {
+    fresh_worktree_names_from(
+        task.id,
+        task.source_kind.as_deref(),
+        task.source_meta.as_deref(),
+        repo_name,
+    )
+}
+
+fn fresh_worktree_names_from(
+    task_id: i32,
+    source_kind: Option<&str>,
+    source_meta: Option<&str>,
+    repo_name: &str,
+) -> FreshWorktreeNames {
+    let legacy = || FreshWorktreeNames {
+        branch: format!("task/{task_id}"),
+        directory: format!("{repo_name}-task-{task_id}"),
+    };
+    if source_kind != Some(SOURCE_KIND_ISSUE) {
+        return legacy();
+    }
+    let Some(meta) = source_meta
+        .and_then(|raw| serde_json::from_str::<ForgeSourceMeta>(raw).ok())
+        .filter(|meta| meta.number > 0)
+    else {
+        return legacy();
+    };
+
+    // `ForgeProvider` is an enum, so deserializing the snapshot above is also
+    // the provider whitelist. Never interpolate a free JSON string into a ref.
+    let provider = meta.provider.as_str();
+    let repo = safe_name_slug(repo_name, WORKTREE_REPO_SLUG_MAX_CHARS);
+    let repo = if repo.is_empty() { "repo" } else { &repo };
+    FreshWorktreeNames {
+        branch: format!("task/{provider}-issue-{}-{task_id}", meta.number),
+        directory: format!("{repo}-task-{provider}-issue-{}-{task_id}", meta.number),
+    }
+}
+
+/// Reduce a local repository basename to one branch- and path-safe component.
+/// Unicode letters and numbers stay readable; every other run becomes one
+/// dash. The 48-character ceiling leaves enough byte budget for the fixed
+/// source suffix even when every retained character occupies four UTF-8 bytes.
+fn safe_name_slug(raw: &str, max_chars: usize) -> String {
+    let mut slug = String::new();
+    let mut chars = 0usize;
+    let mut separator_pending = false;
+    for ch in raw.chars() {
+        if !ch.is_alphanumeric() {
+            separator_pending = !slug.is_empty();
+            continue;
+        }
+        if separator_pending && chars < max_chars {
+            slug.push('-');
+            chars += 1;
+        }
+        separator_pending = false;
+        for lower in ch.to_lowercase() {
+            if chars == max_chars {
+                return slug.trim_end_matches('-').to_string();
+            }
+            slug.push(lower);
+            chars += 1;
+        }
+    }
+    slug.trim_end_matches('-').to_string()
+}
+
+/// A row with a recorded branch must always re-check out that exact branch.
+/// When its folder row is gone, mirror the retry suffix in the reconstructed
+/// directory name. Legacy `task/<id>` branches deliberately keep the legacy
+/// directory, even when that old row now also has readable source metadata.
+fn recreated_worktree_directory(
+    task: &crate::db::entities::work_task::Model,
+    repo_name: &str,
+    recorded_branch: &str,
+) -> String {
+    let source = fresh_worktree_names(task, repo_name);
+    if let Some(suffix) = retry_suffix(recorded_branch, &source.branch) {
+        return format!("{}{suffix}", source.directory);
+    }
+
+    let legacy_branch = format!("task/{}", task.id);
+    let legacy_directory = format!("{repo_name}-task-{}", task.id);
+    match retry_suffix(recorded_branch, &legacy_branch) {
+        Some(suffix) => format!("{legacy_directory}{suffix}"),
+        None => legacy_directory,
+    }
+}
+
+fn retry_suffix<'a>(branch: &'a str, base: &str) -> Option<&'a str> {
+    let suffix = branch.strip_prefix(base)?;
+    if suffix.is_empty() {
+        return Some(suffix);
+    }
+    let generation = suffix.strip_prefix("-r")?.strip_suffix('b')?;
+    (!generation.is_empty() && generation.chars().all(|c| c.is_ascii_digit()))
+        .then_some(suffix)
+}
+
 /// `name` placed next to the project folder — where task worktrees live when
 /// the folder configures no root of its own. A project folder with no parent
 /// (a drive or filesystem root) falls back to the bare name, which git then
@@ -6777,6 +6894,187 @@ mod tests {
         // No parent to be a sibling of: the bare name, which git resolves
         // against the repository it runs in.
         assert_eq!(sibling_path("repo", "repo-task-7"), "repo-task-7");
+    }
+
+    fn issue_source_meta(provider: &str, number: i64, title: &str) -> String {
+        serde_json::json!({
+            "provider": provider,
+            "server_host": "forge.test",
+            "api_base": "https://forge.test/api",
+            "account_id": "acc-1",
+            "owner_repo": "acme/app",
+            "number": number,
+            "url": format!("https://forge.test/acme/app/issues/{number}"),
+            "title": title,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn issue_worktree_names_expose_the_source_without_sacrificing_uniqueness() {
+        let meta = issue_source_meta(
+            "github",
+            152,
+            "AI Calls: Reconcile page & offboarding ../../@{evil}",
+        );
+        assert_eq!(
+            fresh_worktree_names_from(2, Some(SOURCE_KIND_ISSUE), Some(&meta), "WowApps"),
+            FreshWorktreeNames {
+                branch: "task/github-issue-152-2".into(),
+                directory: "wowapps-task-github-issue-152-2".into(),
+            }
+        );
+
+        let same_issue_another_task =
+            fresh_worktree_names_from(3, Some(SOURCE_KIND_ISSUE), Some(&meta), "WowApps");
+        assert_ne!(
+            same_issue_another_task.branch,
+            "task/github-issue-152-2"
+        );
+        let gitlab = issue_source_meta("gitlab", 152, "AI Calls");
+        assert_eq!(
+            fresh_worktree_names_from(
+                2,
+                Some(SOURCE_KIND_ISSUE),
+                Some(&gitlab),
+                "WowApps"
+            )
+            .branch,
+            "task/gitlab-issue-152-2"
+        );
+    }
+
+    #[test]
+    fn untrusted_issue_titles_do_not_enter_refs_or_paths() {
+        let unicode = issue_source_meta("github", 8, "修复 登录 🚀 café");
+        assert_eq!(
+            fresh_worktree_names_from(4, Some(SOURCE_KIND_ISSUE), Some(&unicode), "项目")
+                .branch,
+            "task/github-issue-8-4"
+        );
+
+        let empty = issue_source_meta("github", 9, " ../../ 😈 ");
+        assert_eq!(
+            fresh_worktree_names_from(5, Some(SOURCE_KIND_ISSUE), Some(&empty), ""),
+            FreshWorktreeNames {
+                branch: "task/github-issue-9-5".into(),
+                directory: "repo-task-github-issue-9-5".into(),
+            }
+        );
+
+        let long = fresh_worktree_names_from(
+            6,
+            Some(SOURCE_KIND_ISSUE),
+            Some(&issue_source_meta("github", 10, &"界".repeat(500))),
+            &"界".repeat(500),
+        );
+        assert!(long.directory.len() < 255, "{} bytes", long.directory.len());
+        assert_eq!(long.branch, "task/github-issue-10-6");
+    }
+
+    #[test]
+    fn tasks_without_valid_issue_provenance_keep_legacy_names() {
+        let meta = issue_source_meta("github", 7, "Login");
+        let legacy = FreshWorktreeNames {
+            branch: "task/2".into(),
+            directory: "Repo-task-2".into(),
+        };
+        for (kind, source) in [
+            (None, None),
+            (Some(SOURCE_KIND_PR), Some(meta.as_str())),
+            (Some(SOURCE_KIND_ISSUE), Some("not json")),
+        ] {
+            assert_eq!(fresh_worktree_names_from(2, kind, source, "Repo"), legacy);
+        }
+        let zero = issue_source_meta("github", 0, "Login");
+        assert_eq!(
+            fresh_worktree_names_from(2, Some(SOURCE_KIND_ISSUE), Some(&zero), "Repo"),
+            legacy
+        );
+    }
+
+    #[test]
+    fn retry_suffixes_are_strictly_internal_name_components() {
+        assert_eq!(retry_suffix("task/github-issue-7-2", "task/github-issue-7-2"), Some(""));
+        assert_eq!(retry_suffix("task/2-r3b", "task/2"), Some("-r3b"));
+        for hostile in ["-r/b", "-r..b", "-r3/../../b", "-other"] {
+            assert_eq!(retry_suffix(&format!("task/2{hostile}"), "task/2"), None);
+        }
+    }
+
+    /// Pins the user-visible behavior from issue #619 at the git boundary, not
+    /// just the pure name helper: a real forge issue task gets the source-aware
+    /// branch and directory, and those exact coordinates are recorded for all
+    /// later retries, merges, and cleanup.
+    #[tokio::test]
+    async fn a_forge_issue_mints_and_records_a_source_aware_worktree() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let root = home.path().join("Repo");
+        std::fs::create_dir_all(&root).expect("mkdir repo");
+        git_run(&root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("README.md"), "base\n").expect("write");
+        git_run(&root, &["add", "-A"]);
+        git_run(&root, &["commit", "-qm", "base"]);
+        // Legal leaf refs with the provider names must not collide with the
+        // task namespace. A top-level `github/...` or `gitlab/...` scheme
+        // cannot coexist with these branches at all.
+        git_run(&root, &["branch", "github"]);
+        git_run(&root, &["branch", "gitlab"]);
+
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let folder_id = crate::db::test_helpers::seed_folder(&db, root.to_str().unwrap()).await;
+        let created = work_task_service::create_from_forge(
+            &db.conn,
+            crate::models::WorkTaskDraft {
+                folder_id,
+                title: "#619 · Branch names".into(),
+                config: serde_json::json!({ "display_text": "fix it" }),
+            },
+            crate::models::WorkTaskSource {
+                kind: SOURCE_KIND_ISSUE.into(),
+                key: "github:github.com:acme/app:issue:619".into(),
+                meta: serde_json::from_str(&issue_source_meta(
+                    "github",
+                    619,
+                    "../../ title must not become a path",
+                ))
+                .expect("meta"),
+            },
+            false,
+        )
+        .await
+        .expect("create issue task");
+        let task_id = match created {
+            work_task_service::ForgeCreateOutcome::Created(task) => task.id,
+            work_task_service::ForgeCreateOutcome::Duplicate(_) => panic!("fresh source"),
+        };
+        let engine = test_engine(db);
+        let task = row(&engine, task_id).await;
+        let root_detail = get_folder_core(&engine.db, folder_id).await.expect("root");
+
+        let wt = engine
+            .ensure_worktree(&task, &root_detail, &WorkTaskFolderSettings::default())
+            .await
+            .expect("worktree");
+
+        let expected_branch = format!("task/github-issue-619-{task_id}");
+        let branch_tip = task_git::local_branch_tip(&root_detail.path, &expected_branch)
+            .await
+            .expect("branch lookup")
+            .expect("source-aware branch");
+        assert_eq!(
+            task_git::rev_parse(&wt.path, "HEAD").await.expect("worktree head"),
+            branch_tip
+        );
+        let expected_directory = format!("repo-task-github-issue-619-{task_id}");
+        assert_eq!(
+            Path::new(&wt.path).file_name().and_then(|name| name.to_str()),
+            Some(expected_directory.as_str())
+        );
+        assert_eq!(
+            row(&engine, task_id).await.work_branch.as_deref(),
+            Some(expected_branch.as_str())
+        );
     }
 
     /// The derived directory name is joined ONTO the configured root, so it
