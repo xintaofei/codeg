@@ -3211,6 +3211,7 @@
         "noDetail": "暫無詳情。",
         "unknownAgent": "子智慧體",
         "openDetail": "檢視會話",
+        "delegationPinnedModel": "此次委派由上層指定使用 {model}",
         "detailTitle": "子智慧體會話",
         "detailDescription": "唯讀檢視委派給子智慧體的會話內容。",
         "waitForResult": "等待 {task} 任務執行結果",

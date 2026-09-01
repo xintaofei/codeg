@@ -3211,6 +3211,7 @@
         "noDetail": "No detail available yet.",
         "unknownAgent": "하위 에이전트",
         "openDetail": "대화 보기",
+        "delegationPinnedModel": "이 위임에서 부모가 {model} 을(를) 지정했습니다",
         "detailTitle": "서브에이전트 대화",
         "detailDescription": "위임된 서브에이전트 대화를 읽기 전용으로 봅니다.",
         "waitForResult": "작업 {task} 실행 결과 대기 중",

@@ -3211,6 +3211,7 @@
         "noDetail": "No detail available yet.",
         "unknownAgent": "サブエージェント",
         "openDetail": "会話を表示",
+        "delegationPinnedModel": "この委任では親が {model} を指定しました",
         "detailTitle": "サブエージェントの会話",
         "detailDescription": "委任されたサブエージェントの会話を読み取り専用で表示します。",
         "waitForResult": "タスク {task} の実行結果を待機中",

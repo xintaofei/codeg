@@ -3211,6 +3211,7 @@
         "noDetail": "No detail available yet.",
         "unknownAgent": "وكيل فرعي",
         "openDetail": "عرض المحادثة",
+        "delegationPinnedModel": "بدأ على {model}، حدده الأصل لهذه الإحالة",
         "detailTitle": "محادثة الوكيل الفرعي",
         "detailDescription": "عرض للقراءة فقط لمحادثة الوكيل الفرعي المُفوَّض.",
         "waitForResult": "في انتظار نتيجة المهمة {task}",
