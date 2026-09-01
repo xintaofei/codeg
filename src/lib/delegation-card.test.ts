@@ -174,4 +174,29 @@ describe("parseDelegationMeta task fields", () => {
     expect(parsed?.task).toBeNull()
     expect(parsed?.taskId).toBeNull()
   })
+
+  it("parses permission_mode and trims it", () => {
+    const parsed = parseInput(
+      JSON.stringify({
+        agent_type: "codex",
+        task: "t",
+        permission_mode: "  plan  ",
+      })
+    )
+    expect(parsed.permissionMode).toBe("plan")
+  })
+
+  it("treats a blank permission_mode as absent", () => {
+    const parsed = parseInput(
+      JSON.stringify({ agent_type: "codex", task: "t", permission_mode: "   " })
+    )
+    expect(parsed.permissionMode).toBeNull()
+  })
+
+  it("leaves permissionMode null when the argument is omitted", () => {
+    const parsed = parseInput(
+      JSON.stringify({ agent_type: "codex", task: "t" })
+    )
+    expect(parsed.permissionMode).toBeNull()
+  })
 })

@@ -3210,6 +3210,7 @@
         "subAgentRunning": "서브에이전트 실행 중…",
         "noDetail": "No detail available yet.",
         "unknownAgent": "하위 에이전트",
+        "delegationPinnedMode": "Started in {mode} mode, pinned by the parent for this delegation",
         "openDetail": "대화 보기",
         "detailTitle": "서브에이전트 대화",
         "detailDescription": "위임된 서브에이전트 대화를 읽기 전용으로 봅니다.",

@@ -3210,6 +3210,7 @@
         "subAgentRunning": "Sub-agent running…",
         "noDetail": "No detail available yet.",
         "unknownAgent": "Sub-agent",
+        "delegationPinnedMode": "Started in {mode} mode, pinned by the parent for this delegation",
         "openDetail": "Open conversation",
         "detailTitle": "Sub-agent conversation",
         "detailDescription": "Read-only view of the delegated sub-agent's conversation.",

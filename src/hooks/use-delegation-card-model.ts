@@ -53,6 +53,9 @@ export interface DelegationCardModel {
   errorCode: string | undefined
   childConversationId: number | null
   childConnectionId: string | null
+  /** Session mode the parent pinned for this delegation, or `null` when it
+   *  used the configured default. */
+  permissionMode: string | null
   /** False when there's no live binding and the input parsed to neither an
    *  agent type nor a task — nothing useful to draw. Callers render null. */
   hasModel: boolean
@@ -150,6 +153,9 @@ export function useDelegationCardModel(
     errorCode,
     childConversationId,
     childConnectionId,
+    // Only the parsed arguments carry this; hosts that strip arguments simply
+    // show no mode, which reads correctly as "the configured default".
+    permissionMode: parsed.permissionMode,
     // Broker-stamped meta alone is proof enough of a delegation — the
     // persisted Cursor shape has empty raw_input and no live binding.
     hasModel: Boolean(binding || parsed.agentType || parsed.task || parsedMeta),
