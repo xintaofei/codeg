@@ -381,6 +381,49 @@ pub async fn update_conversation_pinned(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetComposerDraftParams {
+    pub conversation_id: i32,
+}
+
+pub async fn get_composer_draft(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<GetComposerDraftParams>,
+) -> Result<Json<Option<crate::db::service::conversation_composer_draft_service::ComposerDraft>>, AppCommandError>
+{
+    Ok(Json(
+        conv_commands::get_composer_draft_core(&state.db.conn, params.conversation_id).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PutComposerDraftParams {
+    pub conversation_id: i32,
+    pub text: String,
+    pub origin: String,
+}
+
+pub async fn put_composer_draft(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<PutComposerDraftParams>,
+) -> Result<
+    Json<crate::db::service::conversation_composer_draft_service::ComposerDraftPutResult>,
+    AppCommandError,
+> {
+    Ok(Json(
+        conv_commands::put_composer_draft_core(
+            &state.db.conn,
+            &state.emitter,
+            params.conversation_id,
+            params.text,
+            params.origin,
+        )
+        .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteConversationParams {
     pub conversation_id: i32,
 }

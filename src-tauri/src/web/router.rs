@@ -160,6 +160,14 @@ pub fn build_router(
             post(handlers::conversations::update_conversation_pinned),
         )
         .route(
+            "/get_composer_draft",
+            post(handlers::conversations::get_composer_draft),
+        )
+        .route(
+            "/put_composer_draft",
+            post(handlers::conversations::put_composer_draft),
+        )
+        .route(
             "/delete_conversation",
             post(handlers::conversations::delete_conversation),
         )

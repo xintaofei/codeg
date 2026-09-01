@@ -6,7 +6,10 @@ use tauri::Manager;
 use crate::app_error::AppCommandError;
 use crate::db::entities::conversation;
 use crate::db::entities::folder::FolderKind;
-use crate::db::service::{conversation_service, folder_service, import_service, tab_service};
+use crate::db::service::{
+    conversation_composer_draft_service, conversation_service, folder_service, import_service,
+    tab_service,
+};
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
 use crate::models::*;
@@ -19,9 +22,10 @@ use crate::parsers::{
     AgentParser, ParseError,
 };
 use crate::web::event_bridge::{
-    emit_event, ConversationChange, ConversationsBulkChanged, EventEmitter, ImportScanProgress,
-    TabsChanged, CONVERSATIONS_BULK_CHANGED_EVENT, CONVERSATION_CHANGED_EVENT,
-    IMPORT_SCAN_PROGRESS_EVENT, TABS_CHANGED_EVENT,
+    emit_event, ComposerDraftChanged, ConversationChange, ConversationsBulkChanged, EventEmitter,
+    ImportScanProgress, TabsChanged, COMPOSER_DRAFT_CHANGED_EVENT,
+    CONVERSATIONS_BULK_CHANGED_EVENT, CONVERSATION_CHANGED_EVENT, IMPORT_SCAN_PROGRESS_EVENT,
+    TABS_CHANGED_EVENT,
 };
 
 #[derive(Default)]
@@ -2226,6 +2230,70 @@ pub async fn update_conversation_pinned(
     update_conversation_pinned_core(&db.conn, conversation_id, pinned).await?;
     emit_conversation_upsert(&EventEmitter::Tauri(app), &db.conn, conversation_id).await;
     Ok(())
+}
+
+/// Fetch the unsent composer text for a persisted conversation. `None` when
+/// no client has saved a draft yet. The body is only returned here — the
+/// WS notify never carries it.
+pub async fn get_composer_draft_core(
+    conn: &sea_orm::DatabaseConnection,
+    conversation_id: i32,
+) -> Result<Option<conversation_composer_draft_service::ComposerDraft>, AppCommandError> {
+    conversation_composer_draft_service::get(conn, conversation_id)
+        .await
+        .map_err(AppCommandError::from)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn get_composer_draft(
+    db: tauri::State<'_, AppDatabase>,
+    conversation_id: i32,
+) -> Result<Option<conversation_composer_draft_service::ComposerDraft>, AppCommandError> {
+    get_composer_draft_core(&db.conn, conversation_id).await
+}
+
+/// Last-write-wins save of unsent composer text. Broadcasts
+/// [`COMPOSER_DRAFT_CHANGED_EVENT`] with ids only (no body).
+pub async fn put_composer_draft_core(
+    conn: &sea_orm::DatabaseConnection,
+    emitter: &EventEmitter,
+    conversation_id: i32,
+    text: String,
+    origin: String,
+) -> Result<conversation_composer_draft_service::ComposerDraftPutResult, AppCommandError> {
+    let result =
+        conversation_composer_draft_service::put(conn, conversation_id, text, origin).await?;
+    emit_event(
+        emitter,
+        COMPOSER_DRAFT_CHANGED_EVENT,
+        ComposerDraftChanged {
+            conversation_id: result.conversation_id,
+            revision: result.revision,
+            origin: result.origin.clone(),
+            cleared: result.cleared,
+        },
+    );
+    Ok(result)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn put_composer_draft(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    conversation_id: i32,
+    text: String,
+    origin: String,
+) -> Result<conversation_composer_draft_service::ComposerDraftPutResult, AppCommandError> {
+    put_composer_draft_core(
+        &db.conn,
+        &EventEmitter::Tauri(app),
+        conversation_id,
+        text,
+        origin,
+    )
+    .await
 }
 
 pub async fn delete_conversation_core(
