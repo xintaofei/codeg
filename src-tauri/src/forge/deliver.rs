@@ -334,9 +334,13 @@ impl ForgeDeliveryApi for ForgeDelivery {
         let auth = resolve(ctx).await?;
         match ctx.provider {
             ForgeProvider::GitHub => create_issue_comment(&auth, ctx.owner_repo, number, body).await,
-            ForgeProvider::GitLab => {
-                gitlab::create_note(&auth, ctx.owner_repo, kind, number, body).await
-            }
+            ForgeProvider::GitLab => gitlab::create_note(&auth, ctx.owner_repo, kind, number, body)
+                .await
+                // The write-back wants the LINK; the composer wants the whole
+                // comment. Same one request either way — and an anchor that did
+                // not survive sanitizing must not fail a comment that was
+                // posted (see `create_issue_comment`).
+                .map(|comment| comment.html_url.unwrap_or_default()),
         }
         .map_err(|e| e.to_string())
     }
@@ -490,24 +494,14 @@ pub async fn create_issue_comment(
     number: i64,
     body: &str,
 ) -> Result<String, ForgeError> {
-    let repo = super::normalize_repo(owner_repo)
-        .ok_or_else(|| ForgeError::Invalid(format!("bad repository path: {owner_repo}")))?;
-    if number <= 0 {
-        return Err(ForgeError::Invalid(format!("bad work item number: {number}")));
-    }
-    let url = format!("{}/repos/{repo}/issues/{number}/comments", auth.api_base);
-    let payload = serde_json::json!({ "body": body });
-    #[derive(Deserialize)]
-    struct RawComment {
-        #[serde(default)]
-        html_url: String,
-    }
-    let created: RawComment = github::api_post(auth, &url, &payload)
-        .await?
-        .json()
-        .await
-        .map_err(|e| ForgeError::Network(format!("bad comment payload: {e}")))?;
-    Ok(created.html_url)
+    // One spelling of the endpoint, shared with the panel's own composer — two
+    // copies of a write path are two chances for one of them to drift onto the
+    // review-comment collection. The write-back only wants the link, and takes
+    // an empty one over a failure: the comment IS posted at this point, and
+    // failing the delivery over a URL that did not survive sanitizing would
+    // report a write-back that did happen as one that did not.
+    let comment = github::create_comment(auth, owner_repo, number, body).await?;
+    Ok(comment.html_url.unwrap_or_default())
 }
 
 /// Push over an explicit HTTPS URL rather than the folder's configured remote:
@@ -935,6 +929,7 @@ mod tests {
             api_base,
             account_id: "acc-test".into(),
             username: "alice".into(),
+            avatar_url: None,
             token: "tok-test".into(),
             scopes: vec!["repo".into()],
         }

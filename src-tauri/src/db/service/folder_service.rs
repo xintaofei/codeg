@@ -7,6 +7,7 @@ use sea_orm::{
 
 use crate::db::entities::folder;
 use crate::db::entities::folder::FolderKind;
+use crate::db::entities::folder_group;
 use crate::db::error::DbError;
 use crate::models::agent::AgentType;
 use crate::models::{FolderDetail, FolderHistoryEntry};
@@ -14,6 +15,36 @@ use crate::models::{FolderDetail, FolderHistoryEntry};
 /// Theme color sentinel stored in the DB. The frontend leaves the folder group
 /// unscoped so it inherits the app-wide appearance theme color.
 pub const DEFAULT_FOLDER_COLOR: &str = "inherit";
+
+/// The position a newly created folder should take: after everything already in
+/// the sidebar.
+///
+/// Reads BOTH tables, because the sidebar's top level is one numeric sequence
+/// shared by folder groups and ungrouped folders — that shared space is what
+/// lets the two interleave. Taking `MAX(folder.sort_order)` alone hands the new
+/// folder a position a group already occupies, and instead of appending it
+/// sorts into the middle of the list (with three groups at 1/2/3 and no
+/// top-level folders, a newly opened folder would land at 1 and render between
+/// the first and second group).
+///
+/// The folder side is deliberately unfiltered — worktree children and hidden
+/// chat folders count too — so the result only ever moves forward. That is the
+/// pre-groups behavior, kept as-is.
+async fn next_sort_order(conn: &DatabaseConnection) -> Result<i32, DbError> {
+    let max_folder = folder::Entity::find()
+        .order_by_desc(folder::Column::SortOrder)
+        .one(conn)
+        .await?
+        .map(|m| m.sort_order)
+        .unwrap_or(0);
+    let max_group = folder_group::Entity::find()
+        .order_by_desc(folder_group::Column::SortOrder)
+        .one(conn)
+        .await?
+        .map(|m| m.sort_order)
+        .unwrap_or(0);
+    Ok(max_folder.max(max_group) + 1)
+}
 
 fn to_entry(m: folder::Model) -> FolderHistoryEntry {
     FolderHistoryEntry {
@@ -43,6 +74,7 @@ fn to_detail(m: folder::Model) -> FolderDetail {
         parent_id: m.parent_id,
         kind: m.kind,
         alias: m.alias,
+        group_id: m.group_id,
     }
 }
 
@@ -121,12 +153,7 @@ async fn add_folder_inner(
         }
         active.update(conn).await?
     } else {
-        let max_order = folder::Entity::find()
-            .order_by_desc(folder::Column::SortOrder)
-            .one(conn)
-            .await?
-            .map(|m| m.sort_order)
-            .unwrap_or(0);
+        let next_order = next_sort_order(conn).await?;
         let active = folder::ActiveModel {
             id: NotSet,
             name: Set(name.clone()),
@@ -138,7 +165,7 @@ async fn add_folder_inner(
             updated_at: Set(now),
             deleted_at: Set(None),
             is_open: Set(true),
-            sort_order: Set(max_order + 1),
+            sort_order: Set(next_order),
             color: Set(DEFAULT_FOLDER_COLOR.to_string()),
             parent_id: Set(match parent {
                 ParentWrite::Preserve => None,
@@ -146,6 +173,9 @@ async fn add_folder_inner(
             }),
             kind: Set(FolderKind::Regular),
             alias: Set(None),
+            // A newly opened folder always lands at the top level; the user
+            // moves it into a group afterwards.
+            group_id: Set(None),
         };
         active.insert(conn).await?
     };
@@ -166,12 +196,7 @@ pub async fn add_chat_folder(
     path: &str,
 ) -> Result<FolderDetail, DbError> {
     let now = Utc::now();
-    let max_order = folder::Entity::find()
-        .order_by_desc(folder::Column::SortOrder)
-        .one(conn)
-        .await?
-        .map(|m| m.sort_order)
-        .unwrap_or(0);
+    let next_order = next_sort_order(conn).await?;
     let active = folder::ActiveModel {
         id: NotSet,
         name: Set("Chat".to_string()),
@@ -183,11 +208,14 @@ pub async fn add_chat_folder(
         updated_at: Set(now),
         deleted_at: Set(None),
         is_open: Set(true),
-        sort_order: Set(max_order + 1),
+        sort_order: Set(next_order),
         color: Set(DEFAULT_FOLDER_COLOR.to_string()),
         parent_id: Set(None),
         kind: Set(FolderKind::Chat),
         alias: Set(None),
+        // Hidden chat folders never appear in the sidebar's folder list, so
+        // they are never in a group.
+        group_id: Set(None),
     };
     let model = active.insert(conn).await?;
     Ok(to_detail(model))
@@ -482,27 +510,47 @@ pub async fn list_live_chat_folder_paths(
     Ok(rows.into_iter().map(|m| m.path).collect())
 }
 
-pub async fn reorder_folders(conn: &DatabaseConnection, ids: Vec<i32>) -> Result<(), DbError> {
-    if ids.is_empty() {
+/// Bulk-assign `sort_order` (and `group_id`) to the named folders in one
+/// statement. `assignments` is `(id, sort_order, group_id)`; a folder absent
+/// from it keeps whatever it had, which is how a closed folder's position
+/// survives a reorder of the open ones.
+///
+/// Raw SQL with a CASE expression rather than one UPDATE per row: the whole
+/// sidebar is rewritten on every drop, and this keeps that a single round trip.
+/// Every interpolated value is an `i32` (or the formatted timestamp), so there
+/// is no injection surface.
+pub(crate) async fn assign_folder_positions(
+    conn: &DatabaseConnection,
+    assignments: &[(i32, i32, Option<i32>)],
+) -> Result<(), DbError> {
+    if assignments.is_empty() {
         return Ok(());
     }
 
-    let now = Utc::now();
-    let now_str = now.format("%Y-%m-%d %H:%M:%S %:z").to_string();
-    let case_expr = ids
+    let now_str = Utc::now().format("%Y-%m-%d %H:%M:%S %:z").to_string();
+    let order_case = assignments
         .iter()
-        .enumerate()
-        .map(|(idx, id)| format!("WHEN {} THEN {}", id, idx + 1))
+        .map(|(id, order, _)| format!("WHEN {id} THEN {order}"))
         .collect::<Vec<_>>()
         .join(" ");
-    let id_list = ids
+    let group_case = assignments
         .iter()
-        .map(|id| id.to_string())
+        .map(|(id, _, group_id)| match group_id {
+            Some(g) => format!("WHEN {id} THEN {g}"),
+            None => format!("WHEN {id} THEN NULL"),
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let id_list = assignments
+        .iter()
+        .map(|(id, _, _)| id.to_string())
         .collect::<Vec<_>>()
         .join(", ");
 
     let sql = format!(
-        "UPDATE folder SET sort_order = CASE id {case_expr} END, updated_at = '{now_str}' WHERE id IN ({id_list})"
+        "UPDATE folder SET sort_order = CASE id {order_case} END, \
+         group_id = CASE id {group_case} END, \
+         updated_at = '{now_str}' WHERE id IN ({id_list})"
     );
     conn.execute(Statement::from_string(DbBackend::Sqlite, sql))
         .await?;

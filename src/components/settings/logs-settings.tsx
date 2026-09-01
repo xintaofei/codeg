@@ -246,7 +246,7 @@ const LogRow = memo(function LogRow({
         </span>
       </div>
       {expanded && hasDetail && (
-        <div className="space-y-1 px-2 pb-2 pl-7 text-[10px] text-muted-foreground">
+        <div className="space-y-1 px-2 pb-2 pl-7 text-3xs text-muted-foreground">
           {record.spans.length > 0 && (
             <div className="break-all">
               <span className="text-muted-foreground/60">spans: </span>
@@ -705,9 +705,7 @@ export function LogsSettings() {
             )}
           </div>
           {envLocked && (
-            <p className="text-[11px] text-amber-500">
-              {t("captureEnvLocked")}
-            </p>
+            <p className="text-2xs text-amber-500">{t("captureEnvLocked")}</p>
           )}
 
           {/* Per-module overrides */}
@@ -715,7 +713,7 @@ export function LogsSettings() {
             <div className="flex items-center justify-between gap-2">
               <div className="space-y-0.5">
                 <h3 className="text-xs font-semibold">{t("targetsTitle")}</h3>
-                <p className="text-[11px] leading-4 text-muted-foreground">
+                <p className="text-2xs leading-4 text-muted-foreground">
                   {t("targetsDescription")}
                 </p>
               </div>
@@ -872,7 +870,7 @@ export function LogsSettings() {
                 ))}
               </SelectContent>
             </Select>
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-2xs text-muted-foreground">
               {t("shownCount", {
                 shown: visible.length,
                 total: records.length,
@@ -880,7 +878,7 @@ export function LogsSettings() {
             </span>
           </div>
 
-          <div className="h-[480px] rounded-md border bg-background/50 font-mono text-[11px] leading-5">
+          <div className="h-[30rem] rounded-md border bg-background/50 font-mono text-2xs leading-5">
             {visible.length === 0 ? (
               <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
                 {t("empty")}
@@ -918,7 +916,7 @@ export function LogsSettings() {
               </p>
             </div>
             {logFiles.length === 0 ? (
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-2xs text-muted-foreground">
                 {t("filesEmpty")}
               </p>
             ) : (
@@ -932,7 +930,7 @@ export function LogsSettings() {
                       {file.name}
                     </span>
                     <div className="flex shrink-0 items-center gap-3">
-                      <span className="text-[11px] text-muted-foreground">
+                      <span className="text-2xs text-muted-foreground">
                         {formatBytes(file.size_bytes)}
                       </span>
                       <Button

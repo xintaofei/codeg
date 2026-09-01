@@ -1,4 +1,9 @@
-import type { DbConversationSummary, FolderDetail } from "@/lib/types"
+import type {
+  DbConversationSummary,
+  FolderDetail,
+  FolderGroupDetail,
+  SidebarLayoutEntry,
+} from "@/lib/types"
 import {
   DEFAULT_SECTION_ORDER,
   normalizeSectionOrder,
@@ -396,6 +401,462 @@ export function worktreeHeaderAlias(
   return alias?.trim() || branch?.trim() || null
 }
 
+// ── Folder groups: the mixed top-level layout ───────────────────────────────
+// The "Folders" section's top level holds two kinds of entry — folder GROUPS and
+// ungrouped folders — interleaved in one user-controlled order. Both carry their
+// position in `sort_order`, and (this is the whole trick) the two tables share
+// one numeric space at the top level, so a single ascending sort over both
+// produces the mixed sequence. Inside a group, its member folders have their own
+// 1..n sequence.
+//
+// Everything below is pure and reference-free so it can be unit-tested without
+// the store, and so the drag gesture can compute a *candidate* layout without
+// touching the backend.
+
+/** One entry in the sidebar's top-level sequence. */
+export interface SidebarEntry {
+  kind: "folder" | "group"
+  id: number
+}
+
+/**
+ * The resolved shape of the "Folders" section: the mixed top-level sequence
+ * plus, for each group, its ordered member folder ids.
+ *
+ * Deliberately ids-only — it is a *shape*, not a data snapshot, so it stays
+ * stable across the status events that constantly replace conversation objects.
+ */
+export interface SidebarLayout {
+  top: readonly SidebarEntry[]
+  /** groupId → ordered member folder ids. A group with no members still has an
+   *  entry (an empty array) so an empty group stays visible and droppable. */
+  membersByGroup: ReadonlyMap<number, readonly number[]>
+}
+
+/** No groups: every folder is top level. Shared so the group-free path (and
+ *  every pre-groups test) allocates nothing. */
+export const EMPTY_SIDEBAR_LAYOUT: SidebarLayout = {
+  top: [],
+  membersByGroup: new Map(),
+}
+
+/** Ascending `sort_order`, ties broken on id, so the sequence is stable even
+ *  when two rows share a position (possible right after a partial write). */
+function compareBySortOrder(
+  left: { sort_order: number; id: number },
+  right: { sort_order: number; id: number }
+): number {
+  const diff = left.sort_order - right.sort_order
+  return diff !== 0 ? diff : left.id - right.id
+}
+
+/**
+ * Resolve the mixed top-level order and each group's members from the raw
+ * folder + group lists.
+ *
+ * `folders` must already be the REORDERABLE set — open, non-chat, and with
+ * worktree children excluded (they follow their repo and never take a slot of
+ * their own). `orderedFolderIds` from the caller is the fallback order used for
+ * ungrouped folders during a drag; see `layoutFromOrderedIds`.
+ *
+ * Two defenses, both load-bearing:
+ * - A folder whose `group_id` names a group that isn't in `groups` (deleted in
+ *   another window between the two snapshots) falls back to the TOP LEVEL. The
+ *   alternative — dropping it — would make a folder vanish from the sidebar
+ *   because of a race, which is much worse than it appearing in the wrong slot
+ *   for one frame.
+ * - Every group gets a `membersByGroup` entry even when empty, because a freshly
+ *   created group has no members and must still render (it is the thing you drag
+ *   folders into).
+ */
+export function buildSidebarLayout(args: {
+  folders: readonly FolderDetail[]
+  groups: readonly FolderGroupDetail[]
+}): SidebarLayout {
+  const { folders, groups } = args
+  if (groups.length === 0) {
+    return {
+      top: [...folders]
+        .sort(compareBySortOrder)
+        .map((f) => ({ kind: "folder" as const, id: f.id })),
+      membersByGroup: new Map(),
+    }
+  }
+
+  const groupIds = new Set(groups.map((g) => g.id))
+  const membersByGroup = new Map<number, number[]>()
+  for (const g of groups) membersByGroup.set(g.id, [])
+
+  const topFolders: FolderDetail[] = []
+  const membersByGroupRaw = new Map<number, FolderDetail[]>()
+  for (const folder of folders) {
+    const groupId = folder.group_id
+    if (groupId == null || !groupIds.has(groupId)) {
+      topFolders.push(folder)
+      continue
+    }
+    const bucket = membersByGroupRaw.get(groupId)
+    if (bucket) bucket.push(folder)
+    else membersByGroupRaw.set(groupId, [folder])
+  }
+
+  for (const [groupId, bucket] of membersByGroupRaw) {
+    membersByGroup.set(
+      groupId,
+      bucket.sort(compareBySortOrder).map((f) => f.id)
+    )
+  }
+
+  // The mixed sort: groups and ungrouped folders in ONE ascending pass over the
+  // shared top-level `sort_order` space. Ties break group-before-folder (then by
+  // id) purely so the result is deterministic.
+  const top: SidebarEntry[] = [
+    ...groups.map((g) => ({
+      kind: "group" as const,
+      id: g.id,
+      sort_order: g.sort_order,
+    })),
+    ...topFolders.map((f) => ({
+      kind: "folder" as const,
+      id: f.id,
+      sort_order: f.sort_order,
+    })),
+  ]
+    .sort((a, b) => {
+      const diff = a.sort_order - b.sort_order
+      if (diff !== 0) return diff
+      if (a.kind !== b.kind) return a.kind === "group" ? -1 : 1
+      return a.id - b.id
+    })
+    .map(({ kind, id }) => ({ kind, id }))
+
+  return { top, membersByGroup }
+}
+
+/**
+ * The group-free layout for a pre-resolved folder id order — the shape
+ * `buildRows` falls back to when no groups exist, and the seed the row model
+ * uses so its output is byte-identical to the pre-groups model.
+ */
+export function layoutFromOrderedIds(
+  orderedFolderIds: readonly number[]
+): SidebarLayout {
+  return {
+    top: orderedFolderIds.map((id) => ({ kind: "folder" as const, id })),
+    membersByGroup: new Map(),
+  }
+}
+
+/** Flatten a layout into the top-level folder/group sequence with each group's
+ *  members inlined right after their group — the order the sidebar renders, and
+ *  the order the backend's per-container counter expects. */
+export function layoutToEntries(layout: SidebarLayout): SidebarLayoutEntry[] {
+  const entries: SidebarLayoutEntry[] = []
+  for (const entry of layout.top) {
+    if (entry.kind === "folder") {
+      entries.push({ kind: "folder", id: entry.id, groupId: null })
+      continue
+    }
+    entries.push({ kind: "group", id: entry.id, groupId: null })
+    for (const memberId of layout.membersByGroup.get(entry.id) ?? []) {
+      entries.push({ kind: "folder", id: memberId, groupId: entry.id })
+    }
+  }
+  return entries
+}
+
+/** Every folder id the layout places, top level and group members alike. */
+export function layoutFolderIds(layout: SidebarLayout): number[] {
+  const ids: number[] = []
+  for (const entry of layout.top) {
+    if (entry.kind === "folder") {
+      ids.push(entry.id)
+      continue
+    }
+    ids.push(...(layout.membersByGroup.get(entry.id) ?? []))
+  }
+  return ids
+}
+
+/**
+ * Move one entry to `(targetGroupId, targetIndex)`, returning a NEW layout.
+ * The folder-group analogue of {@link applyReorder}.
+ *
+ * - Moving a GROUP only ever reorders the top level; `targetGroupId` is ignored
+ *   (groups never nest) and its members travel with it untouched.
+ * - Moving a FOLDER removes it from wherever it currently is — top level or some
+ *   group — and inserts it into the target container at `targetIndex`. That one
+ *   operation covers all four gestures: reorder at top level, reorder within a
+ *   group, drag INTO a group, and drag OUT of one.
+ *
+ * `targetIndex` is clamped into the destination's range AFTER removal, so
+ * "drop past the end" appends rather than being rejected. An unknown entry
+ * returns the input layout unchanged.
+ */
+export function applyLayoutMove(
+  layout: SidebarLayout,
+  moved: SidebarEntry,
+  targetGroupId: number | null,
+  targetIndex: number
+): SidebarLayout {
+  if (moved.kind === "group") {
+    const from = layout.top.findIndex(
+      (e) => e.kind === "group" && e.id === moved.id
+    )
+    if (from < 0) return layout
+    const top = applyReorder(layout.top, from, targetIndex)
+    return { top, membersByGroup: layout.membersByGroup }
+  }
+
+  // Locate the folder: top level, or inside exactly one group.
+  const topIndex = layout.top.findIndex(
+    (e) => e.kind === "folder" && e.id === moved.id
+  )
+  let sourceGroupId: number | null = null
+  if (topIndex < 0) {
+    for (const [groupId, members] of layout.membersByGroup) {
+      if (members.includes(moved.id)) {
+        sourceGroupId = groupId
+        break
+      }
+    }
+    if (sourceGroupId === null) return layout
+  }
+
+  // Dropping into a group that isn't in this layout would strand the folder, so
+  // treat an unknown target as the top level.
+  const destination =
+    targetGroupId !== null && layout.membersByGroup.has(targetGroupId)
+      ? targetGroupId
+      : null
+
+  if (sourceGroupId === destination) {
+    // Same container: a plain reorder, so the other container is untouched.
+    if (destination === null) {
+      return {
+        top: applyReorder(layout.top, topIndex, targetIndex),
+        membersByGroup: layout.membersByGroup,
+      }
+    }
+    const members = layout.membersByGroup.get(destination) ?? []
+    const from = members.indexOf(moved.id)
+    const membersByGroup = new Map(layout.membersByGroup)
+    membersByGroup.set(destination, applyReorder(members, from, targetIndex))
+    return { top: layout.top, membersByGroup }
+  }
+
+  // Cross-container: remove from the source, then insert into the destination.
+  let top = layout.top
+  const membersByGroup = new Map(layout.membersByGroup)
+  if (sourceGroupId === null) {
+    top = layout.top.filter((_, i) => i !== topIndex)
+  } else {
+    membersByGroup.set(
+      sourceGroupId,
+      (membersByGroup.get(sourceGroupId) ?? []).filter((id) => id !== moved.id)
+    )
+  }
+
+  if (destination === null) {
+    const next = [...top]
+    next.splice(clampIndex(targetIndex, next.length), 0, {
+      kind: "folder",
+      id: moved.id,
+    })
+    return { top: next, membersByGroup }
+  }
+
+  const members = [...(membersByGroup.get(destination) ?? [])]
+  members.splice(clampIndex(targetIndex, members.length), 0, moved.id)
+  membersByGroup.set(destination, members)
+  return { top, membersByGroup }
+}
+
+/** Clamp an insertion index into `[0, length]` (length = append at the end). */
+function clampIndex(index: number, length: number): number {
+  return Math.max(0, Math.min(length, index))
+}
+
+/** Where an entry currently sits, or null if the layout doesn't hold it. */
+export function locateEntry(
+  layout: SidebarLayout,
+  entry: SidebarEntry
+): { groupId: number | null; index: number } | null {
+  if (entry.kind === "group") {
+    const index = layout.top.findIndex(
+      (e) => e.kind === "group" && e.id === entry.id
+    )
+    return index < 0 ? null : { groupId: null, index }
+  }
+  const topIndex = layout.top.findIndex(
+    (e) => e.kind === "folder" && e.id === entry.id
+  )
+  if (topIndex >= 0) return { groupId: null, index: topIndex }
+  for (const [groupId, members] of layout.membersByGroup) {
+    const index = members.indexOf(entry.id)
+    if (index >= 0) return { groupId, index }
+  }
+  return null
+}
+
+/**
+ * Reconcile an optimistic (mid-drag) layout against the authoritative one.
+ *
+ * The drag holds its own layout so siblings shift live under the pointer, but
+ * the workspace keeps moving underneath: an automation can mint a worktree, a
+ * task can remove one, another window can delete a group. Without this the drag
+ * snapshot would either resurrect a folder that is gone or hide one that just
+ * arrived, and then PERSIST that view on drop.
+ *
+ * Rule: `candidate` decides the ORDER, `authoritative` decides the MEMBERSHIP.
+ * Anything the authoritative layout no longer has is dropped; anything it has
+ * that the candidate doesn't is appended (folders to the top level, groups to
+ * the end) so it stays reachable and un-clobbered.
+ */
+export function reconcileLayout(
+  candidate: SidebarLayout,
+  authoritative: SidebarLayout
+): SidebarLayout {
+  const liveGroups = new Set<number>()
+  for (const entry of authoritative.top) {
+    if (entry.kind === "group") liveGroups.add(entry.id)
+  }
+  const liveFolders = new Set(layoutFolderIds(authoritative))
+
+  const seenGroups = new Set<number>()
+  const seenFolders = new Set<number>()
+  const top: SidebarEntry[] = []
+  const membersByGroup = new Map<number, number[]>()
+
+  for (const entry of candidate.top) {
+    if (entry.kind === "group") {
+      if (!liveGroups.has(entry.id) || seenGroups.has(entry.id)) continue
+      seenGroups.add(entry.id)
+      top.push(entry)
+      const members: number[] = []
+      for (const memberId of candidate.membersByGroup.get(entry.id) ?? []) {
+        if (!liveFolders.has(memberId) || seenFolders.has(memberId)) continue
+        seenFolders.add(memberId)
+        members.push(memberId)
+      }
+      membersByGroup.set(entry.id, members)
+      continue
+    }
+    if (!liveFolders.has(entry.id) || seenFolders.has(entry.id)) continue
+    seenFolders.add(entry.id)
+    top.push(entry)
+  }
+
+  // Anything new since the drag began, in the authoritative order.
+  for (const entry of authoritative.top) {
+    if (entry.kind === "group") {
+      if (seenGroups.has(entry.id)) continue
+      seenGroups.add(entry.id)
+      top.push(entry)
+      membersByGroup.set(entry.id, [])
+    } else if (!seenFolders.has(entry.id)) {
+      seenFolders.add(entry.id)
+      top.push(entry)
+    }
+  }
+  for (const [groupId, members] of authoritative.membersByGroup) {
+    const bucket = membersByGroup.get(groupId)
+    if (!bucket) continue
+    for (const memberId of members) {
+      if (seenFolders.has(memberId)) continue
+      seenFolders.add(memberId)
+      bucket.push(memberId)
+    }
+  }
+
+  return { top, membersByGroup }
+}
+
+/**
+ * One row of the drag surface: what it renders, and where a drop on it lands
+ * the dragged entry.
+ *
+ * The drag surface collapses the whole Folders section to fixed-height rows so
+ * `pointerYToTargetIndex` is a plain `floor(y / rowHeight)` — the drop target
+ * therefore has to be baked into the row rather than re-derived from the live
+ * (variable-height, virtualized) list.
+ */
+export interface DragSlot {
+  render:
+    | { kind: "folder"; id: number; depth: number }
+    | { kind: "group"; id: number }
+    /** The trailing "move out of the group" drop zone. */
+    | { kind: "ungroup" }
+  target: { groupId: number | null; index: number }
+}
+
+/**
+ * Build the drag surface for one gesture. Two shapes, because the two things
+ * you can drag have different destination spaces:
+ *
+ * - Dragging a GROUP: one row per top-level entry, groups collapsed to their
+ *   heading. Groups never nest, so every drop is a top-level reposition and the
+ *   members travel along without ever being drop targets themselves.
+ * - Dragging a FOLDER: top-level entries, with every group EXPANDED to show its
+ *   members — even a group that is collapsed in the real list, since otherwise a
+ *   collapsed group's interior would be unreachable. A drop on a group's own
+ *   heading means "into this group, at the top", which is also the only way into
+ *   an empty group.
+ *
+ * A folder dragged out of a group gets a trailing drop zone, because a workspace
+ * where every folder lives in some group would otherwise have no top-level row
+ * to aim at. It is omitted for a folder already at the top level, where it would
+ * duplicate a row that already exists (and where its "remove from group" label
+ * would be a lie).
+ */
+export function buildDragSlots(
+  layout: SidebarLayout,
+  dragged: SidebarEntry
+): DragSlot[] {
+  const slots: DragSlot[] = []
+  if (dragged.kind === "group") {
+    layout.top.forEach((entry, index) => {
+      slots.push({
+        render:
+          entry.kind === "group"
+            ? { kind: "group", id: entry.id }
+            : { kind: "folder", id: entry.id, depth: 0 },
+        target: { groupId: null, index },
+      })
+    })
+    return slots
+  }
+
+  layout.top.forEach((entry, index) => {
+    if (entry.kind === "folder") {
+      slots.push({
+        render: { kind: "folder", id: entry.id, depth: 0 },
+        target: { groupId: null, index },
+      })
+      return
+    }
+    slots.push({
+      render: { kind: "group", id: entry.id },
+      target: { groupId: entry.id, index: 0 },
+    })
+    const members = layout.membersByGroup.get(entry.id) ?? []
+    members.forEach((memberId, memberIndex) => {
+      slots.push({
+        render: { kind: "folder", id: memberId, depth: 1 },
+        target: { groupId: entry.id, index: memberIndex },
+      })
+    })
+  })
+
+  if (locateEntry(layout, dragged)?.groupId != null) {
+    slots.push({
+      render: { kind: "ungroup" },
+      target: { groupId: null, index: layout.top.length },
+    })
+  }
+  return slots
+}
+
 // ── Flat row model (Phase 2 virtualization) ─────────────────────────────────
 // The sidebar tree (folders → their conversation rows) is flattened into a
 // single linear array so it can be windowed by `virtua`. Each visible folder
@@ -531,6 +992,34 @@ export interface SectionHeaderRow {
 }
 
 /**
+ * A folder GROUP's heading, inside the "Folders" section. Sits at the same
+ * indent as a top-level folder header and gates its member folders' rows.
+ *
+ * Distinct from {@link SectionHeaderRow} (a group is user-created data, not one
+ * of the four fixed sections) and from {@link FolderHeaderRow} (a group owns no
+ * conversations of its own). The sticky-header machinery, keyed on
+ * `kind === "folder"`, deliberately skips it: sticky stays single-level, and the
+ * member folder's own header is the one worth pinning while you scroll its
+ * conversations.
+ */
+export interface FolderGroupHeaderRow {
+  kind: "folder-group"
+  groupId: number
+  expanded: boolean
+}
+
+/**
+ * The hint under an expanded but empty group ("No folders in this group"). A
+ * group with no members is a normal state — it is what you get the instant you
+ * create one — so it must render something rather than collapsing to a bare
+ * heading with nothing under it.
+ */
+export interface GroupEmptyRow {
+  kind: "group-empty"
+  groupId: number
+}
+
+/**
  * A transient placeholder at the child indent, shown while a conversation's
  * delegation children are being lazily fetched (between expand and the
  * `listChildConversations` response). Replaced by the real child rows once
@@ -548,6 +1037,8 @@ export interface SubsessionLoadingRow {
 
 export type SidebarRow =
   | SectionHeaderRow
+  | FolderGroupHeaderRow
+  | GroupEmptyRow
   | FolderHeaderRow
   | RootGroupHeaderRow
   | ConversationRow
@@ -574,6 +1065,9 @@ const EMPTY_CONTAINER_CHILDREN: ReadonlyMap<number, readonly number[]> =
 // the row output stays identical to the pre-Recent model for callers that don't
 // pass it.
 const EMPTY_CONVERSATIONS: readonly DbConversationSummary[] = []
+// No group is collapsed by default (absent key = expanded), matching
+// `folderExpanded`. Shared so the group-free path allocates nothing.
+const EMPTY_GROUP_EXPANDED: Record<number, boolean> = {}
 
 /**
  * Merge a freshly-fetched children snapshot with child summaries already applied
@@ -757,6 +1251,18 @@ export function buildRows(args: {
    *  hidden). Absent = expanded (the default). Only consulted for container
    *  repos. Optional. */
   rootGroupCollapsed?: ReadonlySet<number>
+  /** The mixed top-level layout: folder GROUPS interleaved with ungrouped
+   *  folders, plus each group's members. Omitted (or group-free) reproduces the
+   *  pre-groups row model exactly — `orderedFolderIds` is then the whole story,
+   *  which is why every existing caller and test keeps working untouched.
+   *
+   *  When present, `orderedFolderIds` is ignored for the Folders section's
+   *  ordering (the layout IS the order) but is still what the caller derived the
+   *  layout from, so the two never disagree. */
+  layout?: SidebarLayout
+  /** Collapsed state of each folder group, keyed by group id. Absent key =
+   *  expanded (the default), mirroring `folderExpanded`. Optional. */
+  groupExpanded?: Record<number, boolean>
 }): SidebarRow[] {
   const {
     pinned,
@@ -778,6 +1284,8 @@ export function buildRows(args: {
     childrenLoading = EMPTY_EXPANDED,
     containerChildren = EMPTY_CONTAINER_CHILDREN,
     rootGroupCollapsed = EMPTY_EXPANDED,
+    layout,
+    groupExpanded = EMPTY_GROUP_EXPANDED,
   } = args
   const rows: SidebarRow[] = []
 
@@ -833,12 +1341,47 @@ export function buildRows(args: {
     }
   }
 
+  // Emit one folder's header + (when expanded) its body, at `baseDepth`.
+  // `baseDepth` is 0 for a top-level folder and 1 for a folder inside a group —
+  // a group member reuses the SAME depth machinery as a worktree sub-group, so
+  // its indent, connector rails and conversation rows all shift together.
+  const pushFolderEntry = (folderId: number, baseDepth: number) => {
+    const worktrees = containerChildren.get(folderId)
+    if (!worktrees || worktrees.length === 0) {
+      // Plain folder (or, under Show worktrees, a repo with no open worktrees):
+      // header + its own bucket — the flat model.
+      rows.push({ kind: "folder", folderId })
+      if (folderExpanded[folderId] ?? true) pushFolderBody(folderId, baseDepth)
+      return
+    }
+    // Container repo: its header gates the WHOLE subtree (root sub-group +
+    // worktrees). Collapsing it hides everything below, so the connector spine
+    // only spans an expanded container.
+    rows.push({ kind: "folder", folderId })
+    if (!(folderExpanded[folderId] ?? true)) return
+    // The repo's OWN sessions move into an indented "root" sub-group, first.
+    rows.push({ kind: "root-group", folderId })
+    if (!rootGroupCollapsed.has(folderId))
+      pushFolderBody(folderId, baseDepth + 1)
+    // Then each worktree as its own indented sub-group.
+    for (const worktreeId of worktrees) {
+      rows.push({ kind: "folder", folderId: worktreeId })
+      if (folderExpanded[worktreeId] ?? true) {
+        pushFolderBody(worktreeId, baseDepth + 1)
+      }
+    }
+  }
+
   const pushFolders = () => {
     // The Folders section header is always present (a permanent entry point),
     // mirroring the Chat section — so a workspace with chats but no open folders
     // still shows the "Folders" heading and its "add a folder" actions. The
     // fully-empty initial workspace (no folders AND no conversations) never
     // reaches buildRows; the list renders a dedicated open-folder CTA there.
+    //
+    // The count is FOLDERS, not top-level entries: groups are containers, and a
+    // header reading "3" next to three groups holding a dozen folders would
+    // undercount the thing the section is about.
     rows.push({
       kind: "section",
       section: "folders",
@@ -846,32 +1389,35 @@ export function buildRows(args: {
       count: orderedFolderIds.length,
     })
     if (!foldersExpanded) return
-    if (orderedFolderIds.length === 0) {
+    // No layout given (or one with no groups at all) → the historical path,
+    // driven straight off `orderedFolderIds`, byte-identical to before groups.
+    const resolved =
+      layout && layout.top.length > 0
+        ? layout
+        : layoutFromOrderedIds(orderedFolderIds)
+    if (resolved.top.length === 0) {
       rows.push({ kind: "folders-empty" })
       return
     }
-    for (const folderId of orderedFolderIds) {
-      const worktrees = containerChildren.get(folderId)
-      if (!worktrees || worktrees.length === 0) {
-        // Plain top-level folder (or, under Show worktrees, a repo with no open
-        // worktrees): header + its own bucket at depth 0 — the flat model.
-        rows.push({ kind: "folder", folderId })
-        if (folderExpanded[folderId] ?? true) pushFolderBody(folderId, 0)
+    for (const entry of resolved.top) {
+      if (entry.kind === "folder") {
+        pushFolderEntry(entry.id, 0)
         continue
       }
-      // Container repo: its header gates the WHOLE subtree (root sub-group +
-      // worktrees). Collapsing it hides everything below, so the connector spine
-      // only spans an expanded container.
-      rows.push({ kind: "folder", folderId })
-      if (!(folderExpanded[folderId] ?? true)) continue
-      // The repo's OWN sessions move into an indented "root" sub-group, first.
-      rows.push({ kind: "root-group", folderId })
-      if (!rootGroupCollapsed.has(folderId)) pushFolderBody(folderId, 1)
-      // Then each worktree as its own indented sub-group.
-      for (const worktreeId of worktrees) {
-        rows.push({ kind: "folder", folderId: worktreeId })
-        if (folderExpanded[worktreeId] ?? true) pushFolderBody(worktreeId, 1)
+      const members = resolved.membersByGroup.get(entry.id) ?? []
+      const expanded = groupExpanded[entry.id] ?? true
+      // No member count on the row: the heading's badge shows RUNNING sessions,
+      // which the render layer derives from live conversation state rather than
+      // from the row model (a status event must never rebuild rows).
+      rows.push({ kind: "folder-group", groupId: entry.id, expanded })
+      if (!expanded) continue
+      if (members.length === 0) {
+        // A group you just created has no members yet; without this the heading
+        // would sit above nothing and read as broken.
+        rows.push({ kind: "group-empty", groupId: entry.id })
+        continue
       }
+      for (const memberId of members) pushFolderEntry(memberId, 1)
     }
   }
 
@@ -1053,6 +1599,11 @@ export function applyReorder<T>(
  * of the Chat and Recent sections belong to no folder, so without this reset
  * they would inherit the last folder of the Folders section and keep its sticky
  * header pinned over a list it has nothing to do with.
+ *
+ * A FOLDER-GROUP header ends it for the same reason, one level down: the group
+ * heading and its empty-state hint belong to no folder, so the folder that
+ * happened to sit above the group must not keep its header pinned across the
+ * group's band.
  */
 export function buildOwnerHeaderIndex(rows: readonly SidebarRow[]): Int32Array {
   const out = new Int32Array(rows.length)
@@ -1060,7 +1611,7 @@ export function buildOwnerHeaderIndex(rows: readonly SidebarRow[]): Int32Array {
   for (let i = 0; i < rows.length; i++) {
     const kind = rows[i].kind
     if (kind === "folder") current = i
-    else if (kind === "section") current = -1
+    else if (kind === "section" || kind === "folder-group") current = -1
     out[i] = current
   }
   return out

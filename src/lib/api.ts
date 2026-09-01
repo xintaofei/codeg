@@ -11,6 +11,7 @@ import { notifyWebUnauthorized } from "./transport/web-connection-store"
 import { getCurrentEffectiveAppLocale } from "./i18n"
 import {
   DEFAULT_FORGE_COMMENT_PAGE_SIZE,
+  DEFAULT_FORGE_FILES_PAGE_SIZE,
   DEFAULT_FORGE_PAGE_SIZE,
 } from "./forge-list-prefs"
 import { TurnBusyError, isTurnInProgressRejection } from "./turn-busy"
@@ -23,14 +24,22 @@ import type {
   Automation,
   AutomationRun,
   AutomationDraft,
+  ForgeChangeDetail,
+  ForgeChangedFileList,
+  ForgeComment,
   ForgeCreateResult,
   ForgeCommentList,
+  ForgeIdentity,
   ForgeIssueList,
+  ForgeIssueRow,
   ForgeLabelList,
+  ForgeMergeMethod,
+  ForgeMergeOptions,
   ForgePanelSettings,
   ForgeRemote,
   ForgeSettingsStore,
   ForgeSort,
+  ForgeStateAction,
   ForgeTab,
   ForgeTaskDraftInput,
   ForgeTaskLink,
@@ -79,9 +88,16 @@ import type {
   CustomImportResult,
   FolderHistoryEntry,
   FolderDetail,
+  FolderGroupDetail,
+  SidebarLayoutEntry,
   FolderLinkDetail,
   FolderLinkPlan,
   FolderLinkRequestItem,
+  CanvasMutation,
+  CanvasNode,
+  CanvasNodeKind,
+  CanvasNodeMovePayload,
+  CanvasSnapshot,
   CreateChatConversationResult,
   CreateChatDirResult,
   WorktreeResolution,
@@ -842,6 +858,105 @@ export type AntigravitySyncReport = {
  */
 export async function acpSyncAntigravitySettings(): Promise<AntigravitySyncReport> {
   return getTransport().call("acp_sync_antigravity_settings", {})
+}
+
+/**
+ * Step one of a browser-free Antigravity sign-in. Mirrors
+ * `AntigravityLoginStart` in src-tauri/src/acp/antigravity_login.rs, as a union
+ * on `alreadySignedIn` — the agent may hold a still-usable token, in which case
+ * it authenticates on the spot and there is no link and nothing to complete.
+ */
+export type AntigravityLoginStart =
+  | {
+      alreadySignedIn: true
+      handle: null
+      authUrl: null
+      redirectUri: null
+      methodId: string
+      expiresInSecs: number
+    }
+  | {
+      alreadySignedIn: false
+      /** Opaque id for this attempt; pass it back to finish/cancel. */
+      handle: string
+      /** The Google consent URL — open it in any browser, on any machine. */
+      authUrl: string
+      /**
+       * Where the browser will be redirected and fail to connect. Shown so the
+       * dead page reads as an expected step rather than a broken login.
+       */
+      redirectUri: string
+      methodId: string
+      /** Antigravity stops waiting after this many seconds. */
+      expiresInSecs: number
+    }
+
+/** Step two's answer. Mirrors `AntigravityLoginOutcome` in the same file. */
+export type AntigravityLoginOutcome = {
+  signedIn: boolean
+  /** The agent's own words when it refused; `null` on success. */
+  message: string | null
+  /**
+   * Whether the same link still works. True only when codeg rejected the paste
+   * itself — the agent never saw it, so the consent already given is still good
+   * and only the paste needs fixing. False once the redirect went out: the
+   * agent's listener answers exactly one request.
+   */
+  retryable: boolean
+  /** Where the credential landed, when codeg can name the file. */
+  credentialPath: string | null
+}
+
+/**
+ * Begin signing in to Antigravity on a machine with no browser.
+ *
+ * Antigravity authenticates through a loopback browser flow the AGENT runs, so
+ * on a headless server (codeg deployed on Linux, no desktop) the first session
+ * opens a browser that does not exist and then blocks for five minutes. This
+ * runs the same flow out of band and hands back the link, so the consent can
+ * happen in whatever browser the user does have.
+ */
+export async function acpAntigravityLoginStart(
+  methodId: string
+): Promise<AntigravityLoginStart> {
+  // The backend spawns the agent and waits for it: up to 60s for `initialize`
+  // (CPython inside a PAR, unpacked on first run) plus 90s for the printed
+  // link. The transport defaults — 60s on web, 30s through the remote-desktop
+  // proxy — would abort with "Request timed out" while that child is still
+  // starting, so the ceiling has to clear the backend's own with a margin.
+  return getTransport().call(
+    "acp_antigravity_login_start",
+    { methodId },
+    { timeoutMs: 180_000 }
+  )
+}
+
+/**
+ * Finish that sign-in with the address the browser was redirected to.
+ *
+ * That address points at `127.0.0.1` on the *server*, which the user's browser
+ * cannot reach — codeg can, so it performs the redirect on their behalf. Only
+ * the OAuth parameters are taken from the paste; the target itself comes from
+ * the link codeg issued.
+ */
+export async function acpAntigravityLoginFinish(
+  handle: string,
+  redirect: string
+): Promise<AntigravityLoginOutcome> {
+  // 20s to deliver the redirect plus 180s for the agent's token exchange and
+  // onboarding round-trips. Timing out under that would be the worst case
+  // available: the attempt is already spent, so the sign-in cannot be retried,
+  // and its result would be lost with it.
+  return getTransport().call(
+    "acp_antigravity_login_finish",
+    { handle, redirect },
+    { timeoutMs: 240_000 }
+  )
+}
+
+/** Abandon a pending browser-free sign-in and stop its agent process. */
+export async function acpAntigravityLoginCancel(handle: string): Promise<void> {
+  return getTransport().call("acp_antigravity_login_cancel", { handle })
 }
 
 /**
@@ -1909,8 +2024,46 @@ export async function removeFolderFromWorkspace(
   return getTransport().call("remove_folder_from_workspace", { folderId })
 }
 
-export async function reorderFolders(ids: number[]): Promise<void> {
-  return getTransport().call("reorder_folders", { ids })
+export async function listFolderGroups(): Promise<FolderGroupDetail[]> {
+  return getTransport().call("list_folder_groups", {})
+}
+
+export async function createFolderGroup(
+  name: string,
+  color?: FolderThemeColor
+): Promise<FolderGroupDetail> {
+  return getTransport().call("create_folder_group", { name, color })
+}
+
+/** Patch a group's name and/or color. An omitted field is left alone, so the
+ *  rename dialog and the color picker never clobber each other. */
+export async function updateFolderGroup(
+  groupId: number,
+  patch: { name?: string; color?: FolderThemeColor }
+): Promise<FolderGroupDetail> {
+  return getTransport().call("update_folder_group", { groupId, ...patch })
+}
+
+/** Delete a group. Member folders are NOT removed from the workspace — they
+ *  return to the top level. */
+export async function deleteFolderGroup(groupId: number): Promise<void> {
+  return getTransport().call("delete_folder_group", { groupId })
+}
+
+/** Persist the whole sidebar layout after a drag. See {@link SidebarLayoutEntry}. */
+export async function applySidebarLayout(
+  entries: SidebarLayoutEntry[]
+): Promise<void> {
+  return getTransport().call("apply_sidebar_layout", { entries })
+}
+
+/** Move one folder into (`groupId`) or out of (`null`) a group, appending it to
+ *  the target container. The context-menu path, which has no drop position. */
+export async function setFolderGroup(
+  folderId: number,
+  groupId: number | null
+): Promise<void> {
+  return getTransport().call("set_folder_group", { folderId, groupId })
 }
 
 export async function updateFolderColor(
@@ -2629,8 +2782,156 @@ export async function removeFolderLink(
   return getTransport().call("remove_folder_link", { linkId, deleteLink })
 }
 
+// ─── Conversation canvas ───
+
+/** Input for `canvasCreateNode`. Binding fields are kind-specific (validated
+ *  server-side): folder → folderId, group → folderGroupId, agent → agentType,
+ *  conversation → conversationId; custom starts empty; note uses content. */
+export interface CreateCanvasNodeInput {
+  kind: CanvasNodeKind
+  folderId?: number
+  folderGroupId?: number
+  agentType?: string
+  conversationId?: number
+  title?: string
+  content?: string
+  color?: string
+  /** Pinned grid axes (regions only); omitted / 0 = auto. */
+  gridColumns?: number
+  gridRows?: number
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** Field-by-field patch: absent = untouched, empty string clears a nullable
+ *  text field. `memberAdd` / `memberRemove` are atomic server-side list ops
+ *  (custom regions only). */
+export interface CanvasNodePatchInput {
+  title?: string
+  content?: string
+  color?: string
+  collapsed?: boolean
+  /** Pinned grid axes; regions only (a non-region patch is rejected). 0 = auto. */
+  gridColumns?: number
+  gridRows?: number
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  memberAdd?: number
+  memberRemove?: number
+}
+
+/** Input for `canvasGroupIntoRegion` — every "collect these conversations"
+ *  gesture: box-select → new region, a pinned card dragged into a custom
+ *  region, and two cards dropped onto each other. */
+export interface GroupIntoRegionInput {
+  /** Existing custom region to merge into. Omit to create a new one from the
+   *  geometry below (which is then ignored — the frame is already placed). */
+  targetRegionId?: number
+  title?: string
+  color?: string
+  /** Conversations to seed the region with; duplicates collapse server-side. */
+  memberIds: number[]
+  /** Pinned cards the selection swallowed, deleted in the same transaction.
+   *  Ids that aren't pinned cards are ignored, not rejected. */
+  consumeNodeIds: number[]
+  gridColumns?: number
+  gridRows?: number
+  /** Where a NEW region goes — all four together, or none at all when merging
+   *  into an existing frame. A half-specified frame is rejected rather than
+   *  silently placed. */
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+}
+
+/** What the gesture actually committed — the region plus the pins that were
+ *  really deleted (raced ids dropped), mirroring the `grouped` event payload. */
+export interface GroupIntoRegionResult {
+  node: CanvasNode
+  deletedIds: number[]
+}
+
+/** The full canvas node set plus the revision it was read at. */
+export async function canvasListNodes(): Promise<CanvasSnapshot> {
+  return getTransport().call("canvas_list_nodes", {})
+}
+
+export async function canvasCreateNode(
+  input: CreateCanvasNodeInput
+): Promise<CanvasMutation<CanvasNode>> {
+  return getTransport().call("canvas_create_node", { input })
+}
+
+/** "Collect these conversations into a region": the region write, its member
+ *  list and the deletion of the pinned cards it absorbed, as ONE transaction and
+ *  ONE revision. Doing it as create + N × memberAdd + M × delete would spray a
+ *  dozen events for one gesture and make every intermediate state observable. */
+export async function canvasGroupIntoRegion(
+  input: GroupIntoRegionInput
+): Promise<CanvasMutation<GroupIntoRegionResult>> {
+  return getTransport().call("canvas_group_into_region", { input })
+}
+
+export async function canvasUpdateNode(
+  nodeId: number,
+  patch: CanvasNodePatchInput
+): Promise<CanvasMutation<CanvasNode>> {
+  return getTransport().call("canvas_update_node", { nodeId, patch })
+}
+
+/** Batch position write (drag drop, auto-arrange): one revision bump, one
+ *  event, however many nodes moved. The value echoes the moves as actually
+ *  written — clamped, deleted-node ghosts dropped — apply THAT optimistically,
+ *  not the request. */
+export async function canvasMoveNodes(
+  moves: CanvasNodeMovePayload[]
+): Promise<CanvasMutation<CanvasNodeMovePayload[]>> {
+  return getTransport().call("canvas_move_nodes", { moves })
+}
+
+/** Drag a member card out of a region onto open canvas. Custom regions MOVE
+ *  the membership (stale retries reject as not_found); folder/agent regions
+ *  COPY. One transaction, one event either way. */
+export async function canvasDetachMember(
+  regionId: number,
+  conversationId: number,
+  x: number,
+  y: number
+): Promise<CanvasMutation<CanvasNode>> {
+  return getTransport().call("canvas_detach_member", {
+    regionId,
+    conversationId,
+    x,
+    y,
+  })
+}
+
+export async function canvasDeleteNode(
+  nodeId: number
+): Promise<CanvasMutation<null>> {
+  return getTransport().call("canvas_delete_node", { nodeId })
+}
+
+/** Delete a whole multi-selection in one transaction and one `pruned` event.
+ *  The value is the ids ACTUALLY deleted (ghosts dropped) — apply that. */
+export async function canvasDeleteNodes(
+  nodeIds: number[]
+): Promise<CanvasMutation<number[]>> {
+  return getTransport().call("canvas_delete_nodes", { nodeIds })
+}
+
 export async function openFolder(path: string): Promise<FolderDetail> {
   return getTransport().call("open_folder", { path })
+}
+
+/** Open a file or directory in Visual Studio Code on the workspace host. */
+export async function openInCode(path: string): Promise<void> {
+  return getTransport().call("open_in_code", { path })
 }
 
 /**
@@ -3248,12 +3549,22 @@ export async function workTaskReturn(
  * Stop a task. `reason` (optional) is the user's own note about why — it lands
  * on the `canceled` entry of the progress timeline and is never replayed into
  * a later run's prompt (a requeue carries its own note for that).
+ *
+ * `deleteWorktree` takes the checkout along once the stop lands — best-effort,
+ * so a removal that fails leaves a retryable `cleanup_state` on the card and
+ * the task is canceled either way. It also deletes the work branch, which is
+ * why the dialog leaves the box unchecked by default.
  */
 export async function workTaskCancel(
   id: number,
-  reason?: string | null
+  reason?: string | null,
+  deleteWorktree = false
 ): Promise<void> {
-  return getTransport().call("work_task_cancel", { id, reason: reason ?? null })
+  return getTransport().call("work_task_cancel", {
+    id,
+    reason: reason ?? null,
+    deleteWorktree,
+  })
 }
 
 /** Dispatch the agent-driven merge (`message: null` = the agent writes the
@@ -5036,6 +5347,197 @@ export async function forgeListComments(
       page: query.page ?? 1,
       perPage: query.perPage ?? DEFAULT_FORGE_COMMENT_PAGE_SIZE,
       accountId: query.accountId ?? null,
+    },
+  })
+}
+
+/**
+ * Post one comment, and get back the comment as the FORGE stored it.
+ *
+ * The result is what the thread appends — not the text that was sent. They
+ * differ in every field that matters: the id (the React key, and the handle
+ * that de-duplicates it when the next page arrives), the author as the forge
+ * resolved it from the token, the timestamp and the permalink.
+ *
+ * Never retried: a retried POST posts twice, and a thread other people read is
+ * the wrong place to be approximately once.
+ */
+export async function forgeCreateComment(
+  folderId: number,
+  draft: {
+    kind: "issue" | "pr"
+    number: number
+    body: string
+    accountId?: string | null
+  }
+): Promise<ForgeComment> {
+  return getTransport().call("forge_create_comment", {
+    folderId,
+    draft: {
+      kind: draft.kind,
+      number: draft.number,
+      body: draft.body,
+      accountId: draft.accountId ?? null,
+    },
+  })
+}
+
+/**
+ * Close or reopen one item, and get back the row the forge now serves.
+ *
+ * The returned row is the point: flipping `state` locally would be a guess.
+ * The item may have been closed in the browser a moment ago, a lock may have
+ * refused the write, and on GitHub a pull request merged in between comes back
+ * `merged` rather than `closed`.
+ */
+export async function forgeSetItemState(
+  folderId: number,
+  request: {
+    kind: "issue" | "pr"
+    number: number
+    action: ForgeStateAction
+    accountId?: string | null
+  }
+): Promise<ForgeIssueRow> {
+  return getTransport().call("forge_set_item_state", {
+    folderId,
+    request: {
+      kind: request.kind,
+      number: request.number,
+      action: request.action,
+      accountId: request.accountId ?? null,
+    },
+  })
+}
+
+/** Open a new issue on the folder's repository. As everywhere else on this
+ *  surface, the repository is derived from the folder's own remote — there is
+ *  no field here to point this account's token at somewhere else. */
+export async function forgeCreateIssue(
+  folderId: number,
+  draft: {
+    title: string
+    body?: string | null
+    labels?: string[]
+    accountId?: string | null
+  }
+): Promise<ForgeIssueRow> {
+  return getTransport().call("forge_create_issue", {
+    folderId,
+    draft: {
+      title: draft.title,
+      body: draft.body ?? null,
+      labels: draft.labels ?? [],
+      accountId: draft.accountId ?? null,
+    },
+  })
+}
+
+/** One proposed change's branches, size, mergeability and CI. Asked only when
+ *  the panel opens on a PULL REQUEST — a list page holds thirty rows whose
+ *  reader opens at most one, so folding this into every row would spend its
+ *  requests on rows nobody looks at. */
+export async function forgeChangeDetail(
+  folderId: number,
+  number: number,
+  accountId?: string | null
+): Promise<ForgeChangeDetail> {
+  return getTransport().call("forge_change_detail", {
+    folderId,
+    query: { number, accountId: accountId ?? null },
+  })
+}
+
+/** One page of the files a proposed change touches. Paths and counters only —
+ *  reading the diff itself is what the task worktree and the app's diff view
+ *  are for. */
+export async function forgeChangeFiles(
+  folderId: number,
+  query: {
+    number: number
+    page?: number
+    perPage?: number
+    accountId?: string | null
+  }
+): Promise<ForgeChangedFileList> {
+  return getTransport().call("forge_change_files", {
+    folderId,
+    query: {
+      number: query.number,
+      page: query.page ?? 1,
+      perPage: query.perPage ?? DEFAULT_FORGE_FILES_PAGE_SIZE,
+      accountId: query.accountId ?? null,
+    },
+  })
+}
+
+/** Who a comment on this folder's repository would be posted as.
+ *
+ *  The panel cannot work this out: which stored account serves a folder is
+ *  decided in the backend, from the origin remote's HOST and an optional
+ *  pinned account, so reading "the default account" out of the settings list
+ *  would name the wrong person on every folder that is not on it.
+ *
+ *  Local — it reads stored settings and sends nothing to the forge. */
+export async function forgeIdentity(
+  folderId: number,
+  accountId?: string | null
+): Promise<ForgeIdentity> {
+  return getTransport().call("forge_identity", {
+    folderId,
+    accountId: accountId ?? null,
+  })
+}
+
+/** Which merge methods the folder's repository permits.
+ *
+ *  A REPOSITORY fact, not a change's — which is why it is not a field on
+ *  `forgeChangeDetail`: folding it in would spend a request on every change
+ *  opened merely to read it. Asked once, when the panel is about to draw the
+ *  merge button. */
+export async function forgeMergeOptions(
+  folderId: number,
+  accountId?: string | null
+): Promise<ForgeMergeOptions> {
+  return getTransport().call("forge_merge_options", {
+    folderId,
+    accountId: accountId ?? null,
+  })
+}
+
+/** Land one proposed change, and get back the row the forge now serves.
+ *
+ *  The returned row is the point, as it is for `forgeSetItemState`: GitHub has
+ *  no merged STATE (a merged pull request reports `closed`, and only
+ *  `merged_at` tells them apart), so a local guess would paint a change that
+ *  just landed as one somebody abandoned.
+ *
+ *  `null` means IT MERGED AND THE ROW COULD NOT BE READ BACK — GitHub's merge
+ *  response does not contain the pull request, so the row costs a second
+ *  request that can fail on its own. It is emphatically not a failure: the
+ *  change is on the base branch, and reporting one would invite somebody to run
+ *  an irreversible operation twice.
+ *
+ *  `headSha` is the commit the caller was looking at. Both forges refuse with a
+ *  409 when the branch has moved since, which is the point of sending it: the
+ *  panel decided with a diff, a file list and a set of checks that all describe
+ *  ONE commit. */
+export async function forgeMergeChange(
+  folderId: number,
+  request: {
+    number: number
+    method: ForgeMergeMethod
+    headSha?: string | null
+    accountId?: string | null
+  }
+): Promise<ForgeIssueRow | null> {
+  return getTransport().call("forge_merge_change", {
+    folderId,
+    request: {
+      number: request.number,
+      method: request.method,
+      headSha: request.headSha ?? null,
+      accountId: request.accountId ?? null,
     },
   })
 }

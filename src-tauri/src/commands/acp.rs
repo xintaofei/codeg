@@ -3980,6 +3980,24 @@ pub(crate) fn grok_launch_permission_mode() -> Option<String> {
 /// launch-time channel that makes the user's own config mean anything, exactly
 /// like [`grok_launch_permission_mode`] above.
 ///
+/// ## What the three presets mean (codex-acp ≥1.7.0)
+///
+/// | preset | sandbox | approvals reviewer |
+/// |---|---|---|
+/// | `read-only` ("Ask for approval") | workspace-write | `user` |
+/// | `agent` ("Approve for me", DEFAULT) | workspace-write | `auto_review` |
+/// | `agent-full-access` ("Full access") | danger-full-access | policy `never` |
+///
+/// 1.7.0 redefined these. `read-only` used to carry a genuinely read-only
+/// sandbox; it now carries `workspaceWrite` like `agent`, and the two are
+/// separated by a new `approvalsReviewer` axis instead — `user` routes every
+/// escalation to the person, `auto_review` puts codex's Guardian model in front
+/// of it and only forwards what that judges unsafe (verified in the `@openai/
+/// codex` 0.148 binary: an `ApprovalsReviewer` enum plus a `guardian_*`
+/// telemetry surface carrying `risk_level` / `user_authorization`; codex's own
+/// `AskForApproval` vocabulary lists `on_request` and `on_request_auto_review`
+/// as DISTINCT policies).
+///
 /// ## Why it keys off the sandbox
 ///
 /// The sandbox is the only axis where guessing wrong ENLARGES access, so it
@@ -3989,6 +4007,33 @@ pub(crate) fn grok_launch_permission_mode() -> Option<String> {
 /// 1. never widen the sandbox — the result is identical or tighter;
 /// 2. never select `never` (no approvals at all) unless the config already says
 ///    exactly that.
+///
+/// ## Why the reviewer axis is NOT used to select
+///
+/// It is tempting to answer 1.7.0's redefinition by injecting `read-only` (the
+/// only user-reviewed preset) whenever the config asks to be consulted. That is
+/// wrong for two independent reasons:
+///
+/// - **It breaks older adapters.** `supports_custom_version()` is true for npx
+///   agents, so a user may pin codex-acp ≤1.6.2, where `read-only` is still a
+///   genuinely READ-ONLY sandbox. Injecting it for a `workspace-write` config
+///   would leave that agent unable to write any file — a silent, hard break.
+///   No preset injection is version-stable across the 1.6/1.7 boundary
+///   (`read-only` changed sandbox, `agent` changed reviewer), and
+///   `INITIAL_AGENT_MODE` is decided BEFORE launch, so the adapter's real
+///   version is not knowable here without an `npm list -g` spawn on the connect
+///   path.
+/// - **It could not help the majority anyway.** This mapping only fires when
+///   the user wrote a `sandbox_mode`. Everyone else gets no injection and so
+///   lands on the adapter's default `agent` — i.e. `auto_review` — regardless.
+///   Overriding the vendor's consent default for the minority who happened to
+///   write a sandbox key, while breaking their older pins, is not a coherent
+///   trade.
+///
+/// So the reviewer change is treated as what it is: an upstream default that
+/// every ACP client now inherits. codeg DISCLOSES it in the Codex panel, and the
+/// composer's approval-preset selector ("Ask for approval") remains the
+/// first-class, per-session control for a user who wants to adjudicate directly.
 ///
 /// ## What is deliberately NOT preserved
 ///
@@ -4001,6 +4046,14 @@ pub(crate) fn grok_launch_permission_mode() -> Option<String> {
 /// `on-request` PLUS a widened sandbox. Mapping is therefore strictly better on
 /// the sandbox axis and neutral on the approval axis; the panel discloses the
 /// approval loss to the user rather than pretending it away.
+///
+/// **The read-only sandbox, on codex-acp ≥1.7.0.** No preset carries one any
+/// more, and the adapter re-sends the selected preset's `sandboxPolicy` on every
+/// `runTurn`, so neither `config.toml` nor the `CODEX_CONFIG` session-config
+/// channel can put it back. `read-only` is still the right target for a
+/// read-only config — it is the tightest preset on both adapter generations —
+/// but on ≥1.7.0 the session really is workspace-writable, which the panel says
+/// out loud rather than papering over.
 fn codex_initial_agent_mode(settings: &CodexSandboxSettings) -> Option<&'static str> {
     // `default_permissions` makes codex resolve everything through that named
     // profile and IGNORE the root sandbox/approval keys entirely (the panel
@@ -4026,6 +4079,9 @@ fn codex_initial_agent_mode(settings: &CodexSandboxSettings) -> Option<&'static 
     // `on-request` and dropped anything outside `CODEX_APPROVAL_POLICIES`.
     let never = settings.approval_policy.as_deref() == Some("never");
     match settings.sandbox_mode.as_deref() {
+        // The tightest preset on BOTH adapter generations: a real read-only
+        // sandbox on ≤1.6.2, and workspace-write with user-adjudicated
+        // approvals on ≥1.7.0 (see the note above on what 1.7.0 removed).
         Some("read-only") => Some("read-only"),
         Some("workspace-write") => Some("agent"),
         // Full access is the one preset that removes approvals entirely, so it
@@ -4340,7 +4396,9 @@ fn persist_opencode_auth_json(raw_auth: &str) -> Result<(), AcpError> {
 // Kimi Code config helpers
 //
 // IMPORTANT — how `kimi acp` actually authenticates (reverse-engineered &
-// empirically verified against @moonshot-ai/kimi-code 0.19.1):
+// empirically verified against @moonshot-ai/kimi-code 0.19.1; still the exact
+// behaviour on 0.39.0, where the managed block + seeded token below were driven
+// through a real `session/new` + `session/prompt` again):
 //
 // `kimi acp` gates EVERY `session/new` on an OAuth-style token: it calls
 // `harnessIsAuthed`, which is true iff `~/.kimi-code/credentials/kimi-code.json`
@@ -5594,24 +5652,58 @@ pub(crate) fn pi_project_trust_launch_block(
 pub(crate) async fn acp_sync_antigravity_settings_core(
     db: &AppDatabase,
 ) -> Result<crate::acp::connection::AntigravitySyncReport, AcpError> {
-    // The read error is PROPAGATED, unlike the `.ok().flatten()` the pi trust
-    // path uses. This function's whole job is to report on the stored row, and
-    // treating a failed read as "no row" would not merely lose the method — it
-    // would hand the sync an empty environment, which on a machine with no
-    // settings.json yet writes `oauth-personal` and reports success for a
-    // choice the user did not make.
+    let runtime_env = antigravity_runtime_env(db).await?;
+    Ok(crate::acp::connection::sync_antigravity_settings_for_env(
+        &runtime_env,
+    ))
+}
+
+/// The environment a real Antigravity launch would compose from the STORED row.
+///
+/// The read error is PROPAGATED, unlike the `.ok().flatten()` the pi trust path
+/// uses. Treating a failed read as "no row" would not merely lose the method —
+/// it would hand the caller an empty environment, which on a machine with no
+/// settings.json yet writes `oauth-personal` and reports success for a choice
+/// the user did not make, and which points the browser-free sign-in at the
+/// default `~/.gemini` rather than the relocated `GEMINI_HOME` a session uses.
+async fn antigravity_runtime_env(db: &AppDatabase) -> Result<BTreeMap<String, String>, AcpError> {
     let setting = agent_setting_service::get_by_agent_type(&db.conn, AgentType::Antigravity)
         .await
         .map_err(|e| AcpError::protocol(e.to_string()))?;
     let local_config_json = load_agent_local_config_json(AgentType::Antigravity);
-    let runtime_env = build_runtime_env_from_setting(
+    Ok(build_runtime_env_from_setting(
         AgentType::Antigravity,
         setting.as_ref(),
         local_config_json.as_deref(),
-    );
-    Ok(crate::acp::connection::sync_antigravity_settings_for_env(
-        &runtime_env,
     ))
+}
+
+/// Start a browser-free Antigravity sign-in and hand back the link to open.
+///
+/// For headless deployments (codeg on a Linux server, no desktop), where the
+/// agent's own loopback browser flow cannot complete: it opens a browser that
+/// does not exist and then blocks for five minutes inside `session/new`. See
+/// [`crate::acp::antigravity_login`].
+pub(crate) async fn acp_antigravity_login_start_core(
+    db: &AppDatabase,
+    method_id: String,
+) -> Result<crate::acp::antigravity_login::AntigravityLoginStart, AcpError> {
+    let runtime_env = antigravity_runtime_env(db).await?;
+    crate::acp::antigravity_login::start(&runtime_env, method_id.trim()).await
+}
+
+/// Deliver the redirect the user's browser could not reach, completing the
+/// sign-in started by [`acp_antigravity_login_start_core`].
+pub(crate) async fn acp_antigravity_login_finish_core(
+    handle: String,
+    redirect: String,
+) -> Result<crate::acp::antigravity_login::AntigravityLoginOutcome, AcpError> {
+    crate::acp::antigravity_login::finish(handle.trim(), &redirect).await
+}
+
+/// Abandon a pending browser-free sign-in and stop its agent process.
+pub(crate) async fn acp_antigravity_login_cancel_core(handle: String) -> Result<(), AcpError> {
+    crate::acp::antigravity_login::cancel(handle.trim()).await
 }
 
 pub(crate) async fn acp_pi_project_trust_state_core(
@@ -6959,7 +7051,7 @@ async fn hermes_setup_argvs() -> (Vec<String>, Vec<String>) {
         // Unreachable: Hermes is always an Npx distribution. Fall through to
         // the npx guidance with the same pinned spec so a future match-arm
         // change can't resurrect a stale recipe.
-        _ => "hermes-agent@0.20.5",
+        _ => "hermes-agent@0.20.6",
     };
     let build = |tail: &[&str]| -> Vec<String> {
         let mut argv = vec![
@@ -11414,6 +11506,34 @@ pub async fn acp_sync_antigravity_settings(
     acp_sync_antigravity_settings_core(&db).await
 }
 
+/// Start a browser-free Antigravity sign-in for a machine with no desktop.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_antigravity_login_start(
+    db: tauri::State<'_, AppDatabase>,
+    method_id: String,
+) -> Result<crate::acp::antigravity_login::AntigravityLoginStart, AcpError> {
+    acp_antigravity_login_start_core(&db, method_id).await
+}
+
+/// Complete a browser-free Antigravity sign-in from the address the user's
+/// browser was redirected to.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_antigravity_login_finish(
+    handle: String,
+    redirect: String,
+) -> Result<crate::acp::antigravity_login::AntigravityLoginOutcome, AcpError> {
+    acp_antigravity_login_finish_core(handle, redirect).await
+}
+
+/// Abandon a pending browser-free Antigravity sign-in.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_antigravity_login_cancel(handle: String) -> Result<(), AcpError> {
+    acp_antigravity_login_cancel_core(handle).await
+}
+
 /// Record (or clear, with `trusted: null`) an explicit project-trust decision in
 /// pi's `trust.json`. Only ever called from a user action in the approval UI.
 #[cfg(feature = "tauri-runtime")]
@@ -13059,6 +13179,33 @@ mod tests {
         for policy in ["", "approval_policy = \"untrusted\"\n"] {
             let toml = format!("{policy}sandbox_mode = \"workspace-write\"\n");
             assert_eq!(initial_mode_for(&toml), Some("agent"));
+        }
+    }
+
+    #[test]
+    fn codex_initial_agent_mode_keeps_a_writable_config_writable_on_every_adapter() {
+        // Regression guard for a fix that looks right and is not. codex-acp
+        // 1.7.0 turned `read-only` into a workspace-write preset whose
+        // approvals are user-adjudicated, which invites mapping EVERY
+        // approval-wanting config onto it. But `supports_custom_version()` is
+        // true for npx agents, and on a user-pinned ≤1.6.2 that preset is still
+        // a genuinely READ-ONLY sandbox — the agent would silently be unable to
+        // write a single file. `INITIAL_AGENT_MODE` is chosen before launch, so
+        // the running adapter's version is not knowable here; the mapping must
+        // therefore stay keyed on the sandbox, which is the axis whose meaning
+        // did not move. See the "Why the reviewer axis is NOT used" note above.
+        for policy in [
+            "",
+            "approval_policy = \"on-request\"\n",
+            "approval_policy = \"on-failure\"\n",
+            "approval_policy = \"untrusted\"\n",
+        ] {
+            let toml = format!("{policy}sandbox_mode = \"workspace-write\"\n");
+            assert_eq!(
+                initial_mode_for(&toml),
+                Some("agent"),
+                "a writable config must never be handed the read-only preset ({policy:?})"
+            );
         }
     }
 
@@ -17231,7 +17378,7 @@ wire_api = "chat"
                     .expect("npx recipe must pin via --package");
                 assert_eq!(
                     argv.get(pkg_idx + 1).map(String::as_str),
-                    Some("hermes-agent@0.20.5")
+                    Some("hermes-agent@0.20.6")
                 );
                 assert_eq!(argv.get(pkg_idx + 2).map(String::as_str), Some("hermes"));
             } else {
@@ -17843,7 +17990,7 @@ model = "gpt"
             )
         };
 
-        let annotated = annotate_npm_bootstrap_failure("hermes-agent@0.20.5", download());
+        let annotated = annotate_npm_bootstrap_failure("hermes-agent@0.20.6", download());
         let text = annotated.to_string();
         assert!(text.contains("fetch failed"), "keeps the original error");
         assert!(text.contains("HTTP(S)_PROXY"), "adds the proxy hint");
@@ -17855,7 +18002,7 @@ model = "gpt"
 
         // A hermes failure that isn't a download stays untouched.
         let permissions = annotate_npm_bootstrap_failure(
-            "hermes-agent@0.20.5",
+            "hermes-agent@0.20.6",
             AcpError::Protocol("failed to install npm package globally: EACCES".to_string()),
         );
         assert!(!permissions.to_string().contains("HTTP(S)_PROXY"));

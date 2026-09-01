@@ -123,7 +123,7 @@ export function FeedbackCheckResultCard({ output, errorText, state }: Props) {
               {time && (
                 <time
                   dateTime={entry.createdAt ?? undefined}
-                  className="shrink-0 text-[10px] text-muted-foreground tabular-nums"
+                  className="shrink-0 text-3xs text-muted-foreground tabular-nums"
                 >
                   {time}
                 </time>

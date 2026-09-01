@@ -32,6 +32,7 @@ import { findOwningFolder } from "@/lib/file-open-target"
 import { AuxPanelNoFolderEmpty } from "@/components/layout/aux-panel-no-folder-empty"
 import { WorkspaceDegradedBanner } from "@/components/layout/workspace-degraded-banner"
 import { WorkspaceUploadDialog } from "@/components/layout/workspace-upload-dialog"
+import { OpenInSubContent } from "@/components/layout/open-in-menu"
 import {
   createFileTreeEntry,
   deleteFileTreeEntry,
@@ -46,6 +47,7 @@ import {
   moveFileTreeEntry,
   readFilePreview,
   openCommitWindow,
+  openInCode,
   renameFileTreeEntry,
   WORKSPACE_DOWNLOAD_CANCELLED,
 } from "@/lib/api"
@@ -722,6 +724,16 @@ function RenderNode({
       }
     }
 
+    const handleOpenInCode = async () => {
+      try {
+        await openInCode(absolutePath)
+      } catch (error) {
+        toast.error(t("toasts.openInCodeFailed"), {
+          description: toErrorMessage(error),
+        })
+      }
+    }
+
     return (
       <ContextMenu>
         <ContextMenuTrigger>
@@ -821,18 +833,16 @@ function RenderNode({
           </ContextMenuItem>
           <ContextMenuSub>
             <ContextMenuSubTrigger>{t("openIn")}</ContextMenuSubTrigger>
-            <ContextMenuSubContent>
-              <ContextMenuItem
-                onSelect={() => void handleOpenInSystemExplorer()}
-              >
-                {systemExplorerLabel}
-              </ContextMenuItem>
-              <ContextMenuItem
-                onSelect={() => void onOpenDirInTerminal(dirPath, node.name)}
-              >
-                {t("openInTerminal")}
-              </ContextMenuItem>
-            </ContextMenuSubContent>
+            <OpenInSubContent
+              explorerLabel={systemExplorerLabel}
+              terminalLabel={t("openInTerminal")}
+              codeLabel={t("openInCode")}
+              onOpenExplorer={() => void handleOpenInSystemExplorer()}
+              onOpenTerminal={() =>
+                void onOpenDirInTerminal(dirPath, node.name)
+              }
+              onOpenCode={() => void handleOpenInCode()}
+            />
           </ContextMenuSub>
           <ContextMenuItem
             onSelect={() =>
@@ -890,6 +900,16 @@ function RenderNode({
     } catch (error) {
       const message = toErrorMessage(error)
       toast.error(t("toasts.openDirectoryFailed"), { description: message })
+    }
+  }
+
+  const handleOpenInCode = async () => {
+    try {
+      await openInCode(absolutePath)
+    } catch (error) {
+      toast.error(t("toasts.openInCodeFailed"), {
+        description: toErrorMessage(error),
+      })
     }
   }
 
@@ -1057,18 +1077,16 @@ function RenderNode({
         </ContextMenuItem>
         <ContextMenuSub>
           <ContextMenuSubTrigger>{t("openIn")}</ContextMenuSubTrigger>
-          <ContextMenuSubContent>
-            <ContextMenuItem
-              onSelect={() => void handleOpenDirInSystemExplorer()}
-            >
-              {systemExplorerLabel}
-            </ContextMenuItem>
-            <ContextMenuItem
-              onSelect={() => void onOpenDirInTerminal(absolutePath, node.name)}
-            >
-              {t("openInTerminal")}
-            </ContextMenuItem>
-          </ContextMenuSubContent>
+          <OpenInSubContent
+            explorerLabel={systemExplorerLabel}
+            terminalLabel={t("openInTerminal")}
+            codeLabel={t("openInCode")}
+            onOpenExplorer={() => void handleOpenDirInSystemExplorer()}
+            onOpenTerminal={() =>
+              void onOpenDirInTerminal(absolutePath, node.name)
+            }
+            onOpenCode={() => void handleOpenInCode()}
+          />
         </ContextMenuSub>
         <ContextMenuItem
           onSelect={() =>
@@ -2626,7 +2644,7 @@ export function FileTreeTab() {
           >
             {node.name}
           </button>
-          <span className="w-8 shrink-0 text-right text-[10px] font-medium text-muted-foreground">
+          <span className="w-8 shrink-0 text-right text-3xs font-medium text-muted-foreground">
             {node.status}
           </span>
         </FileTreeFile>
@@ -3001,25 +3019,27 @@ export function FileTreeTab() {
                       <ContextMenuSubTrigger>
                         {t("openIn")}
                       </ContextMenuSubTrigger>
-                      <ContextMenuSubContent>
-                        <ContextMenuItem
-                          onSelect={() => {
-                            void revealItemInDir(folder.path)
-                          }}
-                        >
-                          {systemExplorerLabel}
-                        </ContextMenuItem>
-                        <ContextMenuItem
-                          onSelect={() => {
-                            void handleOpenDirInTerminal(
-                              folder.path,
-                              rootNodeName
-                            )
-                          }}
-                        >
-                          {t("openInTerminal")}
-                        </ContextMenuItem>
-                      </ContextMenuSubContent>
+                      <OpenInSubContent
+                        explorerLabel={systemExplorerLabel}
+                        terminalLabel={t("openInTerminal")}
+                        codeLabel={t("openInCode")}
+                        onOpenExplorer={() => {
+                          void revealItemInDir(folder.path)
+                        }}
+                        onOpenTerminal={() => {
+                          void handleOpenDirInTerminal(
+                            folder.path,
+                            rootNodeName
+                          )
+                        }}
+                        onOpenCode={() => {
+                          void openInCode(folder.path).catch((error) => {
+                            toast.error(t("toasts.openInCodeFailed"), {
+                              description: toErrorMessage(error),
+                            })
+                          })
+                        }}
+                      />
                     </ContextMenuSub>
                     <ContextMenuItem
                       onSelect={() =>

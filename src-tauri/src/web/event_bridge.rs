@@ -246,6 +246,34 @@ pub enum FolderChange {
     Deleted { id: i32 },
 }
 
+/// Global side-channel for sidebar folder-group sync, alongside
+/// [`FOLDER_CHANGED_EVENT`]. Groups are edited in one window but rendered in
+/// every client, so a rename / recolor / delete has to reach them all.
+pub const FOLDER_GROUP_CHANGED_EVENT: &str = "folder-group://changed";
+
+/// Payload for [`FOLDER_GROUP_CHANGED_EVENT`].
+///
+/// Group CRUD carries its detail so clients apply it without a re-fetch, but a
+/// LAYOUT change deliberately carries nothing: one drag rewrites `group_id` /
+/// `sort_order` on every visible folder, and per-row `folder://changed` upserts
+/// would turn a single gesture into a burst of events that must then be applied
+/// in order to land on the right layout. A single "go re-read both lists" nudge
+/// is smaller, order-independent and self-healing.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FolderGroupChange {
+    /// Insert-or-replace by id (create / rename / recolor).
+    Upsert {
+        group: crate::models::FolderGroupDetail,
+    },
+    /// The group is gone. Its member folders are NOT deleted — they returned to
+    /// the top level, which the accompanying `Layout` refetch picks up.
+    Deleted { id: i32 },
+    /// Folder membership and/or ordering changed; re-fetch the folder and group
+    /// lists.
+    Layout,
+}
+
 /// Per-agent progress of the import picker's local-session scan. Emitted by
 /// `scan_importable_sessions` once per parser so the picker window can render
 /// a live checklist while the (potentially seconds-long) filesystem walk runs.
@@ -639,6 +667,7 @@ mod tests {
                     parent_id: Some(7),
                     kind: FolderKind::Regular,
                     alias: None,
+                    group_id: None,
                 }),
             },
         );
@@ -673,5 +702,56 @@ mod tests {
         assert_eq!(p["kind"], "deleted");
         assert_eq!(p["id"], 42);
         assert!(p["folder"].is_null(), "delete carries no folder detail");
+    }
+
+    #[test]
+    fn emit_event_broadcasts_folder_group_change_wire_shapes() {
+        // The three shapes the sidebar switches on. `layout` in particular must
+        // serialize as a bare tagged variant with no body — the client treats it
+        // as "re-read both lists", so any payload there would be dead weight the
+        // sender is tempted to start trusting.
+        use crate::models::FolderGroupDetail;
+
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+
+        emit_event(
+            &emitter,
+            FOLDER_GROUP_CHANGED_EVENT,
+            FolderGroupChange::Upsert {
+                group: FolderGroupDetail {
+                    id: 3,
+                    name: "Work".to_string(),
+                    color: "blue".to_string(),
+                    sort_order: 2,
+                },
+            },
+        );
+        let evt = rx.try_recv().expect("group upsert should broadcast");
+        assert_eq!(evt.channel, FOLDER_GROUP_CHANGED_EVENT);
+        let p = &*evt.payload;
+        assert_eq!(p["kind"], "upsert");
+        assert_eq!(p["group"]["id"], 3);
+        assert_eq!(p["group"]["name"], "Work");
+        assert_eq!(p["group"]["color"], "blue");
+        assert_eq!(p["group"]["sort_order"], 2);
+
+        emit_event(
+            &emitter,
+            FOLDER_GROUP_CHANGED_EVENT,
+            FolderGroupChange::Deleted { id: 3 },
+        );
+        let evt = rx.try_recv().expect("group delete should broadcast");
+        let p = &*evt.payload;
+        assert_eq!(p["kind"], "deleted");
+        assert_eq!(p["id"], 3);
+
+        emit_event(&emitter, FOLDER_GROUP_CHANGED_EVENT, FolderGroupChange::Layout);
+        let evt = rx.try_recv().expect("layout nudge should broadcast");
+        let p = &*evt.payload;
+        assert_eq!(p["kind"], "layout");
+        assert!(p["group"].is_null(), "the layout nudge carries no payload");
+        assert!(p["id"].is_null(), "the layout nudge carries no payload");
     }
 }

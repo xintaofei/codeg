@@ -16,7 +16,16 @@ import {
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useSearchDialog } from "@/contexts/search-dialog-context"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
-import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
+import {
+  isConversationDeleted,
+  useAppWorkspaceStore,
+} from "@/stores/app-workspace-store"
+import { popClosedTab } from "@/lib/closed-tab-stack"
+import {
+  matchShortcutEvent,
+  numberedTabIndexFromEvent,
+  pickNumberedTabId,
+} from "@/lib/keyboard-shortcuts"
 import { SearchCommandDialog } from "@/components/conversations/search-command-dialog"
 import { WorkspaceFolderDialog } from "@/components/layout/workspace-folder-dialog"
 
@@ -34,15 +43,17 @@ export function WorkspaceChromeController() {
   const { toggle } = useSidebarContext()
   const { toggle: toggleAuxPanel } = useAuxPanelContext()
   const { toggle: toggleTerminal } = useTerminalContext()
-  const { openNewConversationTab, switchTab, closeTab } = useTabActions()
+  const { openNewConversationTab, openTab, switchTab, closeTab } =
+    useTabActions()
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
   // Tab-close/navigation shortcuts used to live in the visible tab strips.
   // Mobile no longer mounts those strips, so this always-mounted controller now
   // owns them too (see the keydown handler below).
   const { mode, activePane, filesMaximized } = useWorkspaceView()
-  const { activeFileTabId } = useWorkspaceFileTabs()
-  const { closeFileTab, closeAllFileTabs } = useWorkspaceActions()
+  const { activeFileTabId, fileTabs } = useWorkspaceFileTabs()
+  const { closeFileTab, closeAllFileTabs, switchFileTab, openFilePreview } =
+    useWorkspaceActions()
   const { openConversations } = useWorkbenchRoute()
   const { shortcuts } = useShortcutSettings()
   // Search open-state is shared (see search-dialog-context): the trigger lives
@@ -132,6 +143,46 @@ export function WorkspaceChromeController() {
         return
       }
 
+      const numberedIndex = numberedTabIndexFromEvent(e, shortcuts)
+      if (numberedIndex !== null) {
+        // A Ctrl chord belongs to a focused terminal — with the defaults it is
+        // a control code, and Ctrl+6 is the Ctrl+^ that switches vim's
+        // alternate file — so decline there, the same way the zoom listener
+        // declines Ctrl+-/Ctrl+= (see appearance-provider). This covers a
+        // remapped Ctrl binding too, which is the behaviour we want. Cmd
+        // carries no shell meaning, so on macOS the jump keeps working over a
+        // focused terminal.
+        if (
+          e.ctrlKey &&
+          !e.metaKey &&
+          e.target instanceof Element &&
+          e.target.closest('[data-terminal-panel-region="true"]')
+        ) {
+          return
+        }
+        if (conversationPaneActive) {
+          const tabId = pickNumberedTabId(
+            tabs.map((tab) => tab.id),
+            numberedIndex
+          )
+          if (!tabId) return
+          e.preventDefault()
+          switchTab(tabId)
+          return
+        }
+        if (filesPaneActive) {
+          const tabId = pickNumberedTabId(
+            fileTabs.map((tab) => tab.id),
+            numberedIndex
+          )
+          if (!tabId) return
+          e.preventDefault()
+          switchFileTab(tabId)
+          return
+        }
+        return
+      }
+
       if (matchShortcutEvent(e, shortcuts.close_all_file_tabs)) {
         if (!filesPaneActive) return
         e.preventDefault()
@@ -149,6 +200,45 @@ export function WorkspaceChromeController() {
           e.preventDefault()
           closeFileTab(activeFileTabId)
         }
+        return
+      }
+
+      if (matchShortcutEvent(e, shortcuts.reopen_last_closed_tab)) {
+        e.preventDefault()
+        while (true) {
+          const closed = popClosedTab()
+          if (!closed) return
+          if (closed.kind === "file") {
+            void openFilePreview(closed.path, {
+              folderId: closed.folderId ?? undefined,
+            })
+            return
+          }
+          if (closed.conversationId != null) {
+            // A deletion seen at any point wins. `applyConversationRemove`
+            // purges what is on the stack when it runs, but a tab that was
+            // still open then gets recorded afterwards, when the user closes
+            // it by hand — that entry can only be caught here.
+            if (isConversationDeleted(closed.conversationId)) continue
+            openConversations()
+            openTab(
+              closed.folderId,
+              closed.conversationId,
+              closed.agentType,
+              closed.isPinned,
+              closed.title
+            )
+            return
+          }
+          const folder = useAppWorkspaceStore
+            .getState()
+            .getFolder(closed.folderId)
+          const workingDir = closed.workingDir ?? folder?.path
+          if (!workingDir) continue
+          openConversations()
+          openNewConversationTab(closed.folderId, workingDir)
+          return
+        }
       }
     }
     document.addEventListener("keydown", handleKeyDown)
@@ -159,6 +249,8 @@ export function WorkspaceChromeController() {
     handleOpenSettings,
     openConversations,
     openNewConversationTab,
+    openTab,
+    openFilePreview,
     setSearchOpen,
     shortcuts,
     toggle,
@@ -172,9 +264,11 @@ export function WorkspaceChromeController() {
     mode,
     activePane,
     filesMaximized,
+    fileTabs,
     activeFileTabId,
     closeFileTab,
     closeAllFileTabs,
+    switchFileTab,
   ])
 
   return (

@@ -265,16 +265,16 @@ export function OpenCodePermissionsSection({
     <div className="space-y-2.5 rounded-md border bg-background/60 p-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <label className="text-[11px] font-medium">
+          <label className="text-2xs font-medium">
             {t("openCode.permissions.title")}
           </label>
-          <p className="mt-1 text-[10px] text-muted-foreground">
+          <p className="mt-1 text-3xs text-muted-foreground">
             {t("openCode.permissions.description")}
           </p>
         </div>
         <BrowserLink
           href={DOCS_URL}
-          className="inline-flex shrink-0 items-center gap-1 text-[11px] text-primary hover:underline"
+          className="inline-flex shrink-0 items-center gap-1 text-2xs text-primary hover:underline"
         >
           {t("openCode.permissions.docsLink")}
           <ExternalLink className="h-3 w-3" />
@@ -282,18 +282,18 @@ export function OpenCodePermissionsSection({
       </div>
 
       {!editable && (
-        <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-[11px] text-amber-500">
+        <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-2xs text-amber-500">
           {t("openCode.permissions.unparsableConfig")}
         </p>
       )}
       {editable && view.invalid && (
-        <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-[11px] text-amber-500">
+        <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-2xs text-amber-500">
           {t("openCode.permissions.invalidBlock")}
         </p>
       )}
       {editable && !view.invalid && view.orderingUnsafe && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5">
-          <p className="min-w-0 flex-1 text-[11px] text-amber-500">
+          <p className="min-w-0 flex-1 text-2xs text-amber-500">
             {view.orderingFixable
               ? t("openCode.permissions.orderingUnsafe")
               : t("openCode.permissions.orderingUnsafeManual")}
@@ -314,14 +314,14 @@ export function OpenCodePermissionsSection({
         </div>
       )}
       {editable && view.agentOverrides.length > 0 && (
-        <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-[11px] text-amber-500">
+        <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-2xs text-amber-500">
           {t("openCode.permissions.agentOverrides", {
             agents: view.agentOverrides.join(", "),
           })}
         </p>
       )}
       {editable && view.legacyToolsDeny && (
-        <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-[11px] text-amber-500">
+        <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-2xs text-amber-500">
           {t("openCode.permissions.legacyTools")}
         </p>
       )}
@@ -334,7 +334,7 @@ export function OpenCodePermissionsSection({
             <div className="text-xs font-medium">
               {t("openCode.permissions.autoAcceptTitle")}
             </div>
-            <p className="mt-0.5 text-[10px] text-muted-foreground">
+            <p className="mt-0.5 text-3xs text-muted-foreground">
               {t("openCode.permissions.autoAcceptHint")}
             </p>
           </div>
@@ -358,10 +358,10 @@ export function OpenCodePermissionsSection({
       {/* ---- Global default ("*") ---- */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-[11px] font-medium">
+          <div className="text-2xs font-medium">
             {t("openCode.permissions.globalLabel")}
           </div>
-          <p className="mt-0.5 text-[10px] text-muted-foreground">
+          <p className="mt-0.5 text-3xs text-muted-foreground">
             {t("openCode.permissions.globalHint")}
           </p>
         </div>
@@ -389,7 +389,7 @@ export function OpenCodePermissionsSection({
       {/* ---- Per-tool grid ---- */}
       <div className="space-y-1.5 border-t pt-2">
         <div className="flex items-center justify-between gap-2">
-          <div className="text-[11px] font-medium text-muted-foreground">
+          <div className="text-2xs font-medium text-muted-foreground">
             {t("openCode.permissions.perToolTitle")}
           </div>
           <Button
@@ -433,7 +433,7 @@ export function OpenCodePermissionsSection({
 
       {customEntries.length > 0 && (
         <div className="space-y-1.5 border-t pt-2">
-          <div className="text-[11px] font-medium text-muted-foreground">
+          <div className="text-2xs font-medium text-muted-foreground">
             {t("openCode.permissions.customKeys")}
           </div>
           <div className="space-y-1">
@@ -517,12 +517,12 @@ function PermissionRow({
         <div className="flex flex-wrap items-center gap-2 px-2.5 py-1.5">
           <div className="flex min-w-0 flex-1 flex-col">
             <span className="truncate font-mono text-xs">{label}</span>
-            <span className="truncate text-[10px] text-muted-foreground">
+            <span className="truncate text-3xs text-muted-foreground">
               {hint}
             </span>
           </div>
           {entry.rules.length > 0 && (
-            <Badge variant="secondary" className="text-[10px]">
+            <Badge variant="secondary" className="text-3xs">
               {t("openCode.permissions.ruleCount", {
                 count: entry.rules.length,
               })}
@@ -573,12 +573,12 @@ function PermissionRow({
         {fineGrained && (
           <CollapsibleContent className="px-2.5 pb-2.5">
             <div className="space-y-1.5 border-t pt-2">
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-3xs text-muted-foreground">
                 {t("openCode.permissions.rulesHint")}
               </p>
 
               {entry.rules.length === 0 ? (
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-2xs text-muted-foreground">
                   {t("openCode.permissions.noRules")}
                 </p>
               ) : (
@@ -709,7 +709,7 @@ function PermissionRow({
                 </Button>
               </div>
               {(duplicate || editRejected) && (
-                <p className="text-[10px] text-destructive">
+                <p className="text-3xs text-destructive">
                   {editRejected && editedText.length === 0
                     ? t("openCode.permissions.blankRule")
                     : t("openCode.permissions.duplicateRule")}

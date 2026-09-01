@@ -488,7 +488,7 @@ function ZoomControls({ controller }: { controller: ViewportController }) {
       >
         <ZoomOutIcon />
       </Button>
-      <span className="min-w-9 text-center text-[11px] text-muted-foreground tabular-nums">
+      <span className="min-w-9 text-center text-2xs text-muted-foreground tabular-nums">
         {Math.round(controller.zoom * 100)}%
       </span>
       <Button
@@ -666,7 +666,7 @@ function FullscreenDiagram({
       aria-describedby={undefined}
       // A framed panel on the dimmed overlay `DialogContent` already brings —
       // the point of moving fullscreen into a real dialog.
-      className="grid h-[90dvh] w-[min(1400px,95vw)] max-w-none grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden overflow-y-hidden rounded-2xl p-0"
+      className="grid h-[90dvh] w-full max-w-[95vw] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden overflow-y-hidden rounded-2xl p-0"
       showCloseButton={false}
     >
       <div className="flex items-center justify-between gap-2 border-border border-b px-3 py-2">

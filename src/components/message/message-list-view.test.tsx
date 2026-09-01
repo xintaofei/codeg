@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  advanceReplyFold,
   mergeConsecutiveAssistantTurns,
   singletonSourceTurns,
   type MergedAssistantRunCache,
+  type ReplyFoldState,
   type ResolvedMessageGroup,
   type ThreadRenderItem,
 } from "./message-list-view"
@@ -32,12 +34,205 @@ function assistantItem(
       ...groupOverrides,
     },
     phase: "persisted",
+    isResponseComplete: true,
     showStats: false,
     isRoleTransition: false,
     previousUserIndex: null,
+    isLastAssistantRun: false,
     sourceTurns: [],
   }
 }
+
+describe("advanceReplyFold", () => {
+  const initial: ReplyFoldState = {
+    signal: 0,
+    epoch: 0,
+    armed: false,
+    running: false,
+    runId: null,
+    roundOpen: true,
+  }
+  // Live-message ids — the logical run, one per reply.
+  const A = "lm-a"
+  const B = "lm-b"
+  const idle = (runId: string | null = null, sendSignal = 0) => ({
+    sendSignal,
+    running: false,
+    runId,
+  })
+  const live = (runId: string, sendSignal = 0) => ({
+    sendSignal,
+    running: true,
+    runId,
+  })
+
+  it("opens a conversation with every reply folded", () => {
+    // Nothing is streaming on load, so no run is the current round and every
+    // reply falls back to its own (empty) fold override.
+    expect(advanceReplyFold(initial, idle(A))).toBe(initial)
+  })
+
+  it("arms once the agent starts replying and stays armed after it settles", () => {
+    const armed = advanceReplyFold(initial, live(A))
+    expect(armed.armed).toBe(true)
+    // The reply settling must NOT disarm — that is the auto-fold-on-finish
+    // this replaced. Only the running edge moves.
+    const settled = advanceReplyFold(armed, idle(A))
+    expect(settled.armed).toBe(true)
+    expect(settled.roundOpen).toBe(true)
+    expect(settled.running).toBe(false)
+    // Steady state after that: nothing left to move.
+    expect(advanceReplyFold(settled, idle(A))).toBe(settled)
+  })
+
+  it("keeps a hand-folded round folded while it settles", () => {
+    const folded: ReplyFoldState = {
+      signal: 0,
+      epoch: 0,
+      armed: true,
+      running: true,
+      runId: A,
+      roundOpen: false,
+    }
+    expect(advanceReplyFold(folded, idle(A)).roundOpen).toBe(false)
+  })
+
+  it("folds the thread and disarms on send", () => {
+    const settled = advanceReplyFold(
+      advanceReplyFold(initial, live(A)),
+      idle(A)
+    )
+    const sent = advanceReplyFold(settled, idle(A, 1))
+    expect(sent).toMatchObject({
+      signal: 1,
+      armed: false,
+      running: false,
+      roundOpen: true,
+    })
+    // The epoch only ever has to MOVE — its absolute value is an invalidation
+    // token, and a round starting bumps it too.
+    expect(sent.epoch).toBeGreaterThan(settled.epoch)
+  })
+
+  it("re-arms immediately when a send lands mid-reply (steering)", () => {
+    const armed = advanceReplyFold(initial, live(A))
+    const steered = advanceReplyFold(armed, live(A, 1))
+    // The reply being written is at once the new round: bumping the epoch folds
+    // the history above it without folding the reply itself.
+    expect(steered).toMatchObject({
+      signal: 1,
+      armed: true,
+      running: true,
+      roundOpen: true,
+    })
+    expect(steered.epoch).toBeGreaterThan(armed.epoch)
+  })
+
+  it("starts a fresh round on the running edge, with no send signal at all", () => {
+    // `live-transcript-view` mounts MessageListView WITHOUT `sendSignal` for a
+    // work-task transcript the engine drives through many rounds. Keying the
+    // round off `sendSignal` alone left every finished round expanded there.
+    let s = advanceReplyFold(initial, live(A)) // round 1 starts
+    s = advanceReplyFold(s, idle(A)) // round 1 settles
+    const roundOneEpoch = s.epoch
+
+    const roundTwo = advanceReplyFold(s, live(B)) // round 2, same signal
+    expect(roundTwo.armed).toBe(true)
+    expect(roundTwo.roundOpen).toBe(true)
+    expect(roundTwo.runId).toBe(B)
+    // A fresh epoch is what folds round 1 shut behind round 2.
+    expect(roundTwo.epoch).toBeGreaterThan(roundOneEpoch)
+  })
+
+  it("does not hand a hand-folded round's collapse to the next round", () => {
+    // Same no-send host: folding round 1 by hand set `roundOpen: false`, and a
+    // latched `armed` meant round 2 inherited it and arrived already collapsed.
+    let s = advanceReplyFold(initial, live(A))
+    s = { ...s, roundOpen: false } // reader folds the live round
+    s = advanceReplyFold(s, idle(A)) // it settles, still folded
+    expect(s.roundOpen).toBe(false)
+
+    expect(advanceReplyFold(s, live(B)).roundOpen).toBe(true)
+  })
+
+  it("starts a fresh round for a streaming reply that merges behind a settled one", () => {
+    // Background / loop turns arrive with no user turn between, so a settled
+    // reply and a brand-new streaming one end up CONSECUTIVE and
+    // `mergeConsecutiveAssistantTurns` folds them into one render item whose id
+    // is pinned to the first member. Identifying the round by that id would
+    // read the new reply as the old one resuming — it would arrive folded (if
+    // the reader had folded the old one) with its live content hidden. The live
+    // message is the run, so the merge cannot alias the two.
+    let s = advanceReplyFold(initial, live(A))
+    s = { ...s, roundOpen: false } // reader folds reply A
+    s = advanceReplyFold(s, idle(null)) // A settles, live message cleared
+    const settledEpoch = s.epoch
+
+    const merged = advanceReplyFold(s, live(B))
+    expect(merged.roundOpen).toBe(true)
+    expect(merged.armed).toBe(true)
+    expect(merged.epoch).toBeGreaterThan(settledEpoch)
+  })
+
+  it("latches a live identity that arrives after the round started", () => {
+    // Mid-turn attach: a viewer joining a reply already in flight sees it
+    // through the backend's in-flight marker first (running, but no live
+    // message yet) and bridges the live stream a beat later. Leaving the round
+    // anonymous gives a later re-bridge nothing to recognise the reply by.
+    let s = advanceReplyFold(initial, {
+      sendSignal: 0,
+      running: true,
+      runId: null,
+    })
+    s = advanceReplyFold(s, live(A)) // live stream attaches mid-round
+    expect(s.runId).toBe(A)
+    const latchedEpoch = s.epoch
+    s = { ...s, roundOpen: false } // reader folds the reply
+
+    s = advanceReplyFold(s, idle(null)) // premature COMPLETE_TURN
+    const rebridged = advanceReplyFold(s, live(A))
+    // Still the same reply: the latch is what keeps this from reading as new.
+    expect(rebridged.epoch).toBe(latchedEpoch)
+    expect(rebridged.roundOpen).toBe(false)
+  })
+
+  it("re-identifies, not re-rounds, when a running reply's id is rebased", () => {
+    // `STATUS_CHANGED(prompting)` mints a client-side `randomUUID` live
+    // message; a reconnect that hydrates from a snapshot swaps it wholesale for
+    // the backend's, mid-reply. Reading that as a new round would re-open a
+    // reply the reader had folded and fold the history they had opened — on
+    // every reconnect.
+    let s = advanceReplyFold(initial, live(A))
+    s = { ...s, roundOpen: false } // reader folds the live reply
+    const rebased = advanceReplyFold(s, live(B)) // snapshot hydration
+    expect(rebased.runId).toBe(B)
+    expect(rebased.epoch).toBe(s.epoch)
+    expect(rebased.roundOpen).toBe(false)
+    // And the new id is what a later re-bridge is recognised by.
+    const settled = advanceReplyFold(rebased, idle(null))
+    expect(advanceReplyFold(settled, live(B)).roundOpen).toBe(false)
+  })
+
+  it("treats a re-bridged live reply as the same round, not a new one", () => {
+    // The runtime completes a live reply prematurely and then re-bridges the
+    // SAME liveMessage while it is still streaming (see "drops the promoted
+    // snapshot when the same liveMessage is still streaming" in
+    // conversation-runtime-context.test.tsx). That reaches the fold state as
+    // running true → false → true for ONE reply, carrying one unchanged id.
+    let s = advanceReplyFold(initial, live(A))
+    s = { ...s, roundOpen: false } // reader folds the live reply
+    const armedEpoch = s.epoch
+
+    s = advanceReplyFold(s, idle(A)) // premature COMPLETE_TURN
+    const rebridged = advanceReplyFold(s, live(A)) // same liveMessage returns
+
+    expect(rebridged.running).toBe(true)
+    // Neither may move: a bump would fold history the reader had opened, and a
+    // reset would re-open the reply they had just folded.
+    expect(rebridged.epoch).toBe(armedEpoch)
+    expect(rebridged.roundOpen).toBe(false)
+  })
+})
 
 describe("singletonSourceTurns", () => {
   it("returns the same array reference for the same turn", () => {
@@ -131,9 +326,11 @@ function makeItem(
     kind: "turn",
     group,
     phase,
+    isResponseComplete: phase === "persisted",
     showStats: false,
     isRoleTransition: false,
     previousUserIndex: null,
+    isLastAssistantRun: false,
     sourceTurns: singletonSourceTurns(turn(group.id)),
   }
 }
@@ -208,6 +405,25 @@ describe("mergeConsecutiveAssistantTurns merged-run cache", () => {
 
     expect(out2[0]).not.toBe(out1[0])
     expect(out2[2]).toBe(out1[2])
+  })
+
+  it("rebuilds when a persisted run changes from in-flight to completed", () => {
+    const cache: MergedAssistantRunCache = new WeakMap()
+    const g1 = makeGroup("assistant", "a1")
+    const g2 = makeGroup("assistant", "a2")
+    const firstItems = [makeItem(g1, 0), makeItem(g2, 1)]
+    if (firstItems[1].kind !== "turn") throw new Error("expected turn")
+    firstItems[1].isResponseComplete = false
+
+    const out1 = mergeConsecutiveAssistantTurns(firstItems, cache)
+    const out2 = mergeConsecutiveAssistantTurns(
+      [makeItem(g1, 0), makeItem(g2, 1)],
+      cache
+    )
+
+    expect(out2[0]).not.toBe(out1[0])
+    if (out2[0].kind !== "turn") throw new Error("expected turn")
+    expect(out2[0].isResponseComplete).toBe(true)
   })
 
   it("misses when the run gains a member, then caches the new membership", () => {

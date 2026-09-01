@@ -2896,7 +2896,23 @@ fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
         entry.1.insert(McpAppType::Gemini);
     }
 
+    // OpenClaw is the one agent that shares a key with Kimi (`auth`), so keep
+    // what its own config declares: below, that is what tells Kimi's pass an
+    // OpenClaw setting from an echo codeg once wrote into some other agent's
+    // file — and it has to be the VALUE, since the agent that wins the merge may
+    // carry neither. See `KIMI_SHARED_KEYS`.
+    let mut openclaw_declares: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
     for (id, spec) in read_openclaw_servers()? {
+        let declared: Map<String, Value> = KIMI_SHARED_KEYS
+            .iter()
+            .filter_map(|key| {
+                spec.get(*key)
+                    .map(|value| ((*key).to_string(), value.clone()))
+            })
+            .collect();
+        if !declared.is_empty() {
+            openclaw_declares.insert(id.clone(), declared);
+        }
         let entry = merged
             .entry(id)
             .or_insert_with(|| (spec.clone(), BTreeSet::new()));
@@ -2925,9 +2941,15 @@ fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
     }
 
     for (id, spec) in read_kimi_code_servers()? {
+        let owner_values = openclaw_declares.remove(&id).unwrap_or_default();
         let entry = merged
             .entry(id)
             .or_insert_with(|| (spec.clone(), BTreeSet::new()));
+        // Kimi models fields no other agent does, and this merge is
+        // first-writer-wins — so when an earlier agent already claimed the id,
+        // fold Kimi's own fields back in or they never reach the editor (and the
+        // next save writes them off disk). See `merge_kimi_extension_fields`.
+        merge_kimi_extension_fields(&mut entry.0, &spec, &owner_values);
         entry.1.insert(McpAppType::KimiCode);
     }
 
@@ -3065,7 +3087,7 @@ fn read_kimi_code_servers() -> Result<BTreeMap<String, Value>, AppCommandError> 
 
 /// Convert one Kimi `mcpServers` entry into codeg's canonical spec.
 ///
-/// Kimi Code 0.23.3 validates `mcp.json` with a Zod discriminated union keyed on
+/// Kimi Code validates `mcp.json` with a Zod discriminated union keyed on
 /// `transport` (`stdio`/`http`/`sse`): `command` ⇒ stdio, and a url-only remote
 /// entry DEFAULTS to streamable HTTP — it never infers SSE from the URL path, and
 /// `type` is not a recognized field (silently stripped). Mirror that so codeg
@@ -3074,6 +3096,9 @@ fn read_kimi_code_servers() -> Result<BTreeMap<String, Value>, AppCommandError> 
 /// `sse` yields SSE), else HTTP. `type` is intentionally NOT consulted for remote
 /// (Kimi ignores it). `transport` is then dropped from the canonical spec so it
 /// can't leak into another agent's config on a cross-agent sync. See issue #325.
+///
+/// Schema last checked against 0.39.1: unchanged since 0.23.3 apart from the
+/// optional `runtime_id` stdio field 0.38.0 added.
 fn kimi_code_entry_to_canonical(spec: &Value, id: &str) -> Result<Value, AppCommandError> {
     let Some(obj) = spec.as_object() else {
         return canonicalize_spec(spec, "Kimi Code config");
@@ -3133,9 +3158,132 @@ fn read_kimi_code_servers_at(path: &Path) -> Result<BTreeMap<String, Value>, App
     Ok(out)
 }
 
+fn is_non_empty_str(value: &Value) -> bool {
+    value.as_str().is_some_and(|s| !s.is_empty())
+}
+
+fn is_string_array(value: &Value) -> bool {
+    value
+        .as_array()
+        .is_some_and(|items| items.iter().all(Value::is_string))
+}
+
+/// Kimi's `McpTimeoutMsSchema`: an integer in `1..=i32::MAX`.
+///
+/// `30000.0` counts: JSON numbers are doubles in JS, so Zod's `.int()` accepts
+/// any integer-valued one. Rejecting it here would drop a timeout Kimi honors.
+fn is_kimi_timeout_ms(value: &Value) -> bool {
+    let Some(ms) = value.as_f64() else {
+        return false;
+    };
+    ms.fract() == 0.0 && (1.0..=f64::from(i32::MAX)).contains(&ms)
+}
+
+/// The `mcp.json` fields Kimi models that no other agent codeg writes models —
+/// checked against every per-server schema in this file plus OpenClaw's
+/// `McpServerConfig` and Cline's `McpServerRegistration`, the two richest. That
+/// exclusivity is what lets Kimi's copy be authoritative for them in
+/// `merge_kimi_extension_fields`.
+const KIMI_OWNED_KEYS: &[&str] = &[
+    "runtime_id",
+    "executor",
+    "bearerTokenEnvVar",
+    "startupTimeoutMs",
+    "toolTimeoutMs",
+    "enabledTools",
+    "disabledTools",
+];
+
+/// Kimi fields that ANOTHER agent also models, so Kimi's copy is not
+/// authoritative: `auth: "oauth"` means the same thing in OpenClaw's
+/// `McpServerConfig`. For these the OWNER's value wins, with Kimi's as the
+/// fallback — `scan_local_servers` collects it during the OpenClaw pass and
+/// hands it to `merge_kimi_extension_fields`. A copy held by any OTHER agent is
+/// only an echo codeg once wrote there and never wins, so removing the key in
+/// either owner's config still takes effect.
+const KIMI_SHARED_KEYS: &[&str] = &["auth"];
+
+/// Whether `key` is one of [`KIMI_OWNED_KEYS`] / [`KIMI_SHARED_KEYS`] carrying a
+/// value that still satisfies Kimi's schema for this transport.
+///
+/// Validation is not optional: Kimi rejects the ENTIRE `mcpServers` record when a
+/// field it knows has the wrong type, so a wrong-shaped value must be dropped
+/// rather than written back. `stdio` selects the branch of Kimi's discriminated
+/// union, since `runtime_id`/`executor` are stdio-only and `auth`/
+/// `bearerTokenEnvVar` are remote-only.
+fn is_kimi_extension_field(key: &str, value: &Value, stdio: bool) -> bool {
+    match key {
+        // stdio: which runtime executes the command. `runtime_id` arrived in
+        // Kimi 0.38.0 alongside the runtime-binding rework.
+        "runtime_id" => stdio && is_non_empty_str(value),
+        "executor" => stdio && matches!(value.as_str(), Some("local") | Some("kaos")),
+        // http/sse: OAuth is the only literal Kimi accepts for `auth`.
+        "auth" => !stdio && value.as_str() == Some("oauth"),
+        "bearerTokenEnvVar" => !stdio && is_non_empty_str(value),
+        // Common to every transport.
+        "startupTimeoutMs" | "toolTimeoutMs" => is_kimi_timeout_ms(value),
+        "enabledTools" | "disabledTools" => is_string_array(value),
+        _ => false,
+    }
+}
+
+/// Resolve the Kimi-only fields of the canonical spec a server resolved to from
+/// Kimi's own copy.
+///
+/// codeg keeps ONE canonical spec per server across every agent, and
+/// `scan_local_servers` resolves a server present in several agents to the FIRST
+/// agent's copy. A server that also lives in, say, Codex's config would
+/// otherwise surface as Codex's projection, which never carried Kimi's fields —
+/// and since the settings UI hands that same spec back on save, the next save
+/// would write them off disk. Folding them in keeps the canonical spec an honest
+/// description of what is on disk, which is also what makes DELETING one work:
+/// the field is visible in the editor, and a spec that omits it means the user
+/// removed it, not that some other agent's reader never had it.
+///
+/// For [`KIMI_OWNED_KEYS`] Kimi's copy wins outright, its ABSENCE included.
+/// Those keys mean nothing to any other agent, but codeg's permissive writers do
+/// copy them into other agents' config files — so an earlier-scanned agent can
+/// hold a stale echo of one, and letting that echo stand would pin the canonical
+/// spec to a value the user has since changed or deleted in Kimi's own
+/// `/mcp-config`.
+///
+/// A [`KIMI_SHARED_KEYS`] entry is cleared the same way, then refilled from
+/// `owner_values` — what the agent that genuinely shares it declared for this
+/// server — falling back to Kimi's copy when that agent declared none. So the
+/// owner's OAuth setting survives a Kimi copy that omits it, while a value only
+/// an echo left behind wins nothing.
+///
+/// Every value must satisfy Kimi's schema for the transport the resolved spec
+/// declares: a stdio-only `runtime_id` is not folded onto a remote server, and a
+/// wrong-typed value is dropped rather than carried.
+fn merge_kimi_extension_fields(
+    canonical: &mut Value,
+    kimi_spec: &Value,
+    owner_values: &Map<String, Value>,
+) {
+    let Some(source) = kimi_spec.as_object() else {
+        return;
+    };
+    let Some(target) = canonical.as_object_mut() else {
+        return;
+    };
+    let stdio = target.get("type").and_then(Value::as_str) == Some("stdio");
+    for key in KIMI_OWNED_KEYS.iter().chain(KIMI_SHARED_KEYS) {
+        target.remove(*key);
+        // `owner_values` only ever holds KIMI_SHARED_KEYS, so an owned key
+        // always falls through to Kimi's copy.
+        let Some(value) = owner_values.get(*key).or_else(|| source.get(*key)) else {
+            continue;
+        };
+        if is_kimi_extension_field(key, value, stdio) {
+            target.insert((*key).to_string(), value.clone());
+        }
+    }
+}
+
 /// Convert codeg's canonical spec into a Kimi `mcpServers` entry.
 ///
-/// Kimi Code 0.23.3 keys the transport off a `transport` field (Zod
+/// Kimi Code keys the transport off a `transport` field (Zod
 /// discriminated union), defaulting a url-only remote entry to streamable HTTP — an
 /// SSE server MUST carry an explicit `transport: "sse"` or it silently downgrades to
 /// HTTP. So emit `transport` for remote entries. The streamable-HTTP literal is
@@ -3160,12 +3308,19 @@ fn canonical_to_kimi_code_entry(spec: &Value) -> Result<Value, AppCommandError> 
     // onto disk. The canonical `command`/`args`/`env`/`cwd`/`url`/`headers` already
     // carry Kimi-compatible types; `type` is kept but Kimi ignores/strips it.
     // See issue #325.
+    //
+    // `is_kimi_extension_field` covers the keys Kimi models but codeg has no UI
+    // for. They exist on disk when the user set them through Kimi's own
+    // `/mcp-config`, and dropping them would quietly break that server — an
+    // OAuth'd remote losing its `auth`, or a `runtime_id`/`executor` entry
+    // falling back to the local runtime. `upsert_kimi_code_server_at` reads the
+    // rest back off disk; this only forwards what the caller's spec carries.
     let mut out = Map::new();
     for (key, value) in obj {
         let keep = match key.as_str() {
             "type" | "command" | "args" | "env" | "cwd" | "url" | "headers" => true,
             "enabled" => value.is_boolean(),
-            _ => false,
+            other => is_kimi_extension_field(other, value, transport.is_none()),
         };
         if keep {
             out.insert(key.clone(), value.clone());
@@ -6758,6 +6913,266 @@ mod tests {
             ok.as_object().and_then(|o| o.get("enabled")).and_then(Value::as_bool),
             Some(true)
         );
+    }
+
+    #[test]
+    fn kimi_code_entry_preserves_kimi_only_fields_through_a_round_trip() {
+        // Fields Kimi models but codeg has no UI for must survive read→write:
+        // dropping them breaks a server the user configured through Kimi's own
+        // `/mcp-config` the first time they touch it in codeg's editor.
+        let on_disk = json!({
+            "command": "npx",
+            "args": ["-y", "server"],
+            "runtime_id": "remote-box",       // Kimi 0.38.0+
+            "executor": "kaos",
+            "startupTimeoutMs": 30_000,
+            "toolTimeoutMs": 120_000,
+            "enabledTools": ["a", "b"],
+            "disabledTools": [],
+        });
+        let canonical = kimi_code_entry_to_canonical(&on_disk, "srv").expect("canonical");
+        let written = canonical_to_kimi_code_entry(&canonical).expect("write");
+        let obj = written.as_object().expect("object");
+        assert_eq!(obj.get("runtime_id").and_then(Value::as_str), Some("remote-box"));
+        assert_eq!(obj.get("executor").and_then(Value::as_str), Some("kaos"));
+        assert_eq!(obj.get("startupTimeoutMs").and_then(Value::as_i64), Some(30_000));
+        assert_eq!(obj.get("toolTimeoutMs").and_then(Value::as_i64), Some(120_000));
+        assert_eq!(obj.get("enabledTools"), Some(&json!(["a", "b"])));
+        assert_eq!(obj.get("disabledTools"), Some(&json!([])));
+
+        // Remote auth fields ride along on http/sse entries.
+        let remote = canonical_to_kimi_code_entry(&json!({
+            "type": "http",
+            "url": "https://host/mcp",
+            "auth": "oauth",
+            "bearerTokenEnvVar": "MCP_TOKEN",
+        }))
+        .expect("http entry");
+        let remote = remote.as_object().expect("object");
+        assert_eq!(remote.get("auth").and_then(Value::as_str), Some("oauth"));
+        assert_eq!(
+            remote.get("bearerTokenEnvVar").and_then(Value::as_str),
+            Some("MCP_TOKEN")
+        );
+    }
+
+    #[test]
+    fn kimi_extension_fields_survive_a_scan_that_another_agent_won() {
+        // `scan_local_servers` is first-writer-wins, so a server that also lives
+        // in an earlier-scanned agent resolves to that agent's projection — which
+        // never carried Kimi's own fields. They must be folded back in, or the
+        // editor never shows them and the next save writes them off disk.
+        let kimi = json!({
+            "type": "stdio",
+            "command": "npx",
+            "runtime_id": "remote-box",
+            "executor": "kaos",
+            "toolTimeoutMs": 120_000,
+            "disabledTools": ["danger"],
+        });
+        let none = Map::new();
+        // What Codex's reader produces for the same id: the core spec only.
+        let mut canonical = json!({"type": "stdio", "command": "npx", "args": ["-y", "ctx7"]});
+        merge_kimi_extension_fields(&mut canonical, &kimi, &none);
+        let obj = canonical.as_object().expect("object");
+        assert_eq!(obj.get("runtime_id").and_then(Value::as_str), Some("remote-box"));
+        assert_eq!(obj.get("executor").and_then(Value::as_str), Some("kaos"));
+        assert_eq!(obj.get("toolTimeoutMs").and_then(Value::as_i64), Some(120_000));
+        assert_eq!(obj.get("disabledTools"), Some(&json!(["danger"])));
+        // The winning spec still owns every key it already had.
+        assert_eq!(obj.get("args"), Some(&json!(["-y", "ctx7"])));
+
+        // Kimi's copy is authoritative for the keys it owns, absence included:
+        // codeg's permissive writers copy them into other agents' files, so an
+        // earlier-scanned agent's stale copy must not pin the canonical spec.
+        let mut stale = json!({
+            "type": "stdio",
+            "command": "npx",
+            "runtime_id": "was-here",   // Kimi now says "remote-box"
+            "enabledTools": ["gone"],   // Kimi no longer sets this at all
+        });
+        merge_kimi_extension_fields(&mut stale, &kimi, &none);
+        assert_eq!(
+            stale.get("runtime_id").and_then(Value::as_str),
+            Some("remote-box")
+        );
+        assert!(
+            !stale.as_object().expect("object").contains_key("enabledTools"),
+            "a key Kimi no longer sets must not survive in another agent's copy"
+        );
+        // Only the Kimi-owned keys are touched.
+        assert_eq!(stale.get("command").and_then(Value::as_str), Some("npx"));
+
+        // `auth` is OpenClaw's as much as Kimi's, so OpenClaw's own value wins
+        // over a Kimi copy that does not set it...
+        let kimi_remote = json!({
+            "type": "http",
+            "url": "https://host/mcp",
+            "bearerTokenEnvVar": "TOKEN",
+        });
+        let owns_auth: Map<String, Value> =
+            [("auth".to_string(), json!("oauth"))].into_iter().collect();
+        let mut openclaw_first = json!({
+            "type": "http",
+            "url": "https://host/mcp",
+            "auth": "oauth",
+        });
+        merge_kimi_extension_fields(&mut openclaw_first, &kimi_remote, &owns_auth);
+        assert_eq!(
+            openclaw_first.get("auth").and_then(Value::as_str),
+            Some("oauth"),
+            "OpenClaw declared `auth` itself; Kimi's copy must not clear it"
+        );
+        assert_eq!(
+            openclaw_first.get("bearerTokenEnvVar").and_then(Value::as_str),
+            Some("TOKEN")
+        );
+
+        // ...even when the spec that won the scan came from a third agent that
+        // carries no `auth` at all. Only the owner's VALUE can restore it.
+        let mut claude_first = json!({"type": "http", "url": "https://host/mcp"});
+        merge_kimi_extension_fields(&mut claude_first, &kimi_remote, &owns_auth);
+        assert_eq!(
+            claude_first.get("auth").and_then(Value::as_str),
+            Some("oauth"),
+            "a scan won by a third agent must not drop OpenClaw's OAuth"
+        );
+
+        // But the same value in an agent that does NOT model `auth` is only an
+        // echo codeg wrote there, so removing it in Kimi must take effect.
+        let mut echo = json!({
+            "type": "http",
+            "url": "https://host/mcp",
+            "auth": "oauth",
+        });
+        merge_kimi_extension_fields(&mut echo, &kimi_remote, &none);
+        assert!(
+            !echo.as_object().expect("object").contains_key("auth"),
+            "a passthrough echo must not pin a key Kimi no longer sets"
+        );
+
+        // stdio-only fields are never folded onto a remote server, and remote-only
+        // fields are never folded onto a stdio one.
+        let mut remote = json!({"type": "http", "url": "https://host/mcp"});
+        merge_kimi_extension_fields(&mut remote, &kimi, &none);
+        let remote_obj = remote.as_object().expect("object");
+        assert!(!remote_obj.contains_key("runtime_id"));
+        assert!(!remote_obj.contains_key("executor"));
+        assert_eq!(remote_obj.get("toolTimeoutMs").and_then(Value::as_i64), Some(120_000));
+
+        let mut stdio = json!({"type": "stdio", "command": "npx"});
+        merge_kimi_extension_fields(
+            &mut stdio,
+            &json!({"type": "http", "url": "https://host/mcp", "auth": "oauth"}),
+            &none,
+        );
+        assert!(!stdio.as_object().expect("object").contains_key("auth"));
+    }
+
+    #[test]
+    fn kimi_extension_keys_and_their_validator_stay_in_step() {
+        // `merge_kimi_extension_fields` clears KIMI_OWNED_KEYS before folding
+        // Kimi's values back in, so a key listed there but unknown to
+        // `is_kimi_extension_field` would be silently erased and never restored.
+        let sample = |key: &str| -> (Value, bool) {
+            match key {
+                "runtime_id" => (json!("local"), true),
+                "executor" => (json!("kaos"), true),
+                "auth" => (json!("oauth"), false),
+                "bearerTokenEnvVar" => (json!("TOKEN"), false),
+                "startupTimeoutMs" | "toolTimeoutMs" => (json!(1_000), true),
+                "enabledTools" | "disabledTools" => (json!(["a"]), true),
+                other => panic!("{other:?} was listed with no sample value here"),
+            }
+        };
+        for key in KIMI_OWNED_KEYS.iter().chain(KIMI_SHARED_KEYS) {
+            let (value, stdio) = sample(key);
+            assert!(
+                is_kimi_extension_field(key, &value, stdio),
+                "{key} is listed but its validator rejects a well-formed value"
+            );
+        }
+        // A key another agent also models must never be cleared as if Kimi owned
+        // it — that is what makes it "shared".
+        for key in KIMI_SHARED_KEYS {
+            assert!(
+                !KIMI_OWNED_KEYS.contains(key),
+                "{key} cannot be both owned and shared"
+            );
+        }
+    }
+
+    #[test]
+    fn kimi_code_upsert_honors_removing_a_kimi_only_field() {
+        // The counterpart to folding fields in at scan time: because the editor
+        // shows them, a spec that omits one means the user deleted it. The writer
+        // must not resurrect it from whatever is already on disk.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        upsert_kimi_code_server_at(
+            &path,
+            "remote",
+            &json!({
+                "type": "http",
+                "url": "https://host/mcp",
+                "auth": "oauth",
+                "bearerTokenEnvVar": "OLD_TOKEN",
+            }),
+        )
+        .expect("seed");
+        assert_eq!(
+            read_kimi_code_servers_at(&path).expect("read")["remote"]
+                .get("bearerTokenEnvVar")
+                .and_then(Value::as_str),
+            Some("OLD_TOKEN")
+        );
+
+        upsert_kimi_code_server_at(
+            &path,
+            "remote",
+            &json!({"type": "http", "url": "https://host/mcp", "auth": "oauth"}),
+        )
+        .expect("save without the token field");
+        let after = read_kimi_code_servers_at(&path).expect("read");
+        let obj = after["remote"].as_object().expect("object");
+        assert!(
+            !obj.contains_key("bearerTokenEnvVar"),
+            "removing a field in codeg's editor must reach disk"
+        );
+        assert_eq!(obj.get("auth").and_then(Value::as_str), Some("oauth"));
+    }
+
+    #[test]
+    fn kimi_code_entry_drops_kimi_only_fields_that_fail_kimi_schema() {
+        // The whole-record guard still holds: a same-named value of the wrong
+        // shape would make Kimi reject every server in `mcp.json`, so it is
+        // dropped rather than written back.
+        let entry = canonical_to_kimi_code_entry(&json!({
+            "type": "stdio",
+            "command": "npx",
+            "runtime_id": "",              // schema wants min length 1
+            "executor": "podman",          // not one of local | kaos
+            "startupTimeoutMs": 0,         // schema wants >= 1
+            "toolTimeoutMs": "30000",      // string, not int
+            "enabledTools": ["a", 7],      // not all strings
+        }))
+        .expect("stdio entry");
+        let obj = entry.as_object().expect("object");
+        for key in [
+            "runtime_id",
+            "executor",
+            "startupTimeoutMs",
+            "toolTimeoutMs",
+            "enabledTools",
+        ] {
+            assert!(!obj.contains_key(key), "{key} must be dropped");
+        }
+        // `auth` accepts only the `oauth` literal.
+        let bad_auth = canonical_to_kimi_code_entry(&json!({
+            "type": "http", "url": "https://host/mcp", "auth": "bearer",
+        }))
+        .expect("http entry");
+        assert!(!bad_auth.as_object().expect("object").contains_key("auth"));
     }
 
     #[test]

@@ -658,7 +658,7 @@ function CommitFilesTree({
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[11px] text-muted-foreground">{t("filesTitle")}</p>
+        <p className="text-2xs text-muted-foreground">{t("filesTitle")}</p>
         <div className="flex items-center gap-1">
           <Button
             variant="ghost"
@@ -786,10 +786,14 @@ function BranchSelector({
             )}
           </Button>
         </PopoverTrigger>
+        {/* `max-h-(--radix-popover-content-available-height)`: the list's own cap
+            is a rem (`MAX_LIST_HEIGHT_REM`), so at high zoom it outgrows the room
+            below the toolbar and the popup would run off the window. The list
+            inside is flex-shrinkable, so it gives way to this cap. */}
         <PopoverContent
           align="start"
           sideOffset={6}
-          className="w-72 overflow-hidden p-0"
+          className="max-h-(--radix-popover-content-available-height) w-72 overflow-hidden p-0"
         >
           <GitLogBranchFilterList
             branchList={branchList}
@@ -1092,7 +1096,7 @@ function AuthorFilter({
                         <span className="min-w-0 flex-1 truncate">
                           {meName}
                         </span>
-                        <span className="shrink-0 rounded-sm bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+                        <span className="shrink-0 rounded-sm bg-muted px-1 py-0.5 text-3xs text-muted-foreground">
                           {t("you")}
                         </span>
                         {selectedAuthor === meName && (
@@ -2280,10 +2284,10 @@ export function GitLogTab() {
                                         (group = CommitHeader) instead of a hover
                                         background — widens the readable area.
                                         Single line: the subject. */}
-                                    <p className="truncate text-[13px] font-medium leading-snug text-foreground/70 transition-colors group-hover:text-foreground group-data-[state=open]:text-foreground">
+                                    <p className="truncate text-[0.8125rem] font-medium leading-snug text-foreground/70 transition-colors group-hover:text-foreground group-data-[state=open]:text-foreground">
                                       {entry.message}
                                     </p>
-                                    <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+                                    <div className="flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground">
                                       <span className="min-w-0 truncate">
                                         {entry.author}
                                       </span>
@@ -2306,7 +2310,7 @@ export function GitLogTab() {
                                           background. ms-auto (not ml-auto) so it
                                           stays on the trailing edge under RTL. */}
                                       <span
-                                        className="ms-auto flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-primary/80"
+                                        className="ms-auto flex shrink-0 items-center gap-0.5 font-mono text-3xs text-primary/80"
                                         title={entry.full_hash}
                                       >
                                         <Hash
@@ -2380,7 +2384,7 @@ export function GitLogTab() {
                                         supply their own. */}
                                     {isFilesLoading && !commitFiles ? (
                                       <div className="space-y-1">
-                                        <p className="text-[11px] text-muted-foreground">
+                                        <p className="text-2xs text-muted-foreground">
                                           {t("filesTitle")}
                                         </p>
                                         <p className="text-xs text-muted-foreground">
@@ -2389,7 +2393,7 @@ export function GitLogTab() {
                                       </div>
                                     ) : filesLoadError ? (
                                       <div className="space-y-1">
-                                        <p className="text-[11px] text-muted-foreground">
+                                        <p className="text-2xs text-muted-foreground">
                                           {t("filesTitle")}
                                         </p>
                                         <p className="text-xs text-destructive">
@@ -2407,7 +2411,7 @@ export function GitLogTab() {
                                       />
                                     ) : (
                                       <div className="space-y-1">
-                                        <p className="text-[11px] text-muted-foreground">
+                                        <p className="text-2xs text-muted-foreground">
                                           {t("filesTitle")}
                                         </p>
                                         <p className="text-xs text-muted-foreground">
@@ -2416,7 +2420,7 @@ export function GitLogTab() {
                                       </div>
                                     )}
                                     <div className="pt-3 space-y-1">
-                                      <p className="text-[11px] text-muted-foreground">
+                                      <p className="text-2xs text-muted-foreground">
                                         {t("branchesTitle")}
                                       </p>
                                       {isBranchLoading ? (
@@ -2433,7 +2437,7 @@ export function GitLogTab() {
                                           {commitBranches.map((branch) => (
                                             <span
                                               key={`${commitKey}-${branch}`}
-                                              className="rounded-md border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                                              className="rounded-md border border-border px-1.5 py-0.5 text-3xs text-muted-foreground"
                                               title={branch}
                                             >
                                               {branch}

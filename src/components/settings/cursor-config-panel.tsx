@@ -42,13 +42,29 @@ import {
   acpUpdateAgentConfig,
 } from "@/lib/api"
 import type { AcpAgentInfo, CursorAuthStatus } from "@/lib/types"
+import {
+  buildCursorModelFamilies,
+  decomposeCursorModelId,
+  defaultCursorVariant,
+  familyEffortValues,
+  familyFastValues,
+  familyThinkingValues,
+  resolveCursorVariant,
+  variantKey,
+  type CursorEffort,
+  type CursorModelEntry,
+  type CursorModelFamily,
+  type CursorVariant,
+} from "@/lib/cursor-model-variants"
 import { cn } from "@/lib/utils"
 
 const CURSOR_API_KEY_ENV = "CURSOR_API_KEY"
 const CURSOR_API_BASE_URL_ENV = "CURSOR_API_BASE_URL"
 const CURSOR_MODEL_ENV = "CURSOR_MODEL"
 /** codeg-side launch knob: "1" inserts the CLI's root `--force` flag (Run
- * Everything) before the `acp` subcommand. The CLI reads no such env var. */
+ * Everything) before the `acp` subcommand, "0" leaves it off. The CLI reads no
+ * such env var. Off is written explicitly rather than by deleting the key —
+ * see [`buildCursorEnv`]. */
 const CURSOR_FORCE_ENV = "CURSOR_FORCE"
 /** codeg-side knob recording the chosen authentication method. Read by the
  * launch path (`apply_cursor_env_policy`): in `subscription` mode it clears any
@@ -64,11 +80,24 @@ const UNSET = "__unset__"
  * for backward-compatibility with rows saved before the rename. */
 export type CursorAuthMethod = "subscription" | "custom"
 
-/** One entry in the model picker. `value` is the `--model` id, `label` the
- * human name from `cursor-agent models`. base-ui's Combobox uses the `{ value,
- * label }` shape automatically (label for display + filtering, value for the
- * value); `isDefault` only drives our own badge. */
+/** One entry in the model-family picker. `value` is the family's base id, and
+ * `label` its shared display name. base-ui's Combobox uses the `{ value, label
+ * }` shape automatically (label for display + filtering, value for the value);
+ * `isDefault` only drives our own badge. The `--model` id that actually gets
+ * saved is the family member the variant controls resolve to. */
 type CursorModelItem = { value: string; label: string; isDefault: boolean }
+
+/** Effort ids are Cursor's own product vocabulary, shown verbatim in its CLI
+ * and ACP pickers — model-parameter jargon, not prose, so it is not localized
+ * (same treatment as the model names next to it). */
+const EFFORT_LABELS: Record<CursorEffort, string> = {
+  none: "None",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra High",
+  max: "Max",
+}
 
 /**
  * Build the env map to persist for Cursor. The authentication method decides
@@ -80,6 +109,11 @@ type CursorModelItem = { value: string; label: string; isDefault: boolean }
  * `CURSOR_API_BASE_URL` is always removed (the CLI has no custom endpoint, so
  * a stale value is dead weight). `CURSOR_AUTH_MODE` is always recorded, and
  * unrelated keys are preserved untouched.
+ *
+ * `CURSOR_FORCE` is written for BOTH states ("1" / "0"), never deleted. Off
+ * used to be a missing key, which the launch could not tell apart from "never
+ * configured" — so the control showed one permission mode while the session ran
+ * another. The backend (`cursor_force_enabled`) reads the same three states.
  */
 export function buildCursorEnv(
   prevEnv: Record<string, string>,
@@ -109,7 +143,7 @@ export function buildCursorEnv(
     delete env[CURSOR_API_KEY_ENV]
   }
   setOrDelete(CURSOR_MODEL_ENV, model)
-  setOrDelete(CURSOR_FORCE_ENV, force ? "1" : "")
+  env[CURSOR_FORCE_ENV] = force ? "1" : "0"
   return env
 }
 
@@ -131,7 +165,9 @@ export function cursorLoginCommand(binaryPath?: string | null): string {
   return `${program} login`
 }
 
-/** The saved env's Run Everything knob, tolerant of hand-edited values. */
+/** The saved env's Run Everything knob, tolerant of hand-edited values. Mirrors
+ * the launch-side `cursor_force_enabled`: unset (and anything unrecognized)
+ * means Ask, which is what Cursor sessions have always actually done. */
 export function isCursorForceEnabled(env: Record<string, string>): boolean {
   const value = (env[CURSOR_FORCE_ENV] ?? "").trim().toLowerCase()
   return value === "1" || value === "true"
@@ -210,10 +246,16 @@ function RuleListEditor({
  * 2. **Cursor API key** — a Cursor Dashboard account key for headless/server
  *    machines (CURSOR_API_KEY), an alternative to browser login.
  *
- * The model picker (a searchable Combobox of `cursor-agent models`) is shared
- * and only shown once real models were fetched; the chosen id is stored as
- * CURSOR_MODEL and passed to the CLI as its root `--model` flag at launch.
- * The permission/sandbox editor and the raw-JSON advanced card are unchanged.
+ * The model card is shared and only shown once real models were fetched: a
+ * searchable Combobox of model FAMILIES over `cursor-agent models`, plus
+ * Thinking / Effort / Fast selects for the family's variants. The CLI reports
+ * every combination as its own flat id (~200 of them), so those two knobs are
+ * otherwise reachable only by knowing an id like
+ * `claude-opus-5-thinking-max-fast` by heart. The resolved id is stored as
+ * CURSOR_MODEL and passed to the CLI as its root `--model` flag at launch (it
+ * seeds the session's model AND its parameters; the composer's live pickers
+ * take over from there). The permission/sandbox editor and the raw-JSON
+ * advanced card are unchanged.
  */
 export function CursorConfigPanel({
   agent,
@@ -248,21 +290,22 @@ export function CursorConfigPanel({
   )
   const [showKey, setShowKey] = useState(false)
 
-  // --- model state (searchable picker over cursor-agent models) ---
+  // --- model state (searchable family picker + variant controls) ---
+  // `model` is the flat `cursor-agent models` id that gets persisted as
+  // CURSOR_MODEL and passed to the CLI as `--model`; the controls below only
+  // ever set it to an id the catalog actually reported.
   const [model, setModel] = useState(() => agent.env[CURSOR_MODEL_ENV] ?? "")
-  const [models, setModels] = useState<CursorModelItem[]>([])
+  const [models, setModels] = useState<CursorModelEntry[]>([])
   const [modelsError, setModelsError] = useState<string | null>(null)
   const [modelsLoading, setModelsLoading] = useState(false)
   const [modelsLoaded, setModelsLoaded] = useState(false)
 
   // --- permissions card state ---
   const settings = agent.cursor_settings
-  // Default a fresh Cursor agent to Run Everything (--force): only when the
-  // CURSOR_FORCE knob was never set does it default on; an explicit "0" (the
-  // user chose "Ask before running") is respected.
-  const [force, setForce] = useState(() =>
-    CURSOR_FORCE_ENV in agent.env ? isCursorForceEnabled(agent.env) : true
-  )
+  // Ask before running unless the knob explicitly says otherwise — the same
+  // rule the launch applies (`cursor_force_enabled`), so what this control
+  // shows is what the next session gets.
+  const [force, setForce] = useState(() => isCursorForceEnabled(agent.env))
   const [sandboxMode, setSandboxMode] = useState(
     () => settings?.sandbox_mode ?? ""
   )
@@ -327,7 +370,7 @@ export function CursorConfigPanel({
       if (!mountedRef.current) return
       setModels(
         result.models.map((m) => ({
-          value: m.id,
+          id: m.id,
           label: m.label || m.id,
           isDefault: m.is_default,
         }))
@@ -382,19 +425,81 @@ export function CursorConfigPanel({
     }
   }, [loginCommand])
 
-  // Model picker items: the fetched catalog, plus a saved-but-unlisted model
-  // kept as its own entry so a hand-set value still displays and isn't lost.
-  const modelItems = useMemo<CursorModelItem[]>(() => {
-    if (model && !models.some((m) => m.value === model)) {
-      return [{ value: model, label: model, isDefault: false }, ...models]
-    }
-    return models
+  // Model families: the fetched catalog grouped by base id, plus a
+  // saved-but-unlisted model kept as its own one-member family so a hand-set
+  // value still displays and isn't silently dropped on save.
+  const families = useMemo<CursorModelFamily[]>(() => {
+    const entries =
+      model && !models.some((m) => m.id === model)
+        ? [{ id: model, label: model, isDefault: false }, ...models]
+        : models
+    return buildCursorModelFamilies(entries)
   }, [models, model])
-  const selectedModelItem = modelItems.find((m) => m.value === model) ?? null
 
-  const handleSelectModel = useCallback((item: CursorModelItem | null) => {
-    setModel(item?.value ?? "")
-  }, [])
+  const currentBase = model ? decomposeCursorModelId(model).base : ""
+  const currentVariant = model ? decomposeCursorModelId(model).variant : null
+  const currentFamily = families.find((f) => f.base === currentBase) ?? null
+
+  const familyItems = useMemo<CursorModelItem[]>(
+    () =>
+      families.map((f) => ({
+        value: f.base,
+        label: f.label,
+        isDefault: f.isDefault,
+      })),
+    [families]
+  )
+  const selectedFamilyItem =
+    familyItems.find((f) => f.value === currentBase) ?? null
+
+  // Picking a family carries the current variant across where the target
+  // offers it (switching model rarely means "and drop my thinking level"),
+  // falling back to that family's own default.
+  const handleSelectFamily = useCallback(
+    (item: CursorModelItem | null) => {
+      if (!item) {
+        setModel("")
+        return
+      }
+      const family = families.find((f) => f.base === item.value)
+      if (!family) return
+      const want = currentVariant ?? defaultCursorVariant(family)
+      const resolved = want ? resolveCursorVariant(family, want, null) : null
+      setModel(resolved?.id ?? family.members[0]?.entry.id ?? "")
+    },
+    [families, currentVariant]
+  )
+
+  // Moving one variant control holds THAT dimension and repairs the rest —
+  // not every combination exists (Cursor reaches xhigh/max on Opus only with
+  // thinking on), so the others clamp to the nearest member that honours it.
+  const setVariant = useCallback(
+    (dimension: keyof CursorVariant, value: boolean | CursorEffort | null) => {
+      if (!currentFamily || !currentVariant) return
+      const want = { ...currentVariant, [dimension]: value } as CursorVariant
+      const resolved = resolveCursorVariant(currentFamily, want, dimension)
+      if (resolved) setModel(resolved.id)
+    },
+    [currentFamily, currentVariant]
+  )
+
+  // Only offer a dimension the family actually varies on — a lone "Fast: Off"
+  // select is noise, and `auto` varies on nothing at all.
+  const thinkingValues = currentFamily
+    ? familyThinkingValues(currentFamily)
+    : []
+  const effortValues = currentFamily ? familyEffortValues(currentFamily) : []
+  const fastValues = currentFamily ? familyFastValues(currentFamily) : []
+  const hasVariantControls =
+    thinkingValues.length > 1 ||
+    effortValues.length > 1 ||
+    fastValues.length > 1
+  // What `--model` will actually receive, shown under the controls so the
+  // resolved variant is never a guess.
+  const resolvedEntry =
+    currentFamily && currentVariant
+      ? currentFamily.variants.get(variantKey(currentVariant))
+      : undefined
 
   /** One save for auth method + model (env) and permissions (cli-config.json). */
   const saveAll = useCallback(async () => {
@@ -480,14 +585,14 @@ export function CursorConfigPanel({
     <div className="space-y-3 rounded-md border bg-muted/10 p-3">
       <div>
         <label className="text-xs font-medium">{t("configManagement")}</label>
-        <p className="mt-1 text-[11px] text-muted-foreground">
+        <p className="mt-1 text-2xs text-muted-foreground">
           {t("cursor.configDescription")}
         </p>
       </div>
 
       {/* ---- Authentication method ---- */}
       <div className="space-y-1.5">
-        <label className="text-[11px] text-muted-foreground">
+        <label className="text-2xs text-muted-foreground">
           {t("cursor.authMode")}
         </label>
         <Select
@@ -504,7 +609,7 @@ export function CursorConfigPanel({
             <SelectItem value="custom">{t("cursor.authModeApiKey")}</SelectItem>
           </SelectContent>
         </Select>
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-2xs text-muted-foreground">
           {mode === "subscription"
             ? t("cursor.subscriptionHint")
             : t("cursor.authModeApiKeyHint")}
@@ -514,9 +619,7 @@ export function CursorConfigPanel({
       {/* ---- Credential card: shared auth status + method-specific body ---- */}
       <div className="space-y-2 rounded-md border bg-background/60 p-2.5">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] font-medium">
-            {t("cursor.authTitle")}
-          </span>
+          <span className="text-2xs font-medium">{t("cursor.authTitle")}</span>
           <div className="flex items-center gap-1.5">
             <span
               className={cn(
@@ -528,7 +631,7 @@ export function CursorConfigPanel({
                   "bg-muted-foreground/40 animate-pulse"
               )}
             />
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-2xs text-muted-foreground">
               {authState === "loading"
                 ? t("cursor.authChecking")
                 : authState === "missing"
@@ -538,7 +641,7 @@ export function CursorConfigPanel({
                     : t("cursor.authNotLoggedIn")}
             </span>
             {authState === "ok" && auth?.membership ? (
-              <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-600 dark:text-emerald-400">
+              <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-3xs text-emerald-600 dark:text-emerald-400">
                 {auth.membership}
               </span>
             ) : null}
@@ -560,11 +663,11 @@ export function CursorConfigPanel({
         {/* Subscription: runnable login command when not signed in. */}
         {mode === "subscription" && authState === "unauthenticated" ? (
           <div className="space-y-1.5">
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-2xs text-muted-foreground">
               {t("cursor.loginHint")}
             </p>
             <div className="flex items-center gap-1.5">
-              <code className="flex-1 break-all rounded bg-muted px-2 py-1 font-mono text-[11px]">
+              <code className="flex-1 break-all rounded bg-muted px-2 py-1 font-mono text-2xs">
                 {loginCommand}
               </code>
               <Button
@@ -587,7 +690,7 @@ export function CursorConfigPanel({
         {/* API key mode: the Cursor Dashboard account key. */}
         {mode === "custom" ? (
           <div className="space-y-1">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="text-2xs text-muted-foreground">
               {t("cursor.apiKeyLabel")}
             </label>
             <div className="flex items-center gap-1.5">
@@ -612,14 +715,14 @@ export function CursorConfigPanel({
                 )}
               </Button>
             </div>
-            <p className="text-[10px] text-muted-foreground">
+            <p className="text-3xs text-muted-foreground">
               {t("cursor.apiKeyHint")}
             </p>
           </div>
         ) : null}
 
         {auth?.error ? (
-          <p className="text-[11px] text-destructive">{auth.error}</p>
+          <p className="text-2xs text-destructive">{auth.error}</p>
         ) : null}
 
         {/* No model list yet (not signed in / empty): tell the user why the
@@ -627,7 +730,7 @@ export function CursorConfigPanel({
         {authState !== "missing" &&
         authState !== "loading" &&
         models.length === 0 ? (
-          <p className="text-[10px] text-muted-foreground">
+          <p className="text-3xs text-muted-foreground">
             {t("cursor.modelsNeedAuth")}
           </p>
         ) : null}
@@ -637,11 +740,11 @@ export function CursorConfigPanel({
       {models.length > 0 ? (
         <div className="space-y-2 rounded-md border bg-background/60 p-2.5">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[11px] font-medium">
+            <span className="text-2xs font-medium">
               {t("cursor.modelTitle")}
             </span>
             <Button
-              className="h-6 gap-1 px-2 text-[11px]"
+              className="h-6 gap-1 px-2 text-2xs"
               disabled={modelsLoading}
               onClick={() => void loadModels()}
               size="sm"
@@ -657,10 +760,10 @@ export function CursorConfigPanel({
             </Button>
           </div>
           <Combobox
-            key={model || UNSET}
-            items={modelItems}
-            value={selectedModelItem}
-            onValueChange={handleSelectModel}
+            key={currentBase || UNSET}
+            items={familyItems}
+            value={selectedFamilyItem}
+            onValueChange={handleSelectFamily}
             isItemEqualToValue={(
               a: CursorModelItem | null,
               b: CursorModelItem | null
@@ -680,9 +783,9 @@ export function CursorConfigPanel({
                     value={item}
                   >
                     <span className="truncate">{item.label}</span>
-                    <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-2 font-mono text-[10px] text-muted-foreground">
+                    <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-2 font-mono text-3xs text-muted-foreground">
                       {item.isDefault ? (
-                        <span className="rounded bg-muted px-1 py-0.5 font-sans text-[9px] text-foreground/70">
+                        <span className="rounded bg-muted px-1 py-0.5 font-sans text-[0.5625rem] text-foreground/70">
                           {t("cursor.modelDefaultBadge")}
                         </span>
                       ) : null}
@@ -694,14 +797,121 @@ export function CursorConfigPanel({
               <ComboboxEmpty>{t("cursor.modelNoMatch")}</ComboboxEmpty>
             </ComboboxContent>
           </Combobox>
+
+          {/* Variant controls — the reason the flat catalog was split up. The
+              CLI ships one id per combination (`claude-opus-5-thinking-max-fast`
+              and ~200 siblings), so without these the thinking level and the
+              Fast flag are only reachable by knowing the id by heart. */}
+          {hasVariantControls ? (
+            <div className="flex flex-wrap gap-2">
+              {thinkingValues.length > 1 ? (
+                <div className="min-w-24 flex-1 space-y-1">
+                  <label className="text-2xs text-muted-foreground">
+                    {t("cursor.modelThinkingLabel")}
+                  </label>
+                  <Select
+                    onValueChange={(value) =>
+                      setVariant("thinking", value === "true")
+                    }
+                    value={currentVariant?.thinking ? "true" : "false"}
+                  >
+                    <SelectTrigger className="h-7 w-full text-xs" size="sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem className="text-xs" value="false">
+                        {t("cursor.variantOff")}
+                      </SelectItem>
+                      <SelectItem className="text-xs" value="true">
+                        {t("cursor.variantOn")}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
+              {effortValues.length > 1 ? (
+                <div className="min-w-24 flex-1 space-y-1">
+                  <label className="text-2xs text-muted-foreground">
+                    {t("cursor.modelEffortLabel")}
+                  </label>
+                  <Select
+                    onValueChange={(value) =>
+                      setVariant(
+                        "effort",
+                        value === UNSET ? null : (value as CursorEffort)
+                      )
+                    }
+                    value={currentVariant?.effort ?? UNSET}
+                  >
+                    <SelectTrigger className="h-7 w-full text-xs" size="sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {effortValues.map((effort) => (
+                        <SelectItem
+                          className="text-xs"
+                          key={effort ?? UNSET}
+                          value={effort ?? UNSET}
+                        >
+                          {effort
+                            ? EFFORT_LABELS[effort]
+                            : t("cursor.optionDefault")}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
+              {fastValues.length > 1 ? (
+                <div className="min-w-24 flex-1 space-y-1">
+                  <label className="text-2xs text-muted-foreground">
+                    {t("cursor.modelFastLabel")}
+                  </label>
+                  <Select
+                    onValueChange={(value) =>
+                      setVariant("fast", value === "true")
+                    }
+                    value={currentVariant?.fast ? "true" : "false"}
+                  >
+                    <SelectTrigger className="h-7 w-full text-xs" size="sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem className="text-xs" value="false">
+                        {t("cursor.variantOff")}
+                      </SelectItem>
+                      <SelectItem className="text-xs" value="true">
+                        {t("cursor.variantOn")}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* The exact id `--model` receives. A repaired pick (an unavailable
+              combination clamped to its nearest sibling) is only visible here. */}
+          {resolvedEntry ? (
+            <p className="text-3xs text-muted-foreground">
+              <span className="text-foreground/80">{resolvedEntry.label}</span>{" "}
+              <span className="font-mono">{resolvedEntry.id}</span>
+            </p>
+          ) : null}
+
           {modelsError ? (
-            <p className="text-[10px] text-muted-foreground">
+            <p className="text-3xs text-muted-foreground">
               {t("cursor.modelsUnavailable")}: {modelsError}
             </p>
           ) : null}
-          <p className="text-[10px] text-muted-foreground">
+          <p className="text-3xs text-muted-foreground">
             {t("cursor.modelHint")}
           </p>
+          {hasVariantControls ? (
+            <p className="text-3xs text-muted-foreground">
+              {t("cursor.modelVariantHint")}
+            </p>
+          ) : null}
         </div>
       ) : null}
 
@@ -709,17 +919,17 @@ export function CursorConfigPanel({
       <div className="space-y-2 rounded-md border bg-background/60 p-2.5">
         <div className="flex items-center gap-1.5">
           <ShieldCheck className="h-3.5 w-3.5 text-muted-foreground" />
-          <span className="text-[11px] font-medium">
+          <span className="text-2xs font-medium">
             {t("cursor.permissionsTitle")}
           </span>
         </div>
-        <p className="text-[10px] text-muted-foreground">
+        <p className="text-3xs text-muted-foreground">
           {t("cursor.permissionsDescription")}
         </p>
 
         <div className="grid gap-2 md:grid-cols-2">
           <div className="space-y-1">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="text-2xs text-muted-foreground">
               {t("cursor.permissionModeLabel")}
             </label>
             <Select
@@ -740,7 +950,7 @@ export function CursorConfigPanel({
             </Select>
           </div>
           <div className="space-y-1">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="text-2xs text-muted-foreground">
               {t("cursor.sandboxLabel")}
             </label>
             <Select
@@ -766,13 +976,19 @@ export function CursorConfigPanel({
             </Select>
           </div>
         </div>
-        <p className="text-[10px] text-muted-foreground">
-          {t("cursor.permissionModeHint")}
+        {/* Whichever mode is selected, say what it actually does. Ask mode's
+            half matters most: Cursor's own prompt carries an "Allow always"
+            button, and the rule it writes lands in the Allowed list right
+            below — the connection is invisible otherwise. */}
+        <p className="text-3xs text-muted-foreground">
+          {force
+            ? t("cursor.permissionModeHint")
+            : t("cursor.permissionModeAskHint")}
         </p>
 
         <div className="grid gap-3 md:grid-cols-2">
           <div className="space-y-1">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="text-2xs text-muted-foreground">
               {t("cursor.allowRulesLabel")}
             </label>
             <RuleListEditor
@@ -785,7 +1001,7 @@ export function CursorConfigPanel({
             />
           </div>
           <div className="space-y-1">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="text-2xs text-muted-foreground">
               {t("cursor.denyRulesLabel")}
             </label>
             <RuleListEditor
@@ -798,7 +1014,7 @@ export function CursorConfigPanel({
             />
           </div>
         </div>
-        <p className="text-[10px] text-muted-foreground">
+        <p className="text-3xs text-muted-foreground">
           {t("cursor.rulesSyntaxHint")}
         </p>
       </div>
@@ -824,7 +1040,7 @@ export function CursorConfigPanel({
       {/* ---- Advanced: raw cli-config.json ---- */}
       <div className="space-y-2">
         <button
-          className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+          className="flex items-center gap-1 text-2xs text-muted-foreground hover:text-foreground"
           onClick={() => setAdvancedOpen((v) => !v)}
           type="button"
         >
@@ -837,11 +1053,11 @@ export function CursorConfigPanel({
         </button>
         {advancedOpen ? (
           <div className="space-y-1.5">
-            <p className="text-[10px] text-muted-foreground">
+            <p className="text-3xs text-muted-foreground">
               {t("cursor.advancedHint")}
             </p>
             <Textarea
-              className="min-h-40 font-mono text-[11px]"
+              className="min-h-40 font-mono text-2xs"
               onChange={(e) => setRawConfig(e.target.value)}
               spellCheck={false}
               value={rawConfig}

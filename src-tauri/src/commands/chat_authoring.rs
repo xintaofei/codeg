@@ -500,6 +500,7 @@ mod tests {
             parent_id: parent,
             kind,
             alias: None,
+            group_id: None,
         }
     }
 

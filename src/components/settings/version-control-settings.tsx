@@ -123,12 +123,12 @@ function AccountRow({
             {account.username}
           </span>
           {account.is_default && (
-            <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+            <Badge variant="secondary" className="text-3xs px-1.5 py-0">
               {t("defaultLabel")}
             </Badge>
           )}
         </div>
-        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+        <div className="flex items-center gap-2 text-2xs text-muted-foreground">
           <span className="truncate">{account.server_url}</span>
           {account.scopes.length > 0 && (
             <>
@@ -483,7 +483,7 @@ export function VersionControlSettings() {
                   )}
                 </Button>
               </div>
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-2xs text-muted-foreground">
                 {t("customGitPathHint")}
               </p>
             </div>

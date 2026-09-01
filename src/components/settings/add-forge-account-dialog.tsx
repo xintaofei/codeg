@@ -243,7 +243,7 @@ export function AddForgeAccountDialog({
                 )}
               </Button>
             </div>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-2xs text-muted-foreground">
               {t(gitlab ? "gitlabTokenHint" : "tokenHint")}
             </p>
           </div>

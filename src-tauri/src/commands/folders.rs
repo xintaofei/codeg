@@ -19,10 +19,10 @@ use tauri::Manager;
 
 use crate::app_error::AppCommandError;
 use crate::db::error::DbError;
-use crate::db::service::folder_service;
+use crate::db::service::{folder_group_service, folder_service};
 use crate::db::AppDatabase;
 use crate::models::GitCredentials;
-use crate::models::{FolderDetail, FolderHistoryEntry};
+use crate::models::{FolderDetail, FolderGroupDetail, FolderHistoryEntry, SidebarLayoutEntry};
 use crate::web::event_bridge::EventEmitter;
 
 /// Configure a git command for remote operations:
@@ -879,10 +879,125 @@ pub async fn remove_folder_from_workspace_core(
     Ok(())
 }
 
-pub async fn reorder_folders_core(db: &AppDatabase, ids: Vec<i32>) -> Result<(), AppCommandError> {
-    folder_service::reorder_folders(&db.conn, ids)
+/// Broadcast a folder-group change so every window / WebSocket client converges.
+fn emit_folder_group_change(
+    emitter: &EventEmitter,
+    change: crate::web::event_bridge::FolderGroupChange,
+) {
+    crate::web::event_bridge::emit_event(
+        emitter,
+        crate::web::event_bridge::FOLDER_GROUP_CHANGED_EVENT,
+        change,
+    );
+}
+
+pub async fn list_folder_groups_core(
+    db: &AppDatabase,
+) -> Result<Vec<FolderGroupDetail>, AppCommandError> {
+    folder_group_service::list_folder_groups(&db.conn)
         .await
         .map_err(AppCommandError::from)
+}
+
+/// Trim and length-cap a group name. An all-whitespace name would render as an
+/// invisible band the user can't grab or tell apart, so it is rejected here
+/// rather than stored.
+fn normalize_group_name(name: &str) -> Result<String, AppCommandError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(AppCommandError::invalid_input("Group name cannot be empty"));
+    }
+    Ok(trimmed.chars().take(MAX_FOLDER_GROUP_NAME_CHARS).collect())
+}
+
+/// Longest group name kept. The sidebar truncates far sooner; this only stops a
+/// pasted novel from becoming a permanent row.
+const MAX_FOLDER_GROUP_NAME_CHARS: usize = 120;
+
+pub async fn create_folder_group_core(
+    emitter: &EventEmitter,
+    db: &AppDatabase,
+    name: String,
+    color: Option<String>,
+) -> Result<FolderGroupDetail, AppCommandError> {
+    let name = normalize_group_name(&name)?;
+    let group = folder_group_service::create_folder_group(&db.conn, name, color)
+        .await
+        .map_err(AppCommandError::from)?;
+    emit_folder_group_change(
+        emitter,
+        crate::web::event_bridge::FolderGroupChange::Upsert {
+            group: group.clone(),
+        },
+    );
+    Ok(group)
+}
+
+pub async fn update_folder_group_core(
+    emitter: &EventEmitter,
+    db: &AppDatabase,
+    group_id: i32,
+    name: Option<String>,
+    color: Option<String>,
+) -> Result<FolderGroupDetail, AppCommandError> {
+    let name = name.map(|n| normalize_group_name(&n)).transpose()?;
+    let group = folder_group_service::update_folder_group(&db.conn, group_id, name, color)
+        .await
+        .map_err(AppCommandError::from)?
+        .ok_or_else(|| AppCommandError::not_found("Folder group not found"))?;
+    emit_folder_group_change(
+        emitter,
+        crate::web::event_bridge::FolderGroupChange::Upsert {
+            group: group.clone(),
+        },
+    );
+    Ok(group)
+}
+
+pub async fn delete_folder_group_core(
+    emitter: &EventEmitter,
+    db: &AppDatabase,
+    group_id: i32,
+) -> Result<(), AppCommandError> {
+    let removed = folder_group_service::delete_folder_group(&db.conn, group_id)
+        .await
+        .map_err(AppCommandError::from)?;
+    if !removed {
+        return Err(AppCommandError::not_found("Folder group not found"));
+    }
+    emit_folder_group_change(emitter, crate::web::event_bridge::FolderGroupChange::Deleted { id: group_id });
+    // Members moved back to the top level, so their rows changed too.
+    emit_folder_group_change(emitter, crate::web::event_bridge::FolderGroupChange::Layout);
+    Ok(())
+}
+
+/// Persist the sidebar's folder/group layout after a drag. See
+/// [`folder_group_service::apply_sidebar_layout`] for the wire contract.
+pub async fn apply_sidebar_layout_core(
+    emitter: &EventEmitter,
+    db: &AppDatabase,
+    entries: Vec<SidebarLayoutEntry>,
+) -> Result<(), AppCommandError> {
+    folder_group_service::apply_sidebar_layout(&db.conn, entries)
+        .await
+        .map_err(AppCommandError::from)?;
+    emit_folder_group_change(emitter, crate::web::event_bridge::FolderGroupChange::Layout);
+    Ok(())
+}
+
+/// Move one folder into (or out of) a group — the context-menu path, which has
+/// no drop position to derive an index from, so the folder is appended.
+pub async fn set_folder_group_core(
+    emitter: &EventEmitter,
+    db: &AppDatabase,
+    folder_id: i32,
+    group_id: Option<i32>,
+) -> Result<(), AppCommandError> {
+    folder_group_service::set_folder_group(&db.conn, folder_id, group_id)
+        .await
+        .map_err(AppCommandError::from)?;
+    emit_folder_group_change(emitter, crate::web::event_bridge::FolderGroupChange::Layout);
+    Ok(())
 }
 
 pub async fn update_folder_color_core(
@@ -1043,11 +1158,64 @@ pub async fn remove_folder_from_workspace(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn reorder_folders(
+pub async fn list_folder_groups(
     db: tauri::State<'_, AppDatabase>,
-    ids: Vec<i32>,
+) -> Result<Vec<FolderGroupDetail>, AppCommandError> {
+    list_folder_groups_core(&db).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn create_folder_group(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    name: String,
+    color: Option<String>,
+) -> Result<FolderGroupDetail, AppCommandError> {
+    create_folder_group_core(&EventEmitter::Tauri(app), &db, name, color).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn update_folder_group(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    group_id: i32,
+    name: Option<String>,
+    color: Option<String>,
+) -> Result<FolderGroupDetail, AppCommandError> {
+    update_folder_group_core(&EventEmitter::Tauri(app), &db, group_id, name, color).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn delete_folder_group(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    group_id: i32,
 ) -> Result<(), AppCommandError> {
-    reorder_folders_core(&db, ids).await
+    delete_folder_group_core(&EventEmitter::Tauri(app), &db, group_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn apply_sidebar_layout(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    entries: Vec<SidebarLayoutEntry>,
+) -> Result<(), AppCommandError> {
+    apply_sidebar_layout_core(&EventEmitter::Tauri(app), &db, entries).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn set_folder_group(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    group_id: Option<i32>,
+) -> Result<(), AppCommandError> {
+    set_folder_group_core(&EventEmitter::Tauri(app), &db, folder_id, group_id).await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -6276,6 +6444,7 @@ mod tests {
                 parent_id: Some(1),
                 kind: FolderKind::Regular,
                 alias: None,
+                group_id: None,
             },
         );
 

@@ -343,7 +343,7 @@ export function AddModelProviderDialog({
                   placeholder="Routed via custom gateway"
                 />
               </div>
-              <p className="text-[11px] text-muted-foreground md:col-span-2">
+              <p className="text-2xs text-muted-foreground md:col-span-2">
                 {t("claudeCustomModelOptionHint")}
               </p>
             </div>

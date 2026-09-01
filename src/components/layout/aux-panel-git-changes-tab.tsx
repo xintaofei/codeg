@@ -1644,7 +1644,7 @@ export function GitChangesTab() {
                     20px button — ends 17px from the right, exactly where the
                     toolbar's "more" glyph ends (8px + the 9px inset of a 14px
                     glyph in a 32px circle). */}
-                <div className="flex items-center justify-between px-3.5 py-1 text-[11px] text-muted-foreground">
+                <div className="flex items-center justify-between px-3.5 py-1 text-2xs text-muted-foreground">
                   <span>
                     {t("trackedChanges", { count: trackedChanges.length })}
                   </span>
@@ -1762,7 +1762,7 @@ export function GitChangesTab() {
             {untrackedChanges.length > 0 && (
               <section className="space-y-1">
                 {/* px-3.5 for the same alignment as the tracked header above. */}
-                <div className="flex items-center justify-between px-3.5 py-1 text-[11px] text-muted-foreground">
+                <div className="flex items-center justify-between px-3.5 py-1 text-2xs text-muted-foreground">
                   <span>
                     {t("untrackedFiles", { count: untrackedChanges.length })}
                   </span>
@@ -1967,7 +1967,7 @@ export function GitChangesTab() {
                         <span
                           className={
                             selected
-                              ? "flex h-4 w-4 shrink-0 items-center justify-center rounded border border-primary bg-primary text-[10px] text-primary-foreground"
+                              ? "flex h-4 w-4 shrink-0 items-center justify-center rounded border border-primary bg-primary text-3xs text-primary-foreground"
                               : "flex h-4 w-4 shrink-0 items-center justify-center rounded border border-input"
                           }
                           aria-hidden

@@ -381,7 +381,7 @@ export function CommandManageDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="flex h-[min(760px,calc(100vh-4rem))] max-w-[min(980px,calc(100vw-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
+        <DialogContent className="flex h-[min(47.5rem,calc(100vh-4rem))] max-w-[min(61.25rem,calc(100vw-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
           <DialogHeader className="border-b px-4 py-3">
             <DialogTitle>{t("title")}</DialogTitle>
           </DialogHeader>
@@ -476,7 +476,7 @@ export function CommandManageDialog({
                                   <div className="truncate text-sm font-medium">
                                     {command.name}
                                   </div>
-                                  <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
+                                  <div className="mt-0.5 truncate font-mono text-2xs text-muted-foreground">
                                     {command.command}
                                   </div>
                                 </div>

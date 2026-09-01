@@ -388,6 +388,13 @@ pub struct SessionState {
     /// keep round-tripping after the parent session ends.
     pub delegation_token: Option<String>,
 
+    /// Whether `delegate_to_agent` was exposed to THIS agent at launch (the
+    /// `delegation` feature was on when its companion was injected). The sole
+    /// gate on appending the `@agent` routing frame: an agent with no such tool
+    /// would just be told to route through something it cannot call. Backend-only
+    /// and fixed for the connection's lifetime.
+    pub delegation_enabled: bool,
+
     /// Whether the `check_user_feedback` MCP tool was exposed to THIS agent at
     /// launch (the `feedback` feature was on when its companion was injected).
     /// Fixed for the connection's lifetime — tool exposure can't change after
@@ -583,6 +590,7 @@ impl SessionState {
             event_stream: Arc::new(ConnectionEventStream::new()),
             recent_events: RecentEventsBuffer::new(),
             delegation_token: None,
+            delegation_enabled: false,
             feedback_tool_available: false,
             native_steering_available: false,
             neutral_goal_channel: false,
@@ -945,6 +953,22 @@ impl SessionState {
                 // call (no concluding text) → empty, which CLEARS the field so a
                 // prior turn's text can't leak as this turn's result; the LLM
                 // reads the full result by opening the child session instead.
+                //
+                // Cleared FIRST, because a turn can end with no live message at
+                // all — cancelled before it produced anything, or one whose only
+                // chunk was an empty text delta (dropped by
+                // `append_text_delta`). Leaving the field alone there would
+                // serve the PREVIOUS turn's answer as this turn's result.
+                //
+                // Guarded on the turn actually being open, because
+                // `TurnComplete` has three emitters (stop-reason message,
+                // prompt response, and the cancel path — which deliberately
+                // does not wait for the agent, so its response can bring a
+                // second one). A repeat must not wipe the text the first one
+                // captured.
+                if self.turn_in_flight || self.live_message.is_some() {
+                    self.last_assistant_text = None;
+                }
                 if let Some(live) = self.live_message.as_ref() {
                     let after_last_tool_call = live
                         .content
@@ -968,11 +992,9 @@ impl SessionState {
                         })
                         .collect::<Vec<&str>>()
                         .join("");
-                    self.last_assistant_text = if assembled.trim().is_empty() {
-                        None
-                    } else {
-                        Some(assembled)
-                    };
+                    if !assembled.trim().is_empty() {
+                        self.last_assistant_text = Some(assembled);
+                    }
                 }
                 self.live_message = None;
                 self.active_tool_calls.clear();
@@ -1437,6 +1459,21 @@ impl SessionState {
     }
 
     fn append_text_delta(&mut self, text: &str, parent_tool_use_id: Option<&str>) {
+        // An empty text delta has nothing to render, so the only thing it could
+        // contribute is a block boundary — and the frontend reducer never
+        // creates one (it drops an empty `CONTENT_DELTA` outright, before it
+        // would even open a live message). Dropping it here too is what keeps
+        // the two block lists identical; otherwise a snapshot-hydrated client
+        // carries an empty `Text` block that the streaming client never had,
+        // and prose either side of it looks like two separate runs.
+        //
+        // Empty THINKING deltas are deliberately NOT dropped: there the empty
+        // block IS the signal (it renders the "Thinking…" indicator before any
+        // reasoning text arrives, and newer Claude models redact the text
+        // entirely while still emitting the block).
+        if text.is_empty() {
+            return;
+        }
         let live = self.ensure_live_message();
         // Merge only into a trailing block of the same kind AND the same
         // subagent attribution — main text → subagent text → main text must
@@ -2694,6 +2731,49 @@ mod tests {
         }
     }
 
+    /// The frontend reducer drops an empty `CONTENT_DELTA` outright, so a
+    /// streaming client never sees an empty `Text` block. If this side kept
+    /// one, a snapshot-hydrated client would get an extra block the streaming
+    /// one lacks — and prose either side of it would render as two runs
+    /// instead of one (#494 on the snapshot path only).
+    #[test]
+    fn empty_text_delta_adds_no_block_and_never_splits_a_run() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.apply_event(&AcpEvent::Thinking {
+            text: "before".into(),
+            parent_tool_use_id: None,
+        });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: String::new(),
+            parent_tool_use_id: None,
+        });
+        s.apply_event(&AcpEvent::Thinking {
+            text: " after".into(),
+            parent_tool_use_id: None,
+        });
+        let live = s.live_message.as_ref().expect("live message");
+        assert_eq!(live.content.len(), 1, "no empty Text block was inserted");
+        assert!(
+            matches!(&live.content[0], LiveContentBlock::Thinking { text, .. } if text == "before after"),
+            "the thinking run stayed one block, got {:?}",
+            live.content[0]
+        );
+    }
+
+    /// …and it must not open a live message either — same as the reducer,
+    /// which returns before `ensureLiveMessage`.
+    #[test]
+    fn empty_text_delta_does_not_open_a_live_message() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: String::new(),
+            parent_tool_use_id: None,
+        });
+        assert!(s.live_message.is_none());
+    }
+
     #[test]
     fn parented_deltas_with_same_parent_merge() {
         let mut s = fresh_state();
@@ -3312,6 +3392,62 @@ mod tests {
             agent_type: "codex".into(),
         });
         assert_eq!(s.last_assistant_text, None);
+    }
+
+    /// A turn that never opened a live message has no text of its own either.
+    /// An agent whose only output was an empty text chunk reaches exactly that
+    /// state (`append_text_delta` drops it), and the turn still ends on
+    /// `end_turn` — so without clearing, `get_delegation_status` would hand the
+    /// PREVIOUS turn's answer back as this turn's result.
+    #[test]
+    fn turn_complete_clears_stale_text_when_the_turn_produced_nothing() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.turn_in_flight = true;
+        s.last_assistant_text = Some("stale text from an earlier turn".into());
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: String::new(),
+            parent_tool_use_id: None,
+        });
+        assert!(s.live_message.is_none(), "empty chunk opens no live message");
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "codex".into(),
+        });
+        assert_eq!(s.last_assistant_text, None);
+    }
+
+    /// `TurnComplete` is emitted from three places, and the cancel path does
+    /// not wait for the agent — so a second one can land on an already-settled
+    /// turn. It must not wipe the text the first one captured.
+    #[test]
+    fn a_repeat_turn_complete_keeps_the_captured_text() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.turn_in_flight = true;
+        s.live_message = Some(LiveMessage {
+            id: "m1".into(),
+            role: MessageRole::Assistant,
+            content: vec![LiveContentBlock::Text {
+                text: "the answer".into(),
+                parent_tool_use_id: None,
+            }],
+            started_at: Utc::now(),
+        });
+        let complete = AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "cancelled".into(),
+            agent_type: "codex".into(),
+        };
+        s.apply_event(&complete);
+        assert_eq!(s.last_assistant_text.as_deref(), Some("the answer"));
+        s.apply_event(&complete);
+        assert_eq!(
+            s.last_assistant_text.as_deref(),
+            Some("the answer"),
+            "the agent's late response must not erase the captured result"
+        );
     }
 
     #[test]

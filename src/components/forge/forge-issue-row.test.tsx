@@ -44,6 +44,7 @@ function row(overrides: Partial<ForgeIssueRow> = {}): ForgeIssueRow {
     draft: false,
     labels: [label("bug"), label("p1")],
     author: "octocat",
+    author_avatar: "https://avatars.githubusercontent.com/u/583231",
     updated_at: null,
     html_url: "https://github.com/o/r/issues/42",
     is_pr: false,

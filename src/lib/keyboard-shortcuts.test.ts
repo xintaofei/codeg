@@ -3,12 +3,15 @@ import { beforeEach, describe, expect, it } from "vitest"
 import {
   DEFAULT_SHORTCUTS,
   SHORTCUTS_STORAGE_KEY,
+  NUMBERED_TAB_ACTION_IDS,
   SHORTCUT_DEFINITIONS,
   formatShortcutLabel,
   matchShortcutEvent,
   normalizeShortcut,
   readShortcutSettings,
   resolveWindowZoomAction,
+  numberedTabIndexFromEvent,
+  pickNumberedTabId,
   shortcutFromKeyboardEvent,
   shortcutsConflict,
   writeShortcutSettings,
@@ -64,6 +67,62 @@ describe("tab cycling shortcuts", () => {
       matchShortcutEvent(
         keyEvent("Tab", { ctrlKey: true, shiftKey: true }),
         "mod+tab"
+      )
+    ).toBe(false)
+  })
+})
+
+describe("numbered tab shortcuts", () => {
+  it("registers Ctrl/Cmd+1 through 9 as switch_tab_N", () => {
+    const ids = SHORTCUT_DEFINITIONS.map((definition) => definition.id)
+    for (const [index, actionId] of NUMBERED_TAB_ACTION_IDS.entries()) {
+      expect(ids).toContain(actionId)
+      expect(DEFAULT_SHORTCUTS[actionId]).toBe(`mod+${index + 1}`)
+    }
+  })
+
+  it("maps Ctrl+1 to the first tab and ignores a missing ninth tab", () => {
+    const tabs = ["conv-a", "conv-b", "conv-c"]
+    expect(pickNumberedTabId(tabs, 0)).toBe("conv-a")
+    expect(pickNumberedTabId(tabs, 2)).toBe("conv-c")
+    expect(pickNumberedTabId(tabs, 8)).toBeNull()
+    expect(pickNumberedTabId([], 0)).toBeNull()
+  })
+
+  it("resolves Ctrl+2 against the default numbered-tab bindings", () => {
+    expect(
+      numberedTabIndexFromEvent(
+        keyEvent("2", { ctrlKey: true }),
+        DEFAULT_SHORTCUTS
+      )
+    ).toBe(1)
+    expect(
+      numberedTabIndexFromEvent(keyEvent("2"), DEFAULT_SHORTCUTS)
+    ).toBeNull()
+    expect(
+      numberedTabIndexFromEvent(
+        keyEvent("Tab", { ctrlKey: true }),
+        DEFAULT_SHORTCUTS
+      )
+    ).toBeNull()
+  })
+})
+
+describe("reopen last closed tab", () => {
+  it("defaults to Ctrl/Cmd+Shift+T", () => {
+    const ids = SHORTCUT_DEFINITIONS.map((definition) => definition.id)
+    expect(ids).toContain("reopen_last_closed_tab")
+    expect(DEFAULT_SHORTCUTS.reopen_last_closed_tab).toBe("mod+shift+t")
+    expect(
+      matchShortcutEvent(
+        keyEvent("t", { ctrlKey: true, shiftKey: true }),
+        DEFAULT_SHORTCUTS.reopen_last_closed_tab
+      )
+    ).toBe(true)
+    expect(
+      matchShortcutEvent(
+        keyEvent("t", { ctrlKey: true }),
+        DEFAULT_SHORTCUTS.reopen_last_closed_tab
       )
     ).toBe(false)
   })
@@ -298,6 +357,44 @@ describe("digit bindings on a shifted digit row", () => {
     expect(matchShortcutEvent(event, "mod+0")).toBe(false)
     expect(matchShortcutEvent(event, "mod+=")).toBe(true)
     expect(resolveWindowZoomAction(event, defaultZoom)).toBe("in")
+  })
+
+  // AZERTY puts `-` on Digit6 and `_` on Digit8. Binding the digits 1-9 to tab
+  // jumps put those two physical keys in reach of the positional fallback, so
+  // one Ctrl+- press would have matched `mod+-` by key AND `mod+6` by code —
+  // and the zoom listener preventDefaults without stopping propagation, so the
+  // window would zoom out *and* the app would jump to tab 6. `shortcutsConflict`
+  // cannot see the pair, so Settings shows no warning either.
+  it("leaves the AZERTY minus/underscore keys to the zoom bindings", () => {
+    const minus = keyEvent("-", { ctrlKey: true, code: "Digit6" })
+    expect(matchShortcutEvent(minus, "mod+6")).toBe(false)
+    expect(numberedTabIndexFromEvent(minus, DEFAULT_SHORTCUTS)).toBeNull()
+    expect(resolveWindowZoomAction(minus, defaultZoom)).toBe("out")
+
+    const underscore = keyEvent("_", { ctrlKey: true, code: "Digit8" })
+    expect(matchShortcutEvent(underscore, "mod+8")).toBe(false)
+    expect(numberedTabIndexFromEvent(underscore, DEFAULT_SHORTCUTS)).toBeNull()
+  })
+
+  it("still reaches tab 6 from the AZERTY spelling that types the digit", () => {
+    // Shift is how you type "6" there, and the surplus-Shift tolerance for
+    // digits already accepts it — so declining the position costs nothing.
+    expect(
+      numberedTabIndexFromEvent(
+        keyEvent("6", { ctrlKey: true, shiftKey: true, code: "Digit6" }),
+        DEFAULT_SHORTCUTS
+      )
+    ).toBe(5)
+  })
+
+  it("keeps the positional fallback for AZERTY digits nobody else claims", () => {
+    // Unshifted Digit1 types "&", which no binding owns by name.
+    expect(
+      numberedTabIndexFromEvent(
+        keyEvent("&", { ctrlKey: true, code: "Digit1" }),
+        DEFAULT_SHORTCUTS
+      )
+    ).toBe(0)
   })
 
   it("only accepts the bound digit's own physical key", () => {

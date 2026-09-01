@@ -54,7 +54,7 @@ import {
 
 function SectionHeader({ children }: { children: React.ReactNode }) {
   return (
-    <h4 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
+    <h4 className="text-2xs font-medium uppercase tracking-wider text-muted-foreground/70">
       {children}
     </h4>
   )
@@ -398,7 +398,7 @@ export function HyperframesLauncher() {
                           </span>
                         </span>
                         {installedMap[a.id] && (
-                          <span className="shrink-0 text-[10px] text-emerald-600 dark:text-emerald-500">
+                          <span className="shrink-0 text-3xs text-emerald-600 dark:text-emerald-500">
                             {t("hyperframes.installedBadge")}
                           </span>
                         )}

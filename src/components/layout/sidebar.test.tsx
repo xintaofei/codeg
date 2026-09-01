@@ -348,11 +348,10 @@ describe("Sidebar — Navigation item visibility", () => {
   })
 
   // The nav rows are `button`s; the menu's toggles are `menuitemcheckbox`es, so
-  // the two never collide even while the menu is open. The Forge row's name
-  // carries its Beta badge (deliberately not aria-hidden), unlike its toggle.
+  // the two never collide even while the menu is open.
   const navRow = (name: string | RegExp) =>
     screen.queryByRole("button", { name })
-  const FORGE_ROW = /^Repository panel/
+  const FORGE_ROW = "Repository panel"
 
   it("shows every route row by default", () => {
     renderSidebar()

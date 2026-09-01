@@ -242,3 +242,47 @@ describe("InlineSessionConfigToggle", () => {
     expect(container).toBeEmptyDOMElement()
   })
 })
+
+// The chips carry a `SelectorTooltip` instead of a native `title`: same hover
+// affordance, themed, and naming the setting rather than echoing the value the
+// chip already shows.
+describe("selector hover hints", () => {
+  afterEach(() => cleanup())
+
+  it("names the setting on hover, without echoing the value the chip shows", async () => {
+    const user = userEvent.setup()
+    const longName = "claude-opus-4-1-20250805-with-a-very-long-name"
+    const option = modelOption([{ value: "opus", name: longName }], "opus")
+    render(<InlineSessionConfigSelector option={option} onSelect={vi.fn()} />)
+
+    const trigger = screen.getByRole("button")
+    expect(trigger).not.toHaveAttribute("title")
+
+    await user.hover(trigger)
+    const tip = await screen.findByRole("tooltip")
+    expect(tip).toHaveTextContent("Model")
+    expect(tip).not.toHaveTextContent(longName)
+  })
+
+  it("shows the toggle's description on hover", async () => {
+    const user = userEvent.setup()
+    render(
+      <InlineSessionConfigToggle
+        option={autoApproveOption(true)}
+        onSelect={vi.fn()}
+        onLabel="On"
+        offLabel="Off"
+      />
+    )
+
+    const trigger = screen.getByRole("button")
+    expect(trigger).not.toHaveAttribute("title")
+
+    await user.hover(trigger)
+    const tip = await screen.findByRole("tooltip")
+    expect(tip).toHaveTextContent("Auto-approve tools")
+    expect(tip).toHaveTextContent(
+      "Automatically approve all tool calls without asking"
+    )
+  })
+})

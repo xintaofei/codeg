@@ -45,12 +45,14 @@ const GITHUB: ForgeRemote = {
   owner_repo: "o/r",
   remote_url: "https://github.com/o/r.git",
   provider: "github",
+  supported: true,
 }
 const GITLAB: ForgeRemote = {
   server_host: "gitlab.com",
   owner_repo: "group/sub/app",
   remote_url: "https://gitlab.com/group/sub/app.git",
   provider: "gitlab",
+  supported: true,
 }
 
 function row(overrides: Partial<ForgeIssueRow> = {}): ForgeIssueRow {
@@ -62,6 +64,7 @@ function row(overrides: Partial<ForgeIssueRow> = {}): ForgeIssueRow {
     draft: false,
     labels: [{ name: "bug", color: "#d73a4a" }],
     author: "octocat",
+    author_avatar: "https://avatars.githubusercontent.com/u/583231",
     updated_at: null,
     html_url: "https://github.com/o/r/issues/42",
     is_pr: false,

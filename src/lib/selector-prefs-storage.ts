@@ -65,6 +65,64 @@ function updatePrefs(
   writeAll(all)
 }
 
+/**
+ * cursor-agent's model-parameter vocabulary, as it appeared inside the
+ * stringified variants its old picker used.
+ *
+ * The match below keys on these NAMES, not merely on a `key=value` shape,
+ * because healing runs for every agent (see [`healLegacyValues`]) and some
+ * agents accept arbitrary model ids: OpenCode builds its selector values as
+ * `<provider>/<modelId>` straight from the user's own config, so
+ * `mygw/llama[quant=q4]` is a perfectly legitimate id that a shape-only match
+ * would truncate on every reconnect.
+ */
+const CURSOR_VARIANT_KEYS = new Set(["thinking", "context", "effort", "fast"])
+
+/**
+ * Heal a `model` preference saved before codeg opted into cursor-agent's
+ * parameterized model picker.
+ *
+ * That older surface identified a model by a stringified variant —
+ * `claude-opus-5[thinking=true,context=300k,effort=high,fast=false]` — and the
+ * agent now rejects anything but the bare base id, so the saved value would
+ * fail to apply on every connect (logged and skipped, i.e. the user silently
+ * keeps landing on whatever model Cursor felt like). The base is the prefix
+ * before the bracket, which is exactly what the new surface wants; the
+ * parameters inside it are re-offered as their own selectors.
+ *
+ * Matched on the VALUE rather than on the agent id. Scoping this to
+ * `agentType === "cursor"` would strand every CUSTOM agent that wraps the same
+ * `cursor-agent … acp` binary: the capability gate that turns the new picker on
+ * keys on the resolved launch recipe, not on the built-in identity, so those
+ * agents get the new surface and carry the very same stale preference under a
+ * user-chosen id this module cannot enumerate. Running for everyone is only
+ * safe because the match demands cursor's own parameter names — see
+ * [`CURSOR_VARIANT_KEYS`].
+ */
+function healLegacyValues(
+  values: Record<string, string>
+): Record<string, string> {
+  const model = values.model
+  if (typeof model !== "string" || !model.endsWith("]")) return values
+  // `<= 0` also rejects a leading bracket, which would heal to an empty model.
+  const open = model.lastIndexOf("[")
+  if (open <= 0) return values
+  // Every cursor id is a flat slug — `composer-2.5`, `claude-opus-5-thinking-
+  // max-fast`. A namespaced id belongs to somebody else (OpenCode's values are
+  // `<provider>/<modelId>`, and the model half comes from the user's own
+  // config, so it may legitimately end in anything at all).
+  if (model.slice(0, open).includes("/")) return values
+  const isVariantSuffix = model
+    .slice(open + 1, -1)
+    .split(",")
+    .every((param) => {
+      const eq = param.indexOf("=")
+      return eq > 0 && CURSOR_VARIANT_KEYS.has(param.slice(0, eq))
+    })
+  if (!isVariantSuffix) return values
+  return { ...values, model: model.slice(0, open) }
+}
+
 // ── Read ──
 
 /** Read saved mode id for an agent (no validation, just the raw value). */
@@ -92,7 +150,7 @@ export function getSavedPrefsForConnect(agentType: string): {
   if (!prefs) return { modeId: null, configValues: null }
   const configValues =
     prefs.configValues && Object.keys(prefs.configValues).length > 0
-      ? prefs.configValues
+      ? healLegacyValues(prefs.configValues)
       : null
   return {
     modeId: prefs.modeId ?? null,

@@ -66,16 +66,16 @@ export function PanelPermissionCard({
       </div>
 
       {parsed.command ? (
-        <div className="mt-1 flex items-start gap-1 text-[11px] text-muted-foreground">
+        <div className="mt-1 flex items-start gap-1 text-2xs text-muted-foreground">
           <Terminal className="mt-0.5 h-3 w-3 shrink-0" />
           <code className="min-w-0 truncate font-mono">{parsed.command}</code>
         </div>
       ) : changeSummary ? (
-        <div className="mt-1 font-mono text-[11px] text-muted-foreground">
+        <div className="mt-1 font-mono text-2xs text-muted-foreground">
           {changeSummary}
         </div>
       ) : parsed.contentText ? (
-        <div className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">
+        <div className="mt-1 line-clamp-2 text-2xs text-muted-foreground">
           {parsed.contentText}
         </div>
       ) : null}
@@ -89,7 +89,7 @@ export function PanelPermissionCard({
               size="sm"
               variant={isReject ? "outline" : "default"}
               disabled={busy}
-              className={cn("h-6 px-2 text-[11px]")}
+              className={cn("h-6 px-2 text-2xs")}
               onClick={() => respond(opt.option_id)}
             >
               {opt.name}

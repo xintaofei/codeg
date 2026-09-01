@@ -119,7 +119,7 @@ export const DirectoryBrowser = forwardRef<
     selectedPaths,
     onToggleSelected,
     pathInputAction,
-    heightClassName = "h-[300px]",
+    heightClassName = "h-[18.75rem]",
   },
   ref
 ) {

@@ -983,7 +983,7 @@ export function McpSettings() {
                           />
                         )}
                         {field.description ? (
-                          <div className="text-[11px] text-muted-foreground leading-5">
+                          <div className="text-2xs text-muted-foreground leading-5">
                             {field.description}
                           </div>
                         ) : null}
@@ -1048,7 +1048,7 @@ export function McpSettings() {
         </DialogContent>
       </Dialog>
 
-      <div className="h-full min-h-0 grid grid-cols-1 gap-4 p-3 md:p-4 lg:grid-cols-[360px_1fr]">
+      <div className="h-full min-h-0 grid grid-cols-1 gap-4 p-3 md:p-4 lg:grid-cols-[22.5rem_1fr]">
         <section className="min-h-0 rounded-xl border bg-card p-3">
           <Tabs
             value={leftTab}
@@ -1160,8 +1160,15 @@ export function McpSettings() {
               </div>
             </TabsContent>
 
-            <TabsContent value="market" className="h-full min-h-0 pt-2">
-              <div className="space-y-2 pb-2">
+            {/* Flex column rather than `h-[calc(100% - <header>)]` on the list:
+                the header above is sized by its own controls (rem-driven, so it
+                grows with the zoom level) and the error banner appears and
+                disappears, neither of which a hardcoded subtrahend can track. */}
+            <TabsContent
+              value="market"
+              className="flex h-full min-h-0 flex-col pt-2"
+            >
+              <div className="shrink-0 space-y-2 pb-2">
                 <Select
                   value={selectedProvider}
                   onValueChange={setSelectedProvider}
@@ -1222,12 +1229,12 @@ export function McpSettings() {
               </div>
 
               {searchError ? (
-                <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
+                <div className="shrink-0 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
                   {t("market.searchFailed", { message: searchError })}
                 </div>
               ) : null}
 
-              <div className="h-[calc(100%-106px)] overflow-auto space-y-1">
+              <div className="min-h-0 flex-1 overflow-auto space-y-1">
                 {searching ? (
                   <div className="h-full min-h-24 rounded-md border border-dashed flex items-center justify-center gap-2 text-xs text-muted-foreground">
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1271,7 +1278,7 @@ export function McpSettings() {
                                     className="h-full w-full object-cover"
                                   />
                                 ) : (
-                                  <div className="h-full w-full flex items-center justify-center text-[10px] text-muted-foreground">
+                                  <div className="h-full w-full flex items-center justify-center text-3xs text-muted-foreground">
                                     MCP
                                   </div>
                                 )}
@@ -1291,29 +1298,23 @@ export function McpSettings() {
                                 <Badge
                                   key={`${item.server_id}-${protocol}`}
                                   variant="secondary"
-                                  className="text-[10px]"
+                                  className="text-3xs"
                                 >
                                   {protocolBadgeLabel(protocol, mcpT)}
                                 </Badge>
                               ))}
                               {item.latest_version ? (
-                                <Badge
-                                  variant="outline"
-                                  className="text-[10px]"
-                                >
+                                <Badge variant="outline" className="text-3xs">
                                   v{item.latest_version}
                                 </Badge>
                               ) : null}
                               {item.verified ? (
-                                <Badge className="text-[10px]">
+                                <Badge className="text-3xs">
                                   {t("badges.verified")}
                                 </Badge>
                               ) : null}
                               {typeof item.downloads === "number" ? (
-                                <Badge
-                                  variant="outline"
-                                  className="text-[10px]"
-                                >
+                                <Badge variant="outline" className="text-3xs">
                                   {t("badges.uses", { count: item.downloads })}
                                 </Badge>
                               ) : null}
@@ -1400,7 +1401,7 @@ export function McpSettings() {
                 <Textarea
                   value={draftSpecText}
                   onChange={(event) => setDraftSpecText(event.target.value)}
-                  className="min-h-[360px] font-mono text-xs"
+                  className="min-h-[22.5rem] font-mono text-xs"
                 />
               </div>
 
@@ -1506,7 +1507,7 @@ export function McpSettings() {
                 <Textarea
                   value={localSpecText}
                   onChange={(event) => setLocalSpecText(event.target.value)}
-                  className="min-h-[360px] font-mono text-xs"
+                  className="min-h-[22.5rem] font-mono text-xs"
                 />
               </div>
 
@@ -1668,7 +1669,7 @@ export function McpSettings() {
                         ))}
                       </SelectContent>
                     </Select>
-                    <div className="text-[11px] text-muted-foreground">
+                    <div className="text-2xs text-muted-foreground">
                       {t("market.currentOptionParameterCount", {
                         count: selectedInstallOption?.parameters.length ?? 0,
                       })}
@@ -1685,7 +1686,7 @@ export function McpSettings() {
                         setMarketSpecText(event.target.value)
                         setMarketSpecDirty(true)
                       }}
-                      className="min-h-[360px] font-mono text-xs"
+                      className="min-h-[22.5rem] font-mono text-xs"
                     />
                   </div>
                 </>

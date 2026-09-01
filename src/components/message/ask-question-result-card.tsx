@@ -174,7 +174,7 @@ export function AskQuestionResultCard({
       t("awaiting"),
       <div className="flex flex-wrap gap-1.5">
         {questions.map((q, i) => (
-          <Badge key={i} variant="outline" className="text-[10px]">
+          <Badge key={i} variant="outline" className="text-3xs">
             {q.header || q.question}
           </Badge>
         ))}

@@ -8,7 +8,6 @@ import {
   Coins,
   CopyIcon,
   ListTodo,
-  Timer,
 } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
 import {
@@ -19,7 +18,6 @@ import {
 } from "@/components/ui/tooltip"
 import { useMessageScroll } from "@/components/message/message-scroll-context"
 import { useCreateTaskFromMessage } from "./use-create-task-from-message"
-import { formatElapsedLabel } from "@/lib/format-elapsed"
 import { formatTokenCount } from "@/lib/token-format"
 import { cn, copyTextToClipboard } from "@/lib/utils"
 import type { TurnUsage } from "@/lib/types"
@@ -51,9 +49,6 @@ export function TurnStats({
 }: TurnStatsProps) {
   const locale = useLocale()
   const t = useTranslations("Folder.chat.messageList")
-  // Reuse the live timer's elapsed-unit strings so the per-turn duration
-  // tooltip renders the exact same localized "Xh Ym Zs" format.
-  const tLive = useTranslations("Folder.chat.liveTurnStats")
   const tTasks = useTranslations("Tasks")
   const scroll = useMessageScroll()
   const [isCopied, setIsCopied] = useState(false)
@@ -92,10 +87,13 @@ export function TurnStats({
   const displayModels = models?.length ? models : model ? [model] : []
   const hasCopy = copyText.trim().length > 0
   const hasUsage = Boolean(usage)
+  // The duration itself is shown by the reply's fold header
+  // (`CompletedTurnContent`), not here — this row only uses it as a signal that
+  // the turn was substantial.
   const hasDuration = typeof duration_ms === "number" && duration_ms > 0
   const hasCompletedAt = Boolean(completedLabel)
   // Usage OR duration: some agents (Cursor) never report per-turn token
-  // usage, but a turn with a duration chip is still a substantial reply
+  // usage, but a turn that took real time is still a substantial reply
   // worth jumping back from.
   const hasJump =
     isResponseComplete &&
@@ -128,8 +126,9 @@ export function TurnStats({
   )
 
   if (!isResponseComplete) return null
-  if (!hasCopy && !hasUsage && !hasDuration && !hasCompletedAt && !hasJump)
-    return null
+  // Deliberately not gated on `hasDuration`: nothing in this row renders a
+  // duration any more, so a turn carrying only one would open an empty row.
+  if (!hasCopy && !hasUsage && !hasCompletedAt && !hasJump) return null
 
   return (
     <div className="mt-2 -ms-[0.3125rem] flex items-center justify-start gap-1 text-xs text-muted-foreground">
@@ -237,24 +236,6 @@ export function TurnStats({
                   </div>
                 )}
               </div>
-            </TooltipContent>
-          </Tooltip>
-        )}
-        {hasDuration && duration_ms != null && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                className={cn(iconButtonClass, "cursor-default")}
-                aria-label={t("duration")}
-              >
-                <Timer aria-hidden="true" className="h-3.5 w-3.5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="top">
-              <span className="font-mono tabular-nums">
-                {formatElapsedLabel(duration_ms, tLive)}
-              </span>
             </TooltipContent>
           </Tooltip>
         )}

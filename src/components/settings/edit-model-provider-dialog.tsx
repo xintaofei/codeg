@@ -235,7 +235,7 @@ export function EditModelProviderDialog({
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-2xs text-muted-foreground">
               {t("agentTypeImmutableHint")}
             </p>
           </div>
@@ -362,7 +362,7 @@ export function EditModelProviderDialog({
                   placeholder="Routed via custom gateway"
                 />
               </div>
-              <p className="text-[11px] text-muted-foreground md:col-span-2">
+              <p className="text-2xs text-muted-foreground md:col-span-2">
                 {t("claudeCustomModelOptionHint")}
               </p>
             </div>

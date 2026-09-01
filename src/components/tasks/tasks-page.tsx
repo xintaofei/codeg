@@ -61,7 +61,7 @@ import {
   type BoardColumnId,
 } from "./board-columns"
 import {
-  isFolderMerging,
+  isAnotherTaskMerging,
   isMergeQueued,
   mergeQueueRanks,
 } from "./task-acceptance"
@@ -984,8 +984,8 @@ export function TasksPage() {
         open={mergeOpen}
         onOpenChange={setMergeOpen}
         task={mergeTask}
-        folderMerging={
-          mergeTask != null && isFolderMerging(tasks, mergeTask.folder_id)
+        anotherMerging={
+          mergeTask != null && isAnotherTaskMerging(tasks, mergeTask)
         }
         alreadyQueued={mergeLiveTask != null && isMergeQueued(mergeLiveTask)}
       />

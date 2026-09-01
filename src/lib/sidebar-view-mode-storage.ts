@@ -1,6 +1,7 @@
 "use client"
 
 const FOLDER_EXPANDED_KEY = "workspace:sidebar-folder-expanded"
+const FOLDER_GROUP_EXPANDED_KEY = "workspace:sidebar-folder-group-expanded"
 const SHOW_COMPLETED_KEY = "workspace:sidebar-show-completed"
 const SHOW_WORKTREES_KEY = "workspace:sidebar-show-worktrees"
 const SHOW_RECENT_KEY = "workspace:sidebar-show-recent"
@@ -58,7 +59,12 @@ export interface SidebarSectionCollapsed {
  * than navigation, and it is the one row with no equivalent elsewhere in the
  * chrome. Adding a future route here gives it a toggle for free.
  */
-export const SIDEBAR_NAV_ITEM_IDS = ["automations", "tasks", "forge"] as const
+export const SIDEBAR_NAV_ITEM_IDS = [
+  "automations",
+  "tasks",
+  "forge",
+  "canvas",
+] as const
 
 export type SidebarNavItemId = (typeof SIDEBAR_NAV_ITEM_IDS)[number]
 
@@ -157,6 +163,40 @@ export function saveFolderExpanded(state: Record<number, boolean>): void {
   if (typeof window === "undefined") return
   try {
     localStorage.setItem(FOLDER_EXPANDED_KEY, JSON.stringify(state))
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Collapsed state of the sidebar's folder GROUPS, keyed by group id. Absent
+ *  key = expanded, mirroring {@link loadFolderExpanded}: a freshly created group
+ *  is open, and a group whose row is closed is the only thing persisted. Kept
+ *  device-local (localStorage, not the DB) for the same reason folder collapse
+ *  is — it is a view preference, not shared workspace state. */
+export function loadFolderGroupExpanded(): Record<number, boolean> {
+  if (typeof window === "undefined") return {}
+  try {
+    const raw = localStorage.getItem(FOLDER_GROUP_EXPANDED_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== "object") return {}
+    const result: Record<number, boolean> = {}
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      const id = Number(k)
+      if (!Number.isNaN(id) && typeof v === "boolean") {
+        result[id] = v
+      }
+    }
+    return result
+  } catch {
+    return {}
+  }
+}
+
+export function saveFolderGroupExpanded(state: Record<number, boolean>): void {
+  if (typeof window === "undefined") return
+  try {
+    localStorage.setItem(FOLDER_GROUP_EXPANDED_KEY, JSON.stringify(state))
   } catch {
     /* ignore */
   }

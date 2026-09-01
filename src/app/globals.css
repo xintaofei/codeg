@@ -21,7 +21,20 @@
 
   font-family: var(--font-sans);
   font-size: 16px;
-  line-height: 24px;
+  /* 这条行高被所有没自带 line-height 的文字继承，必须跟着根字号一起放大：写死 24px
+     的话缩放到 300% 时字长到 42px、行盒却仍是 24px，`truncate` 的 overflow:hidden
+     会把侧栏导航标签、会话标题、文件夹选择器的汉字上下各切掉几像素。
+
+     em 而非 rem：**根元素上的 rem 在 WebKit 里不解析为根字号，而是解析为 font-size
+     的初始值 16px**。缩放是 AppearanceProvider 往 <html> 上写 font-size 实现的，
+     于是 `1.5rem` 在这里被永久钉死在 24px —— 不是失效竞态，300% 冷启动同样是 24px。
+     Chromium 按规范解析为 1.5×根字号，所以这个 bug 只在桌面端（Tauri = WKWebView）
+     出现，浏览器里跑 server 模式看不到。根元素上的 em 就是它自己的 font-size，两个
+     引擎都实时解析：100% 下算出 24px（与旧写法逐像素相同），300% 下 72px。
+
+     `calc(1.5 * 1rem)` 和 `var(--lh)`（值为 1.5rem）在 WebKit 上同样被钉死，换写法
+     绕不过去；要留在 :root 上就只能用 em。 */
+  line-height: 1.5em;
   font-weight: 400;
 
   font-synthesis: none;
@@ -1018,6 +1031,18 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* 比 text-xs(12px) 更小的两档字号。缩放档位（80%–150%）改的是 html 的 font-size，
+   所以只有 rem 会跟着放大 —— 全仓原先散落的 `text-[11px]` / `text-[10px]` 在缩放到
+   150% 时仍是 11px/10px，旁边的 text-sm 却涨到 21px，小字被压得越来越不成比例。
+   刻意只声明 font-size、不声明 line-height：被它们替换掉的 `text-[Npx]` 任意值同样
+   只写 font-size，行高照旧由 leading-* 或继承决定，换过来在 100% 缩放下零视觉差异。 */
+@utility text-2xs {
+  font-size: 0.6875rem; /* 11px @100% */
+}
+@utility text-3xs {
+  font-size: 0.625rem; /* 10px @100% */
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -1368,6 +1393,29 @@
   }
 }
 
+/* Sidebar folder / folder-group TITLES painted in the folder's chosen colour.
+   Same shape as `.forge-label` above: `folderTitleTintVars()` (theme-presets.ts)
+   writes BOTH themes' values as inline custom properties and these rules pick
+   the set, because an inline style cannot see the theme class on the root — and
+   because picking in JS would flash the light colour on every cold start in dark
+   mode. The colour deliberately lands on the title TEXT ONLY; the row around it
+   (hover pill, badges, and every conversation card under it) stays on the app
+   theme. Unlayered like the chips, so it beats a Tailwind `text-*` utility if
+   the two ever meet on one element. */
+.folder-title-tint {
+  color: var(--folder-title-light);
+}
+
+.dark .folder-title-tint {
+  color: var(--folder-title-dark);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) .folder-title-tint {
+    color: var(--folder-title-dark);
+  }
+}
+
 /* The forge workbench's "a request is out" sweep (see `PendingBar`). Its own
    keyframes rather than an animation utility: the travel is expressed in the
    SWEEP's width, not the track's, so it has to run from fully off one edge
@@ -1521,6 +1569,83 @@
   }
   to {
     opacity: 1;
+  }
+}
+
+/* Reply fold body — the "Worked for …" header's progress section
+   (`CompletedTurnContent`). Unlike the tool collapsibles above, this one DOES
+   animate its height: it is the one fold per reply the reader toggles by hand,
+   and the answer below reading as pushed down / pulled back up is the whole
+   point of the affordance.
+
+   Driven by `grid-template-rows: 0fr ↔ 1fr`, never by a measured pixel height.
+   `instant-collapsible` exists precisely because Radix measured content height
+   on every open-on-mount and turned a long history into a forced-layout storm;
+   this keeps that promise — no JS reads layout, the engine interpolates the
+   track. The single child carries the clipping (and all the padding, so the
+   collapsed track really reaches zero instead of stalling at its own padding).
+
+   Kept as a CSS animation rather than a transition because `instant-collapsible`
+   holds closing content mounted by watching `animationName` / `animationend`. */
+.reply-fold-body {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+
+.reply-fold-body > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* easeOutCubic opening (the body decelerates into place as it pushes the answer
+   down) against easeInCubic closing (it accelerates away as it folds up). A
+   single sharp ease-out on both ends made the open read as a snap.
+
+   The enter animation is opt-in via `.reply-fold-enter`, which the component
+   adds only for a real closed→open toggle. A body that MOUNTS open — the row
+   key flipping at settlement, the detail refetch, the virtualizer recycling the
+   row — must paint expanded rather than replay the unfold. The exit animation
+   is unconditional: it is what unmounts the content. */
+.reply-fold-body[data-state="open"].reply-fold-enter {
+  animation: reply-fold-open 200ms cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+.reply-fold-body[data-state="closed"] {
+  animation: reply-fold-close 160ms cubic-bezier(0.32, 0, 0.67, 0) forwards;
+}
+
+@keyframes reply-fold-open {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+  to {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+}
+
+@keyframes reply-fold-close {
+  from {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+  to {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+
+/* Reduced motion: snap. The close animation still has to RUN (it is what
+   unmounts the content — see the `animationend` presence check in
+   `instant-collapsible`), so shorten it to a single frame rather than removing
+   it, and drop the height travel so nothing slides. */
+@media (prefers-reduced-motion: reduce) {
+  .reply-fold-body[data-state="open"].reply-fold-enter {
+    animation: none;
+  }
+  .reply-fold-body[data-state="closed"] {
+    animation: reply-fold-close 1ms linear forwards;
   }
 }
 
@@ -2347,7 +2472,11 @@ div.monaco-diff-editor.side-by-side .editor.modified {
 .browser-tab-hover::before {
   content: "";
   position: absolute;
-  inset: 2px 2px 8px 2px;
+  /* rem 而非 2/2/8/2 px：底部这一格是**镜像 `.browser-tab-seat` 的 0.5rem 座高**（凹
+     弧脚的地盘），写死 px 的话缩放到 250% 时座是 20px 而药丸只让出 8px —— 药丸下沿落进
+     脚区，上面注释里「让开脚部」的前提就不成立了。100% 下 0.125rem=2px、0.5rem=8px，
+     逐像素与原值相同。 */
+  inset: 0.125rem 0.125rem 0.5rem 0.125rem;
   z-index: -1;
   border-radius: 0.5rem;
   background-color: color-mix(in oklab, var(--background) 60%, transparent);
@@ -2408,23 +2537,35 @@ div.monaco-diff-editor.side-by-side .editor.modified {
   width: 0.5rem;
   background-color: var(--background);
 }
+/* ★ 遮罩半径必须与上面的 0.5rem 见方盒**同单位**：写死 7px/8px 时，缩放到 250% 盒子是
+   20px 见方而凹弧只有 8px 半径 —— 弧只啃掉左上角一小口，剩下的仍是实心方块，视觉上就是
+   两个「方脚」而非反向圆角（用户在 250% 下反馈「反向圆角过渡不自然」）。0.4375rem=7px、
+   0.5rem=8px @100%，逐像素与原值相同；抗锯齿带宽也随之等比。 */
 .browser-tab-seat::before {
   left: -0.5rem;
   -webkit-mask-image: radial-gradient(
     circle at top left,
-    transparent 7px,
-    #000 8px
+    transparent 0.4375rem,
+    #000 0.5rem
   );
-  mask-image: radial-gradient(circle at top left, transparent 7px, #000 8px);
+  mask-image: radial-gradient(
+    circle at top left,
+    transparent 0.4375rem,
+    #000 0.5rem
+  );
 }
 .browser-tab-seat::after {
   right: -0.5rem;
   -webkit-mask-image: radial-gradient(
     circle at top right,
-    transparent 7px,
-    #000 8px
+    transparent 0.4375rem,
+    #000 0.5rem
   );
-  mask-image: radial-gradient(circle at top right, transparent 7px, #000 8px);
+  mask-image: radial-gradient(
+    circle at top right,
+    transparent 0.4375rem,
+    #000 0.5rem
+  );
 }
 /* Workspace 背景图开启：所有 tab 全透明，seat 反向圆角默认不显示（否则透明 tab 会挂
    var(--background) 白色小圆角）。非激活 tab 的 seat 已不随 hover 显示（见上「仅激活」），
@@ -2645,4 +2786,171 @@ div.monaco-diff-editor.side-by-side .editor.modified {
   --tu-seq-5: color-mix(in oklab, var(--tu-accent) 64%, var(--card));
   --tu-seq-6: color-mix(in oklab, var(--tu-accent) 81%, var(--card));
   --tu-seq-7: var(--tu-accent);
+}
+
+/* ─── Conversation canvas (ReactFlow) ─── */
+
+/* Running-conversation breathing ring: opacity only, on the card's ring —
+   no transform, no layout work. Guarded by motion-safe at the usage site. */
+@keyframes canvas-breathe {
+  0%,
+  100% {
+    box-shadow:
+      var(--tw-ring-offset-shadow, 0 0 #0000),
+      var(--tw-ring-shadow, 0 0 #0000);
+  }
+  50% {
+    box-shadow:
+      var(--tw-ring-offset-shadow, 0 0 #0000),
+      0 0 0 3px color-mix(in oklab, var(--primary) 14%, transparent);
+  }
+}
+
+.canvas-surface {
+  /* Dots grid ink; when the workspace background image is on, the surface
+     turns transparent so the image shows through — drop the dot ink so the
+     grid reads as texture, not noise. */
+  --canvas-dot-color: color-mix(
+    in oklab,
+    var(--muted-foreground) 22%,
+    transparent
+  );
+  /* ReactFlow theme variables → app tokens, all 12 presets + dark for free. */
+  --xy-background-color: transparent;
+  --xy-minimap-background-color: var(--card);
+  --xy-minimap-mask-background-color: color-mix(
+    in oklab,
+    var(--muted-foreground) 12%,
+    transparent
+  );
+  --xy-minimap-node-background-color: color-mix(
+    in oklab,
+    var(--muted-foreground) 30%,
+    transparent
+  );
+  --xy-selection-background-color: color-mix(
+    in oklab,
+    var(--primary) 8%,
+    transparent
+  );
+  --xy-selection-border-default: 1px solid
+    color-mix(in oklab, var(--primary) 45%, transparent);
+  --xy-node-border-radius: 0.75rem;
+  background-color: var(--background);
+}
+/* Board units.
+ *
+ * Everything ON the board — where a card sits, how wide a region is, how tall a
+ * row of the grid is — is a FLOW unit: a plain number that ReactFlow renders,
+ * SQLite stores and the Rust side mirrors (`canvas_detach_member` lands a
+ * detached card with the same arithmetic). A rem cannot be a coordinate, so
+ * those numbers can never follow the appearance zoom.
+ *
+ * The typography inside them therefore must not either, or the two disagree at
+ * every zoom but 100%: the slot stays 132 tall while its contents grow, which is
+ * how a card ended up with a title clipped through the middle of a line at 150%
+ * and a blank third line's worth of dead space at 116%. Same for a region's
+ * fixed header band and a note's fixed box.
+ *
+ * So the board opts out of the app's zoom and keeps its own scale — which it
+ * already has, and which is the honest knob for "make the board bigger": the
+ * zoom control in the corner (and the wheel), persisted per visit.
+ *
+ * Redefining the theme variables is enough for the utilities, because every
+ * Tailwind v4 size resolves through one: `p-3` → `calc(var(--spacing) * 3)`,
+ * `text-xs` → `var(--text-xs)`, `rounded-xl` → `calc(var(--radius) * 1.4)`. The
+ * line heights those text utilities pair with are unitless ratios and follow
+ * their font size for free; the INHERITED one does not, hence the reset below.
+ *
+ * Applies to board CONTENT only. The dock, the zoom pill, the minimap and every
+ * portalled menu are window chrome and keep following the appearance zoom. */
+.canvas-board-units {
+  /* The inherited metrics matter as much as the scale below: text with no size
+     utility of its own would otherwise arrive from outside the board already
+     scaled. 16px is what the root font-size is at 100%, which is the whole
+     definition of "board units".
+
+     `line-height` has to be restated for a subtler reason: `:root` declares it
+     in `em` (deliberately — see the note up there), and an em line-height
+     computes to an absolute LENGTH before it inherits. So a 13px label with no
+     `leading-*` of its own would sit in the root's 36px line box at 150% no
+     matter what this scope says about font sizes — enough to burst a region's
+     fixed 40px header band. Unitless re-resolves against each element's own
+     size, and lands on exactly the same 24px as the root does at 100%. */
+  font-size: 16px;
+  line-height: 1.5;
+  --spacing: 4px;
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-base: 16px;
+  --text-lg: 18px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --radius: 10px;
+}
+[data-workspace-bg="on"] .canvas-surface {
+  background-color: transparent;
+  --canvas-dot-color: color-mix(
+    in oklab,
+    var(--muted-foreground) 12%,
+    transparent
+  );
+}
+.canvas-surface .canvas-dots circle {
+  fill: var(--canvas-dot-color);
+}
+/* Appearance only. What takes the map OUT of the absolute positioning its own
+   `<Panel>` wrapper comes with — so it can stack above the zoom controls rather
+   than land on them — is an inline style on the component, deliberately: see
+   the note in `canvas-dock`. Do not re-add `position`/`margin` here; two owners
+   of one layout decision is how it got broken the first time. */
+.canvas-surface .canvas-minimap {
+  border-radius: 0.75rem;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  transition: opacity 120ms ease;
+}
+/* Out of the way while the board is being dragged. The map is an orientation
+   aid for a board that is standing still; during a pan it is a bright rectangle
+   redrawing itself while the thing it depicts moves under it. Opacity rather
+   than `display: none` so the controls beneath it don't jump up and back, and
+   so it fades in rather than popping. */
+.canvas-surface[data-canvas-panning] .canvas-minimap {
+  opacity: 0;
+}
+/* RF wraps each custom node in an absolutely-positioned div; the default
+   focus outline fights the cards' own selected ring. */
+.canvas-surface .react-flow__node:focus {
+  outline: none;
+}
+/* A left-drag on empty board draws the marquee — and ReactFlow deliberately
+   does NOT `preventDefault` that pointerdown (it only does so when the press
+   landed on a child), so the browser drops a text-selection anchor on the pane
+   as well. The drag then sweeps a native selection through every `select-text`
+   region in DOCUMENT order, which is why an expanded card's transcript
+   highlighted even when the marquee never touched it. Refusing to start a
+   selection on the pane removes the anchor; `.select-text` inside a card opts
+   itself back in, so dragging within a transcript still selects its text. Same
+   mechanism ReactFlow already applies to `.react-flow__node` — this just puts
+   it one level up, on their shared container. */
+.canvas-surface .react-flow__pane {
+  user-select: none;
+}
+/* …and for the duration of the drag, nothing on the board is selectable at all.
+   The rule above only refuses the ANCHOR; a subtree that opts back in is still
+   fair game for a selection sweeping through it, and two of them do opt back in
+   — a card body says `select-text`, and form controls get it from the UA
+   stylesheet. `!important` is what beats those, and the attribute is what keeps
+   it to the gesture (`use-canvas-marquee-text-guard`), so selecting a reply
+   inside a card is untouched. Same shape as the panning cursor below. */
+.canvas-surface[data-canvas-marquee],
+.canvas-surface[data-canvas-marquee] * {
+  user-select: none !important;
+}
+/* Right-drag panning is ours, not d3-zoom's (every draggable node carries the
+   `nopan` class its filter refuses), so the grabbing cursor is ours too — and
+   it has to beat every element's own cursor, including a card's text. */
+.canvas-surface[data-canvas-panning],
+.canvas-surface[data-canvas-panning] * {
+  cursor: grabbing !important;
 }

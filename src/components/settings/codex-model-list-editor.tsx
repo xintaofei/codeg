@@ -322,7 +322,7 @@ export function CodexModelListEditor({
   return (
     <div className="space-y-4">
       {hasCustomization && (
-        <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-500">
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-2xs text-amber-500">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>{t("customizedNotice")}</span>
         </div>
@@ -333,7 +333,7 @@ export function CodexModelListEditor({
         <div className="flex items-center justify-between">
           <div>
             <p className="text-xs font-semibold">{t("officialsTitle")}</p>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-2xs text-muted-foreground">
               {t("officialsHint")}
             </p>
           </div>
@@ -354,7 +354,7 @@ export function CodexModelListEditor({
         </div>
 
         {shownOfficials.length === 0 ? (
-          <p className="rounded-md border border-dashed px-3 py-3 text-center text-[11px] text-muted-foreground">
+          <p className="rounded-md border border-dashed px-3 py-3 text-center text-2xs text-muted-foreground">
             {t("officialsEmpty")}
           </p>
         ) : (
@@ -387,7 +387,7 @@ export function CodexModelListEditor({
                 </button>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-xs">{m.display_name || m.slug}</p>
-                  <p className="truncate text-[11px] text-muted-foreground">
+                  <p className="truncate text-2xs text-muted-foreground">
                     {m.slug}
                   </p>
                 </div>
@@ -429,7 +429,7 @@ export function CodexModelListEditor({
       <section className="space-y-2">
         <p className="text-xs font-semibold">{t("customsTitle")}</p>
         {customs.length === 0 ? (
-          <p className="rounded-md border border-dashed px-3 py-3 text-center text-[11px] text-muted-foreground">
+          <p className="rounded-md border border-dashed px-3 py-3 text-center text-2xs text-muted-foreground">
             {t("customsEmpty")}
           </p>
         ) : (
@@ -541,7 +541,7 @@ function CodexCustomRow({
         : options
     return (
       <div key={f.key} className="space-y-1">
-        <Label className="text-[11px] font-medium text-muted-foreground">
+        <Label className="text-2xs font-medium text-muted-foreground">
           {t(f.labelKey as Parameters<typeof t>[0])}
         </Label>
         <Select
@@ -576,7 +576,7 @@ function CodexCustomRow({
         key={f.key}
         className="flex items-center justify-between gap-2 rounded-md border px-2 py-1.5"
       >
-        <Label className="text-[11px] font-medium text-muted-foreground">
+        <Label className="text-2xs font-medium text-muted-foreground">
           {t(f.labelKey as Parameters<typeof t>[0])}
         </Label>
         <Switch
@@ -665,7 +665,7 @@ function CodexCustomRow({
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+        className="mt-1.5 flex items-center gap-1 text-2xs text-muted-foreground hover:text-foreground"
       >
         {expanded ? (
           <ChevronDown className="h-3 w-3" />
@@ -678,7 +678,7 @@ function CodexCustomRow({
       {expanded && (
         <div className="mt-2 space-y-3 border-t pt-2">
           <div className="space-y-1">
-            <Label className="text-[11px] font-medium text-muted-foreground">
+            <Label className="text-2xs font-medium text-muted-foreground">
               {t("presetLabel")}
             </Label>
             <div className="flex gap-1.5">
@@ -703,13 +703,11 @@ function CodexCustomRow({
                 {t("presetCompat")}
               </Button>
             </div>
-            <p className="text-[11px] text-muted-foreground">
-              {t("presetHint")}
-            </p>
+            <p className="text-2xs text-muted-foreground">{t("presetHint")}</p>
           </div>
 
           <div className="space-y-1">
-            <Label className="text-[11px] font-medium text-muted-foreground">
+            <Label className="text-2xs font-medium text-muted-foreground">
               {t("baseTemplate")}
             </Label>
             <Select
@@ -728,13 +726,13 @@ function CodexCustomRow({
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-2xs text-muted-foreground">
               {t("baseTemplateHint")}
             </p>
           </div>
 
           <div className="space-y-2">
-            <p className="text-[11px] font-semibold text-muted-foreground">
+            <p className="text-2xs font-semibold text-muted-foreground">
               {t("groupProtocol")}
             </p>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -746,7 +744,7 @@ function CodexCustomRow({
           </div>
 
           <div className="space-y-2">
-            <p className="text-[11px] font-semibold text-muted-foreground">
+            <p className="text-2xs font-semibold text-muted-foreground">
               {t("groupBehavior")}
             </p>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -767,11 +765,11 @@ function CodexCustomRow({
           </div>
 
           <div className="space-y-2">
-            <p className="text-[11px] font-semibold text-muted-foreground">
+            <p className="text-2xs font-semibold text-muted-foreground">
               {t("groupInstructions")}
             </p>
             <div className="space-y-1">
-              <Label className="text-[11px] font-medium text-muted-foreground">
+              <Label className="text-2xs font-medium text-muted-foreground">
                 {t("fieldDescription")}
               </Label>
               <Textarea
@@ -779,11 +777,11 @@ function CodexCustomRow({
                 readOnly={readOnly}
                 rows={2}
                 onChange={(e) => setField("description", e.target.value)}
-                className="max-h-20 resize-y text-[11px]"
+                className="max-h-20 resize-y text-2xs"
               />
             </div>
             <div className="space-y-1">
-              <Label className="text-[11px] font-medium text-muted-foreground">
+              <Label className="text-2xs font-medium text-muted-foreground">
                 {t("baseInstructions")}
               </Label>
               <Textarea
@@ -791,7 +789,7 @@ function CodexCustomRow({
                 readOnly={readOnly}
                 rows={6}
                 onChange={(e) => setField("base_instructions", e.target.value)}
-                className="max-h-48 resize-y overflow-y-auto font-mono text-[11px]"
+                className="max-h-48 resize-y overflow-y-auto font-mono text-2xs"
               />
             </div>
           </div>

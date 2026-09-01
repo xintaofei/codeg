@@ -69,13 +69,14 @@ function settings(
     max_concurrent: 2,
     merge_strategy: "squash",
     auto_merge: false,
+    auto_compact_percent: 0,
     delete_worktree_default: true,
     ...overrides,
   }
 }
 
 function renderDialog(props?: {
-  folderMerging?: boolean
+  anotherMerging?: boolean
   alreadyQueued?: boolean
   onOpenChange?: (open: boolean) => void
 }) {
@@ -85,7 +86,7 @@ function renderDialog(props?: {
         open
         onOpenChange={props?.onOpenChange ?? (() => {})}
         task={task()}
-        folderMerging={props?.folderMerging}
+        anotherMerging={props?.anotherMerging}
         alreadyQueued={props?.alreadyQueued}
       />
     </NextIntlClientProvider>
@@ -198,7 +199,7 @@ describe("TaskMergeDialog", () => {
     settingsMock.mockResolvedValue(settings())
     mergeMock.mockResolvedValue(true)
     const onOpenChange = vi.fn()
-    renderDialog({ folderMerging: true, onOpenChange })
+    renderDialog({ anotherMerging: true, onOpenChange })
 
     expect(screen.getByText(/joins the queue/)).toBeInTheDocument()
     await userEvent.click(
@@ -218,6 +219,46 @@ describe("TaskMergeDialog", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Merge" }))
     await waitFor(() => expect(mergeMock).toHaveBeenCalled())
+    expect(toastSuccess).not.toHaveBeenCalled()
+  })
+
+  // The reported bug: a plain merge flashed "this project is landing another
+  // task" for the seconds its dispatch took. The engine broadcasts
+  // review→merging as soon as it begins — before the call returns — so the
+  // board recomputes and the still-open dialog gets told its own project is
+  // busy. What the button promised when it was pressed has to hold until the
+  // call answers.
+  it("keeps its promise while the dispatch is in flight", async () => {
+    settingsMock.mockResolvedValue(settings())
+    let settle: (queued: boolean) => void = () => {}
+    mergeMock.mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        settle = resolve
+      })
+    )
+    const onOpenChange = vi.fn()
+    const view = (anotherMerging: boolean) => (
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <TaskMergeDialog
+          open
+          onOpenChange={onOpenChange}
+          task={task()}
+          anotherMerging={anotherMerging}
+        />
+      </NextIntlClientProvider>
+    )
+    const { rerender } = render(view(false))
+
+    await userEvent.click(screen.getByRole("button", { name: "Merge" }))
+    await waitFor(() => expect(mergeMock).toHaveBeenCalled())
+
+    rerender(view(true))
+    expect(screen.queryByText(/joins the queue/)).toBeNull()
+    expect(screen.getByRole("button", { name: "Merge" })).toBeInTheDocument()
+
+    // And the dispatch still lands as a dispatch.
+    settle(false)
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
     expect(toastSuccess).not.toHaveBeenCalled()
   })
 

@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { DropdownRadioItemContent } from "@/components/chat/dropdown-radio-item-content"
+import { SelectorTooltip } from "@/components/chat/selector-tooltip"
 import type { SessionModeInfo } from "@/lib/types"
 
 interface ModeSelectorProps {
@@ -29,18 +30,19 @@ export function InlineModeSelector({
   const currentLabel = selected?.name ?? selectedModeId ?? ""
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size="xs"
-          title={label}
-          aria-label={currentLabel ? `${label}: ${currentLabel}` : label}
-          className="min-w-0 gap-0.5 px-1 text-muted-foreground"
-        >
-          <span className="max-w-[10rem] truncate">{currentLabel}</span>
-          <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
-        </Button>
-      </DropdownMenuTrigger>
+      <SelectorTooltip label={label} description={selected?.description}>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="xs"
+            aria-label={currentLabel ? `${label}: ${currentLabel}` : label}
+            className="min-w-0 gap-0.5 px-1 text-muted-foreground"
+          >
+            <span className="max-w-[10rem] truncate">{currentLabel}</span>
+            <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+          </Button>
+        </DropdownMenuTrigger>
+      </SelectorTooltip>
       <DropdownMenuContent
         side="top"
         align="start"

@@ -470,6 +470,22 @@ describe("ConversationDetailPanel session-load failure surface", () => {
     expect(banner).toContain("hasPersistedConversation && acpLoadError")
     expect(banner).toContain("handleReloadDetail")
     expect(banner).toContain("handleOpenNewSession")
+    // A failure with a runnable fix (archived session → `codex unarchive
+    // <id>`) offers it as a copy action. The message itself renders in a
+    // one-line ellipsized strip, so a 36-char session id inside the prose is
+    // exactly what gets truncated away — the button is what makes the
+    // command reachable at all, and it must not show when there is no
+    // command to copy.
+    expect(banner).toContain("{recoveryCommand && (")
+    expect(banner).toContain("handleCopyRecoveryCommand")
+    // Every action is shrink-0 and the message is the only elastic child, so
+    // a third action has to be able to wrap. Without `flex-wrap` plus a floor
+    // under the message, the row silently pushes "New conversation" outside
+    // the banner at narrow widths (measured 34-172px past the edge at
+    // 320-384px) — i.e. adding a recovery action would break the two that
+    // were already there.
+    expect(banner).toContain("flex w-full flex-wrap items-center")
+    expect(banner).toContain("min-w-40 flex-1 overflow-hidden")
     // The shell renders the banner inside the composer dock, constrained to
     // the same message-column width as the input it replaces.
     const dockIdx = conversationShellSource.indexOf("{composerBanner && (")

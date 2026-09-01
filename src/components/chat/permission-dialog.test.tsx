@@ -53,6 +53,38 @@ describe("PermissionDialog", () => {
     ).toBeInTheDocument()
   })
 
+  it("shows the agent's own reason in place of the boilerplate subtitle", () => {
+    // codex-acp ≥1.7.0 keeps the reason ONLY in the request-level
+    // `_meta.permission` the backend hoists onto the card; `title` degraded to
+    // a fixed string. The subtitle is boilerplate, so the reason replaces it.
+    const permission: PendingPermission = {
+      request_id: "req-1",
+      tool_call: {
+        title: "Edit files",
+        kind: "edit",
+        _meta: {
+          permission: {
+            version: 1,
+            title: "Make edits?",
+            description: "The migration renames a column used by two callers.",
+          },
+        },
+      },
+      options: baseOptions,
+    }
+    renderWithIntl(
+      <PermissionDialog permission={permission} onRespond={() => {}} />
+    )
+    expect(
+      screen.getByText("The migration renames a column used by two callers.")
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText("Agent requests permission to continue this turn.")
+    ).not.toBeInTheDocument()
+    // The permission title beats the generic tool-call one as the heading.
+    expect(screen.getByText("Make edits?")).toBeInTheDocument()
+  })
+
   it("shows how many approvals are queued behind this card, and hides the badge at zero", () => {
     // Approvals are surfaced one at a time (backend FIFO, #442). Without this
     // count the remaining ones read as the agent having stopped responding.

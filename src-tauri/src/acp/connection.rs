@@ -30,6 +30,7 @@ use sacp::{
 use sacp_tokio::AcpAgent;
 use tokio::sync::{mpsc, RwLock};
 
+use crate::acp::agent_mentions::append_agent_routes;
 use crate::acp::background_watch;
 use crate::acp::error::AcpError;
 use crate::acp::file_system_runtime::{
@@ -87,6 +88,28 @@ fn merge_agent_env(
     prepend_officecli_path(&mut merged);
 
     merged.into_iter().collect()
+}
+
+/// Whether a Cursor launch gets the root `--force` (Run Everything) flag, from
+/// the panel's `CURSOR_FORCE` knob.
+///
+/// The knob is TRI-state on purpose. It used to be written as "1" for on and
+/// *deleted* for off, which made "the user chose Ask" indistinguishable from
+/// "never configured" — and since the panel rendered the missing key as Run
+/// Everything while this function rendered it as Ask, the switch showed one
+/// thing and the session did another. Off is now written as an explicit "0",
+/// and both sides read the same rule: unset means Ask.
+///
+/// Unset resolving to Ask (not Run Everything) is deliberate. It is what every
+/// Cursor session has actually been doing all along, so no existing install
+/// silently loses its confirmation prompts; `--force` also turns cursor's own
+/// sandbox off (`approvalMode: unrestricted` → `insecure_none`), which is not
+/// something to switch on for someone who never asked.
+pub(crate) fn cursor_force_enabled(value: Option<&str>) -> bool {
+    let Some(value) = value.map(str::trim) else {
+        return false;
+    };
+    value == "1" || value.eq_ignore_ascii_case("true")
 }
 
 /// Cursor subscription-mode launch policy. When the user picked the official
@@ -398,18 +421,53 @@ fn sync_antigravity_settings_file(runtime_env: &BTreeMap<String, String>) -> Ant
 /// mean guessing, and a guess here creates a stray tree AND leaves the real
 /// `auth.type` unwritten, so the sync reports the skip instead.
 fn antigravity_acp_dir_for_env(runtime_env: &BTreeMap<String, String>) -> Result<PathBuf, String> {
-    // NOT trimmed: the spawn layer's "is this var removed" test is an exact
-    // empty-string check (`vendor/sacp-tokio/src/acp_agent.rs`), so a
-    // whitespace-only value reaches the child verbatim and trimming here would
-    // name a directory it never opens.
-    let configured = runtime_env.get("GEMINI_HOME").filter(|v| !v.is_empty());
+    antigravity_acp_dir_with_inherited(runtime_env, std::env::var_os("GEMINI_HOME"))
+}
+
+/// [`antigravity_acp_dir_for_env`] with codeg's own `GEMINI_HOME` handed in.
+///
+/// Split out so the three-state resolution can be tested without mutating the
+/// process environment. A `temp_env` writer would race every other test that
+/// reads `GEMINI_HOME` — `resolve_antigravity_acp_dir` does, one assertion away
+/// in this same module — and that race is silent: the writer's value simply
+/// leaks into the reader's expectation.
+fn antigravity_acp_dir_with_inherited(
+    runtime_env: &BTreeMap<String, String>,
+    inherited: Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
+    // Three states, and they are NOT interchangeable — the same distinction
+    // [`crate::acp::file_system_runtime::child_home_dir`] spells out for `HOME`,
+    // for the same reason. `merge_agent_env` names only the variables a launch
+    // SETS, so an ABSENT key means the child inherits codeg's value, and a
+    // container that relocates the tree does exactly that: `GEMINI_HOME` in the
+    // image's own environment, nothing in the per-agent row. Reading only the
+    // row made codeg write `auth.type` — and name the token file — under
+    // `~/.gemini` (i.e. `/root/.gemini`) while the agent used the relocated
+    // one, so the file the panel talked about was never the file the session
+    // read.
+    let configured = match runtime_env.get("GEMINI_HOME") {
+        // Explicitly removed (blank ⇒ `env_remove`): the child sees no
+        // `GEMINI_HOME` at all and falls back to `~/.gemini`.
+        Some(value) if value.is_empty() => None,
+        // Overridden. NOT trimmed: the spawn layer's "is this var removed" test
+        // is an exact empty-string check
+        // (`vendor/sacp-tokio/src/acp_agent.rs`), so a whitespace-only value
+        // reaches the child verbatim and trimming here would name a directory
+        // it never opens.
+        Some(value) => Some(std::ffi::OsString::from(value)),
+        // Absent: the child inherits codeg's environment, so codeg's own answer
+        // is exact. Empty is filtered because the server's `paths.py` treats an
+        // empty `GEMINI_HOME` as unset (`if not home`).
+        None => inherited.filter(|value| !value.is_empty()),
+    };
 
     // The CHILD's home, not codeg's. `merge_agent_env` copies `HOME` into the
     // child like any other variable, so a launch that relocates it moves both
     // the `~/.gemini` default and any `~` in `GEMINI_HOME` with it — and the
     // server, running `os.path.expanduser` in that environment, resolves them
     // there. Only a value that is already absolute is independent of it.
-    let needs_home = configured.is_none_or(|value| {
+    let needs_home = configured.as_ref().is_none_or(|value| {
+        let value = value.to_string_lossy();
         value == "~" || value.starts_with("~/") || value.starts_with("~\\")
     });
     let home = crate::acp::file_system_runtime::child_home_dir(runtime_env);
@@ -422,11 +480,8 @@ fn antigravity_acp_dir_for_env(runtime_env: &BTreeMap<String, String>) -> Result
     }
 
     Ok(
-        crate::parsers::antigravity::resolve_gemini_home_from_value(
-            configured.map(std::ffi::OsString::from),
-            home,
-        )
-        .join(ANTIGRAVITY_ACP_SUBDIR),
+        crate::parsers::antigravity::resolve_gemini_home_from_value(configured, home)
+            .join(ANTIGRAVITY_ACP_SUBDIR),
     )
 }
 
@@ -533,6 +588,52 @@ pub fn sync_antigravity_settings_for_env(
     runtime_env: &BTreeMap<String, String>,
 ) -> AntigravitySyncReport {
     sync_antigravity_settings_file(runtime_env)
+}
+
+/// The environment a real Antigravity launch hands the agent process.
+///
+/// Factored out of [`build_agent`]'s `Binary` branch so the browser-free
+/// sign-in flow ([`crate::acp::antigravity_login`]) can spawn the SAME binary
+/// with the SAME environment. That identity is the whole point: the sign-in
+/// child is the one that writes the OAuth token, and the token's location is
+/// decided by `GEMINI_HOME` (via `paths.py`) and its storage backend by
+/// `AGY_ACP_FORCE_FILE_STORAGE` — so a child launched with a different
+/// environment would faithfully sign the user in and then leave the credential
+/// somewhere no session ever reads.
+///
+/// Deliberately does NOT run [`sync_antigravity_settings_file`]: this returns a
+/// value and that writes a file, and the sign-in path wants the report rather
+/// than a silently dropped one. Callers run the sync themselves.
+pub fn antigravity_launch_env(runtime_env: &BTreeMap<String, String>) -> Vec<(String, String)> {
+    let registry_env: &[(&'static str, &'static str)] =
+        match registry::get_agent_meta(AgentType::Antigravity).distribution {
+            AgentDistribution::Binary { env, .. } => env,
+            // Unreachable while the registry entry stays `Binary`; an empty
+            // base is the correct answer for every other shape anyway, since
+            // `runtime_env` carries everything the panel owns.
+            _ => &[],
+        };
+    let mut merged = merge_agent_env(registry_env, runtime_env);
+    apply_antigravity_env_policy(&mut merged, runtime_env);
+    merged
+}
+
+/// The `auth.type` values Antigravity accepts, for callers that must validate a
+/// method id before acting on it.
+pub fn is_antigravity_auth_method(method_id: &str) -> bool {
+    ANTIGRAVITY_AUTH_METHODS.contains(&method_id)
+}
+
+/// `<GEMINI_HOME>/antigravity-acp` for a launch carrying `runtime_env`, for
+/// callers outside this module that need to name a file the agent keeps there
+/// (its OAuth token, alongside the `settings.json` this module writes).
+///
+/// Same resolution, same `Err` contract as the private original: see
+/// [`antigravity_acp_dir_for_env`].
+pub fn antigravity_acp_dir_for_runtime_env(
+    runtime_env: &BTreeMap<String, String>,
+) -> Result<PathBuf, String> {
+    antigravity_acp_dir_for_env(runtime_env)
 }
 
 /// Read `settings.json` for editing.
@@ -1605,12 +1706,9 @@ async fn build_agent(
                 // apply, and an org policy can downgrade it to rule-based
                 // approval). Sourced from the panel's permission-mode
                 // control (env_json key CURSOR_FORCE — codeg-side knob; the
-                // CLI reads no such env var).
-                if runtime_env
-                    .get("CURSOR_FORCE")
-                    .map(|v| v.trim())
-                    .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                {
+                // CLI reads no such env var). Unset means Ask; see
+                // `cursor_force_enabled`.
+                if cursor_force_enabled(runtime_env.get("CURSOR_FORCE").map(String::as_str)) {
                     cmd_args.insert(0, "--force".to_string());
                 }
             }
@@ -2632,82 +2730,16 @@ fn map_session_config_options(
         .collect()
 }
 
-/// Defensive fallback for Codex's approval-preset selector.
-///
-/// codex-acp 1.0.0 advertises its modes through *both* standard ACP
-/// `SessionModes` and an `id = "mode"` config option (see `AgentMode.ts`'s
-/// `toSessionModeState()` + `toConfigOption()`), so this synthesizer is
-/// normally a no-op — the early return fires because the agent already
-/// surfaced "mode". We keep it only as a safety net: if a future build ever
-/// omits the "mode" config option (older 0.16.0 did this when the sandbox
-/// policy didn't match a preset, e.g. after `writable_roots` injection), the
-/// user would otherwise lose the preset picker entirely, because the composer
-/// hides the standard mode selector whenever any config option exists. Codex's
-/// `set_config_option` handler accepts `config_id = "mode"` regardless of
-/// whether it was advertised.
-///
-/// The preset ids/names/descriptions below MUST match the live adapter
-/// vocabulary (`read-only` / `agent` / `agent-full-access`, default `agent`);
-/// the legacy 0.16.0 ids (`auto` / `full-access`) are no longer accepted.
-fn ensure_codex_mode_option(options: &mut Vec<SessionConfigOptionInfo>) {
-    if options.iter().any(|o| o.id == "mode") {
-        return;
-    }
-    options.insert(
-        0,
-        SessionConfigOptionInfo {
-            id: "mode".to_string(),
-            name: "Approval Preset".to_string(),
-            description: Some(
-                "Choose an approval and sandboxing preset for your session".to_string(),
-            ),
-            category: Some("mode".to_string()),
-            kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
-                current_value: "agent".to_string(),
-                options: vec![
-                    SessionConfigSelectOptionInfo {
-                        value: "read-only".to_string(),
-                        name: "Read-only".to_string(),
-                        description: Some(
-                            "Requires approval to edit files and run commands.".to_string(),
-                        ),
-                    },
-                    SessionConfigSelectOptionInfo {
-                        value: "agent".to_string(),
-                        name: "Agent".to_string(),
-                        description: Some("Read and edit files, and run commands.".to_string()),
-                    },
-                    SessionConfigSelectOptionInfo {
-                        value: "agent-full-access".to_string(),
-                        name: "Agent (full access)".to_string(),
-                        description: Some(
-                            "Codex can edit files outside this workspace and run commands with \
-                             network access."
-                                .to_string(),
-                        ),
-                    },
-                ],
-                groups: vec![],
-            }),
-        },
-    );
-}
-
 async fn emit_session_config_options_values(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
-    agent_type: AgentType,
     config_options: Vec<SessionConfigOption>,
 ) {
-    let mut mapped = map_session_config_options(&config_options);
-    if agent_type == AgentType::Codex {
-        ensure_codex_mode_option(&mut mapped);
-    }
     emit_with_state(
         state,
         emitter,
         AcpEvent::SessionConfigOptions {
-            config_options: mapped,
+            config_options: map_session_config_options(&config_options),
         },
     )
     .await;
@@ -2717,9 +2749,14 @@ async fn emit_selectors_ready(state: &Arc<RwLock<SessionState>>, emitter: &Event
     emit_with_state(state, emitter, AcpEvent::SelectorsReady).await;
 }
 
+/// The conventional id of a model selector. ACP reserves none — `category:
+/// "model"` is the spec-level signal — but every agent codeg drives spells the
+/// id this way, and the frontend's `isModelConfigOption` accepts either.
+const MODEL_CONFIG_OPTION_ID: &str = "model";
+
 /// Synthesized config-option id for Grok's model picker (drives the composer's
 /// grouped model selector via the frontend's `isModelConfigOption`).
-const GROK_MODEL_OPTION_ID: &str = "model";
+const GROK_MODEL_OPTION_ID: &str = MODEL_CONFIG_OPTION_ID;
 
 /// Synthesized config-option id for Grok's per-session reasoning-effort selector.
 /// Grok ships effort choices in `x.ai/sessionConfig` under `category:"mode"`
@@ -3511,7 +3548,7 @@ async fn apply_and_emit_session_config_options(
         initial_config_options,
     )
     .await;
-    emit_session_config_options_values(state, emitter, agent_type, updated).await;
+    emit_session_config_options_values(state, emitter, updated).await;
 }
 
 /// Grok's initialize still advertises `image: false` — the coding model
@@ -3626,6 +3663,19 @@ fn claude_raw_sdk_session_meta(
 ///   `claude_chunk_parent_tool_use_id`). The adapter checks strictly
 ///   `=== true`, and a pre-0.63 binary ignores the unknown key, so this is
 ///   inert everywhere it isn't understood.
+/// - Any agent that launches `cursor-agent … acp` (the built-in Cursor entry
+///   and custom agents wrapping the same binary — see
+///   `registry::uses_cursor_acp_backend`): `_meta["parameterizedModelPicker"]
+///   = true`. cursor-agent's ACP layer reads exactly this key
+///   (`clientSupportsParameterizedModelPicker`, strictly `=== true`) to pick
+///   between its two model-picker shapes. Without it the `model` select is the
+///   EXPLODED variant list — one row per model×parameter combination, valued
+///   by the variant string — and `set_config_option` accepts no other id. With
+///   it the picker splits into a `model` select over model names plus one
+///   option per model parameter (`fast`, thinking level), which is the only
+///   way Composer's Fast switch is reachable. A build that predates the key
+///   ignores it and stays on variants, so this is inert where it isn't
+///   understood.
 fn build_client_capabilities(
     agent_type: AgentType,
     host_tools: HostToolsPolicy,
@@ -3684,12 +3734,37 @@ fn build_client_capabilities(
     // with no filesystem watcher; codeg is not one. Nothing else in either
     // release depends on it, and both adapters no-op without the
     // advertisement, so staying out costs us nothing.
+    //
+    // codex-acp 1.7.0 added a third, "nativeSubagentSessions" (the draft ACP
+    // subagent RFD; the canonical gate is a `clientCapabilities.subagents: {}`
+    // field, with this AIR key as the fallback for SDKs that strip it). It must
+    // stay out for a harder reason than cost: `agent-client-protocol-schema`
+    // 0.11.7 cannot RECEIVE the result. Its `SessionUpdate` is an
+    // internally-tagged enum with no catch-all arm, so the `subagent_spawned` /
+    // `subagent_state_update` notifications would fail to deserialize — and
+    // since the adapter switches child messages, thoughts, tools and
+    // permissions onto a child session id announced only in that first
+    // notification, opting in would make subagent work vanish from the timeline
+    // rather than render better. Without the advertisement the lifecycle stays
+    // the legacy `subAgentActivity` tool call codeg already renders, whose
+    // shape is unchanged from 1.4.0. Revisit when the schema crate ships both
+    // the capability field and the update variants.
     if matches!(agent_type, AgentType::ClaudeCode | AgentType::Codex) {
         meta.insert(
             "jetbrains".to_string(),
             serde_json::json!({
                 "air": { "version": 1, "capabilities": ["sessionFailure"] }
             }),
+        );
+    }
+    // Cursor ACP gates Composer 2.5's `fast` parameter behind this client
+    // capability. Without it the agent advertises only the default variant
+    // (Fast); with it the model picker splits into separate `model` and
+    // `fast` config options that `session/set_config_option` can set.
+    if registry::uses_cursor_acp_backend(agent_type) {
+        meta.insert(
+            "parameterizedModelPicker".to_string(),
+            serde_json::Value::Bool(true),
         );
     }
     if !meta.is_empty() {
@@ -4148,6 +4223,8 @@ fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<String> {
 struct CompanionInjection {
     token: String,
     feedback_available: bool,
+    /// Whether the `delegate_to_agent` tool group was exposed this launch.
+    delegation_enabled: bool,
 }
 
 async fn inject_codeg_mcp(
@@ -4158,6 +4235,30 @@ async fn inject_codeg_mcp(
     tasks_enabled: bool,
     host_tools: HostToolsPolicy,
 ) -> Option<CompanionInjection> {
+    inject_codeg_mcp_with_binary_locator(
+        servers,
+        injection,
+        parent_connection_id,
+        working_dir,
+        tasks_enabled,
+        host_tools,
+        locate_codeg_mcp_binary,
+    )
+    .await
+}
+
+async fn inject_codeg_mcp_with_binary_locator<F>(
+    servers: &mut Vec<McpServer>,
+    injection: &DelegationInjection,
+    parent_connection_id: &str,
+    working_dir: &Path,
+    tasks_enabled: bool,
+    host_tools: HostToolsPolicy,
+    locate_binary: F,
+) -> Option<CompanionInjection>
+where
+    F: FnOnce() -> Option<PathBuf>,
+{
     // codeg-mcp carries BOTH the delegation tools and the live-feedback tool.
     // Inject it when EITHER feature is enabled; the `--features` arg tells the
     // companion which tool groups to expose so a disabled feature's tools never
@@ -4189,6 +4290,15 @@ async fn inject_codeg_mcp(
              anyway. Turn that per-agent switch off to restore the delegation tools."
         );
     }
+    // Which agents the user switched off, so the companion's advertised enum
+    // tracks the live toggle. One indexed query, skipped outright when
+    // delegation is off, and it fails open: the spawn-time disabled check is
+    // the hard gate either way.
+    let disabled = if delegation_enabled {
+        injection.agent_availability.disabled_agent_wire_slugs().await
+    } else {
+        Vec::new()
+    };
     let flags = CompanionFeatureFlags {
         delegation: delegation_enabled,
         feedback: feedback_enabled,
@@ -4198,9 +4308,12 @@ async fn inject_codeg_mcp(
         automations: authoring.automations_enabled,
         taskboard: authoring.work_tasks_enabled,
     };
-    // `None` (no feature enabled) short-circuits the whole injection.
+    // `None` (no feature enabled) short-circuits BEFORE the binary lookup, the
+    // token registration and the server append: there is no companion to launch,
+    // and looking for a binary we would never use would also emit the "binary
+    // not found" warning below for a connection that asked for nothing.
     let features_arg = companion_features_arg(flags)?;
-    let Some(binary_path) = locate_codeg_mcp_binary() else {
+    let Some(binary_path) = locate_binary() else {
         tracing::warn!(
             "[delegation][WARN] codeg-mcp companion binary not found (checked CODEG_MCP_BIN, \
              exe sibling, and PATH); skipping delegate_to_agent / check_user_feedback / \
@@ -4209,6 +4322,13 @@ async fn inject_codeg_mcp(
         );
         return None;
     };
+    // Registered-and-enabled custom agents become extra `delegate_to_agent`
+    // targets; disabled BUILT-INS are subtracted companion-side
+    // (`--disabled-agents`) so the embedded schema stays the single source of
+    // truth for the builtin list and its order. Either flag is omitted when
+    // empty, which also keeps an older codeg-mcp binary — one that rejects
+    // unknown flags at startup — working for installations needing neither.
+    let (custom_slugs, disabled_builtins) = delegate_target_args(&disabled);
     let token = uuid::Uuid::new_v4().to_string();
     injection
         .tokens
@@ -4220,7 +4340,7 @@ async fn inject_codeg_mcp(
             },
         )
         .await;
-    let mut server = McpServerStdio::new("codeg-mcp", binary_path);
+    let mut server = McpServerStdio::new("codeg-mcp", binary_path.clone());
     let mut args = vec![
         "--parent-connection-id".to_string(),
         parent_connection_id.to_string(),
@@ -4238,20 +4358,6 @@ async fn inject_codeg_mcp(
         "--features".to_string(),
         features_arg,
     ];
-    // Advertised delegate targets track the user's enable toggles, read
-    // fresh at injection time. Registered-and-enabled custom agents become
-    // extra `delegate_to_agent` targets; disabled BUILT-INS are subtracted
-    // companion-side (`--disabled-agents`) so the embedded schema stays the
-    // single source of truth for the builtin list and its order. Either flag
-    // is omitted when empty: the companion then serves its embedded
-    // builtin-only schema unchanged, and an older codeg-mcp binary (which
-    // rejects unknown flags at startup) keeps working for every installation
-    // that needs neither.
-    let disabled = injection
-        .agent_availability
-        .disabled_agent_wire_slugs()
-        .await;
-    let (custom_slugs, disabled_builtins) = delegate_target_args(&disabled);
     if !custom_slugs.is_empty() {
         args.push("--custom-agents".to_string());
         args.push(custom_slugs.join(","));
@@ -4265,6 +4371,7 @@ async fn inject_codeg_mcp(
     Some(CompanionInjection {
         token,
         feedback_available: feedback_enabled,
+        delegation_enabled: flags.delegation,
     })
 }
 
@@ -4958,10 +5065,18 @@ async fn run_connection(
                 s.goal_actions = Some(goal_actions);
                 if let Some(ref injected) = delegate_injection {
                     s.delegation_token = Some(injected.token.clone());
+                    s.delegation_enabled = injected.delegation_enabled;
                     // The agent's actual feedback capability for this session
                     // — the authoritative gate for submit + UI, fixed at
                     // launch.
                     s.feedback_tool_available = injected.feedback_available;
+                } else {
+                    // Keep a reused/test state fail-closed if companion
+                    // injection was skipped; no stale token or delegation
+                    // capability may survive.
+                    s.delegation_token = None;
+                    s.delegation_enabled = false;
+                    s.feedback_tool_available = false;
                 }
             }
 
@@ -6125,6 +6240,8 @@ async fn handle_permission_request(
         }
     }
 
+    hoist_request_permission_meta(&mut tool_call_value, req.meta.as_ref());
+
     admit_permission(
         perms,
         state,
@@ -6211,7 +6328,6 @@ async fn set_session_config_option(
     session_id: &SessionId,
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
-    agent_type: AgentType,
     config_id: String,
     value_id: String,
 ) -> Result<(), sacp::Error> {
@@ -6235,7 +6351,7 @@ async fn set_session_config_option(
     {
         emit_with_state(state, emitter, rejection).await;
     }
-    emit_session_config_options_values(state, emitter, agent_type, updated).await;
+    emit_session_config_options_values(state, emitter, updated).await;
     Ok(())
 }
 
@@ -6304,6 +6420,46 @@ fn config_option_already_holds(option: &SessionConfigOption, value: &str) -> boo
         SessionConfigKind::Boolean(b) => b.current_value == (value == "true"),
         _ => false,
     }
+}
+
+/// Whether an advertised option IS the agent's model selector. ACP reserves no
+/// id for it, so match either signal — the `category` every agent that has a
+/// model publishes it under (see [`current_model_id_from_opts`]) or the
+/// conventional `model` id, the same pair the frontend's `isModelConfigOption`
+/// checks.
+fn is_model_config_option(option: &SessionConfigOption) -> bool {
+    matches!(option.category, Some(SessionConfigOptionCategory::Model))
+        || option.id.to_string() == MODEL_CONFIG_OPTION_ID
+}
+
+/// Saved preferences in application order: the model selector first, then every
+/// other id in its natural (sorted) order.
+///
+/// Order is load-bearing because a model switch RE-SCOPES the options hanging
+/// off it. Cursor's parameterized picker is the case that forced this: it
+/// answers `set_config_option("model", …)` by reloading THAT model's own saved
+/// (or default) parameter values, and rejects a parameter id the model in
+/// effect does not define. Replaying by raw key order would put `fast` before
+/// `model` and lose it to the switch — or hard-fail it against the outgoing
+/// model. Grok's dedicated path (`apply_grok_preferred_options`) already
+/// hard-codes the same order for the same reason; this is the generic half.
+///
+/// A preferred id the agent never advertised is ordered as a non-model option
+/// unless it is literally `model` — the fallback stays deliberately narrow
+/// because an unadvertised id is still sent (see `apply_preferred_session_options`).
+fn order_preferred_config_values<'a>(
+    options: &[SessionConfigOption],
+    preferred: &'a BTreeMap<String, String>,
+) -> Vec<(&'a String, &'a String)> {
+    let (model_first, rest): (Vec<_>, Vec<_>) = preferred.iter().partition(|(config_id, _)| {
+        options
+            .iter()
+            .find(|o| o.id.to_string() == **config_id)
+            .map_or(config_id.as_str() == MODEL_CONFIG_OPTION_ID, |o| {
+                is_model_config_option(o)
+            })
+    });
+    model_first.into_iter().chain(rest).collect()
 }
 
 /// Wire-level half of `set_session_config_option`: send the JSON-RPC request and
@@ -6413,13 +6569,19 @@ async fn apply_preferred_session_options(
 
     let session_id = session.session_id().clone();
     let mut options = initial_config_options;
-    for (config_id, value_id) in preferred_config_values {
+    // Model first — see `order_preferred_config_values`. Ordered once against
+    // the INITIAL list: every later list is the same agent's answer to a set,
+    // so the model selector cannot move between ids mid-replay.
+    let ordered = order_preferred_config_values(&options, preferred_config_values);
+    for (config_id, value_id) in ordered {
         // Skip the round-trip when the agent's current value already matches.
-        // Note: codex-acp 1.0.0 advertises "mode" as a config option (so the
-        // match check below normally fires), but we still do NOT skip when a
-        // requested config_id is absent from the advertised options — older or
-        // edge-case builds accept `set_config_option` for an unadvertised "mode"
-        // (see `ensure_codex_mode_option`), so let the agent decide.
+        // Note: codex-acp advertises "mode" as a config option (so the match
+        // check below normally fires), but we still do NOT skip when a
+        // requested config_id is absent from the advertised options — an agent
+        // may accept `set_config_option` for an id it never advertised. codex
+        // does: its `applySessionConfigOption` switches on `configId` alone,
+        // with no advertised-list check (verified in the 1.7.0 bundle). So let
+        // the agent decide.
         let advertised = options.iter().find(|o| o.id.to_string() == *config_id);
         let already_matches =
             advertised.is_some_and(|o| config_option_already_holds(o, value_id.as_str()));
@@ -6455,6 +6617,55 @@ fn preferred_mode_to_apply<'a>(
     preferred_mode_id.filter(|preferred| {
         session_modes.is_some_and(|modes| modes.current_mode_id.to_string() != *preferred)
     })
+}
+
+/// Prepare a freshly attached fork child before its command loop is allowed to
+/// consume buffered prompts. Unlike an ordinary saved preference, an inherited
+/// mode is part of the fork's permission contract: if the agent rejects the
+/// restore, continuing on its default mode could execute the queued prompt with
+/// different permissions. Therefore this path is strict and returns before
+/// config emission or `SelectorsReady` on failure.
+#[allow(clippy::too_many_arguments)]
+async fn prepare_fork_child_session(
+    cx: &ConnectionTo<Agent>,
+    session: &mut sacp::ActiveSession<'_, Agent>,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    agent_type: AgentType,
+    grok_meta: Option<&serde_json::Map<String, serde_json::Value>>,
+    grok_model_specs: Option<&HashMap<String, GrokModelSpec>>,
+    inherited_mode_id: Option<&str>,
+    initial_config_options: Vec<SessionConfigOption>,
+) -> Result<(), sacp::Error> {
+    if let Some(mode_id) =
+        preferred_mode_to_apply(session.modes().as_ref(), inherited_mode_id)
+    {
+        set_session_mode(session, state, emitter, mode_id.to_string())
+            .await
+            .map_err(|error| {
+                sacp::util::internal_error(format!(
+                    "Failed to restore inherited mode '{mode_id}' after fork; queued prompts were not sent: {error}"
+                ))
+            })?;
+    }
+
+    apply_and_emit_session_config_options(
+        cx,
+        session,
+        state,
+        emitter,
+        agent_type,
+        grok_meta,
+        grok_model_specs,
+        // The inherited mode was handled strictly above. Passing it through
+        // the ordinary preference path would turn a retry failure into a log.
+        None,
+        &BTreeMap::new(),
+        initial_config_options,
+    )
+    .await;
+    emit_selectors_ready(state, emitter).await;
+    Ok(())
 }
 
 const TERMINAL_POLL_INTERVAL_MS: u64 = 200;
@@ -7183,6 +7394,23 @@ fn map_prompt_blocks(blocks: Vec<PromptInputBlock>) -> Vec<ContentBlock> {
         .collect()
 }
 
+/// The single final agent boundary. `delegation_enabled` is this connection's
+/// launch verdict, so routing is appended for EVERY agent that received the
+/// companion's delegation group — that flag is the only gate, and it is already
+/// the injection gate's own verdict (`supports_mcp` + `agent_delivers_wire_mcp`
+/// + the delegation feature being on).
+fn prepare_agent_bound_prompt(
+    agent_type: AgentType,
+    mut blocks: Vec<PromptInputBlock>,
+    delegation_enabled: bool,
+) -> Vec<ContentBlock> {
+    append_agent_routes(&mut blocks, delegation_enabled);
+    if agent_type == AgentType::Grok {
+        blocks = normalize_grok_image_blocks(blocks);
+    }
+    map_prompt_blocks(blocks)
+}
+
 /// Read the event-backed mode selected on the live parent session, but only when
 /// that parent advertises modes. `SessionState` spans nested fork transitions,
 /// so its value alone may belong to an ancestor when the current session has no
@@ -7297,7 +7525,7 @@ async fn handle_fork_or_exit(
     )
     .await;
     emit_session_modes(state, emitter, session.modes()).await;
-    apply_and_emit_session_config_options(
+    prepare_fork_child_session(
         &cx,
         &mut session,
         state,
@@ -7306,11 +7534,9 @@ async fn handle_fork_or_exit(
         grok_meta.as_ref(),
         grok_model_specs.as_ref(),
         inherited_mode_id.as_deref(),
-        &BTreeMap::new(),
         initial_config_options.unwrap_or_default(),
     )
-    .await;
-    emit_selectors_ready(state, emitter).await;
+    .await?;
 
     let loop_result = run_conversation_loop(
         &mut session,
@@ -7379,6 +7605,13 @@ fn stop_reason_to_str(reason: StopReason) -> &'static str {
 /// same `SessionLoadFailed` banner (Reload / New conversation) instead of a raw
 /// protocol error.
 ///
+/// A third case is archived rather than lost: `codex archive <id>` parks a
+/// rollout, and a later `session/load` answers -32603 with a body naming both
+/// the session and the command that brings it back. That one is a *recoverable*
+/// state, so it earns its own code — the banner can name the fix — but it takes
+/// the same banner rather than the silent `session/new` fallback, which would
+/// orphan a history the user is one command away from restoring.
+///
 /// Returns `None` for failures that must keep the existing behavior:
 /// "Method not found" (agent lacks resume → silent `session/new` fallback),
 /// "Authentication required" (silent stop), and any other error (emit
@@ -7389,6 +7622,14 @@ fn classify_session_load_failure(
 ) -> Option<&'static str> {
     if matches!(code, sacp::schema::ErrorCode::ResourceNotFound) {
         return Some("resource_not_found");
+    }
+    // codex-acp on an archived rollout: the -32603 body reads
+    // "session <id> is archived. Run `codex unarchive <id>` …". Matched on the
+    // wire message for the same reason as the family below — the code is a
+    // generic Internal error. Checked BEFORE that family so the more specific
+    // (and recoverable) verdict wins if a body ever carries both signals.
+    if message.contains("is archived") {
+        return Some("session_archived");
     }
     // Upstream signals for an unrecoverable session (claude-agent-acp 0.58.1):
     //  - "process exited"    → "Claude Code process exited with code 1",
@@ -7964,17 +8205,12 @@ async fn run_conversation_loop<'a>(
                         .collect();
                     (crate::turn_timings::prompt_hash(&text), cursor_turn_ord)
                 });
-                // Grok: settle each image onto the carriage grok can read —
-                // decodable ones as native Image blocks (so its describe
-                // sidecar runs), the rest back as resource blobs. The last
-                // point that sees the blocks, so every producer (composer,
-                // queued draft, work task, delegation) is covered at once.
-                let blocks = if agent_type == AgentType::Grok {
-                    normalize_grok_image_blocks(blocks)
-                } else {
-                    blocks
-                };
-                let prompt_blocks = map_prompt_blocks(blocks);
+                // Keep the user's blocks pristine through ledgering, previews,
+                // and cross-client broadcast. Only the final agent-bound prompt
+                // receives the machine routing block derived from agent badges.
+                let delegation_enabled = state.read().await.delegation_enabled;
+                let prompt_blocks =
+                    prepare_agent_bound_prompt(agent_type, blocks, delegation_enabled);
                 if prompt_blocks.is_empty() {
                     // Defensive: the manager rejects empty prompts before the
                     // concurrency gate is set / the command is enqueued (see
@@ -8480,8 +8716,7 @@ async fn run_conversation_loop<'a>(
                                         .await
                                     } else {
                                         set_session_config_option(
-                                            &cx, &sid, state, emitter, agent_type, config_id,
-                                            value_id,
+                                            &cx, &sid, state, emitter, config_id, value_id,
                                         )
                                         .await
                                     };
@@ -8756,10 +8991,7 @@ async fn run_conversation_loop<'a>(
                 let set_result = if agent_type == AgentType::Grok {
                     set_grok_config_option(&cx, &sid, state, emitter, config_id, value_id).await
                 } else {
-                    set_session_config_option(
-                        &cx, &sid, state, emitter, agent_type, config_id, value_id,
-                    )
-                    .await
+                    set_session_config_option(&cx, &sid, state, emitter, config_id, value_id).await
                 };
                 if let Err(e) = set_result {
                     emit_with_state(
@@ -9318,6 +9550,54 @@ fn pi_result_content_is_stringify_noise(
         && raw_output
             .as_ref()
             .is_some_and(pi_result_is_empty_announcement)
+}
+
+/// Resolve the live `raw_output` string for an OpenCode tool call.
+///
+/// OpenCode's ACP adapter reports a finished tool on BOTH channels: the clean
+/// result text on `content[]`, and the envelope `{output, metadata?,
+/// attachments?}` — wrapping that very same string — on `rawOutput` (a failure
+/// sends `{error, metadata?}` beside the error text). Stringifying the envelope
+/// shadows the clean text, because the live renderer's `raw_output_chunks` win
+/// over `content` (`conversation-runtime-store.ts`), so every card that parses
+/// the result ITSELF is handed JSON source instead of the result.
+///
+/// Verified against opencode 1.18.23 (driven over real ACP with a stub MCP
+/// server): a codeg-mcp `ask_user_question` completes as
+///   content:   [{"type":"content","content":{"type":"text","text":"The user
+///               answered your question(s):\n1. [框架] …\n   → 选项 A\n"}}]
+///   rawOutput: {"output":"<that same text>","metadata":{"truncated":false}}
+/// OpenCode drops the MCP `structuredContent` entirely, so the human-readable
+/// lines ARE the whole record — and `AskQuestionResultCard`, seeing only the
+/// one-line JSON blob, matched neither the structured envelope nor the text
+/// fallback and rendered an answered question as "no selection", while the
+/// history parser (which reads the same `state.output` bare) rendered it fine.
+///
+/// Same parity rule as Grok and pi (see [`grok_live_tool_output`]): whenever
+/// `content` carries anything, it IS OpenCode's own rendering of this result —
+/// return `None` and let it render. Only with no `content` is the envelope
+/// unwrapped, mirroring `parsers/opencode.rs`: `output`, else the failure
+/// `error`, else `metadata.output` (a command writing only to stderr leaves
+/// `state.output` empty while the combined stream stays in the metadata). An
+/// unrecognized payload still stringifies as before, so no result is ever lost.
+fn opencode_live_tool_output(
+    content: &Option<String>,
+    raw_output: &Option<serde_json::Value>,
+) -> Option<String> {
+    if content.as_deref().is_some_and(|c| !c.trim().is_empty()) {
+        return None;
+    }
+    let raw = raw_output.as_ref()?;
+    fn text(value: Option<&serde_json::Value>) -> Option<&str> {
+        value
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+    }
+    text(raw.get("output"))
+        .or_else(|| text(raw.get("error")))
+        .or_else(|| text(raw.pointer("/metadata/output")))
+        .map(structurize_live_output)
+        .or_else(|| json_value_to_text(raw_output).map(|t| structurize_live_output(&t)))
 }
 
 /// What a pi `agent_message_chunk` actually IS (issue #525).
@@ -10002,6 +10282,53 @@ fn is_codex_plan_review(
         .and_then(|codex| codex.get("kind"))
         .and_then(serde_json::Value::as_str)
         == Some("plan_review")
+}
+
+/// Copy a permission request's REQUEST-level `_meta.permission` onto the card's
+/// tool call, where the dialog can reach it.
+///
+/// `session/request_permission` carries presentation data at two levels: on each
+/// option (`PermissionOptionInfo.meta`, already forwarded verbatim) and on the
+/// request itself. Only the tool call and the options reach the frontend —
+/// `AcpEvent::PermissionRequest` has no request-meta field — so without this the
+/// request level is dropped on the floor.
+///
+/// That became load-bearing in codex-acp 1.7.0, which moved Codex's own reason
+/// for asking out of `toolCall.title` (1.4.0 sent
+/// `params.reason ?? "Permissions Request"`) into
+/// `_meta.permission = {version: 1, title, description?}`. The title is now one
+/// of four fixed strings and the reason lives only in `description`, so a card
+/// built from the tool call alone would read "Edit files" where it used to
+/// explain WHY the edit needs approval. claude-agent-acp does not send this
+/// block; nothing changes for it.
+///
+/// Hoisting rather than adding an event field is deliberate: the tool call is
+/// already the card's payload end-to-end (`PendingPermissionState.tool_call`,
+/// the snapshot, the WebSocket envelope, `parsePermissionToolCall`), so the
+/// reason survives a reconnect and a snapshot restore for free. `_meta` is
+/// namespaced by producer, and `permission` is unclaimed at tool-call level —
+/// codex's permission tool calls carry no `_meta` at all, and claude's carries
+/// only `claudeCode`. An existing `_meta.permission` is therefore never
+/// overwritten: the insert is skipped if the key is already present.
+fn hoist_request_permission_meta(
+    tool_call: &mut serde_json::Value,
+    request_meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) {
+    let Some(permission) = request_meta.and_then(|m| m.get("permission")) else {
+        return;
+    };
+    let Some(obj) = tool_call.as_object_mut() else {
+        return;
+    };
+    let meta = obj
+        .entry("_meta")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let Some(meta) = meta.as_object_mut() else {
+        // A non-object `_meta` is malformed; leave it exactly as the agent sent
+        // it rather than replacing content the card may still be parsing.
+        return;
+    };
+    meta.entry("permission").or_insert_with(|| permission.clone());
 }
 
 /// True when an `initialize` response advertises the ACP steering extension —
@@ -11568,6 +11895,11 @@ async fn emit_conversation_update(
                 // `content` already carries; shipping it shadows the clean text
                 // with JSON source (see pi_live_tool_output).
                 pi_live_tool_output(&content, &tc.raw_output)
+            } else if matches!(agent_type, AgentType::OpenCode) {
+                // OpenCode's rawOutput is the `{output, metadata}` envelope
+                // around the SAME text `content` already carries; shipping it
+                // shadows the clean text (see opencode_live_tool_output).
+                opencode_live_tool_output(&content, &tc.raw_output)
             } else {
                 json_value_to_text(&tc.raw_output)
                     .map(|text| unwrap_codebuddy_deferred_output(agent_type, &text).unwrap_or(text))
@@ -11773,6 +12105,11 @@ async fn emit_conversation_update(
                 // Symmetric with the ToolCall arm — and the arm that matters:
                 // pi delivers the result on the update (see pi_live_tool_output).
                 pi_live_tool_output(&content, &tcu.fields.raw_output)
+            } else if matches!(agent_type, AgentType::OpenCode) {
+                // Symmetric with the ToolCall arm — and the arm that matters:
+                // OpenCode delivers every result on the completion update (see
+                // opencode_live_tool_output).
+                opencode_live_tool_output(&content, &tcu.fields.raw_output)
             } else {
                 json_value_to_text(&tcu.fields.raw_output)
                     .map(|text| unwrap_codebuddy_deferred_output(agent_type, &text).unwrap_or(text))
@@ -11960,7 +12297,7 @@ async fn emit_conversation_update(
             .await;
         }
         SessionUpdate::ConfigOptionUpdate(update) => {
-            emit_session_config_options_values(state, emitter, agent_type, update.config_options)
+            emit_session_config_options_values(state, emitter, update.config_options)
                 .await;
         }
         SessionUpdate::AvailableCommandsUpdate(update) => {
@@ -12261,6 +12598,151 @@ mod tests {
             None,
             "a modes-less current parent must not inherit an ancestor's stale mode"
         );
+    }
+
+    struct ForkModeGateProbe {
+        result: Result<(), sacp::Error>,
+        rpc_calls: Vec<String>,
+        events: Vec<AcpEvent>,
+        queued_prompt_released: bool,
+        selectors_ready: bool,
+    }
+
+    /// Drive the production fork-child preparation against an in-memory ACP
+    /// agent. The prompt sentinel is queued before preparation, exactly like a
+    /// frontend prompt buffered while the fork transition is in flight, and is
+    /// released only after the same function that emits `SelectorsReady`
+    /// succeeds.
+    async fn probe_fork_mode_gate(
+        child_mode: &str,
+        inherited_mode: Option<&str>,
+        reject_set_mode: bool,
+    ) -> ForkModeGateProbe {
+        let rpc_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let agent_rpc_calls = Arc::clone(&rpc_calls);
+        let agent = Agent.builder().on_receive_request(
+            async move |request: SetSessionModeRequest,
+                        responder: Responder<sacp::schema::SetSessionModeResponse>,
+                        _cx| {
+                agent_rpc_calls
+                    .lock()
+                    .expect("rpc log lock")
+                    .push(format!("set_mode:{}", request.mode_id));
+                if reject_set_mode {
+                    responder.respond_with_error(sacp::util::internal_error("mode rejected"))
+                } else {
+                    responder.respond(sacp::schema::SetSessionModeResponse::new())
+                }
+            },
+            sacp::on_receive_request!(),
+        );
+        let (agent_channel, client_channel) = sacp::Channel::duplex();
+        let agent_task = tokio::spawn(async move { agent.connect_to(agent_channel).await });
+
+        let state = Arc::new(RwLock::new(SessionState::new(
+            "conn-fork-mode-wire".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "window".to_string(),
+            None,
+        )));
+        let mut event_rx = {
+            let snapshot = state.read().await;
+            snapshot.event_stream().subscribe()
+        };
+        let (prompt_tx, mut prompt_rx) = mpsc::channel(1);
+        prompt_tx.send(()).await.expect("queue prompt sentinel");
+        let queued_prompt_released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let released_in_connection = Arc::clone(&queued_prompt_released);
+        let state_in_connection = Arc::clone(&state);
+        let child_mode = child_mode.to_string();
+        let inherited_mode = inherited_mode.map(str::to_string);
+
+        let result = Client
+            .builder()
+            .connect_with(client_channel, async move |cx| {
+                let response = NewSessionResponse::new(SessionId::new("fork-child"))
+                    .modes(fork_test_modes(&child_mode));
+                let mut session = cx.attach_session(response, Default::default())?;
+                prepare_fork_child_session(
+                    &cx,
+                    &mut session,
+                    &state_in_connection,
+                    &EventEmitter::Noop,
+                    AgentType::ClaudeCode,
+                    None,
+                    None,
+                    inherited_mode.as_deref(),
+                    Vec::new(),
+                )
+                .await?;
+
+                prompt_rx.recv().await.expect("queued prompt still present");
+                released_in_connection.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+        // The in-memory transport intentionally has no process EOF to close the
+        // agent driver after the client continuation returns.
+        agent_task.abort();
+        let _ = agent_task.await;
+
+        let mut events = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            events.push(event.payload.clone());
+        }
+        let selectors_ready = state.read().await.selectors_ready;
+        let rpc_calls = rpc_calls.lock().expect("rpc log lock").clone();
+        ForkModeGateProbe {
+            result,
+            rpc_calls,
+            events,
+            queued_prompt_released: queued_prompt_released.load(std::sync::atomic::Ordering::SeqCst),
+            selectors_ready,
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_mode_inheritance_restores_before_ready_and_releasing_queued_prompt() {
+        let probe = probe_fork_mode_gate("manual", Some("auto"), false).await;
+
+        assert!(probe.result.is_ok(), "preparation failed: {:?}", probe.result);
+        assert_eq!(probe.rpc_calls, vec!["set_mode:auto"]);
+        assert!(matches!(probe.events.first(), Some(AcpEvent::ModeChanged { mode_id }) if mode_id == "auto"));
+        assert!(matches!(probe.events.last(), Some(AcpEvent::SelectorsReady)));
+        assert!(probe.selectors_ready);
+        assert!(
+            probe.queued_prompt_released,
+            "the queued prompt is released only after preparation returns"
+        );
+    }
+
+    #[tokio::test]
+    async fn fork_mode_inheritance_failure_blocks_ready_and_queued_prompt() {
+        let probe = probe_fork_mode_gate("manual", Some("auto"), true).await;
+
+        let error = probe.result.expect_err("mode restore must fail closed");
+        assert!(
+            error.to_string().contains("Failed to restore inherited mode 'auto' after fork")
+                && error.to_string().contains("queued prompts were not sent"),
+            "client-facing terminal error should explain the safety block: {error}"
+        );
+        assert_eq!(probe.rpc_calls, vec!["set_mode:auto"]);
+        assert!(probe.events.is_empty(), "no readiness event may escape");
+        assert!(!probe.selectors_ready);
+        assert!(!probe.queued_prompt_released);
+    }
+
+    #[tokio::test]
+    async fn fork_mode_inheritance_noop_paths_reach_ready_without_set_mode() {
+        for inherited_mode in [None, Some("manual")] {
+            let probe = probe_fork_mode_gate("manual", inherited_mode, false).await;
+            assert!(probe.result.is_ok(), "preparation failed: {:?}", probe.result);
+            assert!(probe.rpc_calls.is_empty());
+            assert!(matches!(probe.events.last(), Some(AcpEvent::SelectorsReady)));
+            assert!(probe.selectors_ready);
+            assert!(probe.queued_prompt_released);
+        }
     }
 
     // ── PermissionQueue (#442) ──────────────────────────────────────────────
@@ -13167,12 +13649,16 @@ mod tests {
             assert!(capabilities
                 .iter()
                 .any(|v| v.as_str() == Some("sessionFailure")));
-            // And nothing else. Adding a capability here is not free: it is
-            // what turns a per-prompt request on, and "agentFileChangeReport"
+            // And nothing else. Adding a capability here is not free — it is
+            // what turns the corresponding behavior on, and neither of the two
+            // that exist is wanted: "agentFileChangeReport"
             // (claude-agent-acp 0.69.0 / codex-acp 1.4.0) buys an extra model
             // round-trip per turn for a clamped, self-reported subset of what
-            // the `workspace_state` watcher already sees. See the reasoning at
-            // the advertisement site before relaxing this.
+            // the `workspace_state` watcher already sees, and
+            // "nativeSubagentSessions" (codex-acp 1.7.0) would move subagent
+            // output onto child session ids carried by `SessionUpdate` variants
+            // `agent-client-protocol-schema` 0.11.7 cannot deserialize at all.
+            // See the reasoning at the advertisement site before relaxing this.
             assert_eq!(
                 capabilities,
                 &vec![serde_json::Value::String("sessionFailure".to_string())],
@@ -13202,6 +13688,155 @@ mod tests {
                 .and_then(|m| m.get("jetbrains"))
                 .is_none());
         }
+    }
+
+    #[test]
+    fn client_capabilities_advertise_parameterized_model_picker_for_cursor() {
+        let caps = serde_json::to_value(build_client_capabilities(
+            AgentType::Cursor,
+            HostToolsPolicy::Default,
+        ))
+        .unwrap();
+        assert_eq!(
+            caps.get("_meta")
+                .and_then(|m| m.get("parameterizedModelPicker"))
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "Cursor initialize must advertise parameterizedModelPicker"
+        );
+        // Cursor must not pick up Claude/Codex-only extensions.
+        assert!(caps
+            .get("_meta")
+            .and_then(|m| m.get("jetbrains"))
+            .is_none());
+        assert!(caps
+            .get("_meta")
+            .and_then(|m| m.get("subagent-transcript"))
+            .is_none());
+    }
+
+    #[test]
+    fn client_capabilities_advertise_parameterized_model_picker_for_custom_cursor_agent() {
+        use std::collections::BTreeMap;
+
+        use crate::acp::custom_registry::{
+            hydrate, hydrate_test_guard, BinaryPlatformSpec, CustomAgentDef, CustomAgentSpec,
+            CustomDistributionKind,
+        };
+
+        let _guard = hydrate_test_guard();
+        // Every platform, because `build_meta` REJECTS a binary def with no
+        // entry for the machine it runs on — a windows-only spec would leave
+        // the id unregistered on every other host and this test would then be
+        // asserting against `unregistered_meta`, not a cursor launch recipe.
+        let mut binary = BTreeMap::new();
+        for platform in [
+            "darwin-aarch64",
+            "darwin-x86_64",
+            "linux-aarch64",
+            "linux-x86_64",
+            "windows-aarch64",
+            "windows-x86_64",
+        ] {
+            binary.insert(
+                platform.to_string(),
+                BinaryPlatformSpec {
+                    archive: format!(
+                        "https://downloads.cursor.com/lab/2026.08.11-e8db854/{platform}/agent-cli-package.tar.gz"
+                    ),
+                    cmd: if platform.starts_with("windows") {
+                        "./dist-package/cursor-agent.cmd".into()
+                    } else {
+                        "./dist-package/cursor-agent".into()
+                    },
+                    args: vec!["acp".into()],
+                    ..Default::default()
+                },
+            );
+        }
+        let def = CustomAgentDef {
+            registry_id: "test-cursor-acp".into(),
+            name: "Test Cursor ACP".into(),
+            description: String::new(),
+            version: "1.0.0".into(),
+            distribution_kind: CustomDistributionKind::Binary,
+            spec: CustomAgentSpec {
+                binary,
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+            skills_dir: None,
+            source: Default::default(),
+            version_probe: None,
+            supports_mcp: true,
+        };
+        assert!(
+            hydrate(&[def]).is_empty(),
+            "the def must actually register — an unregistered id falls back to \
+             unregistered_meta, which advertises nothing"
+        );
+        let caps = serde_json::to_value(build_client_capabilities(
+            AgentType::Custom("test-cursor-acp"),
+            HostToolsPolicy::Default,
+        ))
+        .unwrap();
+        assert_eq!(
+            caps.get("_meta")
+                .and_then(|m| m.get("parameterizedModelPicker"))
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "custom cursor-agent acp must advertise parameterizedModelPicker"
+        );
+        hydrate(&[]);
+    }
+
+    #[test]
+    fn client_capabilities_skip_parameterized_model_picker_for_non_cursor_custom_agent() {
+        use crate::acp::custom_registry::{
+            hydrate, hydrate_test_guard, CustomAgentDef, CustomAgentSpec, CustomDistributionKind,
+            NpxSpec,
+        };
+
+        let _guard = hydrate_test_guard();
+        let def = CustomAgentDef {
+            registry_id: "test-codex-acp".into(),
+            name: "Test Codex ACP".into(),
+            description: String::new(),
+            version: "1.7.0".into(),
+            distribution_kind: CustomDistributionKind::Npx,
+            spec: CustomAgentSpec {
+                npx: Some(NpxSpec {
+                    package: "@agentclientprotocol/codex-acp@1.7.0".into(),
+                    args: vec![],
+                    env: Default::default(),
+                    cmd: Some("codex-acp".into()),
+                    node_required: None,
+                }),
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+            skills_dir: None,
+            source: Default::default(),
+            version_probe: None,
+            supports_mcp: true,
+        };
+        // Same reason as the cursor case: an unregistered id would satisfy the
+        // negative assertion for the wrong reason.
+        assert!(hydrate(&[def]).is_empty());
+        let caps = serde_json::to_value(build_client_capabilities(
+            AgentType::Custom("test-codex-acp"),
+            HostToolsPolicy::Default,
+        ))
+        .unwrap();
+        assert!(
+            caps.get("_meta")
+                .and_then(|m| m.get("parameterizedModelPicker"))
+                .is_none(),
+            "non-cursor custom agents must not advertise parameterizedModelPicker"
+        );
+        hydrate(&[]);
     }
 
     #[test]
@@ -13309,6 +13944,76 @@ mod tests {
     }
 
     #[test]
+    fn hoist_request_permission_meta_carries_the_codex_reason_onto_the_card() {
+        // codex-acp 1.7.0: the title is a fixed string and the REASON only
+        // exists at request level, so the card is built from a tool call that
+        // does not explain itself until this hoist runs.
+        let mut tool_call = serde_json::json!({
+            "toolCallId": "command-7",
+            "kind": "execute",
+            "status": "pending",
+            "title": "Run command",
+            "rawInput": { "command": "npm test", "cwd": "/workspace" }
+        });
+        let request_meta = meta_map(serde_json::json!({
+            "permission": {
+                "version": 1,
+                "title": "Run command?",
+                "description": "The test suite needs to run outside the current sandbox."
+            }
+        }));
+        hoist_request_permission_meta(&mut tool_call, Some(&request_meta));
+        assert_eq!(
+            tool_call["_meta"]["permission"]["description"],
+            serde_json::json!("The test suite needs to run outside the current sandbox.")
+        );
+        // Untouched otherwise — the standard fields stay the authority.
+        assert_eq!(tool_call["title"], serde_json::json!("Run command"));
+    }
+
+    #[test]
+    fn hoist_request_permission_meta_preserves_existing_tool_call_meta() {
+        // An agent-supplied `_meta` must survive: claude puts `claudeCode.title`
+        // there and the dialog prefers it over the raw title. And a tool call
+        // that already carried `permission` wins over the request level — it is
+        // the more specific of the two.
+        let mut tool_call = serde_json::json!({
+            "toolCallId": "t1",
+            "_meta": { "claudeCode": { "title": "Run the test suite" },
+                       "permission": { "version": 1, "description": "from the tool call" } }
+        });
+        let request_meta = meta_map(serde_json::json!({
+            "permission": { "version": 1, "description": "from the request" }
+        }));
+        hoist_request_permission_meta(&mut tool_call, Some(&request_meta));
+        assert_eq!(
+            tool_call["_meta"]["claudeCode"]["title"],
+            serde_json::json!("Run the test suite")
+        );
+        assert_eq!(
+            tool_call["_meta"]["permission"]["description"],
+            serde_json::json!("from the tool call")
+        );
+    }
+
+    #[test]
+    fn hoist_request_permission_meta_is_a_noop_without_a_permission_block() {
+        // Every agent but codex ≥1.7.0 sends no request-level `permission`, and
+        // codex's own plan-review request sends `codex` instead. Neither may
+        // grow a stray `_meta` key.
+        for request_meta in [
+            None,
+            Some(meta_map(serde_json::json!({
+                "codex": { "kind": "plan_review", "planItemId": "p1" }
+            }))),
+        ] {
+            let mut tool_call = serde_json::json!({ "toolCallId": "t1" });
+            hoist_request_permission_meta(&mut tool_call, request_meta.as_ref());
+            assert_eq!(tool_call, serde_json::json!({ "toolCallId": "t1" }));
+        }
+    }
+
+    #[test]
     fn codex_retry_indicator_extracts_message_and_object_http_status() {
         // codex-acp #289: object-variant `codexErrorInfo` carries an inner
         // `httpStatusCode`; the message + status are surfaced.
@@ -13411,6 +14116,46 @@ mod tests {
     }
 
     #[test]
+    fn classify_load_failure_names_an_archived_session() {
+        // The reported case: `codex archive <id>`, then reopen the conversation.
+        // codex-acp answers session/load with a generic -32603 whose data names
+        // the session and the command that restores it.
+        let archived = "Internal error: {\n  \"details\": \"session \
+             019bf0c4-4d1a-7c3e-9f21-6a0e5b8d2c47 is archived. Run `codex \
+             unarchive 019bf0c4-4d1a-7c3e-9f21-6a0e5b8d2c47` to restore it.\"\n}";
+        assert_eq!(
+            classify_session_load_failure(sacp::schema::ErrorCode::InternalError, archived),
+            Some("session_archived"),
+        );
+
+        // Archived is the more specific verdict: a body carrying both signals
+        // must not degrade into the generic "unavailable" family, which offers
+        // the user no way back.
+        assert_eq!(
+            classify_session_load_failure(
+                sacp::schema::ErrorCode::InternalError,
+                "Session not found: session abc is archived.",
+            ),
+            Some("session_archived"),
+        );
+
+        // Codex reads history back out of its own rollout store, so an archived
+        // session must stop with the banner — silently opening a new session
+        // would orphan history that one command restores.
+        assert!(!recovers_load_failure_locally(
+            AgentType::Codex,
+            Some("session_archived")
+        ));
+        // A custom agent's history is codeg's own transcript, so it keeps the
+        // silent local recovery it has for the other classified failures.
+        let custom = AgentType::custom("glm-acp-agent").expect("valid id");
+        assert!(recovers_load_failure_locally(
+            custom,
+            Some("session_archived")
+        ));
+    }
+
+    #[test]
     fn classify_load_failure_keeps_existing_behavior_for_recoverable_errors() {
         // "Method not found" (agent lacks resume) and "Authentication required"
         // must fall through to the existing session/new + silent-stop paths.
@@ -13504,6 +14249,22 @@ mod tests {
             assert!(!env.iter().any(|(k, _)| k == "CURSOR_API_KEY"));
             assert!(!env.iter().any(|(k, _)| k == "CURSOR_API_BASE_URL"));
         }
+    }
+
+    #[test]
+    fn cursor_force_knob_is_tri_state() {
+        // On.
+        for on in ["1", "true", "TRUE", " 1 "] {
+            assert!(cursor_force_enabled(Some(on)), "{on:?} must enable --force");
+        }
+        // Explicitly off — the value the panel now writes for "Ask before
+        // running", which has to be distinguishable from the unset case.
+        for off in ["0", "false", "", "  "] {
+            assert!(!cursor_force_enabled(Some(off)), "{off:?} must not force");
+        }
+        // Never configured. Ask, matching what Cursor sessions have always
+        // actually done, and matching what the panel now shows.
+        assert!(!cursor_force_enabled(None));
     }
 
     #[test]
@@ -13926,6 +14687,77 @@ mod tests {
         ));
     }
 
+    /// A `GEMINI_HOME` that only codeg's OWN environment carries still names
+    /// the directory the agent uses.
+    ///
+    /// `merge_agent_env` lists the variables a launch SETS; anything absent is
+    /// inherited, and relocating the tree from a container's environment
+    /// (`GEMINI_HOME=/data/gemini` in the image, nothing in the per-agent row)
+    /// is exactly that shape. Treating "absent" as "unset" sent codeg to
+    /// `~/.gemini` — so on a Docker deployment it wrote `auth.type` into
+    /// `/root/.gemini` while the agent read the relocated file, and the panel
+    /// named a token path that was never written. The same three-state
+    /// distinction `child_home_dir` makes for `HOME`, for the same reason.
+    #[test]
+    fn antigravity_settings_path_follows_a_gemini_home_codeg_only_inherits() {
+        // Platform-native, and HOME is pinned in the row rather than read from
+        // the process: other tests relocate the real one through `temp_env`,
+        // and a read here would race them. codeg's own `GEMINI_HOME` is
+        // injected for the same reason — see
+        // [`antigravity_acp_dir_with_inherited`].
+        #[cfg(windows)]
+        let (home_key, child_home, inherited, from_row) = (
+            "USERPROFILE",
+            "C:\\srv\\agy",
+            "C:\\data\\gemini",
+            "C:\\srv\\row",
+        );
+        #[cfg(not(windows))]
+        let (home_key, child_home, inherited, from_row) =
+            ("HOME", "/srv/agy", "/data/gemini", "/srv/row");
+        let base = || BTreeMap::from([(home_key.to_string(), child_home.to_string())]);
+
+        let codegs_own = || Some(std::ffi::OsString::from(inherited));
+
+        // ABSENT from the row: the child inherits codeg's, so codeg's own value
+        // is the exact answer.
+        assert_eq!(
+            antigravity_acp_dir_with_inherited(&base(), codegs_own()).expect("nameable"),
+            PathBuf::from(inherited).join(ANTIGRAVITY_ACP_SUBDIR)
+        );
+
+        // Present in the row: that is what the child is launched with, so it
+        // outranks the inherited one.
+        let mut overridden = base();
+        overridden.insert("GEMINI_HOME".to_string(), from_row.to_string());
+        assert_eq!(
+            antigravity_acp_dir_with_inherited(&overridden, codegs_own()).expect("nameable"),
+            PathBuf::from(from_row).join(ANTIGRAVITY_ACP_SUBDIR)
+        );
+
+        // Present but EMPTY is a removal (the spawn layer reads a blank as
+        // `env_remove`), and a removal is NOT the same as absent: the child then
+        // sees no `GEMINI_HOME` at all and falls back to `~/.gemini` under its
+        // own home. Collapsing the two would send codeg to the inherited value
+        // for a launch that deliberately took it away.
+        let mut removed = base();
+        removed.insert("GEMINI_HOME".to_string(), String::new());
+        assert_eq!(
+            antigravity_acp_dir_with_inherited(&removed, codegs_own()).expect("nameable"),
+            PathBuf::from(child_home)
+                .join(".gemini")
+                .join(ANTIGRAVITY_ACP_SUBDIR)
+        );
+
+        // And codeg having none either is the plain default.
+        assert_eq!(
+            antigravity_acp_dir_with_inherited(&base(), None).expect("nameable"),
+            PathBuf::from(child_home)
+                .join(".gemini")
+                .join(ANTIGRAVITY_ACP_SUBDIR)
+        );
+    }
+
     /// `GEMINI_HOME=~/x` names `$HOME/x` to the server, so it has to name the
     /// same thing here.
     ///
@@ -14319,6 +15151,15 @@ mod tests {
         assert!(deepseek.get("elicitation").is_some());
         assert!(deepseek.get("_meta").is_none());
 
+        // Cursor: parameterized model picker only (no elicitation / AIR).
+        let cursor = caps_of(AgentType::Cursor);
+        assert_eq!(
+            cursor["_meta"]["parameterizedModelPicker"],
+            serde_json::Value::Bool(true)
+        );
+        assert!(cursor.get("elicitation").is_none());
+        assert!(cursor["_meta"].get("jetbrains").is_none());
+
         // Everyone else: neither gate; fs + terminal always advertised.
         let other = caps_of(AgentType::Gemini);
         assert!(other.get("_meta").is_none());
@@ -14640,6 +15481,45 @@ mod tests {
             }
             other => panic!("expected Error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn final_agent_boundary_appends_routes_for_every_agent_holding_a_snapshot() {
+        let visible = "ask [@Antigravity](codeg://agent/antigravity) to build";
+        let blocks = vec![PromptInputBlock::Text {
+            text: visible.into(),
+        }];
+        // Not Codex-specific: any parent whose companion carried the delegation
+        // group routes, including custom agents.
+        for parent in [
+            AgentType::Codex,
+            AgentType::ClaudeCode,
+            AgentType::Gemini,
+            AgentType::custom("delegating-custom").expect("valid custom id"),
+        ] {
+            let prompt = prepare_agent_bound_prompt(parent, blocks.clone(), true);
+            assert_eq!(prompt.len(), 2, "{parent} must receive the routing block");
+            assert!(matches!(
+                &prompt[0],
+                ContentBlock::Text(text) if text.text == visible
+            ));
+            assert!(matches!(
+                &prompt[1],
+                ContentBlock::Text(text)
+                    if text.text.contains("Codeg composer routing metadata (authoritative)")
+                        && text.text.contains(r#""agentType":"antigravity""#)
+            ));
+        }
+
+        // An agent that never received the companion (OpenClaw's
+        // supports_mcp=false, pi's wire exclusion) reaches here with delegation
+        // off and keeps a pristine prompt.
+        let unrouted = prepare_agent_bound_prompt(AgentType::OpenClaw, blocks, false);
+        assert_eq!(unrouted.len(), 1);
+        assert!(matches!(
+            &unrouted[0],
+            ContentBlock::Text(text) if text.text == visible
+        ));
     }
 
     #[test]
@@ -16553,6 +17433,169 @@ mod tests {
         );
         // Absent rawOutput.
         assert_eq!(grok_live_tool_output(&None, &None), None);
+    }
+
+    /// The captured opencode 1.18.23 completion envelope for a codeg-mcp
+    /// `ask_user_question` — the clean answer text on both channels, the
+    /// `rawOutput` one wrapped in `{output, metadata}`.
+    fn opencode_ask_raw_output() -> serde_json::Value {
+        serde_json::json!({
+            "output": "The user answered your question(s):\n1. [框架] 选一个前端框架\n   → 选项 A\n",
+            "metadata": {"truncated": false},
+        })
+    }
+
+    /// The envelope must never shadow `content`: it wraps the very same string,
+    /// and the JSON blob is what made an answered question render "no selection".
+    #[test]
+    fn opencode_live_tool_output_prefers_content() {
+        let content = Some(
+            "The user answered your question(s):\n1. [框架] 选一个前端框架\n   → 选项 A\n"
+                .to_string(),
+        );
+        assert_eq!(
+            opencode_live_tool_output(&content, &Some(opencode_ask_raw_output())),
+            None
+        );
+    }
+
+    /// With no `content` the envelope is unwrapped to the bare result text —
+    /// never the stringified object. Whitespace-only content counts as none.
+    #[test]
+    fn opencode_live_tool_output_unwraps_output_when_content_empty() {
+        let raw = Some(opencode_ask_raw_output());
+        let expected =
+            "The user answered your question(s):\n1. [框架] 选一个前端框架\n   → 选项 A\n";
+        assert_eq!(
+            opencode_live_tool_output(&None, &raw).as_deref(),
+            Some(expected)
+        );
+        assert_eq!(
+            opencode_live_tool_output(&Some("   ".to_string()), &raw).as_deref(),
+            Some(expected)
+        );
+    }
+
+    /// Failures send `{error, metadata}`, and a command that writes only to
+    /// stderr leaves `output` empty while the combined stream stays in
+    /// `metadata.output` — both mirror `parsers/opencode.rs`.
+    #[test]
+    fn opencode_live_tool_output_falls_back_to_error_and_metadata_output() {
+        let failed = Some(serde_json::json!({
+            "error": "The tool call was aborted",
+            "metadata": {},
+        }));
+        assert_eq!(
+            opencode_live_tool_output(&None, &failed).as_deref(),
+            Some("The tool call was aborted")
+        );
+
+        let stderr_only = Some(serde_json::json!({
+            "output": "",
+            "metadata": {"output": "boom\n", "exit": 1},
+        }));
+        assert_eq!(
+            opencode_live_tool_output(&None, &stderr_only).as_deref(),
+            Some("boom\n")
+        );
+    }
+
+    /// An unrecognized payload still stringifies exactly as before — the fix
+    /// unwraps a known envelope, it never drops a result on the floor.
+    #[test]
+    fn opencode_live_tool_output_keeps_unknown_payloads() {
+        let unknown = Some(serde_json::json!({"weird": {"shape": 1}}));
+        assert_eq!(
+            opencode_live_tool_output(&None, &unknown).as_deref(),
+            Some(r#"{"weird":{"shape":1}}"#)
+        );
+        assert_eq!(opencode_live_tool_output(&None, &None), None);
+    }
+
+    /// End-to-end over the frames opencode 1.18.23 actually put on the wire for a
+    /// codeg-mcp `ask_user_question` (captured by driving `opencode acp` against a
+    /// stub MCP server). The card reconstructs the answer from the result TEXT —
+    /// opencode drops the MCP `structuredContent` — so the completion must hand
+    /// the frontend that text, not the `{output, metadata}` blob that shadows it
+    /// and made an answered question render "no selection" while streaming.
+    #[tokio::test]
+    async fn opencode_ask_question_completion_emits_the_answer_text() {
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+
+        let (_, _, opening_output, _) = pi_emit(
+            AgentType::OpenCode,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "call_probe_1",
+                "title": "codeg-mcp_ask_user_question",
+                "kind": "other",
+                "status": "pending",
+                "locations": [],
+                "rawInput": {},
+            }),
+        )
+        .await;
+        assert!(
+            opening_output.is_none(),
+            "the pending frame carries no result: {opening_output:?}"
+        );
+
+        let (content, _, raw_output, _) = pi_emit(
+            AgentType::OpenCode,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call_probe_1",
+                "status": "completed",
+                "content": [{
+                    "type": "content",
+                    "content": {
+                        "type": "text",
+                        "text": "The user answered your question(s):\n1. [框架] 选一个前端框架\n   → 选项 A\n",
+                    },
+                }],
+                "rawOutput": opencode_ask_raw_output(),
+            }),
+        )
+        .await;
+
+        assert_eq!(
+            content.as_deref(),
+            Some("The user answered your question(s):\n1. [框架] 选一个前端框架\n   → 选项 A\n"),
+            "the clean answer text reaches the card"
+        );
+        assert!(
+            raw_output.is_none(),
+            "the envelope must not shadow it: {raw_output:?}"
+        );
+    }
+
+    /// The unwrap is agent-gated: every other agent keeps the existing
+    /// `json_value_to_text` behavior for an object `rawOutput`.
+    #[tokio::test]
+    async fn non_opencode_keeps_the_stringified_envelope() {
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let (_, _, raw_output, _) = pi_emit(
+            AgentType::ClaudeCode,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call-1",
+                "status": "completed",
+                "rawOutput": {"output": "hi", "metadata": {"truncated": false}},
+            }),
+        )
+        .await;
+        assert_eq!(
+            raw_output.as_deref(),
+            Some(r#"{"metadata":{"truncated":false},"output":"hi"}"#)
+        );
     }
 
     /// A finished Grok terminal `tool_call_update` carries the readable output in
@@ -18745,6 +19788,88 @@ mod tests {
         ));
     }
 
+    struct TestConversationDepthLookup;
+
+    #[async_trait::async_trait]
+    impl crate::acp::delegation::broker::ConversationDepthLookup for TestConversationDepthLookup {
+        async fn parent_of(
+            &self,
+            _id: i32,
+        ) -> Result<Option<i32>, crate::acp::delegation::types::DelegationError> {
+            Ok(None)
+        }
+    }
+
+    struct TestNoQuestions;
+
+    #[async_trait::async_trait]
+    impl crate::acp::question::SessionQuestionAccess for TestNoQuestions {
+        async fn register_question(
+            &self,
+            _parent_connection_id: &str,
+            _questions: Vec<crate::acp::question::QuestionSpec>,
+        ) -> Option<crate::acp::question::RegisteredQuestion> {
+            None
+        }
+
+        async fn cancel_question(&self, _parent_connection_id: &str, _question_id: &str) {}
+
+        async fn cancel_questions_by_parent(&self, _parent_connection_id: &str) {}
+    }
+
+    struct TestNoPlanApprovals;
+
+    #[async_trait::async_trait]
+    impl crate::acp::plan_approval::SessionPlanApprovalAccess for TestNoPlanApprovals {
+        async fn register_plan_approval(
+            &self,
+            _parent_connection_id: &str,
+            _tool_call_id: String,
+            _plan_markdown: String,
+        ) -> Option<crate::acp::plan_approval::RegisteredPlanApproval> {
+            None
+        }
+
+        async fn cancel_plan_approvals_by_parent(&self, _parent_connection_id: &str) {}
+    }
+
+    struct TestAllAgentsAvailable;
+
+    #[async_trait::async_trait]
+    impl AgentAvailabilityLookup for TestAllAgentsAvailable {
+        async fn disabled_agent_wire_slugs(&self) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    fn test_delegation_injection(
+        agent_availability: Arc<dyn AgentAvailabilityLookup>,
+    ) -> DelegationInjection {
+        use crate::acp::delegation::broker::DelegationBroker;
+        use crate::acp::delegation::listener::TokenRegistry;
+        use crate::acp::delegation::spawner::{mock::MockSpawner, ConnectionSpawner};
+
+        let broker = Arc::new(DelegationBroker::new(
+            Arc::new(MockSpawner::default()) as Arc<dyn ConnectionSpawner>,
+            Arc::new(TestConversationDepthLookup)
+                as Arc<dyn crate::acp::delegation::broker::ConversationDepthLookup>,
+        ));
+        DelegationInjection {
+            broker,
+            tokens: Arc::new(TokenRegistry::default()),
+            socket_path: std::path::PathBuf::from("/tmp/codeg-mcp.sock"),
+            agent_availability,
+            feedback: crate::acp::feedback::FeedbackRuntimeConfig::new(),
+            ask: crate::acp::question::QuestionRuntimeConfig::new(),
+            sessions: crate::acp::session_info::SessionInfoRuntimeConfig::new(),
+            authoring: crate::acp::chat_authoring::ChatAuthoringRuntimeConfig::new(),
+            questions: Arc::new(TestNoQuestions)
+                as Arc<dyn crate::acp::question::SessionQuestionAccess>,
+            plan_approvals: Arc::new(TestNoPlanApprovals)
+                as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
+        }
+    }
+
     // ─── inject_codeg_mcp: enabled=false short-circuit ──────────
     //
     // Guards the "default off" product contract: when the broker config has
@@ -18756,75 +19881,14 @@ mod tests {
     // opts in via the settings panel.
     #[tokio::test]
     async fn inject_codeg_delegate_skipped_when_broker_disabled() {
-        use crate::acp::delegation::broker::{ConversationDepthLookup, DelegationBroker};
-        use crate::acp::delegation::listener::TokenRegistry;
-        use crate::acp::delegation::spawner::{mock::MockSpawner, ConnectionSpawner};
-        use crate::acp::delegation::types::DelegationError;
-
-        struct EmptyLookup;
-        #[async_trait::async_trait]
-        impl ConversationDepthLookup for EmptyLookup {
-            async fn parent_of(&self, _id: i32) -> Result<Option<i32>, DelegationError> {
-                Ok(None)
-            }
-        }
-
-        let broker = Arc::new(DelegationBroker::new(
-            Arc::new(MockSpawner::default()) as Arc<dyn ConnectionSpawner>,
-            Arc::new(EmptyLookup) as Arc<dyn ConversationDepthLookup>,
-        ));
         // No set_config call: broker carries its default config, which is
         // `enabled: false` after the product-default flip. This is the
         // exact state a fresh install reaches before the user touches the
         // settings panel. Feedback is likewise disabled by default, so with
         // BOTH features off the companion isn't injected at all.
-        struct NoQuestions;
-        #[async_trait::async_trait]
-        impl crate::acp::question::SessionQuestionAccess for NoQuestions {
-            async fn register_question(
-                &self,
-                _parent_connection_id: &str,
-                _questions: Vec<crate::acp::question::QuestionSpec>,
-            ) -> Option<crate::acp::question::RegisteredQuestion> {
-                None
-            }
-            async fn cancel_question(&self, _parent_connection_id: &str, _question_id: &str) {}
-            async fn cancel_questions_by_parent(&self, _parent_connection_id: &str) {}
-        }
-        struct NoPlanApprovals;
-        #[async_trait::async_trait]
-        impl crate::acp::plan_approval::SessionPlanApprovalAccess for NoPlanApprovals {
-            async fn register_plan_approval(
-                &self,
-                _parent_connection_id: &str,
-                _tool_call_id: String,
-                _plan_markdown: String,
-            ) -> Option<crate::acp::plan_approval::RegisteredPlanApproval> {
-                None
-            }
-            async fn cancel_plan_approvals_by_parent(&self, _parent_connection_id: &str) {}
-        }
-        struct AllEnabled;
-        #[async_trait::async_trait]
-        impl AgentAvailabilityLookup for AllEnabled {
-            async fn disabled_agent_wire_slugs(&self) -> Vec<String> {
-                Vec::new()
-            }
-        }
-        let injection = DelegationInjection {
-            broker,
-            tokens: Arc::new(TokenRegistry::default()),
-            socket_path: std::path::PathBuf::from("/tmp/codeg-mcp.sock"),
-            agent_availability: Arc::new(AllEnabled) as Arc<dyn AgentAvailabilityLookup>,
-            feedback: crate::acp::feedback::FeedbackRuntimeConfig::new(),
-            ask: crate::acp::question::QuestionRuntimeConfig::new(),
-            sessions: crate::acp::session_info::SessionInfoRuntimeConfig::new(),
-            authoring: crate::acp::chat_authoring::ChatAuthoringRuntimeConfig::new(),
-            questions: Arc::new(NoQuestions)
-                as Arc<dyn crate::acp::question::SessionQuestionAccess>,
-            plan_approvals: Arc::new(NoPlanApprovals)
-                as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
-        };
+        let injection = test_delegation_injection(
+            Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
+        );
 
         let mut servers: Vec<McpServer> = Vec::new();
         let result = inject_codeg_mcp(
@@ -19164,6 +20228,93 @@ mod tests {
         let untyped = UntypedMessage::new("session/new", req).expect("builds");
         assert_eq!(untyped.method(), "session/new");
         assert_eq!(untyped.params(), &expected);
+    }
+
+    /// The saved-preference replay must set the model BEFORE anything scoped to
+    /// it. Cursor's parameterized picker (unlocked by
+    /// `_meta.parameterizedModelPicker`) ships `fast` / thinking options that
+    /// belong to the CURRENT model: setting `model` reloads that model's own
+    /// parameter values, and setting a parameter the model in effect does not
+    /// define is rejected outright. Raw key order is alphabetical, which puts
+    /// `fast` first — exactly backwards.
+    #[test]
+    fn preferred_config_values_apply_the_model_first() {
+        let options: Vec<SessionConfigOption> = serde_json::from_value(serde_json::json!([
+            {
+                "type": "select",
+                "id": "mode",
+                "name": "Mode",
+                "category": "mode",
+                "currentValue": "agent",
+                "options": [{"value": "agent", "name": "Agent"}]
+            },
+            {
+                "type": "select",
+                "id": "model",
+                "name": "Model",
+                "category": "model",
+                "currentValue": "composer-2.5",
+                "options": [{"value": "composer-2.5", "name": "Composer 2.5"}]
+            },
+            {
+                "type": "select",
+                "id": "fast",
+                "name": "Fast",
+                "category": "model_config",
+                "currentValue": "true",
+                "options": [{"value": "true", "name": "On"}, {"value": "false", "name": "Off"}]
+            },
+        ]))
+        .expect("parses");
+
+        let preferred = BTreeMap::from([
+            ("fast".to_string(), "false".to_string()),
+            ("mode".to_string(), "plan".to_string()),
+            ("model".to_string(), "composer-2.5".to_string()),
+        ]);
+        let ordered: Vec<&str> = order_preferred_config_values(&options, &preferred)
+            .into_iter()
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(
+            ordered,
+            vec!["model", "fast", "mode"],
+            "model leads; the rest keep their sorted order"
+        );
+
+        // An agent that labels its model selector only by category still leads.
+        let by_category: Vec<SessionConfigOption> = serde_json::from_value(serde_json::json!([
+            {
+                "type": "select",
+                "id": "llm",
+                "name": "Model",
+                "category": "model",
+                "currentValue": "a",
+                "options": [{"value": "a", "name": "A"}]
+            },
+        ]))
+        .expect("parses");
+        let preferred = BTreeMap::from([
+            ("effort".to_string(), "high".to_string()),
+            ("llm".to_string(), "b".to_string()),
+        ]);
+        let ordered: Vec<&str> = order_preferred_config_values(&by_category, &preferred)
+            .into_iter()
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(ordered, vec!["llm", "effort"]);
+
+        // Nothing model-shaped: the order is untouched, and an id the agent
+        // never advertised is still replayed (it is not codeg's call to drop).
+        let preferred = BTreeMap::from([
+            ("a_thing".to_string(), "1".to_string()),
+            ("z_thing".to_string(), "2".to_string()),
+        ]);
+        let ordered: Vec<&str> = order_preferred_config_values(&[], &preferred)
+            .into_iter()
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(ordered, vec!["a_thing", "z_thing"]);
     }
 
     #[test]

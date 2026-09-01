@@ -816,9 +816,7 @@ function PushCommitFilesTree({
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[11px] text-muted-foreground">
-          {tLog("filesTitle")}
-        </p>
+        <p className="text-2xs text-muted-foreground">{tLog("filesTitle")}</p>
         <div className="flex items-center gap-1">
           <Button
             variant="ghost"

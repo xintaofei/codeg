@@ -275,7 +275,7 @@ export function QoderConfigPanel({
     <div className="space-y-3 rounded-md border bg-muted/10 p-3">
       <div>
         <label className="text-xs font-medium">{t("configManagement")}</label>
-        <p className="mt-1 text-[11px] text-muted-foreground">
+        <p className="mt-1 text-2xs text-muted-foreground">
           {t("qoder.configDescription")}
         </p>
       </div>
@@ -283,9 +283,7 @@ export function QoderConfigPanel({
       {/* ---- Account ---- */}
       <div className="space-y-2 rounded-md border bg-background/60 p-2.5">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] font-medium">
-            {t("qoder.authTitle")}
-          </span>
+          <span className="text-2xs font-medium">{t("qoder.authTitle")}</span>
           <div className="flex items-center gap-1.5">
             <span
               className={cn(
@@ -298,7 +296,7 @@ export function QoderConfigPanel({
                   "bg-muted-foreground/40 animate-pulse"
               )}
             />
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-2xs text-muted-foreground">
               {authState === "loading"
                 ? t("qoder.authChecking")
                 : authState === "missing"
@@ -312,12 +310,12 @@ export function QoderConfigPanel({
                       : t("qoder.authNotLoggedIn")}
             </span>
             {authState === "ok" && auth?.user_type ? (
-              <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-600 dark:text-emerald-400">
+              <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-3xs text-emerald-600 dark:text-emerald-400">
                 {auth.user_type}
               </span>
             ) : null}
             {auth?.version ? (
-              <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+              <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-3xs text-muted-foreground">
                 {auth.version}
               </span>
             ) : null}
@@ -337,16 +335,16 @@ export function QoderConfigPanel({
         </div>
 
         {authState === "ok" && auth?.email && auth.email !== auth.username ? (
-          <p className="text-[10px] text-muted-foreground">{auth.email}</p>
+          <p className="text-3xs text-muted-foreground">{auth.email}</p>
         ) : null}
 
         {authState === "loggedOut" ? (
           <div className="space-y-1.5">
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-2xs text-muted-foreground">
               {t("qoder.loginHint")}
             </p>
             <div className="flex items-center gap-1.5">
-              <code className="flex-1 break-all rounded bg-muted px-2 py-1 font-mono text-[11px]">
+              <code className="flex-1 break-all rounded bg-muted px-2 py-1 font-mono text-2xs">
                 {loginCommand}
               </code>
               <Button
@@ -367,14 +365,11 @@ export function QoderConfigPanel({
         ) : null}
 
         {auth?.error ? (
-          <p className="text-[11px] text-destructive">{auth.error}</p>
+          <p className="text-2xs text-destructive">{auth.error}</p>
         ) : null}
 
         <div className="space-y-1">
-          <label
-            className="text-[11px] text-muted-foreground"
-            htmlFor="qoder-pat"
-          >
+          <label className="text-2xs text-muted-foreground" htmlFor="qoder-pat">
             {t("qoder.tokenLabel")}
           </label>
           <div className="flex items-center gap-1.5">
@@ -406,13 +401,13 @@ export function QoderConfigPanel({
               )}
             </Button>
           </div>
-          <p className="text-[10px] text-muted-foreground">
+          <p className="text-3xs text-muted-foreground">
             {t("qoder.tokenHint")}
           </p>
         </div>
 
         {authMethod ? (
-          <p className="text-[10px] text-muted-foreground">
+          <p className="text-3xs text-muted-foreground">
             {t("qoder.authMethodLabel")}:{" "}
             <code className="font-mono">{authMethod}</code>
           </p>
@@ -439,7 +434,7 @@ export function QoderConfigPanel({
       {/* ---- Advanced: raw settings.json ---- */}
       <div className="space-y-2">
         <button
-          className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+          className="flex items-center gap-1 text-2xs text-muted-foreground hover:text-foreground"
           onClick={() => setAdvancedOpen((v) => !v)}
           type="button"
         >
@@ -452,16 +447,16 @@ export function QoderConfigPanel({
         </button>
         {advancedOpen ? (
           <div className="space-y-1.5">
-            <p className="text-[10px] text-muted-foreground">
+            <p className="text-3xs text-muted-foreground">
               {t("qoder.advancedHint")}
             </p>
             {agent.config_file_path ? (
-              <code className="block overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-[10px] whitespace-nowrap text-muted-foreground">
+              <code className="block overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-3xs whitespace-nowrap text-muted-foreground">
                 {agent.config_file_path}
               </code>
             ) : null}
             <Textarea
-              className="min-h-40 font-mono text-[11px]"
+              className="min-h-40 font-mono text-2xs"
               onChange={(e) => {
                 rawDirty.current = true
                 setRawConfig(e.target.value)

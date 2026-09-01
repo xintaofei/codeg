@@ -2,7 +2,10 @@
  * Parsing helpers for the codeg-mcp *workbench* companion tools — the ones that
  * report back into codeg itself rather than driving a sub-agent:
  * `get_session_info`, `task_progress`, `task_complete`, `create_automation` and
- * `create_work_task`.
+ * `create_work_task` — plus `resume_delegation`, which does revive a sub-agent
+ * but whose own call is a one-line ack (the resumed child re-binds to the
+ * ORIGINAL delegate card via `delegation_started`), so it rides this lean card
+ * rather than growing the delegation card family a new kind.
  *
  * The delegation trio (`delegate_to_agent` / `get_delegation_status` /
  * `cancel_delegation`), `ask_user_question` and `check_user_feedback` each own a
@@ -39,6 +42,7 @@ export const CODEG_MCP_WORKBENCH_TOOLS = [
   "task_complete",
   "create_automation",
   "create_work_task",
+  "resume_delegation",
 ] as const
 
 export type CodegMcpWorkbenchTool = (typeof CODEG_MCP_WORKBENCH_TOOLS)[number]
@@ -198,6 +202,12 @@ const ARG_SPECS: Record<
   create_work_task: {
     fields: ["title", "prompt"],
     detail: (args) => str(args, "title"),
+  },
+  resume_delegation: {
+    // `task_id` alone identifies the payload; the optional `reason` never
+    // appears without it.
+    fields: ["task_id"],
+    detail: (args) => str(args, "task_id"),
   },
 }
 

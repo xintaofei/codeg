@@ -27,11 +27,15 @@ use tokio::sync::{Mutex, Notify};
 use tokio::time::MissedTickBehavior;
 
 use crate::acp::manager::ConnectionManager;
-use crate::acp::types::{AcpEvent, EventEnvelope, PromptCapabilitiesInfo, PromptInputBlock};
+use crate::acp::types::{
+    AcpEvent, ConnectionStatus, EventEnvelope, PromptCapabilitiesInfo, PromptInputBlock,
+};
 use crate::acp::work_task_tools::{TaskReportAck, WorkTaskToolAccess};
 use crate::acp::InternalEventBus;
 use crate::commands::acp::{build_session_runtime_env, verify_agent_installed};
-use crate::commands::conversations::{create_conversation_core, emit_conversation_upsert};
+use crate::commands::conversations::{
+    create_conversation_core, emit_conversation_upsert, get_folder_conversation_core,
+};
 use crate::commands::folders::{
     emit_folder_deleted, emit_folder_upsert, get_folder_core, git_worktree_add,
     open_worktree_folder_core, resolve_git_head,
@@ -55,6 +59,7 @@ use crate::models::{
 use crate::web::event_bridge::{
     emit_event, EventEmitter, WorkTaskChange, WORK_TASK_CHANGED_EVENT,
 };
+use crate::work_task::compact;
 use crate::work_task::git as task_git;
 
 /// Reconcile sweep cadence.
@@ -67,6 +72,12 @@ const SCHEDULE_INTERVAL_SECS: u64 = 15;
 
 /// Cap on the preflight output tail persisted with a red light.
 const PREFLIGHT_TAIL_CHARS: usize = 4000;
+
+/// How often a waiting pre-prompt compaction re-checks that its connection is
+/// still alive. NOT a deadline on the turn — see `await_compaction_turn`, which
+/// only ever ends the wait on evidence the turn is over or the connection is
+/// gone. Loose enough to cost nothing on a turn that runs for minutes.
+const COMPACTION_LIVENESS_TICK: Duration = Duration::from_secs(5);
 
 static ENGINE: OnceLock<Arc<TaskEngine>> = OnceLock::new();
 
@@ -114,6 +125,31 @@ pub struct TaskEngine {
     /// process TREE so a long `pnpm install` stops with the task instead of
     /// running to completion in the background.
     setup_children: Arc<Mutex<HashMap<i32, SetupChild>>>,
+    /// Tasks whose launch is currently waiting out a pre-prompt compaction
+    /// turn, and the connection running it. Serves the same role
+    /// `setup_children` does for a long init command: the launch holds the task
+    /// lock across the whole compaction, so a cancel has to be able to reach
+    /// the turn WITHOUT that lock — otherwise "stop" would sit behind the very
+    /// turn it is trying to stop. The compaction connection is deliberately NOT
+    /// in `index`: its `TurnComplete` is the launch's own signal, and an
+    /// indexed one would settle the task into review before its work ever
+    /// started.
+    compacting: Arc<Mutex<HashMap<i32, CompactRun>>>,
+    /// `connection_id -> event seq` of a compaction `TurnComplete` the launch
+    /// has already consumed as its own signal.
+    ///
+    /// The bus is a BROADCAST: this engine's own receiver and the launch's
+    /// waiter each get their own copy of that envelope. The waiter is awaiting
+    /// exactly it, so it always reacts first; the engine's loop awaits DB work
+    /// per event and can be arbitrarily far behind. "The connection was not in
+    /// `index` when this was emitted" is therefore something `on_event` cannot
+    /// observe — by the time it dequeues, the launch may have indexed the
+    /// connection and sent the round's real prompt, and the compaction's
+    /// completion would settle THAT turn (and disconnect the agent mid-round).
+    /// The seq is the discriminator: per-connection and monotonic (assigned
+    /// under the state write lock in `emit_with_state_gated`), so it names one
+    /// exact envelope rather than "a turn on this connection".
+    compaction_turns: Arc<Mutex<HashMap<String, u64>>>,
     /// Tasks whose merge/delivery is executing in THIS process — the reconcile
     /// tick must not run crash recovery against them. A merge only needs it
     /// for the dispatch window (a live agent connection covers the rest); a
@@ -184,6 +220,8 @@ pub fn build_task_engine(
         launching: Arc::new(Mutex::new(HashMap::new())),
         launch_token: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         setup_children: Arc::new(Mutex::new(HashMap::new())),
+        compacting: Arc::new(Mutex::new(HashMap::new())),
+        compaction_turns: Arc::new(Mutex::new(HashMap::new())),
         merging: Arc::new(Mutex::new(HashMap::new())),
         in_flight_token: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         forge: Arc::new(crate::forge::deliver::ForgeDelivery),
@@ -243,6 +281,8 @@ fn test_engine_full(
         launching: Arc::new(Mutex::new(HashMap::new())),
         launch_token: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         setup_children: Arc::new(Mutex::new(HashMap::new())),
+        compacting: Arc::new(Mutex::new(HashMap::new())),
+        compaction_turns: Arc::new(Mutex::new(HashMap::new())),
         merging: Arc::new(Mutex::new(HashMap::new())),
         in_flight_token: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         forge,
@@ -684,10 +724,14 @@ impl TaskEngine {
         Ok(())
     }
 
-    /// Cancel a task from any non-terminal state except merging. Worktree is
-    /// kept (the card offers cleanup separately). `reason` is the user's own
-    /// note for the timeline; internal cancels (a conversation the user stopped
-    /// from the chat UI, a delete) pass None.
+    /// Cancel a task from any non-terminal state except merging. The worktree
+    /// is kept — removing it is a separate call the callers chain on when the
+    /// user asked for it (`work_task_cancel_core`'s checkbox, the delete path),
+    /// and it has to come after this one returns: the removal refuses while a
+    /// live agent connection is still on the task, and shedding that connection
+    /// is the last thing we do below. `reason` is the user's own note for the
+    /// timeline; internal cancels (a conversation the user stopped from the
+    /// chat UI, a delete) pass None.
     pub async fn cancel(
         self: &Arc<Self>,
         task_id: i32,
@@ -701,13 +745,15 @@ impl TaskEngine {
         }
         self.emit_upsert(task_id);
 
-        // Kill a running init command BEFORE waiting on the task lock: the
-        // launch holds that lock for its whole setup, so waiting first would
-        // mean waiting out the very `pnpm install` we are trying to stop. The
-        // run_seq we just canceled scopes the kill to this generation (cancel
-        // does not bump it, so the row still carries it).
+        // Stop a running init command / pre-prompt compaction BEFORE waiting on
+        // the task lock: the launch holds that lock for its whole setup, so
+        // waiting first would mean waiting out the very `pnpm install` — or the
+        // very compaction turn — we are trying to stop. The run_seq we just
+        // canceled scopes both to this generation (cancel does not bump it, so
+        // the row still carries it).
         if let Ok(task) = work_task_service::get_model(&self.db.conn, task_id).await {
             self.kill_setup_child(task_id, task.run_seq).await;
+            self.abort_compaction(task_id, task.run_seq).await;
         }
 
         // Serialize the teardown with a possibly in-flight launch: the launch
@@ -728,7 +774,7 @@ impl TaskEngine {
         };
         if let Some(conn_id) = conn_id {
             let _ = self.manager.cancel(&self.db.conn, &conn_id).await;
-            self.index.lock().await.remove(&conn_id);
+            self.forget_connection(&conn_id).await;
             self.forget_delegation_children_of(&conn_id).await;
             let _ = self.manager.disconnect(&conn_id).await;
         }
@@ -1183,8 +1229,35 @@ impl TaskEngine {
         };
         emit_conversation_upsert(&self.emitter, &self.db.conn, conversation_id).await;
 
+        // A resumed session carries every earlier round's context. Give the
+        // folder's threshold (when set) a chance to shrink it BEFORE this
+        // round's prompt goes in — see `compact_before_prompt` for why this
+        // sits ahead of the index insert.
+        if resumed {
+            self.compact_before_prompt(CompactRequest {
+                task_id,
+                run_seq,
+                conn_id: &conn_id,
+                agent_type,
+                settings: &settings,
+                folder_id: wt.folder_id,
+                conversation_id,
+                in_flight: mode.in_flight_status(),
+            })
+            .await;
+        }
+
         let mut blocks =
-            compose_prompt(&cfg, &task, &mode, &settings, resumed, &self.db.conn).await?;
+            match compose_prompt(&cfg, &task, &mode, &settings, resumed, &self.db.conn).await {
+                Ok(blocks) => blocks,
+                // The one path that abandons the connection without a teardown
+                // (it always has). A compaction just fenced this connection's
+                // completion, and nothing downstream would ever lift that fence.
+                Err(e) => {
+                    self.compaction_turns.lock().await.remove(&conn_id);
+                    return Err(e);
+                }
+            };
         // Re-encode attached images for the agent that actually answered the
         // handshake. A task's blocks are STORED — the composer picked their
         // encoding from a transient probe that may not have landed, possibly
@@ -1228,7 +1301,6 @@ impl TaskEngine {
                 &conn_id,
             )
             .await
-            .map_err(|e| e.to_string())?
         } else {
             work_task_service::mark_running(
                 &self.db.conn,
@@ -1238,10 +1310,26 @@ impl TaskEngine {
                 &conn_id,
             )
             .await
-            .map_err(|e| e.to_string())?
+        };
+        // A write that FAILED (a busy database, say) leaves this generation in
+        // exactly the state a lost CAS does — never marked live, no prompt
+        // sent — so it unwinds the same way instead of propagating out with the
+        // connection still registered. `launch`'s caller fails the row on an
+        // `Err`, and a failed row holding an index entry for a live connection
+        // is the stale-binding hazard the run_seq CAS exists to prevent.
+        let marked = match marked {
+            Ok(marked) => marked,
+            Err(e) => {
+                self.forget_connection(&conn_id).await;
+                let _ = self.manager.disconnect(&conn_id).await;
+                if !resumed {
+                    self.cancel_conversation(conversation_id).await;
+                }
+                return Err(e.to_string());
+            }
         };
         if !marked {
-            self.index.lock().await.remove(&conn_id);
+            self.forget_connection(&conn_id).await;
             let _ = self.manager.disconnect(&conn_id).await;
             if !resumed {
                 self.cancel_conversation(conversation_id).await;
@@ -1283,7 +1371,7 @@ impl TaskEngine {
                 Ok(())
             }
             Err(e) => {
-                self.index.lock().await.remove(&conn_id);
+                self.forget_connection(&conn_id).await;
                 let _ = self.manager.disconnect(&conn_id).await;
                 if !resumed {
                     self.cancel_conversation(conversation_id).await;
@@ -1780,6 +1868,477 @@ impl TaskEngine {
         wake.notify_one();
     }
 
+    /// Compact the resumed session's context before this round's prompt, when
+    /// the folder's settings ask for it (`auto_compact_percent`).
+    ///
+    /// Placement is the whole design. It runs AFTER the spawn (only a live
+    /// session can be compacted, and only a live session can say how full it
+    /// is) and BEFORE the `index` insert and `mark_running`, so:
+    /// - the compaction turn's `TurnComplete` reaches `on_event` with no index
+    ///   entry behind it and is dropped — an indexed one would settle the task
+    ///   into review before its actual work started;
+    /// - the round's own prompt is sent only once this turn has landed, which
+    ///   is the point of the feature.
+    ///
+    /// The cost of staying out of `index` is that a compaction turn which
+    /// somehow blocked on a permission would not flip the card to
+    /// `awaiting_input` — it would sit in `preparing` until the user cancels.
+    /// Accepted deliberately: compaction is a self-contained summarisation
+    /// turn, and the alternative (indexing it) trades a rare stall for a
+    /// systematic mis-settle of every task that compacts.
+    ///
+    /// Never fails the launch. A compaction that could not be measured, has no
+    /// command to run, or ends badly records itself on the timeline and lets
+    /// the round proceed: an over-full context makes the next prompt likely to
+    /// fail, but refusing to send it makes it certain.
+    ///
+    /// Only called for a launch that RESUMED — a fresh session's context is
+    /// empty by construction.
+    async fn compact_before_prompt(&self, req: CompactRequest<'_>) {
+        let CompactRequest {
+            task_id,
+            run_seq,
+            conn_id,
+            agent_type,
+            settings,
+            folder_id,
+            conversation_id,
+            in_flight,
+        } = req;
+        let threshold = settings.auto_compact_percent;
+        if threshold <= 0 {
+            return;
+        }
+        let Some(before) = self.context_reading(conn_id, conversation_id).await else {
+            // The agent reports no usable occupancy (no live `usage_update`, and
+            // a transcript that carries no window either). Recorded rather than
+            // silent: with the threshold switched on, "nothing happened" is a
+            // result the user needs an explanation for.
+            self.record_compact_event(
+                task_id,
+                serde_json::json!({
+                    "status": "skipped",
+                    "reason": "usage_unknown",
+                    "threshold_percent": threshold,
+                }),
+            )
+            .await;
+            return;
+        };
+        if !compact::trips_threshold(before.percent, threshold) {
+            return;
+        }
+
+        let advertised = match self.manager.get_state(conn_id).await {
+            Some(state) => state.read().await.available_commands.clone(),
+            None => Vec::new(),
+        };
+        let Some(command) = compact::resolve_compact_command(
+            settings.compact_command.as_deref(),
+            agent_type,
+            &advertised,
+        ) else {
+            self.record_compact_event(
+                task_id,
+                serde_json::json!({
+                    "status": "skipped",
+                    "reason": "no_command",
+                    "threshold_percent": threshold,
+                    "before_percent": round1(before.percent),
+                }),
+            )
+            .await;
+            return;
+        };
+
+        // Cancel gate, then the kill slot, then the gate AGAIN — the same
+        // ordering `reserve_setup_slot` uses for the init command. A cancel
+        // that lands before the slot exists is caught by the re-check (it flips
+        // the row first); one that lands after finds the slot and aborts the
+        // turn. Without the re-check, a cancel in between would fall through to
+        // the task lock, which this launch holds until the compaction it is
+        // trying to stop has finished.
+        if !still_expected(&self.db.conn, task_id, run_seq, in_flight).await {
+            return;
+        }
+        self.compacting.lock().await.insert(
+            task_id,
+            CompactRun {
+                run_seq,
+                conn_id: conn_id.to_string(),
+            },
+        );
+        if !still_expected(&self.db.conn, task_id, run_seq, in_flight).await {
+            self.release_compact_slot(task_id, run_seq).await;
+            return;
+        }
+
+        // Subscribed BEFORE the send: the turn can complete the instant it is
+        // enqueued, and a receiver only ever sees what is published after it
+        // subscribes.
+        let mut rx = self.bus.subscribe();
+        let sent = self
+            .manager
+            .send_prompt_linked_with_message_id(
+                &self.db,
+                conn_id,
+                vec![PromptInputBlock::Text {
+                    text: command.clone(),
+                }],
+                Some(folder_id),
+                Some(conversation_id),
+                None,
+                None,
+            )
+            .await;
+        if let Err(e) = sent {
+            self.release_compact_slot(task_id, run_seq).await;
+            self.record_compact_event(
+                task_id,
+                serde_json::json!({
+                    "status": "failed",
+                    "command": command,
+                    "threshold_percent": threshold,
+                    "before_percent": round1(before.percent),
+                    "error": e.to_string(),
+                }),
+            )
+            .await;
+            return;
+        }
+
+        let outcome = self.await_compaction_turn(&mut rx, conn_id).await;
+        self.release_compact_slot(task_id, run_seq).await;
+
+        // Read the occupancy back from the LIVE session only. The transcript
+        // fallback is write-behind, so re-parsing here would report the
+        // pre-compaction figure as the result of the compaction.
+        let after = self.live_context_reading(conn_id).await;
+        let mut payload = serde_json::json!({
+            "status": outcome.status,
+            "command": command,
+            "threshold_percent": threshold,
+            "before_percent": round1(before.percent),
+            "before_source": before.source,
+        });
+        if let Some(map) = payload.as_object_mut() {
+            if let Some(used) = before.used {
+                map.insert("before_used_tokens".into(), used.into());
+            }
+            if let Some(size) = before.size {
+                map.insert("before_size_tokens".into(), size.into());
+            }
+            if let Some(after) = after.as_ref() {
+                map.insert("after_percent".into(), round1(after.percent).into());
+                if let Some(used) = after.used {
+                    map.insert("after_used_tokens".into(), used.into());
+                }
+            }
+            if let Some(detail) = outcome.detail {
+                map.insert("detail".into(), detail.into());
+            }
+        }
+        self.record_compact_event(task_id, payload).await;
+    }
+
+    /// Wait out the compaction turn on `conn_id`.
+    ///
+    /// Deliberately unbounded in TIME — compacting a full context is a real
+    /// model turn, and a deadline here would just send the round's prompt into
+    /// the very context we were told to shrink. What ends the wait is evidence:
+    /// the turn completing, the connection dying, or a cancel (which aborts the
+    /// turn through [`Self::abort_compaction`], producing a
+    /// `TurnComplete{cancelled}` of its own).
+    ///
+    /// The bus alone is not enough evidence, which is why the wait also polls
+    /// liveness. `apply_event` clears `turn_in_flight` on `TurnComplete` but
+    /// NOT on a terminal `Error` or `StatusChanged{Disconnected}` — and a
+    /// receiver that lags drops whichever of those arrived. Blocking purely on
+    /// `recv()` would then park forever on a connection that is already gone,
+    /// holding the task lock and taking any later cancel down with it. The tick
+    /// never shortens a live turn; it only notices a dead one.
+    ///
+    /// Records the completing envelope's seq in `compaction_turns` BEFORE
+    /// returning, so the engine's own (possibly lagging) receiver can still
+    /// recognise it later and refuse to settle the round with it.
+    async fn await_compaction_turn(
+        &self,
+        rx: &mut tokio::sync::broadcast::Receiver<Arc<EventEnvelope>>,
+        conn_id: &str,
+    ) -> CompactOutcome {
+        loop {
+            let event = tokio::select! {
+                received = rx.recv() => received,
+                _ = tokio::time::sleep(COMPACTION_LIVENESS_TICK) => {
+                    match self.compaction_still_running(conn_id).await {
+                        Some(outcome) => return outcome,
+                        None => continue,
+                    }
+                }
+            };
+            match event {
+                Ok(env) if env.connection_id == conn_id => match &env.payload {
+                    AcpEvent::TurnComplete { stop_reason, .. } => {
+                        self.mark_compaction_turn(conn_id, env.seq).await;
+                        return match stop_reason.as_str() {
+                            "cancelled" | "canceled" => CompactOutcome::new("canceled", None),
+                            "end_turn" | "" => CompactOutcome::new("ok", None),
+                            other => CompactOutcome::new("ok", Some(other.to_string())),
+                        };
+                    }
+                    // A terminal error tears the connection down without a
+                    // `TurnComplete` (the state is discarded, not settled), so
+                    // it has to end the wait itself. Fenced on the way out for
+                    // the same reason the liveness exit is: in-order delivery
+                    // proves no completion is queued on THIS receiver, but not
+                    // that the dying connection emits none after this event.
+                    AcpEvent::Error {
+                        message,
+                        terminal: true,
+                        ..
+                    } => {
+                        self.fence_completed_turns(conn_id).await;
+                        return CompactOutcome::new("failed", Some(message.clone()));
+                    }
+                    AcpEvent::StatusChanged {
+                        status: ConnectionStatus::Disconnected | ConnectionStatus::Error,
+                    } => {
+                        self.fence_completed_turns(conn_id).await;
+                        return CompactOutcome::new("failed", Some("connection lost".into()));
+                    }
+                    _ => {}
+                },
+                Ok(_) => {}
+                // Whatever ended this turn may be among the events the lag
+                // dropped, so ask the connection directly instead of waiting
+                // for a message that may never come again. Only OUR receiver
+                // dropped them — the engine's own copy may still be pending,
+                // which is why the probe fences before ending the wait.
+                Err(RecvError::Lagged(_)) => {
+                    if let Some(outcome) = self.compaction_still_running(conn_id).await {
+                        return outcome;
+                    }
+                }
+                Err(RecvError::Closed) => {
+                    return CompactOutcome::new("failed", Some("event bus closed".into()))
+                }
+            }
+        }
+    }
+
+    /// Liveness probe for a compaction turn: `None` means "still running, keep
+    /// waiting", `Some(outcome)` means the wait is over.
+    ///
+    /// Reads the same flag the send gate itself owns. `send_prompt_inner` sets
+    /// `turn_in_flight` synchronously before the send returns, so by the time
+    /// this can run, `false` means this turn has already ended and its event
+    /// was missed. A connection the manager no longer knows is gone for good —
+    /// its state (and any flag on it) was discarded, not settled.
+    ///
+    /// Ending the wait WITHOUT having seen the completion still has to fence
+    /// that completion off, because it may be sitting in the engine's own
+    /// receiver right now: the flag is cleared by `apply_event` BEFORE the
+    /// envelope is broadcast, so this can observe a finished turn whose event
+    /// nobody has delivered yet. The watermark is the connection's current
+    /// `event_seq` — every event already emitted is at or below it, and the
+    /// round's own completion, which cannot even be prompted until this
+    /// function has returned, is necessarily above it.
+    async fn compaction_still_running(&self, conn_id: &str) -> Option<CompactOutcome> {
+        let Some(state) = self.manager.get_state(conn_id).await else {
+            self.fence_completed_turns(conn_id).await;
+            return Some(CompactOutcome::new("failed", Some("connection lost".into())));
+        };
+        let seq = {
+            let s = state.read().await;
+            if s.turn_in_flight {
+                return None;
+            }
+            s.event_seq
+        };
+        self.mark_compaction_turn(conn_id, seq).await;
+        Some(CompactOutcome::new("ok", Some("turn end not observed".into())))
+    }
+
+    /// Fence every `TurnComplete` this connection has emitted so far, for a
+    /// wait that is ending without having read one.
+    ///
+    /// The watermark is the connection's current `event_seq`: everything
+    /// already emitted is at or below it, and the round's own completion —
+    /// which cannot be prompted until this wait returns — is above it. A
+    /// connection the manager has already dropped can report no seq, so its
+    /// whole id is fenced; ids are per-launch UUIDs and never reused.
+    async fn fence_completed_turns(&self, conn_id: &str) {
+        let seq = match self.manager.get_state(conn_id).await {
+            Some(state) => state.read().await.event_seq,
+            None => u64::MAX,
+        };
+        self.mark_compaction_turn(conn_id, seq).await;
+    }
+
+    /// Fence off every `TurnComplete` up to `seq` on this connection: they
+    /// belong to the launch's pre-prompt compaction, not to the round.
+    async fn mark_compaction_turn(&self, conn_id: &str, seq: u64) {
+        self.compaction_turns
+            .lock()
+            .await
+            .insert(conn_id.to_string(), seq);
+    }
+
+    /// Whether this `TurnComplete` is fenced off as a launch's own compaction
+    /// signal — in which case `on_event` must not treat it as the round's turn.
+    ///
+    /// A watermark rather than an exact seq: the wait can end without ever
+    /// seeing the completion (see `compaction_still_running`), and it must
+    /// still be able to fence one it never read. Self-cleaning — a seq ABOVE
+    /// the watermark can only be the round's own turn, which both lets it
+    /// through and retires the mark. A connection that never completes another
+    /// turn is cleared by `retire_connection` / `forget_connection`.
+    async fn claim_compaction_turn(&self, conn_id: &str, seq: u64) -> bool {
+        let mut marks = self.compaction_turns.lock().await;
+        match marks.get(conn_id).copied() {
+            Some(marked) if marked >= seq => true,
+            Some(_) => {
+                marks.remove(conn_id);
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Drop the in-memory traces of a connection this engine is done with: its
+    /// run binding and its compaction fence. Paired with the `disconnect` calls
+    /// on the launch's teardown paths, which — unlike `retire_connection` —
+    /// unwind a generation that never became live.
+    async fn forget_connection(&self, conn_id: &str) {
+        self.index.lock().await.remove(conn_id);
+        self.compaction_turns.lock().await.remove(conn_id);
+    }
+
+    /// Abort a pre-prompt compaction this task's launch is waiting on. Called
+    /// by `cancel` BEFORE it takes the task lock, for the same reason
+    /// [`Self::kill_setup_child`] is: the launch holds that lock across the
+    /// whole compaction turn.
+    ///
+    /// Only cancels the turn — the launch's own teardown (disconnect, and the
+    /// conversation when it was not resumed) happens where it always has, on
+    /// the `mark_running` CAS it is about to lose.
+    async fn abort_compaction(&self, task_id: i32, run_seq: i32) {
+        let conn_id = {
+            let compacting = self.compacting.lock().await;
+            match compacting.get(&task_id) {
+                Some(run) if run.run_seq == run_seq => run.conn_id.clone(),
+                _ => return,
+            }
+        };
+        let _ = self.manager.cancel(&self.db.conn, &conn_id).await;
+    }
+
+    /// Drop this generation's compaction slot. Generation-checked so a slow
+    /// unwind can never drop a newer launch's slot.
+    async fn release_compact_slot(&self, task_id: i32, run_seq: i32) {
+        let mut compacting = self.compacting.lock().await;
+        if matches!(compacting.get(&task_id), Some(run) if run.run_seq == run_seq) {
+            compacting.remove(&task_id);
+        }
+    }
+
+    async fn record_compact_event(&self, task_id: i32, payload: serde_json::Value) {
+        let _ = work_task_service::record_event(
+            &self.db.conn,
+            task_id,
+            "context_compact",
+            "engine",
+            Some(payload),
+        )
+        .await;
+    }
+
+    /// Context-window occupancy of the session about to be prompted: the live
+    /// connection first, the parsed transcript second.
+    ///
+    /// The live reading is the agent's own accounting of the session it just
+    /// loaded, and costs a lock. The transcript is what the Session Details
+    /// dialog shows and covers every agent that reports usage in its own files
+    /// but publishes no ACP `usage_update` — at the price of a full parse,
+    /// which is why it only runs when the threshold is switched on and the live
+    /// value is missing.
+    async fn context_reading(&self, conn_id: &str, conversation_id: i32) -> Option<ContextReading> {
+        if let Some(live) = self.live_context_reading(conn_id).await {
+            return Some(live);
+        }
+        // The transcript belongs to the session the ROW names; the compaction
+        // goes to the one the CONNECTION holds. Those are the same session on
+        // an ordinary resume — but not when a `session/load` failure the
+        // adapter swallowed fell through to `session/new`, which `spawn_agent`
+        // still reports as success, so the launch still reads as `resumed`
+        // (see the codeg#500 note in `send_prompt_linked_with_message_id`).
+        // Measuring the old session and compacting the new one would spend a
+        // whole turn shrinking a context that is already empty, so the fallback
+        // is only trusted when the two ids match exactly.
+        //
+        // Exactly, not through `continued_session_ids`: that relation answers
+        // "is this the same CONVERSATION", and a continuation is precisely the
+        // case where the agent restarted and its context was rebuilt — the old
+        // transcript's occupancy would not describe the new session.
+        let live_session = self
+            .manager
+            .get_state(conn_id)
+            .await?
+            .read()
+            .await
+            .external_id
+            .clone()?;
+        let row = conversation_service::get_by_id(&self.db.conn, conversation_id)
+            .await
+            .ok()?;
+        if !compact::transcript_describes_live_session(
+            row.external_id.as_deref(),
+            Some(live_session.as_str()),
+        ) {
+            tracing::info!(
+                conversation_id,
+                row_session = row.external_id.as_deref().unwrap_or("<none>"),
+                live_session = %live_session,
+                "[work_task] transcript occupancy refused: the connection holds a \
+                 different session than the row"
+            );
+            return None;
+        }
+        let (detail, _) = get_folder_conversation_core(&self.db.conn, conversation_id)
+            .await
+            .ok()?;
+        let stats = detail.session_stats?;
+        let percent = stats
+            .context_window_usage_percent
+            .filter(|p| p.is_finite() && *p > 0.0)
+            .or_else(|| {
+                compact::occupancy_percent(
+                    stats.context_window_used_tokens,
+                    stats.context_window_max_tokens,
+                )
+            })?;
+        Some(ContextReading {
+            percent,
+            used: stats.context_window_used_tokens,
+            size: stats.context_window_max_tokens,
+            source: "transcript",
+        })
+    }
+
+    /// The live connection's own `usage_update` reading, if it has published
+    /// one.
+    async fn live_context_reading(&self, conn_id: &str) -> Option<ContextReading> {
+        let state = self.manager.get_state(conn_id).await?;
+        let usage = state.read().await.usage.clone()?;
+        let percent = compact::occupancy_percent(Some(usage.used), Some(usage.size))?;
+        Some(ContextReading {
+            percent,
+            used: Some(usage.used),
+            size: Some(usage.size),
+            source: "live",
+        })
+    }
+
     /// Start preflight: the target folder must exist, be live, and be a
     /// project root (not a worktree).
     async fn preflight_folder(&self, folder_id: i32) -> Result<(), String> {
@@ -1800,6 +2359,12 @@ impl TaskEngine {
     async fn on_event(self: &Arc<Self>, env: &EventEnvelope) {
         match &env.payload {
             AcpEvent::TurnComplete { stop_reason, .. } => {
+                // A pre-prompt compaction's completion is the LAUNCH's signal,
+                // never the round's — see `compaction_turns` for why the index
+                // alone cannot tell them apart from in here.
+                if self.claim_compaction_turn(&env.connection_id, env.seq).await {
+                    return;
+                }
                 self.on_turn_complete(&env.connection_id, stop_reason).await;
             }
             AcpEvent::QuestionRequest { question_id, .. } => {
@@ -1979,6 +2544,12 @@ impl TaskEngine {
     /// arrive calls this; the entry has no other way out (`reconcile_once`
     /// only ever looks at `running` / `awaiting_input` rows).
     async fn retire_connection(&self, conn_id: &str, task_id: i32) {
+        // A connection that is being retired will never complete another turn,
+        // so an unspent compaction marker on it would linger for the life of
+        // the process. (`claim_compaction_turn` clears every marker whose
+        // connection does complete one.)
+        self.compaction_turns.lock().await.remove(conn_id);
+
         // Unmap this run's delegation children FIRST: the purge below needs
         // their ids, and a child that is already detached can no longer publish
         // a fresh key (`track_request` resolves a child through
@@ -4520,21 +5091,62 @@ impl TaskEngine {
 
     // ── worktree cleanup ────────────────────────────────────────────────────
 
-    /// Remove a task's worktree + branch (user action from the card, or the
-    /// post-merge checkbox). Takes the per-folder git lock.
+    /// Remove a task's worktree + branch (user action from the card, the
+    /// post-merge checkbox, or the cancel dialog's). Takes the task lock and
+    /// then the per-folder git lock, in that order.
+    ///
+    /// The TASK lock is what makes this safe against a launch, and the folder
+    /// lock cannot stand in for it: [`Self::launch`] holds the task lock across
+    /// its whole setup — `ensure_worktree` included — and takes no folder lock
+    /// at all, so a folder-scoped removal runs straight through a checkout that
+    /// is being created. Reachable whenever the row leaves a launchable state
+    /// and comes back: cancel (`canceled`) → the user requeues (`todo`, a pure
+    /// DB write that waits on nothing) → the pump claims and launches, all
+    /// while this call sits between its status read and its removal. Nothing
+    /// else about that sequence is wrong — the fresh run mints its own worktree
+    /// — but deleting the directory out from under `ensure_worktree` is.
+    ///
+    /// Hence read the status twice: once before the lock so a `running` task
+    /// fails fast instead of queueing behind its own init command (which can be
+    /// a whole `pnpm install`), and once after, because only the second read is
+    /// serialized against the launch it is trying to exclude.
+    ///
+    /// Ordering is deadlock-free by inspection: the task lock is only ever
+    /// taken here, in [`Self::cancel`], and in [`Self::launch`], and none of
+    /// those three is reachable while a folder lock is held (`launch` runs in
+    /// its own spawned task, and `cancel`'s only nested wait is the pump lock).
     pub async fn cleanup_task(&self, task_id: i32) -> Result<(), String> {
+        /// Statuses whose worktree is either in use or about to be — the launch
+        /// path owns it, not the user.
+        fn in_use(status: &WorkTaskStatus) -> bool {
+            matches!(
+                status,
+                WorkTaskStatus::Queued
+                    | WorkTaskStatus::Preparing
+                    | WorkTaskStatus::Running
+                    | WorkTaskStatus::AwaitingInput
+                    | WorkTaskStatus::Merging
+            )
+        }
+        const REFUSAL: &str = "cancel or finish the task before removing its worktree";
+
         let task = work_task_service::get_model(&self.db.conn, task_id)
             .await
             .map_err(|e| e.to_string())?;
-        if matches!(
-            task.status,
-            WorkTaskStatus::Queued
-                | WorkTaskStatus::Preparing
-                | WorkTaskStatus::Running
-                | WorkTaskStatus::AwaitingInput
-                | WorkTaskStatus::Merging
-        ) {
-            return Err("cancel or finish the task before removing its worktree".to_string());
+        if in_use(&task.status) {
+            return Err(REFUSAL.to_string());
+        }
+        let task_guard = self.task_lock(task_id).await;
+        let _task_guard = task_guard.lock().await;
+        // Re-read under the lock: whatever claimed the row while we waited is
+        // now either fully set up (and refused here) or still blocked on this
+        // lock at the top of `launch` — where it re-reads its own status and
+        // gives up if a cancel moved the row on.
+        let task = work_task_service::get_model(&self.db.conn, task_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        if in_use(&task.status) {
+            return Err(REFUSAL.to_string());
         }
         let lock = self.folder_lock(task.folder_id).await;
         let _guard = lock.lock().await;
@@ -5830,6 +6442,65 @@ struct SetupChild {
     run_seq: i32,
     /// Rung by the canceller, awaited by whoever is running the child.
     wake: Arc<Notify>,
+}
+
+/// A launch's in-flight pre-prompt compaction, keyed by task in
+/// [`TaskEngine::compacting`]. Holds the connection the compaction turn runs
+/// on so a cancel can abort that turn without the task lock, and the generation
+/// that owns it so a stale cancel cannot abort a newer run's compaction.
+struct CompactRun {
+    run_seq: i32,
+    conn_id: String,
+}
+
+/// Everything [`TaskEngine::compact_before_prompt`] needs about the launch it
+/// is running inside. A struct rather than a parameter list because four of
+/// the fields are bare `i32`s in a row — named at the call site, a transposed
+/// pair is a compile error instead of a task compacting someone else's session.
+struct CompactRequest<'a> {
+    task_id: i32,
+    run_seq: i32,
+    conn_id: &'a str,
+    agent_type: AgentType,
+    settings: &'a WorkTaskFolderSettings,
+    /// The WORKTREE folder the conversation belongs to — same value the round's
+    /// own prompt is linked with.
+    folder_id: i32,
+    conversation_id: i32,
+    /// Status this generation holds for the rest of the launch, which the
+    /// cancel gates re-check (`preparing`, or `merging` for a merge round).
+    in_flight: WorkTaskStatus,
+}
+
+/// One context-window occupancy reading, plus where it came from — the source
+/// rides the timeline event because "live" and "transcript" answer slightly
+/// different questions (what the agent has loaded vs. what its last turn
+/// recorded), and a surprising percentage is only debuggable with it.
+struct ContextReading {
+    percent: f64,
+    used: Option<u64>,
+    size: Option<u64>,
+    source: &'static str,
+}
+
+/// How a compaction turn ended: `"ok"` / `"canceled"` / `"failed"`, plus the
+/// stop reason or error worth showing beside it.
+struct CompactOutcome {
+    status: &'static str,
+    detail: Option<String>,
+}
+
+impl CompactOutcome {
+    fn new(status: &'static str, detail: Option<String>) -> Self {
+        Self { status, detail }
+    }
+}
+
+/// One decimal place, for percentages written to the timeline — the same
+/// precision the composer's context ring shows, so the two never read as
+/// disagreeing about the same session.
+fn round1(percent: f64) -> f64 {
+    (percent * 10.0).round() / 10.0
 }
 
 /// Marker file (in the worktree's PRIVATE git dir, so it can never show up in
@@ -9372,6 +10043,50 @@ mod tests {
         assert!(!f.engine.index.lock().await.contains_key(ZOMBIE), "retired");
     }
 
+    /// The removal has to serialize against a LAUNCH, and the folder git lock
+    /// cannot do that: `launch` holds the TASK lock across its whole setup —
+    /// `ensure_worktree` included — and takes no folder lock at all.
+    ///
+    /// The sequence that gets there is ordinary board use: a cancel that was
+    /// asked to take the worktree along leaves the row `canceled`, the user
+    /// requeues it (a pure DB write that waits on no lock), and the pump
+    /// launches it — all while the removal sits between its status read and its
+    /// `git worktree remove`. Nothing about the requeue is wrong; the fresh run
+    /// would mint its own checkout. Deleting the directory out from under
+    /// `ensure_worktree` is.
+    ///
+    /// Holding the task lock here stands in for that launch: without the lock
+    /// on the removal's side, the worktree is gone before the guard is dropped.
+    #[tokio::test]
+    async fn worktree_removal_waits_for_the_task_lock() {
+        let f = delivery_fixture(FakeForge::default()).await;
+        let engine = f.engine.clone();
+        let task_id = f.task_id;
+
+        // Stand in for a launch that has the row and is inside its setup.
+        let held = engine.task_lock(task_id).await;
+        let guard = held.lock().await;
+
+        let removal = tokio::spawn({
+            let engine = engine.clone();
+            async move { engine.cleanup_task(task_id).await }
+        });
+
+        // Long enough that an unserialized removal — a few DB reads and a
+        // `git worktree remove` — would have finished several times over.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            f.worktree.exists(),
+            "the checkout must survive while the launch holds the task lock"
+        );
+        assert!(!removal.is_finished(), "and the removal must still be parked");
+
+        drop(guard);
+        removal.await.expect("join").expect("cleanup");
+        assert!(!f.worktree.exists(), "and go once the lock is free");
+        assert_eq!(row(&engine, task_id).await.worktree_folder_id, None);
+    }
+
     /// Drain everything the fixture's engine has broadcast so far.
     fn drained(f: &mut Delivery) -> Vec<crate::web::event_bridge::WebEvent> {
         let mut out = Vec::new();
@@ -10458,5 +11173,453 @@ mod tests {
         let (engine, _task_id) = running_task().await;
         engine.on_event(&delegation_started("conn-chat", "conn-other-child")).await;
         assert!(engine.delegation_parents.lock().await.is_empty());
+    }
+
+    // ── pre-prompt context compaction ───────────────────────────────────────
+
+    const COMPACT_CONN: &str = "conn-compact";
+
+    /// A generation parked exactly where `compact_before_prompt` runs: claimed,
+    /// setup begun (`preparing`), agent connection live, and — as in the real
+    /// launch at this point — nothing in `index` yet.
+    struct CompactFixture {
+        engine: Arc<TaskEngine>,
+        task_id: i32,
+        run_seq: i32,
+        folder_id: i32,
+        conversation_id: i32,
+        /// The connection's command channel. Held for the test's duration: a
+        /// dropped receiver makes every send fail before it reaches the gate.
+        rx: tokio::sync::mpsc::Receiver<crate::acp::connection::ConnectionCommand>,
+    }
+
+    async fn compact_fixture(usage: Option<(u64, u64)>) -> CompactFixture {
+        use crate::db::test_helpers::{fresh_in_memory_db, seed_folder};
+
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/task-compact").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .expect("conversation");
+        let task = work_task_service::create(
+            &db.conn,
+            crate::models::WorkTaskDraft {
+                folder_id,
+                title: "fix login".to_string(),
+                config: serde_json::json!({
+                    "display_text": "fix login",
+                    "prompt_blocks": [{ "type": "text", "text": "fix login" }],
+                }),
+            },
+        )
+        .await
+        .expect("task");
+        let run_seq =
+            work_task_service::claim_for_run(&db.conn, task.id, WorkTaskStatus::Todo, "test")
+                .await
+                .expect("claim")
+                .expect("claimed");
+        assert!(work_task_service::begin_setup(&db.conn, task.id, run_seq)
+            .await
+            .expect("begin_setup"));
+
+        let engine = test_engine(db);
+        let rx = engine
+            .manager
+            .insert_test_connection_live(
+                COMPACT_CONN,
+                AgentType::ClaudeCode,
+                None,
+                EventEmitter::Noop,
+            )
+            .await;
+        if let Some((used, size)) = usage {
+            let state = engine.manager.get_state(COMPACT_CONN).await.expect("state");
+            state.write().await.usage =
+                Some(crate::acp::session_state::UsageInfo { used, size });
+        }
+        CompactFixture {
+            engine,
+            task_id: task.id,
+            run_seq,
+            folder_id,
+            conversation_id: conv.id,
+            rx,
+        }
+    }
+
+    fn compact_settings(percent: i32, command: Option<&str>) -> WorkTaskFolderSettings {
+        WorkTaskFolderSettings {
+            auto_compact_percent: percent,
+            compact_command: command.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    /// Drive `compact_before_prompt` to completion, answering the compaction
+    /// turn with `stop_reason` once its prompt has actually been enqueued.
+    /// Returns the text of the prompt it sent, or `None` when it sent none.
+    async fn run_compaction(
+        f: &mut CompactFixture,
+        settings: WorkTaskFolderSettings,
+        stop_reason: &str,
+    ) -> Option<String> {
+        let engine = f.engine.clone();
+        let (task_id, run_seq, folder_id, conversation_id) =
+            (f.task_id, f.run_seq, f.folder_id, f.conversation_id);
+        let handle = tokio::spawn(async move {
+            engine
+                .compact_before_prompt(CompactRequest {
+                    task_id,
+                    run_seq,
+                    conn_id: COMPACT_CONN,
+                    agent_type: AgentType::ClaudeCode,
+                    settings: &settings,
+                    folder_id,
+                    conversation_id,
+                    in_flight: WorkTaskStatus::Preparing,
+                })
+                .await;
+        });
+
+        // Either a prompt shows up (compaction ran) or the call returns having
+        // sent nothing. Waiting on the two together is what keeps the "no
+        // compaction" assertions from depending on a sleep.
+        let sent = tokio::select! {
+            cmd = f.rx.recv() => match cmd.expect("connection alive") {
+                crate::acp::connection::ConnectionCommand::Prompt { blocks, .. } => blocks
+                    .iter()
+                    .find_map(|b| match b {
+                        PromptInputBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    }),
+                _ => panic!("the compaction must arrive as a prompt"),
+            },
+            _ = &mut Box::pin(async {
+                while !handle.is_finished() {
+                    tokio::task::yield_now().await;
+                }
+            }) => None,
+        };
+        if sent.is_some() {
+            // The waiter subscribed before it sent, so the bus has a receiver.
+            f.engine.bus.send(Arc::new(EventEnvelope {
+                seq: 1,
+                connection_id: COMPACT_CONN.to_string(),
+                payload: AcpEvent::TurnComplete {
+                    session_id: "sess".to_string(),
+                    stop_reason: stop_reason.to_string(),
+                    agent_type: AgentType::ClaudeCode.to_string(),
+                },
+            }));
+        }
+        handle.await.expect("compaction finished");
+        sent
+    }
+
+    async fn compact_events(engine: &TaskEngine, task_id: i32) -> Vec<serde_json::Value> {
+        work_task_service::list_events(&engine.db.conn, task_id, 500)
+            .await
+            .expect("events")
+            .into_iter()
+            .filter(|e| e.kind == "context_compact")
+            .map(|e| e.payload.unwrap_or(serde_json::Value::Null))
+            .collect()
+    }
+
+    /// The feature's whole point: a nearly full session is compacted, and the
+    /// round's own prompt only goes out after that turn has landed.
+    #[tokio::test]
+    async fn a_full_context_is_compacted_before_the_round_prompt() {
+        let mut f = compact_fixture(Some((90_000, 100_000))).await;
+
+        let sent = run_compaction(&mut f, compact_settings(80, None), "end_turn").await;
+
+        assert_eq!(sent.as_deref(), Some("/compact"));
+        let events = compact_events(&f.engine, f.task_id).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0]["status"], "ok");
+        assert_eq!(events[0]["before_percent"], 90.0);
+        assert_eq!(events[0]["before_source"], "live");
+        assert_eq!(events[0]["command"], "/compact");
+        // The slot the canceller reaches through must not outlive the turn.
+        assert!(f.engine.compacting.lock().await.is_empty());
+    }
+
+    /// Below the threshold nothing is sent and nothing is written — the
+    /// ordinary case has to stay free of both an extra turn and timeline noise.
+    #[tokio::test]
+    async fn a_session_below_the_threshold_is_left_alone() {
+        let mut f = compact_fixture(Some((50_000, 100_000))).await;
+
+        let sent = run_compaction(&mut f, compact_settings(80, None), "end_turn").await;
+
+        assert_eq!(sent, None);
+        assert!(compact_events(&f.engine, f.task_id).await.is_empty());
+    }
+
+    /// The off switch. A full context with the setting at 0 is exactly today's
+    /// behaviour — no reading, no turn, no event.
+    #[tokio::test]
+    async fn a_zero_threshold_disables_the_check() {
+        let mut f = compact_fixture(Some((99_000, 100_000))).await;
+
+        let sent = run_compaction(&mut f, compact_settings(0, None), "end_turn").await;
+
+        assert_eq!(sent, None);
+        assert!(compact_events(&f.engine, f.task_id).await.is_empty());
+    }
+
+    /// The explicit setting is what gets sent, verbatim — it exists precisely
+    /// for the agents codeg has no default for.
+    #[tokio::test]
+    async fn the_configured_command_is_sent_verbatim() {
+        let mut f = compact_fixture(Some((90_000, 100_000))).await;
+
+        let sent = run_compaction(&mut f, compact_settings(80, Some("/summarize")), "end_turn")
+            .await;
+
+        assert_eq!(sent.as_deref(), Some("/summarize"));
+    }
+
+    /// A session that reports no occupancy can't be measured against a
+    /// threshold. It must not be compacted on a guess — and the skip is
+    /// recorded, because with the setting switched on "nothing happened" needs
+    /// an explanation.
+    #[tokio::test]
+    async fn an_unmeasurable_session_is_not_compacted_but_is_recorded() {
+        let mut f = compact_fixture(None).await;
+
+        let sent = run_compaction(&mut f, compact_settings(80, None), "end_turn").await;
+
+        assert_eq!(sent, None);
+        let events = compact_events(&f.engine, f.task_id).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0]["status"], "skipped");
+        assert_eq!(events[0]["reason"], "usage_unknown");
+    }
+
+    /// A cancel that lands while the compaction turn is in flight ends the
+    /// wait through the same `TurnComplete{cancelled}` the manager emits — the
+    /// launch must not sit on it, and the round is recorded as canceled rather
+    /// than compacted.
+    #[tokio::test]
+    async fn a_canceled_compaction_turn_releases_the_launch() {
+        let mut f = compact_fixture(Some((90_000, 100_000))).await;
+
+        let sent = run_compaction(&mut f, compact_settings(80, None), "cancelled").await;
+
+        assert_eq!(sent.as_deref(), Some("/compact"));
+        let events = compact_events(&f.engine, f.task_id).await;
+        assert_eq!(events[0]["status"], "canceled");
+        assert!(f.engine.compacting.lock().await.is_empty());
+    }
+
+    fn turn_complete_envelope(conn_id: &str, seq: u64, stop_reason: &str) -> EventEnvelope {
+        EventEnvelope {
+            seq,
+            connection_id: conn_id.to_string(),
+            payload: AcpEvent::TurnComplete {
+                session_id: "sess".to_string(),
+                stop_reason: stop_reason.to_string(),
+                agent_type: AgentType::ClaudeCode.to_string(),
+            },
+        }
+    }
+
+    /// The race the `compaction_turns` marker exists for. The bus is a
+    /// broadcast: the launch's waiter reacts to the compaction's `TurnComplete`
+    /// at once, but the engine's own receiver awaits DB work per event and can
+    /// dequeue that same envelope only after the launch has indexed the
+    /// connection and sent the round's real prompt. Handled naively, the
+    /// compaction's completion would settle the round it preceded — and
+    /// disconnect the agent mid-work.
+    #[tokio::test]
+    async fn a_late_compaction_completion_does_not_settle_the_round() {
+        let mut f = compact_fixture(Some((90_000, 100_000))).await;
+        let sent = run_compaction(&mut f, compact_settings(80, None), "end_turn").await;
+        assert_eq!(sent.as_deref(), Some("/compact"));
+
+        // The launch goes on to bind the connection to the run and prompt it.
+        assert!(work_task_service::mark_running(
+            &f.engine.db.conn,
+            f.task_id,
+            f.run_seq,
+            f.conversation_id,
+            COMPACT_CONN,
+        )
+        .await
+        .expect("mark_running"));
+        f.engine
+            .index
+            .lock()
+            .await
+            .insert(COMPACT_CONN.into(), (f.task_id, f.run_seq));
+
+        // Only NOW does the engine's own loop get to the compaction's envelope
+        // (seq 1 — the one `run_compaction` published).
+        f.engine
+            .on_event(&turn_complete_envelope(COMPACT_CONN, 1, "end_turn"))
+            .await;
+
+        assert_eq!(
+            status_of(&f.engine, f.task_id).await,
+            WorkTaskStatus::Running,
+            "the compaction's completion must not settle the round it preceded"
+        );
+
+        // The other direction: the ROUND's own completion, a later seq on the
+        // same connection, still settles normally.
+        f.engine
+            .on_event(&turn_complete_envelope(COMPACT_CONN, 2, "end_turn"))
+            .await;
+        assert_eq!(
+            status_of(&f.engine, f.task_id).await,
+            WorkTaskStatus::Review
+        );
+    }
+
+    /// The fence covers everything up to its watermark — the wait can end
+    /// without ever reading the completion, and must still be able to fence one
+    /// it never saw — but nothing above it. A higher seq can only be the round's
+    /// own turn, so it passes AND retires the fence.
+    #[tokio::test]
+    async fn the_compaction_fence_stops_at_the_rounds_own_turn() {
+        let f = compact_fixture(Some((90_000, 100_000))).await;
+        f.engine.mark_compaction_turn(COMPACT_CONN, 4).await;
+
+        assert!(f.engine.claim_compaction_turn(COMPACT_CONN, 4).await);
+        assert!(
+            f.engine.claim_compaction_turn(COMPACT_CONN, 2).await,
+            "a completion emitted before the watermark is the launch's too"
+        );
+
+        assert!(!f.engine.claim_compaction_turn(COMPACT_CONN, 9).await);
+        assert!(
+            f.engine.compaction_turns.lock().await.is_empty(),
+            "the round's own turn retires the fence"
+        );
+        // Another connection's turns are never fenced by this one's mark.
+        f.engine.mark_compaction_turn(COMPACT_CONN, 4).await;
+        assert!(!f.engine.claim_compaction_turn("conn-other", 1).await);
+    }
+
+    /// Ending the wait on liveness rather than on the event itself is exactly
+    /// when the completion is most likely to still be sitting in the engine's
+    /// receiver: `apply_event` clears `turn_in_flight` BEFORE the envelope is
+    /// broadcast. The probe has to fence it on the way out, or the fix for the
+    /// settle race has a hole the size of the tick.
+    #[tokio::test]
+    async fn ending_the_wait_on_liveness_still_fences_the_completion() {
+        let f = compact_fixture(Some((90_000, 100_000))).await;
+        let state = f
+            .engine
+            .manager
+            .get_state(COMPACT_CONN)
+            .await
+            .expect("state");
+        {
+            let mut s = state.write().await;
+            s.turn_in_flight = false;
+            s.event_seq = 7;
+        }
+
+        let outcome = f
+            .engine
+            .compaction_still_running(COMPACT_CONN)
+            .await
+            .expect("the wait ends");
+        assert_eq!(outcome.status, "ok");
+        assert!(
+            f.engine.claim_compaction_turn(COMPACT_CONN, 7).await,
+            "a completion the wait never read must still be fenced"
+        );
+
+        // A connection that vanished cannot report a seq, so its whole id is
+        // fenced — ids are per-launch UUIDs, never reused.
+        let outcome = f
+            .engine
+            .compaction_still_running("conn-vanished")
+            .await
+            .expect("the wait ends");
+        assert_eq!(outcome.status, "failed");
+        assert!(f.engine.claim_compaction_turn("conn-vanished", 99).await);
+    }
+
+    /// The fence must not outlive the launch that set it. A generation torn
+    /// down before it ever went live (lost CAS, failed prompt, cancel) is
+    /// retired by `forget_connection`, not by `retire_connection`.
+    #[tokio::test]
+    async fn a_torn_down_launch_takes_its_fence_with_it() {
+        let f = compact_fixture(Some((90_000, 100_000))).await;
+        f.engine.mark_compaction_turn(COMPACT_CONN, 4).await;
+        f.engine
+            .index
+            .lock()
+            .await
+            .insert(COMPACT_CONN.into(), (f.task_id, f.run_seq));
+
+        f.engine.forget_connection(COMPACT_CONN).await;
+
+        assert!(f.engine.compaction_turns.lock().await.is_empty());
+        assert!(f.engine.index.lock().await.is_empty());
+    }
+
+    /// `apply_event` clears `turn_in_flight` on `TurnComplete` but not on a
+    /// terminal error or a disconnect — so a receiver that lagged one of those
+    /// away would block on `recv()` for a connection that is never going to
+    /// speak again, holding the task lock and taking any later cancel with it.
+    /// The liveness tick is what ends those waits.
+    #[tokio::test]
+    async fn a_wait_with_no_events_still_ends_on_liveness() {
+        let f = compact_fixture(Some((90_000, 100_000))).await;
+        // Paused only now, and never around DB work: the sqlite pool's acquire
+        // timeout runs on the same clock, so a test that freezes it before the
+        // fixture exists dies with `PoolTimedOut`. With the runtime otherwise
+        // idle, the tick's sleep auto-advances, so the wait costs no wall time.
+        tokio::time::pause();
+
+        // The connection is gone and no event is coming.
+        let mut rx = f.engine.bus.subscribe();
+        let outcome = f
+            .engine
+            .await_compaction_turn(&mut rx, "conn-never-registered")
+            .await;
+        assert_eq!(outcome.status, "failed");
+
+        // Alive, but the turn already ended and its event was missed.
+        let state = f
+            .engine
+            .manager
+            .get_state(COMPACT_CONN)
+            .await
+            .expect("state");
+        state.write().await.turn_in_flight = false;
+        let outcome = f.engine.await_compaction_turn(&mut rx, COMPACT_CONN).await;
+        assert_eq!(outcome.status, "ok");
+    }
+
+    /// The kill slot is generation-scoped like every other one on this engine:
+    /// a cancel of an older run must not abort the compaction of a newer one.
+    #[tokio::test]
+    async fn a_stale_cancel_does_not_abort_a_newer_compaction() {
+        let f = compact_fixture(Some((90_000, 100_000))).await;
+        f.engine.compacting.lock().await.insert(
+            f.task_id,
+            CompactRun {
+                run_seq: f.run_seq,
+                conn_id: COMPACT_CONN.to_string(),
+            },
+        );
+
+        f.engine.release_compact_slot(f.task_id, f.run_seq - 1).await;
+        assert!(
+            f.engine.compacting.lock().await.contains_key(&f.task_id),
+            "an older generation must not release the live slot"
+        );
+
+        f.engine.release_compact_slot(f.task_id, f.run_seq).await;
+        assert!(f.engine.compacting.lock().await.is_empty());
     }
 }

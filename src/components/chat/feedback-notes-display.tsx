@@ -39,7 +39,7 @@ export function FeedbackNotesDisplay({ notes }: FeedbackNotesDisplayProps) {
             <div
               key={note.id}
               className={cn(
-                "flex items-center gap-1 rounded-md border px-1.5 py-1 text-[10px] leading-none select-none [text-box-trim:both] [text-box-edge:cap_alphabetic]",
+                "flex items-center gap-1 rounded-md border px-1.5 py-1 text-3xs leading-none select-none [text-box-trim:both] [text-box-edge:cap_alphabetic]",
                 "bg-muted/40 border-border/70"
               )}
               title={note.text}
@@ -55,7 +55,7 @@ export function FeedbackNotesDisplay({ notes }: FeedbackNotesDisplayProps) {
                   aria-hidden
                 />
               )}
-              <span className="min-w-0 flex-1 truncate text-[10px] text-foreground/80">
+              <span className="min-w-0 flex-1 truncate text-3xs text-foreground/80">
                 {note.text}
               </span>
               <span className="shrink-0 text-muted-foreground">

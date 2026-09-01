@@ -24,6 +24,22 @@ export function isLocalDesktop(): boolean {
 }
 
 /**
+ * True for a Tauri window pointed at a REMOTE workspace — the one case where
+ * we know for certain the host that owns the workspace paths is not the machine
+ * the user is looking at.
+ *
+ * Gate on this for actions the backend performs by opening a window on the
+ * workspace host (launching an external editor, say): they'd succeed on the
+ * far end and appear to do nothing here. Plain web mode is deliberately NOT
+ * covered — a browser pointed at a `codeg-server` running on the user's own
+ * machine is a first-class setup, and the loopback hostname can't tell that
+ * apart from a port-forwarded remote.
+ */
+export function isRemoteDesktopWindow(): boolean {
+  return isDesktop() && getActiveRemoteConnectionId() !== null
+}
+
+/**
  * Subscribe to backend events.
  * Uses Tauri listen() in desktop mode, WebSocket in web mode.
  */

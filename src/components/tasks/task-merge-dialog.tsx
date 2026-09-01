@@ -26,8 +26,10 @@ interface TaskMergeDialogProps {
   task: WorkTask | null
   /** Another task of the same project is landing right now, so this merge will
    *  join the queue instead of starting. Drives the wording — the backend
-   *  decides for real, and the result of the call is what the toast reports. */
-  folderMerging?: boolean
+   *  decides for real, and the result of the call is what the toast reports.
+   *  ANOTHER task: this one's own merge does not count (see
+   *  `isAnotherTaskMerging`). */
+  anotherMerging?: boolean
   /** This task is already in the queue: submitting updates its intent (and
    *  keeps its place in line) rather than adding a second one. */
   alreadyQueued?: boolean
@@ -51,7 +53,7 @@ export function TaskMergeDialog({
   open,
   onOpenChange,
   task,
-  folderMerging = false,
+  anotherMerging = false,
   alreadyQueued = false,
 }: TaskMergeDialogProps) {
   const t = useTranslations("Tasks")
@@ -60,6 +62,7 @@ export function TaskMergeDialog({
   const [instructions, setInstructions] = useState("")
   const [deleteWorktree, setDeleteWorktree] = useState(true)
   const [submitting, setSubmitting] = useState(false)
+  const [promisedQueue, setPromisedQueue] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   // Seeded off the task's VALUES, never off the row object: the board hands out
@@ -116,10 +119,19 @@ export function TaskMergeDialog({
 
   // "Will be queued" as far as the client can tell. The engine re-checks under
   // the project's git lock, and the call reports what actually happened.
-  const willQueue = folderMerging || alreadyQueued
+  //
+  // FROZEN while the dispatch is in flight, at whatever the button promised
+  // when it was pressed. The row this reads mutates underneath the dialog
+  // during the call — the engine broadcasts every step of the landing it just
+  // started — and re-deciding the copy mid-flight only ever contradicts the
+  // click that is already on its way. Released on failure, when the dialog
+  // stays open and has to describe the situation as it now stands.
+  const live = anotherMerging || alreadyQueued
+  const willQueue = submitting ? promisedQueue : live
 
   const submit = async () => {
     if (!task || (!autoMessage && !message.trim())) return
+    setPromisedQueue(live)
     setSubmitting(true)
     setError(null)
     try {

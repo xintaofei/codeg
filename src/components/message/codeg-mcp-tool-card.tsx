@@ -2,7 +2,8 @@
 
 /**
  * Inline card for the codeg-mcp *workbench* companion tools — `get_session_info`,
- * `task_progress`, `task_complete`, `create_automation` and `create_work_task`.
+ * `task_progress`, `task_complete`, `create_automation`, `create_work_task` and
+ * `resume_delegation`.
  *
  * One collapsed line framed around what the agent was actually doing ("读取会话
  * #2122", "进度：tests passing", "任务完成 · 成功"), with a status badge and an
@@ -24,6 +25,7 @@ import {
   ChevronRight,
   CircleCheckBig,
   ClipboardList,
+  RotateCcw,
   Signpost,
 } from "lucide-react"
 
@@ -53,6 +55,7 @@ const ICONS: Record<CodegMcpWorkbenchTool, typeof BookOpen> = {
   task_complete: CircleCheckBig,
   create_automation: CalendarClock,
   create_work_task: ClipboardList,
+  resume_delegation: RotateCcw,
 }
 
 export function CodegMcpToolCard({
@@ -99,6 +102,10 @@ export function CodegMcpToolCard({
         return model.detail
           ? t("createWorkTask", { title: model.detail })
           : t("createWorkTaskNoTitle")
+      case "resume_delegation":
+        return model.detail
+          ? t("resumeDelegation", { task: model.detail })
+          : t("resumeDelegationNoId")
     }
   }, [t, tool, model])
 
@@ -181,7 +188,7 @@ export function CodegMcpToolCard({
               is auditing, so it must read exactly as it was sent. */}
           {prompt !== "" && (
             <div className="px-3 pt-2">
-              <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              <div className="mb-1 text-3xs font-medium uppercase tracking-wide text-muted-foreground">
                 {t("promptLabel")}
               </div>
               <div className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 px-2 py-1.5 text-xs text-foreground/90">

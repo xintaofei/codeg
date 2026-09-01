@@ -74,6 +74,24 @@
     }
   },
   {
+    "name": "resume_delegation",
+    "description": "Resume a delegated task that was INTERRUPTED — canceled, or cut off when a session/app terminated unexpectedly — so its sub-agent picks the ORIGINAL task back up in its own session with all prior context and work intact, under the SAME task_id (keep collecting it with get_delegation_status, or stop it again with cancel_delegation). STRICT SCOPE: this tool ONLY revives interrupted work; it takes no task text and must NOT be used to iterate on, extend, retry, or redo a task. A task that is still running, or that already finished on its own (completed or failed), is refused with error_code \"not_resumable\" and its actual status — for follow-up or retry work, start a fresh delegate_to_agent call instead. The optional `reason` is context about WHY the run is being resumed (e.g. \"the app was killed mid-run\"), passed to the sub-agent as interruption context — never new instructions.",
+    "inputSchema": {
+      "type": "object",
+      "required": ["task_id"],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "The task_id of the interrupted task — the id delegate_to_agent originally returned (also reported by get_delegation_status as canceled). The resumed run keeps this exact id."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional: why the task is being resumed / how it was interrupted (e.g. 'session crashed during a long refactor'). Interruption context only — do NOT put new instructions or task changes here; they will not be honored."
+        }
+      }
+    }
+  },
+  {
     "name": "check_user_feedback",
     "description": "IMPORTANT: This tool gives you the ability to receive the user's real-time guidance while you work, preventing you from going down the wrong path and wasting effort. The user can type corrections, new requirements, or hints at any time during your turn — but you will NEVER see them unless you call this tool. Without it, you could spend minutes on work the user has already tried to redirect.\n\nWhen to call:\n- After thinking through your approach but BEFORE starting implementation — the user may have clarified requirements.\n- Before making a significant decision (choosing an architecture, picking which files to modify, deciding on an approach) — the user may prefer a different direction.\n- After completing a sub-task and before moving to the next step — the user may want to adjust priorities.\n- When you pause to plan or organize your next steps — a natural checkpoint to read any pending guidance.\n\nThis is a quick, non-blocking snapshot that returns instantly. It either returns the user's messages (treat as HIGH-PRIORITY steering and adjust immediately) or an empty result (continue your current plan). Call it proactively — do not wait to be asked.",
     "inputSchema": {

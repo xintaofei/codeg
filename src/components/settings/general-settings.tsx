@@ -314,7 +314,7 @@ export function GeneralSettings() {
                     <span className="flex items-center gap-2">
                       <span>{tDynamic(opt.label_key)}</span>
                       {!opt.exists && !opt.accepts_custom_path && (
-                        <span className="text-[10px] text-muted-foreground">
+                        <span className="text-3xs text-muted-foreground">
                           ({t("terminalShellNotInstalled")})
                         </span>
                       )}
@@ -355,7 +355,7 @@ export function GeneralSettings() {
                   </Button>
                 </div>
                 {customPathExists === false && customShellPath.trim() && (
-                  <p className="text-[11px] text-amber-500">
+                  <p className="text-2xs text-amber-500">
                     {t("terminalShellNotFoundWarning")}
                   </p>
                 )}

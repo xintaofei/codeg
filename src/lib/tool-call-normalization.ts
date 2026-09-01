@@ -110,6 +110,7 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   mcp__codeg__delegate_to_agent: "delegate_to_agent",
   get_delegation_status: "get_delegation_status",
   cancel_delegation: "cancel_delegation",
+  resume_delegation: "resume_delegation",
   // codeg-mcp workbench companions (session lookup, work-task reporting, chat
   // authoring). Listed explicitly because the freeform `^task(\b|[_\s:-])` rule
   // below would otherwise collapse `task_progress` / `task_complete` into the
@@ -506,6 +507,7 @@ export function normalizeToolName(toolName: string): string {
   if (/[^a-z0-9]get_delegation_status$/.test(canonical))
     return "get_delegation_status"
   if (/[^a-z0-9]cancel_delegation$/.test(canonical)) return "cancel_delegation"
+  if (/[^a-z0-9]resume_delegation$/.test(canonical)) return "resume_delegation"
   if (/[^a-z0-9]create_goal$/.test(canonical)) return "create_goal"
   if (/[^a-z0-9]update_goal$/.test(canonical)) return "update_goal"
 
@@ -542,13 +544,17 @@ export function normalizeToolName(toolName: string): string {
   return trimmed
 }
 
-// Canonical names of the codeg-mcp delegation companion tools. Each has a
-// dedicated card renderer, so its identity must win over input-shape
-// heuristics during live streaming (see `inferLiveToolName`).
+// Canonical names of the codeg-mcp delegation companion tools. Their identity
+// must win over input-shape heuristics during live streaming (see
+// `inferLiveToolName`): most have a dedicated card renderer, and
+// `resume_delegation`'s `{task_id, reason}` input would otherwise be
+// misclassified by `inferFromInput` exactly like `cancel_delegation`'s
+// `{task_id}` (generic "task" tool).
 const DELEGATION_COMPANION_TOOLS: ReadonlySet<string> = new Set([
   "delegate_to_agent",
   "get_delegation_status",
   "cancel_delegation",
+  "resume_delegation",
 ])
 
 export function inferLiveToolName(params: {

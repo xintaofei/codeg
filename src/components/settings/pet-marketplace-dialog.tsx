@@ -472,7 +472,7 @@ function PetMarketCard({
                   {pet.displayName}
                 </div>
                 {pet.kind ? (
-                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-3xs uppercase text-muted-foreground">
                     {pet.kind}
                   </span>
                 ) : null}
@@ -490,7 +490,7 @@ function PetMarketCard({
                   {tags.map((tag) => (
                     <span
                       key={tag}
-                      className="rounded bg-accent px-1.5 py-0.5 text-[10px] text-accent-foreground"
+                      className="rounded bg-accent px-1.5 py-0.5 text-3xs text-accent-foreground"
                     >
                       {tag}
                     </span>
@@ -500,7 +500,7 @@ function PetMarketCard({
             </div>
           </button>
           <div className="mt-auto flex items-center justify-between gap-2 px-3 pb-3 pt-1">
-            <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+            <div className="flex items-center gap-2 text-3xs text-muted-foreground">
               <span title={labels.views} className="flex items-center gap-0.5">
                 <Eye className="h-3 w-3" />
                 {pet.viewCount}

@@ -111,13 +111,28 @@ function SelectLabel({
 function SelectItem({
   className,
   children,
+  description,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Item>) {
+}: React.ComponentProps<typeof SelectPrimitive.Item> & {
+  /**
+   * Secondary line under the item's label, for a list whose values need
+   * explaining (agent modes, model options). Rendered OUTSIDE `ItemText` on
+   * purpose: Radix mirrors `ItemText` into the trigger to render `SelectValue`,
+   * so a description placed inside it would also print on the closed trigger
+   * and blow up a compact chip's height.
+   */
+  description?: string | null
+}) {
+  const normalizedDescription = description?.trim()
   return (
     <SelectPrimitive.Item
       data-slot="select-item"
       className={cn(
         "focus:bg-accent focus:text-accent-foreground not-data-[variant=destructive]:focus:**:text-accent-foreground gap-2.5 rounded-xl py-2 pr-8 pl-3 text-sm [&_svg:not([class*='size-'])]:size-4 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2 relative flex w-full cursor-default items-center outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        // Two-line item: stack, and drop the row gap the description's own
+        // `mt-0.5` replaces. Only applied when there IS a description, so every
+        // existing single-line item renders exactly as before.
+        normalizedDescription && "flex-col items-start gap-0",
         className
       )}
       {...props}
@@ -128,6 +143,13 @@ function SelectItem({
         </SelectPrimitive.ItemIndicator>
       </span>
       <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+      {normalizedDescription ? (
+        // Same treatment as the chat composer's menu rows
+        // (`DropdownRadioItemContent`), so the two surfaces read alike.
+        <p className="text-muted-foreground mt-0.5 text-xs leading-snug whitespace-pre-wrap wrap-break-word">
+          {normalizedDescription}
+        </p>
+      ) : null}
     </SelectPrimitive.Item>
   )
 }

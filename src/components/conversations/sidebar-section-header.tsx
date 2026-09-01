@@ -6,6 +6,7 @@ import {
   Download,
   FolderGit2,
   FolderOpenDot,
+  LayersPlus,
   SquarePen,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -34,6 +35,7 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
   onOpenFolder,
   onCloneRepository,
   onImportSessions,
+  onNewFolderGroup,
   topGap = false,
 }: {
   section: SidebarSectionKey
@@ -64,6 +66,14 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
    * same right-edge cluster. Must be referentially stable to preserve the memo.
    */
   onImportSessions?: () => void
+  /**
+   * When provided on the "folders" section, renders "New group" as the FIRST
+   * (leftmost) action of the cluster — it organises the list rather than adding
+   * to it, so it reads as the odd one out and the three "add a folder" actions
+   * keep their existing left-to-right positions. Must be referentially stable to
+   * preserve the memo.
+   */
+  onNewFolderGroup?: () => void
   /**
    * Adds breathing room above the header so the "Folders" section reads as
    * visually separated from the "Pinned" section above it. Implemented as
@@ -102,7 +112,8 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
     section === "folders" &&
     (onOpenFolder != null ||
       onCloneRepository != null ||
-      onImportSessions != null)
+      onImportSessions != null ||
+      onNewFolderGroup != null)
   // Shared styling for the right-edge hover-revealed action buttons (New chat on
   // the chats section; Open Folder / Clone Repository on the folders section).
   // Revealed only while the row is hovered (group/header lives on the row
@@ -189,6 +200,20 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
         )}
         {showFolderActions && (
           <div className="absolute top-1/2 right-[0.375rem] flex -translate-y-1/2 items-center gap-px">
+            {onNewFolderGroup != null && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onNewFolderGroup()
+                }}
+                title={t("folderGroup.newGroup")}
+                aria-label={t("folderGroup.newGroup")}
+                className={actionButtonClassName}
+              >
+                <LayersPlus className="h-[0.875rem] w-[0.875rem]" />
+              </button>
+            )}
             {onImportSessions != null && (
               <button
                 type="button"

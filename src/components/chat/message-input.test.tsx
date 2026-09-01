@@ -132,6 +132,16 @@ vi.mock("@/components/ui/scroll-area", async () => {
   }
 })
 
+// ModelOptionList sizes its scroll window in rem, so it reads the live zoom
+// level — which throws outside an AppearanceProvider, and this suite renders the
+// composer bare. Pin it at 100% (1rem = 16px). Spread the real module so the
+// other appearance hooks keep their real (provider-requiring) behaviour instead
+// of silently resolving to `undefined` if something here starts using one.
+vi.mock("@/hooks/use-appearance", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/use-appearance")>()),
+  useZoomLevel: () => ({ zoomLevel: 100, setZoomLevel: () => {} }),
+}))
+
 import enMessages from "@/i18n/messages/en.json"
 import type {
   PromptCapabilitiesInfo,

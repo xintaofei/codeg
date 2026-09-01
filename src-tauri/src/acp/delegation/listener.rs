@@ -20,10 +20,12 @@ use crate::acp::delegation::transport::{
     read_frame, write_frame, BrokerAskRequest, BrokerCancelRequest, BrokerCancelTaskRequest,
     BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerMessage, BrokerRequest,
     BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerResponse,
-    BrokerSessionRequest, BrokerStatusRequest, BrokerTaskCompleteRequest,
-    BrokerTaskProgressRequest,
+    BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
+    BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
 };
-use crate::acp::delegation::types::{DelegationRequest, DelegationTaskReport, TaskStatus};
+use crate::acp::delegation::types::{
+    DelegationRequest, DelegationTaskReport, ResumeDelegationRequest, TaskStatus,
+};
 use crate::acp::feedback::{PendingFeedback, SessionFeedbackAccess};
 use crate::acp::question::{QuestionOutcome, SessionQuestionAccess};
 use crate::acp::chat_authoring::{AuthoringContext, AuthoringOutcome, ChatAuthoringAccess};
@@ -229,6 +231,7 @@ impl DelegationListener {
                 reports_response(reports)?
             }
             BrokerMessage::CancelTask(req) => report_response(self.process_cancel_task(req).await)?,
+            BrokerMessage::ResumeTask(req) => report_response(self.process_resume_task(req).await)?,
             BrokerMessage::Feedback(req) => {
                 // at-least-once delivery: READ pending notes (no mutation),
                 // WRITE the response, and COMMIT them delivered ONLY on a
@@ -449,6 +452,57 @@ impl DelegationListener {
                 parent_conversation_id,
                 &req.task_id,
             )
+            .await
+    }
+
+    /// Validate the token, resolve the caller's parent, and resume the task.
+    /// Backs the `resume_delegation` tool. Unlike `delegate_to_agent`, the
+    /// parent conversation is REQUIRED here even though the broker could
+    /// technically look the child up without it: ownership of a resumable task
+    /// is proven by the child row's `parent_id` matching the caller's current
+    /// conversation, so a caller with no conversation has no claim to resume
+    /// anything.
+    async fn process_resume_task(&self, req: BrokerResumeTaskRequest) -> DelegationTaskReport {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
+            return unknown_report(&req.task_id);
+        };
+        // Same call-time identity restoration as `process_status` /
+        // `process_cancel_task`: like cancel, the resume result is free-form
+        // report text with no stable prefix for the completion-time sniff, so
+        // this rename is the only identity source on identity-less hosts.
+        let mut rename_input = serde_json::Map::new();
+        rename_input.insert(
+            "task_id".into(),
+            serde_json::Value::String(req.task_id.clone()),
+        );
+        if let Some(reason) = req.reason.as_deref() {
+            rename_input.insert(
+                "reason".into(),
+                serde_json::Value::String(reason.to_string()),
+            );
+        }
+        self.broker
+            .rewrite_identityless_tool_call(
+                &entry.parent_connection_id,
+                crate::acp::delegation::RESUME_TOOL_REWRITE_TITLE,
+                serde_json::Value::Object(rename_input),
+            )
+            .await;
+        let Some(parent_conversation_id) = self
+            .parent_lookup
+            .current_conversation_id(&entry.parent_connection_id)
+            .await
+        else {
+            return cancel("parent has no active conversation");
+        };
+        self.broker
+            .resume_delegation(ResumeDelegationRequest {
+                parent_connection_id: entry.parent_connection_id,
+                parent_conversation_id,
+                task_id: req.task_id,
+                reason: req.reason,
+                external_handle: req.external_handle,
+            })
             .await
     }
 
@@ -827,7 +881,9 @@ pub fn default_socket_path(_temp_dir: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use crate::acp::delegation::broker::{ConversationDepthLookup, DelegationConfig};
-    use crate::acp::delegation::spawner::{mock::MockSpawner, ConnectionSpawner, SpawnerError};
+    use crate::acp::delegation::spawner::{
+        mock::MockSpawner, ConnectionSpawner, ResumedSpawn, SpawnerError,
+    };
     use crate::acp::delegation::types::{DelegationError, DelegationOutcome, DelegationSuccess};
     use serde_json::json;
     use std::time::Duration;
@@ -1674,6 +1730,125 @@ mod tests {
             DelegationOutcome::Err { code, .. } => assert_eq!(code, "canceled"),
             other => panic!("expected canceled, got {other:?}"),
         }
+    }
+
+    /// Full `resume_delegation` round-trip over the wire: the listener
+    /// validates the token, resolves the caller's conversation, and hands the
+    /// broker a `ResumeDelegationRequest` — which resumes the interrupted child
+    /// and acks Running under the unchanged task id.
+    #[tokio::test]
+    async fn resume_task_round_trip_resumes_interrupted_child() {
+        use crate::acp::delegation::broker::{ChildResumeContext, ChildStatusLookup};
+        use crate::acp::delegation::types::TaskStatus as Ts;
+
+        /// Minimal resume-context stub: every call_id resolves to one canceled
+        /// child owned by conversation 1.
+        struct StubResumeLookup;
+        #[async_trait]
+        impl ChildStatusLookup for StubResumeLookup {
+            async fn find_by_call_id(
+                &self,
+                _call_id: &str,
+            ) -> Option<crate::acp::delegation::broker::ChildStatusRecord> {
+                None
+            }
+            async fn find_resume_context_by_call_id(
+                &self,
+                _call_id: &str,
+            ) -> Option<ChildResumeContext> {
+                Some(ChildResumeContext {
+                    child_conversation_id: 42,
+                    status: Ts::Canceled,
+                    agent_type: AgentType::Codex,
+                    parent_id: Some(1),
+                    parent_tool_use_id: Some("pt-orig".into()),
+                    external_id: Some("ext-1".into()),
+                    folder_id: 7,
+                    working_dir: Some("/work".into()),
+                    title: Some("do x".into()),
+                })
+            }
+        }
+
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("child-conn-2"))).await;
+        mock.queue_resume_send(Ok(())).await;
+        let broker = Arc::new(
+            DelegationBroker::new(
+                mock.clone() as Arc<dyn ConnectionSpawner>,
+                Arc::new(AlwaysRootLookup) as Arc<dyn ConversationDepthLookup>,
+            )
+            .with_status_lookup(Arc::new(StubResumeLookup)),
+        );
+        broker
+            .set_config(DelegationConfig {
+                enabled: true,
+                ..DelegationConfig::default()
+            })
+            .await;
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let listener = make_listener(broker.clone(), tokens, Some(1));
+
+        let (mut client, mut server) = duplex(16 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg = BrokerMessage::ResumeTask(BrokerResumeTaskRequest {
+            token: "tok".into(),
+            task_id: "task-1".into(),
+            reason: Some("session crashed".into()),
+            external_handle: Some("h-resume".into()),
+        });
+        write_frame(&mut client, &msg).await.unwrap();
+        let ack: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+
+        assert_eq!(ack.outcome["status"], "running");
+        assert_eq!(ack.outcome["task_id"], "task-1");
+        assert_eq!(ack.outcome["child_conversation_id"], 42);
+        // The child was re-spawned by loading its recorded session, and the
+        // caller's reason reached the continuation prompt.
+        let spawns = mock.resume_spawn_args.lock().await;
+        assert_eq!(spawns.len(), 1);
+        assert_eq!(spawns[0].external_session_id, "ext-1");
+        drop(spawns);
+        let sends = mock.resume_send_args.lock().await;
+        assert_eq!(sends[0].child_conversation_id, 42);
+        assert!(sends[0].prompt.contains("session crashed"));
+    }
+
+    /// An invalid token on the resume arm stays opaque — `unknown`, exactly
+    /// like the status/cancel arms (no leak of whether the task exists).
+    #[tokio::test]
+    async fn resume_task_invalid_token_reports_unknown() {
+        let listener = make_listener(
+            make_broker(Arc::new(MockSpawner::new())).await,
+            Arc::new(TokenRegistry::default()),
+            Some(1),
+        );
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg = BrokerMessage::ResumeTask(BrokerResumeTaskRequest {
+            token: "bad".into(),
+            task_id: "task-1".into(),
+            reason: None,
+            external_handle: None,
+        });
+        write_frame(&mut client, &msg).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+        assert_eq!(resp.outcome["status"], "unknown");
     }
 
     #[tokio::test]

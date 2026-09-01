@@ -7,6 +7,7 @@ import {
   ArrowUp,
   CopyIcon,
   MessageCircleQuestionMark,
+  StickyNote,
   TextQuote,
 } from "lucide-react"
 
@@ -79,6 +80,12 @@ interface SelectionActionBubbleProps {
    * isn't offered — same rule as `onQuote`.
    */
   onAsk?: (selection: string, question: string) => void
+  /**
+   * Keep the selection as a note beside the transcript. Only the canvas has
+   * somewhere to put one, so everywhere else omits it and the action isn't
+   * offered — same rule as `onQuote`.
+   */
+  onSaveAsNote?: (text: string) => void
 }
 
 /**
@@ -97,6 +104,7 @@ export function SelectionActionBubble({
   containerRef,
   onQuote,
   onAsk,
+  onSaveAsNote,
 }: SelectionActionBubbleProps) {
   const t = useTranslations("Folder.chat.messageList")
   const ime = useImeGuard()
@@ -324,6 +332,13 @@ export function SelectionActionBubble({
     })
   }, [dismiss, t])
 
+  const handleSaveAsNote = useCallback(() => {
+    const current = stateRef.current
+    if (current.kind === "none" || !onSaveAsNote) return
+    onSaveAsNote(current.text)
+    dismiss()
+  }, [onSaveAsNote, dismiss])
+
   const handleQuote = useCallback(() => {
     const current = stateRef.current
     if (current.kind === "none" || !onQuote) return
@@ -480,6 +495,18 @@ export function SelectionActionBubble({
             >
               <TextQuote />
               {t("selectionQuote")}
+            </Button>
+          )}
+          {onSaveAsNote && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              onClick={handleSaveAsNote}
+              aria-label={t("selectionSaveAsNote")}
+            >
+              <StickyNote />
+              {t("selectionSaveAsNote")}
             </Button>
           )}
           {onAsk && (

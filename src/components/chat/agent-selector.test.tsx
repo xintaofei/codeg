@@ -80,6 +80,11 @@ beforeAll(() => {
  * everywhere. Feed it widths keyed off `data-slot`, which is exactly what the
  * component measures: the wrapper (how much room there is), an icon-only pill
  * (the unit every fit is counted in) and the "more" button.
+ *
+ * `offsetWidth`, not `getBoundingClientRect`: the component measures in LAYOUT
+ * px so its arithmetic stays correct under a CSS transform (a canvas card at
+ * 60% zoom). Stubbing the rect instead would make these tests pass against code
+ * that is wrong everywhere a transform exists.
  */
 function stubLayout({
   wrapper = 300,
@@ -87,28 +92,16 @@ function stubLayout({
   more = 32,
 }: { wrapper?: number; pill?: number; more?: number } = {}) {
   return vi
-    .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+    .spyOn(HTMLElement.prototype, "offsetWidth", "get")
     .mockImplementation(function (this: HTMLElement) {
       const slot = this.dataset.slot
-      const width =
-        slot === "agent-selector"
-          ? wrapper
-          : slot === "agent-pill"
-            ? pill
-            : slot === "agent-selector-more"
-              ? more
-              : 0
-      return {
-        width,
-        height: 32,
-        top: 0,
-        left: 0,
-        right: width,
-        bottom: 32,
-        x: 0,
-        y: 0,
-        toJSON: () => ({}),
-      } as DOMRect
+      return slot === "agent-selector"
+        ? wrapper
+        : slot === "agent-pill"
+          ? pill
+          : slot === "agent-selector-more"
+            ? more
+            : 0
     })
 }
 
@@ -279,6 +272,47 @@ describe("AgentSelector", () => {
     )
     expect(pills(container)).toHaveLength(6)
     expect(screen.getByLabelText("More agents (7)")).toBeInTheDocument()
+  })
+
+  it("measures in layout px, so a CSS transform can't skew the fit", () => {
+    // The selector renders inside canvas cards, which the board scales. Screen
+    // rects shrink with that scale; `scrollWidth` — the selected label's
+    // natural width, a term in the very same sum — does not. Mixing the two
+    // collapses the row at any zoom below 100% and puts the droplet somewhere
+    // its pill isn't.
+    //
+    // The label width is what makes this test bite: with jsdom's default
+    // `scrollWidth` of 0 the mismatched term vanishes and both unit systems
+    // happen to cut at the same pill. Give the label a real width and the two
+    // disagree loudly — 6 pills measured in layout px, 2 measured in a
+    // 60%-scaled world.
+    stubLayout()
+    vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockReturnValue(90)
+    const scale = 0.6
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const slot = this.dataset.slot
+        const width =
+          slot === "agent-selector"
+            ? 300 * scale
+            : slot === "agent-pill"
+              ? 38 * scale
+              : slot === "agent-selector-more"
+                ? 32 * scale
+                : 0
+        return { width, height: 32 * scale, left: 0, top: 0 } as DOMRect
+      }
+    )
+    mockUseAcpAgents.mockReturnValue({
+      agents: MANY_AGENTS.map((type) => agent(type)),
+      fresh: true,
+      refresh: async () => {},
+    })
+    const { container } = renderWithIntl(
+      <AgentSelector defaultAgentType="claude_code" onSelect={() => {}} />
+    )
+    // 300 - (38 + 8 + 90) - 32 = 132 → 3 more pills fit, plus the selected one.
+    expect(pills(container)).toHaveLength(4)
   })
 
   it("keeps the selected agent in the row even when it sits past the cut", () => {

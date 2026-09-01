@@ -104,23 +104,30 @@ export function PermissionDialog({
           <div className="flex items-center gap-1.5 text-sm font-medium">
             <ShieldAlert className="h-4 w-4 shrink-0 text-amber-500" />
             {/* Prefer the human-readable description (claude-agent-acp ≥0.63
-                `_meta.claudeCode.title`) over the raw title (the shell
+                `_meta.claudeCode.title`, else codex-acp ≥1.7.0
+                `_meta.permission.title`) over the raw title (the shell
                 command, which the command block below already shows). */}
             <span className="truncate">
               {parsed.description ?? parsed.title}
             </span>
           </div>
-          <p className="text-xs text-muted-foreground">{t("subtitle")}</p>
+          {/* The agent's own reason for asking, when it gave one — strictly
+              more informative than the boilerplate subtitle it replaces, and
+              the only place codex-acp ≥1.7.0 still carries it. Wraps rather
+              than truncating: this is the sentence the decision rests on. */}
+          <p className="text-xs text-muted-foreground">
+            {parsed.reason ?? t("subtitle")}
+          </p>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {/* Only one card shows at a time, so without this the remaining
               approvals look like the agent has stopped responding. */}
           {queued > 0 ? (
-            <Badge variant="secondary" className="text-[10px] tabular-nums">
+            <Badge variant="secondary" className="text-3xs tabular-nums">
               {t("queuedCount", { count: queued })}
             </Badge>
           ) : null}
-          <Badge variant="outline" className="text-[10px]">
+          <Badge variant="outline" className="text-3xs">
             {formatKindLabel(parsed.normalizedKind, t("kindFallbackTool"))}
           </Badge>
         </div>
@@ -199,7 +206,7 @@ export function PermissionDialog({
                   className="flex items-center gap-2 text-xs"
                 >
                   {item.tool && (
-                    <Badge variant="outline" className="shrink-0 text-[10px]">
+                    <Badge variant="outline" className="shrink-0 text-3xs">
                       {item.tool}
                     </Badge>
                   )}
@@ -282,7 +289,7 @@ export function PermissionDialog({
                         {change.scope && (
                           <Badge
                             variant="outline"
-                            className="shrink-0 text-[10px]"
+                            className="shrink-0 text-3xs"
                           >
                             {t(CHANGE_SCOPE_LABEL_KEYS[change.scope])}
                           </Badge>

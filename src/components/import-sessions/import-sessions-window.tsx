@@ -460,9 +460,7 @@ export function ImportSessionsWindow({
               <div className="text-lg font-semibold tabular-nums">
                 {stat.value}
               </div>
-              <div className="text-[11px] text-muted-foreground">
-                {stat.label}
-              </div>
+              <div className="text-2xs text-muted-foreground">{stat.label}</div>
             </div>
           ))}
         </div>

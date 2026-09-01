@@ -205,13 +205,13 @@ export const AgentPlanOverlay = memo(function AgentPlanOverlay({
                 </p>
               </div>
               <div className="mt-2 flex items-center gap-1.5 pl-5">
-                <Badge variant="outline" className="h-5 text-[10px] uppercase">
+                <Badge variant="outline" className="h-5 text-3xs uppercase">
                   {t(getStatusKey(entry.status))}
                 </Badge>
                 <Badge
                   variant="outline"
                   className={cn(
-                    "h-5 text-[10px] uppercase",
+                    "h-5 text-3xs uppercase",
                     getPriorityClassName(entry.priority)
                   )}
                 >

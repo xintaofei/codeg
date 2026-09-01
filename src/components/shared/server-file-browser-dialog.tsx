@@ -316,7 +316,7 @@ export function ServerFileBrowserDialog({
             />
           </div>
 
-          <ScrollArea className="h-[320px] rounded-md border">
+          <ScrollArea className="h-[20rem] rounded-md border">
             <div className="p-1">
               {renderEntries(rootPath, 0)}
               {error && !loading.size && (

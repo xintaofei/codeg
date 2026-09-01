@@ -332,7 +332,7 @@ export function PiProjectTrustBanner({
                 <li key={resource.path} className="flex items-start gap-2">
                   <span
                     className={cn(
-                      "mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                      "mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-3xs font-medium",
                       resource.executesCode
                         ? "bg-red-500/15 text-red-700 dark:text-red-300"
                         : "bg-muted text-muted-foreground"

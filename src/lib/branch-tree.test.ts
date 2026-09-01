@@ -7,6 +7,7 @@ import {
   expandedKeysForBranch,
   localBranchItems,
   sectionKey,
+  worktreeBranchLeaves,
   type BranchTreeItem,
   type BranchTreeNode,
 } from "@/lib/branch-tree"
@@ -287,6 +288,64 @@ describe("sectionKey", () => {
     expect(sectionKey("local")).toBe("s local")
     expect(sectionKey("remote")).toBe("s remote")
     expect(sectionKey("remote:origin")).toBe("s remote:origin")
+  })
+})
+
+describe("worktreeBranchLeaves", () => {
+  it("returns nothing when the repo has no other worktree", () => {
+    expect(worktreeBranchLeaves([], null)).toEqual([])
+  })
+
+  it("keeps every branch whole — no prefix grouping, label is the full ref", () => {
+    // The same input through buildBranchTree would fold these into a "task/"
+    // group; this list must stay one click deep.
+    expect(worktreeBranchLeaves(["task/b", "task/a"], null)).toEqual([
+      {
+        type: "leaf",
+        fullName: "task/a",
+        label: "task/a",
+        key: "l worktree task/a",
+      },
+      {
+        type: "leaf",
+        fullName: "task/b",
+        label: "task/b",
+        key: "l worktree task/b",
+      },
+    ])
+  })
+
+  it("puts the main working tree first, then the rest by name", () => {
+    const leaves = worktreeBranchLeaves(
+      ["task/b", "Loop/x", "main", "task/a"],
+      "main"
+    )
+    expect(leaves.map((leaf) => leaf.fullName)).toEqual([
+      "main",
+      "Loop/x",
+      "task/a",
+      "task/b",
+    ])
+  })
+
+  it("sorts by name alone when no worktree holds the main branch", () => {
+    expect(
+      worktreeBranchLeaves(["task/b", "main", "task/a"], null).map(
+        (leaf) => leaf.fullName
+      )
+    ).toEqual(["main", "task/a", "task/b"])
+  })
+
+  it("scopes keys to the worktree section, so the local tree's leaf differs", () => {
+    const [worktreeLeaf] = worktreeBranchLeaves(["dev"], null)
+    const [localLeaf] = buildBranchTree(localBranchItems(["dev"]), "local")
+    expect(worktreeLeaf.key).not.toBe(localLeaf.key)
+  })
+
+  it("leaves the caller's array untouched", () => {
+    const branches = ["task/b", "task/a"]
+    worktreeBranchLeaves(branches, null)
+    expect(branches).toEqual(["task/b", "task/a"])
   })
 })
 

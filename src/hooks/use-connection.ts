@@ -74,6 +74,10 @@ export interface UseConnectionReturn {
   sessionFailures: SessionFailureRecord[]
   error: string | null
   loadError: string | null
+  /** Runnable recovery for `loadError` (today `codex unarchive <id>`), or
+   *  null when the failure has none. Carried separately from the localized
+   *  message so the banner can offer it as a copy action. */
+  loadErrorCommand: string | null
   /** True when the running session is on stale (launch-time) config after a
    *  later settings save. Drives the "restart to apply" banner. */
   configStale: boolean
@@ -228,6 +232,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
   const sessionFailures = connection?.sessionFailures ?? EMPTY_SESSION_FAILURES
   const error = connection?.error ?? null
   const loadError = connection?.loadError ?? null
+  const loadErrorCommand = connection?.loadErrorCommand ?? null
   const configStale = connection?.configStale ?? false
   const configStaleKind = connection?.configStaleKind ?? null
   const configStaleDismissed = connection?.configStaleDismissed ?? false
@@ -332,6 +337,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       sessionFailures,
       error,
       loadError,
+      loadErrorCommand,
       configStale,
       configStaleKind,
       configStaleDismissed,
@@ -371,6 +377,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       sessionFailures,
       error,
       loadError,
+      loadErrorCommand,
       configStale,
       configStaleKind,
       configStaleDismissed,

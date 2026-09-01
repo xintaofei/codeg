@@ -461,7 +461,7 @@ function StashCard({
                           {stash.message}
                         </span>
                       </div>
-                      <div className="flex gap-2 text-[10px] text-muted-foreground/70">
+                      <div className="flex gap-2 text-3xs text-muted-foreground/70">
                         <span>{stash.branch}</span>
                         <span>{stash.date}</span>
                       </div>

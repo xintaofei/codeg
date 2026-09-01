@@ -102,24 +102,24 @@ export function SearchResultsOutput({ text, query }: Props) {
 
   return (
     <div className="space-y-2">
-      <div className="text-[11px] text-muted-foreground">{summary}</div>
+      <div className="text-2xs text-muted-foreground">{summary}</div>
       {/* Same height cap as the file-read viewer: a broad search can match
           hundreds of lines, and an unbounded card pushes the rest of the
           transcript off screen. */}
-      <div className="max-h-[420px] divide-y divide-border/60 overflow-auto rounded-md border border-border/60">
+      <div className="max-h-[26.25rem] divide-y divide-border/60 overflow-auto rounded-md border border-border/60">
         {parsed.groups.map((group) => (
           <div key={group.path}>
             <div className="flex items-center gap-1.5 bg-muted/40 px-2.5 py-1.5">
               <FileTextIcon className="size-3 shrink-0 text-muted-foreground" />
               <FilePathLink
                 filePath={group.path}
-                className="min-w-0 flex-1 truncate text-left font-mono text-[11px] text-foreground"
+                className="min-w-0 flex-1 truncate text-left font-mono text-2xs text-foreground"
                 title={group.path}
               >
                 {group.path}
               </FilePathLink>
               {group.lines.length > 1 && (
-                <span className="shrink-0 tabular-nums text-[10px] text-muted-foreground">
+                <span className="shrink-0 tabular-nums text-3xs text-muted-foreground">
                   {group.lines.length}
                 </span>
               )}
@@ -129,7 +129,7 @@ export function SearchResultsOutput({ text, query }: Props) {
                 {group.lines.map((entry, i) => (
                   <div
                     key={`${entry.line}-${i}`}
-                    className="flex gap-2 px-2.5 py-1 font-mono text-[11px] leading-[18px] hover:bg-muted/30"
+                    className="flex gap-2 px-2.5 py-1 font-mono text-2xs leading-[1.125rem] hover:bg-muted/30"
                   >
                     <FilePathLink
                       filePath={group.path}
@@ -149,12 +149,12 @@ export function SearchResultsOutput({ text, query }: Props) {
         ))}
       </div>
       {parsed.hiddenCount > 0 && (
-        <div className="text-[11px] text-muted-foreground">
+        <div className="text-2xs text-muted-foreground">
           {t("search.moreResults", { count: parsed.hiddenCount })}
         </div>
       )}
       {parsed.notes.length > 0 && (
-        <div className="space-y-0.5 rounded-md bg-muted/40 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground">
+        <div className="space-y-0.5 rounded-md bg-muted/40 px-2.5 py-1.5 font-mono text-2xs text-muted-foreground">
           {parsed.notes.map((note, i) => (
             <div key={i} className="break-all">
               {note}

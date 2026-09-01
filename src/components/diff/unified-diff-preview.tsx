@@ -550,7 +550,7 @@ function HunkSeparator({ hunk }: { hunk: ParsedDiffHunk }) {
       ? `@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart ?? hunk.oldStart},${hunk.newCount ?? hunk.oldCount} @@`
       : "···"
   return (
-    <div className="flex items-center gap-2 border-y border-border/50 bg-muted/30 px-3 py-0.5 font-mono text-[11px] text-muted-foreground/60">
+    <div className="flex items-center gap-2 border-y border-border/50 bg-muted/30 px-3 py-0.5 font-mono text-2xs text-muted-foreground/60">
       {/* Rides along with the line numbers rather than sliding off to the
           left. Nothing scrolls underneath it, so the band needs no backing. */}
       <span className="sticky left-3 select-none">{label}</span>
@@ -586,7 +586,7 @@ const STICKY_RAIL_TINT = "flex pr-1"
 
 function HunkLines({ rows }: { rows: ParsedDiffRow[] }) {
   return (
-    <div className="font-mono text-[12px] leading-[20px]">
+    <div className="font-mono text-xs leading-[1.25rem]">
       {rows.map((row, i) => {
         const tint = ROW_CLASS[rowMarker(row)]
         return (
@@ -620,7 +620,7 @@ function HunkLines({ rows }: { rows: ParsedDiffRow[] }) {
 /** Clean file content view for new files (no diff signs, green highlight as added) */
 function NewFileLines({ rows }: { rows: ParsedDiffRow[] }) {
   return (
-    <div className="font-mono text-[12px] leading-[20px]">
+    <div className="font-mono text-xs leading-[1.25rem]">
       {rows.map((row, i) => (
         <div key={i} className={cn("flex", ROW_CLASS.added)}>
           <span className={STICKY_RAIL}>
@@ -641,12 +641,12 @@ function SplitCellView({ cell }: { cell: SplitCell }) {
   const empty = cell.text === null
   const tint = empty ? "bg-muted/20" : ROW_CLASS[cell.marker]
   return (
-    // `min-h-[20px]` (one `leading-[20px]` line) is what holds a filler cell
+    // `min-h-[1.25rem]` (one `leading-[1.25rem]` line) is what holds a filler cell
     // open. It carries neither a number nor text, so its flex line has nothing
     // to give it height: the old single grid let the opposite cell hold the row
     // open, but independent panes each lay out alone, and a collapsed filler
     // slides every row below it one line out of step with the other side.
-    <div className={cn("flex min-h-[20px]", tint)}>
+    <div className={cn("flex min-h-[1.25rem]", tint)}>
       <span className={STICKY_RAIL}>
         <span className={cn(STICKY_RAIL_TINT, tint)}>
           <span
@@ -699,7 +699,7 @@ function SplitHunkSeparator({
   const label =
     start != null && count != null ? `@@ ${sign}${start},${count} @@` : "···"
   return (
-    <div className="border-y border-border/50 bg-muted/30 px-3 text-[11px] text-muted-foreground/60">
+    <div className="border-y border-border/50 bg-muted/30 px-3 text-2xs text-muted-foreground/60">
       <span className="sticky left-3 inline-block select-none">{label}</span>
     </div>
   )
@@ -719,7 +719,7 @@ function SplitPane({
   side: "left" | "right"
 }) {
   return (
-    <div className="w-max min-w-full font-mono text-[12px] leading-[20px]">
+    <div className="w-max min-w-full font-mono text-xs leading-[1.25rem]">
       {blocks.map((block) => (
         <Fragment key={block.key}>
           {block.separator && (
@@ -899,7 +899,7 @@ function DiffFileSection({
         // Self-capped by default: the section owns a scroll box so a huge file
         // can't stretch its host. `unbounded` hands both back to the host (it
         // supplies its own cap + reveal), which keeps the two from nesting.
-        unbounded ? "min-h-0" : "max-h-[420px]",
+        unbounded ? "min-h-0" : "max-h-[26.25rem]",
         embedded
           ? "bg-transparent"
           : "rounded-lg border border-border bg-background"
@@ -908,8 +908,8 @@ function DiffFileSection({
       {!embedded && (
         // The counters sit with the path they belong to; the far right of the
         // bar is the view toggle's, so it lands in the same spot on every file.
-        <header className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/40 px-3 py-2 text-[11px]">
-          <span className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
+        <header className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/40 px-3 py-2 text-2xs">
+          <span className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-3xs text-muted-foreground">
             {newFile ? "WRITE" : t(modeKey(file.mode))}
           </span>
           {clickableFilePath ? (
@@ -981,7 +981,7 @@ function DiffFileSection({
           type="button"
           onClick={() => setExpanded(true)}
           className={cn(
-            "shrink-0 select-none px-3 py-1 text-left font-mono text-[11px] text-muted-foreground hover:bg-muted/40 hover:text-foreground",
+            "shrink-0 select-none px-3 py-1 text-left font-mono text-2xs text-muted-foreground hover:bg-muted/40 hover:text-foreground",
             embedded ? "border-t border-border/50" : "border-t border-border"
           )}
         >
@@ -998,6 +998,7 @@ export function UnifiedDiffPreview({
   clickableFilePath = false,
   embedded = false,
   unbounded = false,
+  hideViewToggle = false,
 }: {
   diffText: string
   /** @deprecated No longer used — kept for API compat */
@@ -1019,6 +1020,18 @@ export function UnifiedDiffPreview({
    * scroll inside another one.
    */
   unbounded?: boolean
+  /**
+   * Suppress the `embedded` layout's own toggle row, for a host that renders
+   * `ViewModeToggle` itself somewhere better.
+   *
+   * The repository panel does: it mounts one preview per expanded file, so the
+   * built-in row would appear once per file, halfway down a list, and only
+   * after something was expanded — while the control belongs in the header
+   * above that list. The mode is one global preference either way (see
+   * `useDiffViewMode`), so the host's toggle and every preview under it move
+   * together through the same broadcast.
+   */
+  hideViewToggle?: boolean
 }) {
   const t = useTranslations("Folder.diffPreview")
   const { activeFolder: folder } = useActiveFolder()
@@ -1042,7 +1055,7 @@ export function UnifiedDiffPreview({
     const pre = (
       <pre
         dir="ltr"
-        className="font-mono text-[11px] leading-5 whitespace-pre-wrap text-muted-foreground p-3"
+        className="font-mono text-2xs leading-5 whitespace-pre-wrap text-muted-foreground p-3"
       >
         {diffText}
       </pre>
@@ -1064,8 +1077,9 @@ export function UnifiedDiffPreview({
     <Frame className={className}>
       <div className={embedded ? "space-y-2" : "space-y-3"}>
         {/* Every file renders its own toggle in its header. Embedded previews
-            have no header to put it in, so they keep a row of their own. */}
-        {embedded && supportsSplitView(files) && (
+            have no header to put it in, so they keep a row of their own —
+            unless the host said it has somewhere better for it. */}
+        {embedded && !hideViewToggle && supportsSplitView(files) && (
           <div className="flex items-center justify-end">
             <ViewModeToggle view={view} onSwitch={switchView} />
           </div>
@@ -1092,15 +1106,23 @@ export function UnifiedDiffPreview({
  * one already on screen — the icon reads as "go here", which is also what the
  * `viewMode` labels say ("Switch to …"). A pair of buttons spent twice the
  * header's width to say the same thing.
+ *
+ * Exported for hosts that place it themselves (see `hideViewToggle`). Its
+ * chrome is a default rather than a fixture: a host that puts it in a row of
+ * its own icon buttons overrides `className`/`iconClassName` so the pair reads
+ * as one control set, and the *decision* — which mode is next, which glyph and
+ * which label say so — stays in one place regardless.
  */
-function ViewModeToggle({
+export function ViewModeToggle({
   view,
   onSwitch,
   className,
+  iconClassName,
 }: {
   view: DiffViewMode
   onSwitch: (mode: DiffViewMode) => void
   className?: string
+  iconClassName?: string
 }) {
   const t = useTranslations("Folder.diffPreview")
   const next: DiffViewMode = view === "split" ? "unified" : "split"
@@ -1117,7 +1139,7 @@ function ViewModeToggle({
         className
       )}
     >
-      <Icon className="h-3 w-3" />
+      <Icon className={cn("h-3 w-3", iconClassName)} />
     </button>
   )
 }

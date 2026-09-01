@@ -296,3 +296,33 @@ export function buildRemoteBranchSections(
 export function localBranchItems(local: string[]): BranchTreeItem[] {
   return local.map((full) => ({ full, display: full }))
 }
+
+/**
+ * Flat, ordered leaves for the branch selector's worktree section: the repo's
+ * main working tree first — the usual "back to the project root" target — then
+ * the linked worktrees by name. `branches` is `GitBranchList.worktree_branches`,
+ * i.e. the branches checked out somewhere OTHER than the folder being viewed.
+ *
+ * Deliberately NOT prefix-grouped like the local/remote trees, and labelled
+ * with the full ref: the section is a short quick-switch list, and folding
+ * `task/a` + `task/b` behind a group that defaults to collapsed would cost the
+ * very click it exists to save. Keys are scoped to "worktree", so a branch that
+ * also appears in the local tree keeps a distinct identity in both places.
+ */
+export function worktreeBranchLeaves(
+  branches: string[],
+  mainBranch: string | null
+): BranchTreeLeaf[] {
+  return [...branches]
+    .sort((a, b) => {
+      if (a === mainBranch) return -1
+      if (b === mainBranch) return 1
+      return a.localeCompare(b, undefined, { sensitivity: "base" })
+    })
+    .map((full) => ({
+      type: "leaf",
+      fullName: full,
+      label: full,
+      key: leafKey("worktree", full),
+    }))
+}

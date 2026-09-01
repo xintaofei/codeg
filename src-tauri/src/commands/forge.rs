@@ -37,6 +37,12 @@ pub struct ForgeRemote {
     /// and handed to the client for display and for building the reverse-lookup
     /// keys. The client never picks it: that choice selects a credential.
     pub provider: ForgeProvider,
+    /// Whether `provider` is known rather than assumed — see
+    /// `HostProfile::recognized`. `false` says the remote parsed fine but names
+    /// a host codeg has no reason to think is GitHub or GitLab, so the panel
+    /// says so up front instead of spending a request that comes back as a raw
+    /// API failure.
+    pub supported: bool,
 }
 
 /// Client-supplied coordinates of the work item being triggered.
@@ -434,6 +440,7 @@ pub async fn folder_forge_remote_core(
         // whatever configured it, and this value crosses to the client.
         remote_url: redact_userinfo(&url),
         provider: profile.provider,
+        supported: profile.recognized,
     }))
 }
 
@@ -557,6 +564,203 @@ pub async fn forge_list_comments_core(
         ForgeProvider::GitLab => {
             forge::gitlab::list_notes(&auth, &remote.owner_repo, kind, number, page, per_page)
                 .await?
+        }
+    })
+}
+
+/// Post one comment on an item, and hand back the comment as the forge stored
+/// it.
+///
+/// The RESULT is what the panel appends to the thread it is already showing —
+/// not the text that was typed. They differ in every field that matters: the
+/// id (which is the React key and the de-duplication handle when the next page
+/// arrives), the author as the forge resolved it from the token, the timestamp,
+/// and the permalink. Echoing the draft back would show a comment that has no
+/// anchor and duplicates itself on the next refresh.
+///
+/// Not retried anywhere on the way down: a retried POST posts twice, and a
+/// thread other people are reading is the wrong place to be approximately
+/// once.
+pub async fn forge_create_comment_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    draft: forge::CommentDraft,
+) -> Result<forge::ForgeComment, AppCommandError> {
+    let (kind, number, body) = draft.resolve().map_err(AppCommandError::from)?;
+    let (remote, auth) = resolve_folder_repo(db, folder_id, draft.account_id.as_deref()).await?;
+    Ok(match remote.provider {
+        // No kind: a pull request IS an issue at GitHub, and one endpoint
+        // serves both (`/pulls/{n}/comments` is the review-comment collection,
+        // which is a different thing entirely).
+        ForgeProvider::GitHub => {
+            forge::github::create_comment(&auth, &remote.owner_repo, number, &body).await?
+        }
+        ForgeProvider::GitLab => {
+            forge::gitlab::create_note(&auth, &remote.owner_repo, kind, number, &body).await?
+        }
+    })
+}
+
+/// Close or reopen one item, and hand back the row the forge now serves.
+///
+/// The returned row is the point. A local flip of `state` would be a guess:
+/// the item may have been closed in the browser a moment ago, a lock may have
+/// refused the write, and on GitHub a pull request that got merged in between
+/// comes back `merged` rather than `closed`. What the panel adopts is the
+/// forge's answer, which is the only version of the row that is true.
+pub async fn forge_set_item_state_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    request: forge::StateChangeRequest,
+) -> Result<forge::ForgeIssueRow, AppCommandError> {
+    let (kind, number, action) = request.resolve().map_err(AppCommandError::from)?;
+    let (remote, auth) = resolve_folder_repo(db, folder_id, request.account_id.as_deref()).await?;
+    Ok(match remote.provider {
+        ForgeProvider::GitHub => {
+            forge::github::set_item_state(&auth, &remote.owner_repo, kind, number, action).await?
+        }
+        ForgeProvider::GitLab => {
+            forge::gitlab::set_item_state(&auth, &remote.owner_repo, kind, number, action).await?
+        }
+    })
+}
+
+/// Open a new issue on the folder's repository.
+///
+/// The repository is derived from the folder's own remote like every other
+/// forge write — there is no repository field on the draft, so a client cannot
+/// file an issue against somewhere else with this account's token.
+pub async fn forge_create_issue_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    draft: forge::NewIssueDraft,
+) -> Result<forge::ForgeIssueRow, AppCommandError> {
+    let resolved = draft.resolve().map_err(AppCommandError::from)?;
+    let (remote, auth) = resolve_folder_repo(db, folder_id, draft.account_id.as_deref()).await?;
+    Ok(match remote.provider {
+        ForgeProvider::GitHub => {
+            forge::github::create_issue(&auth, &remote.owner_repo, &resolved).await?
+        }
+        ForgeProvider::GitLab => {
+            forge::gitlab::create_issue(&auth, &remote.owner_repo, &resolved).await?
+        }
+    })
+}
+
+/// One proposed change's branches, size, mergeability and CI.
+///
+/// Asked only when the panel opens on a PULL REQUEST, and for the same reason
+/// the comment thread is its own call: a list page holds thirty rows whose
+/// reader opens at most one, and folding two or three extra requests into every
+/// row would spend them on rows nobody looks at. Everything it costs is on the
+/// core quota, not GitHub search's thirty-a-minute one.
+pub async fn forge_change_detail_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    query: forge::ChangeQuery,
+) -> Result<forge::ForgeChangeDetail, AppCommandError> {
+    let number = query.resolve().map_err(AppCommandError::from)?;
+    let (remote, auth) = resolve_folder_repo(db, folder_id, query.account_id.as_deref()).await?;
+    Ok(match remote.provider {
+        ForgeProvider::GitHub => {
+            forge::github::change_detail(&auth, &remote.owner_repo, number).await?
+        }
+        ForgeProvider::GitLab => {
+            forge::gitlab::change_detail(&auth, &remote.owner_repo, number).await?
+        }
+    })
+}
+
+/// One page of the files a proposed change touches.
+///
+/// Paged rather than whole: a large change lists thousands of files, and the
+/// panel shows a scannable "what does this touch" rather than a diff. The
+/// contents are deliberately NOT carried — reviewing a diff is what the task
+/// worktree and the app's own diff view are for.
+pub async fn forge_change_files_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    query: forge::ChangeFilesQuery,
+) -> Result<forge::ForgeChangedFileList, AppCommandError> {
+    let (number, page, per_page) = query.resolve().map_err(AppCommandError::from)?;
+    let (remote, auth) = resolve_folder_repo(db, folder_id, query.account_id.as_deref()).await?;
+    Ok(match remote.provider {
+        ForgeProvider::GitHub => {
+            forge::github::list_change_files(&auth, &remote.owner_repo, number, page, per_page)
+                .await?
+        }
+        ForgeProvider::GitLab => {
+            forge::gitlab::list_change_files(&auth, &remote.owner_repo, number, page, per_page)
+                .await?
+        }
+    })
+}
+
+/// Who a comment on this folder's repository would be posted as.
+///
+/// The same resolution every write here goes through, answered instead of
+/// spent — so the face the composer shows is by construction the account
+/// [`forge_create_comment_core`] would use, pinned `account_id` and all. A UI
+/// that picked the default account from the settings list would name the wrong
+/// person on any folder that is not on it.
+///
+/// Local and cheap: no request leaves the machine. The token is resolved along
+/// the way (its absence is a real failure — that comment could not be posted
+/// either) and then dropped: [`forge::ForgeIdentity`] carries a name and a
+/// picture, nothing more.
+pub async fn forge_identity_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    account_id: Option<String>,
+) -> Result<forge::ForgeIdentity, AppCommandError> {
+    let (_, auth) = resolve_folder_repo(db, folder_id, account_id.as_deref()).await?;
+    Ok(forge::ForgeIdentity::of(&auth))
+}
+
+/// Which merge methods the folder's repository permits.
+///
+/// A repository fact, not a change's, which is why it is not a field on
+/// [`forge_change_detail_core`]: folding it in would spend a request on every
+/// change opened merely to read it. The panel asks once, and only when it is
+/// about to draw the merge button.
+pub async fn forge_merge_options_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    account_id: Option<String>,
+) -> Result<forge::ForgeMergeOptions, AppCommandError> {
+    let (remote, auth) = resolve_folder_repo(db, folder_id, account_id.as_deref()).await?;
+    Ok(match remote.provider {
+        ForgeProvider::GitHub => forge::github::merge_options(&auth, &remote.owner_repo).await?,
+        ForgeProvider::GitLab => forge::gitlab::merge_options(&auth, &remote.owner_repo).await?,
+    })
+}
+
+/// Land one proposed change, and hand back the row the forge now serves.
+///
+/// The returned row is the point, exactly as it is for
+/// [`forge_set_item_state_core`]: the panel adopts the forge's copy rather than
+/// flipping `state` locally. A merge is the one write where that matters most —
+/// GitHub has no merged STATE (a merged pull request reports `closed`, and only
+/// `merged_at` tells them apart), so a local guess would paint a change that
+/// just landed as one somebody abandoned.
+///
+/// `Ok(None)` means the merge SUCCEEDED and the row could not be read back.
+/// Distinguishing that from an error is the difference between "it landed, the
+/// list will catch up" and inviting somebody to merge the same change twice.
+pub async fn forge_merge_change_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    request: forge::ChangeMergeRequest,
+) -> Result<Option<forge::ForgeIssueRow>, AppCommandError> {
+    let (number, method, head_sha) = request.resolve().map_err(AppCommandError::from)?;
+    let (remote, auth) = resolve_folder_repo(db, folder_id, request.account_id.as_deref()).await?;
+    let head_sha = head_sha.as_deref();
+    Ok(match remote.provider {
+        ForgeProvider::GitHub => {
+            forge::github::merge_change(&auth, &remote.owner_repo, number, method, head_sha).await?
+        }
+        ForgeProvider::GitLab => {
+            forge::gitlab::merge_change(&auth, &remote.owner_repo, number, method, head_sha).await?
         }
     })
 }
@@ -880,6 +1084,86 @@ pub async fn forge_list_comments(
     filters: forge::CommentFilters,
 ) -> Result<forge::ForgeCommentList, AppCommandError> {
     forge_list_comments_core(&db, folder_id, filters).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn forge_create_comment(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    draft: forge::CommentDraft,
+) -> Result<forge::ForgeComment, AppCommandError> {
+    forge_create_comment_core(&db, folder_id, draft).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn forge_set_item_state(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    request: forge::StateChangeRequest,
+) -> Result<forge::ForgeIssueRow, AppCommandError> {
+    forge_set_item_state_core(&db, folder_id, request).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn forge_create_issue(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    draft: forge::NewIssueDraft,
+) -> Result<forge::ForgeIssueRow, AppCommandError> {
+    forge_create_issue_core(&db, folder_id, draft).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn forge_change_detail(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    query: forge::ChangeQuery,
+) -> Result<forge::ForgeChangeDetail, AppCommandError> {
+    forge_change_detail_core(&db, folder_id, query).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn forge_change_files(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    query: forge::ChangeFilesQuery,
+) -> Result<forge::ForgeChangedFileList, AppCommandError> {
+    forge_change_files_core(&db, folder_id, query).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn forge_identity(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    account_id: Option<String>,
+) -> Result<forge::ForgeIdentity, AppCommandError> {
+    forge_identity_core(&db, folder_id, account_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn forge_merge_options(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    account_id: Option<String>,
+) -> Result<forge::ForgeMergeOptions, AppCommandError> {
+    forge_merge_options_core(&db, folder_id, account_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn forge_merge_change(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    request: forge::ChangeMergeRequest,
+) -> Result<Option<forge::ForgeIssueRow>, AppCommandError> {
+    forge_merge_change_core(&db, folder_id, request).await
 }
 
 #[cfg(feature = "tauri-runtime")]

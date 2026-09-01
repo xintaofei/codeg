@@ -233,8 +233,8 @@ use chrono::{DateTime, Utc};
 use regex::Regex;
 
 use crate::models::{
-    ContentBlock, ConversationDetail, ConversationSummary, MessageTurn, SessionStats, TurnRole,
-    TurnUsage,
+    AgentType, ContentBlock, ConversationDetail, ConversationSummary, MessageTurn, SessionStats,
+    TurnRole, TurnUsage,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -254,6 +254,110 @@ pub enum ParseError {
 pub trait AgentParser {
     fn list_conversations(&self) -> Result<Vec<ConversationSummary>, ParseError>;
     fn get_conversation(&self, conversation_id: &str) -> Result<ConversationDetail, ParseError>;
+}
+
+/// The ONE place a history parser is constructed.
+///
+/// Every caller goes through here so the internal `@agent` routing frame is
+/// stripped from every agent's history — not just the one agent whose parser
+/// happens to know about it. `codeg-mcp` is injected into every MCP-capable
+/// agent, so the frame lands in each of their native transcripts; a per-parser
+/// fix would silently miss whichever parser was written next.
+pub fn build_agent_parser(agent_type: AgentType) -> Box<dyn AgentParser> {
+    let inner: Box<dyn AgentParser> = match agent_type {
+        AgentType::ClaudeCode => Box::new(claude::ClaudeParser::new()),
+        AgentType::Codex => Box::new(codex::CodexParser::new()),
+        AgentType::OpenCode => Box::new(opencode::OpenCodeParser::new()),
+        AgentType::Gemini => Box::new(gemini::GeminiParser::new()),
+        AgentType::OpenClaw => Box::new(openclaw::OpenClawParser::new()),
+        AgentType::Cline => Box::new(cline::ClineParser::new()),
+        AgentType::Hermes => Box::new(hermes::HermesParser::new()),
+        AgentType::CodeBuddy => Box::new(codebuddy::CodeBuddyParser::new()),
+        AgentType::KimiCode => Box::new(kimi_code::KimiCodeParser::new()),
+        AgentType::Pi => Box::new(pi::PiParser::new()),
+        AgentType::Grok => Box::new(grok::GrokParser::new()),
+        AgentType::Cursor => Box::new(cursor::CursorParser::new()),
+        AgentType::DeepSeek => Box::new(deepseek::DeepSeekParser::new()),
+        AgentType::Qoder => Box::new(qoder::QoderParser::new()),
+        AgentType::Antigravity => Box::new(antigravity::AntigravityParser::new()),
+        // Custom ACP agents have no native store to reverse-engineer; their
+        // history is codeg's own ACP transcript.
+        AgentType::Custom(_) => Box::new(acp_native::AcpNativeParser::new(agent_type)),
+    };
+    Box::new(RouteSanitized(inner))
+}
+
+/// Removes Codeg's internal `@agent` routing frame from whatever a parser read
+/// back out of an agent's own transcript.
+///
+/// Only complete frames that re-render byte-for-byte are touched (see
+/// [`crate::acp::agent_mentions::strip_internal_agent_routes`]), and the
+/// separator that opens one is scrubbed from every prompt at ingress, so
+/// look-alike user prose is never eligible. A user turn left with no content
+/// after stripping was a transport-only record and is dropped rather than
+/// rendered as a phantom turn.
+///
+/// The Codex parser additionally handles route-only records STRUCTURALLY
+/// (canonical-channel coverage is positional and cannot be repaired after the
+/// fact); this pass is idempotent on top of that.
+struct RouteSanitized(Box<dyn AgentParser>);
+
+impl AgentParser for RouteSanitized {
+    fn list_conversations(&self) -> Result<Vec<ConversationSummary>, ParseError> {
+        let mut summaries = self.0.list_conversations()?;
+        for summary in &mut summaries {
+            sanitize_summary(summary);
+        }
+        Ok(summaries)
+    }
+
+    fn get_conversation(&self, conversation_id: &str) -> Result<ConversationDetail, ParseError> {
+        let mut detail = self.0.get_conversation(conversation_id)?;
+        let before = detail.turns.len();
+        detail.turns.retain_mut(|turn| {
+            if !matches!(turn.role, TurnRole::User) {
+                return true;
+            }
+            for block in &mut turn.blocks {
+                if let ContentBlock::Text { text } = block {
+                    sanitize_text(text);
+                }
+            }
+            // A turn whose ONLY content was the frame carried no user message.
+            !turn.blocks.iter().all(|block| match block {
+                ContentBlock::Text { text } => text.trim().is_empty(),
+                _ => false,
+            })
+        });
+        // Keep the count the sidebar shows in step with the turns actually
+        // rendered; the summary rides along inside the detail.
+        let dropped = (before - detail.turns.len()) as u32;
+        detail.summary.message_count = detail.summary.message_count.saturating_sub(dropped);
+        sanitize_summary(&mut detail.summary);
+        Ok(detail)
+    }
+}
+
+fn sanitize_summary(summary: &mut ConversationSummary) {
+    if let Some(title) = summary.title.as_mut() {
+        sanitize_text(title);
+        // Titles are capped by their parser BEFORE reaching here, so a frame can
+        // straddle the cut and survive `sanitize_text`, which only removes whole
+        // frames. Anything from a leftover separator on is truncated frame.
+        crate::acp::agent_mentions::cut_at_route_separator(title);
+        if title.trim().is_empty() {
+            summary.title = None;
+        }
+    }
+}
+
+fn sanitize_text(text: &mut String) {
+    // Single scan short-circuit: history with no frame pays one memchr per
+    // string, not a parse attempt.
+    if !crate::acp::agent_mentions::contains_internal_agent_routes(text) {
+        return;
+    }
+    *text = crate::acp::agent_mentions::strip_internal_agent_routes(text);
 }
 
 /// Expand a leading `~` in a relocation env var, for the agents whose OWN
@@ -1296,6 +1400,223 @@ pub fn normalize_path_for_matching(path: &str) -> String {
 
 pub fn path_eq_for_matching(left: &str, right: &str) -> bool {
     normalize_path_for_matching(left) == normalize_path_for_matching(right)
+}
+
+#[cfg(test)]
+mod route_sanitizer_tests {
+
+    use super::{AgentParser, ParseError, RouteSanitized};
+    use crate::acp::agent_mentions::append_agent_routes;
+    use crate::acp::types::PromptInputBlock;
+    use crate::models::{
+        AgentType, ContentBlock, ConversationDetail, ConversationSummary, MessageTurn, TurnRole,
+    };
+
+    /// The exact bytes `append_agent_routes` puts on the wire — the same thing
+    /// every MCP-capable agent then persists into its own transcript.
+    fn routing_frame(agent_wire: &str) -> String {
+        let mut blocks = vec![PromptInputBlock::Text {
+            text: format!("ask [@A](codeg://agent/{agent_wire}) to help"),
+        }];
+        append_agent_routes(&mut blocks, true);
+        match &blocks[1] {
+            PromptInputBlock::Text { text } => text.clone(),
+            _ => unreachable!("the routing block is text"),
+        }
+    }
+
+    fn turn(role: TurnRole, text: &str) -> MessageTurn {
+        MessageTurn {
+            id: format!("{role:?}-{}", text.len()),
+            role,
+            blocks: vec![ContentBlock::Text { text: text.into() }],
+            timestamp: "2026-03-01T10:00:00Z".parse().expect("valid timestamp"),
+            usage: None,
+            duration_ms: None,
+            model: None,
+            completed_at: None,
+        }
+    }
+
+    fn summary(title: Option<&str>, message_count: u32) -> ConversationSummary {
+        ConversationSummary {
+            id: "conv-1".into(),
+            agent_type: AgentType::ClaudeCode,
+            folder_path: None,
+            folder_name: None,
+            title: title.map(str::to_string),
+            started_at: "2026-03-01T10:00:00Z".parse().expect("valid timestamp"),
+            ended_at: None,
+            message_count,
+            model: None,
+            git_branch: None,
+            parent_id: None,
+            parent_tool_use_id: None,
+            delegation_call_id: None,
+        }
+    }
+
+    struct Fixture {
+        summary: ConversationSummary,
+        turns: Vec<MessageTurn>,
+    }
+
+    impl AgentParser for Fixture {
+        fn list_conversations(&self) -> Result<Vec<ConversationSummary>, ParseError> {
+            Ok(vec![self.summary.clone()])
+        }
+        fn get_conversation(&self, _id: &str) -> Result<ConversationDetail, ParseError> {
+            Ok(ConversationDetail {
+                summary: self.summary.clone(),
+                turns: self.turns.clone(),
+                session_stats: None,
+                transcript_watermark: None,
+            })
+        }
+    }
+
+    fn sanitized(fixture: Fixture) -> ConversationDetail {
+        RouteSanitized(Box::new(fixture))
+            .get_conversation("conv-1")
+            .expect("fixture parses")
+    }
+
+    /// A title is capped by its parser BEFORE it reaches the decorator, and the
+    /// cap has no idea where the frame starts. A short first prompt puts the cut
+    /// inside the frame, leaving an opening separator and half a descriptor with
+    /// no closing one — which the whole-frame strip pass will not touch.
+    #[test]
+    fn a_title_truncated_mid_frame_leaks_no_route_metadata() {
+        let frame = routing_frame("antigravity");
+        // Exactly what `acp_native::first_prompt_title` builds: the prompt's
+        // text blocks joined with no separator, then capped at 80.
+        let truncated = super::truncate_str(format!("hi{frame}").trim(), 80);
+        assert!(
+            truncated.contains('\u{001e}')
+                && !crate::acp::agent_mentions::contains_internal_agent_routes(&truncated),
+            "fixture must straddle the frame, or it proves nothing"
+        );
+
+        let fixture = || Fixture {
+            summary: summary(Some(&truncated), 1),
+            turns: vec![turn(TurnRole::User, &format!("hi\n{frame}"))],
+        };
+        assert_eq!(sanitized(fixture()).summary.title.as_deref(), Some("hi"));
+        // The sidebar reads the list path, which never sees the turns.
+        let listed = RouteSanitized(Box::new(fixture()))
+            .list_conversations()
+            .expect("fixture parses");
+        assert_eq!(listed[0].title.as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn frames_are_stripped_from_any_agents_history_not_just_codex() {
+        // The whole point of the shared decorator: this fixture stands in for
+        // claude / gemini / opencode / … , none of which know about the frame.
+        let frame = routing_frame("antigravity");
+        let visible = "ask [@A](codeg://agent/antigravity) to help";
+        let detail = sanitized(Fixture {
+            summary: summary(Some(&format!("{visible}\n{frame}")), 2),
+            turns: vec![
+                turn(TurnRole::User, &format!("{visible}\n{frame}")),
+                turn(TurnRole::Assistant, "on it"),
+            ],
+        });
+
+        assert_eq!(detail.summary.title.as_deref(), Some(visible));
+        assert_eq!(detail.turns.len(), 2);
+        assert!(matches!(
+            detail.turns[0].blocks.as_slice(),
+            [ContentBlock::Text { text }] if text == visible
+        ));
+        assert_eq!(detail.summary.message_count, 2);
+    }
+
+    #[test]
+    fn a_route_only_user_turn_is_dropped_and_uncounted() {
+        // Some adapters persist each ACP text block as its own record; the
+        // transport-only one must not render as a phantom turn.
+        let detail = sanitized(Fixture {
+            summary: summary(Some("real prompt"), 3),
+            turns: vec![
+                turn(TurnRole::User, "real prompt"),
+                turn(TurnRole::User, &routing_frame("codex")),
+                turn(TurnRole::Assistant, "done"),
+            ],
+        });
+
+        assert_eq!(detail.turns.len(), 2);
+        assert_eq!(detail.summary.message_count, 2);
+        assert!(matches!(
+            detail.turns[0].blocks.as_slice(),
+            [ContentBlock::Text { text }] if text == "real prompt"
+        ));
+    }
+
+    #[test]
+    fn assistant_turns_and_look_alike_user_prose_are_left_alone() {
+        // Only a complete frame that re-renders byte-for-byte is removed, so
+        // prose that merely resembles one stays verbatim, on both roles. The
+        // separator is scrubbed from every prompt at ingress, so prose a user
+        // can actually type is the tag text WITHOUT it.
+        let look_alike =
+            "see <codeg_internal_agent_routes version=\"2\">note</codeg_internal_agent_routes>";
+        // Each frame carries its own nonce, so capture ONE and compare to it.
+        let echoed = routing_frame("codex");
+        let detail = sanitized(Fixture {
+            summary: summary(Some(look_alike), 2),
+            turns: vec![
+                turn(TurnRole::User, look_alike),
+                turn(TurnRole::Assistant, &echoed),
+            ],
+        });
+
+        assert_eq!(detail.summary.title.as_deref(), Some(look_alike));
+        assert_eq!(detail.turns.len(), 2);
+        assert!(matches!(
+            detail.turns[0].blocks.as_slice(),
+            [ContentBlock::Text { text }] if text == look_alike
+        ));
+        assert!(matches!(
+            detail.turns[1].blocks.as_slice(),
+            [ContentBlock::Text { text }] if text == &echoed
+        ));
+    }
+
+    /// The cut is deliberately asymmetric, so pin both halves.
+    #[test]
+    fn only_a_title_is_cut_at_a_dangling_separator() {
+        // A parser caps a title but never a turn's text, so a lone separator is
+        // evidence of a sliced frame in the first case and not in the second.
+        let dangling = "see \u{001e}<codeg_internal_agent_routes version=\"2\">no";
+        let detail = sanitized(Fixture {
+            summary: summary(Some(dangling), 1),
+            turns: vec![turn(TurnRole::User, dangling)],
+        });
+
+        assert_eq!(detail.summary.title.as_deref(), Some("see"));
+        assert!(matches!(
+            detail.turns[0].blocks.as_slice(),
+            [ContentBlock::Text { text }] if text == dangling
+        ));
+    }
+
+    #[test]
+    fn a_title_that_was_only_a_frame_falls_back_to_none() {
+        let detail = sanitized(Fixture {
+            summary: summary(Some(&routing_frame("codex")), 1),
+            turns: vec![turn(TurnRole::Assistant, "hi")],
+        });
+        assert_eq!(detail.summary.title, None);
+
+        let listed = RouteSanitized(Box::new(Fixture {
+            summary: summary(Some(&routing_frame("codex")), 1),
+            turns: Vec::new(),
+        }))
+        .list_conversations()
+        .expect("fixture lists");
+        assert_eq!(listed[0].title, None);
+    }
 }
 
 #[cfg(test)]

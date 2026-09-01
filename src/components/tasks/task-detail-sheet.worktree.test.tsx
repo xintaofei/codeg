@@ -1,9 +1,10 @@
 /**
  * The drawer's standalone worktree removal.
  *
- * A finished task can keep the checkout it ran in — both acceptances offer to
- * take it along, and both let the user say no. These pin the one affordance
- * that reclaims it afterwards: who gets it, where it sits, and that nothing is
+ * A settled task can keep the checkout it ran in — every way of stopping offers
+ * to take it along, and every one of them lets the user say no (the two
+ * acceptances, and the cancel dialog). These pin the one affordance that
+ * reclaims it afterwards: who gets it, where it sits, and that nothing is
  * removed without a confirm (git takes the directory `--force` and the branch
  * `-D`, so the click is not undoable).
  */
@@ -148,7 +149,23 @@ describe("task drawer worktree removal", () => {
     ).toBeTruthy()
   })
 
-  it("is offered only to a finished task that still has a worktree", async () => {
+  it("offers the same removal to a canceled task", async () => {
+    const user = userEvent.setup()
+    // Abandoning leaves a checkout behind exactly like finishing does, and the
+    // cancel dialog's checkbox is skippable — without this the only way to
+    // reclaim that disk was deleting the task, taking the record of why it was
+    // stopped with it.
+    mount(task({ status: "canceled" }))
+
+    await user.click(removeButton()!)
+    const confirm = await screen.findByRole("alertdialog")
+    await user.click(
+      within(confirm).getByRole("button", { name: "Delete worktree" })
+    )
+    await waitFor(() => expect(workTaskCleanup).toHaveBeenCalledWith(7))
+  })
+
+  it("is offered only to a settled task that still has a worktree", async () => {
     const { rerender } = mount(task())
     await waitFor(() => expect(removeButton()).toBeInTheDocument())
 

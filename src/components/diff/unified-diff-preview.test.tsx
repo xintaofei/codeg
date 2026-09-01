@@ -347,7 +347,7 @@ describe("UnifiedDiffPreview — side-by-side view", () => {
     // pair leaves a filler on the right.
     const rows = container.querySelectorAll(".w-max > div")
     expect(rows).toHaveLength(8)
-    for (const row of rows) expect(row).toHaveClass("min-h-[20px]")
+    for (const row of rows) expect(row).toHaveClass("min-h-[1.25rem]")
   })
 
   it("repeats the hunk marker in both panes so the rows stay level", () => {

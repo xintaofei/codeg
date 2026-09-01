@@ -159,7 +159,7 @@ export const ConversationMessageNav = memo(function ConversationMessageNav({
                     onClick={() => jump(entry.threadIndex)}
                     className="flex min-w-0 flex-1 items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-accent/40"
                   >
-                    <span className="mt-0.5 shrink-0 rounded-md border border-border bg-muted/40 px-1 text-[10px] tabular-nums text-muted-foreground">
+                    <span className="mt-0.5 shrink-0 rounded-md border border-border bg-muted/40 px-1 text-3xs tabular-nums text-muted-foreground">
                       #{entry.ordinal}
                     </span>
                     <span className="min-w-0 flex-1">
@@ -168,12 +168,12 @@ export const ConversationMessageNav = memo(function ConversationMessageNav({
                       </span>
                       {entry.hasChanges && (
                         <span className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                          <span className="rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          <span className="rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-3xs text-muted-foreground">
                             {t("fileCount", { count: uniqueFileCount })}
                           </span>
                           {/* Always render BOTH counts (incl. zeros) so a
                               one-sided change still shows its +N and -N. */}
-                          <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-[10px]">
+                          <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-3xs">
                             <span className="text-green-600 dark:text-green-400">
                               +{entry.additions}
                             </span>
@@ -257,18 +257,18 @@ export const ConversationMessageNav = memo(function ConversationMessageNav({
                               {fileNameOf(displayPath)}
                             </span>
                             {isRemoved ? (
-                              <span className="inline-flex shrink-0 items-center rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 font-mono text-[10px] text-destructive">
+                              <span className="inline-flex shrink-0 items-center rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 font-mono text-3xs text-destructive">
                                 {t("remove")}
                               </span>
                             ) : (
-                              <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
+                              <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-3xs text-foreground">
                                 <CommitFileAdditions
                                   count={file.additions}
-                                  className="text-[10px]"
+                                  className="text-3xs"
                                 />
                                 <CommitFileDeletions
                                   count={file.deletions}
-                                  className="text-[10px]"
+                                  className="text-3xs"
                                 />
                               </span>
                             )}

@@ -122,7 +122,7 @@ export function CollabAgentCard({ input, errorText, state }: Props) {
       {/* Sub-agent model + reasoning effort (codex-acp #304), execution capsule
           only. Live-side enrichment: previously visible only after reload. */}
       {showRunMeta && (
-        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <div className="flex items-center gap-1.5 text-2xs text-muted-foreground">
           <Cpu className="size-3 shrink-0" />
           {model && <span className="font-mono">{model}</span>}
           {model && reasoningEffort && <span aria-hidden>·</span>}

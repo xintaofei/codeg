@@ -53,6 +53,7 @@ import {
   buildBranchTree,
   buildRemoteBranchSections,
   localBranchItems,
+  worktreeBranchLeaves,
 } from "@/lib/branch-tree"
 import { BranchSelectorList } from "@/components/layout/branch-selector-list"
 import type {
@@ -167,6 +168,19 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
   const isRepo = head ? head.is_repo : branch !== null
   const isDetached = !branch && !!head?.detached
 
+  // Resolve this folder's HEAD ourselves when nothing else has. The workspace
+  // polls exactly ONE folder (the active tab's), and the folder row's
+  // `git_branch` column is always null — so every chip mounted for some other
+  // folder used to read `isRepo === false` and render "no branch" forever. That
+  // is what a canvas board is: many folders on screen at once, none of them the
+  // active tab. Idempotent + in-flight-deduped in the store, so N chips over M
+  // folders make M requests; the active folder's poll keeps owning freshness.
+  const ensureGitHead = useAppWorkspaceStore((s) => s.ensureGitHead)
+  useEffect(() => {
+    if (isChatMode || head || !folderId || !folderPath) return
+    ensureGitHead(folderId, folderPath)
+  }, [isChatMode, head, folderId, folderPath, ensureGitHead])
+
   const [branchList, setBranchList] = useState<GitBranchList>({
     local: [],
     remote: [],
@@ -200,6 +214,18 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
   const worktreeBranchSet = useMemo(
     () => new Set(branchList.worktree_branches),
     [branchList.worktree_branches]
+  )
+  // The worktree shortcut section: the branches this repo has checked out
+  // elsewhere, listed above Local so switching to a worktree is one place to
+  // look instead of a hunt through every local branch. They stay in the local
+  // tree too — `local` is still the full `git branch` list.
+  const worktreeLeaves = useMemo(
+    () =>
+      worktreeBranchLeaves(
+        branchList.worktree_branches,
+        branchList.main_worktree_branch
+      ),
+    [branchList.worktree_branches, branchList.main_worktree_branch]
   )
   const localNodes = useMemo(
     () => buildBranchTree(localBranchItems(branchList.local), "local"),
@@ -633,7 +659,7 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
             className="flex h-6 min-w-0 items-center gap-1.5 rounded-full px-2 text-xs text-muted-foreground outline-none transition-colors hover:bg-foreground/10 hover:text-foreground"
           >
             <GitFork className="size-3 shrink-0" />
-            <span className="max-w-[160px] truncate">{t("noBranch")}</span>
+            <span className="max-w-[10rem] truncate">{t("noBranch")}</span>
           </button>
         </PopoverTrigger>
         <PopoverContent side="top" align="start" className="w-64 p-1">
@@ -675,24 +701,32 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
             ) : (
               <GitBranch className="size-3 shrink-0 text-muted-foreground" />
             )}
-            <span className="max-w-[160px] truncate">
+            <span className="max-w-[10rem] truncate">
               {branch ?? head?.branch ?? head?.short_sha ?? t("noBranch")}
             </span>
             <ChevronDown className="size-3 shrink-0 text-muted-foreground/60" />
           </Button>
         </PopoverTrigger>
         {/* No `overflow-hidden`: the list's inner shell clips to the rounding so
-            the right-side action bubble can overflow past this edge. */}
+            the right-side action bubble can overflow past this edge.
+            `max-h-(--radix-popover-content-available-height)` is the vertical twin
+            of the `max-w` guard: the trigger sits in the status bar, so the popup
+            opens upward and its own cap (`MAX_LIST_HEIGHT_REM`, 30rem) is a rem —
+            at 250% zoom that is 1200px, taller than the space above the trigger,
+            and the top of the list ran off the window. Radix publishes the room it
+            actually has on that side; the list below is flex-shrinkable so it
+            gives way to this cap instead of overflowing it. */}
         <PopoverContent
           ref={contentRef}
           side="top"
           align="start"
           onPointerDownOutside={onPointerDownOutside}
           onFocusOutside={onFocusOutside}
-          className="w-[22rem] max-w-[calc(100vw-1rem)] p-0"
+          className="max-h-(--radix-popover-content-available-height) w-[22rem] max-w-[calc(100vw-1rem)] p-0"
         >
           <BranchSelectorList
             operations={operations}
+            worktreeLeaves={worktreeLeaves}
             localNodes={localNodes}
             remoteSections={remoteSections}
             localCount={branchList.local.length}

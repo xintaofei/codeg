@@ -208,7 +208,7 @@ function ActiveFailureStrip({
           {title}
         </span>
         {hiddenCount > 0 && (
-          <span className="shrink-0 text-[10px] font-medium opacity-70">
+          <span className="shrink-0 text-3xs font-medium opacity-70">
             {t("moreIncidents", { count: hiddenCount })}
           </span>
         )}
@@ -256,7 +256,7 @@ function ActiveFailureStrip({
         )}
       </div>
       {expanded && details && (
-        <p className="mt-1.5 ps-[22px] text-[11px] whitespace-pre-wrap break-words opacity-80">
+        <p className="mt-1.5 ps-[1.375rem] text-2xs whitespace-pre-wrap break-words opacity-80">
           {details}
         </p>
       )}
@@ -288,7 +288,7 @@ function RecoveredStrip({
     return () => clearTimeout(timer)
   }, [dismiss, id])
   return (
-    <div className="border-t border-border/50 bg-muted/30 px-4 py-1.5 text-[11px] text-muted-foreground">
+    <div className="border-t border-border/50 bg-muted/30 px-4 py-1.5 text-2xs text-muted-foreground">
       <div className="flex items-center gap-2">
         <CheckCircle2 aria-hidden="true" className="h-3 w-3 shrink-0" />
         <span className="min-w-0 flex-1 truncate">

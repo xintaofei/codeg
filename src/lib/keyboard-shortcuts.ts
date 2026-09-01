@@ -9,9 +9,19 @@ export type ShortcutActionId =
   | "open_folder"
   | "open_settings"
   | "close_current_tab"
+  | "reopen_last_closed_tab"
   | "close_all_file_tabs"
   | "next_tab"
   | "prev_tab"
+  | "switch_tab_1"
+  | "switch_tab_2"
+  | "switch_tab_3"
+  | "switch_tab_4"
+  | "switch_tab_5"
+  | "switch_tab_6"
+  | "switch_tab_7"
+  | "switch_tab_8"
+  | "switch_tab_9"
   | "send_message"
   | "newline_in_message"
   | "toggle_custom_style"
@@ -55,6 +65,9 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     id: "close_current_tab",
   },
   {
+    id: "reopen_last_closed_tab",
+  },
+  {
     id: "close_all_file_tabs",
   },
   {
@@ -63,6 +76,15 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   {
     id: "prev_tab",
   },
+  { id: "switch_tab_1" },
+  { id: "switch_tab_2" },
+  { id: "switch_tab_3" },
+  { id: "switch_tab_4" },
+  { id: "switch_tab_5" },
+  { id: "switch_tab_6" },
+  { id: "switch_tab_7" },
+  { id: "switch_tab_8" },
+  { id: "switch_tab_9" },
   {
     id: "send_message",
   },
@@ -121,9 +143,19 @@ export const DEFAULT_SHORTCUTS: ShortcutSettings = {
   open_folder: "mod+o",
   open_settings: "mod+,",
   close_current_tab: "mod+w",
+  reopen_last_closed_tab: "mod+shift+t",
   close_all_file_tabs: "mod+shift+w",
   next_tab: "mod+tab",
   prev_tab: "mod+shift+tab",
+  switch_tab_1: "mod+1",
+  switch_tab_2: "mod+2",
+  switch_tab_3: "mod+3",
+  switch_tab_4: "mod+4",
+  switch_tab_5: "mod+5",
+  switch_tab_6: "mod+6",
+  switch_tab_7: "mod+7",
+  switch_tab_8: "mod+8",
+  switch_tab_9: "mod+9",
   send_message: "enter",
   newline_in_message: "shift+enter",
   // 自定义样式的逃生舱：用户把界面改到不可用时，这一路必须仍然按得动，所以选一个
@@ -461,15 +493,55 @@ function matchesDigitRowCode(
   // Unshifted only: with Shift the digit row yields a character that belongs to
   // someone else — ")" on US, "=" on QWERTZ — and claiming it by position makes
   // one press satisfy two bindings.
-  //
-  // This narrows the positional fallback rather than closing it: the unshifted
-  // half remains, because AZERTY puts `-` on Digit6 and `_` on Digit8, so
-  // `Ctrl+-` matches both `mod+-` and `mod+6` while `shortcutsConflict` cannot
-  // see it (the recorder serialises from `key`, this matches by `code`, and the
-  // synthetic event only rebuilds the `key` form). Latent while nothing binds
-  // digits 1-9; any `Digit<N>` positional fallback has this shape.
   if (event.shiftKey) return false
+  // Same reason, for the unshifted half: AZERTY puts `-` on Digit6 and `_` on
+  // Digit8, so a bare positional match would let one `Ctrl+-` press satisfy
+  // both `mod+-` (by key) and `mod+6` (by code) — and `shortcutsConflict`
+  // cannot warn about it, because the recorder serialises from `key` while
+  // this matches by `code`. The zoom listener preventDefaults but does not
+  // stopPropagation, so both handlers really would run. Decline the position
+  // whenever the key typed a character some binding owns by name; `mod+6` is
+  // still reachable there as Shift + the digit row, which the surplus-Shift
+  // tolerance for digits in `matchShortcutEvent` already accepts.
+  const typed = eventKeyToken(event)
+  if (typed !== null && typed in PHYSICAL_KEY_SIBLINGS) return false
   return event.code === `Digit${boundKey}`
+}
+
+export const NUMBERED_TAB_ACTION_IDS = [
+  "switch_tab_1",
+  "switch_tab_2",
+  "switch_tab_3",
+  "switch_tab_4",
+  "switch_tab_5",
+  "switch_tab_6",
+  "switch_tab_7",
+  "switch_tab_8",
+  "switch_tab_9",
+] as const satisfies readonly ShortcutActionId[]
+
+/** 0-based index into the visible tab strip, or null when that tab does not exist. */
+export function pickNumberedTabId(
+  tabIds: readonly string[],
+  index: number
+): string | null {
+  if (!Number.isInteger(index) || index < 0 || index >= tabIds.length) {
+    return null
+  }
+  return tabIds[index] ?? null
+}
+
+export function numberedTabIndexFromEvent(
+  event: ShortcutEventLike,
+  shortcuts: ShortcutSettings
+): number | null {
+  for (let index = 0; index < NUMBERED_TAB_ACTION_IDS.length; index += 1) {
+    const actionId = NUMBERED_TAB_ACTION_IDS[index]
+    if (matchShortcutEvent(event, shortcuts[actionId])) {
+      return index
+    }
+  }
+  return null
 }
 
 export function matchShortcutEvent(

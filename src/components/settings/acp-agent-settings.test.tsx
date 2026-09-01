@@ -21,9 +21,11 @@ import {
   patchCodexConfigTomlText,
   patchEnvByImportantKey,
   patchImportantConfigText,
+  codexSandboxSeedsAcpPreset,
   rebaseDeepSeekDraft,
   setClaudeEnvFlagInConfigText,
   setHostToolsAgentMode,
+  showsCodexReadOnlyAcpWarning,
 } from "./acp-agent-settings"
 import { parse as parseTomlDocument } from "smol-toml"
 import type {
@@ -1936,5 +1938,33 @@ describe("important env keys", () => {
         "qmodel_38max"
       )
     ).toContain("QODER_MODEL=qmodel_38max")
+  })
+})
+
+describe("codex ACP preset disclosures", () => {
+  // Every claim the panel makes about the seeded approval preset is only true
+  // when a preset is actually seeded. `default_permissions` shadowing means
+  // `codex_initial_agent_mode` declines to map the config at all, so the
+  // session falls back to the adapter's `agent` default — whose approvals are
+  // pre-screened by a model, not routed to the user.
+  it("stops claiming a seeded preset once default_permissions shadows the keys", () => {
+    expect(codexSandboxSeedsAcpPreset(false)).toBe(true)
+    expect(codexSandboxSeedsAcpPreset(true)).toBe(false)
+  })
+
+  it("only warns about the lost read-only sandbox when codeg really seeds read-only", () => {
+    // Unshadowed read-only: codeg injects the `read-only` preset, which on
+    // codex-acp >=1.7.0 is workspace-write with `approvalsReviewer: "user"`.
+    // Both halves of the warning hold.
+    expect(showsCodexReadOnlyAcpWarning("read-only", false)).toBe(true)
+    // Shadowed: no preset is injected, so the warning's promise that every
+    // escalation reaches the user would be false — and it would sit directly
+    // under `sandboxShadowedWarning` saying the key is ignored.
+    expect(showsCodexReadOnlyAcpWarning("read-only", true)).toBe(false)
+    // Other sandbox modes never select the read-only preset ("" = unset).
+    for (const mode of ["workspace-write", "danger-full-access", ""] as const) {
+      expect(showsCodexReadOnlyAcpWarning(mode, false)).toBe(false)
+      expect(showsCodexReadOnlyAcpWarning(mode, true)).toBe(false)
+    }
   })
 })

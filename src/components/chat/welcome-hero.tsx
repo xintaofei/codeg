@@ -131,7 +131,7 @@ export function WelcomeTip() {
   const tip = TIPS[tipIndex]
 
   const kbd = (chunks: ReactNode) => (
-    <kbd className="mx-0.5 inline-flex items-center rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-foreground/80">
+    <kbd className="mx-0.5 inline-flex items-center rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[0.65625rem] font-medium text-foreground/80">
       {chunks}
     </kbd>
   )

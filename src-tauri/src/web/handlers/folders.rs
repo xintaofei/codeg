@@ -57,6 +57,14 @@ pub async fn open_folder(
     ))
 }
 
+/// Launch Visual Studio Code against a file or directory on this host.
+pub async fn open_in_code(
+    Json(params): Json<AddFolderParams>,
+) -> Result<Json<()>, AppCommandError> {
+    crate::commands::open_in::open_in_code_core(params.path).await?;
+    Ok(Json(()))
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenWorktreeFolderParams {
@@ -152,17 +160,110 @@ pub async fn remove_folder_from_workspace(
     Ok(Json(()))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReorderFoldersParams {
-    pub ids: Vec<i32>,
+pub async fn list_folder_groups(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<Vec<FolderGroupDetail>>, AppCommandError> {
+    Ok(Json(
+        folder_commands::list_folder_groups_core(&state.db).await?,
+    ))
 }
 
-pub async fn reorder_folders(
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateFolderGroupParams {
+    pub name: String,
+    #[serde(default)]
+    pub color: Option<String>,
+}
+
+pub async fn create_folder_group(
     Extension(state): Extension<Arc<AppState>>,
-    Json(params): Json<ReorderFoldersParams>,
+    Json(params): Json<CreateFolderGroupParams>,
+) -> Result<Json<FolderGroupDetail>, AppCommandError> {
+    Ok(Json(
+        folder_commands::create_folder_group_core(
+            &state.emitter,
+            &state.db,
+            params.name,
+            params.color,
+        )
+        .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateFolderGroupParams {
+    pub group_id: i32,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+}
+
+pub async fn update_folder_group(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<UpdateFolderGroupParams>,
+) -> Result<Json<FolderGroupDetail>, AppCommandError> {
+    Ok(Json(
+        folder_commands::update_folder_group_core(
+            &state.emitter,
+            &state.db,
+            params.group_id,
+            params.name,
+            params.color,
+        )
+        .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderGroupIdParams {
+    pub group_id: i32,
+}
+
+pub async fn delete_folder_group(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<FolderGroupIdParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    folder_commands::reorder_folders_core(&state.db, params.ids).await?;
+    folder_commands::delete_folder_group_core(&state.emitter, &state.db, params.group_id).await?;
+    Ok(Json(()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplySidebarLayoutParams {
+    pub entries: Vec<SidebarLayoutEntry>,
+}
+
+pub async fn apply_sidebar_layout(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ApplySidebarLayoutParams>,
+) -> Result<Json<()>, AppCommandError> {
+    folder_commands::apply_sidebar_layout_core(&state.emitter, &state.db, params.entries).await?;
+    Ok(Json(()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetFolderGroupParams {
+    pub folder_id: i32,
+    #[serde(default)]
+    pub group_id: Option<i32>,
+}
+
+pub async fn set_folder_group(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<SetFolderGroupParams>,
+) -> Result<Json<()>, AppCommandError> {
+    folder_commands::set_folder_group_core(
+        &state.emitter,
+        &state.db,
+        params.folder_id,
+        params.group_id,
+    )
+    .await?;
     Ok(Json(()))
 }
 

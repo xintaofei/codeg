@@ -582,7 +582,7 @@ export function ThreePaneMergeEditor({
             <div className="flex items-center gap-1">
               <Button
                 size="sm"
-                className="h-5 px-1.5 text-[10px]"
+                className="h-5 px-1.5 text-3xs"
                 onClick={handleApplyLeftNonConflicting}
               >
                 <ArrowRight className="mr-0.5 h-2.5 w-2.5" />
@@ -590,14 +590,14 @@ export function ThreePaneMergeEditor({
               </Button>
               <Button
                 size="sm"
-                className="h-5 px-1.5 text-[10px]"
+                className="h-5 px-1.5 text-3xs"
                 onClick={handleApplyAllNonConflicting}
               >
                 {t("applyAllNonConflicting")}
               </Button>
               <Button
                 size="sm"
-                className="h-5 px-1.5 text-[10px]"
+                className="h-5 px-1.5 text-3xs"
                 onClick={handleApplyRightNonConflicting}
               >
                 {t("applyRightNonConflicting")}

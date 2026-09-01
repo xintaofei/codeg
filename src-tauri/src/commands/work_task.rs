@@ -534,11 +534,39 @@ pub async fn work_task_return_core(
 
 /// Stop a task. `reason` is the user's optional note about WHY — it lands on
 /// the `canceled` entry of the progress timeline and nowhere else.
-pub async fn work_task_cancel_core(id: i32, reason: Option<String>) -> Result<(), DbError> {
-    engine()?
-        .cancel(id, reason)
-        .await
-        .map_err(DbError::Validation)
+///
+/// `delete_worktree` takes the checkout along, the same offer the acceptances
+/// make — except here it also destroys the work branch (`cleanup_task` deletes
+/// it outright), so a canceled task that was cleaned up has nothing left to
+/// requeue INTO; the requeued run starts from a fresh worktree. The dialog
+/// defaults the box to off for exactly that reason.
+///
+/// Cleanup runs AFTER the cancel returns, not inside it: the removal refuses
+/// while the task still has a live agent connection, and shedding that
+/// connection is the last thing [`Engine::cancel`] does. The gap that opens
+/// between the two calls is `cleanup_task`'s own problem, not this one's — it
+/// re-reads the row under the task lock precisely so a requeue landing in here
+/// cannot have its fresh checkout deleted.
+///
+/// Best-effort, like the delete path — a git failure flags a retryable
+/// `cleanup_state` on the card rather than turning a stop that already happened
+/// into an error. The one outcome that stays silent is a refusal, which by the
+/// above can only mean the task was re-claimed while we were stopping it: the
+/// worktree survives (fail-safe), and the requeue that saved it is itself on
+/// the board.
+pub async fn work_task_cancel_core(
+    id: i32,
+    reason: Option<String>,
+    delete_worktree: bool,
+) -> Result<(), DbError> {
+    let engine = engine()?;
+    engine.cancel(id, reason).await.map_err(DbError::Validation)?;
+    if delete_worktree {
+        if let Err(e) = engine.cleanup_task(id).await {
+            tracing::warn!("[work_task] cleanup during cancel of task {id}: {e}");
+        }
+    }
+    Ok(())
 }
 
 /// Dispatch the merge generation: the agent lands the task in its session and
@@ -948,8 +976,12 @@ pub async fn work_task_return(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn work_task_cancel(id: i32, reason: Option<String>) -> Result<(), DbError> {
-    work_task_cancel_core(id, reason).await
+pub async fn work_task_cancel(
+    id: i32,
+    reason: Option<String>,
+    delete_worktree: Option<bool>,
+) -> Result<(), DbError> {
+    work_task_cancel_core(id, reason, delete_worktree.unwrap_or(false)).await
 }
 
 #[cfg(feature = "tauri-runtime")]

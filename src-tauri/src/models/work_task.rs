@@ -231,6 +231,21 @@ pub struct WorkTaskFolderSettings {
     /// starts (deps install, env seeding). Not re-run on reused worktrees.
     #[serde(default)]
     pub init_command: Option<String>,
+    /// Context-window occupancy (percent, 0–100) at or above which a launch
+    /// that RESUMES the task's session compacts before it prompts: the engine
+    /// sends [`Self::compact_command`], waits for that turn to finish, and only
+    /// then sends the round's own message. `0` (the default) disables the whole
+    /// check — nothing is measured and no extra turn is ever sent.
+    ///
+    /// Only resumed launches (retry / follow-up / merge) are eligible: a fresh
+    /// session starts empty, so there is nothing to compact.
+    #[serde(default)]
+    pub auto_compact_percent: i32,
+    /// The command sent to compact, verbatim (e.g. `/compact`). Blank/`None`
+    /// resolves per agent — see `work_task::compact::resolve_compact_command`
+    /// — which is why this is an override rather than a required setting.
+    #[serde(default)]
+    pub compact_command: Option<String>,
     /// User-authored instructions appended *after* the built-in prompt of a
     /// launch stage — project conventions or personal preferences the standard
     /// wording can't cover. Keys are the stage identifiers the engine already
@@ -257,6 +272,8 @@ impl Default for WorkTaskFolderSettings {
             preflight_command_id: None,
             preflight_command: None,
             init_command: None,
+            auto_compact_percent: 0,
+            compact_command: None,
             stage_prompts: Default::default(),
         }
     }

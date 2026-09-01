@@ -29,6 +29,12 @@
 //! `TurnComplete`, the broker resolves the pending call, sends `disconnect`
 //! to the child, and returns. v2 will introduce `continue_with_session` /
 //! `close_session` tools without protocol breakage.
+//!
+//! One deliberate exception to one-shot: `resume_delegation` revives a task
+//! that was INTERRUPTED (canceled, or stranded by a crash) by re-spawning its
+//! child connection with the recorded agent session id and re-arming the same
+//! `delegation_call_id` routing — strictly a continuation of the original
+//! task, never a second iteration on it (the tool takes no task text).
 
 pub mod broker;
 pub mod companion;
@@ -55,3 +61,4 @@ pub mod types;
 pub const DELEGATE_TOOL_REWRITE_TITLE: &str = "codeg-mcp__delegate_to_agent";
 pub const STATUS_TOOL_REWRITE_TITLE: &str = "codeg-mcp__get_delegation_status";
 pub const CANCEL_TOOL_REWRITE_TITLE: &str = "codeg-mcp__cancel_delegation";
+pub const RESUME_TOOL_REWRITE_TITLE: &str = "codeg-mcp__resume_delegation";

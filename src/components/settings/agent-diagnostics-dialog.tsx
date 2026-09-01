@@ -215,7 +215,7 @@ export function AgentDiagnosticsDialog({
                             </span>
                             <span
                               className={cn(
-                                "break-all font-mono text-[11px]",
+                                "break-all font-mono text-2xs",
                                 LEVEL_TEXT[check.status]
                               )}
                             >
@@ -223,7 +223,7 @@ export function AgentDiagnosticsDialog({
                             </span>
                           </div>
                           {check.hint && (
-                            <div className="text-[11px] leading-snug text-muted-foreground/70">
+                            <div className="text-2xs leading-snug text-muted-foreground/70">
                               {check.hint}
                             </div>
                           )}
@@ -235,7 +235,7 @@ export function AgentDiagnosticsDialog({
               ))}
 
               {report.generated_at && (
-                <div className="flex items-center justify-center gap-1.5 pt-0.5 text-[11px] text-muted-foreground/60">
+                <div className="flex items-center justify-center gap-1.5 pt-0.5 text-2xs text-muted-foreground/60">
                   <Clock className="h-3 w-3" />
                   {report.generated_at}
                 </div>

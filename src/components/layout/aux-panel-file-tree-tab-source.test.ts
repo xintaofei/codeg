@@ -61,6 +61,15 @@ describe("aux file tree badges links from the node's own symlink flag", () => {
   })
 })
 
+describe("aux file tree Open in submenu includes Code", () => {
+  it("offers VS Code next to Explorer and Terminal", () => {
+    expect(auxSource).toMatch(/OpenInSubContent/)
+    expect(auxSource).toMatch(/t\("openInCode"\)/)
+    expect(auxSource).toMatch(/openInCode\(/)
+    expect(auxSource).toMatch(/t\("openInTerminal"\)/)
+  })
+})
+
 describe("use-open-file-tabs-watch external-change coverage", () => {
   it("destructures the background-reload, stale, and prefetched-apply APIs", () => {
     // Catching external changes for non-active tabs requires these APIs;

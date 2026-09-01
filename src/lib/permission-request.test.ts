@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest"
 
-import { parsePermissionOptionChanges } from "./permission-request"
+import {
+  parsePermissionOptionChanges,
+  parsePermissionToolCall,
+} from "./permission-request"
 
 function metaWith(changes: unknown[]): Record<string, unknown> {
   return { permission: { version: 1, changes } }
@@ -100,5 +103,101 @@ describe("parsePermissionOptionChanges", () => {
     expect(parsePermissionOptionChanges({ somethingElse: true })).toEqual([])
     expect(parsePermissionOptionChanges(null)).toEqual([])
     expect(parsePermissionOptionChanges(undefined)).toEqual([])
+  })
+
+  it("reads codex-acp ≥1.7.0's flat description as one scope-less change", () => {
+    // 1.7.0 dropped `changes[]`; MCP elicitation approvals now carry the
+    // explanation directly. No lifetime is sent, so no duration is claimed.
+    expect(
+      parsePermissionOptionChanges({
+        permission: {
+          version: 1,
+          description:
+            "Run the tool and remember this choice for this session.",
+        },
+      })
+    ).toEqual([
+      {
+        description: "Run the tool and remember this choice for this session.",
+        scope: null,
+      },
+    ])
+    // `changes[]` still wins where an adapter sends it (claude ≥0.64.1).
+    expect(
+      parsePermissionOptionChanges({
+        permission: {
+          version: 1,
+          description: "ignored",
+          changes: [{ description: "kept", lifetime: { scope: "session" } }],
+        },
+      })
+    ).toEqual([{ description: "kept", scope: "session" }])
+    // Same version gate as the structured form.
+    expect(
+      parsePermissionOptionChanges({
+        permission: { version: 2, description: "nope" },
+      })
+    ).toEqual([])
+  })
+})
+
+describe("parsePermissionToolCall — request-level _meta.permission", () => {
+  it("surfaces the codex reason and prefers its title over the generic one", () => {
+    // codex-acp ≥1.7.0, after the backend hoists the request meta onto the
+    // card. Before 1.7.0 this sentence WAS `toolCall.title`, so dropping it
+    // would be a straight regression on upgrade.
+    const parsed = parsePermissionToolCall({
+      toolCallId: "command-7",
+      kind: "execute",
+      status: "pending",
+      title: "Run command",
+      rawInput: { command: "npm test", cwd: "/workspace" },
+      _meta: {
+        permission: {
+          version: 1,
+          title: "Run command?",
+          description:
+            "The test suite needs to run outside the current sandbox.",
+        },
+      },
+    })
+    expect(parsed.reason).toBe(
+      "The test suite needs to run outside the current sandbox."
+    )
+    expect(parsed.description).toBe("Run command?")
+    // The standard fields stay authoritative for the action itself.
+    expect(parsed.command).toBe("npm test")
+    expect(parsed.title).toBe("Run command")
+  })
+
+  it("keeps claude's action title ahead of the permission title", () => {
+    // `_meta.claudeCode.title` names the ACTION and has always been the
+    // heading; the permission block only fills a gap claude does not leave.
+    const parsed = parsePermissionToolCall({
+      toolCallId: "t1",
+      title: "npm test",
+      _meta: {
+        claudeCode: { title: "Run the test suite" },
+        permission: { version: 1, title: "Run command?", description: "why" },
+      },
+    })
+    expect(parsed.description).toBe("Run the test suite")
+    expect(parsed.reason).toBe("why")
+  })
+
+  it("reports no reason for agents that send none, or a version it cannot read", () => {
+    expect(parsePermissionToolCall({ toolCallId: "t1" }).reason).toBeNull()
+    expect(
+      parsePermissionToolCall({
+        toolCallId: "t1",
+        _meta: { permission: { version: 1, title: "Make edits?" } },
+      }).reason
+    ).toBeNull()
+    expect(
+      parsePermissionToolCall({
+        toolCallId: "t1",
+        _meta: { permission: { version: 2, description: "unreadable" } },
+      }).reason
+    ).toBeNull()
   })
 })

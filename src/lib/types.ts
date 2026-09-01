@@ -191,6 +191,8 @@ export type ContentBlock =
       revised_prompt?: string | null
       image?: ImageData | null
       status?: ToolCallStatus | null
+      /** Real tool/page name when this card is not Codex image generation. */
+      label?: string | null
     }
   | {
       type: "tool_use"
@@ -360,7 +362,70 @@ export interface FolderDetail {
    * folder's real `path`/`id`.
    */
   alias: string | null
+  /**
+   * Sidebar folder group this folder sits in, or null for top level. Purely a
+   * sidebar-organisation concept: never consulted for cwd, agent or
+   * conversation resolution. Always null on worktree children — they follow
+   * their repo, which is what carries the whole family into a group.
+   *
+   * May name a group that no longer exists (deleted in another window between
+   * this snapshot and the group list's); `buildSidebarLayout` falls such a
+   * folder back to the top level rather than hiding it.
+   */
+  group_id: number | null
 }
+
+/**
+ * A sidebar folder group: a named, optionally colored band that holds folders.
+ * Groups never nest and never hold conversations directly.
+ *
+ * `sort_order` is its position among TOP-LEVEL siblings, sharing one numeric
+ * space with the `sort_order` of ungrouped folders — that shared sequence is
+ * what lets groups and loose folders interleave in a single list.
+ */
+export interface FolderGroupDetail {
+  id: number
+  name: string
+  /**
+   * A {@link FolderThemeColor} value, or `"inherit"` for the app theme. Tints
+   * only the group's own header row; member folders keep their own color.
+   */
+  color: string
+  sort_order: number
+}
+
+/** Which kind of sidebar entry a {@link SidebarLayoutEntry} names. */
+export type SidebarEntryKind = "folder" | "group"
+
+/**
+ * One row of the sidebar's desired layout, as submitted after a drag. The
+ * client sends the COMPLETE visible layout — the top-level sequence followed by
+ * each group's members, in render order — and the backend assigns `sort_order`
+ * from a per-container counter. Positional, so the client never computes
+ * `sort_order` values itself; idempotent, so a replay is a no-op.
+ */
+export interface SidebarLayoutEntry {
+  kind: SidebarEntryKind
+  id: number
+  /** Only meaningful for `folder` entries: the group it lands in, or null for
+   *  top level. Always null for `group` entries — groups never nest. */
+  groupId: number | null
+}
+
+/**
+ * Payload for the global `folder-group://changed` side-channel. Group CRUD
+ * carries its detail so clients apply it without a re-fetch; `layout` carries
+ * nothing on purpose — one drag rewrites `group_id`/`sort_order` across every
+ * visible folder, so a single "re-read both lists" nudge is smaller and
+ * order-independent compared to a burst of per-row upserts. Mirrors the Rust
+ * `FolderGroupChange` (serde `tag = "kind"`).
+ */
+export type FolderGroupChange =
+  | { kind: "upsert"; group: FolderGroupDetail }
+  | { kind: "deleted"; id: number }
+  | { kind: "layout" }
+
+export const FOLDER_GROUP_CHANGED_EVENT = "folder-group://changed"
 
 /**
  * Result of `createChatConversation`: the new conversation id plus the hidden
@@ -597,6 +662,103 @@ export interface ConversationsBulkChanged {
 }
 
 export const CONVERSATIONS_BULK_CHANGED_EVENT = "conversations://bulk-changed"
+
+// ─── Conversation canvas ───
+
+/** What a canvas node is bound to. Mirrors the Rust `CanvasNodeKind`. */
+export type CanvasNodeKind =
+  | "folder"
+  | "group"
+  | "agent"
+  | "conversation"
+  | "custom"
+  | "note"
+
+/** One element on the conversation canvas. Mirrors the Rust `CanvasNode`:
+ *  a binding region (folder / folder group / agent / single conversation), a
+ *  hand-curated `custom` region, or a sticky `note`. `folder_id` /
+ *  `folder_group_id` / `conversation_id` are soft references — a binding whose
+ *  target is gone renders as unresolved. */
+export interface CanvasNode {
+  id: number
+  kind: CanvasNodeKind
+  folder_id: number | null
+  /** kind=group: the sidebar folder group this region mirrors. */
+  folder_group_id: number | null
+  agent_type: string | null
+  conversation_id: number | null
+  /** kind=custom: pinned conversation ids in insertion order; `[]` otherwise. */
+  member_ids: number[]
+  title: string | null
+  content: string | null
+  color: string | null
+  collapsed: boolean
+  /**
+   * Region grid shape. `0` on an axis means AUTO — columns are derived from the
+   * region width, rows are capped by `MAX_VISIBLE_MEMBERS`. A non-zero value
+   * pins that axis, which is what makes a resize step by whole cards. Always 0
+   * on pinned cards and notes.
+   */
+  grid_columns: number
+  grid_rows: number
+  x: number
+  y: number
+  width: number
+  height: number
+  created_at: string
+  updated_at: string
+}
+
+/** Response of `canvas_list_nodes`: the full node set plus the revision it was
+ *  read at (single read transaction server-side). Seeds `lastRevision`. */
+export interface CanvasSnapshot {
+  nodes: CanvasNode[]
+  revision: number
+}
+
+/** Envelope of every canvas mutation: the result plus the revision its single
+ *  broadcast event carries. Responses never advance `lastRevision` — the event
+ *  stream is the only ordered channel (see canvas-store). */
+export interface CanvasMutation<T> {
+  value: T
+  revision: number
+}
+
+export interface CanvasNodeMovePayload {
+  id: number
+  x: number
+  y: number
+}
+
+/** Payload for the global `canvas://changed` side-channel: exactly one event
+ *  per committed mutation, carrying a dense server revision. Payloads are
+ *  full-state and idempotent, so every client — including the originator —
+ *  applies them identically. Mirrors the Rust `CanvasChange` enum. */
+export type CanvasChange =
+  | { kind: "upsert"; node: CanvasNode; revision: number }
+  | { kind: "moved"; moves: CanvasNodeMovePayload[]; revision: number }
+  | { kind: "deleted"; id: number; revision: number }
+  | {
+      kind: "detached"
+      removed_from: number | null
+      node: CanvasNode
+      revision: number
+    }
+  | {
+      kind: "grouped"
+      node: CanvasNode
+      /** Pinned cards the new region absorbed, deleted in the same commit. */
+      deleted_ids: number[]
+      revision: number
+    }
+  | {
+      kind: "pruned"
+      deleted_ids: number[]
+      updated: CanvasNode[]
+      revision: number
+    }
+
+export const CANVAS_CHANGED_EVENT = "canvas://changed"
 
 export interface DbConversationDetail {
   summary: DbConversationSummary
@@ -1517,6 +1679,10 @@ export interface ForgeIssueRow {
   draft: boolean
   labels: ForgeLabel[]
   author: string | null
+  /** The author's picture, `http(s)` only — under the same rule (and from the
+   *  same sanitizer) as `ForgeComment.author_avatar`. Rides along with the list
+   *  row on both forges, so the panel's author avatar costs no request. */
+  author_avatar: string | null
   updated_at: string | null
   html_url: string
   is_pr: boolean
@@ -1546,6 +1712,18 @@ export interface ForgeIssueList {
   has_next: boolean
   /** GitHub search timed out; this page is partial. */
   incomplete: boolean
+}
+
+/** Who a write against a folder goes out as (mirrors Rust ForgeIdentity).
+ *
+ *  Resolved by the backend from the origin remote's host and an optional
+ *  pinned account — the panel has no way to work it out, and the default
+ *  account would be the wrong answer on any folder that is not on it.
+ *  Deliberately carries no token: it is derived from the value that holds one. */
+export interface ForgeIdentity {
+  username: string
+  /** `http(s)` only, like every other avatar the panel renders. */
+  avatar_url: string | null
 }
 
 /** One human comment on a work item (mirrors Rust ForgeComment).
@@ -1583,6 +1761,169 @@ export interface ForgeCommentList {
   has_next: boolean
 }
 
+/** What the panel's state button does to an item (mirrors Rust
+ *  ForgeStateAction). Two VERBS rather than a target state — that is what
+ *  GitLab's API takes and what a button means. Merging is deliberately absent:
+ *  it is a different operation with its own preconditions, not a state. It has
+ *  its own door — see `ForgeMergeMethod`. */
+export type ForgeStateAction = "close" | "reopen"
+
+/** How a change is joined to its base branch (mirrors Rust ForgeMergeMethod).
+ *
+ *  One vocabulary, two very different offers behind it. GitHub takes the method
+ *  per merge and lets a repository forbid any of the three. GitLab takes no
+ *  method at all — the PROJECT picks between a merge commit, a rebase-merge and
+ *  a fast-forward — and the only thing a caller chooses is whether to squash,
+ *  so `rebase` never reaches it. Which is why the menu is built from
+ *  `ForgeMergeOptions` rather than from this union. */
+export type ForgeMergeMethod = "merge" | "squash" | "rebase"
+
+/** What `merge` actually DOES to the history (mirrors Rust
+ *  ForgeMergeStrategy).
+ *
+ *  The method and the result are the same question on GitHub — `merge` writes a
+ *  merge commit, full stop. On GitLab they are not: the project's own setting
+ *  picks between a merge commit, a rebase-then-merge and a fast-forward, and
+ *  the API offers no override. This is what stops the menu promising a merge
+ *  commit to a fast-forward-only project. */
+export type ForgeMergeStrategy =
+  | "merge_commit"
+  | "rebase_merge"
+  | "fast_forward"
+
+/** The merge methods one repository permits (mirrors Rust ForgeMergeOptions).
+ *
+ *  Asked for separately from `ForgeChangeDetail` and only when the panel is
+ *  about to draw the button: it is a REPOSITORY fact, and folding it into the
+ *  detail would spend a request on every change opened merely to read it. */
+export interface ForgeMergeOptions {
+  /** In the order to offer them. EMPTY means the forge would not say — a token
+   *  that reads the change but not the repository's settings gets this — and
+   *  the panel then offers `merge` alone rather than entries that can only
+   *  fail. */
+  methods: ForgeMergeMethod[]
+  /** Which one starts selected. Always a member of `methods` when that is
+   *  non-empty. */
+  default_method: ForgeMergeMethod
+  /** What `merge` will do here — see `ForgeMergeStrategy`. */
+  merge_strategy: ForgeMergeStrategy
+}
+
+/** How a check ended up, in ONE vocabulary (mirrors Rust ForgeCheckState).
+ *
+ *  GitHub crosses `status` with `conclusion` and keeps a second legacy
+ *  commit-status vocabulary; GitLab has its own eleven job statuses. All three
+ *  are folded by the backend, so this switches on five values instead of
+ *  eighteen. `neutral` is deliberately not `success`: a skipped required check
+ *  is not a pass. */
+export type ForgeCheckState =
+  | "queued"
+  | "running"
+  | "success"
+  | "failure"
+  | "neutral"
+
+/** One CI check on a change's head commit (mirrors Rust ForgeCheck). */
+export interface ForgeCheck {
+  id: string
+  name: string
+  state: ForgeCheckState
+  /** One-line detail — GitHub's status description, GitLab's stage. */
+  summary: string | null
+  /** `http(s)` only; null when the forge sent nothing usable. */
+  url: string | null
+  /** A failure here does not block the change (GitLab's `allow_failure`;
+   *  always false on GitHub, which has no per-check equivalent). */
+  allow_failure: boolean
+}
+
+/** A change's checks, and how much of the answer arrived (mirrors Rust
+ *  ForgeCheckList).
+ *
+ *  `available: false` is NOT "no checks ran" — it means the forge would not
+ *  say (a token without `checks:read`, CI disabled). An empty list under
+ *  `available: true` means nothing is configured. Collapsing the two prints
+ *  "no checks" over a repository whose pipeline is red.
+ *
+ *  `partial` is the same distinction one level down: GitHub keeps its checks
+ *  in TWO collections behind TWO fine-grained permissions, so a token granted
+ *  only one of them gets a 403 from one endpoint and an empty list from the
+ *  other. That half answer must not be drawn as a complete one. */
+export interface ForgeCheckList {
+  checks: ForgeCheck[]
+  available: boolean
+  /** Some checks could not be read; this list may be missing entries. Always
+   *  false when `available` is false — there is no partial answer to qualify. */
+  partial: boolean
+}
+
+/** What a proposed change is, beyond what its list row says (mirrors Rust
+ *  ForgeChangeDetail).
+ *
+ *  Every counter is nullable because the two forges answer different halves:
+ *  GitHub's pull object carries additions/deletions/changed_files/commits,
+ *  GitLab's merge request carries none of them. A zero would claim the change
+ *  touches nothing, so absent stays absent. */
+export interface ForgeChangeDetail {
+  number: number
+  /** Where it would land. */
+  base_ref: string
+  /** What would land. */
+  head_ref: string
+  /** `owner/repo` of the head, present ONLY when it is a fork. */
+  head_repo: string | null
+  head_sha: string | null
+  draft: boolean
+  state: string
+  /** Tri-state on BOTH forges: null is "the server has not worked it out yet"
+   *  (GitHub computes it asynchronously, GitLab says `unchecked`), which is a
+   *  different answer from false. */
+  mergeable: boolean | null
+  /** The forge's own word for the situation, for a tooltip — the two
+   *  vocabularies do not line up and a translation would read as a diagnosis. */
+  merge_state: string | null
+  additions: number | null
+  deletions: number | null
+  changed_files: number | null
+  commits: number | null
+  checks: ForgeCheckList
+}
+
+/** How a file was touched (mirrors Rust ForgeFileStatus). */
+export type ForgeFileStatus = "added" | "removed" | "modified" | "renamed"
+
+/** One file a change touches (mirrors Rust ForgeChangedFile). */
+export interface ForgeChangedFile {
+  /** Path AFTER the change (the old one for a deletion). */
+  path: string
+  /** Where a rename came from; null otherwise. */
+  previous_path: string | null
+  status: ForgeFileStatus
+  /** Null when the forge does not count — a binary file has no line counts on
+   *  either forge. */
+  additions: number | null
+  deletions: number | null
+  binary: boolean
+  /** The file's own unified diff, as the forge shipped it with the page — it
+   *  costs no extra request, the backend simply stopped discarding it.
+   *
+   *  Null means there is nothing to open onto, for either of two reasons: the
+   *  content is binary, or the forge WITHHELD the diff (GitHub omits it past
+   *  its own size limit while still reporting the line counts). Neither is an
+   *  empty diff, which is why the row offers no reveal rather than a reveal
+   *  onto nothing. */
+  patch: string | null
+}
+
+/** One page of a change's file list (mirrors Rust ForgeChangedFileList). */
+export interface ForgeChangedFileList {
+  files: ForgeChangedFile[]
+  page: number
+  per_page: number
+  /** From the forge's own pagination signal, never from the row count. */
+  has_next: boolean
+}
+
 /** A folder's `origin` remote parsed into forge coordinates. */
 export interface ForgeRemote {
   server_host: string
@@ -1591,6 +1932,12 @@ export interface ForgeRemote {
   /** Which forge this host is — decided by the backend from the configured
    *  accounts and the hostname, never chosen here. */
   provider: ForgeProviderId
+  /** Whether `provider` is KNOWN rather than assumed — an account configured
+   *  for the host, or a hostname naming one of the two forges. `false` is a
+   *  remote that parsed perfectly well but lives somewhere codeg cannot read
+   *  (Bitbucket, Gitee, a Gitea): the panel says only GitHub and GitLab are
+   *  supported rather than spending a call that fails as a raw API error. */
+  supported: boolean
 }
 
 /** Latest task (any state) for a source key — the row chip's data. */
@@ -1772,6 +2119,15 @@ export interface WorkTaskFolderSettings {
   /** Shell line run inside a freshly created worktree before the agent
    *  starts (deps install, env seeding). */
   init_command?: string | null
+  /** Context-window occupancy (percent) at or above which a round that RESUMES
+   *  the task's session compacts first: the engine sends `compact_command`,
+   *  waits for that turn to land, and only then sends the round's own message.
+   *  0 = off. A fresh session is never compacted — it starts empty. */
+  auto_compact_percent: number
+  /** The command sent to compact, verbatim (e.g. `/compact`). Null/blank
+   *  resolves per agent: what the live session advertises, else a built-in
+   *  default for the agents codeg knows first-hand. */
+  compact_command?: string | null
   /** Extra instructions appended after the built-in prompt of a launch stage.
    *  Keys are the engine's stage ids (`work` | `retry` | `return` | `merge`)
    *  plus the reserved `all`, which applies to every stage. */
@@ -2198,7 +2554,10 @@ export type AcpEvent =
       type: "session_load_failed"
       session_id: string
       message: string
-      /** Stable backend identifier — currently `"resource_not_found"`. */
+      /**
+       * Stable backend identifier: `"resource_not_found"`,
+       * `"session_unavailable"`, or `"session_archived"`.
+       */
       code: string
     }
   | {

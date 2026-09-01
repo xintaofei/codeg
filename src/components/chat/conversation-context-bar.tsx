@@ -235,11 +235,32 @@ ConversationHeaderFolderPicker.displayName = "ConversationHeaderFolderPicker"
 
 interface ConversationFolderBranchPickerProps {
   tabId?: string | null
+  /**
+   * Identity and switching for a surface that ISN'T a tab. Supplied, it
+   * replaces the tab lookup entirely.
+   *
+   * Without it this picker resolves itself from `tabId ?? activeTabId`, which
+   * for a surface with no tab of its own means "whatever tab the workspace last
+   * had open" — every canvas card showed that tab's folder and switching moved
+   * that tab, not the card. A non-tab surface has to say who it is.
+   */
+  override?: ConversationFolderPickerOverride
+}
+
+export interface ConversationFolderPickerOverride {
+  /** The conversation's folder; `null` means chat mode (no folder yet). */
+  folderId: number | null
+  /** Whether the folder can still be changed — false once the conversation is
+   *  bound, matching a tab's "only a new conversation may move". */
+  editable: boolean
+  onSelectFolder: (folderId: number, path: string) => void
+  onSelectChatMode: () => void
 }
 
 export const ConversationFolderBranchPicker = memo(
   function ConversationFolderBranchPicker({
     tabId,
+    override,
   }: ConversationFolderBranchPickerProps) {
     const t = useTranslations("Folder.conversationContextBar")
     const tabs = useTabStore((s) => s.tabs)
@@ -249,17 +270,21 @@ export const ConversationFolderBranchPicker = memo(
     const allFolders = useAppWorkspaceStore((s) => s.allFolders)
 
     const ownTab = useMemo(() => {
+      if (override) return null
       const lookupId = tabId ?? activeTabId
       return tabs.find((x) => x.id === lookupId) ?? null
-    }, [tabs, tabId, activeTabId])
+    }, [override, tabs, tabId, activeTabId])
 
-    const ownFolder = useMemo(
-      () =>
-        ownTab
-          ? (allFolders.find((f) => f.id === ownTab.folderId) ?? null)
-          : null,
-      [ownTab, allFolders]
-    )
+    const ownFolder = useMemo(() => {
+      if (override) {
+        return override.folderId != null
+          ? (allFolders.find((f) => f.id === override.folderId) ?? null)
+          : null
+      }
+      return ownTab
+        ? (allFolders.find((f) => f.id === ownTab.folderId) ?? null)
+        : null
+    }, [override, ownTab, allFolders])
 
     // The folder picker lists only top-level repos — worktree folders
     // (`parent_id != null`) are reached through the branch picker, not here, so
@@ -271,15 +296,19 @@ export const ConversationFolderBranchPicker = memo(
       [folders]
     )
 
-    if (!ownTab) return null
+    if (!override && !ownTab) return null
     // Chat mode: either a draft flagged `isChat` (no folder yet) or a bound
     // conversation whose folder is a hidden chat folder. Show the folder
     // chip (so the user can switch back to a real folder while drafting) but
     // suppress the branch picker — a folderless chat has no git branch.
-    const isChatMode = ownTab.isChat === true || ownFolder?.kind === "chat"
+    const isChatMode = override
+      ? override.folderId == null || ownFolder?.kind === "chat"
+      : ownTab!.isChat === true || ownFolder?.kind === "chat"
     if (!ownFolder && !isChatMode) return null
 
-    const isNewConversation = ownTab.conversationId == null
+    const isNewConversation = override
+      ? override.editable
+      : ownTab!.conversationId == null
     // Worktree folders surface their parent (root repo) name here; the picker's
     // own list below keeps real folder names/paths for selection, and every
     // git/path operation still uses `ownFolder` (the worktree) unchanged.
@@ -304,6 +333,13 @@ export const ConversationFolderBranchPicker = memo(
           onSelect={async (folderId) => {
             const target = folders.find((f) => f.id === folderId)
             if (!target) return
+            if (override) {
+              // The surface owns what "switch folder" means for it — a canvas
+              // card retargets its own draft rather than opening a tab.
+              override.onSelectFolder(target.id, target.path)
+              toast.success(t("toasts.folderChanged", { name: target.name }))
+              return
+            }
             try {
               // Route through openNewConversationTab so the target folder's
               // saved default agent is applied. The function's existing-
@@ -329,6 +365,11 @@ export const ConversationFolderBranchPicker = memo(
           labelChatMode={t("chatModeLabel")}
           isChatMode={isChatMode}
           onSelectChatMode={() => {
+            if (override) {
+              override.onSelectChatMode()
+              toast.success(t("toasts.switchedToChatMode"))
+              return
+            }
             try {
               openChatModeTab()
               toast.success(t("toasts.switchedToChatMode"))
@@ -363,11 +404,20 @@ ConversationFolderBranchPicker.displayName = "ConversationFolderBranchPicker"
  * otherwise-empty wrapper in that interval.
  */
 export function useConversationFolderBranchPickerVisible(
-  tabId?: string | null
+  tabId?: string | null,
+  override?: ConversationFolderPickerOverride
 ): boolean {
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
+  // An overriding surface is always its own answer: it has an identity whether
+  // or not any tab exists, and a chat-mode card has no folder to find.
+  if (override) {
+    return (
+      override.folderId == null ||
+      allFolders.some((f) => f.id === override.folderId)
+    )
+  }
   const lookupId = tabId ?? activeTabId
   const ownTab = tabs.find((x) => x.id === lookupId) ?? null
   const ownFolder = ownTab
@@ -471,7 +521,7 @@ const FolderPicker = memo(function FolderPicker({
         )}
       >
         <Folder className="size-3 shrink-0 text-muted-foreground" />
-        <span className="max-w-[140px] truncate">{currentFolderName}</span>
+        <span className="max-w-[8.75rem] truncate">{currentFolderName}</span>
         <ChevronDown className="size-3 shrink-0 text-muted-foreground/60" />
       </Button>
     )

@@ -47,11 +47,12 @@ use crate::acp::chat_authoring::{
 use crate::acp::delegation::transport::{
     client_ask_round_trip, client_cancel, client_cancel_task_round_trip, client_commit_feedback,
     client_create_automation_round_trip, client_create_work_task_round_trip,
-    client_feedback_round_trip, client_round_trip, client_session_round_trip,
-    client_status_round_trip, client_task_complete_round_trip, client_task_progress_round_trip,
-    BrokerAskRequest, BrokerCancelRequest, BrokerCancelTaskRequest, BrokerCommitFeedbackRequest,
-    BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerFeedbackRequest,
-    BrokerRequest, BrokerResponse, BrokerSessionRequest, BrokerStatusRequest,
+    client_feedback_round_trip, client_resume_task_round_trip, client_round_trip,
+    client_session_round_trip, client_status_round_trip, client_task_complete_round_trip,
+    client_task_progress_round_trip, BrokerAskRequest, BrokerCancelRequest,
+    BrokerCancelTaskRequest, BrokerCommitFeedbackRequest, BrokerCreateAutomationRequest,
+    BrokerCreateWorkTaskRequest, BrokerFeedbackRequest, BrokerRequest, BrokerResponse,
+    BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
     BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
 };
 use crate::acp::question::parse_questions;
@@ -206,7 +207,8 @@ impl CompanionFeatures {
             "task_progress" | "task_complete" => self.tasks,
             "create_automation" => self.automations,
             "create_work_task" => self.taskboard,
-            "delegate_to_agent" | "get_delegation_status" | "cancel_delegation" => self.delegation,
+            "delegate_to_agent" | "get_delegation_status" | "cancel_delegation"
+            | "resume_delegation" => self.delegation,
             _ => false,
         }
     }
@@ -244,12 +246,12 @@ pub struct CompanionContext {
 /// cancel.
 pub struct InflightEntry {
     /// Companion-minted opaque handle threaded through the broker, for the
-    /// `delegate_to_agent` tool ONLY — a `notifications/cancelled` during its
-    /// setup must tear down the just-started child via the broker's
-    /// `cancel_by_external_handle`. `None` for `get_delegation_status` /
-    /// `cancel_delegation`: canceling those round-trips only suppresses the
-    /// response (no broker-side cancel — the query/cancel itself must not touch
-    /// the task).
+    /// tools that START a child — `delegate_to_agent` and `resume_delegation`
+    /// — where a `notifications/cancelled` during setup must tear down the
+    /// just-(re)started child via the broker's `cancel_by_external_handle`.
+    /// `None` for `get_delegation_status` / `cancel_delegation`: canceling
+    /// those round-trips only suppresses the response (no broker-side cancel —
+    /// the query/cancel itself must not touch the task).
     external_handle: Option<String>,
     /// Tripped by the cancel handler to wake the round-trip task.
     cancel_tx: oneshot::Sender<()>,
@@ -582,6 +584,47 @@ async fn build_tools_call_spawn(
                 Box::pin(async move { client_cancel_task_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_task_report).await
         }
+        "resume_delegation" => {
+            let task_id = match arguments.get("task_id").and_then(|v| v.as_str()) {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => {
+                    return LineAction::Respond(err(
+                        id,
+                        -32602,
+                        "resume_delegation requires a non-empty string task_id",
+                    ));
+                }
+            };
+            // Optional interruption context; whitespace-only collapses to None
+            // so the continuation prompt never carries an empty reason line.
+            let reason = arguments
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            // Mint an external_handle like `delegate_to_agent` does: a
+            // `notifications/cancelled` during resume setup must tear the
+            // re-spawned child back down via `cancel_by_external_handle`, not
+            // merely suppress the response.
+            let external_handle = uuid::Uuid::new_v4().to_string();
+            let req = BrokerResumeTaskRequest {
+                token: ctx.token.clone(),
+                task_id,
+                reason,
+                external_handle: Some(external_handle.clone()),
+            };
+            let round_trip =
+                Box::pin(async move { client_resume_task_round_trip(&socket, &req).await });
+            register_and_spawn(
+                inflight,
+                id,
+                Some(external_handle),
+                round_trip,
+                render_task_report,
+            )
+            .await
+        }
         "check_user_feedback" => {
             let req = BrokerFeedbackRequest {
                 token: ctx.token.clone(),
@@ -731,8 +774,9 @@ async fn build_tools_call_spawn(
 }
 
 /// Register the inflight entry and build the [`SpawnedCall`] that races the
-/// broker round-trip against the cancel signal. `external_handle` is `Some` only
-/// for `delegate_to_agent` (so a cancel during setup tears the child down);
+/// broker round-trip against the cancel signal. `external_handle` is `Some`
+/// only for the child-starting tools — `delegate_to_agent` and
+/// `resume_delegation` — so a cancel during setup tears the child down;
 /// `None` for status/cancel queries (a cancel only suppresses the response).
 ///
 /// `render` maps the broker's `BrokerResponse.outcome` into the MCP `tools/call`
@@ -1579,16 +1623,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_returns_three_delegation_tools() {
+    async fn tools_list_returns_four_delegation_tools() {
         let line = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
         let resp = unwrap_respond(dispatch_for_test(line).await);
         let result = resp.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 3);
+        assert_eq!(tools.len(), 4);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"delegate_to_agent"));
         assert!(names.contains(&"get_delegation_status"));
         assert!(names.contains(&"cancel_delegation"));
+        assert!(names.contains(&"resume_delegation"));
+        // resume_delegation requires only task_id; reason is optional and
+        // there is deliberately NO task-text parameter (no new iterations).
+        let resume = tools
+            .iter()
+            .find(|t| t["name"] == "resume_delegation")
+            .unwrap();
+        assert!(resume["inputSchema"]["properties"]["task_id"].is_object());
+        assert!(resume["inputSchema"]["properties"]["reason"].is_object());
+        assert!(resume["inputSchema"]["properties"]["task"].is_null());
+        let required = resume["inputSchema"]["required"].as_array().unwrap();
+        assert_eq!(required.len(), 1);
+        assert!(required.iter().any(|v| v == "task_id"));
         // delegate_to_agent schema still enumerates all 13 agent types.
         let delegate = tools
             .iter()
@@ -2184,7 +2241,7 @@ mod tests {
             dispatch_for_test(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await,
         );
         assert!(!names.contains(&"check_user_feedback".to_string()));
-        assert_eq!(names.len(), 3);
+        assert_eq!(names.len(), 4);
     }
 
     #[tokio::test]
@@ -2193,7 +2250,7 @@ mod tests {
             dispatch_with_features(BOTH, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await,
         );
         assert!(names.contains(&"check_user_feedback".to_string()));
-        assert_eq!(names.len(), 4);
+        assert_eq!(names.len(), 5);
     }
 
     #[tokio::test]
@@ -2246,6 +2303,54 @@ mod tests {
         .to_string();
         let resp = unwrap_respond(dispatch_with_features(FEEDBACK_ONLY, &line).await);
         assert_eq!(resp.error.unwrap().code, -32602);
+    }
+
+    // -- resume_delegation validation + feature gating -----------------------
+
+    #[tokio::test]
+    async fn resume_requires_task_id() {
+        for arguments in [json!({}), json!({"task_id": ""}), json!({"task_id": 42})] {
+            let line = json!({
+                "jsonrpc": "2.0", "id": 33, "method": "tools/call",
+                "params": { "name": "resume_delegation", "arguments": arguments }
+            })
+            .to_string();
+            let resp = unwrap_respond(dispatch_for_test(&line).await);
+            let e = resp.error.unwrap();
+            assert_eq!(e.code, -32602);
+            assert!(e.message.contains("task_id"));
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_spawns_with_valid_args() {
+        // Well-formed calls (with or without a reason) go async — the UDS
+        // round-trip fails later against the dead socket, but dispatch itself
+        // must accept the shape and register the inflight entry.
+        for arguments in [
+            json!({"task_id": "t-1"}),
+            json!({"task_id": "t-1", "reason": "app crashed"}),
+        ] {
+            let line = json!({
+                "jsonrpc": "2.0", "id": 34, "method": "tools/call",
+                "params": { "name": "resume_delegation", "arguments": arguments }
+            })
+            .to_string();
+            assert!(matches!(dispatch_for_test(&line).await, LineAction::Spawn(_)));
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_rejected_as_unknown_when_delegation_off() {
+        let line = json!({
+            "jsonrpc": "2.0", "id": 35, "method": "tools/call",
+            "params": { "name": "resume_delegation", "arguments": {"task_id": "t-1"} }
+        })
+        .to_string();
+        let resp = unwrap_respond(dispatch_with_features(FEEDBACK_ONLY, &line).await);
+        let e = resp.error.unwrap();
+        assert_eq!(e.code, -32602);
+        assert!(e.message.contains("unknown tool"));
     }
 
     // -- ask_user_question feature gating + validation + rendering ----------

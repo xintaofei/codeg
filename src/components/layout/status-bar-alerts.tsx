@@ -105,7 +105,7 @@ function AlertActionButton({ action }: { action: AlertAction }) {
   return (
     <button
       onClick={handleClick}
-      className="text-[10px] px-1.5 py-0.5 rounded bg-accent hover:bg-accent/80 text-accent-foreground transition-colors"
+      className="text-3xs px-1.5 py-0.5 rounded bg-accent hover:bg-accent/80 text-accent-foreground transition-colors"
     >
       {action.label}
     </button>
@@ -130,7 +130,7 @@ function AlertEvidence({ text }: { text: string }) {
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         aria-expanded={open}
-        className="flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+        className="flex items-center gap-0.5 text-3xs text-muted-foreground hover:text-foreground transition-colors"
       >
         <ChevronRight
           className={cn(
@@ -141,7 +141,7 @@ function AlertEvidence({ text }: { text: string }) {
         {t("details")}
       </button>
       {open && (
-        <pre className="mt-1 max-h-40 overflow-y-auto rounded bg-muted/60 p-1.5 font-mono text-[10px] leading-relaxed text-muted-foreground whitespace-pre-wrap break-words select-text">
+        <pre className="mt-1 max-h-40 overflow-y-auto rounded bg-muted/60 p-1.5 font-mono text-3xs leading-relaxed text-muted-foreground whitespace-pre-wrap break-words select-text">
           {text}
         </pre>
       )}
@@ -188,7 +188,7 @@ export function StatusBarAlerts() {
                 <div className="flex-1 min-w-0">
                   <div className="break-words">{alert.message}</div>
                   {alert.detail && (
-                    <div className="text-[10px] text-muted-foreground mt-0.5 break-all whitespace-pre-wrap">
+                    <div className="text-3xs text-muted-foreground mt-0.5 break-all whitespace-pre-wrap">
                       {alert.detail}
                     </div>
                   )}

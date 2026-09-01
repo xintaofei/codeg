@@ -111,14 +111,18 @@ pub struct ScheduleParams {
     pub scheduled_at: Option<String>,
 }
 
-/// A cancel that may carry the user's reason for stopping the task. Like
-/// `RestartParams`, the note defaults so `{ "id": 1 }` still deserializes.
+/// A cancel that may carry the user's reason for stopping the task, and
+/// whether to take the worktree along. Like `RestartParams`, both default so
+/// `{ "id": 1 }` still deserializes.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CancelParams {
     pub id: i32,
     #[serde(default)]
     pub reason: Option<String>,
+    /// Take the worktree (and its work branch) along with the stop.
+    #[serde(default)]
+    pub delete_worktree: bool,
 }
 
 #[derive(Deserialize)]
@@ -350,7 +354,7 @@ pub async fn work_task_return(
 pub async fn work_task_cancel(
     Json(params): Json<CancelParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    core::work_task_cancel_core(params.id, params.reason)
+    core::work_task_cancel_core(params.id, params.reason, params.delete_worktree)
         .await
         .map_err(AppCommandError::from)?;
     Ok(Json(()))

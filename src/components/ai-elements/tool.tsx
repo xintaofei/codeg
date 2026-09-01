@@ -273,7 +273,7 @@ function renderErrorText(errorText: string): ReactNode {
         <div className="space-y-2 p-3">
           {entries.map(([key, value]) => (
             <div key={key} className="space-y-1">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-destructive/80">
+              <div className="text-2xs font-medium uppercase tracking-wide text-destructive/80">
                 {key}
               </div>
               <pre className="whitespace-pre-wrap break-words font-mono text-xs text-destructive">

@@ -53,6 +53,7 @@ function folder(over: Partial<FolderDetail> & { id: number }): FolderDetail {
     parent_id: null,
     kind: "regular",
     alias: null,
+    group_id: null,
     ...over,
   }
 }

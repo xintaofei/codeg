@@ -1495,7 +1495,7 @@ function FileContentLines({
       : "flex"
 
   return (
-    <div className="inline-block min-w-full font-mono text-[12px] leading-[20px]">
+    <div className="inline-block min-w-full font-mono text-xs leading-[1.25rem]">
       {lines.map((line, i) => (
         <div key={i} className={rowClass}>
           <span className="w-[3.5rem] shrink-0 select-none pr-1 text-right text-muted-foreground/40">
@@ -1550,9 +1550,9 @@ function FileToolInput({
   }, [isRead, output, content, newSource])
 
   return (
-    <section className="flex max-h-[420px] flex-col rounded-lg border border-border bg-background">
-      <header className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/40 px-3 py-2 text-[11px]">
-        <span className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
+    <section className="flex max-h-[26.25rem] flex-col rounded-lg border border-border bg-background">
+      <header className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/40 px-3 py-2 text-2xs">
+        <span className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-3xs text-muted-foreground">
           {isRead ? "READ" : "WRITE"}
         </span>
         {/* No path in the input is not worth an "unknown" placeholder: the
@@ -1571,7 +1571,7 @@ function FileToolInput({
           <span className="min-w-0 flex-1" />
         )}
         {badges.length > 0 && (
-          <span className="ml-auto inline-flex shrink-0 items-center gap-2 text-[10px] text-muted-foreground">
+          <span className="ml-auto inline-flex shrink-0 items-center gap-2 text-3xs text-muted-foreground">
             {badges.map((b) => (
               <span key={b}>{b}</span>
             ))}
@@ -1907,7 +1907,7 @@ function StructuredToolInput({
     isTruncatedInput(input)
 
   const truncationBanner = truncated ? (
-    <div className="rounded-md bg-yellow-500/10 px-2.5 py-1.5 text-[11px] text-yellow-700 dark:text-yellow-400">
+    <div className="rounded-md bg-yellow-500/10 px-2.5 py-1.5 text-2xs text-yellow-700 dark:text-yellow-400">
       {t("inputTruncated")}
     </div>
   ) : null
@@ -2231,11 +2231,13 @@ function parseCliExecutionEnvelope(text: string): {
 const TextPart = memo(function TextPart({
   text,
   isUser = false,
+  isStreaming = false,
 }: {
   text: string
   // User messages render as plain text + inline reference badges (no Markdown),
   // matching the plain-text composer. Assistant / system text keeps full Markdown.
   isUser?: boolean
+  isStreaming?: boolean
 }) {
   if (isUser) {
     return (
@@ -2246,7 +2248,12 @@ const TextPart = memo(function TextPart({
   }
   return (
     <div className='break-words text-sm prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside [&_[data-streamdown="code-block-body"]]:max-h-96 [&_[data-streamdown="code-block-body"]]:overflow-auto'>
-      <MessageResponse>{text}</MessageResponse>
+      <MessageResponse
+        mode={isStreaming ? "streaming" : "static"}
+        parseIncompleteMarkdown={isStreaming}
+      >
+        {text}
+      </MessageResponse>
     </div>
   )
 })
@@ -2399,7 +2406,7 @@ const ToolCallPart = memo(function ToolCallPart({
     return (
       <span className="flex items-center gap-1.5 text-xs font-medium">
         {codexScript?.label && (
-          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+          <span className="rounded-full bg-muted px-1.5 py-0.5 text-3xs font-medium text-muted-foreground">
             {codexScript.label}
           </span>
         )}
@@ -2422,7 +2429,7 @@ const ToolCallPart = memo(function ToolCallPart({
         )}
         {backgroundLaunch && (
           <span
-            className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+            className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-3xs font-medium text-muted-foreground"
             title={backgroundLaunch.taskId}
           >
             <TerminalIcon className="size-3" />
@@ -2747,7 +2754,7 @@ const ToolCallPart = memo(function ToolCallPart({
           )}
           {taskProgress && (
             <div className="mt-2 rounded-md border bg-muted/30 px-3 py-2">
-              <div className="text-[11px] font-medium text-muted-foreground mb-1">
+              <div className="text-2xs font-medium text-muted-foreground mb-1">
                 Progress
               </div>
               <div className="text-xs prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside">
@@ -2810,14 +2817,14 @@ const ToolCallPart = memo(function ToolCallPart({
          * as this command's own result.
          */}
         {codexScript?.sharedWith.length ? (
-          <div className="text-[11px] text-muted-foreground">
+          <div className="text-2xs text-muted-foreground">
             {t("codexScript.sharedWith", {
               commands: codexScript.sharedWith.join(", "),
             })}
           </div>
         ) : null}
         {codexScript?.outputMissing && (
-          <div className="text-[11px] text-muted-foreground">
+          <div className="text-2xs text-muted-foreground">
             {t("codexScript.outputMissing")}
           </div>
         )}
@@ -2835,7 +2842,7 @@ const ToolCallPart = memo(function ToolCallPart({
                   className="max-h-80"
                 />
                 {liveOutputTruncated && (
-                  <div className="text-[11px] text-muted-foreground">
+                  <div className="text-2xs text-muted-foreground">
                     {t("showingTailOutput")}
                   </div>
                 )}
@@ -3028,11 +3035,13 @@ const ToolGroupPart = memo(function ToolGroupPart({
 interface ContentPartsRendererProps {
   parts: AdaptedContentPart[]
   role?: MessageRole
+  isStreaming?: boolean
 }
 
 export const ContentPartsRenderer = memo(function ContentPartsRenderer({
   parts,
   role,
+  isStreaming = false,
 }: ContentPartsRendererProps) {
   const renderPart = (part: AdaptedContentPart, keyId: string): ReactNode => {
     if (part.type === "text") {
@@ -3041,6 +3050,7 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
           key={`text-${keyId}`}
           text={part.text}
           isUser={role === "user"}
+          isStreaming={isStreaming}
         />
       )
     }
@@ -3095,6 +3105,7 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
       return (
         <GeneratedImagesBlock
           key={`gimg-${keyId}`}
+          label={part.label}
           revisedPrompt={part.revisedPrompt}
           image={part.image}
           status={part.status}

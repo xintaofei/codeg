@@ -108,7 +108,7 @@ export const FolderHeaderRow = memo(function FolderHeaderRow({
         ))}
       </span>
       {!folder.exists_in_codeg && (
-        <Badge variant="secondary" className="shrink-0 text-[10px]">
+        <Badge variant="secondary" className="shrink-0 text-3xs">
           {t("folderNew")}
         </Badge>
       )}
@@ -162,12 +162,12 @@ export const SessionRow = memo(function SessionRow({
         {title}
       </span>
       {session.status === "imported" && (
-        <Badge variant="outline" className="shrink-0 text-[10px]">
+        <Badge variant="outline" className="shrink-0 text-3xs">
           {t("statusImported")}
         </Badge>
       )}
       {session.status === "deleted" && (
-        <Badge variant="destructive" className="shrink-0 text-[10px]">
+        <Badge variant="destructive" className="shrink-0 text-3xs">
           {t("statusDeleted")}
         </Badge>
       )}

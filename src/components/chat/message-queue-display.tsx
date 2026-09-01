@@ -49,7 +49,7 @@ function QueueItem({
       dragListener={false}
       dragControls={dragControls}
       className={cn(
-        "flex items-center gap-1 rounded-md border px-1.5 py-1 text-[10px] leading-none select-none [text-box-trim:both] [text-box-edge:cap_alphabetic]",
+        "flex items-center gap-1 rounded-md border px-1.5 py-1 text-3xs leading-none select-none [text-box-trim:both] [text-box-edge:cap_alphabetic]",
         "bg-muted/40 border-border/70",
         isEditing && "border-primary/50 bg-primary/5"
       )}
@@ -61,10 +61,10 @@ function QueueItem({
       >
         <GripVertical className="h-3 w-3 text-muted-foreground/60" />
       </button>
-      <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">
+      <span className="shrink-0 font-mono text-3xs text-muted-foreground/70">
         #{index + 1}
       </span>
-      <span className="min-w-0 flex-1 truncate text-[10px] text-foreground/80">
+      <span className="min-w-0 flex-1 truncate text-3xs text-foreground/80">
         {item.draft.displayText}
       </span>
       <button

@@ -35,6 +35,13 @@ export interface ParsedPermissionToolCall {
    * agent supplied none; the dialog then falls back to `title`.
    */
   description: string | null
+  /**
+   * The agent's stated REASON for asking, from `_meta.permission.description`
+   * (codex-acp ≥1.7.0, hoisted onto the tool call by the backend). Distinct
+   * from {@link description}, which names the ACTION; this says why it needs
+   * approval. Null for every agent that sends no such block.
+   */
+  reason: string | null
   normalizedKind: string
   command: string | null
   cwd: string | null
@@ -773,20 +780,34 @@ export function parsePermissionToolCall(
     pickString(toolCallObj, ["title", "tool_name", "toolName", "name"]) ??
     formatFallbackTitle(normalizedKind)
 
-  // `_meta.claudeCode.title` — NOTE the underscore key: the permission
-  // request forwards the raw ACP ToolCallUpdate serialization (serde renames
-  // `meta` → `_meta`), unlike tool parts whose event field is plain `meta`.
+  // NOTE the underscore key: the permission request forwards the raw ACP
+  // ToolCallUpdate serialization (serde renames `meta` → `_meta`), unlike tool
+  // parts whose event field is plain `meta`.
+  const metaObj = asObject(pickValue(toolCallObj, ["_meta"]))
+
+  // `_meta.claudeCode.title` (claude-agent-acp ≥0.63), else `_meta.permission
+  // .title` — the backend hoists the latter off the REQUEST for codex-acp
+  // ≥1.7.0, whose four fixed titles ("Run command?", "Make edits?", …) read
+  // better as a heading than the generic `toolCall.title` beside them
+  // ("Run command", "Edit files").
   const description =
-    pickString(
-      asObject(
-        pickValue(asObject(pickValue(toolCallObj, ["_meta"])), ["claudeCode"])
-      ),
-      ["title"]
-    ) ?? null
+    pickString(asObject(pickValue(metaObj, ["claudeCode"])), ["title"]) ??
+    pickString(asObject(pickValue(metaObj, ["permission"])), ["title"]) ??
+    null
+
+  // Why the agent needs this approval, in its own words. codex-acp ≥1.7.0 puts
+  // Codex's `reason` here; before 1.7.0 the same sentence WAS `toolCall.title`,
+  // so leaving it unread would quietly drop the most decision-relevant line on
+  // the card. Only `version: 1` is honoured — a reshaped revision is better
+  // shown as nothing than half-understood.
+  const reason = parsePermissionMetaDescription(
+    pickValue(metaObj, ["permission"])
+  )
 
   return {
     title,
     description,
+    reason,
     normalizedKind,
     command,
     cwd,
@@ -867,24 +888,46 @@ function parseChangeScope(lifetime: unknown): PermissionChangeScope | null {
 }
 
 /**
+ * The plain `description` of a version-1 `_meta.permission` block, trimmed to the
+ * card's budget. Shared by the request level and the flat option form; the
+ * `changes[]` form is parsed by {@link parsePermissionOptionChanges} instead.
+ *
+ * Only `version: 1` is honoured — a future revision may reshape the block, and
+ * showing it half-understood is worse than showing nothing.
+ */
+function parsePermissionMetaDescription(permission: unknown): string | null {
+  const record = asObject(permission)
+  if (!record || record.version !== 1) return null
+  const description = pickString(record, ["description"])
+  return description ? description.slice(0, MAX_PERMISSION_CHANGE_CHARS) : null
+}
+
+/**
  * What picking a permission option would change: the agent's own sentence for
  * each change, plus how long it lasts.
  *
- * codex-acp ≥1.1.8 (#342) and claude-agent-acp ≥0.64.1 (#930) both hang
- * `_meta.permission = {version: 1, changes: [...]}` on a `PermissionOption`,
- * where every change carries a rendered English sentence ("Allow access to
- * api.example.com for this session", "Allow all Bash calls"). Only `version: 1`
- * is read — a future revision may reshape `changes`, and showing it
- * half-understood is worse than showing nothing.
+ * Two shapes, both under `_meta.permission` on a `PermissionOption`:
  *
- * `lifetime` is read because `description` alone does NOT always answer "for how
- * long": codex writes the duration into its sentences, claude does not — it
- * reports `{scope: "session"}` vs `{scope: "persistent", storage: "project"}`
- * structurally instead. Left unread, claude's most common card would pair an
- * "Always Allow" button with "Allow all Bash calls" and never reveal that the
- * grant expires with the session (or, worse, that it is about to be written into
- * settings the repo commits). The remaining structural fields (`targets`,
- * `ruleBehavior`) stay ignored: those `description` really does summarize.
+ * - `{version: 1, changes: [...]}` — claude-agent-acp ≥0.64.1 (#930) and
+ *   codex-acp 1.1.8–1.6.2 (#342). Every change carries a rendered English
+ *   sentence ("Allow access to api.example.com for this session", "Allow all
+ *   Bash calls").
+ * - `{version: 1, description}` — codex-acp ≥1.7.0, which dropped `changes[]`
+ *   entirely. It sends this only on MCP elicitation approvals ("Run the tool and
+ *   remember this choice for this session."); command and file-change options
+ *   now spell the grant out in the option NAME instead, which the button already
+ *   renders. Read as a single scope-less change so those cards keep their
+ *   per-option explanation.
+ *
+ * `lifetime` is read (in the `changes[]` form) because `description` alone does
+ * NOT always answer "for how long": codex wrote the duration into its sentences,
+ * claude does not — it reports `{scope: "session"}` vs `{scope: "persistent",
+ * storage: "project"}` structurally instead. Left unread, claude's most common
+ * card would pair an "Always Allow" button with "Allow all Bash calls" and never
+ * reveal that the grant expires with the session (or, worse, that it is about to
+ * be written into settings the repo commits). The remaining structural fields
+ * (`targets`, `ruleBehavior`) stay ignored: those `description` really does
+ * summarize. codex's flat form carries no lifetime at all, hence `scope: null`.
  */
 export function parsePermissionOptionChanges(
   meta: Record<string, unknown> | null | undefined
@@ -892,7 +935,10 @@ export function parsePermissionOptionChanges(
   const permission = asObject(pickValue(asObject(meta), ["permission"]))
   if (!permission || permission.version !== 1) return []
   const changes = permission.changes
-  if (!Array.isArray(changes)) return []
+  if (!Array.isArray(changes)) {
+    const description = parsePermissionMetaDescription(permission)
+    return description ? [{ description, scope: null }] : []
+  }
   const out: PermissionOptionChange[] = []
   for (const change of changes) {
     if (out.length >= MAX_PERMISSION_CHANGES) break

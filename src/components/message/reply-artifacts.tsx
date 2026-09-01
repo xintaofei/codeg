@@ -141,7 +141,7 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
             <span className="text-xs font-medium text-foreground">
               {t("newFilesTitle")}
             </span>
-            <span className="rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            <span className="rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-3xs text-muted-foreground">
               {t("fileCount", { count: addedFiles.length })}
             </span>
             <ChevronRight
@@ -192,7 +192,7 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                                   {name}
                                 </span>
                                 {dir && (
-                                  <span className="truncate text-[10px] text-muted-foreground">
+                                  <span className="truncate text-3xs text-muted-foreground">
                                     {dir}
                                   </span>
                                 )}
@@ -200,7 +200,7 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                               {file.additions > 0 && (
                                 <CommitFileAdditions
                                   count={file.additions}
-                                  className="shrink-0 font-mono text-[10px]"
+                                  className="shrink-0 font-mono text-3xs"
                                 />
                               )}
                             </button>
@@ -249,12 +249,12 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
             <span className="text-xs font-medium text-foreground">
               {t("title")}
             </span>
-            <span className="rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            <span className="rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-3xs text-muted-foreground">
               {t("fileCount", { count: changedFiles.length })}
             </span>
             {/* Always render BOTH counts (incl. zeros) so a one-sided reply
                 still shows its +N and -N. */}
-            <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-[10px]">
+            <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-3xs">
               <span className="text-green-600 dark:text-green-400">
                 +{totalAdditions}
               </span>
@@ -305,12 +305,12 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                               {name}
                             </span>
                             {dir && (
-                              <span className="truncate text-[10px] text-muted-foreground">
+                              <span className="truncate text-3xs text-muted-foreground">
                                 {dir}
                               </span>
                             )}
                           </span>
-                          <span className="inline-flex shrink-0 items-center rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 font-mono text-[10px] text-destructive">
+                          <span className="inline-flex shrink-0 items-center rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 font-mono text-3xs text-destructive">
                             {t("remove")}
                           </span>
                         </div>
@@ -339,19 +339,19 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                                   {name}
                                 </span>
                                 {dir && (
-                                  <span className="truncate text-[10px] text-muted-foreground">
+                                  <span className="truncate text-3xs text-muted-foreground">
                                     {dir}
                                   </span>
                                 )}
                               </span>
-                              <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[10px]">
+                              <span className="inline-flex shrink-0 items-center gap-1 font-mono text-3xs">
                                 <CommitFileAdditions
                                   count={file.additions}
-                                  className="text-[10px]"
+                                  className="text-3xs"
                                 />
                                 <CommitFileDeletions
                                   count={file.deletions}
-                                  className="text-[10px]"
+                                  className="text-3xs"
                                 />
                               </span>
                             </button>

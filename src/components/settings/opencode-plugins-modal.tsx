@@ -135,7 +135,7 @@ export function OpencodePluginsModal({
 
         <div className="space-y-4 overflow-y-auto flex-1">
           {summary && (
-            <div className="text-[11px] text-muted-foreground space-y-0.5">
+            <div className="text-2xs text-muted-foreground space-y-0.5">
               <div>Config: {summary.config_path}</div>
               <div>Cache: {summary.cache_dir}</div>
             </div>
@@ -166,12 +166,12 @@ export function OpencodePluginsModal({
                             ? "secondary"
                             : "destructive"
                         }
-                        className="text-[10px] px-1.5 py-0"
+                        className="text-3xs px-1.5 py-0"
                       >
                         {t(`opencodePlugins.status.${plugin.status}`)}
                       </Badge>
                       {plugin.installed_version && (
-                        <span className="text-[10px] text-muted-foreground">
+                        <span className="text-3xs text-muted-foreground">
                           v{plugin.installed_version}
                         </span>
                       )}
@@ -244,7 +244,7 @@ export function OpencodePluginsModal({
           )}
 
           {stream.status !== "idle" && (
-            <div className="rounded-md border bg-muted/50 text-muted-foreground p-3 max-h-[200px] overflow-y-auto font-mono text-[11px] leading-relaxed">
+            <div className="rounded-md border bg-muted/50 text-muted-foreground p-3 max-h-[12.5rem] overflow-y-auto font-mono text-2xs leading-relaxed">
               {stream.logs.map((line, i) => (
                 <div
                   key={i}

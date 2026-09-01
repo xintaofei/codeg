@@ -68,14 +68,14 @@ export function SessionRow({ session }: SessionRowProps) {
               getAgentLabel(session.agentType)}
           </span>
           {parent ? (
-            <span className="truncate text-[11px] text-muted-foreground">
+            <span className="truncate text-2xs text-muted-foreground">
               {t("panel.subAgentOf")} ·{" "}
               {formatConversationTitle(parent.title) ||
                 getAgentLabel(parent.agentType)}
             </span>
           ) : null}
         </span>
-        <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
+        <span className="flex shrink-0 items-center gap-1 text-2xs text-muted-foreground">
           <span
             className={cn(
               "h-1.5 w-1.5 rounded-full",

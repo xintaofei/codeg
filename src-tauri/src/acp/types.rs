@@ -367,15 +367,17 @@ pub enum AcpEvent {
     /// text chunks), so severity-`warning` records take over the retry-banner
     /// role on those connections.
     SessionFailure { record: SessionFailureRecord },
-    /// `session/load` failed in a non-recoverable way (e.g. the agent has no
-    /// record of this `session_id`). Emitted instead of silently falling back
-    /// to `session/new`, so the frontend can surface the failure with reload
-    /// / new-conversation actions.
+    /// `session/load` failed in a way codeg cannot paper over — the agent has
+    /// no record of this `session_id`, the session/process died, or it is
+    /// archived. Emitted instead of silently falling back to `session/new`, so
+    /// the frontend can surface the failure with reload / new-conversation
+    /// actions.
     SessionLoadFailed {
         session_id: String,
         message: String,
-        /// Stable machine-readable identifier — currently
-        /// `"resource_not_found"` for JSON-RPC -32002.
+        /// Stable machine-readable identifier: `"resource_not_found"` for
+        /// JSON-RPC -32002, or `"session_unavailable"` / `"session_archived"`
+        /// matched on the wire message. See `classify_session_load_failure`.
         code: String,
     },
     /// Available slash commands updated

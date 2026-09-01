@@ -18,6 +18,8 @@ import type {
   AgentSkillContent,
   FolderHistoryEntry,
   FolderDetail,
+  FolderGroupDetail,
+  SidebarLayoutEntry,
   FolderLinkDetail,
   FolderLinkPlan,
   FolderLinkRequestItem,
@@ -590,8 +592,39 @@ export async function removeFolderFromWorkspace(
   return invoke("remove_folder_from_workspace", { folderId })
 }
 
-export async function reorderFolders(ids: number[]): Promise<void> {
-  return invoke("reorder_folders", { ids })
+export async function listFolderGroups(): Promise<FolderGroupDetail[]> {
+  return invoke("list_folder_groups", {})
+}
+
+export async function createFolderGroup(
+  name: string,
+  color?: string
+): Promise<FolderGroupDetail> {
+  return invoke("create_folder_group", { name, color })
+}
+
+export async function updateFolderGroup(
+  groupId: number,
+  patch: { name?: string; color?: string }
+): Promise<FolderGroupDetail> {
+  return invoke("update_folder_group", { groupId, ...patch })
+}
+
+export async function deleteFolderGroup(groupId: number): Promise<void> {
+  return invoke("delete_folder_group", { groupId })
+}
+
+export async function applySidebarLayout(
+  entries: SidebarLayoutEntry[]
+): Promise<void> {
+  return invoke("apply_sidebar_layout", { entries })
+}
+
+export async function setFolderGroup(
+  folderId: number,
+  groupId: number | null
+): Promise<void> {
+  return invoke("set_folder_group", { folderId, groupId })
 }
 
 export async function importLocalConversations(

@@ -219,7 +219,8 @@ export interface TabContextValue {
     pin?: boolean,
     title?: string
   ) => void
-  closeTab: (tabId: string) => void
+  /** See `TabStoreState.closeTab` for `recordForReopen`. */
+  closeTab: (tabId: string, options?: { recordForReopen?: boolean }) => void
   closeConversationTab: (
     folderId: number,
     conversationId: number,

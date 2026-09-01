@@ -476,9 +476,39 @@ const remarkPlugins = [
 // MarkdownLink → ReferenceBadge. See rehype-allow-codeg for the full rationale.
 const rehypePlugins = rehypePluginsAllowingCodeg(defaultRehypePlugins)
 
+/**
+ * How finished Markdown renders. Streamdown defaults to `mode="streaming"` +
+ * remend; remend 1.2.0 appends a closer after spans that are ALREADY complete —
+ * a glob inside code (`` `foo/*` ``), an identifier like `_meta` / `_blank` —
+ * so a finished reply grew a stray `*` / `_`. When the reply ends exactly at a
+ * closing fence that `_` lands after the final ```, the fence stops closing and
+ * the backticks become code content (#555).
+ *
+ * `mode` is the half that does the work, and it is NOT interchangeable with
+ * the other one. Streamdown runs remend only when `mode === "streaming" &&
+ * parseIncompleteMarkdown`, so static already bypasses it — but static is also
+ * the only half that repaints: Streamdown's own memo compares `mode` and NOT
+ * `parseIncompleteMarkdown`, so at the live → finished flip, with the text
+ * unchanged (the common case — the last delta already carried the whole
+ * reply), flipping only `parseIncompleteMarkdown` leaves the remended DOM on
+ * screen. `parseIncompleteMarkdown` is therefore redundant while `mode` is
+ * static, and kept as an explicit invariant: it is what keeps a caller who
+ * passes `mode="streaming"` for finished content from re-growing the closer.
+ *
+ * The impl default and the memo comparator below must agree on these, or a
+ * caller passing the default explicitly would compare unequal to one omitting
+ * it — hence the shared constants.
+ */
+const FINISHED_MODE = "static" as const
+const FINISHED_PARSE_INCOMPLETE_MARKDOWN = false
+
 function MessageResponseImpl({
   className,
   children,
+  // Finished content by default; a live turn opts back into remend by passing
+  // `mode="streaming" parseIncompleteMarkdown`. See FINISHED_MODE above.
+  mode = FINISHED_MODE,
+  parseIncompleteMarkdown = FINISHED_PARSE_INCOMPLETE_MARKDOWN,
   ...props
 }: MessageResponseProps) {
   const normalized = useMemo(
@@ -513,6 +543,8 @@ function MessageResponseImpl({
       plugins={plugins}
       remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePlugins}
+      mode={mode}
+      parseIncompleteMarkdown={parseIncompleteMarkdown}
       {...props}
       // Merge after spreading props so a caller can still override other
       // elements, but the link icon + safety routing on `a` — and the diagram
@@ -530,7 +562,12 @@ function MessageResponseImpl({
 
 export const MessageResponse = memo(
   MessageResponseImpl,
-  (prevProps, nextProps) => prevProps.children === nextProps.children
+  (prevProps, nextProps) =>
+    prevProps.children === nextProps.children &&
+    (prevProps.mode ?? FINISHED_MODE) === (nextProps.mode ?? FINISHED_MODE) &&
+    (prevProps.parseIncompleteMarkdown ??
+      FINISHED_PARSE_INCOMPLETE_MARKDOWN) ===
+      (nextProps.parseIncompleteMarkdown ?? FINISHED_PARSE_INCOMPLETE_MARKDOWN)
 )
 
 MessageResponse.displayName = "MessageResponse"

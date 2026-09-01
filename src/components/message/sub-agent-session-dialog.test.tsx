@@ -212,6 +212,7 @@ function makeConnState(overrides: Partial<ConnectionState>): ConnectionState {
     sessionFailures: [],
     error: null,
     loadError: null,
+    loadErrorCommand: null,
     lastAppliedSeq: 0,
     isDelegationChild: true,
     parentToolUseId: "pt-1",

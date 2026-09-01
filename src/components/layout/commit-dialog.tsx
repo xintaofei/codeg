@@ -1027,7 +1027,7 @@ export function CommitWorkspace({
                   <div className="space-y-3 p-2">
                     {trackedEntries.length > 0 && (
                       <section className="space-y-1">
-                        <div className="flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
+                        <div className="flex items-center gap-2 px-1 text-2xs text-muted-foreground">
                           <button
                             type="button"
                             onClick={toggleTrackedGroup}
@@ -1097,7 +1097,7 @@ export function CommitWorkspace({
 
                     {untrackedEntries.length > 0 && (
                       <section className="space-y-1">
-                        <div className="flex w-full items-center gap-2 px-1 py-0.5 text-[11px] text-muted-foreground">
+                        <div className="flex w-full items-center gap-2 px-1 py-0.5 text-2xs text-muted-foreground">
                           <button
                             type="button"
                             onClick={toggleUntrackedGroup}
@@ -1196,7 +1196,7 @@ export function CommitWorkspace({
                 placeholder={t("commitMessagePlaceholder")}
                 defaultValue=""
                 onChange={handleMessageChange}
-                className="min-h-[90px] max-h-[200px] resize-y"
+                className="min-h-[5.625rem] max-h-[12.5rem] resize-y"
               />
               <div className="mt-3 flex items-center justify-end gap-2">
                 <Button variant="outline" onClick={onCancel}>

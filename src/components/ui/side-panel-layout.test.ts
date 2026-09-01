@@ -59,7 +59,7 @@ describe("transcript inside a side panel", () => {
   /**
    * The gutter belongs to the message list, and only to it. A wrapper that adds
    * its own doubles it — 32px a side instead of 16 — which the full-width chat
-   * column absorbs unnoticed and a 32rem drawer very much does not.
+   * column absorbs unnoticed and a 36rem drawer very much does not.
    */
   it("does not re-pad a transcript the virtualizer already insets", () => {
     // The layer that owns the gutter, and the reason the wrapper must not.

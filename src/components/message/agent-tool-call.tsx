@@ -459,7 +459,7 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
           takes over below. Render is tail-bounded; the data is not. */}
       {isRunning && transcriptTail.length > 0 && (
         <div className="space-y-1.5">
-          <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+          <div className="text-3xs font-medium uppercase tracking-wide text-muted-foreground/70">
             {t("agentLiveTranscript")}
           </div>
           {transcriptTail.map((entry, i) =>

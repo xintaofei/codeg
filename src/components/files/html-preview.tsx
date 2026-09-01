@@ -118,7 +118,7 @@ export function HtmlPreview({
       </div>
       <div className="relative flex-1 min-h-0">
         {loading && (
-          <div className="absolute top-2 right-3 z-10 rounded-md bg-background/70 px-2 py-1 text-[11px] text-muted-foreground backdrop-blur-sm">
+          <div className="absolute top-2 right-3 z-10 rounded-md bg-background/70 px-2 py-1 text-2xs text-muted-foreground backdrop-blur-sm">
             {t("loading")}
           </div>
         )}

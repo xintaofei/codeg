@@ -13,6 +13,8 @@ import {
   MessageSquarePlus,
   PackagePlus,
   ShieldCheck,
+  Shrink,
+  SquareSlash,
   Trash2,
   Zap,
 } from "lucide-react"
@@ -221,6 +223,8 @@ function TaskSettingsBody({
   const [deleteWorktreeDefault, setDeleteWorktreeDefault] = useState(true)
   const [worktreeRoot, setWorktreeRoot] = useState("")
   const [initCommand, setInitCommand] = useState("")
+  const [autoCompactPercent, setAutoCompactPercent] = useState("0")
+  const [compactCommand, setCompactCommand] = useState("")
   const [preflightCommand, setPreflightCommand] = useState("")
   const [stagePrompts, setStagePrompts] = useState<Record<string, string>>({})
   const [stage, setStage] = useState<string>(PROMPT_STAGES[0].key)
@@ -262,6 +266,8 @@ function TaskSettingsBody({
         setDeleteWorktreeDefault(s.delete_worktree_default)
         setWorktreeRoot(s.worktree_root ?? "")
         setInitCommand(s.init_command ?? "")
+        setAutoCompactPercent(String(s.auto_compact_percent ?? 0))
+        setCompactCommand(s.compact_command ?? "")
         setStagePrompts(s.stage_prompts ?? {})
         const legacy =
           s.preflight_command_id != null
@@ -305,6 +311,9 @@ function TaskSettingsBody({
         configValues
       )
       const parsed = Number.parseInt(maxConcurrent, 10)
+      // A percentage the box can't represent (blank, or typed past 100) reads
+      // as "off" rather than as an accidental compact-every-round.
+      const compactPercent = Number.parseInt(autoCompactPercent, 10)
       const settings: WorkTaskFolderSettings = {
         default_agent_type: agentType,
         mode_id,
@@ -327,6 +336,13 @@ function TaskSettingsBody({
         preflight_command_id: null,
         preflight_command: preflightCommand.trim() || null,
         init_command: initCommand.trim() || null,
+        auto_compact_percent:
+          Number.isFinite(compactPercent) &&
+          compactPercent > 0 &&
+          compactPercent <= 100
+            ? compactPercent
+            : 0,
+        compact_command: compactCommand.trim() || null,
         // Blank stages are dropped rather than stored as "" — the engine
         // trims anyway, and an empty entry would only add noise to the blob.
         stage_prompts: Object.fromEntries(
@@ -511,6 +527,49 @@ function TaskSettingsBody({
                     />
                   }
                 />
+              </SettingCard>
+
+              {/* Every round after the first resumes the same session, so its
+                  context only grows. The threshold and the command that acts
+                  on it belong together: the second is unreadable without the
+                  first. */}
+              <SettingCard>
+                <SettingRow
+                  icon={Shrink}
+                  title={t("settingsAutoCompact")}
+                  description={t("settingsAutoCompactHint")}
+                  htmlFor="task-auto-compact"
+                  control={
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        id="task-auto-compact"
+                        inputMode="numeric"
+                        value={autoCompactPercent}
+                        onChange={(e) =>
+                          setAutoCompactPercent(
+                            e.target.value.replace(/[^0-9]/g, "").slice(0, 3)
+                          )
+                        }
+                        className="h-8 w-16 bg-background text-center"
+                      />
+                      <span className="text-xs text-muted-foreground">%</span>
+                    </div>
+                  }
+                />
+                <SettingRow
+                  icon={SquareSlash}
+                  title={t("settingsCompactCommand")}
+                  description={t("settingsCompactCommandHint")}
+                  htmlFor="task-compact-command"
+                >
+                  <Input
+                    id="task-compact-command"
+                    value={compactCommand}
+                    onChange={(e) => setCompactCommand(e.target.value)}
+                    placeholder={t("settingsCompactCommandPlaceholder")}
+                    className="h-8 bg-background font-mono text-xs"
+                  />
+                </SettingRow>
               </SettingCard>
             </TabsContent>
 

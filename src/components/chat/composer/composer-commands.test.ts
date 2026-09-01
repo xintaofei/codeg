@@ -279,6 +279,26 @@ describe("restoreBlocksIntoEditor", () => {
     expect(attachments).toEqual([])
   })
 
+  it("restores every serialized agent link as a badge, losslessly", () => {
+    // No badge is privileged over another: routing is derived backend-side from
+    // the VISIBLE link, so a restored draft sends exactly like the original.
+    const text =
+      "raw [@Claude](codeg://agent/claude_code) then " +
+      "genuine [@Claude](codeg://agent/claude_code)"
+    const blocks: PromptInputBlock[] = [{ type: "text", text }]
+    restoreBlocksIntoEditor(editor, blocks)
+
+    const agents: unknown[] = []
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "reference" && node.attrs.refType === "agent") {
+        agents.push(node.attrs.id)
+      }
+      return true
+    })
+    expect(agents).toEqual(["claude_code", "claude_code"])
+    expect(serializeDocToText(editor.state.doc).trim()).toBe(text)
+  })
+
   it("restores a non-composer resource_link as an attachment, not a badge", () => {
     const blocks: PromptInputBlock[] = [
       {

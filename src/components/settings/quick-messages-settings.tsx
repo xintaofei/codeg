@@ -451,7 +451,7 @@ export function QuickMessagesSettings() {
                               )}
                             </div>
                             {m.content && (
-                              <div className="text-[11px] text-muted-foreground truncate mt-0.5">
+                              <div className="text-2xs text-muted-foreground truncate mt-0.5">
                                 {m.content}
                               </div>
                             )}
@@ -498,7 +498,7 @@ export function QuickMessagesSettings() {
                           setDraftContent(event.target.value)
                         }
                         placeholder={t("fields.contentPlaceholder")}
-                        className="min-h-[260px]"
+                        className="min-h-[16.25rem]"
                       />
                     </div>
                   </div>

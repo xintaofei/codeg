@@ -76,6 +76,7 @@ function settings(
     merge_strategy: "squash",
     auto_merge: false,
     delete_worktree_default: true,
+    auto_compact_percent: 0,
     ...overrides,
   }
 }
@@ -322,6 +323,74 @@ describe("TaskSettingsDialog worktree tab", () => {
     expect(
       screen.getByRole("textbox", { name: "Worktree location" })
     ).toHaveValue("/var/trees")
+  })
+})
+
+describe("TaskSettingsDialog auto-compact", () => {
+  it("saves the threshold and the command, and seeds both back", async () => {
+    const user = userEvent.setup()
+    renderDialog(1)
+    const save = await saveButton()
+
+    const box = screen.getByRole("textbox", { name: "Auto-compact threshold" })
+    expect(box).toHaveValue("0")
+    await user.clear(box)
+    await user.type(box, "80")
+    await user.type(
+      screen.getByRole("textbox", { name: "Compact command" }),
+      "  /compress  "
+    )
+    await user.click(save)
+
+    await waitFor(() => expect(setMock).toHaveBeenCalled())
+    const [, saved] = setMock.mock.calls[0] as [number, WorkTaskFolderSettings]
+    expect(saved.auto_compact_percent).toBe(80)
+    // Trimmed: the value is sent to the agent as a prompt, verbatim.
+    expect(saved.compact_command).toBe("/compress")
+  })
+
+  it("seeds the threshold and the command from the stored row", async () => {
+    getOwnMock.mockResolvedValue(
+      settings({ auto_compact_percent: 80, compact_command: "/compress" })
+    )
+    renderDialog(1)
+    await saveButton()
+
+    expect(
+      screen.getByRole("textbox", { name: "Auto-compact threshold" })
+    ).toHaveValue("80")
+    expect(
+      screen.getByRole("textbox", { name: "Compact command" })
+    ).toHaveValue("/compress")
+  })
+
+  it("reads a percentage it cannot honour as off", async () => {
+    const user = userEvent.setup()
+    renderDialog(1)
+    const save = await saveButton()
+
+    const box = screen.getByRole("textbox", { name: "Auto-compact threshold" })
+    // Above 100 there is no occupancy that could ever reach it — storing it
+    // would look enabled while behaving exactly like off.
+    await user.clear(box)
+    await user.type(box, "120")
+    await user.click(save)
+
+    await waitFor(() => expect(setMock).toHaveBeenCalled())
+    const [, saved] = setMock.mock.calls[0] as [number, WorkTaskFolderSettings]
+    expect(saved.auto_compact_percent).toBe(0)
+
+    // And an emptied box is off too, rather than NaN.
+    setMock.mockClear()
+    await user.clear(box)
+    await user.click(save)
+    await waitFor(() => expect(setMock).toHaveBeenCalled())
+    const [, blanked] = setMock.mock.calls[0] as [
+      number,
+      WorkTaskFolderSettings,
+    ]
+    expect(blanked.auto_compact_percent).toBe(0)
+    expect(blanked.compact_command).toBeNull()
   })
 })
 

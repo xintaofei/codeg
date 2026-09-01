@@ -10,6 +10,10 @@ import {
 } from "@/lib/api"
 import { createWriteQueue } from "@/lib/terminal/write-queue"
 import { getTerminalTheme } from "@/lib/terminal/theme"
+import {
+  copyTerminalSelection,
+  isTerminalCopyShortcut,
+} from "@/lib/terminal/shortcuts"
 import { useZoomLevel, useTerminalFont } from "@/hooks/use-appearance"
 import { detectPlatform } from "@/hooks/use-platform"
 import type { TerminalEvent } from "@/lib/types"
@@ -169,6 +173,14 @@ export function TerminalView({
 
         const writeSeq = (seq: string) => {
           writeQueue.enqueue(seq)
+          e.preventDefault()
+          return false
+        }
+
+        // Swallowed whether or not anything is selected, so an empty-selection
+        // Ctrl+Shift+C never falls through to the PTY.
+        if (isTerminalCopyShortcut(e, isMac)) {
+          void copyTerminalSelection(term)
           e.preventDefault()
           return false
         }

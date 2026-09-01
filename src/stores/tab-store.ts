@@ -36,6 +36,7 @@ import {
   sweepOrphanDraftKeys,
 } from "@/lib/message-input-draft"
 import { discardAskSelectionPrompts } from "@/lib/ask-selection-handoff"
+import { pushClosedTab, snapshotConversationTab } from "@/lib/closed-tab-stack"
 import type {
   AgentType,
   ConversationChange,
@@ -198,7 +199,13 @@ export interface TabStoreState {
     pin?: boolean,
     title?: string
   ) => void
-  closeTab: (tabId: string) => void
+  /**
+   * `recordForReopen: false` closes without offering the tab to
+   * `reopen_last_closed_tab`. Pass it whenever the tab is going away because
+   * its conversation no longer exists — resurrecting it would mint a tab (and
+   * an `opened_tabs` row) pointing at a deleted conversation.
+   */
+  closeTab: (tabId: string, options?: { recordForReopen?: boolean }) => void
   closeConversationTab: (
     folderId: number,
     conversationId: number,
@@ -1154,13 +1161,16 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     runtime.activateConversationPane()
   },
 
-  closeTab: (tabId) => {
+  closeTab: (tabId, options) => {
     const shouldActivateConversation = tabId === get().activeTabId
 
     const prevState = get()
     const index = prevState.rawTabs.findIndex((t) => t.id === tabId)
     if (index >= 0) {
       const closingTab = prevState.rawTabs[index]
+      if (options?.recordForReopen !== false) {
+        pushClosedTab(snapshotConversationTab(closingTab))
+      }
       const next = prevState.rawTabs.filter((t) => t.id !== tabId)
       // A closing draft's composer text is scoped to that tab's key. Drop it —
       // unless this close spawns the replacement draft, which continues the same
@@ -1240,7 +1250,9 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         tab.agentType === agentType
     )
     if (!target) return
-    get().closeTab(target.id)
+    // Every caller reaches here right after `deleteConversation` — the row is
+    // gone, so the tab must not be offered back by "reopen closed tab".
+    get().closeTab(target.id, { recordForReopen: false })
   },
 
   closeOtherTabs: (tabId) => {
@@ -1264,6 +1276,12 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       focusTab(tabId)
       return
     }
+    const keepIds = new Set(keep.map((tab) => tab.id))
+    for (const tab of prevState.rawTabs) {
+      if (!keepIds.has(tab.id)) {
+        pushClosedTab(snapshotConversationTab(tab))
+      }
+    }
     set({ rawTabs: keep, activeTabId: tabId })
     recomputeTabs()
   },
@@ -1273,6 +1291,9 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       const prevState = get()
       if (prevState.rawTabs.length === 0 && prevState.activeTabId == null) {
         return
+      }
+      for (const tab of prevState.rawTabs) {
+        pushClosedTab(snapshotConversationTab(tab))
       }
       set({ rawTabs: [], activeTabId: null })
       recomputeTabs()
@@ -1285,6 +1306,9 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       prevState.rawTabs.find((t) => t.id === prevState.activeTabId) ??
       prevState.rawTabs[0]
     const replacementTab = makeReplacementDraftTab(seedTab)
+    for (const tab of prevState.rawTabs) {
+      pushClosedTab(snapshotConversationTab(tab))
+    }
     set({ rawTabs: [replacementTab], activeTabId: replacementTab.id })
     recomputeTabs()
     runtime.activateConversationPane()
@@ -1294,6 +1318,9 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const prevState = get()
     const remaining = prevState.rawTabs.filter((t) => t.folderId !== folderId)
     if (remaining.length === prevState.rawTabs.length) return
+    // Deliberately not recorded for reopen: this runs when the folder itself
+    // stops existing (a removed worktree, or the sidebar's "remove folder"),
+    // so every tab it drops points at a cwd that is gone.
 
     const currentActive = prevState.activeTabId
     const stillActive =

@@ -4,6 +4,7 @@ pub mod app_update;
 pub mod automation;
 pub mod background;
 pub mod backup;
+pub mod canvas;
 pub mod chat_authoring;
 pub mod chat_channel;
 pub mod conversations;
@@ -22,6 +23,7 @@ pub mod logging;
 pub mod mcp;
 pub mod model_provider;
 pub mod office_tools;
+pub mod open_in;
 #[cfg(feature = "tauri-runtime")]
 pub mod notification;
 pub mod pet;

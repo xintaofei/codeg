@@ -195,7 +195,7 @@ export function OpenCodeConnectDialog({
         <div className="space-y-3">
           {!isEditMode && (
             <div className="space-y-1.5">
-              <label className="text-[11px] text-muted-foreground">
+              <label className="text-2xs text-muted-foreground">
                 {t("openCode.connect.pick")}
               </label>
               <Input
@@ -221,17 +221,20 @@ export function OpenCodeConnectDialog({
                   >
                     <span className="truncate">{provider.name}</span>
                     {provider.auth_kind === "oauth" && (
-                      <Badge variant="outline" className="px-1 text-[9px]">
+                      <Badge
+                        variant="outline"
+                        className="px-1 text-[0.5625rem]"
+                      >
                         OAuth
                       </Badge>
                     )}
-                    <span className="ml-auto shrink-0 pl-2 text-[10px] text-muted-foreground">
+                    <span className="ml-auto shrink-0 pl-2 text-3xs text-muted-foreground">
                       {provider.id}
                     </span>
                   </button>
                 ))}
                 {!catalogLoading && filteredCatalog.length === 0 && (
-                  <div className="px-2.5 py-2 text-center text-[11px] text-muted-foreground">
+                  <div className="px-2.5 py-2 text-center text-2xs text-muted-foreground">
                     {t("openCode.noMatchingModels")}
                   </div>
                 )}
@@ -246,12 +249,12 @@ export function OpenCodeConnectDialog({
                   {catalogProvider?.name ?? selected}
                 </span>
                 {catalogProvider?.auth_kind === "oauth" && (
-                  <Badge variant="outline" className="text-[10px]">
+                  <Badge variant="outline" className="text-3xs">
                     OAuth
                   </Badge>
                 )}
                 {catalogProvider && (
-                  <span className="text-[11px] text-muted-foreground">
+                  <span className="text-2xs text-muted-foreground">
                     {t("openCode.connect.modelsAvailable", {
                       count: catalogProvider.models.length,
                     })}
@@ -260,7 +263,7 @@ export function OpenCodeConnectDialog({
                 {catalogProvider?.doc && (
                   <BrowserLink
                     href={catalogProvider.doc}
-                    className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+                    className="inline-flex items-center gap-1 text-2xs text-primary hover:underline"
                   >
                     {t("openCode.connect.getKey")}
                     <ExternalLink className="h-3 w-3" />
@@ -269,7 +272,7 @@ export function OpenCodeConnectDialog({
               </div>
 
               {catalogProvider?.auth_kind === "oauth" && (
-                <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-[11px] text-amber-500">
+                <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-2xs text-amber-500">
                   {t("openCode.connect.oauthApiKeyNote")}
                 </p>
               )}
@@ -286,7 +289,7 @@ export function OpenCodeConnectDialog({
               />
 
               <div className="space-y-1.5">
-                <label className="text-[11px] text-muted-foreground">
+                <label className="text-2xs text-muted-foreground">
                   {t("openCode.connect.baseUrlOptional")}
                 </label>
                 <Input
@@ -299,7 +302,7 @@ export function OpenCodeConnectDialog({
           )}
 
           {error && (
-            <div className="rounded-md border border-red-500/30 bg-red-500/5 px-2.5 py-1.5 text-[11px] text-red-400">
+            <div className="rounded-md border border-red-500/30 bg-red-500/5 px-2.5 py-1.5 text-2xs text-red-400">
               {error}
             </div>
           )}
@@ -472,7 +475,7 @@ export function OpenCodeCustomProviderDialog({
 
         <div className="grid gap-3 md:grid-cols-2">
           <div className="space-y-1.5">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="text-2xs text-muted-foreground">
               {t("openCode.connect.providerId")}
             </label>
             <Input
@@ -482,11 +485,11 @@ export function OpenCodeCustomProviderDialog({
               className={cn(customIdError && "border-red-500/60")}
             />
             {customIdError && (
-              <p className="text-[10px] text-red-400">{customIdError}</p>
+              <p className="text-3xs text-red-400">{customIdError}</p>
             )}
           </div>
           <div className="space-y-1.5">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="text-2xs text-muted-foreground">
               {t("openCode.connect.displayName")}
             </label>
             <Input
@@ -496,7 +499,7 @@ export function OpenCodeCustomProviderDialog({
             />
           </div>
           <div className="space-y-1.5">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="text-2xs text-muted-foreground">
               provider.npm
             </label>
             <Select value={customNpm} onValueChange={setCustomNpm}>
@@ -513,7 +516,7 @@ export function OpenCodeCustomProviderDialog({
             </Select>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="text-2xs text-muted-foreground">
               provider.options.baseURL
             </label>
             <Input
@@ -535,7 +538,7 @@ export function OpenCodeCustomProviderDialog({
             />
           </div>
           <div className="space-y-1.5 md:col-span-2">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="text-2xs text-muted-foreground">
               {t("openCode.connect.modelsList")}
             </label>
             <Textarea
@@ -544,14 +547,14 @@ export function OpenCodeCustomProviderDialog({
               placeholder={"gpt-4o\nclaude-sonnet-5"}
               className="min-h-20 font-mono text-xs"
             />
-            <p className="text-[10px] text-muted-foreground">
+            <p className="text-3xs text-muted-foreground">
               {t("openCode.connect.modelsHint")}
             </p>
           </div>
         </div>
 
         {error && (
-          <div className="rounded-md border border-red-500/30 bg-red-500/5 px-2.5 py-1.5 text-[11px] text-red-400">
+          <div className="rounded-md border border-red-500/30 bg-red-500/5 px-2.5 py-1.5 text-2xs text-red-400">
             {error}
           </div>
         )}
@@ -605,7 +608,7 @@ function ApiKeyField({
 }) {
   return (
     <div className="space-y-1.5">
-      <label className="text-[11px] text-muted-foreground">{label}</label>
+      <label className="text-2xs text-muted-foreground">{label}</label>
       <div className="flex items-center gap-2">
         <Input
           type={reveal ? "text" : "password"}
@@ -627,7 +630,7 @@ function ApiKeyField({
           )}
         </Button>
       </div>
-      <p className="text-[10px] text-muted-foreground">{hint}</p>
+      <p className="text-3xs text-muted-foreground">{hint}</p>
     </div>
   )
 }

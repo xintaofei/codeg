@@ -211,7 +211,7 @@ export function DeepSeekConfigPanel({
         <label className="text-xs font-medium">
           {t("deepseek.configManagement")}
         </label>
-        <p className="mt-1 text-[11px] text-muted-foreground">
+        <p className="mt-1 text-2xs text-muted-foreground">
           {t("deepseek.configDescription")}
         </p>
       </div>
@@ -220,7 +220,7 @@ export function DeepSeekConfigPanel({
       <div className="space-y-1.5">
         <label
           htmlFor="deepseek-base-url"
-          className="text-[11px] text-muted-foreground"
+          className="text-2xs text-muted-foreground"
         >
           {t("deepseek.baseUrlLabel")}
         </label>
@@ -241,7 +241,7 @@ export function DeepSeekConfigPanel({
         <p
           id="deepseek-base-url-hint"
           className={cn(
-            "text-[11px]",
+            "text-2xs",
             baseUrlValid ? "text-muted-foreground" : "text-destructive"
           )}
         >
@@ -255,7 +255,7 @@ export function DeepSeekConfigPanel({
       <div className="space-y-1.5">
         <label
           htmlFor="deepseek-api-key"
-          className="text-[11px] text-muted-foreground"
+          className="text-2xs text-muted-foreground"
         >
           {t("deepseek.apiKeyLabel")}
         </label>
@@ -285,7 +285,7 @@ export function DeepSeekConfigPanel({
             )}
           </Button>
         </div>
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-2xs text-muted-foreground">
           {t("deepseek.apiKeyHint")}
         </p>
       </div>

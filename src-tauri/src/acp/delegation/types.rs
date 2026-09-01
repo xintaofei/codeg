@@ -73,6 +73,37 @@ pub struct DelegationRequest {
     pub external_handle: Option<String>,
 }
 
+/// Everything the broker needs to resume one interrupted delegation task.
+///
+/// Deliberately carries NO task text: `resume_delegation` continues the
+/// ORIGINAL task in the child's own (resumed) session and must not become a
+/// side-channel for new instructions — the only free-form field is `reason`,
+/// which is bounded and framed as interruption context in the continuation
+/// prompt (see `broker::build_resume_prompt`).
+///
+/// `parent_connection_id` / `parent_conversation_id` identify the CALLER —
+/// after a parent-session restart this is a different connection id than the
+/// one that originally delegated, but the same conversation row, which is what
+/// the ownership check scopes on (`ChildResumeContext::parent_id`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeDelegationRequest {
+    pub parent_connection_id: String,
+    pub parent_conversation_id: i32,
+    /// The broker `call_id` of the task to resume — the same id
+    /// `delegate_to_agent` returned and the child row persists as
+    /// `delegation_call_id`. The resumed task keeps this id, so
+    /// `get_delegation_status` / `cancel_delegation` keep working unchanged.
+    pub task_id: String,
+    /// Optional context on WHY the task is being resumed (e.g. "the app was
+    /// killed mid-run"). Interruption context only — never new work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Companion-minted cancel handle, same contract as
+    /// [`DelegationRequest::external_handle`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_handle: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenUsage {
     pub input: u64,

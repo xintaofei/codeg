@@ -188,7 +188,7 @@ export function OfficePreview({
             <div className="max-w-sm text-xs text-muted-foreground">
               {t("officeServerInstallHint")}
             </div>
-            <code className="block max-w-sm select-all rounded-md bg-muted px-3 py-2 text-left text-[11px] text-foreground">
+            <code className="block max-w-sm select-all rounded-md bg-muted px-3 py-2 text-left text-2xs text-foreground">
               {SERVER_INSTALL_CMD}
             </code>
             <button

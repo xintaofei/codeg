@@ -194,7 +194,7 @@ export function SettingsShell({ children }: SettingsShellProps) {
 
   const navContent = (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="px-2 pb-2 text-[11px] font-medium text-muted-foreground">
+      <div className="px-2 pb-2 text-2xs font-medium text-muted-foreground">
         {t("preferences")}
       </div>
       <ScrollArea className="min-h-0 flex-1">
@@ -265,7 +265,13 @@ export function SettingsShell({ children }: SettingsShellProps) {
             swipeDirection="left"
             disablePointerDismissal={false}
           >
-            <DrawerContent showCloseButton={false} className="w-[260px] p-3">
+            {/* rem so the nav grows with the zoom level like its own labels do,
+                but capped against the viewport: 16.25rem at 150% is 390px, wider
+                than the phone this drawer is for. */}
+            <DrawerContent
+              showCloseButton={false}
+              className="w-[min(16.25rem,85vw)] p-3"
+            >
               <DrawerTitle className="sr-only">{t("title")}</DrawerTitle>
               {navContent}
             </DrawerContent>

@@ -10,7 +10,10 @@ use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::forge as core;
 use crate::forge::settings::{ForgePanelSettings, ForgeSettingsStore};
-use crate::forge::{CommentFilters, CountFilters, ListFilters};
+use crate::forge::{
+    ChangeFilesQuery, ChangeMergeRequest, ChangeQuery, CommentDraft, CommentFilters, CountFilters,
+    ListFilters, NewIssueDraft, StateChangeRequest,
+};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +60,66 @@ pub struct ListCommentsParams {
     /// reason `query` is on the list: the repository is not in here, and
     /// cannot be.
     pub filters: CommentFilters,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateCommentParams {
+    pub folder_id: i32,
+    /// The comment to post. Nested for the same reason every other forge
+    /// payload is: the repository is not in here, and cannot be.
+    pub draft: CommentDraft,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetItemStateParams {
+    pub folder_id: i32,
+    pub request: StateChangeRequest,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateIssueParams {
+    pub folder_id: i32,
+    pub draft: NewIssueDraft,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeDetailParams {
+    pub folder_id: i32,
+    pub query: ChangeQuery,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeFilesParams {
+    pub folder_id: i32,
+    pub query: ChangeFilesQuery,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityParams {
+    pub folder_id: i32,
+    #[serde(default)]
+    pub account_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeOptionsParams {
+    pub folder_id: i32,
+    #[serde(default)]
+    pub account_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeChangeParams {
+    pub folder_id: i32,
+    pub request: ChangeMergeRequest,
 }
 
 #[derive(Deserialize)]
@@ -127,6 +190,78 @@ pub async fn forge_list_comments(
 ) -> Result<Json<crate::forge::ForgeCommentList>, AppCommandError> {
     Ok(Json(
         core::forge_list_comments_core(&state.db, params.folder_id, params.filters).await?,
+    ))
+}
+
+pub async fn forge_create_comment(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<CreateCommentParams>,
+) -> Result<Json<crate::forge::ForgeComment>, AppCommandError> {
+    Ok(Json(
+        core::forge_create_comment_core(&state.db, params.folder_id, params.draft).await?,
+    ))
+}
+
+pub async fn forge_set_item_state(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<SetItemStateParams>,
+) -> Result<Json<crate::forge::ForgeIssueRow>, AppCommandError> {
+    Ok(Json(
+        core::forge_set_item_state_core(&state.db, params.folder_id, params.request).await?,
+    ))
+}
+
+pub async fn forge_create_issue(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<CreateIssueParams>,
+) -> Result<Json<crate::forge::ForgeIssueRow>, AppCommandError> {
+    Ok(Json(
+        core::forge_create_issue_core(&state.db, params.folder_id, params.draft).await?,
+    ))
+}
+
+pub async fn forge_change_detail(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ChangeDetailParams>,
+) -> Result<Json<crate::forge::ForgeChangeDetail>, AppCommandError> {
+    Ok(Json(
+        core::forge_change_detail_core(&state.db, params.folder_id, params.query).await?,
+    ))
+}
+
+pub async fn forge_change_files(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ChangeFilesParams>,
+) -> Result<Json<crate::forge::ForgeChangedFileList>, AppCommandError> {
+    Ok(Json(
+        core::forge_change_files_core(&state.db, params.folder_id, params.query).await?,
+    ))
+}
+
+pub async fn forge_identity(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<IdentityParams>,
+) -> Result<Json<crate::forge::ForgeIdentity>, AppCommandError> {
+    Ok(Json(
+        core::forge_identity_core(&state.db, params.folder_id, params.account_id).await?,
+    ))
+}
+
+pub async fn forge_merge_options(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<MergeOptionsParams>,
+) -> Result<Json<crate::forge::ForgeMergeOptions>, AppCommandError> {
+    Ok(Json(
+        core::forge_merge_options_core(&state.db, params.folder_id, params.account_id).await?,
+    ))
+}
+
+pub async fn forge_merge_change(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<MergeChangeParams>,
+) -> Result<Json<Option<crate::forge::ForgeIssueRow>>, AppCommandError> {
+    Ok(Json(
+        core::forge_merge_change_core(&state.db, params.folder_id, params.request).await?,
     ))
 }
 

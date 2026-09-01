@@ -105,7 +105,7 @@ export function AppearanceSettings() {
               </SelectContent>
             </Select>
             <p
-              className="text-[11px] text-muted-foreground"
+              className="text-2xs text-muted-foreground"
               suppressHydrationWarning
             >
               {t("currentTheme", { theme: resolvedThemeLabel })}
@@ -158,7 +158,7 @@ export function AppearanceSettings() {
             })}
           </div>
 
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-2xs text-muted-foreground">
             {t("themeColor.current", {
               color: t(`themeColor.options.${themeColor}`),
             })}
@@ -202,7 +202,7 @@ export function AppearanceSettings() {
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-2xs text-muted-foreground">
               {t("zoomLevel.current", { zoom: zoomLevel })}
             </p>
           </div>

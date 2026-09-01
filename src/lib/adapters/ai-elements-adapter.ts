@@ -28,6 +28,7 @@ import {
   unescapeReferenceLabel,
   unwrapReferenceDestination,
 } from "@/lib/reference-link"
+import { imageCardLabel } from "@/lib/image-tool-label"
 
 /**
  * Adapted content part types for AI SDK Elements components
@@ -92,6 +93,8 @@ export type AdaptedGeneratedImagePart = {
   /** `null` while the agent has emitted the ToolCall but no image yet. */
   image: UserImageDisplay | null
   status: ToolCallStatus | null
+  /** Unset for Codex image generation; otherwise the tool or page name. */
+  label?: string | null
 }
 
 export type AdaptedGoalRunPart = {
@@ -1073,6 +1076,7 @@ function adaptContentBlock(
         revisedPrompt: block.revised_prompt ?? null,
         image: display,
         status: block.status ?? null,
+        label: block.label ?? null,
       }
     }
 
@@ -1116,11 +1120,23 @@ function deriveImageNameFromImageData(img: {
  * through to the normal tool-card path. Images missing `data`/`mime_type` are
  * skipped; if that empties the list, `null` is returned too.
  */
-function adaptImageToolResultParts(result: {
-  images?: ImageData[] | null
-}): AdaptedGeneratedImagePart[] | null {
+function adaptImageToolResultParts(
+  result: {
+    images?: ImageData[] | null
+  },
+  ctx?: {
+    toolName?: string | null
+    input?: string | null
+    title?: string | null
+  }
+): AdaptedGeneratedImagePart[] | null {
   const images = result.images
   if (!images || images.length === 0) return null
+  const label = imageCardLabel({
+    title: ctx?.title,
+    toolName: ctx?.toolName,
+    input: ctx?.input,
+  })
   const parts: AdaptedGeneratedImagePart[] = []
   for (const img of images) {
     if (!img.data || !img.mime_type) continue
@@ -1137,6 +1153,7 @@ function adaptImageToolResultParts(result: {
       // Historical replay always carries a present image, so status is
       // irrelevant to the renderer; `null` is treated as success.
       status: null,
+      label,
     })
   }
   return parts.length > 0 ? parts : null
@@ -1578,23 +1595,47 @@ function mergeGoalObjectiveHints(
  * prose, the codex Plan-mode document the user has to read, and a generated
  * image. Everything else (tool calls/results/groups, reasoning, todo plans,
  * delegation and background-task polls) is process and belongs in the capsule.
+ *
+ * Written as an exhaustive switch rather than a type set on purpose: a new
+ * `AdaptedContentPart` variant then fails to compile here until it is
+ * classified, so the Goal capsule and the completed-turn collapse (which both
+ * hide process behind a chip) can never silently disagree about what an answer
+ * is.
  */
-const GOAL_ANSWER_PART_TYPES: ReadonlySet<AdaptedContentPart["type"]> = new Set(
-  ["text", "proposed-plan", "generated-image"]
-)
+export function isTurnAnswerPart(part: AdaptedContentPart): boolean {
+  switch (part.type) {
+    case "text":
+    case "proposed-plan":
+    case "generated-image":
+      return true
+    case "reasoning":
+    case "tool-call":
+    case "tool-result":
+    case "tool-group":
+    case "delegation-status-group":
+    case "background-task-group":
+    case "goal-run":
+    case "plan":
+      return false
+  }
+}
 
 /**
- * Split a settled unfinished run's body at the last process part: everything
- * after it is the answer and gets lifted out, in order. Answer parts BEFORE a
- * process part stay inside — prose followed by more work is a mid-run note,
+ * Split a reply (or a settled unfinished goal run's body) at its last process
+ * part: everything after it is the answer, in order. Answer parts BEFORE a
+ * process part stay in `body` — prose followed by more work is a mid-run note,
  * not a wrap-up, and lifting it would reorder the reply.
+ *
+ * Two consumers: `groupGoalRuns` lifts `trailing` out of a settled capsule, and
+ * the completed-turn collapse keeps `trailing` visible while folding `body`
+ * behind the "Worked for …" trigger.
  */
-function splitTrailingAnswerParts(items: AdaptedContentPart[]): {
+export function splitTrailingAnswerParts(items: AdaptedContentPart[]): {
   body: AdaptedContentPart[]
   trailing: AdaptedContentPart[]
 } {
   let end = items.length
-  while (end > 0 && GOAL_ANSWER_PART_TYPES.has(items[end - 1]!.type)) {
+  while (end > 0 && isTurnAnswerPart(items[end - 1]!)) {
     end -= 1
   }
   if (end === items.length) {
@@ -1871,7 +1912,10 @@ export function adaptMessageTurn(
         // mid-stream we keep the spinner via the normal tool-call path.
         const imageParts = isToolStillRunning
           ? null
-          : adaptImageToolResultParts(matchedResult)
+          : adaptImageToolResultParts(matchedResult, {
+              toolName: block.tool_name,
+              input: block.input_preview,
+            })
         if (imageParts) {
           adaptedContent.push(...imageParts)
           continue
@@ -1908,7 +1952,10 @@ export function adaptMessageTurn(
           positionMatchedIndices.add(index + 1)
           // Same image-result handling as the id-matched branch above: a Read
           // returning image bytes renders as image card(s) in-position.
-          const imageParts = adaptImageToolResultParts(positionalResult)
+          const imageParts = adaptImageToolResultParts(positionalResult, {
+            toolName: block.tool_name,
+            input: block.input_preview,
+          })
           if (imageParts) {
             adaptedContent.push(...imageParts)
             continue

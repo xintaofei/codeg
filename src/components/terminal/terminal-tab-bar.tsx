@@ -103,7 +103,7 @@ export function TerminalTabBar() {
                   }}
                 />
               ) : (
-                <span className="truncate max-w-[120px]">{tab.title}</span>
+                <span className="truncate max-w-[7.5rem]">{tab.title}</span>
               )}
               <button
                 className="ml-1 rounded-sm hover:bg-muted-foreground/20 p-0.5"

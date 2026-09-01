@@ -66,6 +66,23 @@ describe("decidePastedContent", () => {
     ])
   })
 
+  it("hydrates a pasted agent link into a real agent badge", () => {
+    // The badge a paste produces is indistinguishable from one the `@` panel
+    // inserted, which is what makes a copied delegation message re-send with
+    // its routing reminder intact.
+    const content = textToHydratedInlineContent(
+      "ask [@Antigravity](codeg://agent/antigravity)"
+    )
+    const agent = content?.find((node) => node.type === "reference")
+    expect(agent).toMatchObject({
+      attrs: {
+        refType: "agent",
+        id: "antigravity",
+        meta: { agentType: "antigravity" },
+      },
+    })
+  })
+
   it("defers to ProseMirror for HTML copied from within the editor (data-pm-slice)", () => {
     // ProseMirror's serializeForClipboard tags native copies with data-pm-slice.
     // Forcing text/plain here would corrupt structure: two paragraphs come across

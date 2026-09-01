@@ -660,7 +660,7 @@ export function CustomSkillsBody({
 
       {/* Editor dialog (create / edit). */}
       <Dialog open={editorOpen} onOpenChange={setEditorOpen}>
-        <DialogContent className="sm:max-w-[720px]">
+        <DialogContent className="sm:max-w-[45rem]">
           <DialogHeader>
             <DialogTitle>
               {editorMode === "create"
@@ -672,7 +672,7 @@ export function CustomSkillsBody({
 
           <div className="space-y-3">
             <div className="space-y-1.5">
-              <label className="text-[11px] text-muted-foreground">
+              <label className="text-2xs text-muted-foreground">
                 {t("editor.idLabel")}
               </label>
               <Input
@@ -687,7 +687,7 @@ export function CustomSkillsBody({
 
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
-                <label className="text-[11px] text-muted-foreground">
+                <label className="text-2xs text-muted-foreground">
                   {t("editor.contentLabel")}
                 </label>
                 <Button
@@ -714,16 +714,16 @@ export function CustomSkillsBody({
                   value={editorContent}
                   onChange={(e) => setEditorContent(e.target.value)}
                   placeholder={t("editor.contentPlaceholder")}
-                  className="min-h-[320px] font-mono text-xs"
+                  className="min-h-[20rem] font-mono text-xs"
                 />
               ) : (
-                <div className="min-h-[320px] max-h-[420px] overflow-auto rounded-md border bg-muted/10 p-3 space-y-2">
+                <div className="min-h-[20rem] max-h-[26.25rem] overflow-auto rounded-md border bg-muted/10 p-3 space-y-2">
                   {preview.fields.length > 0 && (
                     <div className="grid gap-1.5 border-b pb-2 mb-1">
                       {preview.fields.map((field) => (
                         <div
                           key={field.key}
-                          className="text-xs grid grid-cols-[100px_1fr] gap-2 items-start"
+                          className="text-xs grid grid-cols-[6.25rem_1fr] gap-2 items-start"
                         >
                           <span className="text-muted-foreground font-mono truncate">
                             {field.key}
@@ -794,7 +794,7 @@ export function CustomSkillsBody({
           if (!open) setDuplicateSource(null)
         }}
       >
-        <DialogContent className="sm:max-w-[440px]">
+        <DialogContent className="sm:max-w-[27.5rem]">
           <DialogHeader>
             <DialogTitle>{t("duplicate.title")}</DialogTitle>
             <DialogDescription>
@@ -846,7 +846,7 @@ export function CustomSkillsBody({
 
       {/* Import from agent (multi-select an agent's own skills). */}
       <Dialog open={agentImportOpen} onOpenChange={setAgentImportOpen}>
-        <DialogContent className="sm:max-w-[560px]">
+        <DialogContent className="sm:max-w-[35rem]">
           <DialogHeader>
             <DialogTitle>{t("importFromAgent.title")}</DialogTitle>
             <DialogDescription>
@@ -856,7 +856,7 @@ export function CustomSkillsBody({
 
           <div className="space-y-3">
             <div className="space-y-1.5">
-              <label className="text-[11px] text-muted-foreground">
+              <label className="text-2xs text-muted-foreground">
                 {t("importFromAgent.agentLabel")}
               </label>
               <Select
@@ -908,9 +908,9 @@ export function CustomSkillsBody({
                 </label>
               )}
 
-              <ScrollArea className="h-[320px]">
+              <ScrollArea className="h-[20rem]">
                 {agentImportLoading ? (
-                  <div className="flex h-[320px] items-center justify-center text-sm text-muted-foreground">
+                  <div className="flex h-[20rem] items-center justify-center text-sm text-muted-foreground">
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     {t("importFromAgent.loading")}
                   </div>
@@ -919,11 +919,11 @@ export function CustomSkillsBody({
                     {agentImportError}
                   </div>
                 ) : agentImportUnsupported ? (
-                  <div className="flex h-[320px] items-center justify-center px-6 text-center text-sm text-muted-foreground">
+                  <div className="flex h-[20rem] items-center justify-center px-6 text-center text-sm text-muted-foreground">
                     {t("importFromAgent.unsupported")}
                   </div>
                 ) : agentImportSkills.length === 0 ? (
-                  <div className="flex h-[320px] items-center justify-center px-6 text-center text-sm text-muted-foreground">
+                  <div className="flex h-[20rem] items-center justify-center px-6 text-center text-sm text-muted-foreground">
                     {t("importFromAgent.empty")}
                   </div>
                 ) : (
@@ -953,12 +953,12 @@ export function CustomSkillsBody({
                                 {skill.name || skill.id}
                               </span>
                               {already && (
-                                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-3xs text-muted-foreground">
                                   {t("importFromAgent.alreadyInLibrary")}
                                 </span>
                               )}
                             </div>
-                            <div className="truncate font-mono text-[11px] text-muted-foreground">
+                            <div className="truncate font-mono text-2xs text-muted-foreground">
                               {skill.id}
                             </div>
                             {skill.description && (

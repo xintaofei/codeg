@@ -1911,6 +1911,206 @@ describe("buildStreamingTurnsFromLiveMessage — subagent transcript routing (cl
       }
     }
   })
+
+  // #494: the wire splits blocks at kind AND attribution boundaries, so a
+  // sub-agent chunk landing between two main-thread deltas ends the main
+  // block. Once the parented blocks are routed out, what remains is one
+  // uninterrupted run of the main agent's output — rendering it as N cards
+  // torn mid-word (`先看 cli` ⁄ `.py 怎么起 server`) is the reported bug, and
+  // it scales with the number of sub-agents streaming at once.
+  it("rejoins main-thread thinking torn apart by interleaved subagent chunks", () => {
+    const result = build([
+      agentCall("toolu_agent"),
+      { type: "thinking", text: "先看 cli" },
+      {
+        type: "thinking",
+        text: "子代理在读文件",
+        parentToolUseId: "toolu_agent",
+      },
+      { type: "thinking", text: ".py 怎么起 server、token 放哪。" },
+      {
+        type: "thinking",
+        text: "子代理还在读",
+        parentToolUseId: "toolu_agent",
+      },
+      { type: "thinking", text: "注意不要和子代理冲突——" },
+    ])
+    const thinking = result.turns
+      .flatMap((t) => t.blocks)
+      .filter((b) => b.type === "thinking")
+    expect(thinking).toEqual([
+      {
+        type: "thinking",
+        text: "先看 cli.py 怎么起 server、token 放哪。注意不要和子代理冲突——",
+      },
+    ])
+  })
+
+  it("rejoins main-thread text torn apart by interleaved subagent chunks", () => {
+    const result = build([
+      agentCall("toolu_agent"),
+      { type: "text", text: "C" },
+      { type: "text", text: "sub prose", parentToolUseId: "toolu_agent" },
+      { type: "text", text: "airn 的 agent 更换机制" },
+    ])
+    const text = result.turns
+      .flatMap((t) => t.blocks)
+      .filter((b) => b.type === "text")
+    expect(text).toEqual([{ type: "text", text: "Cairn 的 agent 更换机制" }])
+  })
+
+  it("rejoins one subagent's transcript split by a second subagent's chunks", () => {
+    const result = build([
+      agentCall("toolu_a"),
+      agentCall("toolu_b"),
+      { type: "thinking", text: "A 想了", parentToolUseId: "toolu_a" },
+      { type: "thinking", text: "B 也在想", parentToolUseId: "toolu_b" },
+      { type: "thinking", text: "一半", parentToolUseId: "toolu_a" },
+      { type: "text", text: "A 说完了", parentToolUseId: "toolu_a" },
+    ])
+    const carriers = result.turns
+      .flatMap((t) => t.blocks)
+      .filter((b) => b.type === "tool_result")
+    // Attribution still holds: A's run is one entry, B's is its own card.
+    expect(carriers.map((c) => c.agent_transcript)).toEqual([
+      [
+        { type: "thinking", text: "A 想了一半" },
+        { type: "text", text: "A 说完了" },
+      ],
+      [{ type: "thinking", text: "B 也在想" }],
+    ])
+  })
+
+  it("keeps a subagent's own tool call as a boundary in its transcript", () => {
+    // Another agent's chunks do not interrupt A's run, but A stopping to run
+    // a tool does — fusing across it would run two paragraphs together.
+    const result = build([
+      agentCall("toolu_a"),
+      { type: "thinking", text: "before", parentToolUseId: "toolu_a" },
+      {
+        type: "tool_call",
+        info: toolInfo({
+          tool_call_id: "toolu_child",
+          title: "Read",
+          meta: { claudeCode: { parentToolUseId: "toolu_a" } },
+        }),
+      },
+      { type: "thinking", text: "after", parentToolUseId: "toolu_a" },
+    ])
+    const carrier = result.turns
+      .flatMap((t) => t.blocks)
+      .find((b) => b.type === "tool_result")
+    expect(
+      carrier?.type === "tool_result" ? carrier.agent_transcript : null
+    ).toEqual([
+      { type: "thinking", text: "before" },
+      { type: "thinking", text: "after" },
+    ])
+  })
+
+  it("keeps a main-thread run split across a turn boundary", () => {
+    // A completed tool between two thinking blocks opens a new turn group —
+    // rejoining must not reach back across it.
+    const result = build([
+      { type: "thinking", text: "before" },
+      {
+        type: "tool_call",
+        info: toolInfo({ tool_call_id: "toolu_done", status: "completed" }),
+      },
+      { type: "thinking", text: "after" },
+    ])
+    expect(
+      result.turns.map((t) =>
+        t.blocks.filter((b) => b.type === "thinking").map((b) => b.text)
+      )
+    ).toEqual([["before"], ["after"]])
+  })
+
+  it("keeps a boundary that preprocessing removed (codex collab close)", () => {
+    // collapseLiveCollabBlocks folds a completed `closeAgent` into the spawn
+    // capsule, so by Phase 2 the two texts look adjacent. They are not: a real
+    // top-level tool call stood between them on the wire.
+    const collab = (id: string, title: string): LiveContentBlock => ({
+      type: "tool_call",
+      info: {
+        tool_call_id: id,
+        title,
+        kind: "other",
+        status: "completed",
+        content: null,
+        raw_input: JSON.stringify({
+          senderThreadId: "main",
+          receiverThreadIds: ["a1"],
+          agentsStates: { a1: { status: "completed", message: null } },
+        }),
+        raw_output_chunks: [],
+        raw_output_total_bytes: 0,
+        locations: null,
+        meta: null,
+        images: [],
+      },
+    })
+    const result = build([
+      collab("collab-spawn", "spawnAgent"),
+      { type: "text", text: "before" },
+      collab("collab-close", "closeAgent"),
+      { type: "text", text: "after" },
+    ])
+    expect(
+      result.turns
+        .flatMap((t) => t.blocks)
+        .filter((b) => b.type === "text")
+        .map((b) => b.text)
+    ).toEqual(["before", "after"])
+  })
+
+  it("does not let a stale snapshot's empty text block re-split a run", () => {
+    // An empty text block renders nothing (Phase 2 drops it), so it is not a
+    // boundary. Neither producer emits one any more, but a snapshot taken by
+    // an older backend can still carry it.
+    const result = build([
+      { type: "thinking", text: "before" },
+      { type: "text", text: "" },
+      { type: "thinking", text: " after" },
+    ])
+    expect(
+      result.turns
+        .flatMap((t) => t.blocks)
+        .filter((b) => b.type === "thinking")
+        .map((b) => b.text)
+    ).toEqual(["before after"])
+  })
+
+  it("keeps a boundary the PLAN_UPDATE reducer relocated away", () => {
+    // `thinking → plan(v1) → thinking → plan(v2)` reaches the builder as two
+    // adjacent thinking blocks: PLAN_UPDATE keeps one plan and moves it to the
+    // end. The split predicate never leaves same-kind main prose adjacent, so
+    // that shape means a boundary was removed — do not fuse across it.
+    const result = build([
+      { type: "thinking", text: "before" },
+      { type: "thinking", text: "after" },
+      { type: "plan", entries: [] },
+    ])
+    expect(
+      result.turns
+        .flatMap((t) => t.blocks)
+        .filter((b) => b.type === "thinking")
+        .map((b) => b.text)
+    ).toEqual(["before", "after"])
+  })
+
+  it("keeps a plan block between two thinking blocks from fusing them", () => {
+    const result = build([
+      { type: "thinking", text: "before" },
+      { type: "plan", entries: [] },
+      { type: "thinking", text: "after" },
+    ])
+    expect(
+      result.turns
+        .flatMap((t) => t.blocks)
+        .map((b) => (b.type === "thinking" ? b.text : b.type))
+    ).toEqual(["before", "plan", "after"])
+  })
 })
 
 describe("buildStreamingTurnsFromLiveMessage — Kimi TodoList suppression", () => {

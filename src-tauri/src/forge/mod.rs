@@ -158,6 +158,15 @@ impl ForgeItemKind {
 /// forge page's own `useTranslations("Forge")` cannot resolve it.
 pub const NO_ACCOUNT_I18N_KEY: &str = "Forge.errors.noAccount";
 
+/// i18n key for [`ForgeError::UnsupportedHost`], dotted for the same reason.
+/// The workbench also renders this message on its OWN account — it refuses to
+/// spend a request on such a host at all — so the two paths say one thing.
+pub const UNSUPPORTED_HOST_I18N_KEY: &str = "Forge.errors.unsupportedHost";
+
+/// i18n key for [`ForgeError::WrongForge`]. Root-dotted for the same reason
+/// [`NO_ACCOUNT_I18N_KEY`] is.
+pub const WRONG_FORGE_I18N_KEY: &str = "Forge.errors.wrongForge";
+
 #[derive(Debug, thiserror::Error)]
 pub enum ForgeError {
     /// No usable account/token for the requested host (or the token is dead).
@@ -170,6 +179,20 @@ pub enum ForgeError {
     /// [`ForgeError::Auth`]: adding another account fixes none of them.
     #[error("no {} account for host {host}", provider.display_name())]
     NoAccount { provider: ForgeProvider, host: String },
+    /// The host is not one codeg can read: nothing is configured for it and its
+    /// name claims neither forge. Distinct from [`ForgeError::NoAccount`]
+    /// because the advice differs — "add a GitHub account for bitbucket.org"
+    /// is advice that cannot work, while "only GitHub and GitLab are
+    /// supported" is the actual answer (with adding an account still the way
+    /// in for a self-hosted instance under an unrelated name).
+    #[error("unsupported forge host {host}: only GitHub and GitLab are supported")]
+    UnsupportedHost { host: String },
+    /// The host answered in a way only the OTHER forge answers — codeg had it
+    /// classified wrong and now knows better. Recoverable by construction: the
+    /// detection cache has already been corrected by the time this is
+    /// returned, so repeating the request routes it to the right client.
+    #[error("{host} is a {}, not the forge it was addressed as", detected.display_name())]
+    WrongForge { host: String, detected: ForgeProvider },
     /// Primary or secondary rate limit; honor `retry_after` when present.
     #[error("forge rate limited")]
     RateLimited { retry_after: Option<u64> },
@@ -199,6 +222,19 @@ impl From<ForgeError> for crate::app_error::AppCommandError {
                 ]);
                 E::configuration_missing(err.to_string())
                     .with_i18n(NO_ACCOUNT_I18N_KEY, params)
+            }
+            ForgeError::UnsupportedHost { host } => {
+                let params =
+                    std::collections::BTreeMap::from([("host".to_string(), host.clone())]);
+                E::configuration_invalid(err.to_string())
+                    .with_i18n(UNSUPPORTED_HOST_I18N_KEY, params)
+            }
+            ForgeError::WrongForge { host, detected } => {
+                let params = std::collections::BTreeMap::from([
+                    ("host".to_string(), host.clone()),
+                    ("provider".to_string(), detected.display_name().to_string()),
+                ]);
+                E::network(err.to_string()).with_i18n(WRONG_FORGE_I18N_KEY, params)
             }
             ForgeError::RateLimited { retry_after } => E::network("forge rate limit reached")
                 .with_detail(match retry_after {
@@ -588,11 +624,25 @@ pub fn normalize_search(raw: Option<&str>) -> Option<String> {
 /// Trim, drop empties, de-duplicate (case-sensitively — GitHub label names are
 /// case-sensitive) and cap at [`MAX_LABEL_FILTERS`], preserving order.
 pub fn normalize_labels(raw: Vec<String>) -> Vec<String> {
+    normalize_label_names(raw, MAX_LABEL_FILTERS)
+}
+
+/// Most labels one new issue may carry. Far above the filter's cap and there
+/// for a different reason: this is a sanity bound on a payload, not a limit on
+/// how narrow a query may be. GitHub applies at most 100 labels to an issue,
+/// and a repository with more than [`MAX_ISSUE_LABELS`] on one issue is not a
+/// case this dialog is for.
+pub const MAX_ISSUE_LABELS: usize = 50;
+
+/// The shared normalizer behind [`normalize_labels`], with the cap as an
+/// argument — a filter and a new issue want the same trimming and the same
+/// de-duplication but emphatically not the same ceiling.
+fn normalize_label_names(raw: Vec<String>, cap: usize) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     raw.into_iter()
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty() && seen.insert(l.clone()))
-        .take(MAX_LABEL_FILTERS)
+        .take(cap)
         .collect()
 }
 
@@ -696,6 +746,12 @@ pub struct ForgeIssueRow {
     pub draft: bool,
     pub labels: Vec<ForgeLabel>,
     pub author: Option<String>,
+    /// The author's picture, under the same rule as [`ForgeComment`]'s: `http(s)`
+    /// only, through [`sanitize_web_url`], because it goes straight into an
+    /// `<img src>`. Both forges ship it with the list row, so it costs nothing —
+    /// and without it the panel would draw an initial for the author beside
+    /// comments from that same person showing their face.
+    pub author_avatar: Option<String>,
     pub updated_at: Option<String>,
     pub html_url: String,
     pub is_pr: bool,
@@ -802,6 +858,40 @@ impl ForgeComment {
     }
 }
 
+/// Who a write against this folder would go out as.
+///
+/// The panel cannot work this out for itself. Which stored account serves a
+/// folder is decided here, from the origin remote's HOST and an optional pinned
+/// `account_id` ([`auth::resolve_forge_auth`]) — so a UI that read "the default
+/// account" would name the wrong person for every folder that is not on it.
+///
+/// Local: the answer comes from stored settings, not from the forge, so asking
+/// costs no request. Nothing secret rides along — the token stays in
+/// [`auth::ResolvedAuth`], which this is deliberately not.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ForgeIdentity {
+    pub username: String,
+    /// `http(s)` only (see [`sanitize_web_url`]) — it goes into an `<img src>`
+    /// like any other avatar, and a stored account's URL is no more trusted
+    /// than one off the wire.
+    pub avatar_url: Option<String>,
+}
+
+impl ForgeIdentity {
+    /// The public half of a resolved identity.
+    ///
+    /// Written out field by field on purpose. A `..` spread would make every
+    /// future addition to [`auth::ResolvedAuth`] — which is where the token
+    /// lives — arrive here silently, in a struct that is serialized straight
+    /// to the UI.
+    pub fn of(auth: &auth::ResolvedAuth) -> Self {
+        Self {
+            username: auth.username.clone(),
+            avatar_url: auth.avatar_url.as_deref().and_then(sanitize_web_url),
+        }
+    }
+}
+
 /// One page of an item's discussion.
 ///
 /// No total: GitHub's comments endpoint does not count (only the `Link`
@@ -865,6 +955,588 @@ impl CommentFilters {
             self.per_page.clamp(MIN_PER_PAGE, MAX_PER_PAGE),
         ))
     }
+}
+
+// ── writes: comments, state, new issues ─────────────────────────────────────
+
+/// Longest comment body accepted. GitHub rejects an issue comment over 65 536
+/// characters outright and GitLab's own limit is 1 000 000; the smaller of the
+/// two is the honest ceiling for a box that must work on both. Refused here
+/// rather than truncated: silently posting half of what someone wrote to a
+/// thread other people read is worse than telling them it is too long.
+pub const MAX_COMMENT_CHARS: usize = 65_536;
+/// Longest issue title accepted — GitHub's documented cap, and comfortably
+/// under GitLab's 255.
+pub const MAX_TITLE_CHARS: usize = 255;
+
+/// A comment somebody is about to post. As with every other client-supplied
+/// forge payload, the repository is deliberately absent: the server derives it
+/// from the folder's own remote.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommentDraft {
+    /// "issue" | "pr" — which COLLECTION on GitLab (see [`ForgeItemKind`]).
+    pub kind: String,
+    pub number: i64,
+    pub body: String,
+    #[serde(default)]
+    pub account_id: Option<String>,
+}
+
+impl CommentDraft {
+    /// The item this posts to and the text to post — validated exactly once,
+    /// here, so neither provider client has to trust the wire.
+    ///
+    /// The body is TRIMMED and required to be non-empty: both forges accept a
+    /// whitespace-only comment and render it as a blank card nobody can delete
+    /// from this app.
+    pub fn resolve(&self) -> Result<(ForgeItemKind, i64, String), ForgeError> {
+        let kind = ForgeItemKind::parse(&self.kind)?;
+        if self.number <= 0 {
+            return Err(ForgeError::Invalid(format!(
+                "bad work item number: {}",
+                self.number
+            )));
+        }
+        let body = self.body.trim();
+        if body.is_empty() {
+            return Err(ForgeError::Invalid("comment body is empty".to_string()));
+        }
+        if body.chars().count() > MAX_COMMENT_CHARS {
+            return Err(ForgeError::Invalid(format!(
+                "comment body exceeds {MAX_COMMENT_CHARS} characters"
+            )));
+        }
+        Ok((kind, self.number, body.to_string()))
+    }
+}
+
+/// What the panel's state button does to an item.
+///
+/// Two verbs rather than a target state, because that is what GitLab's API
+/// takes (`state_event: close | reopen`) and what a button means: "close this"
+/// is an action, `state = "closed"` is an assertion about a value that may have
+/// changed since the panel drew it. Merging is deliberately NOT here — it is a
+/// different operation with its own preconditions (method, conflicts, required
+/// checks), not a state to be set. It has its own door: see
+/// [`ChangeMergeRequest`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ForgeStateAction {
+    Close,
+    Reopen,
+}
+
+impl ForgeStateAction {
+    /// GitHub's `state` value on `PATCH /issues/{n}` and `PATCH /pulls/{n}`.
+    pub fn github_state(self) -> &'static str {
+        match self {
+            ForgeStateAction::Close => "closed",
+            ForgeStateAction::Reopen => "open",
+        }
+    }
+
+    /// GitLab's `state_event` value — a VERB, which is why this enum is one.
+    pub fn gitlab_event(self) -> &'static str {
+        match self {
+            ForgeStateAction::Close => "close",
+            ForgeStateAction::Reopen => "reopen",
+        }
+    }
+}
+
+/// A state change the panel is asking for.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateChangeRequest {
+    pub kind: String,
+    pub number: i64,
+    pub action: ForgeStateAction,
+    #[serde(default)]
+    pub account_id: Option<String>,
+}
+
+impl StateChangeRequest {
+    pub fn resolve(&self) -> Result<(ForgeItemKind, i64, ForgeStateAction), ForgeError> {
+        let kind = ForgeItemKind::parse(&self.kind)?;
+        if self.number <= 0 {
+            return Err(ForgeError::Invalid(format!(
+                "bad work item number: {}",
+                self.number
+            )));
+        }
+        Ok((kind, self.number, self.action))
+    }
+}
+
+/// How a proposed change is joined to its base branch.
+///
+/// One vocabulary, but the two forges hand the choice over very differently.
+/// GitHub takes the method per merge (`merge_method` on the request) and lets a
+/// repository forbid any of the three. GitLab takes no method at all — the
+/// PROJECT decides between a merge commit, a rebase-merge and a fast-forward —
+/// and the only thing a caller picks is whether to squash first. Which is why
+/// [`ForgeMergeOptions`] exists: the menu is what the repository permits, not
+/// what this enum can spell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ForgeMergeMethod {
+    Merge,
+    Squash,
+    Rebase,
+}
+
+impl ForgeMergeMethod {
+    /// GitHub's `merge_method` value on `PUT /pulls/{n}/merge`.
+    pub fn github_method(self) -> &'static str {
+        match self {
+            ForgeMergeMethod::Merge => "merge",
+            ForgeMergeMethod::Squash => "squash",
+            ForgeMergeMethod::Rebase => "rebase",
+        }
+    }
+}
+
+/// What [`ForgeMergeMethod::Merge`] actually DOES to the history here.
+///
+/// The method a caller picks and the shape of the result are the same question
+/// on GitHub — `merge` writes a merge commit, full stop. On GitLab they are
+/// not: the project's `merge_method` decides between a merge commit, a
+/// rebase-then-merge and a fast-forward, and the API offers no override. Naming
+/// that separately is what stops the menu promising a merge commit to a
+/// fast-forward-only project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForgeMergeStrategy {
+    MergeCommit,
+    RebaseMerge,
+    FastForward,
+}
+
+/// The merge methods one repository actually permits.
+///
+/// Asked for separately from [`ForgeChangeDetail`] and only when the panel is
+/// about to offer the button: it is a REPOSITORY fact, not a change's, and
+/// folding it into the detail would spend a request on every change opened for
+/// reading.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ForgeMergeOptions {
+    /// In the order to offer them.
+    ///
+    /// Empty means the forge would not say — a token that can read the change
+    /// but not the repository's settings gets this, and the panel then offers
+    /// [`ForgeMergeMethod::Merge`] alone rather than three menu entries of
+    /// which two answer 405.
+    pub methods: Vec<ForgeMergeMethod>,
+    /// Which one starts selected. Always a member of `methods` when that is
+    /// non-empty.
+    pub default_method: ForgeMergeMethod,
+    /// What `Merge` will do to the history — see [`ForgeMergeStrategy`].
+    pub merge_strategy: ForgeMergeStrategy,
+}
+
+impl ForgeMergeOptions {
+    /// What is offered when the repository's own settings could not be read.
+    /// A merge commit is the one method neither forge can be configured to
+    /// forbid outright without also offering another, so it is the safest
+    /// single guess — and the forge still gets the last word.
+    pub fn unknown() -> Self {
+        Self {
+            methods: Vec::new(),
+            default_method: ForgeMergeMethod::Merge,
+            merge_strategy: ForgeMergeStrategy::MergeCommit,
+        }
+    }
+}
+
+/// A merge the panel is asking for.
+///
+/// No `kind`, unlike [`StateChangeRequest`]: only a proposed change can be
+/// merged, so a field naming the collection could only ever be wrong.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeMergeRequest {
+    pub number: i64,
+    pub method: ForgeMergeMethod,
+    /// The head commit the caller was LOOKING at, when it knows one.
+    ///
+    /// Both forges take this as a precondition and refuse with a 409 when the
+    /// branch has moved since — which is the point. The panel decides with a
+    /// diff, a file list and a set of checks that all describe one commit, and
+    /// a merge that silently landed a newer one would land code nobody in that
+    /// conversation ever saw.
+    ///
+    /// `None` when the caller has no head to name (the detail request failed,
+    /// or a forge answered without one). The merge then goes through unguarded,
+    /// which is the old behaviour and still better than refusing to merge at
+    /// all.
+    #[serde(default)]
+    pub head_sha: Option<String>,
+    #[serde(default)]
+    pub account_id: Option<String>,
+}
+
+impl ChangeMergeRequest {
+    pub fn resolve(&self) -> Result<(i64, ForgeMergeMethod, Option<String>), ForgeError> {
+        if self.number <= 0 {
+            return Err(ForgeError::Invalid(format!(
+                "bad work item number: {}",
+                self.number
+            )));
+        }
+        let head_sha = self
+            .head_sha
+            .as_deref()
+            .map(str::trim)
+            .filter(|sha| !sha.is_empty())
+            .map(str::to_string);
+        Ok((self.number, self.method, head_sha))
+    }
+}
+
+/// An issue somebody is about to open.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewIssueDraft {
+    pub title: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    /// Label names to apply.
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub account_id: Option<String>,
+}
+
+/// A validated new issue — the only shape a provider client will take.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedNewIssue {
+    pub title: String,
+    /// `None` for "no description", never `Some("")`: GitHub stores an empty
+    /// string as a body and the item then renders an empty description block
+    /// instead of nothing at all.
+    pub body: Option<String>,
+    pub labels: Vec<String>,
+}
+
+impl NewIssueDraft {
+    /// Trim, check and normalize. A title is REQUIRED — both forges reject an
+    /// empty one with a 422 whose message the user cannot act on, and the
+    /// dialog can say so before spending a request.
+    pub fn resolve(&self) -> Result<ResolvedNewIssue, ForgeError> {
+        let title = self.title.trim();
+        if title.is_empty() {
+            return Err(ForgeError::Invalid("issue title is empty".to_string()));
+        }
+        if title.chars().count() > MAX_TITLE_CHARS {
+            return Err(ForgeError::Invalid(format!(
+                "issue title exceeds {MAX_TITLE_CHARS} characters"
+            )));
+        }
+        let body = self.body.as_deref().map(str::trim).filter(|b| !b.is_empty());
+        if body.is_some_and(|b| b.chars().count() > MAX_COMMENT_CHARS) {
+            return Err(ForgeError::Invalid(format!(
+                "issue body exceeds {MAX_COMMENT_CHARS} characters"
+            )));
+        }
+        Ok(ResolvedNewIssue {
+            title: title.to_string(),
+            body: body.map(str::to_string),
+            // Deliberately NOT [`normalize_labels`]: that one caps at
+            // [`MAX_LABEL_FILTERS`], which is a FILTER limit (each label
+            // lengthens GitHub's `q`, and ANDed past a handful the list is
+            // empty anyway). Applying it here would silently drop the eleventh
+            // label somebody picked in the dialog, which is the difference
+            // between narrowing a search and losing what was written.
+            labels: normalize_label_names(self.labels.clone(), MAX_ISSUE_LABELS),
+        })
+    }
+}
+
+// ── reads: what a proposed change is made of ────────────────────────────────
+
+/// Which change the detail/files request is about. Its own struct rather than
+/// a bare number so the account choice rides along like every other request's.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeQuery {
+    pub number: i64,
+    #[serde(default)]
+    pub account_id: Option<String>,
+}
+
+impl ChangeQuery {
+    pub fn resolve(&self) -> Result<i64, ForgeError> {
+        if self.number <= 0 {
+            return Err(ForgeError::Invalid(format!(
+                "bad work item number: {}",
+                self.number
+            )));
+        }
+        Ok(self.number)
+    }
+}
+
+/// One page of a change's file list.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeFilesQuery {
+    pub number: i64,
+    #[serde(default = "default_page")]
+    pub page: u32,
+    #[serde(default = "default_files_per_page")]
+    pub per_page: u32,
+    #[serde(default)]
+    pub account_id: Option<String>,
+}
+
+impl ChangeFilesQuery {
+    pub fn resolve(&self) -> Result<(i64, u32, u32), ForgeError> {
+        if self.number <= 0 {
+            return Err(ForgeError::Invalid(format!(
+                "bad work item number: {}",
+                self.number
+            )));
+        }
+        Ok((
+            self.number,
+            self.page.max(1),
+            self.per_page.clamp(MIN_PER_PAGE, MAX_PER_PAGE),
+        ))
+    }
+}
+
+/// Files per page. Larger than a comment page: these are one line each, and a
+/// reviewer scanning "what does this touch" wants the shape of the whole change
+/// rather than a paragraph of it.
+pub const DEFAULT_FILES_PER_PAGE: u32 = 50;
+
+fn default_files_per_page() -> u32 {
+    DEFAULT_FILES_PER_PAGE
+}
+
+/// What a proposed change is, beyond what its list row already says: which
+/// branches it joins, how big it is, and whether it can land.
+///
+/// Every counter is optional because the two forges answer different halves of
+/// the question. GitHub's pull object carries `additions`/`deletions`/
+/// `changed_files`/`commits`; GitLab's merge request carries none of them and
+/// only sometimes a `changes_count` (and that one as a STRING, "12+" once the
+/// diff is truncated). Showing a zero where the forge said nothing would claim
+/// a change touches nothing, so absent stays absent.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ForgeChangeDetail {
+    pub number: i64,
+    /// Where it would land — `main`, `release/1.2`.
+    pub base_ref: String,
+    /// What would land — the source branch.
+    pub head_ref: String,
+    /// `owner/repo` of the head, present only when it is NOT this repository:
+    /// a fork is the one thing about the branch pair a reader must not have to
+    /// infer. `None` means same-repository.
+    pub head_repo: Option<String>,
+    pub head_sha: Option<String>,
+    pub draft: bool,
+    /// Normalized exactly as [`ForgeIssueRow::state`] is: open / closed / merged.
+    pub state: String,
+    /// Can this land without a human resolving something?
+    ///
+    /// `None` is a real third answer on BOTH forges and is not the same as
+    /// `Some(false)`: GitHub computes mergeability asynchronously and answers
+    /// `null` until the background job finishes, and GitLab reports
+    /// `merge_status: "unchecked"` for the same reason. "We do not know yet" is
+    /// what the panel says; "cannot be merged" is a claim that would send
+    /// someone looking for a conflict that may not exist.
+    pub mergeable: Option<bool>,
+    /// The forge's own word for the situation (`clean`, `dirty`, `blocked`,
+    /// `behind`, `can_be_merged`, `cannot_be_merged`…). Passed through for a
+    /// tooltip rather than mapped, because the vocabularies do not line up and
+    /// a wrong translation reads as a diagnosis.
+    pub merge_state: Option<String>,
+    pub additions: Option<i64>,
+    pub deletions: Option<i64>,
+    pub changed_files: Option<i64>,
+    pub commits: Option<i64>,
+    /// CI as the forge reports it for the head commit. Empty means the forge
+    /// answered and there is nothing running; see [`ForgeCheckList`].
+    pub checks: ForgeCheckList,
+}
+
+/// How a check ended up, in ONE vocabulary.
+///
+/// GitHub has `status` (queued/in_progress/completed) crossed with `conclusion`
+/// (success/failure/neutral/cancelled/skipped/timed_out/action_required), plus
+/// a separate legacy commit-status vocabulary (success/failure/error/pending).
+/// GitLab has job statuses (created/pending/running/success/failed/canceled/
+/// skipped/manual/waiting_for_resource). Three vocabularies, one strip of
+/// indicators — so they are folded here, at the boundary, and the UI switches
+/// on five values instead of eighteen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForgeCheckState {
+    /// Not started yet.
+    Queued,
+    Running,
+    Success,
+    Failure,
+    /// Ran and deliberately produced no verdict — skipped, cancelled, neutral,
+    /// manual. Kept apart from success: a skipped required check is not a pass,
+    /// and painting it green is how a red pipeline reads as green.
+    Neutral,
+}
+
+impl ForgeCheckState {
+    /// Whether this check is still going to change. Drives nothing in the
+    /// backend; the panel uses it to decide whether re-polling is worth it.
+    pub fn is_pending(self) -> bool {
+        matches!(self, ForgeCheckState::Queued | ForgeCheckState::Running)
+    }
+}
+
+/// One CI check on a change's head commit.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ForgeCheck {
+    /// Stable within one response — the forge's own id where there is one, so
+    /// React keys survive a refresh that reorders the strip.
+    pub id: String,
+    pub name: String,
+    pub state: ForgeCheckState,
+    /// One-line detail (GitHub's status `description`, GitLab's stage).
+    pub summary: Option<String>,
+    /// Where to see the run, `http(s)` only (see [`sanitize_web_url`]).
+    pub url: Option<String>,
+    /// Whether a failure here is allowed to not block the change. GitLab says
+    /// so explicitly (`allow_failure`); GitHub has no equivalent, so it is
+    /// always false there.
+    pub allow_failure: bool,
+}
+
+/// A change's checks, and how much of the answer we actually got.
+///
+/// `available: false` is NOT "no checks ran". It means the forge would not tell
+/// us — a token without the `checks:read` scope, a GitHub App-less repository,
+/// a GitLab instance with CI disabled. An empty list under `available: true`
+/// means the forge answered and nothing is configured. Collapsing the two would
+/// print "no checks" over a repository whose pipeline is red.
+///
+/// `partial` is the same distinction one level down, and it exists because
+/// GitHub keeps its checks in TWO collections behind TWO fine-grained
+/// permissions: a token with "Commit statuses: read" but not "Checks: read"
+/// gets a 403 from one and an empty `200 []` from the other. Reporting that as
+/// a complete empty list is the original bug wearing a disguise — the pipeline
+/// is red, and the panel says nothing ran.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ForgeCheckList {
+    pub checks: Vec<ForgeCheck>,
+    pub available: bool,
+    /// Some of the checks could not be read, so this list may be missing
+    /// entries. Always false when `available` is false — there is no partial
+    /// answer to qualify.
+    pub partial: bool,
+}
+
+impl ForgeCheckList {
+    pub fn unavailable() -> Self {
+        Self {
+            checks: Vec::new(),
+            available: false,
+            partial: false,
+        }
+    }
+
+    pub fn available(checks: Vec<ForgeCheck>) -> Self {
+        Self {
+            checks,
+            available: true,
+            partial: false,
+        }
+    }
+
+    /// Everything one collection could give, said out loud to be incomplete.
+    pub fn partial(checks: Vec<ForgeCheck>) -> Self {
+        Self {
+            checks,
+            available: true,
+            partial: true,
+        }
+    }
+}
+
+/// How a file was touched, in the one vocabulary both forges can be read into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForgeFileStatus {
+    Added,
+    Removed,
+    Modified,
+    Renamed,
+}
+
+/// One file a change touches.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ForgeChangedFile {
+    /// Path AFTER the change (the old one for a deletion).
+    pub path: String,
+    /// Where a rename came from; `None` otherwise.
+    pub previous_path: Option<String>,
+    pub status: ForgeFileStatus,
+    /// `None` when the forge does not count — GitLab ships the diff text and no
+    /// totals, and a binary file has no line counts on either forge.
+    pub additions: Option<i64>,
+    pub deletions: Option<i64>,
+    /// No textual diff to count or show.
+    pub binary: bool,
+    /// The file's own unified diff, as the forge shipped it alongside the list.
+    ///
+    /// Costs nothing extra: both providers already send it with the page (it is
+    /// what `binary` is inferred from on GitHub and what the counters are
+    /// counted off on GitLab), so this only stops it being thrown away.
+    ///
+    /// `None` covers two different situations that both mean "no diff to show":
+    /// binary content, and a diff the forge WITHHELD — GitHub omits the patch
+    /// past its own size limit while still reporting the file's line counts.
+    /// Neither is "the diff is empty", which is why this is not a `String`.
+    pub patch: Option<String>,
+}
+
+/// One page of a change's file list.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ForgeChangedFileList {
+    pub files: Vec<ForgeChangedFile>,
+    pub page: u32,
+    pub per_page: u32,
+    /// From the forge's own pagination signal, never from how many rows came
+    /// back — same rule as [`ForgeCommentList::has_next`].
+    pub has_next: bool,
+}
+
+/// `(additions, deletions)` counted off a unified diff hunk.
+///
+/// GitLab ships the diff TEXT and no counters, so the only way to put a
+/// `+12 −3` next to one of its files is to count the lines here. `+++` / `---`
+/// are the file headers — counting them would add one to each side of every
+/// single file — but ONLY before the first `@@`. Past that they are ordinary
+/// content, and a diff that adds a line of Markdown underline (`---`) or a
+/// three-plus separator is not rare enough to miscount.
+pub fn count_diff_lines(diff: &str) -> (i64, i64) {
+    let mut additions = 0;
+    let mut deletions = 0;
+    let mut in_hunk = false;
+    for line in diff.lines() {
+        if line.starts_with("@@") {
+            in_hunk = true;
+            continue;
+        }
+        if !in_hunk && (line.starts_with("+++") || line.starts_with("---")) {
+            continue;
+        }
+        match line.as_bytes().first() {
+            Some(b'+') => additions += 1,
+            Some(b'-') => deletions += 1,
+            _ => {}
+        }
+    }
+    (additions, deletions)
 }
 
 /// A forge-supplied URL, or `None` when it is not one this app will put in
@@ -1165,6 +1837,7 @@ mod tests {
             api_base: "https://api.github.com".into(),
             account_id: "acc".into(),
             username: "alice".into(),
+            avatar_url: None,
             token: "tok".into(),
             scopes: vec![],
         };
@@ -1179,6 +1852,42 @@ mod tests {
         // than build a link into whatever that string was.
         auth.api_base = "https://gitlab.com/weird".into();
         assert_eq!(web_origin(&auth), "https://fallback.test");
+    }
+
+    /// A name and a picture, and — the point of the type — nothing else. The
+    /// identity is built from the same value that holds the token, and it is
+    /// serialized straight to a webview.
+    #[test]
+    fn an_identity_is_a_name_and_a_picture_and_carries_no_secret() {
+        let mut auth = ResolvedAuth {
+            provider: ForgeProvider::GitHub,
+            server_host: "github.com".into(),
+            api_base: "https://api.github.com".into(),
+            account_id: "acc".into(),
+            username: "alice".into(),
+            avatar_url: Some("https://avatars.test/u/1".into()),
+            token: "ghp_secret".into(),
+            scopes: vec!["repo".into()],
+        };
+
+        let identity = ForgeIdentity::of(&auth);
+        assert_eq!(identity.username, "alice");
+        assert_eq!(identity.avatar_url.as_deref(), Some("https://avatars.test/u/1"));
+
+        // Whatever the account was stored with, it still has to survive the
+        // gate every other avatar goes through before reaching an `<img src>`.
+        auth.avatar_url = Some("javascript:alert(1)".into());
+        assert_eq!(ForgeIdentity::of(&auth).avatar_url, None);
+        auth.avatar_url = None;
+        assert_eq!(ForgeIdentity::of(&auth).avatar_url, None);
+
+        // The shape on the wire, not just the fields we happened to read: a
+        // key added here later would ship whatever it holds to the panel.
+        let json = serde_json::to_value(ForgeIdentity::of(&auth)).expect("serialize");
+        let mut keys: Vec<&str> = json.as_object().expect("object").keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["avatar_url", "username"]);
+        assert!(!json.to_string().contains("ghp_secret"));
     }
 
     /// Paging comes off the wire and reaches two APIs that reject different
@@ -1338,6 +2047,24 @@ mod tests {
         assert_eq!(page(None, false).trustworthy_count(), None);
     }
 
+    /// The three answers the CI section has to keep apart. `partial` is the one
+    /// GitHub forces: its checks live in two collections behind two separate
+    /// fine-grained permissions, so half an answer is a real outcome.
+    #[test]
+    fn a_half_read_check_list_is_neither_complete_nor_unavailable() {
+        let complete = ForgeCheckList::available(Vec::new());
+        assert!(complete.available && !complete.partial);
+        let half = ForgeCheckList::partial(Vec::new());
+        assert!(half.available && half.partial);
+        let none = ForgeCheckList::unavailable();
+        // Nothing to qualify — there is no partial answer, only no answer.
+        assert!(!none.available && !none.partial);
+        // The wire shape the frontend switches on.
+        let json = serde_json::to_value(&half).unwrap();
+        assert_eq!(json["available"], true);
+        assert_eq!(json["partial"], true);
+    }
+
     /// Four named orders, because the two forges accept different field sets
     /// and spell the shared ones differently. `newest` is the default — the
     /// same one github.com's issue list opens on.
@@ -1418,6 +2145,202 @@ mod tests {
         assert_eq!(ForgeComment::author_name(Some("  alice ".into())).as_deref(), Some("alice"));
         assert_eq!(ForgeComment::author_name(Some("   ".into())), None);
         assert_eq!(ForgeComment::author_name(None), None);
+    }
+
+    /// A comment is written by a human into a box and then published where
+    /// other people read it, so the two things that can go wrong are checked
+    /// before a request is spent: nothing at all, and more than the forge will
+    /// take. Whitespace-only counts as nothing — both forges accept it and
+    /// render a blank card this app has no way to delete.
+    #[test]
+    fn a_comment_draft_must_carry_text_and_a_real_item() {
+        let draft = |kind: &str, number: i64, body: &str| CommentDraft {
+            kind: kind.into(),
+            number,
+            body: body.into(),
+            account_id: None,
+        };
+        assert_eq!(
+            draft("issue", 7, "  looks fixed  ").resolve().unwrap(),
+            (ForgeItemKind::Issue, 7, "looks fixed".to_string()),
+            "trimmed, not passed through"
+        );
+        assert_eq!(
+            draft(" PR ", 7, "x").resolve().unwrap().0,
+            ForgeItemKind::Change
+        );
+        for bad in [
+            draft("issue", 7, "   \n\t "),
+            draft("issue", 7, ""),
+            draft("issue", 0, "x"),
+            draft("issue", -1, "x"),
+            // On GitLab the kind picks the COLLECTION, so a wrong one comments
+            // on a real item that is not the one on screen.
+            draft("mr", 7, "x"),
+        ] {
+            assert!(bad.resolve().is_err(), "{} #{}", bad.kind, bad.number);
+        }
+        let too_long = "x".repeat(MAX_COMMENT_CHARS + 1);
+        assert!(draft("issue", 7, &too_long).resolve().is_err());
+        // Counted in CHARS, so a body of multi-byte text right at the cap is
+        // accepted rather than rejected for its byte length.
+        let at_cap = "汉".repeat(MAX_COMMENT_CHARS);
+        assert!(draft("issue", 7, &at_cap).resolve().is_ok());
+    }
+
+    /// Close and reopen are VERBS on the wire at GitLab and a target state at
+    /// GitHub — the same button, two vocabularies, and neither API accepts the
+    /// other's.
+    #[test]
+    fn a_state_action_speaks_each_forges_own_wire_vocabulary() {
+        assert_eq!(ForgeStateAction::Close.github_state(), "closed");
+        assert_eq!(ForgeStateAction::Reopen.github_state(), "open");
+        assert_eq!(ForgeStateAction::Close.gitlab_event(), "close");
+        assert_eq!(ForgeStateAction::Reopen.gitlab_event(), "reopen");
+        // The spelling the frontend sends.
+        let parsed: StateChangeRequest =
+            serde_json::from_str(r#"{"kind":"pr","number":7,"action":"close"}"#).expect("decodes");
+        assert_eq!(
+            parsed.resolve().unwrap(),
+            (ForgeItemKind::Change, 7, ForgeStateAction::Close)
+        );
+        assert!(serde_json::from_str::<StateChangeRequest>(
+            r#"{"kind":"issue","number":7,"action":"merge"}"#
+        )
+        .is_err());
+    }
+
+    /// A title is required and capped; a body is optional and DROPPED when
+    /// blank rather than sent as an empty string — GitHub stores that as a
+    /// body and the issue then renders an empty description block.
+    #[test]
+    fn a_new_issue_needs_a_title_and_normalizes_the_rest() {
+        let draft = |title: &str, body: Option<&str>, labels: Vec<&str>| NewIssueDraft {
+            title: title.into(),
+            body: body.map(str::to_string),
+            labels: labels.into_iter().map(str::to_string).collect(),
+            account_id: None,
+        };
+        assert_eq!(
+            draft("  Login times out  ", Some("  steps  "), vec![" bug ", "", "bug", "docs"])
+                .resolve()
+                .unwrap(),
+            ResolvedNewIssue {
+                title: "Login times out".into(),
+                body: Some("steps".into()),
+                labels: vec!["bug".into(), "docs".into()],
+            }
+        );
+        assert_eq!(draft("t", Some("  \n "), vec![]).resolve().unwrap().body, None);
+        assert_eq!(draft("t", None, vec![]).resolve().unwrap().body, None);
+
+        // NOT the filter's cap. Ten is how narrow a QUERY may get (each label
+        // lengthens GitHub's `q`); silently dropping the eleventh label
+        // somebody picked in the dialog would be losing what they wrote.
+        let distinct: Vec<String> = (0..MAX_LABEL_FILTERS + 5).map(|i| format!("l{i}")).collect();
+        let resolved = NewIssueDraft {
+            title: "t".into(),
+            body: None,
+            labels: distinct.clone(),
+            account_id: None,
+        }
+        .resolve()
+        .unwrap();
+        assert_eq!(resolved.labels.len(), distinct.len());
+        // There is still a ceiling — this is a payload bound, not a promise to
+        // forward anything at all.
+        let absurd: Vec<String> = (0..MAX_ISSUE_LABELS + 10).map(|i| format!("l{i}")).collect();
+        assert_eq!(
+            NewIssueDraft {
+                title: "t".into(),
+                body: None,
+                labels: absurd,
+                account_id: None,
+            }
+            .resolve()
+            .unwrap()
+            .labels
+            .len(),
+            MAX_ISSUE_LABELS
+        );
+        for bad in [draft("", None, vec![]), draft("   ", None, vec![])] {
+            assert!(bad.resolve().is_err());
+        }
+        assert!(draft(&"t".repeat(MAX_TITLE_CHARS + 1), None, vec![]).resolve().is_err());
+        assert!(draft(&"t".repeat(MAX_TITLE_CHARS), None, vec![]).resolve().is_ok());
+    }
+
+    /// GitLab ships a diff and no counters, so the `+12 −3` beside each file is
+    /// counted here. `+++` / `---` are the file headers: counting them would
+    /// add one to each side of every single file in the list.
+    #[test]
+    fn diff_line_counting_skips_the_file_headers() {
+        let diff = "--- a/src/main.rs\n\
+                    +++ b/src/main.rs\n\
+                    @@ -1,3 +1,4 @@\n\
+                    \x20context\n\
+                    -let x = 1;\n\
+                    +let x = 2;\n\
+                    +let y = 3;\n";
+        assert_eq!(count_diff_lines(diff), (2, 1));
+        assert_eq!(count_diff_lines(""), (0, 0));
+        // A hunk header is neither side, and a bare `-`/`+` line is.
+        assert_eq!(count_diff_lines("@@ -0,0 +1 @@\n+\n-\n"), (1, 1));
+
+        // Past the first `@@` those prefixes are CONTENT, not headers — a
+        // Markdown underline and a separator line are ordinary things to add,
+        // and skipping them would undercount every file that touches one.
+        let markdown = "--- a/README.md\n\
+                        +++ b/README.md\n\
+                        @@ -1,2 +1,4 @@\n\
+                        +Title\n\
+                        +++++\n\
+                        ---\n\
+                        \x20kept\n";
+        assert_eq!(count_diff_lines(markdown), (2, 1));
+    }
+
+    /// "Nothing ran" and "we could not look" are different answers and the
+    /// panel says different things about them — collapsing the two prints "no
+    /// checks" over a repository whose pipeline is red.
+    #[test]
+    fn an_unavailable_check_list_is_not_an_empty_one() {
+        assert!(!ForgeCheckList::unavailable().available);
+        let empty = ForgeCheckList::available(Vec::new());
+        assert!(empty.available && empty.checks.is_empty());
+        assert!(ForgeCheckState::Queued.is_pending());
+        assert!(ForgeCheckState::Running.is_pending());
+        for settled in [
+            ForgeCheckState::Success,
+            ForgeCheckState::Failure,
+            ForgeCheckState::Neutral,
+        ] {
+            assert!(!settled.is_pending(), "{settled:?}");
+        }
+        // The wire spelling the frontend switches on.
+        assert_eq!(
+            serde_json::to_string(&ForgeCheckState::Failure).unwrap(),
+            "\"failure\""
+        );
+    }
+
+    /// A file page comes off the wire with the same clamping every other paged
+    /// request gets, and a change is addressed by a real number.
+    #[test]
+    fn change_queries_validate_their_item_and_clamp_their_paging() {
+        assert_eq!(ChangeQuery { number: 7, account_id: None }.resolve().unwrap(), 7);
+        assert!(ChangeQuery { number: 0, account_id: None }.resolve().is_err());
+        let files = |number: i64, page: u32, per_page: u32| ChangeFilesQuery {
+            number,
+            page,
+            per_page,
+            account_id: None,
+        };
+        assert_eq!(files(7, 0, 0).resolve().unwrap(), (7, 1, MIN_PER_PAGE));
+        assert_eq!(files(7, 2, 5_000).resolve().unwrap(), (7, 2, MAX_PER_PAGE));
+        assert!(files(0, 1, 20).resolve().is_err());
+        let wire: ChangeFilesQuery = serde_json::from_str(r#"{"number":7}"#).expect("decodes");
+        assert_eq!((wire.page, wire.per_page), (1, DEFAULT_FILES_PER_PAGE));
     }
 
     /// These strings reach an `href` and an `<img src>`, and they come from

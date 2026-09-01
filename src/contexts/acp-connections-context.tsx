@@ -97,6 +97,15 @@ import {
 import { useAlertContext, type AlertAction } from "@/contexts/alert-context"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 
+/**
+ * A session id we are willing to interpolate into a shell command we hand the
+ * user to run (`codex unarchive <id>`). Anchored and UUID-shaped on purpose:
+ * the whole string must be an id, so no whitespace or shell metacharacter can
+ * ride along and turn one command into two. Codex rollout ids are UUIDs.
+ */
+const SESSION_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 // ── Shared types (re-exported for consumers) ──
 
 /** ACP extensibility metadata attached to tool calls. */
@@ -233,14 +242,23 @@ export interface ConnectionState {
   sessionFailures: SessionFailureRecord[]
   error: string | null
   /**
-   * Set when the agent rejected `session/load` non-recoverably (currently
-   * only `Resource not found` for an expired/missing historical session).
-   * Distinct from `error` because the UI surfaces it inline in the message
-   * list with reload / new-conversation actions, instead of as a toast.
-   * Cleared on the next CONNECTION_CREATED for the same key, or by
+   * Set when the agent rejected `session/load` in a way codeg cannot paper
+   * over: no record of the session, the session/process died, or it is
+   * archived. Distinct from `error` because the UI surfaces it inline in the
+   * message list with reload / new-conversation actions, instead of as a
+   * toast. Cleared on the next CONNECTION_CREATED for the same key, or by
    * CLEAR_ACP_LOAD_ERROR (Reload button).
    */
   loadError: string | null
+  /**
+   * A shell command that undoes the failure in `loadError`, when one exists
+   * (today: `codex unarchive <id>` for an archived rollout). Kept beside the
+   * localized message rather than only inside it so the banner can offer a
+   * copy action — the message renders in a single-line ellipsized strip, and
+   * a 36-char session id is exactly what gets truncated away. `null` whenever
+   * there is nothing runnable to hand the user. Cleared with `loadError`.
+   */
+  loadErrorCommand: string | null
   /**
    * Highest envelope.seq applied to this connection. Used to dedup the
    * live `acp://event` stream against the snapshot endpoint: a
@@ -579,7 +597,13 @@ type Action =
       retry: ClaudeApiRetryState | null
     }
   | { type: "ERROR"; contextKey: string; message: string }
-  | { type: "ACP_LOAD_ERROR"; contextKey: string; message: string }
+  | {
+      type: "ACP_LOAD_ERROR"
+      contextKey: string
+      message: string
+      /** Runnable recovery for this failure, or null when there is none. */
+      command?: string | null
+    }
   | { type: "CLEAR_ACP_LOAD_ERROR"; contextKey: string }
   | {
       type: "AVAILABLE_COMMANDS"
@@ -1303,6 +1327,7 @@ function connectionsReducer(
         sessionFailures: [],
         error: null,
         loadError: null,
+        loadErrorCommand: null,
         lastAppliedSeq: 0,
         isDelegationChild: false,
         parentToolUseId: null,
@@ -1360,6 +1385,7 @@ function connectionsReducer(
         sessionFailures: [],
         error: null,
         loadError: null,
+        loadErrorCommand: null,
         lastAppliedSeq: 0,
         isDelegationChild: true,
         parentToolUseId: action.parentToolUseId,
@@ -2384,17 +2410,20 @@ function connectionsReducer(
       next.set(action.contextKey, {
         ...conn,
         loadError: action.message,
+        loadErrorCommand: action.command ?? null,
       })
       return next
     }
 
     case "CLEAR_ACP_LOAD_ERROR": {
       const conn = state.get(action.contextKey)
-      if (!conn || conn.loadError === null) return state
+      if (!conn || (conn.loadError === null && conn.loadErrorCommand === null))
+        return state
       const next = new Map(state)
       next.set(action.contextKey, {
         ...conn,
         loadError: null,
+        loadErrorCommand: null,
       })
       return next
     }
@@ -2554,6 +2583,13 @@ export interface AcpActionsValue {
   touchActivity(contextKey: string): void
   registerOpenTabKeys(keys: Set<string>): void
   /**
+   * Same promise as `registerOpenTabKeys`, for surfaces that aren't tabs: while
+   * a key is registered, the idle sweep won't reclaim its connection and the
+   * backend keepalive keeps touching it. `source` namespaces the set so
+   * registrars don't overwrite each other; an empty set unregisters.
+   */
+  registerLiveSurfaceKeys(source: string, keys: Set<string>): void
+  /**
    * Register a sink that mirrors this contextKey's `liveMessage` into the
    * conversation-runtime store from `dispatch` (outside React), replacing the
    * panel's per-token mirror effect. Returns an unregister fn (idempotent —
@@ -2562,9 +2598,9 @@ export interface AcpActionsValue {
    */
   registerLiveMessageSink(contextKey: string, sink: LiveMessageSink): () => void
   /**
-   * Clear `loadError` set by a `session/load` failure so the next auto-connect
-   * attempt isn't gated by stale failure state. Wired to the Reload button in
-   * the conversation detail panel.
+   * Clear `loadError` (and its `loadErrorCommand`) set by a `session/load`
+   * failure so the next auto-connect attempt isn't gated by stale failure
+   * state. Wired to the Reload button in the conversation detail panel.
    */
   clearAcpLoadError(contextKey: string): void
   /**
@@ -2858,6 +2894,23 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
 
   // Open tab keys — updated by child TabProvider via registerOpenTabKeys
   const openTabKeysRef = useRef(new Set<string>())
+  // Live surfaces that are NOT tabs, by source. Tabs were the only place a
+  // conversation could be live when `openTabKeysRef` was written; the canvas
+  // put expanded conversation cards on a board instead, and a surface the idle
+  // sweep can't see gets its agent disconnected out from under the user after
+  // CONNECTION_IDLE_TIMEOUT_MS while the card is still on screen. Keyed by
+  // source so two registrars never clobber each other's set.
+  const extraLiveKeysRef = useRef(new Map<string, Set<string>>())
+
+  /** Every contextKey a visible surface is currently holding open. */
+  const heldOpenKeys = useCallback((): Set<string> => {
+    if (extraLiveKeysRef.current.size === 0) return openTabKeysRef.current
+    const all = new Set(openTabKeysRef.current)
+    for (const keys of extraLiveKeysRef.current.values()) {
+      for (const key of keys) all.add(key)
+    }
+    return all
+  }, [])
 
   // Guard against concurrent connect() calls
   const connectingKeysRef = useRef(new Set<string>())
@@ -3140,6 +3193,14 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   const registerOpenTabKeys = useCallback((keys: Set<string>) => {
     openTabKeysRef.current = keys
   }, [])
+
+  const registerLiveSurfaceKeys = useCallback(
+    (source: string, keys: Set<string>) => {
+      if (keys.size === 0) extraLiveKeysRef.current.delete(source)
+      else extraLiveKeysRef.current.set(source, keys)
+    },
+    []
+  )
 
   const registerLiveMessageSink = useCallback(
     (contextKey: string, sink: LiveMessageSink) => {
@@ -4073,12 +4134,42 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         }
         case "session_load_failed": {
           flushStreamingQueue()
-          // Localize via the stable `code` field (currently only
-          // "resource_not_found" — JSON-RPC -32002). Fall back to the raw
-          // agent message so an unknown future code still surfaces something
-          // intelligible rather than getting swallowed.
+          // Localize via the stable `code` field ("resource_not_found" —
+          // JSON-RPC -32002 — plus "session_unavailable" and
+          // "session_archived", both matched on the wire message). Fall back
+          // to the raw agent message so an unknown future code still surfaces
+          // something intelligible rather than getting swallowed.
           const nc = storeRef.current.connections.get(contextKey)
           const agentLabel = nc ? getAgentLabel(nc.agentType) : ""
+          // The one command that undoes `codex archive`, or null when there is
+          // nothing runnable to offer. Derived once, outside the message, so
+          // the banner can hand the user the exact string to paste instead of
+          // relying on them transcribing a UUID out of prose that a one-line
+          // strip may well have ellipsed away.
+          //
+          // The id comes off the event, not the raw RPC body: `session_id` IS
+          // the session the load just failed for, so it is exact by
+          // construction, while the body only spells it out by convention and
+          // re-parsing it would drift the moment codex rewords the error.
+          //
+          // The classification is matched on the wire message, so it is not
+          // codex-exclusive by construction. Only name the codex command when
+          // codex is actually the agent — telling anyone else to run it would
+          // be worse than saying nothing. They fall back to the agent's own
+          // text, which already carries whatever recovery it wants to offer.
+          //
+          // The id is also shape-checked before it goes into the string. This
+          // is a command we are inviting the user to paste into a shell, so it
+          // must not be able to carry anything but a session id — a `session_id`
+          // holding a space and a second word would become a second command.
+          // Codex rollout ids are UUIDs; anything else falls back to the raw
+          // message rather than composing a line we can't vouch for.
+          const recoveryCommand =
+            e.code === "session_archived" &&
+            nc?.agentType === "codex" &&
+            SESSION_UUID.test(e.session_id)
+              ? `codex unarchive ${e.session_id}`
+              : null
           const localizedMessage = (() => {
             switch (e.code) {
               case "resource_not_found":
@@ -4089,6 +4180,13 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 return t("backendErrors.sessionLoadUnavailable", {
                   agent: agentLabel,
                 })
+              case "session_archived":
+                return recoveryCommand
+                  ? t("backendErrors.sessionArchived", {
+                      agent: agentLabel,
+                      command: recoveryCommand,
+                    })
+                  : e.message
               default:
                 return e.message
             }
@@ -4097,6 +4195,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             type: "ACP_LOAD_ERROR",
             contextKey,
             message: localizedMessage,
+            command: recoveryCommand,
           })
           break
         }
@@ -4538,7 +4637,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const timer = setInterval(() => {
       const currentActiveKey = storeRef.current.activeKey
-      const currentOpenTabKeys = openTabKeysRef.current
+      const currentOpenTabKeys = heldOpenKeys()
       const seen = new Set<string>()
       const toTouch: { contextKey: string; connectionId: string }[] = []
       const consider = (contextKey: string) => {
@@ -4563,7 +4662,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     }, CONNECTION_KEEPALIVE_INTERVAL_MS)
 
     return () => clearInterval(timer)
-  }, [isConnectionLiveOnBackend, markConnectionGone])
+  }, [heldOpenKeys, isConnectionLiveOnBackend, markConnectionGone])
 
   // ── Idle sweep timer ──
   // Complements the backend keepalive: this sweep targets connections
@@ -4580,7 +4679,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       const now = Date.now()
       const currentActiveKey = storeRef.current.activeKey
 
-      const currentOpenTabKeys = openTabKeysRef.current
+      const currentOpenTabKeys = heldOpenKeys()
       const toDisconnect: { contextKey: string; connectionId: string }[] = []
       for (const [contextKey, conn] of storeRef.current.connections) {
         if (contextKey === currentActiveKey) continue
@@ -4631,6 +4730,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   }, [
     captureIdentityBeforeRemoval,
     dispatch,
+    heldOpenKeys,
     releaseConnectionRoute,
     teardownAttachSubscription,
   ])
@@ -4678,10 +4778,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // True when this client already OWNS the given backend connection — i.e.
-  // holds an entry whose teardown `acpDisconnect`s the agent. Guards the
-  // discovery gate from demoting an owner to a viewer on a re-render: a viewer
-  // never `acpDisconnect`s, so a mis-tagged owner would leak its agent process.
+  // The contextKey of the local entry that OWNS the given backend connection —
+  // i.e. the one whose teardown `acpDisconnect`s the agent — or null when this
+  // client doesn't own it.
   //
   // Non-owning entries (viewers, delegation children — the work-task transcript
   // dialog attaches the task's OWN connection that way) are deliberately NOT
@@ -4693,13 +4792,13 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   //
   // NOT the predicate for "may I tear this connection down?" — see
   // `isConnectionReferencedLocally`.
-  const isConnectionOwnedLocally = useCallback((connectionId: string) => {
-    for (const conn of storeRef.current.connections.values()) {
+  const localOwnerKeyOf = useCallback((connectionId: string) => {
+    for (const [key, conn] of storeRef.current.connections) {
       if (conn.connectionId !== connectionId) continue
       if (conn.isViewer || conn.isDelegationChild) continue
-      return true
+      return key
     }
-    return false
+    return null
   }, [])
 
   // True when ANY local surface references the connection — owner, viewer,
@@ -5109,10 +5208,19 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           ) {
             return
           }
-          if (
-            discovered &&
-            !isConnectionOwnedLocally(discovered.connection_id)
-          ) {
+          // Attach as a viewer unless WE are the owner. The question is
+          // deliberately "owned by this contextKey", not "owned locally at
+          // all": the guard exists to stop a surface demoting ITSELF to a
+          // viewer of its own connection on a re-render (nobody would
+          // `acpDisconnect` it, leaking the agent process). A DIFFERENT local
+          // surface — a canvas detail card for a conversation already open in
+          // a workspace tab — must take the viewer path for the same reason a
+          // second browser client does: falling through to `acpConnect` would
+          // spawn a second agent CLI on the same session.
+          const localOwnerKey = discovered
+            ? localOwnerKeyOf(discovered.connection_id)
+            : null
+          if (discovered && localOwnerKey !== contextKey) {
             const attached = await connectAsViewer(
               contextKey,
               discovered.connection_id,
@@ -5349,8 +5457,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       consumeBufferedEvents,
       dispatch,
       isConnectionLiveOnBackend,
-      isConnectionOwnedLocally,
       isConnectionReferencedLocally,
+      localOwnerKeyOf,
       markConnectionGone,
       releaseConnectionRoute,
       resolveConnectBlockState,
@@ -5985,6 +6093,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       setActiveKey,
       touchActivity,
       registerOpenTabKeys,
+      registerLiveSurfaceKeys,
       registerLiveMessageSink,
       clearAcpLoadError,
       attachDelegationChild,
@@ -6011,6 +6120,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       setActiveKey,
       touchActivity,
       registerOpenTabKeys,
+      registerLiveSurfaceKeys,
       registerLiveMessageSink,
       clearAcpLoadError,
       attachDelegationChild,

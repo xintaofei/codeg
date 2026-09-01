@@ -419,7 +419,7 @@ export function RemoteWorkspaceManageDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="flex h-[min(760px,calc(100vh-4rem))] max-w-[min(980px,calc(100vw-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
+        <DialogContent className="flex h-[min(47.5rem,calc(100vh-4rem))] max-w-[min(61.25rem,calc(100vw-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
           <DialogHeader className="border-b px-4 py-3">
             <DialogTitle>{t("manageTitle")}</DialogTitle>
           </DialogHeader>
@@ -516,7 +516,7 @@ export function RemoteWorkspaceManageDialog({
                                   <div className="truncate text-sm font-medium">
                                     {connection.name}
                                   </div>
-                                  <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                                  <div className="mt-0.5 truncate text-2xs text-muted-foreground">
                                     {connection.base_url}
                                   </div>
                                 </div>
@@ -596,7 +596,7 @@ export function RemoteWorkspaceManageDialog({
                         />
                         {t("customHeaders")}
                         {draft.headers.length > 0 ? (
-                          <span className="rounded bg-muted px-1.5 text-[10px] leading-4 text-muted-foreground">
+                          <span className="rounded bg-muted px-1.5 text-3xs leading-4 text-muted-foreground">
                             {draft.headers.length}
                           </span>
                         ) : null}

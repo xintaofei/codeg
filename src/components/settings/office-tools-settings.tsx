@@ -130,36 +130,36 @@ function DetectionCard({
             ) : healthy ? (
               <Badge
                 variant="outline"
-                className="h-5 px-1.5 text-[10px] border-green-500/40 bg-green-500/10 text-green-600 dark:text-green-400"
+                className="h-5 px-1.5 text-3xs border-green-500/40 bg-green-500/10 text-green-600 dark:text-green-400"
               >
                 {t("detection.installed")}
               </Badge>
             ) : installed ? (
               <Badge
                 variant="outline"
-                className="h-5 px-1.5 text-[10px] border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                className="h-5 px-1.5 text-3xs border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
               >
                 {t("detection.notRunnable")}
               </Badge>
             ) : (
               <Badge
                 variant="outline"
-                className="h-5 px-1.5 text-[10px] text-muted-foreground"
+                className="h-5 px-1.5 text-3xs text-muted-foreground"
               >
                 {t("detection.notInstalled")}
               </Badge>
             )}
           </div>
           {installed && info && (
-            <div className="text-[11px] text-muted-foreground mt-1 space-x-3">
+            <div className="text-2xs text-muted-foreground mt-1 space-x-3">
               {info.version && <span>{info.version}</span>}
               {info.path && (
-                <code className="font-mono text-[10px]">{info.path}</code>
+                <code className="font-mono text-3xs">{info.path}</code>
               )}
             </div>
           )}
           {installed && runtimeError && (
-            <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1.5 whitespace-pre-wrap break-words">
+            <p className="text-2xs text-amber-600 dark:text-amber-400 mt-1.5 whitespace-pre-wrap break-words">
               {runtimeError}
             </p>
           )}
@@ -462,7 +462,7 @@ export function OfficeToolsBody({
       </div>
 
       {installStream.status !== "idle" && (
-        <div className="mt-3 shrink-0 rounded-md border bg-muted/50 text-muted-foreground p-3 max-h-[200px] overflow-y-auto font-mono text-[11px] leading-relaxed">
+        <div className="mt-3 shrink-0 rounded-md border bg-muted/50 text-muted-foreground p-3 max-h-[12.5rem] overflow-y-auto font-mono text-2xs leading-relaxed">
           {installStream.logs.map((line, i) => (
             <div
               key={i}

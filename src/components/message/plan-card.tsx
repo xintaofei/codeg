@@ -130,7 +130,7 @@ export const PlanEntriesList = memo(function PlanEntriesList({
           <Badge
             variant="outline"
             className={cn(
-              "h-5 shrink-0 text-[10px] uppercase",
+              "h-5 shrink-0 text-3xs uppercase",
               getPriorityClassName(entry.priority)
             )}
           >

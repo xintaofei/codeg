@@ -237,7 +237,7 @@ export function DelegationAgentDefaultsPanel({
         ))}
       </div>
 
-      <div className="min-h-[120px] rounded-lg border bg-card/50 p-3">
+      <div className="min-h-[7.5rem] rounded-lg border bg-card/50 p-3">
         {loading && (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2 className="size-3.5 animate-spin" aria-hidden />

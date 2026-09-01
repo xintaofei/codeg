@@ -332,7 +332,7 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
                 // the full width is used. Standalone: ellipsis cap in the scroll row.
                 embedded
                   ? "min-w-0 flex-1 overflow-hidden whitespace-nowrap browser-tab-label"
-                  : "truncate max-w-[180px]"
+                  : "truncate max-w-[11.25rem]"
               )}
             >
               {tab.title}

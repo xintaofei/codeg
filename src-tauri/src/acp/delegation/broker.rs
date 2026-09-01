@@ -34,7 +34,11 @@
 //!         [`DelegationBroker::cancel_by_parent_turn`]), or the LLM's own
 //!         [`DelegationBroker::cancel_task_by_id`].
 //!
-//! v1 is explicitly one-shot — no session reuse.
+//! v1 is explicitly one-shot — no session reuse. The one exception is
+//! [`DelegationBroker::resume_delegation`]: an INTERRUPTED task (canceled, or
+//! stranded `in_progress` by a crash) can be brought back under its original
+//! `task_id` by reloading the child's recorded agent session — a continuation
+//! of the original task, never a new iteration on it.
 //!
 //! Result durability: child output is NOT stored in codeg's DB, so the broker
 //! caches the completed text in `completed` (parent-scoped, FIFO-capped). Once
@@ -63,7 +67,7 @@ use crate::acp::delegation::meta_writer::{
 use crate::acp::delegation::spawner::{ConnectionSpawner, DelegationLink};
 use crate::acp::delegation::types::{
     AgentDelegationDefaults, BlockedKind, BlockedOn, DelegationError, DelegationOutcome,
-    DelegationRequest, DelegationTaskReport, TaskStatus,
+    DelegationRequest, DelegationTaskReport, ResumeDelegationRequest, TaskStatus,
 };
 use crate::acp::types::DelegationResultSummary;
 use crate::models::AgentType;
@@ -120,6 +124,40 @@ pub struct ChildStatusRecord {
     pub parent_id: Option<i32>,
 }
 
+/// Everything `resume_delegation` needs to know about an interrupted child
+/// before it can bring the session back: where it ran, which agent, which
+/// agent-side session to load, and how it is currently recorded.
+///
+/// Superset of [`ChildStatusRecord`] — kept separate so the hot status path
+/// keeps its lean shape while resume (rare) pays for the extra fields.
+#[derive(Debug, Clone)]
+pub struct ChildResumeContext {
+    pub child_conversation_id: i32,
+    pub status: TaskStatus,
+    pub agent_type: AgentType,
+    /// Parent conversation scope — same ownership rule as
+    /// [`ChildStatusRecord::parent_id`].
+    pub parent_id: Option<i32>,
+    /// The ORIGINAL delegation's parent-side tool_use_id persisted on the row.
+    /// Reused for the resumed run's meta writes / started event so the parent's
+    /// original delegation card re-binds to the resumed child. `None` maps to a
+    /// synthetic id (meta/events safely skipped).
+    pub parent_tool_use_id: Option<String>,
+    /// The agent-assigned session id to resume (`conversation.external_id`).
+    /// `None` means the child died before its session id was ever recorded —
+    /// nothing to load, so the task is not resumable.
+    pub external_id: Option<String>,
+    /// The child row's folder — the resumed prompt is sent back into the same
+    /// row, which requires its folder id (send-adopt contract).
+    pub folder_id: i32,
+    /// Absolute path of `folder_id`, used as the resumed connection's
+    /// working_dir. `None` when the folder row is gone (refuse, don't guess).
+    pub working_dir: Option<String>,
+    /// The child row's title (originally seeded from the delegated task text) —
+    /// bounded and reused as the resumed task's `task_preview` label.
+    pub title: Option<String>,
+}
+
 /// DB fallback for `get_delegation_status` / `cancel_delegation` once a task's
 /// result has aged out of the broker's in-memory completed-cache. Abstracted
 /// so broker unit tests can run without SeaORM; production wires
@@ -127,6 +165,13 @@ pub struct ChildStatusRecord {
 #[async_trait]
 pub trait ChildStatusLookup: Send + Sync {
     async fn find_by_call_id(&self, call_id: &str) -> Option<ChildStatusRecord>;
+
+    /// Resolve the full resume context for `resume_delegation`. Default `None`
+    /// ("cannot resume") so status-only lookups and existing test doubles stay
+    /// unchanged; production and resume-focused tests override it.
+    async fn find_resume_context_by_call_id(&self, _call_id: &str) -> Option<ChildResumeContext> {
+        None
+    }
 }
 
 /// Default lookup — always "unknown". Used by `DelegationBroker::new` /
@@ -347,6 +392,14 @@ struct PendingInner {
     /// order. Keys and stamps share this sequence but are never cross-compared
     /// (keys match by identity, stamps only by `<` against other stamps).
     seq: u64,
+    /// Task ids with a `resume_delegation` currently mid-setup (claimed in the
+    /// same lock pass as its memory gate, released when the resume settles).
+    /// Two concurrent resumes of the SAME id would otherwise both pass the
+    /// gate — the id is in neither `running` nor (post-crash) `completed` —
+    /// spawn two children onto one agent session, and the second registration
+    /// would silently stomp the first's `RunningTask`. Unlike `setups` this is
+    /// a plain claim with no early-terminal gating semantics.
+    resuming: HashSet<String>,
 }
 
 /// One in-flight `handle_request` setup tracked for parent-cancel coverage.
@@ -555,6 +608,23 @@ impl PendingInner {
                 }
             }
         }
+    }
+
+    /// Remove one completed entry WITH its byte / FIFO-order bookkeeping.
+    /// Used by `resume_delegation` when it re-registers a canceled task as
+    /// running again: a plain `completed.remove` would leave the id in
+    /// `completed_order` (a later re-terminal would then double-push it) and
+    /// leave its bytes counted against the parent's cap forever.
+    fn remove_completed(&mut self, call_id: &str) -> Option<CompletedTask> {
+        let removed = self.completed.remove(call_id)?;
+        let freed = removed.text.as_ref().map_or(0, |t| t.len());
+        if let Some(slot) = self.completed_bytes.get_mut(&removed.parent_connection_id) {
+            *slot = slot.saturating_sub(freed);
+        }
+        if let Some(order) = self.completed_order.get_mut(&removed.parent_connection_id) {
+            order.retain(|id| id != call_id);
+        }
+        Some(removed)
     }
 
     /// Re-apply the current `completed_cap_bytes` to EVERY parent. Called by
@@ -787,6 +857,88 @@ fn running_ack(
         text: None,
         error_code: None,
         message: Some(message),
+        duration_ms: None,
+        blocked_on: None,
+    }
+}
+
+/// Cap on the free-form `reason` a `resume_delegation` call may carry into the
+/// child's continuation prompt. The reason is interruption CONTEXT, not new
+/// instructions — the cap (shared with `TASK_PREVIEW_CAP`'s budget) keeps it
+/// from smuggling a task-sized payload past the "no new iterations" contract.
+const RESUME_REASON_CAP: usize = 2 * 1024;
+
+/// The wire-stable `error_code` on every refused `resume_delegation` report.
+/// Distinct from the task's own status so the caller can tell "this task is
+/// completed" (status) from "and that is why it was not resumed" (code).
+pub const NOT_RESUMABLE_CODE: &str = "not_resumable";
+
+/// Build the fixed continuation prompt a resumed child receives. Deliberately
+/// NOT caller-controlled beyond the bounded `reason`: `resume_delegation`
+/// continues the ORIGINAL task and must not be usable as a second
+/// `delegate_to_agent` (see the tool schema's contract).
+pub fn build_resume_prompt(reason: Option<&str>) -> String {
+    let mut prompt = String::from(
+        "This delegated task was interrupted before completion and is now being \
+         resumed. Re-read the original task from the earlier messages in this \
+         session, assess what has already been done (partial work may exist on \
+         disk), continue from where it stopped, and finish the ORIGINAL task. \
+         Do not take on any new work beyond that original scope.",
+    );
+    if let Some(reason) = reason.map(str::trim).filter(|r| !r.is_empty()) {
+        prompt.push_str("\nContext on why the run was interrupted / resumed: ");
+        prompt.push_str(&truncate_on_char_boundary(reason, RESUME_REASON_CAP));
+    }
+    prompt
+}
+
+/// The `Running` ack returned by `resume_delegation` once the child is back up.
+/// Same shape as [`running_ack`], resume-flavored first sentence — which must
+/// NOT start with `"Delegation successful. task_id="`: Cursor's completion-time
+/// result sniff (`cursor_companion_title_from_content`) anchors on that exact
+/// prefix to re-title identity-less calls as `delegate_to_agent`.
+fn resume_ack(
+    call_id: String,
+    child_conversation_id: i32,
+    agent_type: AgentType,
+) -> DelegationTaskReport {
+    let message = format!(
+        "Delegation resumed. task_id={call_id} (unchanged). Call \
+         get_delegation_status with this id in the task_ids array (optionally \
+         wait_ms) to collect the result, or cancel_delegation to stop it."
+    );
+    DelegationTaskReport {
+        task_id: Some(call_id),
+        status: TaskStatus::Running,
+        child_conversation_id: Some(child_conversation_id),
+        agent_type: Some(agent_type),
+        text: None,
+        error_code: None,
+        message: Some(message),
+        duration_ms: None,
+        blocked_on: None,
+    }
+}
+
+/// A refused resume: reports the task's ACTUAL current status (so the caller
+/// learns where the task really stands) with `error_code: "not_resumable"` and
+/// a message that opens with "Not resumed" — unambiguous against the ack even
+/// on hosts that only surface the content text.
+fn not_resumable_report(
+    task_id: &str,
+    status: TaskStatus,
+    child_conversation_id: Option<i32>,
+    agent_type: Option<AgentType>,
+    why: &str,
+) -> DelegationTaskReport {
+    DelegationTaskReport {
+        task_id: Some(task_id.to_string()),
+        status,
+        child_conversation_id,
+        agent_type,
+        text: None,
+        error_code: Some(NOT_RESUMABLE_CODE.to_string()),
+        message: Some(format!("Not resumed: {why}")),
         duration_ms: None,
         blocked_on: None,
     }
@@ -3567,6 +3719,695 @@ impl DelegationBroker {
         }
     }
 
+    /// Backs the `resume_delegation` tool: bring an INTERRUPTED delegation task
+    /// back to life under its original `task_id`.
+    ///
+    /// Resumable states — and nothing else:
+    ///   * `Canceled` — explicit `cancel_delegation`, parent teardown, a child
+    ///     process dying without `TurnComplete`, or app shutdown; the child row
+    ///     records `cancelled`.
+    ///   * A stale `in_progress` child row with NO live connection — the
+    ///     leftover of a hard crash that never ran any cancel path.
+    ///
+    /// Everything else is refused with `error_code: "not_resumable"` and the
+    /// task's actual status: a running task keeps running (poll it), and a
+    /// `Completed` / `Failed` task ended by its own doing — resuming it would
+    /// be a new iteration on the original task, which this tool deliberately
+    /// does not do (that is `delegate_to_agent`'s job). The same contract is
+    /// why there is no task-text parameter: the child continues the ORIGINAL
+    /// task in its own resumed session (`session/load` via the row's
+    /// `external_id`), nudged by a fixed continuation prompt that may carry
+    /// only the bounded `reason` as interruption context.
+    ///
+    /// The resumed run KEEPS the task id: the child row already persists it as
+    /// `delegation_call_id`, so the lifecycle's TurnComplete routing
+    /// (`forward_turn_complete_to_broker` → [`Self::complete_call`]) re-arms
+    /// automatically once the continuation prompt lands in the same row — and
+    /// the caller's `get_delegation_status` / `cancel_delegation` keep working
+    /// on the id they already hold. Ownership is re-anchored to the CALLER:
+    /// the registered [`RunningTask`] carries the calling connection (the
+    /// original one is usually gone — that is why the task needed resuming),
+    /// while meta writes / events reuse the row's original
+    /// `parent_tool_use_id` so the parent's original delegation card re-binds
+    /// to the resumed child.
+    #[tracing::instrument(
+        name = "delegation_resume",
+        skip_all,
+        fields(
+            parent_connection_id = %req.parent_connection_id,
+            task_id = %req.task_id,
+            child_connection_id = tracing::field::Empty,
+        )
+    )]
+    pub async fn resume_delegation(&self, req: ResumeDelegationRequest) -> DelegationTaskReport {
+        // Same parent-cancel coverage contract as `start_delegation`: register
+        // the in-flight setup FIRST so a parent cancel landing anywhere from
+        // here to park reaches it; deregistered on every exit path.
+        let inflight_id = self
+            .pending
+            .inner
+            .lock()
+            .await
+            .register_inflight(&req.parent_connection_id);
+        // Pre-cancel short-circuit — the companion already received
+        // `notifications/cancelled` for this `tools/call` before we started.
+        // No tool-call claim to drain here: the resume tool never claims
+        // delegate-keyed ACP ids.
+        if let Some(handle) = req.external_handle.as_deref() {
+            if self.take_pre_canceled_handle(handle).await {
+                self.drop_inflight(inflight_id).await;
+                return report_from_outcome(
+                    Some(req.task_id.clone()),
+                    None,
+                    &DelegationOutcome::from_err(
+                        DelegationError::Canceled {
+                            reason: "canceled before resume".into(),
+                        },
+                        None,
+                    ),
+                    None,
+                );
+            }
+        }
+        let cfg = self.config_snapshot().await;
+        if !cfg.enabled {
+            self.drop_inflight(inflight_id).await;
+            return report_from_outcome(
+                Some(req.task_id.clone()),
+                None,
+                &DelegationOutcome::from_err(
+                    DelegationError::Canceled {
+                        reason: "delegation disabled".into(),
+                    },
+                    None,
+                ),
+                None,
+            );
+        }
+
+        // --- In-memory gate ---------------------------------------------------
+        // One lock pass over the live maps. Only a CANCELED, caller-owned cached
+        // entry may proceed (its removal is deferred to the registration lock so
+        // a failed resume leaves the record answering status queries); a running
+        // task and fresher terminal states refuse, and cross-parent hits stay
+        // opaque — exactly the `classify_locked` scoping rules.
+        //
+        // A proceed also CLAIMS the id in `resuming` (same lock), which is what
+        // stops two concurrent resumes of one task from both passing this gate
+        // and spawning two children onto the same agent session. In the
+        // not-in-memory branch ownership isn't proven yet, so a failed claim is
+        // carried as `claimed: false` and only refused AFTER the DB ownership
+        // check — refusing it here would leak the task's existence to a caller
+        // who merely guessed the id.
+        enum MemGate {
+            Proceed { claimed: bool },
+            Refuse(Box<DelegationTaskReport>),
+        }
+        let gate = {
+            let mut inner = self.pending.inner.lock().await;
+            if let Some(c) = inner.completed.get(&req.task_id) {
+                if c.parent_connection_id != req.parent_connection_id {
+                    MemGate::Refuse(Box::new(unknown_report(&req.task_id)))
+                } else {
+                    // Copy the report fields out so the `completed` borrow ends
+                    // before the Canceled arm's mutable `resuming` claim.
+                    let (status, child_conversation_id, agent_type) =
+                        (c.status, c.child_conversation_id, c.agent_type);
+                    match status {
+                        TaskStatus::Canceled => {
+                            // Caller-owned — safe to name the contention.
+                            if inner.resuming.insert(req.task_id.clone()) {
+                                MemGate::Proceed { claimed: true }
+                            } else {
+                                MemGate::Refuse(Box::new(not_resumable_report(
+                                    &req.task_id,
+                                    status,
+                                    Some(child_conversation_id),
+                                    Some(agent_type),
+                                    "a resume of this task is already in progress.",
+                                )))
+                            }
+                        }
+                        TaskStatus::Completed => MemGate::Refuse(Box::new(not_resumable_report(
+                            &req.task_id,
+                            status,
+                            Some(child_conversation_id),
+                            Some(agent_type),
+                            "the task already completed — resume only applies to a \
+                             canceled or interrupted task. Start a new \
+                             delegate_to_agent call for follow-up work.",
+                        ))),
+                        _ => MemGate::Refuse(Box::new(not_resumable_report(
+                            &req.task_id,
+                            status,
+                            Some(child_conversation_id),
+                            Some(agent_type),
+                            "the task ended in failure rather than being \
+                             interrupted — resume only applies to a canceled or \
+                             interrupted task. Start a new delegate_to_agent call \
+                             to retry it.",
+                        ))),
+                    }
+                }
+            } else if let Some(r) = inner.running.get(&req.task_id) {
+                if r.parent_connection_id != req.parent_connection_id {
+                    MemGate::Refuse(Box::new(unknown_report(&req.task_id)))
+                } else {
+                    MemGate::Refuse(Box::new(not_resumable_report(
+                        &req.task_id,
+                        TaskStatus::Running,
+                        Some(r.child_conversation_id),
+                        Some(r.agent_type),
+                        "the task is still running — resume only applies to a \
+                         canceled or interrupted task. Poll it with \
+                         get_delegation_status (or stop it with cancel_delegation) \
+                         instead.",
+                    )))
+                }
+            } else {
+                let claimed = inner.resuming.insert(req.task_id.clone());
+                MemGate::Proceed { claimed }
+            }
+        };
+        let claimed = match gate {
+            MemGate::Refuse(report) => {
+                self.drop_inflight(inflight_id).await;
+                return *report;
+            }
+            MemGate::Proceed { claimed } => claimed,
+        };
+
+        // Everything past the gate runs in a helper so this single exit point
+        // can release the claim on EVERY path — success (the task is in
+        // `running` by then, which re-arms the gate's normal refusals) and
+        // failure alike. A `claimed: false` outcome belongs to the concurrent
+        // resume that holds it; never released here.
+        let claim_key = req.task_id.clone();
+        let report = self
+            .resume_delegation_gated(req, inflight_id, cfg, claimed)
+            .await;
+        if claimed {
+            self.pending.inner.lock().await.resuming.remove(&claim_key);
+        }
+        report
+    }
+
+    /// The post-gate body of [`Self::resume_delegation`]: DB context + status
+    /// gates, child re-spawn, continuation send, and registration. Split out so
+    /// the caller can release the `resuming` claim at one exit point.
+    async fn resume_delegation_gated(
+        &self,
+        req: ResumeDelegationRequest,
+        inflight_id: u64,
+        cfg: DelegationConfig,
+        claimed: bool,
+    ) -> DelegationTaskReport {
+        // --- DB context + status gate -----------------------------------------
+        // The DB row is authoritative for resumability even when the in-memory
+        // cache still remembers the cancel: the user may have driven the child
+        // session onward in the meantime, and resuming over that would be a new
+        // iteration in disguise.
+        let Some(ctx) = self
+            .status_lookup
+            .find_resume_context_by_call_id(&req.task_id)
+            .await
+        else {
+            self.drop_inflight(inflight_id).await;
+            return unknown_report(&req.task_id);
+        };
+        if ctx.parent_id != Some(req.parent_conversation_id) {
+            self.drop_inflight(inflight_id).await;
+            return unknown_report(&req.task_id);
+        }
+        // Deferred claim-contention refusal (see the gate): the caller owns the
+        // task, so naming the in-flight resume leaks nothing.
+        if !claimed {
+            self.drop_inflight(inflight_id).await;
+            return not_resumable_report(
+                &req.task_id,
+                ctx.status,
+                Some(ctx.child_conversation_id),
+                Some(ctx.agent_type),
+                "a resume of this task is already in progress.",
+            );
+        }
+        match ctx.status {
+            // Recorded canceled — the canonical interrupted state.
+            TaskStatus::Canceled => {}
+            // `in_progress` row: a live connection means the child session is
+            // genuinely active (either as somebody's running delegation or
+            // driven by the user in a tab) — hands off. No live connection
+            // means a hard crash stranded the row mid-run: the exact
+            // "unexpected termination" this tool exists for.
+            TaskStatus::Running => {
+                if self
+                    .spawner
+                    .has_live_connection_for_conversation(ctx.child_conversation_id)
+                    .await
+                {
+                    self.drop_inflight(inflight_id).await;
+                    return not_resumable_report(
+                        &req.task_id,
+                        TaskStatus::Running,
+                        Some(ctx.child_conversation_id),
+                        Some(ctx.agent_type),
+                        "the child session is currently active — resume only \
+                         applies to a canceled or interrupted task.",
+                    );
+                }
+            }
+            TaskStatus::Completed => {
+                self.drop_inflight(inflight_id).await;
+                return not_resumable_report(
+                    &req.task_id,
+                    TaskStatus::Completed,
+                    Some(ctx.child_conversation_id),
+                    Some(ctx.agent_type),
+                    "the task already completed — resume only applies to a \
+                     canceled or interrupted task. Start a new delegate_to_agent \
+                     call for follow-up work.",
+                );
+            }
+            TaskStatus::Failed | TaskStatus::Unknown => {
+                self.drop_inflight(inflight_id).await;
+                return unknown_report(&req.task_id);
+            }
+        }
+        let Some(external_id) = ctx.external_id.clone() else {
+            self.drop_inflight(inflight_id).await;
+            return not_resumable_report(
+                &req.task_id,
+                ctx.status,
+                Some(ctx.child_conversation_id),
+                Some(ctx.agent_type),
+                "no agent session id was recorded for the child session, so \
+                 there is nothing to load. Start a new delegate_to_agent call \
+                 instead.",
+            );
+        };
+        let Some(working_dir) = ctx.working_dir.clone() else {
+            self.drop_inflight(inflight_id).await;
+            return not_resumable_report(
+                &req.task_id,
+                ctx.status,
+                Some(ctx.child_conversation_id),
+                Some(ctx.agent_type),
+                "the child session's project folder no longer exists. Start a \
+                 new delegate_to_agent call in a valid directory instead.",
+            );
+        };
+
+        // --- Re-spawn the child, resuming its agent session --------------------
+        // Same per-agent defaults as a fresh spawn; no depth re-check — the
+        // child row already exists at its chain position, resume adds no node.
+        let (preferred_mode_id, preferred_config_values) = cfg
+            .agent_defaults
+            .get(&ctx.agent_type)
+            .map(|d: &AgentDelegationDefaults| (d.mode_id.clone(), d.config_values.clone()))
+            .unwrap_or((None, BTreeMap::new()));
+        // Checkpoint #1: a parent cancel during the gates — nothing spawned yet.
+        if self.take_inflight_cancel(inflight_id).await {
+            return report_from_outcome(
+                Some(req.task_id.clone()),
+                Some(ctx.agent_type),
+                &canceled_outcome(ctx.child_conversation_id, "parent canceled"),
+                None,
+            );
+        }
+        let spawned = match self
+            .spawner
+            .spawn_for_resume(
+                &req.parent_connection_id,
+                ctx.agent_type,
+                Some(working_dir),
+                &external_id,
+                preferred_mode_id,
+                preferred_config_values,
+            )
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                self.drop_inflight(inflight_id).await;
+                return report_from_outcome(
+                    Some(req.task_id.clone()),
+                    Some(ctx.agent_type),
+                    &DelegationOutcome::from_err(
+                        DelegationError::SpawnFailed(format!("resume: {e}")),
+                        Some(ctx.child_conversation_id),
+                    ),
+                    None,
+                );
+            }
+        };
+        let child_connection_id = spawned.connection_id.clone();
+        // Checkpoint #2: a parent cancel during spawn — the connection exists
+        // but no prompt went out; disconnect-only teardown. A DEDUP-REUSED
+        // connection (the user has the child session open — see
+        // `ResumedSpawn::reused`) is not ours to tear down: nothing was sent
+        // on it, so abandoning the resume leaves it exactly as found.
+        if self.take_inflight_cancel(inflight_id).await {
+            if !spawned.reused {
+                let _ = self.spawner.disconnect(&child_connection_id).await;
+            }
+            return report_from_outcome(
+                Some(req.task_id.clone()),
+                Some(ctx.agent_type),
+                &canceled_outcome(ctx.child_conversation_id, "parent canceled"),
+                None,
+            );
+        }
+
+        let call_id = req.task_id.clone();
+        tracing::Span::current().record("child_connection_id", child_connection_id.as_str());
+        // Label for meta writes / the started event: the child row's title was
+        // seeded from the original task text, so it is the closest thing to the
+        // original `task_preview` the broker no longer holds.
+        let task_preview = ctx
+            .title
+            .as_deref()
+            .map(|t| truncate_on_char_boundary(t, TASK_PREVIEW_CAP))
+            .unwrap_or_else(|| "(resumed delegation)".to_string());
+        // The resumed run reuses the ORIGINAL parent-side tool_use_id persisted
+        // on the row so the parent's original delegation card re-binds; a row
+        // without one gets a synthetic id, which `write_meta_if_real` /
+        // `emit_*_if_real` skip.
+        let parent_tool_use_id = ctx
+            .parent_tool_use_id
+            .clone()
+            .unwrap_or_else(|| format!("delegation-{}", uuid::Uuid::new_v4()));
+
+        // Reserve BEFORE sending — identical race contract to
+        // `start_delegation`: once the continuation prompt is dispatched, a
+        // fast TurnComplete (`complete_call`, keyed by `call_id` — live again
+        // because the row's `delegation_call_id` never changed) or an immediate
+        // child failure (`cancel_by_child_connection`, keyed by connection) can
+        // fire before the entry is parked; the reservation buffers either for
+        // the disposition block to drain.
+        self.pending
+            .inner
+            .lock()
+            .await
+            .reserve(&call_id, &child_connection_id);
+
+        if let Err(e) = self
+            .spawner
+            .send_resume_prompt(
+                &child_connection_id,
+                build_resume_prompt(req.reason.as_deref()),
+                ctx.folder_id,
+                ctx.child_conversation_id,
+            )
+            .await
+        {
+            {
+                let mut inner = self.pending.inner.lock().await;
+                inner.unreserve(&call_id, &child_connection_id);
+                inner.deregister_inflight(inflight_id);
+            }
+            // Tear the connection down iff WE spawned it. A fresh connection is
+            // ours to disconnect even when the failed send got far enough to
+            // bind it to the conversation (a post-link status-write / enqueue
+            // failure) — skipping it there would leak a live, bound connection
+            // that blocks every future resume behind the "currently active"
+            // gate. A DEDUP-REUSED connection is the opposite: it belonged to
+            // whoever was already driving it (the user's open tab, having
+            // raced past the live-connection gate), so it is left alone. The
+            // spawn-time `reused` fact is the only reliable discriminator — a
+            // post-hoc liveness probe can't tell our own just-bound connection
+            // from a foreign one.
+            if !spawned.reused {
+                let _ = self.spawner.disconnect(&child_connection_id).await;
+            }
+            return report_from_outcome(
+                Some(call_id),
+                Some(ctx.agent_type),
+                &DelegationOutcome::from_err(
+                    DelegationError::SpawnFailed(format!("resume send: {e}")),
+                    Some(ctx.child_conversation_id),
+                ),
+                None,
+            );
+        }
+
+        let started_at = Instant::now();
+
+        // Re-mark the parent's original card in-flight and re-announce the live
+        // delegation so the frontend re-binds the child sub-thread.
+        self.write_meta_if_real(
+            &req.parent_connection_id,
+            &parent_tool_use_id,
+            build_delegation_meta(
+                "running",
+                Some(&child_connection_id),
+                Some(ctx.child_conversation_id),
+                None,
+                None,
+                None,
+                Some(&task_preview),
+                Some(&call_id),
+            ),
+        )
+        .await;
+        self.emit_started_if_real(
+            &req.parent_connection_id,
+            &parent_tool_use_id,
+            &child_connection_id,
+            ctx.child_conversation_id,
+            ctx.agent_type,
+            &task_preview,
+            &call_id,
+        )
+        .await;
+
+        // --- Register running, or resolve a terminal that beat us --------------
+        // Same atomic disposition as `start_delegation` (see the long comment
+        // there), with one resume-specific addition: the STALE canceled cache
+        // entry (if any) is removed inside this same lock — after this point the
+        // task is either running again or freshly terminal, and either way the
+        // old record must not shadow it (`classify_locked` consults `completed`
+        // first) nor double-count the byte valve on re-insert.
+        enum Disposition {
+            ChildTerminal(DelegationOutcome),
+            ParentCanceled,
+            Running,
+        }
+        let setup_duration_ms = started_at.elapsed().as_millis() as u64;
+        let disposition = {
+            let mut inner = self.pending.inner.lock().await;
+            inner.remove_completed(&call_id);
+            let child_terminal: Option<(u64, DelegationOutcome)> =
+                if let Some((stamp, outcome)) = inner.take_early_complete(&call_id) {
+                    Some((stamp, outcome))
+                } else {
+                    inner
+                        .take_early_cancel(&child_connection_id)
+                        .map(|(stamp, reason)| {
+                            (
+                                stamp,
+                                DelegationOutcome::from_err(
+                                    DelegationError::Canceled { reason },
+                                    Some(ctx.child_conversation_id),
+                                ),
+                            )
+                        })
+                };
+            let parent_canceled_at = inner.inflight_canceled_at(inflight_id);
+            inner.unreserve(&call_id, &child_connection_id);
+            let record = |inner: &mut PendingInner, outcome: &DelegationOutcome| {
+                inner.insert_completed(
+                    &call_id,
+                    build_completed(
+                        &req.parent_connection_id,
+                        ctx.child_conversation_id,
+                        ctx.agent_type,
+                        setup_duration_ms,
+                        outcome,
+                    ),
+                );
+            };
+            match (child_terminal, parent_canceled_at) {
+                (Some((child_stamp, outcome)), Some(cancel_stamp)) => {
+                    inner.deregister_inflight(inflight_id);
+                    if child_stamp < cancel_stamp {
+                        record(&mut inner, &outcome);
+                        Disposition::ChildTerminal(outcome)
+                    } else {
+                        record(
+                            &mut inner,
+                            &canceled_outcome(ctx.child_conversation_id, "parent canceled"),
+                        );
+                        Disposition::ParentCanceled
+                    }
+                }
+                (Some((_, outcome)), None) => {
+                    inner.deregister_inflight(inflight_id);
+                    record(&mut inner, &outcome);
+                    Disposition::ChildTerminal(outcome)
+                }
+                (None, Some(_)) => {
+                    inner.deregister_inflight(inflight_id);
+                    record(
+                        &mut inner,
+                        &canceled_outcome(ctx.child_conversation_id, "parent canceled"),
+                    );
+                    Disposition::ParentCanceled
+                }
+                (None, None) => {
+                    inner.running.insert(
+                        call_id.clone(),
+                        RunningTask {
+                            child_connection_id: child_connection_id.clone(),
+                            child_conversation_id: ctx.child_conversation_id,
+                            parent_connection_id: req.parent_connection_id.clone(),
+                            parent_tool_use_id: parent_tool_use_id.clone(),
+                            agent_type: ctx.agent_type,
+                            task_preview: task_preview.clone(),
+                            task_id: call_id.clone(),
+                            external_handle: req.external_handle.clone(),
+                            started_at,
+                            last_surfaced_block: None,
+                        },
+                    );
+                    inner.deregister_inflight(inflight_id);
+                    Disposition::Running
+                }
+            }
+        };
+
+        match disposition {
+            Disposition::ChildTerminal(outcome) => {
+                self.finalize_delegation(
+                    &req.parent_connection_id,
+                    &parent_tool_use_id,
+                    &child_connection_id,
+                    ctx.child_conversation_id,
+                    ctx.agent_type,
+                    setup_duration_ms,
+                    &outcome,
+                    &task_preview,
+                    &call_id,
+                )
+                .await;
+                self.result_notify.notify_waiters();
+                return report_from_outcome(
+                    Some(call_id),
+                    Some(ctx.agent_type),
+                    &outcome,
+                    Some(setup_duration_ms),
+                );
+            }
+            Disposition::ParentCanceled => {
+                self.write_meta_if_real(
+                    &req.parent_connection_id,
+                    &parent_tool_use_id,
+                    build_delegation_meta(
+                        "failed",
+                        Some(&child_connection_id),
+                        Some(ctx.child_conversation_id),
+                        Some("canceled"),
+                        None,
+                        Some(setup_duration_ms),
+                        Some(&task_preview),
+                        Some(&call_id),
+                    ),
+                )
+                .await;
+                self.emit_completed_if_real(
+                    &req.parent_connection_id,
+                    &parent_tool_use_id,
+                    &child_connection_id,
+                    ctx.child_conversation_id,
+                    ctx.agent_type,
+                    DelegationResultSummary::Err {
+                        error_code: "canceled".to_string(),
+                    },
+                )
+                .await;
+                let _ = self.spawner.cancel(&child_connection_id).await;
+                let _ = self.spawner.disconnect(&child_connection_id).await;
+                self.result_notify.notify_waiters();
+                return report_from_outcome(
+                    Some(call_id),
+                    Some(ctx.agent_type),
+                    &canceled_outcome(ctx.child_conversation_id, "parent canceled"),
+                    Some(setup_duration_ms),
+                );
+            }
+            Disposition::Running => {}
+        }
+
+        // Second pre-cancel check — a `notifications/cancelled` that landed
+        // between the entry-side check and the registration above. Mirror of
+        // `start_delegation`'s second check.
+        if let Some(handle) = req.external_handle.as_deref() {
+            if self.take_pre_canceled_handle(handle).await {
+                let canceled_duration_ms = {
+                    let mut inner = self.pending.inner.lock().await;
+                    if inner.running.remove(&call_id).is_some() {
+                        let outcome = canceled_outcome(
+                            ctx.child_conversation_id,
+                            "canceled before await",
+                        );
+                        let duration_ms = started_at.elapsed().as_millis() as u64;
+                        inner.insert_completed(
+                            &call_id,
+                            build_completed(
+                                &req.parent_connection_id,
+                                ctx.child_conversation_id,
+                                ctx.agent_type,
+                                duration_ms,
+                                &outcome,
+                            ),
+                        );
+                        Some(duration_ms)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(duration_ms) = canceled_duration_ms {
+                    self.write_meta_if_real(
+                        &req.parent_connection_id,
+                        &parent_tool_use_id,
+                        build_delegation_meta(
+                            "failed",
+                            Some(&child_connection_id),
+                            Some(ctx.child_conversation_id),
+                            Some("canceled"),
+                            None,
+                            Some(duration_ms),
+                            Some(&task_preview),
+                            Some(&call_id),
+                        ),
+                    )
+                    .await;
+                    self.emit_completed_if_real(
+                        &req.parent_connection_id,
+                        &parent_tool_use_id,
+                        &child_connection_id,
+                        ctx.child_conversation_id,
+                        ctx.agent_type,
+                        DelegationResultSummary::Err {
+                            error_code: "canceled".to_string(),
+                        },
+                    )
+                    .await;
+                    let _ = self.spawner.cancel(&child_connection_id).await;
+                    let _ = self.spawner.disconnect(&child_connection_id).await;
+                    self.result_notify.notify_waiters();
+                    return report_from_outcome(
+                        Some(call_id),
+                        Some(ctx.agent_type),
+                        &canceled_outcome(ctx.child_conversation_id, "canceled before await"),
+                        Some(duration_ms),
+                    );
+                }
+            }
+        }
+
+        resume_ack(call_id, ctx.child_conversation_id, ctx.agent_type)
+    }
+
     /// Test-only shim preserving the old blocking `handle_request` contract over
     /// the async path: start the delegation, then block until it reaches a
     /// terminal state (driven by the test's `complete_call` / cancel), mapping
@@ -3698,6 +4539,18 @@ pub struct DbChildStatusLookup {
     pub db: Arc<crate::db::AppDatabase>,
 }
 
+/// Map the serialized `ConversationStatus` string on a child conversation row
+/// onto the delegation [`TaskStatus`] vocabulary. Shared by the status fallback
+/// and the resume-context lookup so the two can't drift.
+fn task_status_from_row(status: &str) -> TaskStatus {
+    match status {
+        "in_progress" => TaskStatus::Running,
+        "pending_review" | "completed" => TaskStatus::Completed,
+        "cancelled" => TaskStatus::Canceled,
+        _ => TaskStatus::Unknown,
+    }
+}
+
 #[async_trait]
 impl ChildStatusLookup for DbChildStatusLookup {
     async fn find_by_call_id(&self, call_id: &str) -> Option<ChildStatusRecord> {
@@ -3708,18 +4561,41 @@ impl ChildStatusLookup for DbChildStatusLookup {
         .await
         .ok()
         .flatten()?;
-        // `summary.status` is the serialized `ConversationStatus` string.
-        let status = match summary.status.as_str() {
-            "in_progress" => TaskStatus::Running,
-            "pending_review" | "completed" => TaskStatus::Completed,
-            "cancelled" => TaskStatus::Canceled,
-            _ => TaskStatus::Unknown,
-        };
         Some(ChildStatusRecord {
             child_conversation_id: summary.id,
-            status,
+            status: task_status_from_row(&summary.status),
             agent_type: summary.agent_type,
             parent_id: summary.parent_id,
+        })
+    }
+
+    async fn find_resume_context_by_call_id(&self, call_id: &str) -> Option<ChildResumeContext> {
+        let summary = crate::db::service::conversation_service::get_by_delegation_call_id(
+            &self.db.conn,
+            call_id,
+        )
+        .await
+        .ok()
+        .flatten()?;
+        // The row's folder supplies the resumed connection's working_dir. A
+        // deleted folder yields `working_dir: None`, which the broker turns
+        // into an explicit "folder no longer exists" refusal.
+        let working_dir =
+            crate::db::service::folder_service::get_folder_by_id(&self.db.conn, summary.folder_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|f| f.path);
+        Some(ChildResumeContext {
+            child_conversation_id: summary.id,
+            status: task_status_from_row(&summary.status),
+            agent_type: summary.agent_type,
+            parent_id: summary.parent_id,
+            parent_tool_use_id: summary.parent_tool_use_id,
+            external_id: summary.external_id,
+            folder_id: summary.folder_id,
+            working_dir,
+            title: summary.title,
         })
     }
 }
@@ -3727,7 +4603,7 @@ impl ChildStatusLookup for DbChildStatusLookup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acp::delegation::spawner::{mock::MockSpawner, SpawnerError};
+    use crate::acp::delegation::spawner::{mock::MockSpawner, ResumedSpawn, SpawnerError};
     use crate::acp::delegation::types::DelegationSuccess;
     use crate::models::AgentType;
 
@@ -8477,5 +9353,507 @@ mod tests {
             !inner.completed.contains_key("t0"),
             "oldest result must be pruned"
         );
+    }
+
+    // -- resume_delegation ---------------------------------------------------
+
+    /// Test-only `ChildStatusLookup` whose resume context is seeded per test.
+    /// Answers ANY call_id with the seeded context (broker tests mint task ids
+    /// as UUIDs, so keying by exact id would force awkward post-hoc setup).
+    #[derive(Default)]
+    struct MockResumeLookup {
+        ctx: Mutex<Option<ChildResumeContext>>,
+    }
+
+    #[async_trait]
+    impl ChildStatusLookup for MockResumeLookup {
+        async fn find_by_call_id(&self, _call_id: &str) -> Option<ChildStatusRecord> {
+            self.ctx.lock().await.as_ref().map(|c| ChildStatusRecord {
+                child_conversation_id: c.child_conversation_id,
+                status: c.status,
+                agent_type: c.agent_type,
+                parent_id: c.parent_id,
+            })
+        }
+        async fn find_resume_context_by_call_id(
+            &self,
+            _call_id: &str,
+        ) -> Option<ChildResumeContext> {
+            self.ctx.lock().await.clone()
+        }
+    }
+
+    fn resume_ctx(status: TaskStatus) -> ChildResumeContext {
+        ChildResumeContext {
+            child_conversation_id: 42,
+            status,
+            agent_type: AgentType::ClaudeCode,
+            parent_id: Some(1),
+            parent_tool_use_id: Some("pt-orig".into()),
+            external_id: Some("ext-session-1".into()),
+            folder_id: 7,
+            working_dir: Some("/work".into()),
+            title: Some("do x".into()),
+        }
+    }
+
+    fn resume_request(task_id: &str) -> ResumeDelegationRequest {
+        ResumeDelegationRequest {
+            parent_connection_id: "parent-conn".into(),
+            parent_conversation_id: 1,
+            task_id: task_id.into(),
+            reason: None,
+            external_handle: None,
+        }
+    }
+
+    /// Broker wired with a MockSpawner + seedable resume lookup, enabled.
+    async fn resume_harness(
+        ctx: Option<ChildResumeContext>,
+    ) -> (Arc<MockSpawner>, Arc<MockResumeLookup>, DelegationBroker) {
+        let mock = Arc::new(MockSpawner::new());
+        let lookup = Arc::new(MockResumeLookup::default());
+        *lookup.ctx.lock().await = ctx;
+        let broker = DelegationBroker::new(
+            mock.clone() as Arc<dyn ConnectionSpawner>,
+            shallow_lookup(),
+        )
+        .with_status_lookup(lookup.clone() as Arc<dyn ChildStatusLookup>);
+        enable_delegation(&broker).await;
+        (mock, lookup, broker)
+    }
+
+    #[test]
+    fn resume_prompt_carries_bounded_reason_only() {
+        let bare = build_resume_prompt(None);
+        assert!(bare.contains("interrupted before completion"));
+        assert!(!bare.contains("Context on why"));
+        // Whitespace-only reason collapses to the bare prompt.
+        assert_eq!(build_resume_prompt(Some("   ")), bare);
+        let with_reason = build_resume_prompt(Some("app crashed"));
+        assert!(with_reason.contains("Context on why the run was interrupted"));
+        assert!(with_reason.contains("app crashed"));
+        // An oversized reason is truncated, not passed through.
+        let huge = "x".repeat(10 * 1024);
+        let capped = build_resume_prompt(Some(&huge));
+        assert!(capped.len() < bare.len() + RESUME_REASON_CAP + 128);
+    }
+
+    /// A crash-interrupted task (nothing in memory, DB row `cancelled`) resumes:
+    /// Running ack under the SAME id, the child re-spawned by loading the
+    /// recorded agent session in the recorded working dir, the continuation
+    /// prompt sent into the SAME conversation row — and a later `complete_call`
+    /// on the unchanged id finishes it normally.
+    #[tokio::test]
+    async fn resume_after_interruption_runs_under_same_id_then_completes() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("child-conn-2"))).await;
+        mock.queue_resume_send(Ok(())).await;
+
+        let mut req = resume_request("task-1");
+        req.reason = Some("machine rebooted".into());
+        let ack = broker.resume_delegation(req).await;
+        assert_eq!(ack.status, TaskStatus::Running);
+        assert_eq!(ack.task_id.as_deref(), Some("task-1"));
+        assert_eq!(ack.child_conversation_id, Some(42));
+        assert!(ack.message.unwrap().starts_with("Delegation resumed. task_id=task-1"));
+
+        // The spawn resumed the recorded agent session in the recorded dir.
+        let spawns = mock.resume_spawn_args.lock().await;
+        assert_eq!(spawns.len(), 1);
+        assert_eq!(spawns[0].external_session_id, "ext-session-1");
+        assert_eq!(spawns[0].working_dir.as_deref(), Some("/work"));
+        drop(spawns);
+        // The continuation prompt targeted the SAME child row and carried the
+        // reason as bounded context.
+        let sends = mock.resume_send_args.lock().await;
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].child_conversation_id, 42);
+        assert_eq!(sends[0].folder_id, 7);
+        assert!(sends[0].prompt.contains("machine rebooted"));
+        drop(sends);
+
+        // Status now reports Running for the same id, scoped to the caller.
+        let report = broker
+            .get_task_status("parent-conn", Some(1), "task-1", StatusWait::Immediate)
+            .await;
+        assert_eq!(report.status, TaskStatus::Running);
+
+        // TurnComplete routes through the unchanged delegation_call_id.
+        broker
+            .complete_call(
+                "task-1",
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "finished".into(),
+                    child_conversation_id: 42,
+                    child_agent_type: AgentType::ClaudeCode,
+                    turn_count: 1,
+                    duration_ms: 5,
+                    token_usage: None,
+                }),
+            )
+            .await;
+        let report = broker
+            .get_task_status("parent-conn", Some(1), "task-1", StatusWait::Immediate)
+            .await;
+        assert_eq!(report.status, TaskStatus::Completed);
+        assert_eq!(report.text.as_deref(), Some("finished"));
+    }
+
+    /// An in-session cancel leaves a Canceled completed-cache entry; resuming
+    /// must atomically clear it (with its byte/order bookkeeping) so the task
+    /// classifies as Running again — and a later re-terminal re-inserts exactly
+    /// one record.
+    #[tokio::test]
+    async fn resume_clears_canceled_cache_entry_and_reregisters() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        // Seed a real canceled task via the live path: delegate → cancel.
+        mock.queue_spawn(Ok("child-conn-1".into())).await;
+        mock.queue_send(Ok(42)).await;
+        let ack = broker.start_delegation(request(1, "pt-orig")).await;
+        let task_id = ack.task_id.unwrap();
+        assert_eq!(ack.status, TaskStatus::Running);
+        let canceled = broker
+            .cancel_task_by_id("parent-conn", Some(1), &task_id)
+            .await;
+        assert_eq!(canceled.status, TaskStatus::Canceled);
+        assert_eq!(broker.completed_count().await, 1);
+
+        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("child-conn-2"))).await;
+        mock.queue_resume_send(Ok(())).await;
+        let ack = broker.resume_delegation(resume_request(&task_id)).await;
+        assert_eq!(ack.status, TaskStatus::Running);
+        // The stale canceled record is gone; the task is running again.
+        assert_eq!(broker.completed_count().await, 0);
+        assert_eq!(broker.pending_count().await, 1);
+
+        // Re-terminal lands exactly one completed record under the same id.
+        broker
+            .complete_call(
+                &task_id,
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "done after resume".into(),
+                    child_conversation_id: 42,
+                    child_agent_type: AgentType::ClaudeCode,
+                    turn_count: 1,
+                    duration_ms: 5,
+                    token_usage: None,
+                }),
+            )
+            .await;
+        assert_eq!(broker.completed_count().await, 1);
+        let report = broker
+            .get_task_status("parent-conn", Some(1), &task_id, StatusWait::Immediate)
+            .await;
+        assert_eq!(report.status, TaskStatus::Completed);
+    }
+
+    /// A still-running task is NOT resumable — and stays untouched.
+    #[tokio::test]
+    async fn resume_refuses_running_task() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.queue_spawn(Ok("child-conn-1".into())).await;
+        mock.queue_send(Ok(42)).await;
+        let ack = broker.start_delegation(request(1, "pt-orig")).await;
+        let task_id = ack.task_id.unwrap();
+
+        let report = broker.resume_delegation(resume_request(&task_id)).await;
+        assert_eq!(report.status, TaskStatus::Running);
+        assert_eq!(report.error_code.as_deref(), Some(NOT_RESUMABLE_CODE));
+        assert!(report.message.unwrap().starts_with("Not resumed:"));
+        // No resume spawn happened; the running task is still there.
+        assert!(mock.resume_spawn_args.lock().await.is_empty());
+        assert_eq!(broker.pending_count().await, 1);
+    }
+
+    /// A task that completed on its own is NOT resumable (cache-fresh variant).
+    #[tokio::test]
+    async fn resume_refuses_completed_task() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.queue_spawn(Ok("child-conn-1".into())).await;
+        mock.queue_send(Ok(42)).await;
+        let ack = broker.start_delegation(request(1, "pt-orig")).await;
+        let task_id = ack.task_id.unwrap();
+        broker
+            .complete_call(
+                &task_id,
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "done".into(),
+                    child_conversation_id: 42,
+                    child_agent_type: AgentType::ClaudeCode,
+                    turn_count: 1,
+                    duration_ms: 5,
+                    token_usage: None,
+                }),
+            )
+            .await;
+
+        let report = broker.resume_delegation(resume_request(&task_id)).await;
+        assert_eq!(report.status, TaskStatus::Completed);
+        assert_eq!(report.error_code.as_deref(), Some(NOT_RESUMABLE_CODE));
+        assert!(mock.resume_spawn_args.lock().await.is_empty());
+        // The completed record is untouched — its result stays collectable.
+        let status = broker
+            .get_task_status("parent-conn", Some(1), &task_id, StatusWait::Immediate)
+            .await;
+        assert_eq!(status.status, TaskStatus::Completed);
+        assert_eq!(status.text.as_deref(), Some("done"));
+    }
+
+    /// A failure the child produced itself (refusal etc.) is NOT an
+    /// interruption — refused with the task's actual Failed status.
+    #[tokio::test]
+    async fn resume_refuses_failed_task() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.queue_spawn(Ok("child-conn-1".into())).await;
+        mock.queue_send(Ok(42)).await;
+        let ack = broker.start_delegation(request(1, "pt-orig")).await;
+        let task_id = ack.task_id.unwrap();
+        broker
+            .complete_call(
+                &task_id,
+                DelegationOutcome::from_err(DelegationError::ChildRefusal, Some(42)),
+            )
+            .await;
+
+        let report = broker.resume_delegation(resume_request(&task_id)).await;
+        assert_eq!(report.status, TaskStatus::Failed);
+        assert_eq!(report.error_code.as_deref(), Some(NOT_RESUMABLE_CODE));
+        assert!(mock.resume_spawn_args.lock().await.is_empty());
+    }
+
+    /// DB says the child row is still `in_progress`: with NO live connection it
+    /// is a crash leftover (resumable); with one it is genuinely active
+    /// (refused).
+    #[tokio::test]
+    async fn resume_stale_in_progress_row_depends_on_live_connection() {
+        // Live connection bound to the child conversation → refuse.
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Running))).await;
+        mock.mark_conversation_live(42).await;
+        let report = broker.resume_delegation(resume_request("task-1")).await;
+        assert_eq!(report.status, TaskStatus::Running);
+        assert_eq!(report.error_code.as_deref(), Some(NOT_RESUMABLE_CODE));
+        assert!(mock.resume_spawn_args.lock().await.is_empty());
+
+        // No live connection → the stranded row resumes.
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Running))).await;
+        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("child-conn-2"))).await;
+        mock.queue_resume_send(Ok(())).await;
+        let ack = broker.resume_delegation(resume_request("task-1")).await;
+        assert_eq!(ack.status, TaskStatus::Running);
+        assert_eq!(ack.error_code, None);
+        assert_eq!(broker.pending_count().await, 1);
+    }
+
+    /// Unknown ids, cross-parent ids, and rows owned by another conversation
+    /// all stay opaque — exactly the status-tool scoping rules.
+    #[tokio::test]
+    async fn resume_scoping_unknown_and_cross_parent() {
+        // No DB row at all.
+        let (mock, _lookup, broker) = resume_harness(None).await;
+        let report = broker.resume_delegation(resume_request("nope")).await;
+        assert_eq!(report.status, TaskStatus::Unknown);
+        assert!(mock.resume_spawn_args.lock().await.is_empty());
+
+        // Row owned by a different parent conversation.
+        let mut foreign = resume_ctx(TaskStatus::Canceled);
+        foreign.parent_id = Some(99);
+        let (mock, _lookup, broker) = resume_harness(Some(foreign)).await;
+        let report = broker.resume_delegation(resume_request("task-1")).await;
+        assert_eq!(report.status, TaskStatus::Unknown);
+        assert!(mock.resume_spawn_args.lock().await.is_empty());
+
+        // Canceled cache entry owned by ANOTHER parent connection: opaque.
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.queue_spawn(Ok("child-conn-1".into())).await;
+        mock.queue_send(Ok(42)).await;
+        let ack = broker.start_delegation(request(1, "pt-orig")).await;
+        let task_id = ack.task_id.unwrap();
+        broker
+            .cancel_task_by_id("parent-conn", Some(1), &task_id)
+            .await;
+        let mut req = resume_request(&task_id);
+        req.parent_connection_id = "other-parent".into();
+        let report = broker.resume_delegation(req).await;
+        assert_eq!(report.status, TaskStatus::Unknown);
+    }
+
+    /// A child row without a recorded agent session id has nothing to load.
+    #[tokio::test]
+    async fn resume_refuses_when_no_external_session_id() {
+        let mut ctx = resume_ctx(TaskStatus::Canceled);
+        ctx.external_id = None;
+        let (mock, _lookup, broker) = resume_harness(Some(ctx)).await;
+        let report = broker.resume_delegation(resume_request("task-1")).await;
+        assert_eq!(report.error_code.as_deref(), Some(NOT_RESUMABLE_CODE));
+        assert!(report.message.unwrap().contains("no agent session id"));
+        assert!(mock.resume_spawn_args.lock().await.is_empty());
+    }
+
+    /// Resume honors the global delegation switch like every other entry point.
+    #[tokio::test]
+    async fn resume_refuses_when_delegation_disabled() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        broker
+            .set_config(DelegationConfig {
+                enabled: false,
+                ..DelegationConfig::default()
+            })
+            .await;
+        let report = broker.resume_delegation(resume_request("task-1")).await;
+        assert_eq!(report.status, TaskStatus::Canceled);
+        assert!(report.message.unwrap().contains("delegation disabled"));
+        assert!(mock.resume_spawn_args.lock().await.is_empty());
+    }
+
+    /// A resume whose spawn fails reports the failure but leaves the task's
+    /// canceled record intact — the task is still canceled, still resumable.
+    #[tokio::test]
+    async fn resume_spawn_failure_preserves_canceled_record() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.queue_spawn(Ok("child-conn-1".into())).await;
+        mock.queue_send(Ok(42)).await;
+        let ack = broker.start_delegation(request(1, "pt-orig")).await;
+        let task_id = ack.task_id.unwrap();
+        broker
+            .cancel_task_by_id("parent-conn", Some(1), &task_id)
+            .await;
+
+        mock.queue_resume_spawn(Err(SpawnerError::Spawn("agent not installed".into())))
+            .await;
+        let report = broker.resume_delegation(resume_request(&task_id)).await;
+        assert_eq!(report.status, TaskStatus::Failed);
+        assert_eq!(report.error_code.as_deref(), Some("spawn_failed"));
+        // The canceled record still answers status queries.
+        let status = broker
+            .get_task_status("parent-conn", Some(1), &task_id, StatusWait::Immediate)
+            .await;
+        assert_eq!(status.status, TaskStatus::Canceled);
+        // In-flight bookkeeping is clean.
+        assert_eq!(broker.inflight_count().await, 0);
+        assert_eq!(broker.reserved_call_count().await, 0);
+    }
+
+    /// A resume whose SEND fails (after spawn) disconnects the fresh child and
+    /// releases the reservation.
+    #[tokio::test]
+    async fn resume_send_failure_disconnects_and_unreserves() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("child-conn-2"))).await;
+        mock.queue_resume_send(Err(SpawnerError::Send("stdin closed".into())))
+            .await;
+        let report = broker.resume_delegation(resume_request("task-1")).await;
+        assert_eq!(report.status, TaskStatus::Failed);
+        assert_eq!(report.error_code.as_deref(), Some("spawn_failed"));
+        assert_eq!(
+            mock.disconnects.lock().await.as_slice(),
+            &["child-conn-2".to_string()]
+        );
+        assert_eq!(broker.inflight_count().await, 0);
+        assert_eq!(broker.reserved_call_count().await, 0);
+        assert_eq!(broker.pending_count().await, 0);
+    }
+
+    /// While one resume of a task is mid-setup, a second resume of the SAME id
+    /// is refused (owner-visible "already in progress") instead of spawning a
+    /// second child onto the same agent session — in both gate branches: the
+    /// caller-owned canceled cache entry, and the crash case where ownership is
+    /// only proven by the DB row.
+    #[tokio::test]
+    async fn concurrent_resume_of_same_task_is_refused() {
+        // Cache-owned branch.
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.queue_spawn(Ok("child-conn-1".into())).await;
+        mock.queue_send(Ok(42)).await;
+        let ack = broker.start_delegation(request(1, "pt-orig")).await;
+        let task_id = ack.task_id.unwrap();
+        broker
+            .cancel_task_by_id("parent-conn", Some(1), &task_id)
+            .await;
+        broker
+            .pending
+            .inner
+            .lock()
+            .await
+            .resuming
+            .insert(task_id.clone());
+        let report = broker.resume_delegation(resume_request(&task_id)).await;
+        assert_eq!(report.error_code.as_deref(), Some(NOT_RESUMABLE_CODE));
+        assert!(report.message.unwrap().contains("already in progress"));
+        assert!(mock.resume_spawn_args.lock().await.is_empty());
+
+        // Not-in-memory branch: the refusal is deferred until the DB proves
+        // ownership, and the contended claim is left in place (it belongs to
+        // the resume that holds it).
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        broker
+            .pending
+            .inner
+            .lock()
+            .await
+            .resuming
+            .insert("task-1".into());
+        let report = broker.resume_delegation(resume_request("task-1")).await;
+        assert_eq!(report.error_code.as_deref(), Some(NOT_RESUMABLE_CODE));
+        assert!(report.message.unwrap().contains("already in progress"));
+        assert!(mock.resume_spawn_args.lock().await.is_empty());
+        assert!(broker.pending.inner.lock().await.resuming.contains("task-1"));
+
+        // A successful resume releases its own claim.
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("child-conn-2"))).await;
+        mock.queue_resume_send(Ok(())).await;
+        let ack = broker.resume_delegation(resume_request("task-1")).await;
+        assert_eq!(ack.status, TaskStatus::Running);
+        assert!(broker.pending.inner.lock().await.resuming.is_empty());
+    }
+
+    /// A failed send on a DEDUP-REUSED connection must NOT disconnect it — it
+    /// belongs to whoever was already driving it (the user's open tab that
+    /// raced past the live-connection gate). Only broker-spawned connections
+    /// are torn down; bookkeeping still unwinds either way.
+    #[tokio::test]
+    async fn resume_send_failure_on_reused_connection_skips_disconnect() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.queue_resume_spawn(Ok(ResumedSpawn::reused("user-conn")))
+            .await;
+        mock.queue_resume_send(Err(SpawnerError::Send("turn in flight".into())))
+            .await;
+        let report = broker.resume_delegation(resume_request("task-1")).await;
+        assert_eq!(report.status, TaskStatus::Failed);
+        assert_eq!(report.error_code.as_deref(), Some("spawn_failed"));
+        assert!(
+            mock.disconnects.lock().await.is_empty(),
+            "a reused connection must be left alone"
+        );
+        assert_eq!(broker.inflight_count().await, 0);
+        assert_eq!(broker.reserved_call_count().await, 0);
+        assert!(broker.pending.inner.lock().await.resuming.is_empty());
+    }
+
+    /// A resumed task is cancelable again through the ordinary path — the
+    /// running entry belongs to the CALLING parent connection.
+    #[tokio::test]
+    async fn resumed_task_cancels_like_any_running_task() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("child-conn-2"))).await;
+        mock.queue_resume_send(Ok(())).await;
+        let ack = broker.resume_delegation(resume_request("task-1")).await;
+        assert_eq!(ack.status, TaskStatus::Running);
+
+        let report = broker
+            .cancel_task_by_id("parent-conn", Some(1), "task-1")
+            .await;
+        assert_eq!(report.status, TaskStatus::Canceled);
+        assert!(mock
+            .cancels
+            .lock()
+            .await
+            .contains(&"child-conn-2".to_string()));
+        assert!(mock
+            .disconnects
+            .lock()
+            .await
+            .contains(&"child-conn-2".to_string()));
     }
 }

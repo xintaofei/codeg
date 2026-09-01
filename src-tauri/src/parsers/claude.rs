@@ -1135,6 +1135,11 @@ pub(crate) struct ClaudeRecordAccumulator {
     /// API call's usage. See [`Self::claim_assistant_usage`] for why only one
     /// line of a group may carry it.
     usage_owner_by_message_id: std::collections::HashMap<String, usize>,
+    /// API response id for the immediately preceding assistant record. Claude
+    /// writes each content block on its own JSONL line, so this lets adjacent
+    /// thinking-only fragments from one response share a message without
+    /// crossing text, tool, or user boundaries.
+    pending_assistant_message_id: Option<String>,
 }
 
 impl ClaudeRecordAccumulator {
@@ -1156,6 +1161,7 @@ impl ClaudeRecordAccumulator {
             background_acks: std::collections::HashMap::new(),
             background_notifications: std::collections::HashMap::new(),
             usage_owner_by_message_id: std::collections::HashMap::new(),
+            pending_assistant_message_id: None,
         }
     }
 
@@ -1164,10 +1170,10 @@ impl ClaudeRecordAccumulator {
     /// Claude Code writes **one JSONL line per content block**, not one per API
     /// call: a response that thinks, then answers, then calls two tools becomes
     /// four `assistant` lines sharing a single `message.id` — and every one of
-    /// them repeats that call's *complete* usage object. Each line becomes its
-    /// own [`UnifiedMessage`], its own turn, and (for the dashboard) its own
-    /// fact row, so summing them multiplies one API call's tokens by its block
-    /// count. Measured over a real transcript tree that is a 2.4× over-count
+    /// them repeats that call's *complete* usage object. Most block lines become
+    /// separate [`UnifiedMessage`]s and dashboard fact rows, so summing them
+    /// multiplies one API call's tokens by its block count. Measured over a real
+    /// transcript tree that is a 2.4× over-count
     /// (17.1 B counted vs 7.0 B actually spent), and 74 % of all calls are
     /// affected — a tool-heavy session inflates the most.
     ///
@@ -1184,10 +1190,10 @@ impl ClaudeRecordAccumulator {
     /// reported.
     ///
     /// `owner_index` is the slot the claiming message WILL occupy — normally
-    /// `messages.len()` (a fresh push). `parsers::qoder` merges the fragments of
-    /// one `message.id` into a single bubble, so it claims for
-    /// `messages.len() - 1` instead; passing it explicitly keeps the demotion
-    /// bookkeeping correct for both shapes.
+    /// `messages.len()` (a fresh push). `parsers::qoder` merges all adjacent
+    /// response fragments, while this parser merges adjacent thinking-only
+    /// fragments, so both may claim for `messages.len() - 1`; passing the index
+    /// explicitly keeps the demotion bookkeeping correct for every shape.
     pub(crate) fn claim_assistant_usage(
         messages: &mut [UnifiedMessage],
         usage_owner_by_message_id: &mut std::collections::HashMap<String, usize>,
@@ -1262,9 +1268,16 @@ impl ClaudeRecordAccumulator {
             background_acks,
             background_notifications,
             usage_owner_by_message_id,
+            pending_assistant_message_id,
         } = self;
 
         let msg_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+        // Even filtered user bookkeeping (for example an interrupt marker) is
+        // a response boundary and must not reconnect thinking on either side.
+        if msg_type == "user" {
+            *pending_assistant_message_id = None;
+        }
 
         if msg_type == "file-history-snapshot" || msg_type == "progress" {
             return;
@@ -1294,6 +1307,10 @@ impl ClaudeRecordAccumulator {
         // matching filter on the batch path).
         if is_meta_message(&value) || is_interrupt_marker(&value) {
             return;
+        }
+
+        if msg_type != "assistant" && msg_type != "user" {
+            *pending_assistant_message_id = None;
         }
 
         // Claude Code records the user-set name (`/rename`) and its own
@@ -1355,6 +1372,7 @@ impl ClaudeRecordAccumulator {
         match msg_type {
             "assistant" if is_synthetic_assistant(&value) => {
                 // Skip synthetic assistant placeholders for local commands
+                *pending_assistant_message_id = None;
             }
             "user" => {
                 // Capture `<task-notification>` payloads for the background
@@ -1539,30 +1557,70 @@ impl ClaudeRecordAccumulator {
                 }
 
                 let content = extract_assistant_content(&value);
+                let message_id = value
+                    .get("message")
+                    .and_then(|m| m.get("id"))
+                    .and_then(|id| id.as_str())
+                    .filter(|id| !id.is_empty());
+                let merges_thinking_fragment = message_id.is_some()
+                    && pending_assistant_message_id.as_deref() == message_id
+                    && matches!(
+                        (messages.last(), content.as_slice()),
+                        (
+                            Some(UnifiedMessage {
+                                role: MessageRole::Assistant,
+                                content: previous,
+                                ..
+                            }),
+                            [ContentBlock::Thinking { .. }]
+                        ) if matches!(previous.last(), Some(ContentBlock::Thinking { .. }))
+                    );
                 // One API call is spread over several lines that each repeat
                 // its full usage; only one of them may keep it.
-                let owner_index = messages.len();
+                let owner_index = if merges_thinking_fragment {
+                    messages.len() - 1
+                } else {
+                    messages.len()
+                };
                 let usage = Self::claim_assistant_usage(
                     messages,
                     usage_owner_by_message_id,
-                    value
-                        .get("message")
-                        .and_then(|m| m.get("id"))
-                        .and_then(|id| id.as_str()),
+                    message_id,
                     extract_usage(&value),
                     owner_index,
                 );
 
-                messages.push(UnifiedMessage {
-                    id: uuid,
-                    role: MessageRole::Assistant,
-                    content,
-                    timestamp,
-                    usage,
-                    duration_ms: None,
-                    model: msg_model,
-                    completed_at: Some(timestamp),
-                });
+                if merges_thinking_fragment {
+                    let last = messages.last_mut().expect("checked non-empty");
+                    let ContentBlock::Thinking { text: fragment } =
+                        content.into_iter().next().expect("checked one block")
+                    else {
+                        unreachable!("checked thinking block")
+                    };
+                    let Some(ContentBlock::Thinking { text }) = last.content.last_mut() else {
+                        unreachable!("checked trailing thinking block")
+                    };
+                    text.push_str(&fragment);
+                    last.completed_at = Some(timestamp);
+                    if usage.is_some() {
+                        last.usage = usage;
+                    }
+                    if msg_model.is_some() {
+                        last.model = msg_model;
+                    }
+                } else {
+                    messages.push(UnifiedMessage {
+                        id: uuid,
+                        role: MessageRole::Assistant,
+                        content,
+                        timestamp,
+                        usage,
+                        duration_ms: None,
+                        model: msg_model,
+                        completed_at: Some(timestamp),
+                    });
+                }
+                *pending_assistant_message_id = message_id.map(str::to_string);
             }
             "attachment" => {
                 // `/goal` transitions ride on attachment records; everything
@@ -3498,6 +3556,288 @@ mod tests {
                     + u.cache_read_input_tokens
             })
             .sum()
+    }
+
+    #[test]
+    fn adjacent_thinking_fragments_from_one_response_share_one_turn() {
+        let usage = json!({
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0
+        });
+        let lines = [
+            assistant_block_line(
+                "first-record",
+                "msg-one-response",
+                "2026-03-01T10:00:00Z",
+                json!({"type": "thinking", "thinking": "inspect"}),
+                usage.clone(),
+            ),
+            assistant_block_line(
+                "second-record",
+                "msg-one-response",
+                "2026-03-01T10:00:02Z",
+                json!({"type": "thinking", "thinking": " result"}),
+                usage,
+            ),
+        ];
+
+        let detail = parse_lines_into_detail(&lines);
+        assert_eq!(detail.turns.len(), 1);
+        assert!(matches!(
+            detail.turns[0].blocks.as_slice(),
+            [ContentBlock::Thinking { text }] if text == "inspect result"
+        ));
+        assert_eq!(
+            detail.turns[0].timestamp.to_rfc3339(),
+            "2026-03-01T10:00:00+00:00"
+        );
+        assert_eq!(
+            detail.turns[0]
+                .completed_at
+                .expect("last fragment completion")
+                .to_rfc3339(),
+            "2026-03-01T10:00:02+00:00"
+        );
+        assert_eq!(total_usage_tokens(&detail), 120);
+
+        let mut acc = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+        for line in &lines {
+            acc.feed_line(line);
+        }
+        assert_eq!(acc.messages.len(), 1);
+        assert_eq!(acc.messages[0].id, "first-record");
+    }
+
+    #[test]
+    fn thinking_fragments_do_not_cross_response_or_content_boundaries() {
+        let usage = json!({
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0
+        });
+
+        let different_responses = parse_lines_into_detail(&[
+            assistant_block_line(
+                "a1",
+                "msg-first",
+                "2026-03-01T10:00:00Z",
+                json!({"type": "thinking", "thinking": "one"}),
+                usage.clone(),
+            ),
+            assistant_block_line(
+                "a2",
+                "msg-second",
+                "2026-03-01T10:00:01Z",
+                json!({"type": "thinking", "thinking": "two"}),
+                usage.clone(),
+            ),
+        ]);
+        assert_eq!(different_responses.turns.len(), 2);
+
+        let separated_by_text = parse_lines_into_detail(&[
+            assistant_block_line(
+                "a1",
+                "msg-same",
+                "2026-03-01T10:00:00Z",
+                json!({"type": "thinking", "thinking": "one"}),
+                usage.clone(),
+            ),
+            assistant_block_line(
+                "a2",
+                "msg-same",
+                "2026-03-01T10:00:01Z",
+                json!({"type": "text", "text": "answer"}),
+                usage.clone(),
+            ),
+            assistant_block_line(
+                "a3",
+                "msg-same",
+                "2026-03-01T10:00:02Z",
+                json!({"type": "thinking", "thinking": "two"}),
+                usage,
+            ),
+        ]);
+        assert_eq!(separated_by_text.turns.len(), 3);
+        let thinking: Vec<_> = separated_by_text
+            .turns
+            .iter()
+            .flat_map(|turn| &turn.blocks)
+            .filter_map(|block| match block {
+                ContentBlock::Thinking { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thinking, ["one", "two"]);
+
+        let interrupted = parse_lines_into_detail(&[
+            assistant_block_line(
+                "a1",
+                "msg-interrupted",
+                "2026-03-01T10:00:00Z",
+                json!({"type": "thinking", "thinking": "before"}),
+                json!({}),
+            ),
+            json!({
+                "type": "user",
+                "timestamp": "2026-03-01T10:00:01Z",
+                "uuid": "u-interrupt",
+                "message": {"content": [{
+                    "type": "text",
+                    "text": "[Request interrupted by user]"
+                }]}
+            })
+            .to_string(),
+            assistant_block_line(
+                "a2",
+                "msg-interrupted",
+                "2026-03-01T10:00:02Z",
+                json!({"type": "thinking", "thinking": "after"}),
+                json!({}),
+            ),
+        ]);
+        assert_eq!(interrupted.turns.len(), 2);
+    }
+
+    #[test]
+    fn thinking_fragments_do_not_cross_tool_result_boundaries() {
+        let usage = json!({
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0
+        });
+        let lines = [
+            assistant_block_line(
+                "a1",
+                "msg-same",
+                "2026-03-01T10:00:00Z",
+                json!({"type": "thinking", "thinking": "before"}),
+                usage.clone(),
+            ),
+            assistant_block_line(
+                "a2",
+                "msg-same",
+                "2026-03-01T10:00:01Z",
+                json!({"type": "tool_use", "id": "tu1", "name": "Read", "input": {}}),
+                usage.clone(),
+            ),
+            json!({
+                "type": "user",
+                "timestamp": "2026-03-01T10:00:02Z",
+                "uuid": "u1",
+                "message": {"content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "tu1",
+                    "content": "done"
+                }]}
+            })
+            .to_string(),
+            assistant_block_line(
+                "a3",
+                "msg-same",
+                "2026-03-01T10:00:03Z",
+                json!({"type": "thinking", "thinking": "after"}),
+                usage,
+            ),
+        ];
+
+        let detail = parse_lines_into_detail(&lines);
+        let assistant_turns: Vec<_> = detail
+            .turns
+            .iter()
+            .filter(|turn| matches!(turn.role, TurnRole::Assistant))
+            .collect();
+        assert_eq!(assistant_turns.len(), 3);
+        assert!(matches!(
+            assistant_turns[0].blocks.as_slice(),
+            [ContentBlock::Thinking { text }] if text == "before"
+        ));
+        assert!(assistant_turns[1]
+            .blocks
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolResult { .. })));
+        assert!(matches!(
+            assistant_turns[2].blocks.as_slice(),
+            [ContentBlock::Thinking { text }] if text == "after"
+        ));
+        assert_eq!(total_usage_tokens(&detail), 15);
+    }
+
+    #[test]
+    fn merged_thinking_keeps_largest_usage_payload() {
+        let zeros = json!({
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0
+        });
+        let real = json!({
+            "input_tokens": 2,
+            "output_tokens": 383,
+            "cache_creation_input_tokens": 418,
+            "cache_read_input_tokens": 177_892
+        });
+
+        for (first, second) in [(zeros.clone(), real.clone()), (real.clone(), zeros.clone())] {
+            let detail = parse_lines_into_detail(&[
+                assistant_block_line(
+                    "a1",
+                    "msg-mixed",
+                    "2026-03-01T10:00:00Z",
+                    json!({"type": "thinking", "thinking": "one"}),
+                    first,
+                ),
+                assistant_block_line(
+                    "a2",
+                    "msg-mixed",
+                    "2026-03-01T10:00:01Z",
+                    json!({"type": "thinking", "thinking": "two"}),
+                    second,
+                ),
+            ]);
+            assert_eq!(detail.turns.len(), 1);
+            assert_eq!(total_usage_tokens(&detail), 178_695);
+        }
+    }
+
+    #[test]
+    fn thinking_merge_state_survives_incremental_feed_calls() {
+        let usage = json!({
+            "input_tokens": 1,
+            "output_tokens": 2,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0
+        });
+        let lines = [
+            assistant_block_line(
+                "a1",
+                "msg-incremental",
+                "2026-03-01T10:00:00Z",
+                json!({"type": "thinking", "thinking": "part one"}),
+                usage.clone(),
+            ),
+            assistant_block_line(
+                "a2",
+                "msg-incremental",
+                "2026-03-01T10:00:01Z",
+                json!({"type": "thinking", "thinking": " part two"}),
+                usage,
+            ),
+        ];
+
+        let whole = parse_lines_into_detail(&lines);
+
+        let mut incremental = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+        incremental.feed_line(&lines[0]);
+        incremental.feed_line(&lines[1]);
+
+        assert_eq!(
+            serde_json::to_value(group_into_turns(incremental.messages)).unwrap(),
+            serde_json::to_value(whole.turns).unwrap()
+        );
     }
 
     #[test]

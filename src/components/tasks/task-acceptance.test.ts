@@ -5,7 +5,7 @@ import {
   canRemoveWorktree,
   deliveredPrUrl,
   hasNothingToMerge,
-  isFolderMerging,
+  isAnotherTaskMerging,
   isMergeQueued,
   isWorktreeGone,
   mergeQueueRanks,
@@ -145,10 +145,23 @@ describe("the merge queue", () => {
     expect(ranks.get(1)).toBe(2)
   })
 
-  it("knows when a project's merge slot is busy", () => {
-    const tasks = [task({ id: 1 }), task({ id: 2, status: "merging" })]
-    expect(isFolderMerging(tasks, 1)).toBe(true)
-    expect(isFolderMerging(tasks, 2)).toBe(false)
+  it("knows when a project's merge slot is busy with someone else", () => {
+    const mine = task({ id: 1 })
+    const tasks = [mine, task({ id: 2, status: "merging" })]
+    expect(isAnotherTaskMerging(tasks, mine)).toBe(true)
+    // Another PROJECT's landing is not this project's slot.
+    expect(isAnotherTaskMerging(tasks, task({ id: 3, folder_id: 2 }))).toBe(
+      false
+    )
+  })
+
+  it("does not count the subject task's own merge", () => {
+    // The window this exists for: the engine flips review→merging and
+    // broadcasts it seconds before the dispatch call returns, so the row the
+    // open dialog reads says "merging" while its own submit is still in
+    // flight. Counting that would tell the user another task holds the slot.
+    const mine = task({ id: 1, status: "merging" })
+    expect(isAnotherTaskMerging([mine], mine)).toBe(false)
   })
 })
 
@@ -188,21 +201,23 @@ describe("worktreeWasRemoved", () => {
 describe("canRemoveWorktree", () => {
   const done = { status: "done" } as const
 
-  it("offers the removal to a finished task still holding its worktree", () => {
-    // The merge / complete dialogs both let the user KEEP the worktree, so
-    // this is the state the drawer's own removal exists for.
+  it("offers the removal to a settled task still holding its worktree", () => {
+    // Every way of stopping lets the user KEEP the worktree — the merge /
+    // complete dialogs' checkbox, and the cancel dialog's — so this is the
+    // state the drawer's own removal exists for. Canceled counts: that task
+    // can still be requeued, but a checkout the user has no intention of
+    // reopening should be reclaimable without deleting the task (and with it
+    // the record of why it was stopped).
     expect(canRemoveWorktree(task({ ...done }))).toBe(true)
+    expect(canRemoveWorktree(task({ status: "canceled" }))).toBe(true)
   })
 
-  it("stays out of an unfinished task's way", () => {
+  it("stays out of an unsettled task's way", () => {
     // Mid-run the checkout is in use, and a reviewed task's worktree is what
     // the acceptance is about to read — neither is housekeeping.
     for (const status of ["todo", "running", "review", "merging"] as const) {
       expect(canRemoveWorktree(task({ status }))).toBe(false)
     }
-    // Canceled keeps its worktree on purpose: that task can be requeued, and
-    // requeuing wants the checkout it left behind.
-    expect(canRemoveWorktree(task({ status: "canceled" }))).toBe(false)
   })
 
   it("says nothing when there is no worktree left to remove", () => {
@@ -214,6 +229,11 @@ describe("canRemoveWorktree", () => {
     expect(canRemoveWorktree(task({ ...done, worktree_missing: true }))).toBe(
       false
     )
+    // A canceled task that took its worktree along with the stop is in exactly
+    // the same place — the checkbox already did this call.
+    expect(
+      canRemoveWorktree(task({ status: "canceled", worktree_folder_id: null }))
+    ).toBe(false)
   })
 
   it("defers to the retry entry after a failed cleanup", () => {

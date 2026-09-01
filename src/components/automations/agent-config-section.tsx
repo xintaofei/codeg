@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { SelectorTooltip } from "@/components/chat/selector-tooltip"
 import { cn } from "@/lib/utils"
 import type { AgentOptionsSnapshot, SessionConfigOptionInfo } from "@/lib/types"
 
@@ -140,6 +141,7 @@ export function AgentConfigSection({
           items={snapshot.modes.available_modes.map((m) => ({
             value: m.id,
             name: m.name,
+            description: m.description,
           }))}
         />
       ) : null}
@@ -251,6 +253,7 @@ export function snapshotLabels(
 // bottom bar; callers supply only the differing <SelectContent>.
 function FieldRow({
   label,
+  description,
   value,
   inline,
   allowInherit,
@@ -259,6 +262,10 @@ function FieldRow({
   children,
 }: {
   label: string
+  /** Secondary line for the inline chip's hover hint — the same subtitle the
+   *  chat composer's chips carry. Inline only: the stacked layout shows its
+   *  label outright and has no hint to hang it off. */
+  description?: string | null
   value: string | null
   inline?: boolean
   /** When false (automations), the "inherit/default" escape hatch is dropped:
@@ -291,28 +298,37 @@ function FieldRow({
           onChange(allowInherit ? (v === DEFAULT_SENTINEL ? null : v) : v)
         }
       >
-        <SelectTrigger
-          size="sm"
-          // The dropped label still rides along for hover/screen readers.
-          aria-label={label}
-          title={inline ? label : undefined}
-          // 24px (not the size="sm" default) is deliberate: inline chips share
-          // the task editor's composer bottom bar with the "+" add-menu button,
-          // which is a `size="icon-xs"` (h-6) Button, and the chat composer's
-          // own selectors are h-6 too (`size="xs"`, session-config-selector).
-          // It takes `data-[size=sm]:h-6` to get there: a bare `h-6` loses to
-          // the trigger's own `data-[size=sm]:h-8`, whose attribute selector is
-          // the more specific rule, and tailwind-merge only drops the base
-          // class when the override carries the same variant. `py-0` sheds the
-          // base padding that a 24px box has no room for.
-          className={
-            inline
-              ? "h-6 w-auto max-w-[12rem] gap-1 border-0 bg-transparent px-1.5 py-0 text-xs text-muted-foreground shadow-none hover:text-foreground data-[size=sm]:h-6"
-              : "w-52"
-          }
+        {/* The dropped label still rides along for hover (`SelectorTooltip`, the
+            same hint the chat composer's chips use) and screen readers
+            (`aria-label`). Stacked keeps its visible <label>, so it passes
+            `null` and renders the trigger bare. A Radix `Select` blocks outside
+            pointer events while open, so no `suppressed` is needed. */}
+        <SelectorTooltip
+          label={inline ? label : null}
+          description={inline ? description : null}
         >
-          <SelectValue />
-        </SelectTrigger>
+          <SelectTrigger
+            size="sm"
+            aria-label={label}
+            // 24px (not the size="sm" default) is deliberate: inline chips
+            // share the task editor's composer bottom bar with the "+" add-menu
+            // button, which is a `size="icon-xs"` (h-6) Button, and the chat
+            // composer's own selectors are h-6 too (`size="xs"`,
+            // session-config-selector). It takes `data-[size=sm]:h-6` to get
+            // there: a bare `h-6` loses to the trigger's own
+            // `data-[size=sm]:h-8`, whose attribute selector is the more
+            // specific rule, and tailwind-merge only drops the base class when
+            // the override carries the same variant. `py-0` sheds the base
+            // padding that a 24px box has no room for.
+            className={
+              inline
+                ? "h-6 w-auto max-w-[12rem] gap-1 border-0 bg-transparent px-1.5 py-0 text-xs text-muted-foreground shadow-none hover:text-foreground data-[size=sm]:h-6"
+                : "w-52"
+            }
+          >
+            <SelectValue />
+          </SelectTrigger>
+        </SelectorTooltip>
         {children}
       </Select>
     </div>
@@ -336,11 +352,15 @@ function FlatSelect({
   allowInherit: boolean
   currentValue?: string | null
   onChange: (v: string | null) => void
-  items: Array<{ value: string; name: string }>
+  items: Array<{ value: string; name: string; description?: string | null }>
 }) {
+  // The chip's hint describes the mode it is currently on, mirroring the chat
+  // composer's mode selector (which hangs the selected mode's blurb off it).
+  const selected = items.find((it) => it.value === (value ?? currentValue))
   return (
     <FieldRow
       label={label}
+      description={selected?.description}
       value={value}
       inline={inline}
       allowInherit={allowInherit}
@@ -352,7 +372,11 @@ function FlatSelect({
           <SelectItem value={DEFAULT_SENTINEL}>{inheritLabel}</SelectItem>
         ) : null}
         {items.map((it) => (
-          <SelectItem key={it.value} value={it.value}>
+          <SelectItem
+            key={it.value}
+            value={it.value}
+            description={it.description}
+          >
             {it.name}
           </SelectItem>
         ))}
@@ -381,6 +405,7 @@ function ConfigOptionRow({
   return (
     <FieldRow
       label={option.name}
+      description={option.description}
       value={value}
       inline={inline}
       allowInherit={allowInherit}
@@ -396,14 +421,22 @@ function ConfigOptionRow({
               <SelectGroup key={g.group}>
                 <SelectLabel>{g.name}</SelectLabel>
                 {g.options.map((it) => (
-                  <SelectItem key={`${g.group}-${it.value}`} value={it.value}>
+                  <SelectItem
+                    key={`${g.group}-${it.value}`}
+                    value={it.value}
+                    description={it.description}
+                  >
                     {it.name}
                   </SelectItem>
                 ))}
               </SelectGroup>
             ))
           : option.kind.options.map((it) => (
-              <SelectItem key={it.value} value={it.value}>
+              <SelectItem
+                key={it.value}
+                value={it.value}
+                description={it.description}
+              >
                 {it.name}
               </SelectItem>
             ))}

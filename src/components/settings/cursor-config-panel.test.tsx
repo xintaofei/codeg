@@ -57,7 +57,11 @@ describe("buildCursorEnv", () => {
       "",
       false
     )
-    expect(env).toEqual({ KEEP: "y", CURSOR_AUTH_MODE: "custom" })
+    expect(env).toEqual({
+      KEEP: "y",
+      CURSOR_AUTH_MODE: "custom",
+      CURSOR_FORCE: "0",
+    })
   })
 
   it("subscription mode drops the key + base URL but keeps the model", () => {
@@ -74,7 +78,20 @@ describe("buildCursorEnv", () => {
       KEEP: "y",
       CURSOR_AUTH_MODE: "subscription",
       CURSOR_MODEL: "auto",
+      CURSOR_FORCE: "0",
     })
+  })
+
+  it("writes the off state explicitly so it differs from never-configured", () => {
+    // The bug this closes: off used to be a DELETED key, which the launch read
+    // as "unset" — so the panel could show one permission mode while the
+    // session ran another. Both states must now be on the wire.
+    expect(buildCursorEnv({}, "subscription", "", "", false).CURSOR_FORCE).toBe(
+      "0"
+    )
+    expect(buildCursorEnv({}, "subscription", "", "", true).CURSOR_FORCE).toBe(
+      "1"
+    )
   })
 })
 
@@ -206,12 +223,12 @@ describe("CursorConfigPanel", () => {
     )
 
     await waitFor(() => expect(onSaveEnv).toHaveBeenCalledTimes(2))
-    // No CURSOR_API_BASE_URL is ever written; CURSOR_FORCE defaults to "1"
-    // (Run Everything) because the saved env never set it.
+    // No CURSOR_API_BASE_URL is ever written; an unconfigured CURSOR_FORCE
+    // means Ask, which is what the launch has always actually done.
     expect(onSaveEnv.mock.calls[0][0]).toEqual({
       CURSOR_AUTH_MODE: "custom",
       CURSOR_API_KEY: "new-key",
-      CURSOR_FORCE: "1",
+      CURSOR_FORCE: "0",
     })
     // Rollback restores the exact prior env map.
     expect(onSaveEnv.mock.calls[1][0]).toEqual(originalEnv)
@@ -261,19 +278,19 @@ describe("CursorConfigPanel", () => {
 
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1))
     expect(onSaveEnv).toHaveBeenCalledTimes(1)
-    // Subscription persists the mode only — no credential. A fresh agent
-    // defaults the permission mode to Run Everything (CURSOR_FORCE="1").
+    // Subscription persists the mode only — no credential. A fresh agent asks
+    // before running, and says so explicitly rather than by omission.
     expect(onSaveEnv.mock.calls[0][0]).toEqual({
       CURSOR_AUTH_MODE: "subscription",
-      CURSOR_FORCE: "1",
+      CURSOR_FORCE: "0",
     })
   })
 
-  it("respects an explicit CURSOR_FORCE=0 (Ask before running) instead of defaulting on", async () => {
-    // A saved "0" means the user chose Ask — the Run-Everything default must
-    // not override it, so the save drops CURSOR_FORCE rather than writing "1".
+  it("round-trips a saved Run Everything choice", async () => {
+    // The switch has to survive a re-open: the panel reads CURSOR_FORCE with
+    // the same rule the launch does, so "1" comes back as "1" untouched.
     const { onSaveEnv, onSaved } = renderPanel({
-      env: { CURSOR_AUTH_MODE: "subscription", CURSOR_FORCE: "0" },
+      env: { CURSOR_AUTH_MODE: "subscription", CURSOR_FORCE: "1" },
     })
     await screen.findByText(enMessages.AcpAgentSettings.cursor.authNotInstalled)
 
@@ -286,6 +303,7 @@ describe("CursorConfigPanel", () => {
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1))
     expect(onSaveEnv.mock.calls[0][0]).toEqual({
       CURSOR_AUTH_MODE: "subscription",
+      CURSOR_FORCE: "1",
     })
   })
 
@@ -326,5 +344,74 @@ describe("CursorConfigPanel", () => {
 
     // The picker card (with its header) appears after the catalog loads.
     await screen.findByText(enMessages.AcpAgentSettings.cursor.modelTitle)
+  })
+
+  it("offers Thinking / Effort / Fast for the saved model's family", async () => {
+    // The point of splitting the flat catalog: a saved
+    // `claude-opus-5-thinking-high` has to open with its family selected and
+    // the three variant knobs live, instead of being one opaque row among ~200.
+    vi.mocked(acpCursorAuthStatus).mockResolvedValue(authenticated)
+    vi.mocked(acpCursorListModels).mockResolvedValue({
+      models: [
+        { id: "auto", label: "Auto", is_default: true },
+        {
+          id: "claude-opus-5-high",
+          label: "Claude Opus 5 1M",
+          is_default: false,
+        },
+        {
+          id: "claude-opus-5-high-fast",
+          label: "Claude Opus 5 1M Fast",
+          is_default: false,
+        },
+        {
+          id: "claude-opus-5-thinking-high",
+          label: "Claude Opus 5 1M Thinking",
+          is_default: false,
+        },
+        {
+          id: "claude-opus-5-thinking-max",
+          label: "Claude Opus 5 1M Max Thinking",
+          is_default: false,
+        },
+      ],
+      default_model: "auto",
+      error: null,
+    })
+    renderPanel({
+      env: {
+        CURSOR_AUTH_MODE: "subscription",
+        CURSOR_MODEL: "claude-opus-5-thinking-high",
+      },
+    })
+
+    await screen.findByText(
+      enMessages.AcpAgentSettings.cursor.modelThinkingLabel
+    )
+    screen.getByText(enMessages.AcpAgentSettings.cursor.modelEffortLabel)
+    screen.getByText(enMessages.AcpAgentSettings.cursor.modelFastLabel)
+    // The exact id `--model` will receive is spelled out, so a repaired pick
+    // is never invisible.
+    screen.getByText("claude-opus-5-thinking-high")
+  })
+
+  it("hides variant controls for a family that has no variants", async () => {
+    vi.mocked(acpCursorAuthStatus).mockResolvedValue(authenticated)
+    vi.mocked(acpCursorListModels).mockResolvedValue({
+      models: [{ id: "auto", label: "Auto", is_default: true }],
+      default_model: "auto",
+      error: null,
+    })
+    renderPanel({
+      env: { CURSOR_AUTH_MODE: "subscription", CURSOR_MODEL: "auto" },
+    })
+
+    await screen.findByText(enMessages.AcpAgentSettings.cursor.modelTitle)
+    expect(
+      screen.queryByText(enMessages.AcpAgentSettings.cursor.modelThinkingLabel)
+    ).toBeNull()
+    expect(
+      screen.queryByText(enMessages.AcpAgentSettings.cursor.modelFastLabel)
+    ).toBeNull()
   })
 })

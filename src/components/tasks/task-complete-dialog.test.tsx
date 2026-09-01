@@ -62,6 +62,7 @@ function settings(
     max_concurrent: 2,
     merge_strategy: "squash",
     auto_merge: false,
+    auto_compact_percent: 0,
     delete_worktree_default: true,
     ...overrides,
   }

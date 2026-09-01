@@ -960,79 +960,89 @@ mod tests {
             std::env::temp_dir().join(format!("codeg-helper-e2e-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&data_dir).expect("create data dir");
 
-        // Save & override CODEG_DATA_DIR for the duration of this test —
-        // server-mode `keyring_store` resolves `tokens.json` from this var.
-        let saved_env = std::env::var("CODEG_DATA_DIR").ok();
-        std::env::set_var("CODEG_DATA_DIR", &data_dir);
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio rt");
-
         let username = "octocat";
         let token = "ghp_test_token_value";
         let account_id = "acct-1";
 
-        rt.block_on(async {
-            // Seed: real on-disk DB with migrations + one github_accounts entry.
-            let db = crate::db::init_database(&data_dir, "test")
+        // Override CODEG_DATA_DIR for the duration of this test — server-mode
+        // `keyring_store` resolves `tokens.json` from this var.
+        //
+        // Through `temp_env`, NOT a bare `set_var` + manual restore. `STATE_LOCK`
+        // is private to this module, so it serializes this test against its two
+        // neighbours here and against nothing else; `forge::auth`'s
+        // `resolution_prefers_pinned_id_then_default_and_redacts_debug` guards the
+        // same variable with `temp_env::async_with_vars` and never learns of it.
+        // `keyring_store::tokens_file_path` re-reads the variable on every call
+        // and caches nothing, so with two locks that don't know about each other,
+        // one test's `set_token` writes under this data dir while the other's
+        // reader looks under its own — surfacing as `no stored token for account
+        // …` on whichever side loses. Both `temp_env` entry points take the one
+        // `SERIAL_TEST` mutex, so routing through it is what actually makes the
+        // two mutually exclusive.
+        //
+        // Order is always STATE_LOCK then SERIAL_TEST: nothing holding
+        // SERIAL_TEST can reach STATE_LOCK, so the pair can't invert.
+        temp_env::with_vars([("CODEG_DATA_DIR", Some(&data_dir))], || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio rt");
+
+            rt.block_on(async {
+                // Seed: real on-disk DB with migrations + one github_accounts entry.
+                let db = crate::db::init_database(&data_dir, "test")
+                    .await
+                    .expect("init db");
+
+                let settings = GitHubAccountsSettings {
+                    accounts: vec![GitHubAccount {
+                        id: account_id.into(),
+                        server_url: "https://github.com".into(),
+                        username: username.into(),
+                        scopes: vec![],
+                        avatar_url: None,
+                        is_default: true,
+                        created_at: String::new(),
+                        provider: None,
+                    }],
+                };
+                let json = serde_json::to_string(&settings).expect("serialize settings");
+                crate::db::service::app_metadata_service::upsert_value(
+                    &db.conn,
+                    GITHUB_ACCOUNTS_KEY,
+                    &json,
+                )
                 .await
-                .expect("init db");
+                .expect("seed accounts");
 
-            let settings = GitHubAccountsSettings {
-                accounts: vec![GitHubAccount {
-                    id: account_id.into(),
-                    server_url: "https://github.com".into(),
-                    username: username.into(),
-                    scopes: vec![],
-                    avatar_url: None,
-                    is_default: true,
-                    created_at: String::new(),
-                    provider: None,
-                }],
-            };
-            let json = serde_json::to_string(&settings).expect("serialize settings");
-            crate::db::service::app_metadata_service::upsert_value(
-                &db.conn,
-                GITHUB_ACCOUNTS_KEY,
-                &json,
-            )
-            .await
-            .expect("seed accounts");
+                // Drop the writer connection so the read-only re-open inside
+                // `lookup_credential` doesn't race against an open WAL writer.
+                drop(db);
 
-            // Drop the writer connection so the read-only re-open inside
-            // `lookup_credential` doesn't race against an open WAL writer.
-            drop(db);
+                // Seed the file token store. Uses CODEG_DATA_DIR via
+                // `tokens_file_path`, which is exactly what we're validating.
+                crate::keyring_store::set_token(account_id, token).expect("set token");
 
-            // Seed the file token store. Uses CODEG_DATA_DIR via
-            // `tokens_file_path`, which is exactly what we're validating.
-            crate::keyring_store::set_token(account_id, token).expect("set token");
+                // Lookup must round-trip the seeded credentials. Pass an absolute
+                // data_dir to mirror the production helper invocation.
+                let result = lookup_credential(&data_dir, "github.com")
+                    .await
+                    .expect("lookup should not error");
+                assert_eq!(
+                    result,
+                    Some((username.to_string(), token.to_string())),
+                    "lookup_credential should resolve seeded github.com account"
+                );
 
-            // Lookup must round-trip the seeded credentials. Pass an absolute
-            // data_dir to mirror the production helper invocation.
-            let result = lookup_credential(&data_dir, "github.com")
-                .await
-                .expect("lookup should not error");
-            assert_eq!(
-                result,
-                Some((username.to_string(), token.to_string())),
-                "lookup_credential should resolve seeded github.com account"
-            );
-
-            // Negative case: an unseeded host must return Ok(None), never
-            // fall back to a default account or a hard error.
-            let miss = lookup_credential(&data_dir, "gitlab.example.com")
-                .await
-                .expect("miss should be Ok(None), not Err");
-            assert!(miss.is_none(), "unrelated host must not match");
+                // Negative case: an unseeded host must return Ok(None), never
+                // fall back to a default account or a hard error.
+                let miss = lookup_credential(&data_dir, "gitlab.example.com")
+                    .await
+                    .expect("miss should be Ok(None), not Err");
+                assert!(miss.is_none(), "unrelated host must not match");
+            });
         });
 
-        // Restore env and clean up.
-        match saved_env {
-            Some(v) => std::env::set_var("CODEG_DATA_DIR", v),
-            None => std::env::remove_var("CODEG_DATA_DIR"),
-        }
         let _ = std::fs::remove_dir_all(&data_dir);
     }
 }

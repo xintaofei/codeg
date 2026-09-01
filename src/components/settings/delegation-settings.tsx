@@ -200,7 +200,7 @@ export function DelegationSettingsSection() {
               // Padded like a `SettingRow` (`px-3`) so the glyph and text line
               // up with the rows it sits between, rather than hanging a notch
               // to their left inside the shared card.
-              <p className="flex items-start gap-1.5 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-400">
+              <p className="flex items-start gap-1.5 px-3 py-2 text-2xs text-amber-700 dark:text-amber-400">
                 <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
                 <span>
                   {t("withheldByHostTools", {

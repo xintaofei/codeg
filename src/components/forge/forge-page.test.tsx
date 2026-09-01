@@ -28,6 +28,7 @@ import enMessages from "@/i18n/messages/en.json"
 import { forgeListIssues, openSettingsWindow } from "@/lib/api"
 import { buildForgeSourceKey } from "@/lib/forge-source-key"
 import type {
+  ForgeComment,
   ForgeIssueList,
   ForgeIssueRow,
   ForgeRemote,
@@ -45,6 +46,7 @@ const REMOTE: ForgeRemote = {
   owner_repo: "xintaofei/codeg",
   remote_url: "https://github.com/xintaofei/codeg.git",
   provider: "github",
+  supported: true,
 }
 
 vi.mock("@/lib/api", () => ({
@@ -58,6 +60,17 @@ vi.mock("@/lib/api", () => ({
   // test that opened the panel had finished. The thread itself is covered in
   // `forge-issue-detail-sheet.test.tsx`.
   forgeListComments: vi.fn(() => new Promise(() => {})),
+  // Same reason: a pull request's panel asks for its branches and its file
+  // list the moment it opens. Covered in the panel's own suite.
+  forgeChangeDetail: vi.fn(() => new Promise(() => {})),
+  forgeChangeFiles: vi.fn(() => new Promise(() => {})),
+  // And the composer's "posting as" lookup, fired by every panel that opens
+  // with a folder. Same reason again — it moves one avatar, and nothing here
+  // is about the avatar.
+  forgeIdentity: vi.fn(() => new Promise(() => {})),
+  forgeCreateComment: vi.fn(),
+  forgeSetItemState: vi.fn(),
+  forgeCreateIssue: vi.fn(),
   openSettingsWindow: vi.fn().mockResolvedValue(undefined),
   workTaskLookupBySource: vi.fn().mockResolvedValue([]),
   workTaskCreateFromForge: vi.fn(),
@@ -92,7 +105,11 @@ vi.mock("@/components/ai-elements/message", () => ({
 
 import {
   folderForgeRemote,
+  forgeCreateComment,
+  forgeCreateIssue,
+  forgeListComments,
   forgeListLabels,
+  forgeSetItemState,
   forgeSettingsGet,
   forgeTabCount,
   workTaskLookupBySource,
@@ -133,6 +150,7 @@ function issue(number: number, title: string): ForgeIssueRow {
     draft: false,
     labels: [],
     author: "octocat",
+    author_avatar: "https://avatars.githubusercontent.com/u/583231",
     updated_at: null,
     html_url: `https://github.com/xintaofei/codeg/issues/${number}`,
     is_pr: false,
@@ -254,6 +272,74 @@ describe("ForgePage list failures", () => {
     expect(openSettingsWindow).toHaveBeenCalledWith("version-control")
   })
 
+  /**
+   * Issue #611: a self-hosted GitLab that codeg had classified as a GitHub
+   * Enterprise. The backend recognises GitLab's "API V3 is no longer supported"
+   * 410 and CORRECTS ITSELF before returning, so `wrongForge` describes
+   * bookkeeping that is already fixed — putting it on screen would report our
+   * own mistake as the user's problem. The panel asks again instead.
+   *
+   * The second `folderForgeRemote` answer is the point of re-deriving the
+   * remote rather than just re-listing: `provider` is what the tab wording
+   * reads, so the correction has to reach it too.
+   */
+  it("silently retries a wrong-forge failure instead of showing it", async () => {
+    vi.mocked(folderForgeRemote)
+      .mockResolvedValueOnce(REMOTE)
+      .mockResolvedValue({
+        ...REMOTE,
+        server_host: "git.corp.com",
+        provider: "gitlab",
+      })
+    vi.mocked(forgeListIssues)
+      .mockRejectedValueOnce(
+        backendError({
+          code: "network_error",
+          message:
+            "git.corp.com is a GitLab, not the forge it was addressed as",
+          i18n_key: "Forge.errors.wrongForge",
+          i18n_params: { host: "git.corp.com", provider: "GitLab" },
+        })
+      )
+      .mockResolvedValue(listOf([issue(42, "Login times out")]))
+    mount()
+
+    // The retry's rows, not the failure.
+    expect(await screen.findByText("Login times out")).toBeInTheDocument()
+    expect(
+      screen.queryByText(/not the forge codeg had it classified as/)
+    ).not.toBeInTheDocument()
+    // Re-derived, so the panel now calls them merge requests. The accessible
+    // name carries the count badge too, hence the regex.
+    expect(vi.mocked(folderForgeRemote).mock.calls.length).toBeGreaterThan(1)
+    expect(
+      await screen.findByRole("tab", { name: /Merge requests/ })
+    ).toBeInTheDocument()
+  })
+
+  /**
+   * One retry, not a loop. The backend caches the detection before it reports
+   * `wrongForge`, so a SECOND one means something else is wrong — and a panel
+   * that kept retrying would spin instead of saying so.
+   */
+  it("shows a wrong-forge failure that survives the retry", async () => {
+    vi.mocked(forgeListIssues).mockRejectedValue(
+      backendError({
+        code: "network_error",
+        message: "git.corp.com is a GitLab, not the forge it was addressed as",
+        i18n_key: "Forge.errors.wrongForge",
+        i18n_params: { host: "git.corp.com", provider: "GitLab" },
+      })
+    )
+    mount()
+
+    expect(
+      await screen.findByText(
+        "git.corp.com is a GitLab, not the forge codeg had it classified as. The detection has been corrected — reload to retry."
+      )
+    ).toBeInTheDocument()
+  })
+
   it("recovers: a later successful fetch clears the failure", async () => {
     const user = userEvent.setup()
     vi.mocked(forgeListIssues)
@@ -276,6 +362,64 @@ describe("ForgePage list failures", () => {
         screen.queryByText("forge network error: connection refused")
       ).not.toBeInTheDocument()
     )
+  })
+})
+
+/**
+ * A repository codeg cannot read at all — Bitbucket, Gitee, somebody's Gitea.
+ *
+ * Its remote parses perfectly well and resolves to a provider, because the
+ * backend's last resort for an unrecognized host is GitHub. What it does NOT
+ * resolve to is an API that can answer, so the panel used to spend the request
+ * anyway and report back whatever the wrong forge said — "no GitHub account for
+ * gitee.com", or a raw API failure — neither of which names the real limit.
+ */
+describe("ForgePage on a host that is neither forge", () => {
+  const UNSUPPORTED: ForgeRemote = {
+    server_host: "gitee.com",
+    owner_repo: "someone/thing",
+    remote_url: "https://gitee.com/someone/thing.git",
+    // What the backend guessed, and exactly why the flag has to be separate:
+    // the provider alone cannot tell this apart from a self-hosted Enterprise.
+    provider: "github",
+    supported: false,
+  }
+
+  it("says only GitHub and GitLab are supported, and asks nothing of either", async () => {
+    vi.mocked(folderForgeRemote).mockResolvedValue(UNSUPPORTED)
+    mount()
+
+    expect(
+      await screen.findByText(
+        "The repository panel supports GitHub and GitLab only, and gitee.com is not recognized as either. If it is a self-hosted GitHub Enterprise or GitLab instance, add an account for it under Settings → Version Control."
+      )
+    ).toBeInTheDocument()
+    // No request is worth spending on a host no credential of ours fits — not
+    // the list, not the hidden tab's badge, not the label vocabulary.
+    expect(forgeListIssues).not.toHaveBeenCalled()
+    expect(forgeTabCount).not.toHaveBeenCalled()
+    expect(forgeListLabels).not.toHaveBeenCalled()
+  })
+
+  it("offers no write it could not carry out, and still names the repository", async () => {
+    const user = userEvent.setup()
+    vi.mocked(folderForgeRemote).mockResolvedValue(UNSUPPORTED)
+    mount()
+    await screen.findByRole("button", { name: "Add an account" })
+
+    // The bar still says which repository this is — the folder is real, and
+    // being unreadable is not a reason to stop naming it.
+    expect(
+      screen.getByRole("button", { name: /someone\/thing/ })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "New issue" })
+    ).not.toBeInTheDocument()
+
+    // The account button stays, because declaring an account for the host is
+    // also how a self-hosted instance under an unrelated name gets in.
+    await user.click(screen.getByRole("button", { name: "Add an account" }))
+    expect(openSettingsWindow).toHaveBeenCalledWith("version-control")
   })
 })
 
@@ -392,6 +536,44 @@ describe("ForgePage pagination", () => {
     vi.mocked(forgeListIssues).mockClear()
     mount()
     await waitFor(() => expect(sentQueries()[0].perPage).toBe(50))
+  })
+
+  /**
+   * The switcher position is remembered for the same reason the page SIZE is
+   * and the page NUMBER is not: it says which list you work in, not where you
+   * happened to be in one. Someone who lives in pull requests should not have
+   * to click past Issues every time the panel opens.
+   */
+  it("remembers which tab was last open, and opens there next time", async () => {
+    const user = userEvent.setup()
+    vi.mocked(forgeListIssues).mockResolvedValue(listOf([issue(1, "a row")]))
+    mount()
+    await screen.findByText("a row")
+    // Loose match: the tab carries its count badge in its accessible name.
+    await user.click(screen.getByRole("tab", { name: /Pull requests/ }))
+    await waitFor(() => expect(lastQuery()).toMatchObject({ tab: "prs" }))
+    expect(localStorage.getItem("workspace:forge-tab")).toBe("prs")
+
+    // A fresh mount opens on it — first request and all, so the remembered
+    // tab costs no round trip on the one it is not.
+    cleanup()
+    vi.mocked(forgeListIssues).mockClear()
+    mount()
+    await waitFor(() => expect(sentQueries()[0].tab).toBe("prs"))
+  })
+
+  it("opens on Issues when nothing was remembered, or the entry is junk", async () => {
+    vi.mocked(forgeListIssues).mockResolvedValue(listOf([issue(1, "a row")]))
+    mount()
+    await waitFor(() => expect(sentQueries()[0].tab).toBe("issues"))
+
+    // A hand-edited entry names a tab the switcher cannot show and no list can
+    // be fetched for, so it reads back as the default rather than as itself.
+    cleanup()
+    vi.mocked(forgeListIssues).mockClear()
+    localStorage.setItem("workspace:forge-tab", "merge-requests")
+    mount()
+    await waitFor(() => expect(sentQueries()[0].tab).toBe("issues"))
   })
 
   /** Narrowing the result set redefines what "page 4" means; the old number
@@ -1472,6 +1654,481 @@ describe("ForgePage detail panel", () => {
     // `#number · title`, so the number is what proves WHICH item was handed on.
     expect(
       await screen.findByRole("heading", { name: "#2 · second row" })
+    ).toBeInTheDocument()
+  })
+})
+
+/**
+ * Filing a new issue, and adopting what the panel's writes answer with.
+ *
+ * The wiring the page owns: the button only exists once a repository is
+ * resolved, the dialog files against THAT folder, and NO mutation is followed
+ * by a list re-read. That last one is the load-bearing rule and it is not an
+ * optimization — the list comes from GitHub's search index, which lags a write
+ * by seconds to minutes, so a re-read lands a page that predates the write and
+ * undoes it. Every write here is shown from the answer the forge gave it.
+ */
+describe("ForgePage writes", () => {
+  it("offers no new-issue button until a repository is resolved", async () => {
+    vi.mocked(folderForgeRemote).mockResolvedValue(null)
+    vi.mocked(forgeListIssues).mockResolvedValue(listOf([]))
+    mount()
+    await screen.findByText(
+      "This folder has no recognizable forge remote (origin)"
+    )
+    // Nowhere for the issue to go — the backend would refuse it, and a button
+    // that can only fail is worse than no button.
+    expect(
+      screen.queryByRole("button", { name: "New issue" })
+    ).not.toBeInTheDocument()
+  })
+
+  it("files against the folder on screen and opens the panel on what came back", async () => {
+    const user = userEvent.setup()
+    vi.mocked(forgeListIssues).mockResolvedValue(listOf([issue(1, "a row")]))
+    vi.mocked(forgeCreateIssue).mockResolvedValue({
+      ...issue(123, "Login times out"),
+      body: "## Steps",
+    })
+    mount()
+    await user.click(await screen.findByRole("button", { name: "New issue" }))
+
+    await user.type(screen.getByLabelText("Title"), "Login times out")
+    const before = vi.mocked(forgeListIssues).mock.calls.length
+    await user.click(screen.getByRole("button", { name: "Create issue" }))
+
+    await waitFor(() =>
+      expect(forgeCreateIssue).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ title: "Login times out" })
+      )
+    )
+    // Straight into the panel on what was just filed: the number and the link
+    // the forge assigned are only visible there.
+    const panel = await screen.findByRole("dialog")
+    expect(within(panel).getByText("· #123")).toBeInTheDocument()
+    // And into the list behind it, at the top, from the row the CREATE
+    // answered with. This is the whole point: re-reading here would ask an
+    // index that has not been told about the issue yet, get back the page
+    // without it, and land that — which is what left a reader hitting the
+    // refresh button to see what they had just filed.
+    const rows = await screen.findAllByRole("button", { name: /Login times/ })
+    expect(rows.length).toBeGreaterThan(0)
+    expect(vi.mocked(forgeListIssues).mock.calls.length).toBe(before)
+  })
+
+  it("counts the issue it filed onto the tab badge", async () => {
+    const user = userEvent.setup()
+    vi.mocked(forgeListIssues).mockResolvedValue(
+      listOf([issue(1, "a row")], { total_count: 57 })
+    )
+    vi.mocked(forgeCreateIssue).mockResolvedValue(issue(123, "Login times out"))
+    mount()
+    const tab = await screen.findByRole("tab", { name: /Issues/ })
+    await waitFor(() => expect(within(tab).getByTitle("57 open")).toBeTruthy())
+
+    await user.click(screen.getByRole("button", { name: "New issue" }))
+    // Only has to be non-empty to enable the button — the title that matters is
+    // the one the forge answers with, and it comes from the mock.
+    await user.type(screen.getByLabelText("Title"), "x")
+    await user.click(screen.getByRole("button", { name: "Create issue" }))
+
+    // The badge counts MATCHES, and there is demonstrably one more of them.
+    // Nothing re-reads to find that out, so the number has to be moved here or
+    // it sits one short above a list that visibly gained a row.
+    await waitFor(() =>
+      expect(within(tab).getByTitle("58 open")).toHaveTextContent("58")
+    )
+  })
+
+  it("leaves the pull-request list alone when an issue is filed from it", async () => {
+    const user = userEvent.setup()
+    vi.mocked(forgeListIssues).mockResolvedValue(listOf([issue(1, "a row")]))
+    vi.mocked(forgeCreateIssue).mockResolvedValue(issue(123, "Login times out"))
+    mount()
+    await user.click(await screen.findByRole("tab", { name: /Pull requests/ }))
+    await screen.findByRole("button", { name: "a row" })
+
+    await user.click(screen.getByRole("button", { name: "New issue" }))
+    // Only has to be non-empty to enable the button — the title that matters is
+    // the one the forge answers with, and it comes from the mock.
+    await user.type(screen.getByLabelText("Title"), "x")
+    const before = vi.mocked(forgeListIssues).mock.calls.length
+    await user.click(screen.getByRole("button", { name: "Create issue" }))
+
+    // The panel opens on it — nothing filed ever goes unseen — so the list is
+    // only readable again once that is out of the way (a modal takes the rest
+    // of the tree out of the accessibility tree with it).
+    const panel = await screen.findByRole("dialog")
+    expect(within(panel).getByText("· #123")).toBeInTheDocument()
+    await user.click(within(panel).getByRole("button", { name: "Close" }))
+
+    // A new ISSUE is not a row of the pull-request list, and placing it there
+    // would be showing it somewhere it will never be found again.
+    expect(await screen.findByRole("button", { name: "a row" })).toBeTruthy()
+    expect(
+      screen.queryByRole("button", { name: /Login times/ })
+    ).not.toBeInTheDocument()
+    // And still no re-read: the index is no more current for this tab than the
+    // other, so asking would only cost a request out of a 30-per-minute quota.
+    expect(vi.mocked(forgeListIssues).mock.calls.length).toBe(before)
+  })
+
+  it("adopts the row a state change answered with, even after it leaves the list", async () => {
+    const user = userEvent.setup()
+    vi.mocked(forgeListIssues).mockResolvedValue(listOf([issue(1, "a row")]))
+    vi.mocked(forgeSetItemState).mockResolvedValue({
+      ...issue(1, "a row"),
+      state: "closed",
+    })
+    mount()
+    await user.click(await screen.findByRole("button", { name: "a row" }))
+
+    await user.click(
+      screen.getByRole("button", { name: "Close #1 on the forge" })
+    )
+    const listCalls = vi.mocked(forgeListIssues).mock.calls.length
+    await user.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "Close",
+      })
+    )
+
+    // The panel reads its item out of the LOADED LIST whenever that still has
+    // it, so adopting the answer into only `detailRow` would leave a
+    // just-closed issue reading "Open" for as long as its stale row sat there.
+    await waitFor(() => {
+      const panel = screen.getByRole("dialog")
+      expect(within(panel).getByText("Closed")).toBeInTheDocument()
+    })
+    // The row behind it says the same thing, from the same answer.
+    expect(screen.getByRole("img", { name: "Closed" })).toBeInTheDocument()
+    // And nothing was re-fetched. The list is served from GitHub's SEARCH
+    // index, which lags a write by seconds — an immediate re-read would
+    // routinely answer "open" and undo what the user watched succeed.
+    expect(vi.mocked(forgeListIssues).mock.calls.length).toBe(listCalls)
+  })
+})
+
+/**
+ * A write on the forge makes any list request SENT BEFORE IT obsolete: that
+ * answer was assembled from an index which had not seen the write. Both cases
+ * below hold such a request open across the write and resolve it afterwards —
+ * the ordering that used to put a just-closed issue back to "open" with
+ * nothing left to correct it.
+ */
+describe("ForgePage write orderings", () => {
+  /** A list refresh in flight when the close lands. Its answer is stale by
+   *  construction — the index it was built from had not seen the write — and
+   *  nothing re-fetches afterwards, so landing it raw would leave the wrong
+   *  state on screen indefinitely. It lands, with the write written back. */
+  it("writes the state change back over a list response that predates it", async () => {
+    const user = userEvent.setup()
+    let releaseList: (page: ForgeIssueList) => void = () => {}
+    vi.mocked(forgeListIssues)
+      .mockResolvedValueOnce(listOf([issue(1, "a row")]))
+      .mockReturnValueOnce(
+        new Promise<ForgeIssueList>((resolve) => {
+          releaseList = resolve
+        })
+      )
+    vi.mocked(forgeSetItemState).mockResolvedValue({
+      ...issue(1, "a row"),
+      state: "closed",
+    })
+    mount()
+    await user.click(await screen.findByRole("button", { name: "a row" }))
+
+    // A refresh goes out (the chrome button drives the page's own fetch) and
+    // does not come back yet.
+    await user.click(screen.getByRole("button", { name: "Refresh" }))
+    await user.click(
+      screen.getByRole("button", { name: "Close #1 on the forge" })
+    )
+    await user.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "Close",
+      })
+    )
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("dialog")).getByText("Closed")
+      ).toBeInTheDocument()
+    )
+
+    // The stale answer arrives, still calling the issue open — and carrying a
+    // SECOND row, so it is visibly not discarded.
+    await act(async () => {
+      releaseList(listOf([issue(1, "a row"), issue(2, "another row")]))
+    })
+    // Everything the response brought is on screen…
+    expect(
+      await screen.findByRole("button", { name: "another row" })
+    ).toBeInTheDocument()
+
+    // …except the one row the write knows better than it does.
+    expect(
+      within(screen.getByRole("dialog")).getByText("Closed")
+    ).toBeInTheDocument()
+    expect(screen.getByRole("img", { name: "Closed" })).toBeInTheDocument()
+    // And the page is not left dimmed over a load nothing is loading: the
+    // superseded response never reaches its own `finally`, so the busy flag
+    // has to be cleared where the generation is claimed.
+    expect(document.querySelector("[aria-busy='true']")).toBeNull()
+  })
+
+  /** A comment POST still in the air when a close resolves. The comment must
+   *  add its one to the count and touch nothing else — a row captured when the
+   *  post started would carry the pre-close state back over the newer one. */
+  it("counts a comment that resolves after a close without undoing it", async () => {
+    const user = userEvent.setup()
+    vi.mocked(forgeListIssues).mockResolvedValue(
+      listOf([{ ...issue(1, "a row"), comments: 4 }])
+    )
+    vi.mocked(forgeSetItemState).mockResolvedValue({
+      ...issue(1, "a row"),
+      state: "closed",
+      comments: 4,
+    })
+    let releaseComment: (comment: ForgeComment) => void = () => {}
+    vi.mocked(forgeCreateComment).mockReturnValue(
+      new Promise<ForgeComment>((resolve) => {
+        releaseComment = resolve
+      })
+    )
+    vi.mocked(forgeListComments).mockResolvedValue({
+      comments: [],
+      page: 1,
+      per_page: 20,
+      has_next: false,
+    })
+    mount()
+    await user.click(await screen.findByRole("button", { name: "a row" }))
+    await screen.findByPlaceholderText("Leave a comment…")
+
+    // Post, then close while the post is still out.
+    await user.type(screen.getByPlaceholderText("Leave a comment…"), "hi")
+    await user.click(screen.getByRole("button", { name: "Comment" }))
+    await user.click(
+      screen.getByRole("button", { name: "Close #1 on the forge" })
+    )
+    await user.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "Close",
+      })
+    )
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("dialog")).getByText("Closed")
+      ).toBeInTheDocument()
+    )
+
+    await act(async () => {
+      releaseComment({
+        id: "9",
+        author: "octocat",
+        author_avatar: null,
+        body: "hi",
+        created_at: null,
+        updated_at: null,
+        html_url: null,
+      })
+    })
+
+    const panel = screen.getByRole("dialog")
+    // The close survives the late comment…
+    expect(within(panel).getByText("Closed")).toBeInTheDocument()
+    // …and the comment is still counted onto it.
+    expect(within(panel).getByText("5 comments")).toBeInTheDocument()
+  })
+})
+
+/**
+ * The regression the first attempt at all this introduced: a write must not
+ * be able to strand a view the user asked for while it was in flight.
+ *
+ * Discarding every in-flight list response on a write looked right when the
+ * only request outstanding was a refresh of the SAME view. It was not: the
+ * request a tab switch is waiting on is outstanding too, and throwing that
+ * away left the new tab on skeletons with no dependency left to change and
+ * re-fire the fetch.
+ *
+ * Driven through the COMMENT path deliberately. A state change is confirmed
+ * behind a modal that stays up until the write resolves, so nothing else on
+ * the page is reachable while it is out; the composer is not modal, and
+ * posting then immediately switching tabs is an ordinary thing to do.
+ */
+describe("ForgePage writes across a view change", () => {
+  it("still shows the tab the user switched to while a write was in flight", async () => {
+    const user = userEvent.setup()
+    let releasePrs: (page: ForgeIssueList) => void = () => {}
+    let releaseComment: (comment: ForgeComment) => void = () => {}
+    vi.mocked(forgeListIssues).mockImplementation((_folder, query) => {
+      if (query.tab === "prs") {
+        return new Promise<ForgeIssueList>((resolve) => {
+          releasePrs = resolve
+        })
+      }
+      return Promise.resolve(listOf([{ ...issue(1, "an issue"), comments: 4 }]))
+    })
+    vi.mocked(forgeListComments).mockResolvedValue({
+      comments: [],
+      page: 1,
+      per_page: 20,
+      has_next: false,
+    })
+    vi.mocked(forgeCreateComment).mockReturnValue(
+      new Promise<ForgeComment>((resolve) => {
+        releaseComment = resolve
+      })
+    )
+    mount()
+    await user.click(await screen.findByRole("button", { name: "an issue" }))
+    await screen.findByPlaceholderText("Leave a comment…")
+
+    // The comment is out and has not come back.
+    await user.type(screen.getByPlaceholderText("Leave a comment…"), "hi")
+    await user.click(screen.getByRole("button", { name: "Comment" }))
+    // Meanwhile the user switches to the other tab; its list goes out too.
+    await user.click(screen.getByRole("tab", { name: /Pull requests/ }))
+    await waitFor(() =>
+      expect(
+        vi.mocked(forgeListIssues).mock.calls.some(([, q]) => q.tab === "prs")
+      ).toBe(true)
+    )
+
+    // The write lands first…
+    await act(async () => {
+      releaseComment({
+        id: "9",
+        author: "octocat",
+        author_avatar: null,
+        body: "hi",
+        created_at: null,
+        updated_at: null,
+        html_url: null,
+      })
+    })
+    // …and then the tab's own list, which the write must not have eaten.
+    await act(async () => {
+      releasePrs(listOf([{ ...issue(9, "a pull request"), is_pr: true }]))
+    })
+
+    expect(
+      await screen.findByRole("button", { name: "a pull request" })
+    ).toBeInTheDocument()
+    // Settled, not stuck on a skeleton or dimmed over a load nothing is doing.
+    expect(document.querySelector("[aria-busy='true']")).toBeNull()
+    // And the comment was still counted onto the item it was written on.
+    expect(
+      within(screen.getByRole("dialog")).getByText("5 comments")
+    ).toBeInTheDocument()
+  })
+})
+
+/**
+ * The panel deliberately outlives its row: a filter change or a page turn
+ * takes the row away without saying anything about the ITEM, and blanking a
+ * panel somebody is reading would be worse. Writes made from it still have to
+ * survive a list response that predates them — including the SECOND one.
+ */
+describe("ForgePage writes from a panel with no row", () => {
+  it("keeps both comments when two land on an item the list no longer shows", async () => {
+    const user = userEvent.setup()
+    const resolvers: ((comment: ForgeComment) => void)[] = []
+    vi.mocked(forgeListComments).mockResolvedValue({
+      comments: [],
+      page: 1,
+      per_page: 20,
+      has_next: false,
+    })
+    vi.mocked(forgeCreateComment).mockImplementation(
+      () =>
+        new Promise<ForgeComment>((resolve) => {
+          resolvers.push(resolve)
+        })
+    )
+    const listed = { ...issue(1, "a row"), comments: 4 }
+    vi.mocked(forgeListIssues).mockResolvedValue(listOf([listed]))
+    mount()
+    await user.click(await screen.findByRole("button", { name: "a row" }))
+    await screen.findByPlaceholderText("Leave a comment…")
+
+    // The row leaves the page: a search narrows the list to nothing, and the
+    // panel stays open on the item it was reading.
+    vi.mocked(forgeListIssues).mockResolvedValue(listOf([]))
+    await user.type(
+      screen.getByPlaceholderText("Search title and description…"),
+      "zzz"
+    )
+    await waitFor(
+      () =>
+        expect(
+          screen.queryByRole("button", { name: "a row" })
+        ).not.toBeInTheDocument(),
+      // Explicit, because this wait is gated on a delay the page means to take:
+      // `SEARCH_DEBOUNCE_MS` (350) has to elapse after the last keystroke before
+      // the request even goes out. The default 1000ms budget leaves ~600ms for
+      // typing, the round trip and the re-render, which is enough right up until
+      // it is not — and then it fails as a function of how much ran BEFORE it,
+      // in a test that has nothing to do with any of that.
+      //
+      // Kept well under vitest's 5000ms testTimeout on purpose: at or above it
+      // the TEST dies first, which reports a bare timeout instead of the
+      // assertion, and hides whatever the row was actually still doing.
+      { timeout: 2500 }
+    )
+
+    // A list request goes out that WILL come back holding the item again —
+    // and is left in flight across both comments. One promise PER call, so
+    // releasing it resolves that request and not a later one: a request issued
+    // after a write is the user asking again, and its answer is meant to
+    // supersede the write (see `reconcile`), which is not what is under test.
+    const listResolvers: ((page: ForgeIssueList) => void)[] = []
+    vi.mocked(forgeListIssues).mockImplementation(
+      () =>
+        new Promise<ForgeIssueList>((resolve) => {
+          listResolvers.push(resolve)
+        })
+    )
+    await user.clear(
+      screen.getByPlaceholderText("Search title and description…")
+    )
+    await waitFor(() => expect(listResolvers.length).toBeGreaterThan(0))
+
+    const post = async (body: string) => {
+      await user.type(screen.getByPlaceholderText("Leave a comment…"), body)
+      await user.click(screen.getByRole("button", { name: "Comment" }))
+      await waitFor(() => expect(resolvers.length).toBeGreaterThan(0))
+      const resolve = resolvers.shift()!
+      await act(async () => {
+        resolve({
+          id: body,
+          author: "octocat",
+          author_avatar: null,
+          body,
+          created_at: null,
+          updated_at: null,
+          html_url: null,
+        })
+      })
+    }
+    await post("one")
+    await post("two")
+
+    const panel = screen.getByRole("dialog")
+    expect(within(panel).getByText("6 comments")).toBeInTheDocument()
+
+    // The stale response lands, still counting four. Reconciliation owes it
+    // BOTH increments — recording only the first would roll the panel back.
+    await act(async () => {
+      listResolvers[listResolvers.length - 1](listOf([listed]))
+    })
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "a row" })).toBeInTheDocument()
+    )
+    expect(
+      within(screen.getByRole("dialog")).getByText("6 comments")
     ).toBeInTheDocument()
   })
 })

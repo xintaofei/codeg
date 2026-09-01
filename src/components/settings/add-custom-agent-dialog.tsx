@@ -578,7 +578,7 @@ export function AddCustomAgentDialog({
                             {entry.name}
                           </span>
                           {entry.version && (
-                            <Badge variant="outline" className="text-[10px]">
+                            <Badge variant="outline" className="text-3xs">
                               {entry.version}
                             </Badge>
                           )}
@@ -586,7 +586,7 @@ export function AddCustomAgentDialog({
                             <Badge
                               key={kind}
                               variant="secondary"
-                              className="text-[10px]"
+                              className="text-3xs"
                             >
                               {kind}
                             </Badge>
@@ -596,7 +596,7 @@ export function AddCustomAgentDialog({
                           {entry.description}
                         </p>
                         {!entry.supportedOnPlatform && (
-                          <p className="text-[11px] text-amber-500 mt-1">
+                          <p className="text-2xs text-amber-500 mt-1">
                             {t("customAgentUnsupportedPlatform")}
                           </p>
                         )}
@@ -751,7 +751,7 @@ export function AddCustomAgentDialog({
                   htmlFor="custom-agent-spec"
                   control={
                     <div className="flex items-center gap-1">
-                      <span className="text-[11px] text-muted-foreground">
+                      <span className="text-2xs text-muted-foreground">
                         {t("customAgentTemplateLabel")}
                       </span>
                       {(["npx", "uvx", "binary"] as const).map((kind) => (
@@ -760,7 +760,7 @@ export function AddCustomAgentDialog({
                           type="button"
                           size="sm"
                           variant="outline"
-                          className="h-6 bg-background px-2 font-mono text-[11px]"
+                          className="h-6 bg-background px-2 font-mono text-2xs"
                           // The binary template needs the real platform key;
                           // until the backend has answered (ms after open,
                           // barring a dropped connection) there is nothing

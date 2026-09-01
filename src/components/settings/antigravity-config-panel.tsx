@@ -2,15 +2,31 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
-import { Eye, EyeOff, Loader2, Save } from "lucide-react"
+import {
+  Check,
+  Copy,
+  Eye,
+  EyeOff,
+  Loader2,
+  Save,
+  ExternalLink,
+} from "lucide-react"
 import { toast } from "sonner"
 
+import { BrowserLink } from "@/components/ui/browser-link"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
+  acpAntigravityLoginCancel,
+  acpAntigravityLoginFinish,
+  acpAntigravityLoginStart,
   acpSyncAntigravitySettings,
+  type AntigravityLoginOutcome,
+  type AntigravityLoginStart,
   type AntigravitySyncReport,
 } from "@/lib/api"
+import { toErrorMessage } from "@/lib/app-error"
+import { copyTextToClipboard } from "@/lib/utils"
 import {
   Select,
   SelectContent,
@@ -183,6 +199,376 @@ export function antigravityIncompleteReason(
   }
 }
 
+/** The two methods that authenticate through Antigravity's own browser flow —
+ *  and therefore the only two a machine with no browser cannot complete on its
+ *  own. The API-key methods read their credential from the environment. */
+function usesBrowserSignIn(method: AntigravityAuthMethod): boolean {
+  return method === "oauth-personal" || method === "oauth-business"
+}
+
+/** A sign-in that actually produced a link and is waiting to be completed. */
+type PendingLogin = Extract<AntigravityLoginStart, { alreadySignedIn: false }>
+
+/**
+ * Sign in to Antigravity from a machine that has no browser.
+ *
+ * Antigravity's OAuth flow is run by the AGENT: it binds a one-shot listener on
+ * `127.0.0.1:<random port>`, opens a browser, and blocks for five minutes. On a
+ * headless server that browser does not exist, and `webbrowser.open` returns
+ * false without raising — so the first session simply hangs and then fails,
+ * with no link anywhere the user could open themselves.
+ *
+ * This runs that same flow out of band and splits it in two: codeg shows the
+ * link, the user consents in whatever browser they do have, and codeg — which
+ * IS on the machine where that port is listening — performs the redirect their
+ * browser could not. See `src-tauri/src/acp/antigravity_login.rs`.
+ */
+function HeadlessSignIn({
+  method,
+  disabled,
+  needsSave,
+}: {
+  method: AntigravityAuthMethod
+  disabled: boolean
+  /** The form would satisfy this method but the STORED row does not yet. The
+   *  backend signs in with the persisted environment, so consenting now would
+   *  only fail at license resolution afterwards. */
+  needsSave: boolean
+}) {
+  const t = useTranslations("AcpAgentSettings")
+  const [pending, setPending] = useState<PendingLogin | null>(null)
+  const [redirect, setRedirect] = useState("")
+  const [outcome, setOutcome] = useState<AntigravityLoginOutcome | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  // Read by the abandon effect below, which must NOT re-run whenever the
+  // pending attempt changes — only when the attempt stops being ours.
+  const pendingRef = useRef<PendingLogin | null>(null)
+  pendingRef.current = pending
+
+  // The single owner of "this attempt is over". A pending sign-in belongs to
+  // the method it was started for, and behind the handle is an agent process
+  // holding a one-shot listener open. Switching methods — or closing the
+  // settings page — has to reach the backend, because just forgetting the
+  // handle leaves that child blocked for Antigravity's full five minutes.
+  useEffect(() => {
+    return () => {
+      const abandoned = pendingRef.current
+      pendingRef.current = null
+      if (!abandoned) return
+      void acpAntigravityLoginCancel(abandoned.handle).catch(() => {
+        // Best-effort: the attempt times out on its own, and by here there is
+        // no surface left to report a failed cancel to.
+      })
+    }
+  }, [method])
+
+  // Kept out of the cleanup above so the reset does not also run on unmount,
+  // where a state update would be pointless.
+  const shownMethod = useRef(method)
+  useEffect(() => {
+    if (shownMethod.current === method) return
+    shownMethod.current = method
+    setPending(null)
+    setRedirect("")
+    setOutcome(null)
+  }, [method])
+
+  // The live method, readable after an await. `start` can be in flight for
+  // minutes (the backend spawns the agent and waits for it to print a link),
+  // and the effects above only see attempts that have already landed in state
+  // — so an answer that arrives late has to be checked against this rather
+  // than against the `method` its closure captured.
+  const currentMethod = useRef(method)
+  currentMethod.current = method
+
+  /** Whether a reply that just arrived still belongs on screen. */
+  const stillOurs = useCallback(
+    (startedFor: AntigravityAuthMethod) =>
+      mountedRef.current && currentMethod.current === startedFor,
+    []
+  )
+
+  const start = useCallback(async () => {
+    const startedFor = method
+    setBusy(true)
+    setOutcome(null)
+    setRedirect("")
+    try {
+      const started = await acpAntigravityLoginStart(startedFor)
+      if (!stillOurs(startedFor)) {
+        // The panel closed, or the user picked a different method, while the
+        // agent was starting up. The handle never reached state, so neither
+        // cleanup effect knows about it — cancel it here or its child sits on
+        // a loopback listener for the full five minutes. Showing it would be
+        // worse still: the link authenticates the OLD method while the form
+        // says the new one.
+        if (!started.alreadySignedIn) {
+          void acpAntigravityLoginCancel(started.handle).catch(() => {})
+        }
+        return
+      }
+      if (started.alreadySignedIn) {
+        // The agent still had a usable token and authenticated on the spot, so
+        // this doubles as a "am I signed in?" check. Reporting it beats letting
+        // the user wait out a link that is never coming.
+        setOutcome({
+          signedIn: true,
+          message: t("antigravity.headless.alreadySignedIn"),
+          retryable: false,
+          credentialPath: null,
+        })
+      } else {
+        setPending(started)
+      }
+    } catch (e) {
+      if (!stillOurs(startedFor)) return
+      // NOT `e instanceof Error`: the web transport throws the backend's
+      // `{code, message}` JSON verbatim (`web-transport.ts`), so `String(e)`
+      // renders "[object Object]" — and does it precisely in server mode,
+      // which is the deployment this whole section exists for. Every
+      // actionable message ("Google Antigravity is not installed", "no
+      // sign-in is waiting") would be lost exactly where it is needed most.
+      toast.error(
+        `${t("antigravity.headless.startFailed")}: ${toErrorMessage(e)}`
+      )
+    } finally {
+      if (mountedRef.current) setBusy(false)
+    }
+  }, [method, stillOurs, t])
+
+  const finish = useCallback(async () => {
+    if (!pending) return
+    const startedFor = method
+    setBusy(true)
+    try {
+      const result = await acpAntigravityLoginFinish(pending.handle, redirect)
+      // No cancel needed on the late path, unlike `start`: the backend takes
+      // and kills the attempt on every outcome, so there is nothing left to
+      // strand — only a verdict that no longer describes what is on screen.
+      if (!stillOurs(startedFor)) return
+      setOutcome(result)
+      if (result.signedIn) {
+        toast.success(t("antigravity.headless.signedIn"))
+      }
+      if (!result.retryable) {
+        // The redirect went out, and the agent's listener answers exactly one
+        // request — so the link on screen is spent whether or not the sign-in
+        // worked. Leaving the paste box would invite a second attempt that
+        // could only fail. `retryable` marks the one case where it is still
+        // live: codeg rejected the paste before sending anything.
+        pendingRef.current = null
+        setPending(null)
+        setRedirect("")
+      }
+    } catch (e) {
+      if (!stillOurs(startedFor)) return
+      setOutcome({
+        signedIn: false,
+        message: toErrorMessage(e),
+        // The call never reached a verdict, so nothing is known about the
+        // attempt. Keeping the form is the recoverable read: a retry either
+        // works, or the backend answers "no sign-in is waiting" in plain
+        // words. Clearing it would strand a still-live attempt.
+        retryable: true,
+        credentialPath: null,
+      })
+    } finally {
+      if (mountedRef.current) setBusy(false)
+    }
+  }, [method, pending, redirect, stillOurs, t])
+
+  const cancel = useCallback(async () => {
+    if (!pending) return
+    const handle = pending.handle
+    // Clearing `pendingRef` here is what keeps the abandon effect from
+    // cancelling the same handle a second time when the panel later unmounts.
+    pendingRef.current = null
+    setPending(null)
+    setRedirect("")
+    setOutcome(null)
+    await acpAntigravityLoginCancel(handle).catch(() => {})
+  }, [pending])
+
+  const copyLink = useCallback(async () => {
+    if (!pending) return
+    if (await copyTextToClipboard(pending.authUrl)) {
+      setCopied(true)
+      window.setTimeout(() => {
+        if (mountedRef.current) setCopied(false)
+      }, 1500)
+    }
+  }, [pending])
+
+  return (
+    <div className="space-y-2 rounded-md border border-dashed p-2.5">
+      <div>
+        <p className="text-2xs font-medium">
+          {t("antigravity.headless.title")}
+        </p>
+        <p className="mt-0.5 text-3xs text-muted-foreground">
+          {t("antigravity.headless.description")}
+        </p>
+      </div>
+
+      {pending ? (
+        <div className="space-y-2">
+          <div className="space-y-1">
+            <p className="text-3xs text-muted-foreground">
+              {t("antigravity.headless.step1")}
+            </p>
+            <div className="flex items-start gap-1.5">
+              <code className="block flex-1 overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-3xs whitespace-nowrap text-muted-foreground">
+                {pending.authUrl}
+              </code>
+              <Button
+                className="h-7 w-7 shrink-0"
+                onClick={() => void copyLink()}
+                size="icon"
+                title={t("antigravity.headless.copyLink")}
+                type="button"
+                variant="ghost"
+              >
+                {copied ? (
+                  <Check className="size-3.5" />
+                ) : (
+                  <Copy className="size-3.5" />
+                )}
+              </Button>
+              {/* The one case where opening it here is useful: a DESKTOP codeg
+                  driving a remote agent, or a user browsing the server's panel
+                  from their laptop. On the headless host itself it is inert,
+                  which is what the copy button beside it is for. */}
+              <Button
+                asChild
+                className="h-7 w-7 shrink-0"
+                size="icon"
+                variant="ghost"
+              >
+                <BrowserLink
+                  href={pending.authUrl}
+                  title={t("antigravity.headless.openLink")}
+                >
+                  <ExternalLink className="size-3.5" />
+                </BrowserLink>
+              </Button>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <p className="text-3xs text-muted-foreground">
+              {t("antigravity.headless.step2", {
+                redirectUri: pending.redirectUri,
+              })}
+            </p>
+            <Input
+              className="h-7 text-xs"
+              disabled={busy}
+              onChange={(e) => setRedirect(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && redirect.trim() && !busy) {
+                  e.preventDefault()
+                  void finish()
+                }
+              }}
+              placeholder={`${pending.redirectUri}?state=...&code=...`}
+              value={redirect}
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-1.5">
+            <Button
+              className="h-7 px-2.5 text-xs"
+              disabled={busy}
+              onClick={() => void cancel()}
+              size="sm"
+              type="button"
+              variant="ghost"
+            >
+              {t("antigravity.headless.cancel")}
+            </Button>
+            <Button
+              className="h-7 gap-1.5 px-2.5 text-xs"
+              disabled={busy || !redirect.trim()}
+              onClick={() => void finish()}
+              size="sm"
+              type="button"
+            >
+              {busy ? <Loader2 className="size-3.5 animate-spin" /> : null}
+              {t("antigravity.headless.complete")}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          {needsSave ? (
+            <p className="text-3xs text-amber-600 dark:text-amber-400">
+              {t("antigravity.headless.saveFirst")}
+            </p>
+          ) : null}
+          <Button
+            className="h-7 gap-1.5 px-2.5 text-xs"
+            disabled={disabled || busy}
+            onClick={() => void start()}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            {busy ? <Loader2 className="size-3.5 animate-spin" /> : null}
+            {t("antigravity.headless.start")}
+          </Button>
+        </div>
+      )}
+
+      {outcome ? (
+        <div
+          className={
+            outcome.signedIn
+              ? "space-y-1 rounded-md border border-emerald-500/40 bg-emerald-500/5 p-2"
+              : "space-y-1 rounded-md border border-amber-500/40 bg-amber-500/5 p-2"
+          }
+        >
+          <p
+            className={
+              outcome.signedIn
+                ? "text-2xs text-emerald-600 dark:text-emerald-400"
+                : "text-2xs text-amber-600 dark:text-amber-400"
+            }
+          >
+            {outcome.signedIn
+              ? t("antigravity.headless.signedIn")
+              : t("antigravity.headless.failed")}
+          </p>
+          {outcome.message ? (
+            <p className="text-3xs text-muted-foreground">{outcome.message}</p>
+          ) : null}
+          {/* The credential is a portable file, so a user with several headless
+              machines can sign in once here and copy it to the rest. */}
+          {outcome.signedIn && outcome.credentialPath ? (
+            <>
+              <p className="text-3xs text-muted-foreground">
+                {t("antigravity.headless.credentialHint")}
+              </p>
+              <code className="block overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-3xs whitespace-nowrap text-muted-foreground">
+                {outcome.credentialPath}
+              </code>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 /**
  * Dedicated settings panel for Google Antigravity (`agy_acp_server`).
  *
@@ -293,6 +679,24 @@ export function AntigravityConfigPanel({
   })
 
   const incomplete = antigravityIncompleteReason(values)
+  // The sign-in runs against the STORED row, not this form: the backend builds
+  // the agent's environment from the database, so a project typed but not saved
+  // is a project the sign-in will not see. Gating on the draft would let a user
+  // spend a whole Google consent round trip and only then fail license
+  // resolution — the exact friction this section exists to remove.
+  //
+  // The METHOD counts as one of those values, and it is the sharper half. An
+  // unsaved switch to `oauth-personal` needs no credential, so the field check
+  // alone passes it: the sign-in then genuinely succeeds and the panel says
+  // "new sessions will use this account" — while the next launch reads the OLD
+  // method from the database and rewrites `auth.type` back to it
+  // (`sync_antigravity_settings_file`), scrubbing this method's credentials on
+  // the way. The user is returned to the five-minute failure they came here to
+  // escape, having been told they were signed in.
+  const persistedIncomplete =
+    method !== persisted.method
+      ? "unsavedMethod"
+      : antigravityIncompleteReason({ ...persisted, method })
 
   const save = useCallback(async () => {
     setSavingForm(true)
@@ -332,9 +736,7 @@ export function AntigravityConfigPanel({
       onSaved()
     } catch (e) {
       toast.error(
-        `${t("toasts.saveAntigravityConfigFailed")}: ${
-          e instanceof Error ? e.message : String(e)
-        }`
+        `${t("toasts.saveAntigravityConfigFailed")}: ${toErrorMessage(e)}`
       )
     } finally {
       if (mountedRef.current) setSavingForm(false)
@@ -350,7 +752,7 @@ export function AntigravityConfigPanel({
     <div className="space-y-3 rounded-md border bg-muted/10 p-3">
       <div>
         <label className="text-xs font-medium">{t("configManagement")}</label>
-        <p className="mt-1 text-[11px] text-muted-foreground">
+        <p className="mt-1 text-2xs text-muted-foreground">
           {t("antigravity.configDescription")}
         </p>
       </div>
@@ -358,7 +760,7 @@ export function AntigravityConfigPanel({
       <div className="space-y-2 rounded-md border bg-background/60 p-2.5">
         <div className="space-y-1">
           <label
-            className="text-[11px] text-muted-foreground"
+            className="text-2xs text-muted-foreground"
             htmlFor="antigravity-auth-method"
           >
             {t("antigravity.methodLabel")}
@@ -382,7 +784,7 @@ export function AntigravityConfigPanel({
               ))}
             </SelectContent>
           </Select>
-          <p className="text-[10px] text-muted-foreground">
+          <p className="text-3xs text-muted-foreground">
             {t(`antigravity.methodHints.${method}`)}
           </p>
         </div>
@@ -390,7 +792,7 @@ export function AntigravityConfigPanel({
         {method === "gemini-api-key" ? (
           <div className="space-y-1">
             <label
-              className="text-[11px] text-muted-foreground"
+              className="text-2xs text-muted-foreground"
               htmlFor="antigravity-gemini-key"
             >
               {t("antigravity.geminiApiKeyLabel")}
@@ -430,7 +832,7 @@ export function AntigravityConfigPanel({
         {method === "agent-platform" ? (
           <div className="space-y-1">
             <label
-              className="text-[11px] text-muted-foreground"
+              className="text-2xs text-muted-foreground"
               htmlFor="antigravity-google-key"
             >
               {t("antigravity.googleApiKeyLabel")}
@@ -464,7 +866,7 @@ export function AntigravityConfigPanel({
                 )}
               </Button>
             </div>
-            <p className="text-[10px] text-muted-foreground">
+            <p className="text-3xs text-muted-foreground">
               {t("antigravity.googleApiKeyHint")}
             </p>
           </div>
@@ -475,7 +877,7 @@ export function AntigravityConfigPanel({
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
               <label
-                className="text-[11px] text-muted-foreground"
+                className="text-2xs text-muted-foreground"
                 htmlFor="antigravity-gcp-project"
               >
                 {t("antigravity.gcpProjectLabel")}
@@ -493,7 +895,7 @@ export function AntigravityConfigPanel({
             </div>
             <div className="space-y-1">
               <label
-                className="text-[11px] text-muted-foreground"
+                className="text-2xs text-muted-foreground"
                 htmlFor="antigravity-gcp-location"
               >
                 {t("antigravity.gcpLocationLabel")}
@@ -513,9 +915,23 @@ export function AntigravityConfigPanel({
         ) : null}
 
         {incomplete ? (
-          <p className="text-[11px] text-amber-600 dark:text-amber-400">
+          <p className="text-2xs text-amber-600 dark:text-amber-400">
             {t(`antigravity.${incomplete}`)}
           </p>
+        ) : null}
+
+        {/* Only for the browser-driven methods, and only once the form can
+            actually produce a working session — Gemini Enterprise resolves a
+            license against gcp.project/location during sign-in, so starting one
+            without them just burns an attempt. `disabled` rather than hidden:
+            the section explains the headless problem, which is exactly what a
+            user who cannot complete the flow needs to read. */}
+        {usesBrowserSignIn(method) ? (
+          <HeadlessSignIn
+            disabled={busy || persistedIncomplete !== null}
+            method={method}
+            needsSave={persistedIncomplete !== null && incomplete === null}
+          />
         ) : null}
 
         {/* The save landed in the database but not in the file the server
@@ -524,15 +940,15 @@ export function AntigravityConfigPanel({
             is to edit that file by hand — codeg will not touch it again. */}
         {syncSkip ? (
           <div className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/5 p-2">
-            <p className="text-[11px] text-amber-600 dark:text-amber-400">
+            <p className="text-2xs text-amber-600 dark:text-amber-400">
               {t("antigravity.syncSkipped")}
             </p>
             {syncSkip.reason ? (
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-3xs text-muted-foreground">
                 {syncSkip.reason}
               </p>
             ) : null}
-            <code className="block overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-[10px] whitespace-nowrap text-muted-foreground">
+            <code className="block overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-3xs whitespace-nowrap text-muted-foreground">
               {syncSkip.path}
             </code>
           </div>
@@ -540,10 +956,10 @@ export function AntigravityConfigPanel({
 
         {agent.config_file_path ? (
           <div className="space-y-1">
-            <p className="text-[10px] text-muted-foreground">
+            <p className="text-3xs text-muted-foreground">
               {t("antigravity.settingsFileHint")}
             </p>
-            <code className="block overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-[10px] whitespace-nowrap text-muted-foreground">
+            <code className="block overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-3xs whitespace-nowrap text-muted-foreground">
               {agent.config_file_path}
             </code>
           </div>
