@@ -1,5 +1,14 @@
-import { memo, useMemo, useState, type ReactNode } from "react"
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
 import type { AdaptedContentPart } from "@/lib/adapters/ai-elements-adapter"
+import { AUTO_CLOSE_DELAY_MS } from "@/lib/auto-collapse-timing"
 import {
   classifyToolKind,
   TOOL_KIND_ORDER,
@@ -2261,11 +2270,22 @@ const TextPart = memo(function TextPart({
 
 const ToolCallPart = memo(function ToolCallPart({
   part,
+  onUserOpenChange,
 }: {
   part: Extract<AdaptedContentPart, { type: "tool-call" }>
+  /** Reports user-initiated card toggles so an outer tool-group can veto
+   *  its own automatic collapse while the user is reading a card. */
+  onUserOpenChange?: (toolCallId: string, open: boolean) => void
 }) {
   const t = useTranslations("Folder.chat.contentParts")
   const [manualOpen, setManualOpen] = useState(false)
+  const handleUserToggle = useCallback(
+    (next: boolean) => {
+      setManualOpen(next)
+      onUserOpenChange?.(part.toolCallId, next)
+    },
+    [part.toolCallId, onUserOpenChange]
+  )
   const normalizedToolName = useMemo(
     () => normalizeToolName(part.toolName),
     [part.toolName]
@@ -2820,10 +2840,10 @@ const ToolCallPart = memo(function ToolCallPart({
     )
   }
 
-  const open = (isRunning && (isCommandTool || hasLiveOutput)) || manualOpen
+  const open = manualOpen
 
   return (
-    <Tool open={open} onOpenChange={setManualOpen}>
+    <Tool open={open} onOpenChange={handleUserToggle}>
       <ToolHeader
         type="dynamic-tool"
         state={part.state}
@@ -2975,7 +2995,134 @@ const ToolGroupPart = memo(function ToolGroupPart({
   part: Extract<AdaptedContentPart, { type: "tool-group" }>
 }) {
   const t = useTranslations("Folder.chat.contentParts.toolGroup")
-  const [open, setOpen] = useState(false)
+  const [manualOpen, setManualOpen] = useState<boolean | null>(null)
+  const [autoOpen, setAutoOpen] = useState(part.isStreaming)
+  const [childOpenIds, setChildOpenIds] = useState<Set<string>>(() => new Set())
+  const pendingCloseTimerRef = useRef<number | null>(null)
+  const focusCloseCleanupRef = useRef<(() => void) | null>(null)
+  const groupRef = useRef<HTMLDivElement | null>(null)
+
+  // Adjust the auto-open state during render when streaming resumes on the
+  // same mounted group. This is the React-recommended "adjust state when a
+  // prop changes" pattern and avoids a synchronous setState inside an effect.
+  if (manualOpen === null && part.isStreaming && !autoOpen) {
+    setAutoOpen(true)
+  }
+
+  const clearPendingCloseTimer = useCallback(() => {
+    if (pendingCloseTimerRef.current !== null) {
+      window.clearTimeout(pendingCloseTimerRef.current)
+      pendingCloseTimerRef.current = null
+    }
+  }, [])
+
+  const clearFocusCloseListener = useCallback(() => {
+    focusCloseCleanupRef.current?.()
+    focusCloseCleanupRef.current = null
+  }, [])
+
+  useEffect(() => {
+    if (manualOpen !== null) {
+      clearPendingCloseTimer()
+      clearFocusCloseListener()
+      return
+    }
+
+    if (part.isStreaming) {
+      clearPendingCloseTimer()
+      clearFocusCloseListener()
+      return
+    }
+
+    if (!autoOpen) return
+
+    clearPendingCloseTimer()
+    clearFocusCloseListener()
+    pendingCloseTimerRef.current = window.setTimeout(() => {
+      pendingCloseTimerRef.current = null
+
+      // The user is reading a child card. Defer the automatic collapse until
+      // every manually opened card is closed again.
+      if (childOpenIds.size > 0) return
+
+      // Don't unmount content that still owns keyboard focus.
+      const root = groupRef.current
+      if (root?.contains(document.activeElement)) {
+        const onFocusOut = (event: FocusEvent) => {
+          const next = event.relatedTarget as Node | null
+          if (next && root.contains(next)) return
+          clearFocusCloseListener()
+          setAutoOpen(false)
+        }
+        root.addEventListener("focusout", onFocusOut)
+        focusCloseCleanupRef.current = () =>
+          root.removeEventListener("focusout", onFocusOut)
+        return
+      }
+
+      setAutoOpen(false)
+    }, AUTO_CLOSE_DELAY_MS)
+
+    return () => {
+      clearPendingCloseTimer()
+      clearFocusCloseListener()
+    }
+  }, [
+    part.isStreaming,
+    autoOpen,
+    manualOpen,
+    childOpenIds,
+    clearPendingCloseTimer,
+    clearFocusCloseListener,
+  ])
+
+  // Clean up timers/listeners even when the last effect run took the
+  // `manualOpen !== null` branch (which intentionally returns no cleanup).
+  useEffect(() => {
+    return () => {
+      if (pendingCloseTimerRef.current !== null) {
+        window.clearTimeout(pendingCloseTimerRef.current)
+      }
+      focusCloseCleanupRef.current?.()
+    }
+  }, [])
+
+  const handleChildUserToggle = useCallback(
+    (toolCallId: string, nextOpen: boolean) => {
+      setChildOpenIds((prev) => {
+        const next = new Set(prev)
+        if (nextOpen) next.add(toolCallId)
+        else next.delete(toolCallId)
+        return next
+      })
+    },
+    []
+  )
+
+  const handleUserToggle = useCallback(
+    (nextOpen: boolean) => {
+      clearPendingCloseTimer()
+      clearFocusCloseListener()
+
+      // Clicking the chip of an automatically open running group pins it
+      // instead of closing it; a second click performs the normal toggle.
+      if (manualOpen === null && part.isStreaming && nextOpen === false) {
+        setManualOpen(true)
+        return
+      }
+
+      setManualOpen(nextOpen)
+      if (!nextOpen) setChildOpenIds(new Set())
+    },
+    [
+      manualOpen,
+      part.isStreaming,
+      clearPendingCloseTimer,
+      clearFocusCloseListener,
+    ]
+  )
+
+  const visibleOpen = manualOpen ?? autoOpen
 
   const { phrases, errorPhrase } = useMemo(() => {
     const counts = TOOL_KIND_ORDER.reduce(
@@ -3011,7 +3158,12 @@ const ToolGroupPart = memo(function ToolGroupPart({
   const titleText = phrases.join(joiner)
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="w-full">
+    <Collapsible
+      ref={groupRef}
+      open={visibleOpen}
+      onOpenChange={handleUserToggle}
+      className="w-full"
+    >
       <CollapsibleTrigger
         className={cn(
           "group inline-flex max-w-full items-center gap-1.5 rounded-full bg-muted/60 px-3.5 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ws-msg-chip"
@@ -3021,7 +3173,7 @@ const ToolGroupPart = memo(function ToolGroupPart({
           aria-hidden="true"
           className={cn(
             "size-3 shrink-0 opacity-60 transition-transform",
-            open && "rotate-90"
+            visibleOpen && "rotate-90"
           )}
         />
         <span className="min-w-0 truncate">
@@ -3053,6 +3205,7 @@ const ToolGroupPart = memo(function ToolGroupPart({
             <ToolCallPart
               key={`grouped-tc-${item.toolCallId ?? idx}-${idx}`}
               part={item}
+              onUserOpenChange={handleChildUserToggle}
             />
           ))}
         </div>
