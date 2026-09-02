@@ -2901,6 +2901,7 @@ mod tests {
             working_dir: None,
             requested_working_dir: None,
             external_handle: None,
+            per_call_defaults: None,
         }
     }
 

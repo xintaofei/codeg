@@ -92,7 +92,14 @@ impl DelegationSettings {
             agent_defaults: self
                 .agent_defaults
                 .into_iter()
-                .filter(|(_, v)| !v.is_empty())
+                .filter_map(|(agent, mut defaults)| {
+                    defaults.normalize();
+                    if defaults.is_empty() {
+                        None
+                    } else {
+                        Some((agent, defaults))
+                    }
+                })
                 .collect(),
             // No upper clamp: the cache budget is a user memory choice, not a
             // safety rail. `0` stays `0` (unlimited).
@@ -357,6 +364,38 @@ mod tests {
         .clamped();
         assert!(!s.agent_defaults.contains_key(&AgentType::ClaudeCode));
         assert!(s.agent_defaults.contains_key(&AgentType::Codex));
+    }
+
+    #[test]
+    fn clamped_normalizes_empty_agent_default_values() {
+        let mut malformed = BTreeMap::new();
+        malformed.insert("model".into(), " ".into());
+        malformed.insert("permission_mode".into(), "plan".into());
+        let mut agent_defaults = BTreeMap::new();
+        agent_defaults.insert(
+            AgentType::Codex,
+            AgentDelegationDefaults {
+                mode_id: Some(" ".into()),
+                config_values: malformed,
+            },
+        );
+
+        let s = DelegationSettings {
+            agent_defaults,
+            ..DelegationSettings::default()
+        }
+        .clamped();
+
+        let defaults = s.agent_defaults.get(&AgentType::Codex).unwrap();
+        assert!(defaults.mode_id.is_none());
+        assert_eq!(
+            defaults
+                .config_values
+                .get("permission_mode")
+                .map(String::as_str),
+            Some("plan")
+        );
+        assert!(!defaults.config_values.contains_key("model"));
     }
 
     #[tokio::test]

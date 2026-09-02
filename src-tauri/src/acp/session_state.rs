@@ -8,7 +8,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::acp::delegation::types::{BlockedKind, BlockedOn};
+use crate::acp::delegation::types::{AgentDelegationDefaults, BlockedKind, BlockedOn};
 use crate::acp::event_stream::{ConnectionEventStream, RecentEventsBuffer};
 use crate::acp::feedback::{FeedbackItem, FeedbackStatus};
 use crate::acp::plan_approval::PendingPlanApprovalState;
@@ -511,6 +511,18 @@ pub struct SessionState {
     /// not part of the client-visible snapshot.
     pub turn_in_flight: bool,
 
+    /// Draft-scoped delegation config overrides for the CURRENT turn, captured
+    /// from the parent prompt's `@Agent` mentions (per-mention popover). The
+    /// connection loop stores the map when it dequeues a `Prompt` command and
+    /// `AcpEvent::TurnComplete` clears it (mirroring `turn_in_flight`, whose
+    /// admission gate already guarantees a rejected concurrent prompt never
+    /// reaches the loop and therefore cannot clobber the active turn's
+    /// values). The delegation listener reads the requested agent's entry via
+    /// `ConnectionManagerParentLookup` while the turn runs. Empty = no
+    /// per-call override. Backend-internal: not part of the client snapshot,
+    /// and never written to the persisted `delegation.agent_defaults`.
+    pub delegation_overrides: BTreeMap<AgentType, AgentDelegationDefaults>,
+
     /// Whether the most recently completed turn ended via a stop reason other
     /// than `"end_turn"` (cancelled, refusal, max_tokens, max_turn_requests,
     /// empty, unknown — the same "abnormal ending" bucket `connection.rs`
@@ -602,6 +614,7 @@ impl SessionState {
             pending_user_message: None,
             pending_user_message_started_at: None,
             turn_in_flight: false,
+            delegation_overrides: BTreeMap::new(),
             last_turn_ended_abnormally: false,
             config_stale: false,
             config_stale_kind: None,
@@ -1009,6 +1022,10 @@ impl SessionState {
                 // cancel, stop-reason — emit TurnComplete; disconnect/error
                 // discard the state entirely, so no stale flag can outlive them.)
                 self.turn_in_flight = false;
+                // The turn's per-mention delegation overrides die with it: a
+                // later delegation call (even from a stale MCP companion that
+                // missed the turn end) falls back to the global defaults.
+                self.delegation_overrides.clear();
                 // NOTE: `active_delegations` is intentionally NOT cleared here.
                 // A running delegation's child runs in the background long after
                 // the parent's `delegate_to_agent` tool call returns and this
@@ -1883,6 +1900,44 @@ mod tests {
     /// another row, a cache carried over from the old one would classify the
     /// new row's first title as a repeat and leave it Untitled for the rest of
     /// the connection, with no error anywhere to point at.
+    #[test]
+    fn turn_complete_clears_delegation_overrides_but_user_message_does_not() {
+        let mut s = fresh_state();
+        s.turn_in_flight = true;
+        s.delegation_overrides.insert(
+            AgentType::Codex,
+            crate::acp::delegation::types::AgentDelegationDefaults {
+                mode_id: Some("plan".into()),
+                config_values: std::iter::once(("model".to_string(), "gpt-5.2".to_string()))
+                    .collect(),
+            },
+        );
+
+        // A mid-turn event (the user-message broadcast) must NOT clear the
+        // turn's per-mention overrides — the LLM may still delegate later in
+        // the same turn.
+        s.apply_event(&AcpEvent::UserMessage {
+            message_id: "m1".into(),
+            blocks: Vec::new(),
+        });
+        assert_eq!(s.delegation_overrides.len(), 1);
+
+        // The turn's terminal event clears them, mirroring turn_in_flight.
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "sid".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "codex".into(),
+        });
+        assert!(s.delegation_overrides.is_empty());
+        assert!(!s.turn_in_flight);
+    }
+
+    #[test]
+    fn delegation_overrides_start_empty_on_every_new_session_state() {
+        let s = fresh_state();
+        assert!(s.delegation_overrides.is_empty());
+    }
+
     #[test]
     fn conversation_linked_clears_the_native_title_skip_cache() {
         let mut s = fresh_state();

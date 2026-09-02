@@ -1067,6 +1067,7 @@ const ConversationTabView = memo(function ConversationTabView({
           clientMessageId: optimisticTurn.id,
           onTurnInProgress,
           onSendFailed,
+          delegationOverrides: draft.delegation_overrides,
         })
         return
       }
@@ -1171,6 +1172,7 @@ const ConversationTabView = memo(function ConversationTabView({
             clientMessageId: optimisticTurn.id,
             onTurnInProgress,
             onSendFailed,
+            delegationOverrides: draft.delegation_overrides,
           })
         } catch (e) {
           console.error("[ConversationTabView] create conversation:", e)
@@ -1533,6 +1535,15 @@ const ConversationTabView = memo(function ConversationTabView({
     if (!mqEditingItemId) return null
     const item = msgQueue.find((m) => m.id === mqEditingItemId)
     return item?.draft.blocks ?? null
+  }, [mqEditingItemId, msgQueue])
+
+  // The editing item's draft-scoped delegation overrides. Agent mentions don't
+  // survive the queue-edit block hydration as badges (they become plain text),
+  // so the queued overrides ride as a seed the composer re-emits on save.
+  const editingQueueDelegationOverrides = useMemo(() => {
+    if (!mqEditingItemId) return null
+    const item = msgQueue.find((m) => m.id === mqEditingItemId)
+    return item?.draft.delegation_overrides ?? null
   }, [mqEditingItemId, msgQueue])
 
   const handleQueueEdit = useCallback(
@@ -2028,6 +2039,7 @@ const ConversationTabView = memo(function ConversationTabView({
       editingItemId={mqEditingItemId}
       editingDraftText={editingQueueDraftText}
       editingDraftBlocks={editingQueueDraftBlocks}
+      editingDelegationOverrides={editingQueueDelegationOverrides}
       isEditingQueueItem={mqEditingItemId != null}
       onSaveQueueEdit={handleSaveQueueEdit}
       onCancelQueueEdit={handleQueueCancelEdit}

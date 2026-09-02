@@ -139,6 +139,15 @@ interface SessionConfigToggleProps {
   onSelect: (configId: string, value: string) => void
   onLabel: string
   offLabel: string
+  /**
+   * The value to DISPLAY instead of the option's live `current_value` — the
+   * effective selection when a caller edits a stored override rather than the
+   * running session (per-mention delegation popover reads the mention's
+   * override, falling back to its global default). `"true"` / `"false"`;
+   * omitted (or null) keeps the original live-value behavior, so existing
+   * callers are untouched.
+   */
+  overrideValue?: string | null
 }
 
 /**
@@ -153,10 +162,16 @@ export function InlineSessionConfigToggle({
   onSelect,
   onLabel,
   offLabel,
+  overrideValue,
 }: SessionConfigToggleProps) {
   if (option.kind.type !== "boolean") return null
 
-  const checked = option.kind.current_value
+  const checked =
+    overrideValue === "true"
+      ? true
+      : overrideValue === "false"
+        ? false
+        : option.kind.current_value
   const Icon = checked ? ToggleRight : ToggleLeft
 
   return (

@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+
+use crate::acp::delegation::types::AgentDelegationDefaults;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -447,6 +449,40 @@ impl ConnectionManager {
         preferred_mode_id: Option<String>,
         preferred_config_values: BTreeMap<String, String>,
     ) -> Result<String, AcpError> {
+        self.spawn_agent_impl(
+            agent_type,
+            working_dir,
+            session_id,
+            runtime_env,
+            owner_window_label,
+            emitter,
+            preferred_mode_id,
+            preferred_config_values,
+            true,
+        )
+        .await
+    }
+
+    /// As [`spawn_agent`], with control over the `codeg-mcp` companion
+    /// injection. Probe connections pass `false`: they exist only to read the
+    /// agent's advertised options, and injecting the companion makes every
+    /// probe pay for an MCP handshake the probe never uses — and, on adapters
+    /// whose MCP tool synchronization is flaky, turns the whole probe into a
+    /// failure (surfaced in the UI as "initial connection or tool
+    /// synchronization failed").
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_agent_impl(
+        &self,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        session_id: Option<String>,
+        runtime_env: BTreeMap<String, String>,
+        owner_window_label: String,
+        emitter: EventEmitter,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+        include_companion: bool,
+    ) -> Result<String, AcpError> {
         // Connection dedup: when resuming an agent session (session_id is
         // Some), look for a live AgentConnection that already represents
         // the same external session in the same working_dir for the same
@@ -516,7 +552,11 @@ impl ConnectionManager {
             self.connections.clone(),
             preferred_mode_id,
             preferred_config_values,
-            self.delegation_snapshot(),
+            if include_companion {
+                self.delegation_snapshot()
+            } else {
+                None
+            },
             self.terminal_shell_config.clone(),
         )
         .await?;
@@ -730,6 +770,7 @@ impl ConnectionManager {
         conn_id: &str,
         mut blocks: Vec<PromptInputBlock>,
         user_message: Option<(String, Vec<crate::acp::UserMessageBlock>)>,
+        delegation_overrides: BTreeMap<AgentType, AgentDelegationDefaults>,
     ) -> Result<(), AcpError> {
         // Reject an empty prompt BEFORE touching the concurrency gate. An empty
         // prompt produces no turn — and thus no `TurnComplete` to clear the gate
@@ -790,6 +831,7 @@ impl ConnectionManager {
         permit.send(ConnectionCommand::Prompt {
             blocks,
             user_message,
+            delegation_overrides,
         });
         Ok(())
     }
@@ -813,9 +855,10 @@ impl ConnectionManager {
         conn_id: &str,
         blocks: Vec<PromptInputBlock>,
     ) -> Result<(), AcpError> {
-        let prompt_lock = self.clone_prompt_lock(conn_id).await?;
-        let _guard = prompt_lock.lock_owned().await;
-        self.send_prompt_inner(conn_id, blocks, None).await
+        // Internal/non-UI callers never carry per-mention overrides; the
+        // chat-side path goes through `send_prompt_linked_with_message_id`.
+        self.send_prompt_inner(conn_id, blocks, None, BTreeMap::new())
+            .await
     }
 
     /// Send a prompt while ensuring a `Conversation` DB row is bound to this
@@ -845,6 +888,8 @@ impl ConnectionManager {
         conversation_id: Option<i32>,
         delegation: Option<crate::acp::delegation::spawner::DelegationLink>,
     ) -> Result<Option<i32>, AcpError> {
+        // Back-compat wrapper for internal callers (delegation children,
+        // tests): no per-mention overrides, no client message id.
         self.send_prompt_linked_with_message_id(
             db,
             conn_id,
@@ -853,6 +898,7 @@ impl ConnectionManager {
             conversation_id,
             delegation,
             None,
+            BTreeMap::new(),
         )
         .await
     }
@@ -875,6 +921,7 @@ impl ConnectionManager {
         conversation_id: Option<i32>,
         delegation: Option<crate::acp::delegation::spawner::DelegationLink>,
         client_message_id: Option<String>,
+        delegation_overrides: BTreeMap<AgentType, AgentDelegationDefaults>,
     ) -> Result<Option<i32>, AcpError> {
         // Reject an empty prompt up front, BEFORE any side effects: linking /
         // creating the conversation row, flipping it to InProgress, or emitting
@@ -1322,7 +1369,8 @@ impl ConnectionManager {
         // lifecycle subscriber's PendingReview write also never fires and the
         // row would be stuck until a follow-up `send_prompt_linked` re-flipped it.
         match self
-            .send_prompt_inner(conn_id, blocks, user_message)
+            .send_prompt_inner(conn_id, blocks, user_message, delegation_overrides)
+
             .await
         {
             Ok(()) => {
@@ -2063,7 +2111,7 @@ impl ConnectionManager {
         };
         let _probe_guard = per_agent_lock.lock_owned().await;
         let conn_id = self
-            .spawn_agent(
+            .spawn_agent_impl(
                 agent_type,
                 working_dir,
                 None, // brand-new session — no resume
@@ -2072,6 +2120,10 @@ impl ConnectionManager {
                 EventEmitter::Noop,
                 None,
                 BTreeMap::new(),
+                // Probes never prompt, delegate, or answer questions: skip the
+                // companion so the probe can't fail on (or wait for) an MCP
+                // handshake it has no use for.
+                false,
             )
             .await?;
 
@@ -2391,6 +2443,21 @@ impl ConnectionManager {
     ) -> Option<std::sync::Arc<tokio::sync::RwLock<crate::acp::SessionState>>> {
         let connections = self.connections.lock().await;
         connections.get(conn_id).map(|conn| conn.state.clone())
+    }
+
+    /// Read the CURRENT turn's per-mention delegation overrides for one agent
+    /// on this connection. `None` while no turn is in flight (the map is
+    /// installed when the loop dequeues the prompt and cleared with the turn),
+    /// or when the connection is gone. Used by `ConnectionManagerParentLookup`
+    /// to serve the delegation listener.
+    async fn delegation_override_for(
+        &self,
+        conn_id: &str,
+        agent_type: AgentType,
+    ) -> Option<AgentDelegationDefaults> {
+        let state = self.get_state(conn_id).await?;
+        let snapshot = state.read().await;
+        snapshot.delegation_overrides.get(&agent_type).cloned()
     }
 
     /// Like `get_state`, but also clones the connection's `EventEmitter`.
@@ -3447,6 +3514,16 @@ impl crate::acp::delegation::listener::ParentSessionLookup for ConnectionManager
         let snapshot = state.read().await;
         snapshot.conversation_id
     }
+
+    async fn delegation_override(
+        &self,
+        parent_connection_id: &str,
+        agent_type: AgentType,
+    ) -> Option<AgentDelegationDefaults> {
+        self.manager
+            .delegation_override_for(parent_connection_id, agent_type)
+            .await
+    }
 }
 
 /// Production impl of `SessionFeedbackAccess` for the delegation listener's
@@ -4176,6 +4253,7 @@ mod tests {
             None,
             None,
             Some("optimistic-route".into()),
+            BTreeMap::new(),
         )
         .await
         .unwrap();
@@ -4184,6 +4262,7 @@ mod tests {
         let ConnectionCommand::Prompt {
             blocks,
             user_message,
+            ..
         } = command
         else {
             panic!("expected prompt command");
@@ -4243,6 +4322,7 @@ mod tests {
             None,
             None,
             Some("optimistic-reserved".into()),
+            BTreeMap::new(),
         )
         .await
         .expect("an invisible control character must not block the send");
@@ -4913,6 +4993,7 @@ mod tests {
                     text: "filler".into(),
                 }],
                 user_message: None,
+                delegation_overrides: BTreeMap::new(),
             })
             .await
             .unwrap();
@@ -4925,6 +5006,7 @@ mod tests {
                 text: "blocked".into(),
             }],
             None,
+            BTreeMap::new(),
         );
         let res = tokio::time::timeout(std::time::Duration::from_millis(50), fut).await;
         assert!(
@@ -4968,6 +5050,7 @@ mod tests {
             None,
             None,
             Some("optimistic-abc".to_string()),
+            BTreeMap::new(),
         )
         .await
         .expect("send");
@@ -4981,6 +5064,104 @@ mod tests {
             Some("optimistic-abc"),
             "Prompt's user_message must carry the client-supplied message_id verbatim"
         );
+    }
+
+    #[tokio::test]
+    async fn prompt_with_overrides_carries_the_map_on_the_command() {
+        // The manager forwards the per-mention delegation overrides onto the
+        // Prompt command; the connection loop installs them into the session
+        // state when the command is dequeued (before the turn starts).
+        use crate::acp::connection::ConnectionCommand;
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/um-ovr").await;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-um-ovr";
+        let mut cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::ClaudeCode,
+            Some(PathBuf::from("/tmp/um-ovr")),
+        )
+        .await;
+
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            AgentType::Codex,
+            AgentDelegationDefaults {
+                mode_id: Some("plan".into()),
+                config_values: std::iter::once(("model".to_string(), "gpt-5.2".to_string()))
+                    .collect(),
+            },
+        );
+        mgr.send_prompt_linked_with_message_id(
+            &db,
+            conn_id,
+            vec![PromptInputBlock::Text { text: "hi".into() }],
+            Some(folder_id),
+            None,
+            None,
+            None,
+            overrides.clone(),
+        )
+        .await
+        .expect("send");
+
+        let cmd = cmd_rx.try_recv().expect("prompt enqueued");
+        let delegation_overrides = match cmd {
+            ConnectionCommand::Prompt {
+                delegation_overrides,
+                ..
+            } => delegation_overrides,
+            _ => panic!("expected a Prompt command on the channel"),
+        };
+        assert_eq!(delegation_overrides, overrides);
+    }
+
+    #[tokio::test]
+    async fn delegation_override_for_reads_the_turn_scoped_map() {
+        // Mirrors the connection loop's install: once the map is in the state,
+        // `delegation_override_for` serves the requested agent's entry (and
+        // only that agent's).
+        use crate::acp::delegation::types::AgentDelegationDefaults;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-ovr-lookup";
+        let _cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::ClaudeCode,
+            Some(PathBuf::from("/tmp/ovr-lookup")),
+        )
+        .await;
+
+        // No turn → nothing to serve.
+        assert!(mgr
+            .delegation_override_for(conn_id, AgentType::Codex)
+            .await
+            .is_none());
+
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            AgentType::Codex,
+            AgentDelegationDefaults {
+                mode_id: Some("plan".into()),
+                config_values: BTreeMap::new(),
+            },
+        );
+        {
+            let state = mgr.get_state(conn_id).await.unwrap();
+            state.write().await.delegation_overrides = overrides;
+        }
+        let hit = mgr
+            .delegation_override_for(conn_id, AgentType::Codex)
+            .await
+            .expect("codex override present");
+        assert_eq!(hit.mode_id.as_deref(), Some("plan"));
+        // A different agent's request must not see Codex's entry.
+        assert!(mgr
+            .delegation_override_for(conn_id, AgentType::ClaudeCode)
+            .await
+            .is_none());
     }
 
     #[tokio::test]

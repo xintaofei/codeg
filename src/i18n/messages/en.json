@@ -2884,7 +2884,13 @@
         "mentionGroupAgent": "Agents",
         "mentionGroupSession": "Sessions",
         "mentionGroupCommit": "Commits",
-        "mentionGroupSkill": "Skills"
+        "mentionGroupSkill": "Skills",
+        "mentionConfigTitle": "Delegation config — {agent}",
+        "mentionConfigUseGlobal": "Use global default",
+        "mentionConfigHint": "Applies to this delegation only. Saved defaults are unchanged.",
+        "mentionConfigAction": "Configure for this delegation",
+        "mentionDelegationDefaultLabel": "Agent default",
+        "mentionConfigBadgeTitle": "Click to configure this delegation"
       },
       "messageQueue": {
         "addToQueue": "Queue message",

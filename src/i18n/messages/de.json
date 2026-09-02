@@ -2884,7 +2884,13 @@
         "mentionGroupAgent": "Agenten",
         "mentionGroupSession": "Sitzungen",
         "mentionGroupCommit": "Commits",
-        "mentionGroupSkill": "Fähigkeiten"
+        "mentionGroupSkill": "Fähigkeiten",
+        "mentionConfigTitle": "Delegierungs-Konfiguration — {agent}",
+        "mentionConfigUseGlobal": "Globalen Standard verwenden",
+        "mentionConfigHint": "Gilt nur für diese Delegierung. Gespeicherte Standards bleiben unverändert.",
+        "mentionConfigAction": "Für diese Delegierung konfigurieren",
+        "mentionDelegationDefaultLabel": "Agent-Standard",
+        "mentionConfigBadgeTitle": "Klicken, um diese Delegierung zu konfigurieren"
       },
       "messageQueue": {
         "addToQueue": "Zur Warteschlange",

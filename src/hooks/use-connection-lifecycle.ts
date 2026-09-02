@@ -64,6 +64,12 @@ export interface UseConnectionLifecycleReturn {
        * deterministic failure would otherwise retry forever.
        */
       onSendFailed?: (error: unknown) => void
+      /**
+       * Draft-scoped delegation overrides (`@Agent` mention config), applied
+       * by the backend for THIS turn only. Empty/undefined = none — the wire
+       * payload stays identical to a plain prompt.
+       */
+      delegationOverrides?: PromptDraft["delegation_overrides"]
     }
   ) => void
   handleSetConfigOption: (configId: string, valueId: string) => void
@@ -421,6 +427,7 @@ export function useConnectionLifecycle({
         clientMessageId?: string | null
         onTurnInProgress?: () => void
         onSendFailed?: (error: unknown) => void
+        delegationOverrides?: PromptDraft["delegation_overrides"]
       }
     ) => {
       touchActivity(contextKey)
@@ -434,7 +441,10 @@ export function useConnectionLifecycle({
           // calls before CurrentModeUpdate arrives from the agent.
           modeIdRef.current = modeId
         }
-        await sendPrompt(draft.blocks, opts)
+        await sendPrompt(draft.blocks, {
+          ...opts,
+          delegationOverrides: opts?.delegationOverrides,
+        })
       })().catch((e: unknown) => {
         if (e instanceof TurnBusyError) {
           // A turn was already in flight on the connection (another

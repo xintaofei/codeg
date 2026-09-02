@@ -2884,7 +2884,13 @@
         "mentionGroupAgent": "الوكلاء",
         "mentionGroupSession": "الجلسات",
         "mentionGroupCommit": "عمليات الإيداع",
-        "mentionGroupSkill": "المهارات"
+        "mentionGroupSkill": "المهارات",
+        "mentionConfigTitle": "إعدادات التفويض — {agent}",
+        "mentionConfigUseGlobal": "استخدام الافتراضي العام",
+        "mentionConfigHint": "ينطبق على هذا التفويض فقط. الإعدادات المحفوظة لا تتغير.",
+        "mentionConfigAction": "تهيئة هذا التفويض",
+        "mentionDelegationDefaultLabel": "افتراضي الوكيل",
+        "mentionConfigBadgeTitle": "انقر لتهيئة هذا التفويض"
       },
       "messageQueue": {
         "addToQueue": "إضافة للقائمة",

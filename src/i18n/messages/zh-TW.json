@@ -2884,7 +2884,13 @@
         "mentionGroupAgent": "智能體",
         "mentionGroupSession": "工作階段",
         "mentionGroupCommit": "提交",
-        "mentionGroupSkill": "技能"
+        "mentionGroupSkill": "技能",
+        "mentionConfigTitle": "委派設定 — {agent}",
+        "mentionConfigUseGlobal": "使用全域預設",
+        "mentionConfigHint": "僅對本次委派生效，不會修改已儲存的預設設定。",
+        "mentionConfigAction": "設定本次委派",
+        "mentionDelegationDefaultLabel": "Agent 預設",
+        "mentionConfigBadgeTitle": "點擊設定本次委派"
       },
       "messageQueue": {
         "addToQueue": "加入佇列",

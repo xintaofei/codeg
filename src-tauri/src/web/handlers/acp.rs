@@ -156,6 +156,11 @@ pub struct AcpPromptParams {
     pub conversation_id: Option<i32>,
     #[serde(default)]
     pub client_message_id: Option<String>,
+    /// Draft-scoped delegation overrides for `@Agent` mentions (per-turn
+    /// only). Optional + default: an untouched mention omits the field.
+    #[serde(default)]
+    pub delegation_overrides:
+        Option<BTreeMap<crate::models::agent::AgentType, crate::acp::delegation::types::AgentDelegationDefaults>>,
 }
 
 pub async fn acp_prompt(
@@ -172,6 +177,7 @@ pub async fn acp_prompt(
             params.conversation_id,
             None,
             params.client_message_id,
+            params.delegation_overrides.unwrap_or_default(),
         )
         .await
         .map_err(|e| {

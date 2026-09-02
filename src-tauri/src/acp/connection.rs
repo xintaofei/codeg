@@ -52,6 +52,7 @@ use crate::acp::types::{
     UserMessageBlock,
 };
 use crate::logging::throttle::LeadingEdgeThrottle;
+use crate::acp::delegation::types::AgentDelegationDefaults;
 use crate::models::agent::AgentType;
 use crate::network::proxy;
 use crate::web::event_bridge::{emit_with_state, EventEmitter};
@@ -934,6 +935,12 @@ pub enum ConnectionCommand {
         /// prompt actually being processed. `None` for delegation children,
         /// empty prompts, unbound conversations, and non-linked senders.
         user_message: Option<(String, Vec<UserMessageBlock>)>,
+        /// Draft-scoped delegation overrides (`@Agent` mention config) for the
+        /// turn this prompt starts. The loop installs the map into the session
+        /// state when the command is dequeued (before the agent request goes
+        /// out) and `TurnComplete` clears it. An empty map = no per-call
+        /// override — delegations then use the persisted global defaults.
+        delegation_overrides: BTreeMap<AgentType, AgentDelegationDefaults>,
     },
     SetMode {
         mode_id: String,
@@ -8109,7 +8116,19 @@ async fn run_conversation_loop<'a>(
             Some(ConnectionCommand::Prompt {
                 blocks,
                 user_message,
+                delegation_overrides,
             }) => {
+                // Install the turn's per-mention delegation overrides BEFORE
+                // any event of this turn fires, so a delegation the LLM issues
+                // mid-turn reads exactly this prompt's config. The admission
+                // gate (turn_in_flight, set by the manager before enqueue)
+                // already guarantees no concurrent prompt can clobber these
+                // values mid-turn; `TurnComplete` clears them with the gate.
+                state
+                    .write()
+                    .await
+                    .delegation_overrides
+                    .clone_from(&delegation_overrides);
                 // Fingerprint the outgoing prompt for the background watcher's
                 // foreground/out-of-turn classifier BEFORE the blocks are
                 // consumed: the transcript record this prompt becomes must

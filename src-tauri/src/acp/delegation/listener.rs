@@ -24,7 +24,8 @@ use crate::acp::delegation::transport::{
     BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
 };
 use crate::acp::delegation::types::{
-    DelegationRequest, DelegationTaskReport, ResumeDelegationRequest, TaskStatus,
+    AgentDelegationDefaults, DelegationRequest, DelegationTaskReport, ResumeDelegationRequest,
+    TaskStatus,
 };
 use crate::acp::feedback::{PendingFeedback, SessionFeedbackAccess};
 use crate::acp::question::{QuestionOutcome, SessionQuestionAccess};
@@ -50,6 +51,16 @@ const STATUS_WAIT_MAX_MS: u64 = 60_000;
 #[async_trait]
 pub trait ParentSessionLookup: Send + Sync {
     async fn current_conversation_id(&self, parent_connection_id: &str) -> Option<i32>;
+    /// The CURRENT turn's draft-scoped delegation override for `agent_type` on
+    /// this parent connection (captured from the `@Agent` mention that asked
+    /// for the delegation). `None` = the turn carries no per-call override and
+    /// the broker falls back to the persisted global defaults. Backend state
+    /// only — never inferred from the task text.
+    async fn delegation_override(
+        &self,
+        parent_connection_id: &str,
+        agent_type: AgentType,
+    ) -> Option<AgentDelegationDefaults>;
 }
 
 /// Per-launch token entry. Bound at MCP injection time and revoked on parent
@@ -685,6 +696,14 @@ impl DelegationListener {
             .clone()
             .or_else(|| Some(entry.working_dir.to_string_lossy().to_string()));
 
+        // Per-call config override from the parent's CURRENT turn (the
+        // `@Agent` mention's popover). Read from the parent connection's turn
+        // state, scoped to the requested agent; the parent's prompt admission
+        // gate guarantees the values belong to the turn that is running.
+        let per_call_defaults = self
+            .parent_lookup
+            .delegation_override(&req.parent_connection_id, agent_type)
+            .await;
         let delegation_req = DelegationRequest {
             parent_connection_id: req.parent_connection_id,
             parent_conversation_id,
@@ -694,6 +713,7 @@ impl DelegationListener {
             working_dir,
             requested_working_dir,
             external_handle: req.external_handle,
+            per_call_defaults,
         };
         self.broker.start_delegation(delegation_req).await
     }
@@ -902,6 +922,14 @@ mod tests {
     impl ParentSessionLookup for StaticParentLookup {
         async fn current_conversation_id(&self, _parent_connection_id: &str) -> Option<i32> {
             self.0
+        }
+
+        async fn delegation_override(
+            &self,
+            _parent_connection_id: &str,
+            _agent_type: AgentType,
+        ) -> Option<AgentDelegationDefaults> {
+            None
         }
     }
 
@@ -1203,6 +1231,125 @@ mod tests {
         }
     }
 
+    /// Parent lookup carrying per-call overrides keyed by agent — lets a test
+    /// prove the listener reads the override for the REQUESTED agent only.
+    struct OverrideParentLookup {
+        conversation: Option<i32>,
+        overrides: std::collections::BTreeMap<AgentType, AgentDelegationDefaults>,
+    }
+    #[async_trait]
+    impl ParentSessionLookup for OverrideParentLookup {
+        async fn current_conversation_id(&self, _parent_connection_id: &str) -> Option<i32> {
+            self.conversation
+        }
+
+        async fn delegation_override(
+            &self,
+            _parent_connection_id: &str,
+            agent_type: AgentType,
+        ) -> Option<AgentDelegationDefaults> {
+            self.overrides.get(&agent_type).cloned()
+        }
+    }
+
+    #[tokio::test]
+    async fn per_call_override_forwarded_for_the_requested_agent_only() {
+        let mut overrides = std::collections::BTreeMap::new();
+        overrides.insert(
+            AgentType::Codex,
+            AgentDelegationDefaults {
+                mode_id: Some("plan".into()),
+                config_values: std::iter::once(("model".to_string(), "gpt-5.2-codex".to_string()))
+                    .collect(),
+            },
+        );
+
+        let mock = Arc::new(MockSpawner::new());
+        let broker = make_broker(mock.clone()).await;
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let listener = DelegationListener::new(
+            broker.clone(),
+            tokens.clone(),
+            Arc::new(OverrideParentLookup {
+                conversation: Some(1),
+                overrides,
+            }),
+            Arc::new(StubFeedback::default()),
+            Arc::new(StubQuestion::default()),
+            Arc::new(StubSessionInfo::default()),
+            Arc::new(StubTaskTools),
+            Arc::new(StubAuthoring::default()),
+        );
+
+        // Codex delegation: the override rides into the spawner.
+        mock.queue_spawn(Ok("child-1".into())).await;
+        mock.queue_send(Ok(42)).await;
+        let report = listener
+            .process(make_request(json!({"agent_type": "codex", "task": "x"})).await)
+            .await;
+        assert_eq!(report.status, TaskStatus::Running);
+
+        // ClaudeCode delegation: no per-call entry, and the broker config
+        // carries no global default either — so nothing is forwarded.
+        mock.queue_spawn(Ok("child-2".into())).await;
+        mock.queue_send(Ok(43)).await;
+        let report = listener
+            .process(make_request(json!({"agent_type": "claude_code", "task": "y"})).await)
+            .await;
+        assert_eq!(report.status, TaskStatus::Running);
+
+        let args = mock.spawn_args.lock().await;
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0].agent_type, AgentType::Codex);
+        assert_eq!(args[0].preferred_mode_id.as_deref(), Some("plan"));
+        assert_eq!(
+            args[0].preferred_config_values.get("model").map(String::as_str),
+            Some("gpt-5.2-codex")
+        );
+        assert_eq!(args[1].agent_type, AgentType::ClaudeCode);
+        assert!(args[1].preferred_mode_id.is_none());
+        assert!(args[1].preferred_config_values.is_empty());
+    }
+
+    #[tokio::test]
+    async fn per_call_override_absent_when_lookup_has_none() {
+        let mock = Arc::new(MockSpawner::new());
+        let broker = make_broker(mock.clone()).await;
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let listener = make_listener(broker.clone(), tokens, Some(1));
+
+        mock.queue_spawn(Ok("child-1".into())).await;
+        mock.queue_send(Ok(42)).await;
+        let report = listener
+            .process(make_request(json!({"agent_type": "codex", "task": "x"})).await)
+            .await;
+        assert_eq!(report.status, TaskStatus::Running);
+
+        let args = mock.spawn_args.lock().await;
+        assert_eq!(args.len(), 1);
+        // Old behavior preserved: no per-call state → (None, empty).
+        assert!(args[0].preferred_mode_id.is_none());
+        assert!(args[0].preferred_config_values.is_empty());
+    }
+
     #[tokio::test]
     async fn invalid_token_rejected() {
         let listener = make_listener(
@@ -1394,6 +1541,7 @@ mod tests {
                 working_dir: None,
                 requested_working_dir: None,
                 external_handle: None,
+                per_call_defaults: None,
             })
             .await;
         let task_id = ack.task_id.clone().expect("running task carries an id");
@@ -1547,6 +1695,7 @@ mod tests {
                         working_dir: None,
                         requested_working_dir: None,
                         external_handle: None,
+                        per_call_defaults: None,
                     })
                     .await
                     .task_id
@@ -1649,6 +1798,7 @@ mod tests {
                 working_dir: None,
                 requested_working_dir: None,
                 external_handle: None,
+                per_call_defaults: None,
             })
             .await;
         let task_id = ack.task_id.clone().unwrap();
@@ -1700,6 +1850,7 @@ mod tests {
                     working_dir: None,
                     requested_working_dir: None,
                     external_handle: Some("h-1".into()),
+                    per_call_defaults: None,
                 };
                 broker.handle_request(req).await
             })

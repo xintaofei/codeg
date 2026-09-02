@@ -33,12 +33,34 @@ function parseUri(raw: string | null): string | null {
     : null
 }
 
+/** Payload the badge view reports when an agent badge is clicked. */
+export interface ReferenceBadgeClickInfo {
+  attrs: ReferenceAttrs
+  /** The badge's live DOM element (popover anchoring). */
+  element: HTMLElement
+}
+
+export interface ReferenceNodeStorage {
+  /**
+   * Set by the host (message input) to receive clicks on AGENT badges — the
+   * entry point for re-opening the per-mention delegation config of a mention
+   * already in the composer. Other reference kinds don't report clicks.
+   */
+  onBadgeClick?: (info: ReferenceBadgeClickInfo) => void
+  /** Localized hover hint shown on agent badges. */
+  badgeTitle?: string
+}
+
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
     reference: {
       /** Insert an inline reference badge (file/agent/session/commit/skill). */
       insertReference: (attrs: ReferenceAttrs) => ReturnType
     }
+  }
+
+  interface Storage {
+    reference: ReferenceNodeStorage
   }
 }
 
@@ -67,6 +89,10 @@ export const Reference = Node.create({
   atom: true,
   selectable: true,
   draggable: false,
+
+  addStorage() {
+    return { onBadgeClick: undefined } as ReferenceNodeStorage
+  },
 
   addAttributes() {
     return {

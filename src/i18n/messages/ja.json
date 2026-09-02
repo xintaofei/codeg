@@ -2884,7 +2884,13 @@
         "mentionGroupAgent": "エージェント",
         "mentionGroupSession": "セッション",
         "mentionGroupCommit": "コミット",
-        "mentionGroupSkill": "スキル"
+        "mentionGroupSkill": "スキル",
+        "mentionConfigTitle": "デリゲーション設定 — {agent}",
+        "mentionConfigUseGlobal": "グローバルデフォルトを使用",
+        "mentionConfigHint": "この委託にのみ適用されます。保存済みのデフォルトは変更されません。",
+        "mentionConfigAction": "この委託を設定",
+        "mentionDelegationDefaultLabel": "Agent のデフォルト",
+        "mentionConfigBadgeTitle": "クリックでこの委託を設定"
       },
       "messageQueue": {
         "addToQueue": "キューに追加",

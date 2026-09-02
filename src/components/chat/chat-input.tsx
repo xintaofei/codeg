@@ -4,6 +4,7 @@ import type { ConversationFolderPickerOverride } from "@/components/chat/convers
 import { memo } from "react"
 import { useTranslations } from "next-intl"
 import type {
+  AgentDelegationDefaults,
   AgentType,
   ConnectionStatus,
   PromptCapabilitiesInfo,
@@ -55,6 +56,9 @@ interface ChatInputProps {
   editingItemId?: string | null
   editingDraftText?: string | null
   editingDraftBlocks?: PromptInputBlock[] | null
+  editingDelegationOverrides?: Partial<
+    Record<AgentType, AgentDelegationDefaults>
+  > | null
   isEditingQueueItem?: boolean
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
@@ -117,6 +121,7 @@ export const ChatInput = memo(function ChatInput({
   editingItemId,
   editingDraftText,
   editingDraftBlocks,
+  editingDelegationOverrides,
   isEditingQueueItem,
   onSaveQueueEdit,
   onCancelQueueEdit,
@@ -213,6 +218,7 @@ export const ChatInput = memo(function ChatInput({
         editingItemId={editingItemId}
         editingDraftText={editingDraftText}
         editingDraftBlocks={editingDraftBlocks}
+        editingDelegationOverrides={editingDelegationOverrides}
         isEditingQueueItem={isEditingQueueItem}
         onSaveQueueEdit={onSaveQueueEdit}
         onCancelQueueEdit={onCancelQueueEdit}

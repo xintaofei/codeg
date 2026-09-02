@@ -1,4 +1,4 @@
-import type { AgentType } from "@/lib/types"
+import type { AgentDelegationDefaults, AgentType } from "@/lib/types"
 
 /** The five kinds of inline reference the composer can embed. */
 export type ReferenceKind = "file" | "agent" | "session" | "commit" | "skill"
@@ -56,6 +56,15 @@ export interface ReferenceMeta {
    * `/` when absent.
    */
   invocationPrefix?: "/" | "$"
+  /**
+   * agent: the draft-scoped delegation config override picked in the
+   * per-mention config popover (model/mode/permission for THIS delegation
+   * only). Lives on the mention node so it survives the composer doc's
+   * round-trips (localStorage v2 draft, JSON hydration); `buildDraft` collects
+   * it into `PromptDraft.delegation_overrides`. Absent = use the global
+   * delegation default. Never written to global settings.
+   */
+  delegationOverride?: AgentDelegationDefaults
 }
 
 /**

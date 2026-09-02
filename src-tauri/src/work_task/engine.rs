@@ -1400,13 +1400,12 @@ impl TaskEngine {
         let prompt_head = prompt_head(&blocks);
         match self
             .manager
-            .send_prompt_linked_with_message_id(
+            .send_prompt_linked(
                 &self.db,
                 &conn_id,
                 blocks,
                 Some(wt.folder_id),
                 Some(conversation_id),
-                None,
                 None,
             )
             .await
@@ -2038,7 +2037,7 @@ impl TaskEngine {
         let mut rx = self.bus.subscribe();
         let sent = self
             .manager
-            .send_prompt_linked_with_message_id(
+            .send_prompt_linked(
                 &self.db,
                 conn_id,
                 vec![PromptInputBlock::Text {
@@ -2046,7 +2045,6 @@ impl TaskEngine {
                 }],
                 Some(folder_id),
                 Some(conversation_id),
-                None,
                 None,
             )
             .await;

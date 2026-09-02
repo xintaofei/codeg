@@ -2884,7 +2884,13 @@
         "mentionGroupAgent": "에이전트",
         "mentionGroupSession": "세션",
         "mentionGroupCommit": "커밋",
-        "mentionGroupSkill": "스킬"
+        "mentionGroupSkill": "스킬",
+        "mentionConfigTitle": "위임 설정 — {agent}",
+        "mentionConfigUseGlobal": "전역 기본값 사용",
+        "mentionConfigHint": "이 위임에만 적용됩니다. 저장된 기본값은 변경되지 않습니다.",
+        "mentionConfigAction": "이 위임 구성",
+        "mentionDelegationDefaultLabel": "Agent 기본값",
+        "mentionConfigBadgeTitle": "클릭하여 이 위임 구성"
       },
       "messageQueue": {
         "addToQueue": "대기열에 추가",

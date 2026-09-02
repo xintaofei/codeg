@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core"
 import { getCurrentEffectiveAppLocale } from "./i18n"
 import type {
+  AgentDelegationDefaults,
   AgentType,
   ConversationSummary,
   ConversationDetail,
@@ -120,9 +121,16 @@ export async function acpConnect(
 
 export async function acpPrompt(
   connectionId: string,
-  blocks: PromptInputBlock[]
+  blocks: PromptInputBlock[],
+  // Draft-scoped delegation overrides for `@Agent` mentions (per-turn only).
+  // Undefined/empty is omitted from the invoke args (serde default = none).
+  delegationOverrides?: Partial<Record<AgentType, AgentDelegationDefaults>>
 ): Promise<void> {
-  return invoke("acp_prompt", { connectionId, blocks })
+  return invoke("acp_prompt", {
+    connectionId,
+    blocks,
+    ...(delegationOverrides ? { delegationOverrides } : {}),
+  })
 }
 
 export async function acpSetMode(
