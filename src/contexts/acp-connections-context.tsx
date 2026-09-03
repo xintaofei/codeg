@@ -67,6 +67,7 @@ import type {
   SessionModeStateInfo,
   SessionUsageUpdateInfo,
   PromptCapabilitiesInfo,
+  PromptDraft,
   PromptInputBlock,
   ToolCallImageWire,
   UserMessageBlock,
@@ -5861,6 +5862,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         folderId?: number | null
         conversationId?: number | null
         clientMessageId?: string | null
+        /**
+         * Draft-scoped delegation overrides (`@Agent` mention config) applied
+         * by the backend for this turn only. Undefined/empty = none; the
+         * transport payload omits the field entirely in that case.
+         */
+        delegationOverrides?: PromptDraft["delegation_overrides"]
       }
     ) => {
       const conn = storeRef.current.connections.get(contextKey)
@@ -5872,7 +5879,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           blocks,
           opts?.folderId ?? null,
           opts?.conversationId ?? null,
-          opts?.clientMessageId ?? null
+          opts?.clientMessageId ?? null,
+          opts?.delegationOverrides
         )
       } catch (e) {
         // Same reasoning as `cancel`: the backend disowning this id proves the

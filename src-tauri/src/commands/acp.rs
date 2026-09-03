@@ -10007,12 +10007,21 @@ pub async fn acp_connect(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[allow(clippy::too_many_arguments)]
 pub async fn acp_prompt(
     connection_id: String,
     blocks: Vec<PromptInputBlock>,
     folder_id: Option<i32>,
     conversation_id: Option<i32>,
     client_message_id: Option<String>,
+    // Draft-scoped delegation overrides for `@Agent` mentions, sent by the
+    // composer for THIS turn only. Optional: older callers (and an untouched
+    // mention) omit the field — serde deserializes a missing `Option` field
+    // as `None`, so behavior is exactly as before.
+    delegation_overrides: Option<
+        BTreeMap<crate::models::agent::AgentType,
+                 crate::acp::delegation::types::AgentDelegationDefaults>,
+    >,
     db: State<'_, crate::db::AppDatabase>,
     manager: State<'_, ConnectionManager>,
 ) -> Result<(), AcpError> {
@@ -10025,6 +10034,7 @@ pub async fn acp_prompt(
             conversation_id,
             None,
             client_message_id,
+            delegation_overrides.unwrap_or_default(),
         )
         .await
         .map(|_| ())

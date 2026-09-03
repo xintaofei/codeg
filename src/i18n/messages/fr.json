@@ -2887,7 +2887,13 @@
         "mentionGroupAgent": "Agents",
         "mentionGroupSession": "Sessions",
         "mentionGroupCommit": "Commits",
-        "mentionGroupSkill": "Compétences"
+        "mentionGroupSkill": "Compétences",
+        "mentionConfigTitle": "Configuration de délégation — {agent}",
+        "mentionConfigUseGlobal": "Utiliser la valeur globale",
+        "mentionConfigHint": "S'applique uniquement à cette délégation. Les valeurs enregistrées ne changent pas.",
+        "mentionConfigAction": "Configurer pour cette délégation",
+        "mentionDelegationDefaultLabel": "Valeur par défaut de l'agent",
+        "mentionConfigBadgeTitle": "Cliquez pour configurer cette délégation"
       },
       "messageQueue": {
         "addToQueue": "Mettre en file",

@@ -33,8 +33,34 @@ pub struct AgentDelegationDefaults {
 }
 
 impl AgentDelegationDefaults {
+    /// Remove malformed empty ids and values at the backend boundary. The
+    /// frontend normalizes these already, but delegation requests also arrive
+    /// through MCP and must not turn an empty object into a wholesale
+    /// replacement of persisted defaults.
+    pub fn normalize(&mut self) {
+        if self
+            .mode_id
+            .as_ref()
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(false)
+        {
+            self.mode_id = None;
+        }
+        self.config_values
+            .retain(|key, value| !key.trim().is_empty() && !value.trim().is_empty());
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.mode_id.is_none() && self.config_values.is_empty()
+        let mode_empty = self
+            .mode_id
+            .as_ref()
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(true);
+        let config_empty = self
+            .config_values
+            .iter()
+            .all(|(key, value)| key.trim().is_empty() || value.trim().is_empty());
+        mode_empty && config_empty
     }
 }
 
@@ -71,6 +97,15 @@ pub struct DelegationRequest {
     pub requested_working_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_handle: Option<String>,
+    /// Draft-scoped config override captured from the parent's `@Agent`
+    /// mention (per-mention popover), carried per call so the broker can
+    /// prefer it over the persisted `agent_defaults`. Backend-internal — the
+    /// listener fills it from the parent connection's turn state, never from
+    /// the task text. `None` (or an empty value) = use the global default.
+    /// Wire-tolerant: absent on every payload produced before this field
+    /// existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_call_defaults: Option<AgentDelegationDefaults>,
 }
 
 /// Everything the broker needs to resume one interrupted delegation task.

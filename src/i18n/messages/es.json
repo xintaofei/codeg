@@ -2887,7 +2887,13 @@
         "mentionGroupAgent": "Agentes",
         "mentionGroupSession": "Sesiones",
         "mentionGroupCommit": "Commits",
-        "mentionGroupSkill": "Habilidades"
+        "mentionGroupSkill": "Habilidades",
+        "mentionConfigTitle": "Configuración de delegación — {agent}",
+        "mentionConfigUseGlobal": "Usar valor global",
+        "mentionConfigHint": "Se aplica solo a esta delegación. Los valores guardados no cambian.",
+        "mentionConfigAction": "Configurar para esta delegación",
+        "mentionDelegationDefaultLabel": "Predeterminado del agente",
+        "mentionConfigBadgeTitle": "Clic para configurar esta delegación"
       },
       "messageQueue": {
         "addToQueue": "Agregar a la cola",

@@ -2460,14 +2460,35 @@ impl DelegationBroker {
         }
 
         // --- Spawn child connection --------------------------------------------
-        // Pull per-agent overrides from the broker config (defaults to empty).
-        // Cloning is cheap — `AgentDelegationDefaults` is at most one Option<String>
-        // and a small BTreeMap, and the spawner consumes both fields by value.
-        let (preferred_mode_id, preferred_config_values) = cfg
-            .agent_defaults
-            .get(&req.agent_type)
-            .map(|d: &AgentDelegationDefaults| (d.mode_id.clone(), d.config_values.clone()))
-            .unwrap_or((None, BTreeMap::new()));
+        // Per-call config wins over the persisted global default, which wins
+        // over the agent's native default (empty preferred values). The
+        // per-call value comes from the parent turn's `@Agent` mention
+        // popover; it is EPHEMERAL (turn-scoped on the parent connection) and
+        // never merges into `DelegationConfig::agent_defaults`. A non-empty
+        // per-call value REPLACES the global default wholesale (no merge) —
+        // the composer emits the full effective selection so an untouched row
+        // keeps its global pin, and a partial override could otherwise
+        // silently drop it. Cloning is cheap — `AgentDelegationDefaults` is at
+        // most one Option<String> and a small BTreeMap, and the spawner
+        // consumes both fields by value.
+        let per_call = req
+            .per_call_defaults
+            .take()
+            .map(|mut defaults| {
+                defaults.normalize();
+                defaults
+            })
+            .filter(|d| !d.is_empty());
+        let (preferred_mode_id, preferred_config_values) = if let Some(d) = per_call {
+            (d.mode_id, d.config_values)
+        } else {
+            cfg.agent_defaults
+                .get(&req.agent_type)
+                .map(|d: &AgentDelegationDefaults| {
+                    (d.mode_id.clone(), d.config_values.clone())
+                })
+                .unwrap_or((None, BTreeMap::new()))
+        };
         // Checkpoint #1 (opportunistic): if a parent cancel already landed
         // during the claim/depth phase, bail before spawning a child the parent
         // has abandoned. No child exists yet, so there's nothing to tear down.
@@ -4621,6 +4642,7 @@ mod tests {
     use crate::acp::delegation::spawner::{mock::MockSpawner, ResumedSpawn, SpawnerError};
     use crate::acp::delegation::types::DelegationSuccess;
     use crate::models::AgentType;
+    use serde_json::json;
 
     /// Test-only `ConversationDepthLookup` that resolves against a flat
     /// (id, parent_id) table. Unknown ids return `Ok(None)` to keep test
@@ -4649,6 +4671,7 @@ mod tests {
             working_dir: None,
             requested_working_dir: None,
             external_handle: None,
+            per_call_defaults: None,
         }
     }
 
@@ -5406,6 +5429,210 @@ mod tests {
         assert_eq!(args[0].agent_type, AgentType::Codex);
         assert!(args[0].preferred_mode_id.is_none());
         assert!(args[0].preferred_config_values.is_empty());
+    }
+
+    #[tokio::test]
+    async fn per_call_defaults_win_over_global_agent_defaults() {
+        // The parent turn's @Agent override REPLACES the persisted global
+        // default wholesale (no merge) — the composer emits the full effective
+        // selection precisely so an untouched row keeps its global pin.
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-1".into())).await;
+        mock.queue_send(Err(SpawnerError::Send("stop after spawn".into())))
+            .await;
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+
+        let mut global_cfg = BTreeMap::new();
+        global_cfg.insert("model".into(), "global-model".into());
+        let mut agent_defaults = BTreeMap::new();
+        agent_defaults.insert(
+            AgentType::Codex,
+            AgentDelegationDefaults {
+                mode_id: Some("global-mode".into()),
+                config_values: global_cfg,
+            },
+        );
+        broker
+            .set_config(DelegationConfig {
+                enabled: true,
+                depth_limit: 8,
+                agent_defaults,
+                ..DelegationConfig::default()
+            })
+            .await;
+
+        let mut req = request(1, "pt-1");
+        req.agent_type = AgentType::Codex;
+        let mut per_call_cfg = BTreeMap::new();
+        per_call_cfg.insert("model".into(), "per-call-model".into());
+        req.per_call_defaults = Some(AgentDelegationDefaults {
+            mode_id: Some("per-call-mode".into()),
+            config_values: per_call_cfg,
+        });
+        let _ = broker.handle_request(req).await;
+
+        let args = mock.spawn_args.lock().await;
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0].preferred_mode_id.as_deref(), Some("per-call-mode"));
+        assert_eq!(
+            args[0].preferred_config_values.get("model").map(String::as_str),
+            Some("per-call-model")
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_per_call_defaults_fall_back_to_global_agent_defaults() {
+        // A per-call value the composer normalized away (empty = "use global")
+        // must not shadow the persisted default.
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-1".into())).await;
+        mock.queue_send(Err(SpawnerError::Send("stop after spawn".into())))
+            .await;
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+
+        let mut global_cfg = BTreeMap::new();
+        global_cfg.insert("model".into(), "global-model".into());
+        let mut agent_defaults = BTreeMap::new();
+        agent_defaults.insert(
+            AgentType::Codex,
+            AgentDelegationDefaults {
+                mode_id: Some("global-mode".into()),
+                config_values: global_cfg,
+            },
+        );
+        broker
+            .set_config(DelegationConfig {
+                enabled: true,
+                depth_limit: 8,
+                agent_defaults,
+                ..DelegationConfig::default()
+            })
+            .await;
+
+        let mut req = request(1, "pt-1");
+        req.agent_type = AgentType::Codex;
+        req.per_call_defaults = Some(AgentDelegationDefaults::default());
+        let _ = broker.handle_request(req).await;
+
+        let args = mock.spawn_args.lock().await;
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0].preferred_mode_id.as_deref(), Some("global-mode"));
+        assert_eq!(
+            args[0].preferred_config_values.get("model").map(String::as_str),
+            Some("global-model")
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_empty_per_call_defaults_fall_back_to_global_agent_defaults() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-1".into())).await;
+        mock.queue_send(Err(SpawnerError::Send("stop after spawn".into())))
+            .await;
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+
+        let mut global_cfg = BTreeMap::new();
+        global_cfg.insert("model".into(), "global-model".into());
+        let mut agent_defaults = BTreeMap::new();
+        agent_defaults.insert(
+            AgentType::Codex,
+            AgentDelegationDefaults {
+                mode_id: Some("global-mode".into()),
+                config_values: global_cfg,
+            },
+        );
+        broker
+            .set_config(DelegationConfig {
+                enabled: true,
+                depth_limit: 8,
+                agent_defaults,
+                ..DelegationConfig::default()
+            })
+            .await;
+
+        let mut req = request(1, "pt-1");
+        req.agent_type = AgentType::Codex;
+        let mut malformed_cfg = BTreeMap::new();
+        malformed_cfg.insert("model".into(), " ".into());
+        req.per_call_defaults = Some(AgentDelegationDefaults {
+            mode_id: Some("".into()),
+            config_values: malformed_cfg,
+        });
+        let _ = broker.handle_request(req).await;
+
+        let args = mock.spawn_args.lock().await;
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0].preferred_mode_id.as_deref(), Some("global-mode"));
+        assert_eq!(
+            args[0].preferred_config_values.get("model").map(String::as_str),
+            Some("global-model")
+        );
+    }
+
+    #[tokio::test]
+    async fn per_call_defaults_only_apply_to_the_requested_agent() {
+        // A per-call override captured for Codex must not leak into a
+        // delegation targeting a different agent.
+        // The send step fails on purpose (the test-only `handle_request`
+        // blocks until the task is terminal; a successful send would park it).
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-1".into())).await;
+        mock.queue_send(Err(SpawnerError::Send("stop after spawn".into())))
+            .await;
+        mock.queue_spawn(Ok("child-2".into())).await;
+        mock.queue_send(Err(SpawnerError::Send("stop after spawn".into())))
+            .await;
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
+
+        let mut req = request(1, "pt-1");
+        req.agent_type = AgentType::Codex;
+        req.per_call_defaults = Some(AgentDelegationDefaults {
+            mode_id: Some("per-call-mode".into()),
+            config_values: BTreeMap::new(),
+        });
+        let _ = broker.handle_request(req).await;
+
+        // Second call, no override, different agent: global defaults are empty
+        // for ClaudeCode, so the spawner must see none of Codex's values.
+        let _ = broker.handle_request(request(1, "pt-2")).await;
+
+        let args = mock.spawn_args.lock().await;
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[1].agent_type, AgentType::ClaudeCode);
+        assert!(args[1].preferred_mode_id.is_none());
+        assert!(args[1].preferred_config_values.is_empty());
+    }
+
+    #[tokio::test]
+    async fn request_without_per_call_field_stays_backward_compatible() {
+        // An old payload (no `per_call_defaults` key at all) deserializes with
+        // `None` and behaves exactly like today: global defaults or none.
+        let raw = json!({
+            "parent_connection_id": "parent-conn",
+            "parent_conversation_id": 1,
+            "parent_tool_use_id": "pt-1",
+            "agent_type": "codex",
+            "task": "do x",
+        });
+        let req: DelegationRequest = serde_json::from_value(raw).expect("legacy payload parses");
+        assert!(req.per_call_defaults.is_none());
+
+        // And a wire form carrying an override round-trips it.
+        let raw = json!({
+            "parent_connection_id": "parent-conn",
+            "parent_conversation_id": 1,
+            "parent_tool_use_id": "pt-1",
+            "agent_type": "codex",
+            "task": "do x",
+            "per_call_defaults": {"mode_id": "plan"},
+        });
+        let req: DelegationRequest = serde_json::from_value(raw).expect("override payload parses");
+        assert_eq!(req.per_call_defaults.unwrap().mode_id.as_deref(), Some("plan"));
     }
 
     #[tokio::test]

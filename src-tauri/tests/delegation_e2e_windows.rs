@@ -40,6 +40,14 @@ impl ParentSessionLookup for FixedParent {
     async fn current_conversation_id(&self, _: &str) -> Option<i32> {
         Some(self.0)
     }
+
+    async fn delegation_override(
+        &self,
+        _: &str,
+        _: codeg_lib::models::AgentType,
+    ) -> Option<codeg_lib::acp::delegation::types::AgentDelegationDefaults> {
+        None
+    }
 }
 
 /// No-op feedback access — this e2e suite exercises delegation, not feedback.

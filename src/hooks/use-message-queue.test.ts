@@ -115,3 +115,59 @@ describe("useMessageQueue bounce FIFO ordering", () => {
     expect(texts(result.current.queue)).toEqual(["B", "A-edited"])
   })
 })
+
+describe("useMessageQueue delegation override preservation", () => {
+  it("keeps a queued draft's delegation_overrides through dequeue and requeueFront", () => {
+    const { result } = renderHook(() => useMessageQueue())
+    const withOverride: PromptDraft = {
+      blocks: [{ type: "text", text: "@claude_code do it" }],
+      displayText: "@Claude Code do it",
+      delegation_overrides: {
+        claude_code: { config_values: { model: "claude-opus-4-1" } },
+      },
+    }
+    act(() => result.current.enqueue(withOverride, null))
+    expect(result.current.queue[0].draft.delegation_overrides).toEqual(
+      withOverride.delegation_overrides
+    )
+
+    // The auto-flush dequeues the head and sends it — the sent draft is the
+    // same object the queue stored, overrides included.
+    let dequeued: ReturnType<typeof result.current.dequeue>
+    act(() => {
+      dequeued = result.current.dequeue()
+    })
+    expect(dequeued?.draft.delegation_overrides).toEqual(
+      withOverride.delegation_overrides
+    )
+
+    // A bounce re-queues the SAME draft at the front — overrides survive the
+    // round-trip so the retry delegates with the user's per-mention config.
+    act(() => result.current.requeueFront(withOverride, null))
+    expect(result.current.queue[0].draft.delegation_overrides).toEqual(
+      withOverride.delegation_overrides
+    )
+  })
+
+  it("keeps overrides through updateItem (queue edit save)", () => {
+    const { result } = renderHook(() => useMessageQueue())
+    const withOverride: PromptDraft = {
+      blocks: [{ type: "text", text: "@codex refactor" }],
+      displayText: "@Codex refactor",
+      delegation_overrides: {
+        codex: { config_values: { model: "gpt-5.2-codex" } },
+      },
+    }
+    act(() => result.current.enqueue(withOverride, null))
+    const [item] = result.current.queue
+    // The edited draft (rebuilt by the composer) carries the seeded overrides.
+    const edited: PromptDraft = {
+      ...withOverride,
+      displayText: "@Codex refactor (edited)",
+    }
+    act(() => result.current.updateItem(item.id, edited))
+    expect(result.current.queue[0].draft.delegation_overrides).toEqual(
+      withOverride.delegation_overrides
+    )
+  })
+})

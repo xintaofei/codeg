@@ -1299,6 +1299,16 @@ export type PromptInputBlock =
 export interface PromptDraft {
   blocks: PromptInputBlock[]
   displayText: string
+  /**
+   * Draft-scoped delegation config overrides, keyed by the mentioned agent.
+   * Populated when the user tweaks an `@Agent` mention's model/mode/permission
+   * in the composer's per-mention config popover; overrides ride the draft
+   * through send / queue / requeue / edit and reach the delegation broker as
+   * per-call values (precedence: per-call > global default > agent native).
+   * Absent/empty = untouched — the request is byte-identical to a draft
+   * without this field. Never persisted to global delegation settings.
+   */
+  delegation_overrides?: Partial<Record<AgentType, AgentDelegationDefaults>>
 }
 
 // Permission option info from agent

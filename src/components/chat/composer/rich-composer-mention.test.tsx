@@ -6,6 +6,28 @@ import { describe, expect, it, vi } from "vitest"
 import { RichComposer, type RichComposerHandle } from "./rich-composer"
 import type { ReferenceSearch } from "./suggestion/types"
 
+// Agent-only stub for the onAgentMention tests: the panel auto-targets the
+// first non-empty tab and agent rows always list, so a mixed stub would
+// strand file queries on the agent tab.
+const agentSearch: ReferenceSearch = () => [
+  {
+    kind: "agent",
+    label: "Agents",
+    items: [
+      {
+        reference: {
+          refType: "agent",
+          id: "claude_code",
+          label: "Claude Code",
+          uri: null,
+          meta: { agentType: "claude_code", available: true },
+        },
+        detail: "Claude Code",
+      },
+    ],
+  },
+]
+
 const search: ReferenceSearch = () => [
   {
     kind: "file",
@@ -106,6 +128,115 @@ describe("RichComposer @ mention integration", () => {
       expect(dom.hasAttribute("aria-autocomplete")).toBe(false)
       expect(dom.hasAttribute("aria-activedescendant")).toBe(false)
     })
+  })
+
+  it("does NOT fire onAgentMention on a plain selection — insert only", async () => {
+    const onAgentMention = vi.fn()
+    const ref = createRef<RichComposerHandle>()
+    render(
+      <RichComposer
+        ref={ref}
+        referenceSearch={agentSearch}
+        onAgentMention={onAgentMention}
+      />
+    )
+    await waitFor(() => expect(ref.current?.getEditor()).not.toBeNull(), {
+      timeout: 5000,
+    })
+    const editor = ref.current!.getEditor()!
+    act(() => {
+      editor.commands.insertContent("@cla")
+    })
+    const row = await screen.findByRole(
+      "option",
+      { name: /Claude Code/ },
+      { timeout: 5000 }
+    )
+    act(() => {
+      row.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true, cancelable: true })
+      )
+    })
+    await waitFor(() => {
+      const node = findReference(editor.getJSON())
+      expect(node?.attrs).toMatchObject({ refType: "agent", id: "claude_code" })
+    })
+    // Plain selection inserts the badge and nothing else — no popup.
+    expect(onAgentMention).not.toHaveBeenCalled()
+  })
+
+  it("fires onAgentMention only via the row's delegation-config entry", async () => {
+    const onAgentMention = vi.fn()
+    const ref = createRef<RichComposerHandle>()
+    render(
+      <RichComposer
+        ref={ref}
+        referenceSearch={agentSearch}
+        onAgentMention={onAgentMention}
+        mentionConfigActionLabel="Configure for this delegation"
+      />
+    )
+    await waitFor(() => expect(ref.current?.getEditor()).not.toBeNull(), {
+      timeout: 5000,
+    })
+    const editor = ref.current!.getEditor()!
+    act(() => {
+      editor.commands.insertContent("@cla")
+    })
+    const configEntry = await screen.findByRole(
+      "button",
+      { name: /^Configure for this delegation/ },
+      { timeout: 5000 }
+    )
+    act(() => {
+      // click (not the row's mousedown): the entry inserts AND asks for config
+      configEntry.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true })
+      )
+    })
+    await waitFor(() => {
+      const node = findReference(editor.getJSON())
+      expect(node?.attrs).toMatchObject({ refType: "agent", id: "claude_code" })
+    })
+    expect(onAgentMention).toHaveBeenCalledTimes(1)
+    const info = onAgentMention.mock.calls[0][0]
+    expect(info.agentType).toBe("claude_code")
+    expect(info.referenceAttrs).toMatchObject({
+      refType: "agent",
+      id: "claude_code",
+    })
+    expect(info.range.from).toBeGreaterThan(0)
+  })
+
+  it("does not fire onAgentMention for non-agent mentions", async () => {
+    const onAgentMention = vi.fn()
+    const ref = createRef<RichComposerHandle>()
+    render(
+      <RichComposer
+        ref={ref}
+        referenceSearch={search}
+        onAgentMention={onAgentMention}
+      />
+    )
+    await waitFor(() => expect(ref.current?.getEditor()).not.toBeNull(), {
+      timeout: 5000,
+    })
+    const editor = ref.current!.getEditor()!
+    act(() => {
+      editor.commands.insertContent("@app")
+    })
+    const row = await screen.findByText("app.ts", {}, { timeout: 5000 })
+    act(() => {
+      row.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true, cancelable: true })
+      )
+    })
+    await waitFor(() => {
+      expect(findReference(editor.getJSON())?.attrs).toMatchObject({
+        refType: "file",
+      })
+    })
+    expect(onAgentMention).not.toHaveBeenCalled()
   })
 
   it("does not submit on Enter while the panel is open", async () => {

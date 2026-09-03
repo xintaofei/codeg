@@ -2887,7 +2887,13 @@
         "mentionGroupAgent": "智能体",
         "mentionGroupSession": "会话",
         "mentionGroupCommit": "提交",
-        "mentionGroupSkill": "技能"
+        "mentionGroupSkill": "技能",
+        "mentionConfigTitle": "委托配置 — {agent}",
+        "mentionConfigUseGlobal": "使用全局默认",
+        "mentionConfigHint": "仅对本次委托生效，不会修改已保存的默认设置。",
+        "mentionConfigAction": "配置本次委托",
+        "mentionDelegationDefaultLabel": "Agent 默认",
+        "mentionConfigBadgeTitle": "点击配置本次委托"
       },
       "messageQueue": {
         "addToQueue": "加入队列",

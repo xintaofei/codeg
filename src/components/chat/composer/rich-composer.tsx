@@ -42,6 +42,16 @@ import type {
 } from "./suggestion/types"
 import type { ReferenceAttrs, ReferenceKind } from "./types"
 
+/** Info about an agent mention the `@` panel just inserted. */
+export interface AgentMentionInfo {
+  /** The mentioned agent type (the reference's stable id). */
+  agentType: string
+  /** The query range the mention badge replaced (the badge sits at `from`). */
+  range: { from: number; to: number }
+  /** The exact attributes the inserted badge carries. */
+  referenceAttrs: ReferenceAttrs
+}
+
 /**
  * Imperative handle exposed to the parent (e.g. the message input that owns
  * attachments, queue and send orchestration). The parent reads/writes plain text
@@ -146,6 +156,15 @@ export interface RichComposerProps {
    * Commits/Skills). English fallbacks apply when omitted. Render-only.
    */
   tabLabels?: Record<ReferenceKind, string>
+  /** Localized label for the delegation-config entry shown on agent rows of
+   *  the `@` panel. Render-only; English fallback applies when omitted. */
+  mentionConfigActionLabel?: string
+  /** Localized "Agent default" text for agent rows without a delegation
+   *  default. Render-only. */
+  mentionDelegationDefaultLabel?: string
+  /** Per-agent READ-ONLY delegation-config summaries (persisted global
+   *  default's mode/model ids) shown on agent rows. Render-only. */
+  mentionDelegationSummaries?: Partial<Record<string, string>>
   /**
    * Box the `@` panel lines up with: it adopts this element's width and left
    * edge and opens above it. Point it at the composer's outer chrome so the
@@ -189,6 +208,14 @@ export interface RichComposerProps {
    */
   onDropFiles?: (event: DragEvent) => boolean
   /**
+   * Called when the `@` panel's delegation-config entry inserts an AGENT
+   * mention (the row's chevron). A plain selection (click / Enter) inserts
+   * exactly as before and does NOT fire this — configuring a mention is
+   * opt-in. The host opens the per-mention delegation config popover anchored
+   * to the new badge.
+   */
+  onAgentMention?: (info: AgentMentionInfo) => void
+  /**
    * Paste-without-formatting intent: fired when `Ctrl/⌘+Shift+V` is pressed. The
    * host owns the clipboard read (and its non-secure fallback). Return true when
    * the host took over so the editor consumes the key and the browser's native
@@ -223,7 +250,11 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
       referenceSearch,
       mentionUiLabels,
       tabLabels,
+      mentionConfigActionLabel,
+      mentionDelegationDefaultLabel,
+      mentionDelegationSummaries,
       mentionAnchorRef,
+      onAgentMention,
       submitShortcut,
       newlineShortcut,
       isExternalMenuOpen,
@@ -241,6 +272,7 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
     const onFocusRef = useRef(onFocus)
     const onBlurRef = useRef(onBlur)
     const onReadyRef = useRef(onReady)
+    const onAgentMentionRef = useRef(onAgentMention)
     // Latest referenceSearch, read at event time so the mention plugin (always
     // installed) is gated on whether mentions are currently enabled — robust to
     // the prop being added/removed after the editor is created once.
@@ -263,6 +295,7 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
       onFocusRef.current = onFocus
       onBlurRef.current = onBlur
       onReadyRef.current = onReady
+      onAgentMentionRef.current = onAgentMention
       referenceSearchRef.current = referenceSearch
       submitShortcutRef.current = submitShortcut
       newlineShortcutRef.current = newlineShortcut
@@ -539,7 +572,11 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
     }, [referenceSearch, closeMention])
 
     const handleReferenceSelect = useCallback(
-      (reference: ReferenceAttrs, range: { from: number; to: number }) => {
+      (
+        reference: ReferenceAttrs,
+        range: { from: number; to: number },
+        opts?: { openConfig?: boolean }
+      ) => {
         editor
           ?.chain()
           .focus()
@@ -548,6 +585,18 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
           .insertContent(" ")
           .run()
         closeMention()
+        // Only the row's delegation-config entry asks for the popover — a
+        // plain selection keeps the native no-popup behavior. The badge landed
+        // at the start of the replaced query range; fire after the insert so
+        // the host can read a settled document (e.g. to find the badge's DOM
+        // node for popover anchoring).
+        if (reference.refType === "agent" && opts?.openConfig === true) {
+          onAgentMentionRef.current?.({
+            agentType: reference.id,
+            range,
+            referenceAttrs: reference,
+          })
+        }
       },
       [editor, closeMention]
     )
@@ -614,6 +663,9 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
             moreLabel={mentionUiLabels?.more}
             countLabel={mentionUiLabels?.count}
             tabLabels={tabLabels}
+            configActionLabel={mentionConfigActionLabel}
+            delegationDefaultLabel={mentionDelegationDefaultLabel}
+            delegationSummaries={mentionDelegationSummaries}
           />
         )}
       </div>

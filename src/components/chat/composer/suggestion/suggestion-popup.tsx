@@ -11,6 +11,7 @@ import {
   type RefObject,
 } from "react"
 import { createPortal } from "react-dom"
+import { Settings2 } from "lucide-react"
 
 import { isImeCompositionKey } from "@/lib/ime-composition"
 import { cn } from "@/lib/utils"
@@ -100,10 +101,14 @@ export interface SuggestionPopupProps {
   state: MentionRenderState
   /** Resolves the query into grouped suggestions. Must be referentially stable. */
   search: ReferenceSearch
-  /** Insert the chosen reference, replacing the trigger range. */
+  /** Insert the chosen reference, replacing the trigger range. `opts.openConfig`
+   *  is set only when the row's delegation-config entry was used — the host
+   *  opens the per-mention config popover for it; a plain selection never
+   *  carries it. */
   onSelect: (
     reference: ReferenceAttrs,
-    range: { from: number; to: number }
+    range: { from: number; to: number },
+    opts?: { openConfig?: boolean }
   ) => void
   /** Dismiss the panel without inserting. */
   onClose: () => void
@@ -117,6 +122,19 @@ export interface SuggestionPopupProps {
   moreLabel?: string
   /** Localized per-kind tab labels (English fallbacks apply when omitted). */
   tabLabels?: Record<ReferenceKind, string>
+  /** Localized aria/title label for the per-row delegation-config entry shown
+   *  on agent rows. The entry is rendered only for agents. */
+  configActionLabel?: string
+  /** Localized label shown on an agent row when no delegation default is
+   *  pinned for it ("Agent default"). */
+  delegationDefaultLabel?: string
+  /**
+   * Per-agent READ-ONLY delegation-config summary (the persisted global
+   * default's mode/model ids, precomputed by the host — no probing happens
+   * here). Rendered on the agent row next to the config entry so the user
+   * sees what the delegation would use before opening it.
+   */
+  delegationSummaries?: Partial<Record<string, string>>
   /**
    * The composer box the panel lines up with. When given, the panel adopts that
    * box's width and left edge and opens above it — the same geometry as the
@@ -156,6 +174,9 @@ export const SuggestionPopup = forwardRef<
     countLabel = (count) => `${count} results`,
     moreLabel = "More results — keep typing to filter",
     tabLabels = DEFAULT_TAB_LABELS,
+    configActionLabel,
+    delegationDefaultLabel,
+    delegationSummaries,
     anchorRef,
     onActiveOptionChange,
   },
@@ -622,6 +643,54 @@ export const SuggestionPopup = forwardRef<
                         title={item.detail}
                       >
                         {item.detail}
+                      </span>
+                    )}
+                    {item.reference.refType === "agent" && (
+                      // Delegation-config entry (agents only): opens the
+                      // per-mention config view for THIS mention. A nested
+                      // <button> is invalid inside the option's <button>, so
+                      // this is a span with the button role (Space/Enter
+                      // handled for keyboard access). Selecting the row
+                      // (click elsewhere / Enter) stays a plain insert —
+                      // configuring is strictly opt-in via this affordance.
+                      // The entry carries the agent's READ-ONLY config
+                      // summary (the persisted global default's mode/model
+                      // ids) so the user sees what a delegation would use
+                      // before opening; the summary is display-only — options
+                      // load lazily inside the popover, never in this list.
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`${configActionLabel ?? "Configure delegation"}: ${delegationSummaries?.[item.reference.id] ?? delegationDefaultLabel ?? "Agent default"}`}
+                        title={configActionLabel ?? "Configure delegation"}
+                        className="ml-auto inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-background/70 hover:text-foreground"
+                        onMouseDown={(event) => {
+                          // Don't let the row's insert handler fire…
+                          event.preventDefault()
+                          event.stopPropagation()
+                        }}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          onSelect(item.reference, state.range, {
+                            openConfig: true,
+                          })
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter" && event.key !== " ") {
+                            return
+                          }
+                          event.stopPropagation()
+                          onSelect(item.reference, state.range, {
+                            openConfig: true,
+                          })
+                        }}
+                      >
+                        <Settings2 className="size-3.5" aria-hidden="true" />
+                        <span className="max-w-40 truncate">
+                          {delegationSummaries?.[item.reference.id] ??
+                            delegationDefaultLabel ??
+                            "Agent default"}
+                        </span>
                       </span>
                     )}
                   </button>

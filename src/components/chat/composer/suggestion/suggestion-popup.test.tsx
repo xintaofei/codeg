@@ -290,6 +290,90 @@ describe("SuggestionPopup", () => {
     expect(screen.getAllByRole("tab")).toHaveLength(4)
   })
 
+  it("renders a delegation-config entry on agent rows only, and it opts into config", async () => {
+    const { onSelect } = mountPopup({
+      configActionLabel: "Configure for this delegation",
+    })
+    const panel = screen.getByTestId("mention-popup")
+    const codexRow = (await within(panel).findByText("Codex Helper")).closest(
+      "[role='option']"
+    ) as HTMLElement
+    // Agent row carries the entry (name = label + summary tail; no summary
+    // passed here → the "Agent default" fallback completes the name)…
+    const entry = within(codexRow).getByRole("button", {
+      name: /Configure for this delegation/,
+    })
+    // …and clicking it inserts WITH the config opt-in (not a plain selection).
+    act(() => {
+      entry.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true })
+      )
+    })
+    expect(onSelect).toHaveBeenCalledWith(agentRef, state.range, {
+      openConfig: true,
+    })
+  })
+
+  it("renders a READ-ONLY delegation summary + config entry on agent rows", async () => {
+    const onSelect = vi.fn()
+    render(
+      <SuggestionPopup
+        ref={createRef<SuggestionPopupHandle>()}
+        state={state}
+        search={search}
+        onSelect={onSelect}
+        onClose={vi.fn()}
+        configActionLabel="Configure for this delegation"
+        delegationDefaultLabel="Agent default"
+        delegationSummaries={{
+          codex: "gpt-5.2-codex",
+          claude_code: "claude-opus-4-1 · plan",
+        }}
+      />
+    )
+    const panel = screen.getByTestId("mention-popup")
+    // Codex row: persisted global default summary (stable ids are fine).
+    const codexEntry = await within(panel).findByRole("button", {
+      name: "Configure for this delegation: gpt-5.2-codex",
+    })
+    expect(within(codexEntry).getByText("gpt-5.2-codex")).toBeInTheDocument()
+    // Claude row: mode + model joined.
+    expect(
+      await within(panel).findByText("claude-opus-4-1 · plan")
+    ).toBeInTheDocument()
+    // The entry is a span with the button role (no nested <button> inside the
+    // option's <button>): clicking it opts into config.
+    act(() => {
+      codexEntry.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true })
+      )
+    })
+    expect(onSelect).toHaveBeenCalledWith(agentRef, state.range, {
+      openConfig: true,
+    })
+  })
+
+  it("shows the Agent-default label when no summary exists, and never probes", async () => {
+    // The popup itself has NO probe surface: no onProbeAgent-style prop
+    // exists, and rendering + opening the panel is synchronous display of
+    // host-supplied data. No global default for either agent → the
+    // "Agent default" label shows on both rows.
+    const onSelect = vi.fn()
+    render(
+      <SuggestionPopup
+        ref={createRef<SuggestionPopupHandle>()}
+        state={state}
+        search={search}
+        onSelect={onSelect}
+        onClose={vi.fn()}
+        delegationDefaultLabel="Agent default"
+      />
+    )
+    const panel = screen.getByTestId("mention-popup")
+    expect(await within(panel).findAllByText("Agent default")).toHaveLength(2)
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
   it("selects the active tab's highlighted row on Enter (default = first agent)", async () => {
     const { ref, onSelect } = mountPopup()
     await screen.findByText("Codex Helper")
@@ -582,10 +666,14 @@ describe("SuggestionPopup", () => {
     mountPopup()
     await screen.findByText("Codex Helper")
     // The agent row's AgentIcon is a titled <svg>; if it weren't decorative the
-    // option would be named "Codex Codex Helper". The name must be just label.
+    // option would be named "Codex Codex Helper …". The name must START with
+    // just the label (the delegation-config entry text trails it).
     expect(
-      screen.getByRole("option", { name: "Codex Helper" })
+      screen.getByRole("option", { name: /^Codex Helper/ })
     ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("option", { name: "Codex Codex Helper" })
+    ).toBeNull()
   })
 
   it("moves aria-selected with the keyboard", async () => {

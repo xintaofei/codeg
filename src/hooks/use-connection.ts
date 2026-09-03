@@ -19,6 +19,7 @@ import type {
   PendingPlanApprovalState,
   PendingQuestionState,
   PromptCapabilitiesInfo,
+  PromptDraft,
   QuestionAnswer,
   SessionConfigOptionInfo,
   AsyncTaskRecord,
@@ -121,6 +122,8 @@ export interface UseConnectionReturn {
       folderId?: number | null
       conversationId?: number | null
       clientMessageId?: string | null
+      /** Draft-scoped delegation overrides (`@Agent` mention config). */
+      delegationOverrides?: PromptDraft["delegation_overrides"]
     }
   ) => Promise<void>
   setMode: (modeId: string) => Promise<void>
@@ -279,6 +282,8 @@ export function useConnection(contextKey: string): UseConnectionReturn {
         folderId?: number | null
         conversationId?: number | null
         clientMessageId?: string | null
+        /** Draft-scoped delegation overrides (`@Agent` mention config). */
+        delegationOverrides?: PromptDraft["delegation_overrides"]
       }
     ) => actions.sendPrompt(contextKey, blocks, opts),
     [actions, contextKey]

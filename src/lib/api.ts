@@ -282,7 +282,12 @@ export async function acpPrompt(
   blocks: PromptInputBlock[],
   folderId: number | null = null,
   conversationId: number | null = null,
-  clientMessageId: string | null = null
+  clientMessageId: string | null = null,
+  // Draft-scoped delegation overrides for `@Agent` mentions (per-turn only).
+  // Optional trailing argument: existing callers stay untouched, and an
+  // undefined map is omitted from the payload so the wire request is
+  // byte-identical to a prompt without overrides.
+  delegationOverrides?: Partial<Record<AgentType, AgentDelegationDefaults>>
 ): Promise<void> {
   try {
     await getTransport().call("acp_prompt", {
@@ -296,6 +301,7 @@ export async function acpPrompt(
       folderId,
       conversationId,
       clientMessageId,
+      delegationOverrides,
     })
   } catch (e) {
     if (isTurnInProgressRejection(e)) throw new TurnBusyError()

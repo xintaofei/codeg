@@ -49,6 +49,7 @@ import { isNoActiveTurnRejection } from "@/lib/turn-busy"
 import { ServerFileBrowserDialog } from "@/components/shared/server-file-browser-dialog"
 import { toast } from "sonner"
 import type {
+  AgentDelegationDefaults,
   AgentSkillItem,
   AgentType,
   AvailableCommandInfo,
@@ -100,6 +101,14 @@ import {
   loadMessageInputDraftV2,
   saveMessageInputDraftV2,
 } from "@/lib/message-input-draft"
+import {
+  collectDelegationOverrides,
+  readReferenceDelegationOverride,
+  withDelegationOverrides,
+  writeReferenceDelegationOverride,
+} from "@/lib/delegation-overrides"
+import { delegationDefaultsSummaryParts } from "@/lib/delegation-overrides"
+import { useDelegationGlobalBaseline } from "@/hooks/use-delegation-baseline"
 import { rankByTextMatch } from "@/lib/fuzzy-text-match"
 import {
   RichComposer,
@@ -112,6 +121,7 @@ import {
   serializeDocToText,
 } from "@/components/chat/composer/to-prompt-blocks"
 import { isEmbeddedReferenceUri } from "@/components/chat/composer/reference-uri"
+import type { ReferenceNodeStorage } from "@/components/chat/composer/nodes/reference-node"
 import {
   applyExpertReference,
   isComposerChromeClick,
@@ -124,6 +134,7 @@ import {
   skillToReference,
 } from "@/components/chat/composer/invocation-reference"
 import { cutSelectionToClipboard } from "@/components/chat/composer/clipboard-actions"
+import { AgentDelegationConfigPopover } from "@/components/chat/composer/agent-delegation-config-popover"
 import { sessionToSuggestion } from "@/components/chat/composer/suggestion/adapters"
 import { editorHasReference } from "@/components/chat/composer/attachment-files"
 import type { ReferenceAttrs } from "@/components/chat/composer/types"
@@ -206,6 +217,15 @@ interface MessageInputProps {
    * falls back to {@link editingDraftText} when absent.
    */
   editingDraftBlocks?: PromptInputBlock[] | null
+  /**
+   * The queued item's draft-scoped delegation overrides, when editing a queue
+   * item. Agent mentions hydrate from blocks as plain text (no badge meta to
+   * read back), so the queued overrides ride as a seed: a save re-emits them
+   * unless the user re-mentions the agent and overrides it again in the doc.
+   */
+  editingDelegationOverrides?: Partial<
+    Record<AgentType, AgentDelegationDefaults>
+  > | null
   isEditingQueueItem?: boolean
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
@@ -317,6 +337,7 @@ export function MessageInput({
   editingItemId,
   editingDraftText,
   editingDraftBlocks,
+  editingDelegationOverrides,
   isEditingQueueItem = false,
   onSaveQueueEdit,
   onCancelQueueEdit,
@@ -444,6 +465,139 @@ export function MessageInput({
     labels: referenceGroupLabels,
   })
 
+  // ── Per-mention delegation config (@Agent → popover) ──
+  // The doc is the source of truth while composing: an override lives on the
+  // mention badge's meta (survives v2 draft persistence) and `buildDraft`
+  // collects it into `PromptDraft.delegation_overrides`. Queue edits are the
+  // one gap — their agent mentions hydrate from blocks as plain text — so the
+  // queued item's overrides seed `editingOverridesRef` and the save merges
+  // them under whatever the doc carries now.
+  const editingOverridesRef = useRef<Partial<
+    Record<AgentType, AgentDelegationDefaults>
+  > | null>(null)
+  const [delegationConfig, setDelegationConfig] = useState<{
+    agentType: AgentType
+    anchorEl: HTMLElement | null
+  } | null>(null)
+  const [delegationOverride, setDelegationOverride] =
+    useState<AgentDelegationDefaults | null>(null)
+  // The global baseline the popover displays for a mention with no override.
+  // Re-fetched (and cleared) on EVERY open — the previous values must never
+  // survive a close, or an edit right after a settings change would emit a
+  // stale per-call replacement. While loading, the popover holds its rows
+  // back (see globalDefaultLoading).
+  const delegationBaseline = useDelegationGlobalBaseline(
+    delegationConfig != null
+  )
+  // The @ panel's agent rows show a READ-ONLY summary of each agent's
+  // persisted global delegation default (mode/model ids — stable identifiers;
+  // human-readable names would require a probe we refuse to run during
+  // listing). This baseline may lag the newest settings by one fetch; the
+  // popover refetches on every open, so what the user EDITS against is
+  // always fresh.
+  const panelBaseline = useDelegationGlobalBaseline(isActive)
+  const mentionDelegationSummaries = useMemo(() => {
+    const out: Record<string, string> = {}
+    for (const [agent, defaults] of Object.entries(
+      panelBaseline.baseline ?? {}
+    )) {
+      const parts = delegationDefaultsSummaryParts(defaults)
+      if (parts.length > 0) out[agent] = parts.join(" · ")
+    }
+    return out
+  }, [panelBaseline.baseline])
+
+  // Seed / clear the queue-edit override base when an edit session starts or
+  // ends (and when a DIFFERENT item is opened — mirrors prevEditingItemIdRef).
+  // The seed is consumed ONCE, right after block hydration, by being written
+  // onto the restored badges (see applySeedOverridesToEditor) — after that the
+  // document is the single source of truth, and nothing seeds the save path.
+  useEffect(() => {
+    if (isEditingQueueItem && editingItemId != null) {
+      if (editingItemId !== prevEditingItemIdRef.current) {
+        editingOverridesRef.current = editingDelegationOverrides ?? null
+      }
+    } else {
+      editingOverridesRef.current = null
+    }
+  }, [isEditingQueueItem, editingItemId, editingDelegationOverrides])
+
+  // Find the DOM badge for the reference node that starts at `pos`, falling
+  // back to the composer container so the popover still opens predictably.
+  const anchorElForMention = useCallback((pos: number): HTMLElement | null => {
+    const editor = editorRef.current?.getEditor()
+    const dom = editor ? (editor.view.nodeDOM(pos) as Node | null) : null
+    const el = dom instanceof HTMLElement && dom.isConnected ? dom : null
+    return el ?? containerRef.current
+  }, [])
+
+  const handleAgentMention = useCallback(
+    (info: {
+      agentType: string
+      range: { from: number; to: number }
+      referenceAttrs: ReferenceAttrs
+    }) => {
+      setDelegationOverride(
+        readReferenceDelegationOverride(info.referenceAttrs.meta)
+      )
+      setDelegationConfig({
+        agentType: info.agentType,
+        anchorEl: anchorElForMention(info.range.from),
+      })
+    },
+    [anchorElForMention]
+  )
+
+  // Apply a popover edit to EVERY badge of this agent in the doc (one
+  // draft-level value per agent; the most recent edit wins) + mirror it into
+  // React state so the open popover re-renders its selects.
+  const handleDelegationChange = useCallback(
+    (next: AgentDelegationDefaults | null) => {
+      const agent = delegationConfig?.agentType
+      if (!agent) return
+      setDelegationOverride(next)
+      const editor = editorRef.current?.getEditor()
+      if (!editor) return
+      const tr = editor.state.tr
+      let touched = false
+      editor.state.doc.descendants((node, pos) => {
+        if (
+          node.type.name === "reference" &&
+          node.attrs.refType === "agent" &&
+          node.attrs.id === agent
+        ) {
+          tr.setNodeMarkup(pos, undefined, {
+            ...node.attrs,
+            meta: writeReferenceDelegationOverride(node.attrs.meta, next),
+          })
+          touched = true
+        }
+        return true
+      })
+      if (touched) editor.view.dispatch(tr)
+    },
+    [delegationConfig]
+  )
+
+  const closeDelegationConfig = useCallback(() => {
+    setDelegationConfig(null)
+    setDelegationOverride(null)
+  }, [])
+
+  // Re-apply the queued item's delegation overrides onto the freshly restored
+  // agent badges. Block hydration rebuilds `[@Agent](codeg://…)` tokens as
+  // badges WITHOUT their meta (the queue stores prompt prose, not badges), so
+  // without this an untouched queue edit would silently drop its per-mention
+  // config. Runs right after hydration, inside the same rAF; from here on the
+  // document is the single source of truth — no seed touches the save path.
+  const applySeedOverridesToEditor = useCallback(() => {
+    const editor = editorRef.current?.getEditor()
+    const seed = editingOverridesRef.current
+    if (!editor || !seed) return
+    const next = withDelegationOverrides(editor.getJSON(), seed)
+    if (next) editor.commands.setContent(next)
+  }, [])
+
   // Debounced v2 draft persistence. We snapshot the Tiptap *document* (JSON, not
   // Markdown) ~300ms after the last change so inline reference badges survive a
   // reload — a Markdown round-trip would downgrade them to plain links.
@@ -510,6 +664,9 @@ export function MessageInput({
         } else if (editingDraftText != null) {
           ed.setText(editingDraftText)
         }
+        // The restored badges carry no delegation meta (the queue stores
+        // prose) — write the queued overrides onto them now.
+        applySeedOverridesToEditor()
       } else if (effectiveDraftStorageKey) {
         const loaded = loadMessageInputDraftV2(effectiveDraftStorageKey)
         if (loaded?.kind === "doc") {
@@ -530,6 +687,7 @@ export function MessageInput({
     editingDraftBlocks,
     effectiveDraftStorageKey,
     hydrateFromBlocks,
+    applySeedOverridesToEditor,
   ])
 
   // Focus the composer the moment the editor exists and this tab is active, so
@@ -571,6 +729,8 @@ export function MessageInput({
         } else if (editingDraftText != null) {
           editorRef.current?.setText(editingDraftText)
         }
+        // Same re-attachment as the mount hydration above.
+        applySeedOverridesToEditor()
         setComposerEmpty(editor ? isComposerEmpty(editor) : true)
         editorRef.current?.focus()
       })
@@ -584,6 +744,7 @@ export function MessageInput({
     editingDraftText,
     editingDraftBlocks,
     hydrateFromBlocks,
+    applySeedOverridesToEditor,
   ])
 
   useEffect(() => {
@@ -668,8 +829,25 @@ export function MessageInput({
   }, [syncComposerEmpty, scheduleDraftSave])
 
   const handleComposerReady = useCallback(() => {
+    // Agent badges report clicks through the editor's node storage (the
+    // React NodeView lives outside this tree) — that's the re-entry point
+    // for the per-mention delegation config of a mention already in the doc.
+    const editor = editorRef.current?.getEditor()
+    const storage = editor?.storage.reference as
+      | ReferenceNodeStorage
+      | undefined
+    if (storage) {
+      storage.onBadgeClick = ({ attrs, element }) => {
+        setDelegationOverride(readReferenceDelegationOverride(attrs.meta))
+        setDelegationConfig({
+          agentType: attrs.id,
+          anchorEl: element.isConnected ? element : containerRef.current,
+        })
+      }
+      storage.badgeTitle = t("mentionConfigBadgeTitle")
+    }
     setComposerReady(true)
-  }, [])
+  }, [t])
 
   const availableModes = useMemo(() => modes ?? [], [modes])
   const availableConfigOptions = useMemo(
@@ -1190,16 +1368,32 @@ export function MessageInput({
     const displayText =
       displayProse ||
       `Attached ${attachments.length} attachment${attachments.length > 1 ? "s" : ""}`
-    return { blocks, displayText }
+    // Draft-scoped delegation overrides: read from the doc's agent mention
+    // badges — the single source of truth. Queue-edit hydration re-attaches
+    // the queued values onto the restored badges (see
+    // `applySeedOverridesToEditor`), so nothing is layered on here: a reset or
+    // a deleted mention is expressed in the doc itself. Omitted entirely for
+    // an untouched draft so the sent payload stays byte-identical.
+    const docOverrides = collectDelegationOverrides(editor?.getJSON() ?? null)
+    const delegation_overrides = docOverrides
+    return {
+      blocks,
+      displayText,
+      ...(delegation_overrides && Object.keys(delegation_overrides).length > 0
+        ? { delegation_overrides }
+        : {}),
+    }
   }, [attachments, skillPrefix, imagePromptBlocks, embeddedPayloadsRef])
 
-  // Clear the editor + attachments after a send / enqueue / save.
+  // Clear the editor + attachments after a send / enqueue / save. The popover
+  // targets a mention badge that no longer exists, so close it with the rest.
   const resetComposer = useCallback(() => {
     editorRef.current?.clear()
     setComposerEmpty(true)
     clearAttachments()
     closeSlashMenu()
-  }, [clearAttachments, closeSlashMenu])
+    closeDelegationConfig()
+  }, [clearAttachments, closeSlashMenu, closeDelegationConfig])
 
   const handleSend = useCallback(() => {
     // The editor stays editable while `disabled` (the agent is busy) so the user
@@ -1859,6 +2053,11 @@ export function MessageInput({
                 referenceSearch={referenceSearch}
                 mentionUiLabels={mentionUiLabels}
                 tabLabels={referenceGroupLabels}
+                mentionConfigActionLabel={t("mentionConfigAction")}
+                mentionDelegationDefaultLabel={t(
+                  "mentionDelegationDefaultLabel"
+                )}
+                mentionDelegationSummaries={mentionDelegationSummaries}
                 // The `@` panel spans the whole composer and opens above it —
                 // the same box the `/` menu hangs off (this container), so the
                 // two read as one affordance.
@@ -1870,12 +2069,30 @@ export function MessageInput({
                 onPasteFiles={attach.handlePasteFiles}
                 onDropFiles={attach.handleEditorDrop}
                 onPlainPaste={handlePlainPasteShortcut}
+                onAgentMention={handleAgentMention}
                 submitShortcut={shortcuts.send_message}
                 newlineShortcut={shortcuts.newline_in_message}
                 isExternalMenuOpen={slashMenuVisible}
                 onExternalMenuKeyDown={handleExternalMenuKeyDown}
                 className="min-h-0 flex-1"
               />
+              {delegationConfig && (
+                <AgentDelegationConfigPopover
+                  agentType={delegationConfig.agentType}
+                  workingDir={defaultPath ?? null}
+                  anchorEl={delegationConfig.anchorEl}
+                  globalDefault={
+                    delegationBaseline.baseline?.[delegationConfig.agentType] ??
+                    null
+                  }
+                  globalDefaultLoading={delegationBaseline.loading}
+                  globalDefaultError={delegationBaseline.error}
+                  onRetryGlobalDefault={delegationBaseline.retry}
+                  value={delegationOverride}
+                  onChange={handleDelegationChange}
+                  onClose={closeDelegationConfig}
+                />
+              )}
               <div className="flex shrink-0 items-end justify-between gap-1 px-2 pb-2">
                 <div className="flex min-w-0 items-end gap-1">
                   <ComposerAddMenu
