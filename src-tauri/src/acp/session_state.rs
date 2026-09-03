@@ -833,13 +833,16 @@ impl SessionState {
                     meta.as_ref(),
                     images.as_deref(),
                 );
-                // Anchor the tool call in `live_message.content` so snapshot
-                // reload preserves position relative to surrounding text /
-                // thinking blocks. Idempotent by id: a second ToolCall (or a
-                // ToolCallUpdate, see below) for the same id must not push a
-                // duplicate ref. Mirrors text/thinking deltas in lazily
-                // creating `live_message` if absent.
-                self.push_tool_call_ref_if_absent(tool_call_id);
+                // Anchor foreground tool calls in `live_message.content` so a
+                // snapshot preserves their stream position. Out-of-turn calls
+                // (for example MCP startup diagnostics while Connected) stay
+                // in `active_tool_calls` for permission enrichment, but must
+                // not create a ghost assistant message. A pre-status text
+                // delta may already have opened the live message, so preserve
+                // that ordering edge as foreground work.
+                if self.status == ConnectionStatus::Prompting || self.live_message.is_some() {
+                    self.push_tool_call_ref_if_absent(tool_call_id);
+                }
             }
             AcpEvent::ToolCallUpdate {
                 tool_call_id,
@@ -865,11 +868,12 @@ impl SessionState {
                     meta.as_ref(),
                     images.as_deref(),
                 );
-                // Defensive: if a ToolCallUpdate arrives before its initial
-                // ToolCall (unusual ordering / replay), ensure the ref block
-                // still gets anchored. Idempotent so the normal-flow case is
-                // a no-op here.
-                self.push_tool_call_ref_if_absent(tool_call_id);
+                // Same foreground-only guard as ToolCall. An out-of-turn
+                // update may enrich a permission snapshot, but it cannot
+                // manufacture a transcript message on its own.
+                if self.status == ConnectionStatus::Prompting || self.live_message.is_some() {
+                    self.push_tool_call_ref_if_absent(tool_call_id);
+                }
             }
             AcpEvent::PermissionRequest {
                 request_id,
@@ -2748,6 +2752,7 @@ mod tests {
 
         // A tool call with no trailing text / thinking → `running tool:` prefix.
         let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
         s.apply_event(&AcpEvent::ToolCall {
             tool_call_id: "tc-9".into(),
             title: "grep files".into(),
@@ -4195,6 +4200,7 @@ mod tests {
     #[test]
     fn tool_call_ref_push_is_idempotent() {
         let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
         s.apply_event(&tool_call_event("tc-1", "ls"));
         // Defensive: second ToolCall with the same id (replay/unusual ordering)
         // must NOT push a duplicate ref block.
@@ -4211,6 +4217,7 @@ mod tests {
     #[test]
     fn tool_call_update_does_not_duplicate_ref() {
         let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
         s.apply_event(&tool_call_event("tc-1", "ls"));
         s.apply_event(&AcpEvent::ToolCallUpdate {
             tool_call_id: "tc-1".into(),
@@ -4233,6 +4240,38 @@ mod tests {
         assert_eq!(
             ref_count, 1,
             "ToolCall + ToolCallUpdate for same id yields exactly one ref"
+        );
+    }
+
+    #[test]
+    fn out_of_turn_tool_call_does_not_create_ghost_live_message() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Connected;
+
+        s.apply_event(&tool_call_event("startup-1", "MCP startup failed"));
+        assert!(s.active_tool_calls.contains_key("startup-1"));
+        assert!(s.live_message.is_none());
+
+        s.apply_event(&AcpEvent::ToolCallUpdate {
+            tool_call_id: "startup-1".into(),
+            title: None,
+            status: Some("failed".into()),
+            content: Some("server unavailable".into()),
+            raw_input: None,
+            raw_output: None,
+            raw_output_append: None,
+            locations: None,
+            meta: None,
+            images: None,
+        });
+        assert!(s.live_message.is_none());
+
+        // A separate call from a real prompting turn still anchors normally.
+        s.status = ConnectionStatus::Prompting;
+        s.apply_event(&tool_call_event("turn-1", "Read file"));
+        assert_eq!(
+            live_block_summary(&s),
+            vec![("tool_call_ref", "turn-1".to_string())]
         );
     }
 

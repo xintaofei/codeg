@@ -271,6 +271,14 @@ describe("ConversationDetailPanel split-group render model", () => {
     expect(source).toContain("showActiveFlow={(isSplit || canTileG) && active}")
   })
 
+  it("keeps hidden session controllers but suspends transcript work", () => {
+    expect(source).toContain("isVisible={visible}")
+    expect(source).toContain(
+      "useConversationDetail(effectiveConversationId, { enabled: isVisible })"
+    )
+    expect(source).toContain("if (!isVisible) return null")
+  })
+
   it("gives each split group its own strip and divider overlays only while split", () => {
     expect(source).toContain("<TabBar groupId={groupId} />")
     const handlesIdx = source.indexOf("groupHandles.map((handle) => (")

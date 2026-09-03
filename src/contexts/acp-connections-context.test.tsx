@@ -4,8 +4,11 @@ import { useTranslations } from "next-intl"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   AcpConnectionsProvider,
+  ToolCallUpdateAccumulator,
+  boundLiveToolOutputChunks,
   useAcpActions,
   useConnectionStore,
+  type ToolCallUpdatePayload,
 } from "@/contexts/acp-connections-context"
 import {
   CONNECTION_IDLE_TIMEOUT_MS,
@@ -123,6 +126,74 @@ vi.mock("@/lib/api", () => ({
     throw new Error("detail not seeded in this suite")
   }),
 }))
+
+function toolUpdate(
+  overrides: Partial<ToolCallUpdatePayload> = {}
+): ToolCallUpdatePayload {
+  return {
+    contextKey: "tab-1",
+    tool_call_id: "tool-1",
+    title: null,
+    fallback_title: "Tool",
+    fallback_kind: "tool",
+    status: null,
+    content: null,
+    raw_input: null,
+    raw_output: null,
+    locations: null,
+    meta: null,
+    images: null,
+    ...overrides,
+  }
+}
+
+describe("tool-call update memory bounds", () => {
+  it("coalesces append streams without changing replacement semantics", () => {
+    const updates = new ToolCallUpdateAccumulator(
+      toolUpdate({ status: "in_progress" })
+    )
+    updates.add(toolUpdate({ raw_output: "a", raw_output_append: true }))
+    const firstAppend = updates.finish()
+    expect(firstAppend.raw_output).toBe("a")
+    expect(firstAppend.raw_output_append).toBe(true)
+
+    updates.add(toolUpdate({ raw_output: "b", raw_output_append: true }))
+    const secondAppend = updates.finish()
+    expect(secondAppend.raw_output).toBe("ab")
+    expect(secondAppend.raw_output_append).toBe(true)
+
+    updates.add(toolUpdate({ raw_output: "new", raw_output_append: false }))
+    updates.add(toolUpdate({ raw_output: " tail", raw_output_append: true }))
+    const replacementThenAppend = updates.finish()
+    expect(replacementThenAppend.raw_output).toBe("new tail")
+    expect(replacementThenAppend.raw_output_append).toBe(false)
+  })
+
+  it("bounds both pending output text and retained chunk count", () => {
+    const updates = new ToolCallUpdateAccumulator(
+      toolUpdate({ raw_output: "seed", raw_output_append: true })
+    )
+    updates.add(
+      toolUpdate({
+        raw_output: "x".repeat(210_000),
+        raw_output_append: true,
+      })
+    )
+    const oversized = updates.finish()
+    expect(oversized.raw_output).toHaveLength(200_000)
+
+    const bounded = boundLiveToolOutputChunks(
+      Array.from({ length: 65 }, () => "x")
+    )
+    expect(bounded.chunks).toHaveLength(1)
+    expect(bounded.total).toBe(65)
+
+    const singleOversized = boundLiveToolOutputChunks(["z".repeat(210_000)])
+    expect(singleOversized.chunks).toHaveLength(1)
+    expect(singleOversized.chunks[0]).toHaveLength(200_000)
+    expect(singleOversized.total).toBe(200_000)
+  })
+})
 
 function Probe() {
   const actions = useAcpActions()

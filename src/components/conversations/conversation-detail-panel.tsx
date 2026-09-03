@@ -158,6 +158,10 @@ interface ConversationTabViewProps {
   agentType: AgentType
   workingDir?: string
   isActive: boolean
+  /** Whether this tab is currently painted (selected, tiled, or split).
+   *  Background tabs keep their connection controller mounted, but must not
+   *  fetch or render the heavyweight transcript subtree. */
+  isVisible: boolean
   /** Drive the composer's flowing active-session border. True only for the
    *  active tab while several sessions are visible (tiled within a group
    *  and/or split across groups) — the places the flow serves as the "which
@@ -237,6 +241,7 @@ const ConversationTabView = memo(function ConversationTabView({
   agentType,
   workingDir,
   isActive,
+  isVisible,
   showActiveFlow,
   reloadSignal,
   groupId,
@@ -464,7 +469,7 @@ const ConversationTabView = memo(function ConversationTabView({
     loading: detailLoading,
     error: detailError,
     acpLoadError,
-  } = useConversationDetail(effectiveConversationId)
+  } = useConversationDetail(effectiveConversationId, { enabled: isVisible })
 
   // Subscribe to only the fields this panel actually reads from its runtime
   // session — NOT the whole session object. The live-message sink rewrites the
@@ -2026,6 +2031,12 @@ const ConversationTabView = memo(function ConversationTabView({
     [feedbackSteer]
   )
 
+  // Keep every tab's connection/lifecycle hooks resident so background agents
+  // continue running, but do not keep a second copy of the transcript renderer
+  // (and all of its streaming derivations) alive for every persisted tab. The
+  // detail stays in the runtime cache, so returning to the tab is immediate.
+  if (!isVisible) return null
+
   return (
     <ConversationShell
       topBanner={
@@ -2677,6 +2688,7 @@ export function ConversationDetailPanel() {
         agentType={tab.agentType}
         workingDir={tab.workingDir ?? folderPath}
         isActive={active}
+        isVisible={visible}
         showActiveFlow={(isSplit || canTileG) && active}
         reloadSignal={reloadByTabId[tab.id] ?? 0}
         groupId={groupId}

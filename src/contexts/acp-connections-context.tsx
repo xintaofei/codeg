@@ -384,6 +384,23 @@ function sameConnectRequest(a: ConnectRequest, b: ConnectRequest) {
 
 // ── Reducer actions ──
 
+export interface ToolCallUpdatePayload {
+  contextKey: string
+  tool_call_id: string
+  title: string | null
+  fallback_title: string
+  fallback_kind: string
+  status: string | null
+  content: string | null
+  raw_input: string | null
+  raw_output: string | null
+  raw_output_append?: boolean
+  locations: unknown
+  meta: ToolCallMeta
+  /** `null` preserves the previously received image list. */
+  images: ToolCallImage[] | null
+}
+
 type Action =
   | {
       type: "CONNECTION_CREATED"
@@ -467,46 +484,10 @@ type Action =
       /** `null` when the wire event omitted the field (no images). */
       images: ToolCallImage[] | null
     }
-  | {
-      type: "TOOL_CALL_UPDATE"
-      contextKey: string
-      tool_call_id: string
-      title: string | null
-      fallback_title: string
-      fallback_kind: string
-      status: string | null
-      content: string | null
-      raw_input: string | null
-      raw_output: string | null
-      raw_output_append?: boolean
-      locations: unknown
-      meta: ToolCallMeta
-      /**
-       * `null` when the wire event omitted the field — preserve prior images.
-       * `[]` (empty array) when the agent explicitly cleared images.
-       * `[a, b]` to replace.
-       */
-      images: ToolCallImage[] | null
-    }
+  | ({ type: "TOOL_CALL_UPDATE" } & ToolCallUpdatePayload)
   | {
       type: "BATCH_TOOL_CALL_UPDATES"
-      actions: Array<{
-        contextKey: string
-        tool_call_id: string
-        title: string | null
-        fallback_title: string
-        fallback_kind: string
-        status: string | null
-        content: string | null
-        raw_input: string | null
-        raw_output: string | null
-        raw_output_append?: boolean
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        locations: any | null
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        meta: any | null
-        images: ToolCallImage[] | null
-      }>
+      actions: ToolCallUpdatePayload[]
     }
   | {
       type: "PERMISSION_REQUEST"
@@ -681,8 +662,153 @@ type StreamingAction =
 
 type ConnectionsMap = Map<string, ConnectionState>
 const MAX_LIVE_TOOL_RAW_OUTPUT_CHARS = 200_000
+const MAX_LIVE_TOOL_RAW_OUTPUT_CHUNKS = 64
+const MAX_PENDING_TOOL_CALL_UPDATES = 512
+const MAX_PENDING_TOOL_RAW_OUTPUT_CHUNKS = 4_096
 const MAX_BUFFERED_UNMAPPED_EVENTS_PER_CONNECTION = 64
 const MAX_BUFFERED_UNMAPPED_CONNECTIONS = 128
+
+function trimLiveToolOutput(text: string): string {
+  return text.length <= MAX_LIVE_TOOL_RAW_OUTPUT_CHARS
+    ? text
+    : text.slice(-MAX_LIVE_TOOL_RAW_OUTPUT_CHARS)
+}
+
+/**
+ * Mutable, frame-local accumulator for one tool. Keeping output as chunks makes
+ * each websocket event O(1) instead of repeatedly concatenating an ever larger
+ * string while the main thread is catching up. `finish` joins at most once per
+ * animation frame and emits the same append/replace operation the reducer
+ * would have observed after applying every update in order.
+ */
+export class ToolCallUpdateAccumulator {
+  private payload: ToolCallUpdatePayload
+  private rawOutputChunks: string[] = []
+  private rawOutputHead = 0
+  private rawOutputChars = 0
+  private hasRawOutput = false
+  private rawOutputAppend: boolean | undefined
+
+  constructor(initial: ToolCallUpdatePayload) {
+    this.payload = { ...initial, raw_output: null }
+    this.mergeRawOutput(initial.raw_output, initial.raw_output_append)
+  }
+
+  add(incoming: ToolCallUpdatePayload): void {
+    this.payload = {
+      ...this.payload,
+      title: incoming.title ?? this.payload.title,
+      fallback_title: incoming.fallback_title,
+      fallback_kind: incoming.fallback_kind,
+      status: incoming.status ?? this.payload.status,
+      content: incoming.content ?? this.payload.content,
+      raw_input: incoming.raw_input ?? this.payload.raw_input,
+      locations: incoming.locations ?? this.payload.locations,
+      meta: incoming.meta ?? this.payload.meta,
+      images: incoming.images ?? this.payload.images,
+    }
+    this.mergeRawOutput(incoming.raw_output, incoming.raw_output_append)
+  }
+
+  finish(): ToolCallUpdatePayload {
+    return {
+      ...this.payload,
+      raw_output: this.hasRawOutput
+        ? this.rawOutputChunks.slice(this.rawOutputHead).join("")
+        : null,
+      raw_output_append: this.rawOutputAppend,
+    }
+  }
+
+  private mergeRawOutput(
+    rawOutput: string | null,
+    append: boolean | undefined
+  ): void {
+    if (rawOutput === null) return
+
+    if (!append) {
+      const bounded = trimLiveToolOutput(rawOutput)
+      this.rawOutputChunks = [bounded]
+      this.rawOutputHead = 0
+      this.rawOutputChars = bounded.length
+      this.hasRawOutput = true
+      this.rawOutputAppend = false
+      return
+    }
+
+    if (!this.hasRawOutput) {
+      this.rawOutputAppend = true
+      this.hasRawOutput = true
+    }
+    // Appending after a replacement must remain one replacement of the old
+    // reducer value; appending after an append stays an append.
+    this.rawOutputChunks.push(rawOutput)
+    this.rawOutputChars += rawOutput.length
+
+    while (
+      this.rawOutputChars > MAX_LIVE_TOOL_RAW_OUTPUT_CHARS &&
+      this.rawOutputHead < this.rawOutputChunks.length
+    ) {
+      const excess = this.rawOutputChars - MAX_LIVE_TOOL_RAW_OUTPUT_CHARS
+      const head = this.rawOutputChunks[this.rawOutputHead]
+      if (head.length <= excess) {
+        this.rawOutputChars -= head.length
+        this.rawOutputHead += 1
+      } else {
+        this.rawOutputChunks[this.rawOutputHead] = head.slice(excess)
+        this.rawOutputChars -= excess
+      }
+    }
+
+    const activeChunks = this.rawOutputChunks.length - this.rawOutputHead
+    if (
+      this.rawOutputHead >= MAX_PENDING_TOOL_RAW_OUTPUT_CHUNKS ||
+      activeChunks > MAX_PENDING_TOOL_RAW_OUTPUT_CHUNKS
+    ) {
+      this.rawOutputChunks = [
+        this.rawOutputChunks.slice(this.rawOutputHead).join(""),
+      ]
+      this.rawOutputHead = 0
+    }
+  }
+}
+
+export function boundLiveToolOutputChunks(chunks: string[]): {
+  chunks: string[]
+  total: number
+} {
+  let bounded = chunks
+  let total = bounded.reduce((sum, chunk) => sum + chunk.length, 0)
+
+  if (total > MAX_LIVE_TOOL_RAW_OUTPUT_CHARS) {
+    let evictCount = 0
+    let evictedChars = 0
+    while (
+      evictCount < bounded.length - 1 &&
+      total - evictedChars > MAX_LIVE_TOOL_RAW_OUTPUT_CHARS
+    ) {
+      evictedChars += bounded[evictCount].length
+      evictCount += 1
+    }
+    if (evictCount > 0) {
+      bounded = bounded.slice(evictCount)
+      total -= evictedChars
+    }
+    if (bounded.length === 1 && total > MAX_LIVE_TOOL_RAW_OUTPUT_CHARS) {
+      bounded = [trimLiveToolOutput(bounded[0])]
+      total = bounded[0].length
+    }
+  }
+
+  // A byte cap alone still permits hundreds of thousands of one-character
+  // chunks, making each immutable append copy an ever-growing array. Collapse
+  // periodically so append cost stays bounded as well.
+  if (bounded.length > MAX_LIVE_TOOL_RAW_OUTPUT_CHUNKS) {
+    bounded = [bounded.join("")]
+    total = bounded[0].length
+  }
+  return { chunks: bounded, total }
+}
 /**
  * How many times a user-driven `reconnect` will wait for an in-flight
  * `connect()` on the same key before giving up and rebuilding anyway. Small on
@@ -1720,6 +1846,9 @@ function connectionsReducer(
     case "TOOL_CALL": {
       const conn = state.get(action.contextKey)
       if (!conn) return state
+      const boundedRawOutput = boundLiveToolOutputChunks(
+        action.raw_output !== null ? [action.raw_output] : []
+      )
       // Out-of-turn wire tool activity stays OUT of `liveMessage` (the
       // transcript overlay renders that content — grafting it here recreated
       // the garbled-timeline bug), but its context is still recorded so a
@@ -1735,9 +1864,8 @@ function connectionsReducer(
             status: action.status,
             content: action.content,
             raw_input: action.raw_input,
-            raw_output_chunks:
-              action.raw_output !== null ? [action.raw_output] : [],
-            raw_output_total_bytes: action.raw_output?.length ?? 0,
+            raw_output_chunks: boundedRawOutput.chunks,
+            raw_output_total_bytes: boundedRawOutput.total,
             locations: action.locations,
             meta: action.meta,
             images: action.images ?? [],
@@ -1767,11 +1895,11 @@ function connectionsReducer(
                 raw_input: action.raw_input ?? block.info.raw_input,
                 raw_output_chunks:
                   action.raw_output !== null
-                    ? [action.raw_output]
+                    ? boundedRawOutput.chunks
                     : block.info.raw_output_chunks,
                 raw_output_total_bytes:
                   action.raw_output !== null
-                    ? action.raw_output.length
+                    ? boundedRawOutput.total
                     : block.info.raw_output_total_bytes,
                 images:
                   action.images !== null ? action.images : block.info.images,
@@ -1794,9 +1922,8 @@ function connectionsReducer(
               status: action.status,
               content: action.content,
               raw_input: action.raw_input,
-              raw_output_chunks:
-                action.raw_output !== null ? [action.raw_output] : [],
-              raw_output_total_bytes: action.raw_output?.length ?? 0,
+              raw_output_chunks: boundedRawOutput.chunks,
+              raw_output_total_bytes: boundedRawOutput.total,
               locations: action.locations ?? null,
               meta: action.meta ?? null,
               images: action.images ?? [],
@@ -1875,9 +2002,9 @@ function connectionsReducer(
       let newContent: LiveContentBlock[]
 
       if (existingIndex === -1) {
-        const initialChunks =
+        const initial = boundLiveToolOutputChunks(
           action.raw_output !== null ? [action.raw_output] : []
-        const initialBytes = action.raw_output?.length ?? 0
+        )
         newContent = [
           ...prev.content,
           {
@@ -1888,11 +2015,11 @@ function connectionsReducer(
               kind: action.fallback_kind,
               status:
                 action.status ??
-                (initialChunks.length > 0 ? "in_progress" : "pending"),
+                (initial.chunks.length > 0 ? "in_progress" : "pending"),
               content: action.content,
               raw_input: action.raw_input,
-              raw_output_chunks: initialChunks,
-              raw_output_total_bytes: initialBytes,
+              raw_output_chunks: initial.chunks,
+              raw_output_total_bytes: initial.total,
               locations: action.locations ?? null,
               meta: action.meta ?? null,
               images: action.images ?? [],
@@ -1910,33 +2037,17 @@ function connectionsReducer(
           newChunks = block.info.raw_output_chunks
           newTotalBytes = block.info.raw_output_total_bytes
         } else if (action.raw_output_append) {
-          newChunks = [...block.info.raw_output_chunks, action.raw_output]
-          newTotalBytes =
-            block.info.raw_output_total_bytes + action.raw_output.length
-
-          // 超限时从头部批量移除 chunks（单次 slice 替代循环 shift）
-          if (
-            newTotalBytes > MAX_LIVE_TOOL_RAW_OUTPUT_CHARS &&
-            newChunks.length > 1
-          ) {
-            let evictCount = 0
-            let evictedBytes = 0
-            while (
-              evictCount < newChunks.length - 1 &&
-              newTotalBytes - evictedBytes > MAX_LIVE_TOOL_RAW_OUTPUT_CHARS
-            ) {
-              evictedBytes += newChunks[evictCount].length
-              evictCount++
-            }
-            if (evictCount > 0) {
-              newChunks = newChunks.slice(evictCount)
-              newTotalBytes -= evictedBytes
-            }
-          }
+          const bounded = boundLiveToolOutputChunks([
+            ...block.info.raw_output_chunks,
+            action.raw_output,
+          ])
+          newChunks = bounded.chunks
+          newTotalBytes = bounded.total
         } else {
           // 非 append 模式（替换）
-          newChunks = [action.raw_output]
-          newTotalBytes = action.raw_output.length
+          const bounded = boundLiveToolOutputChunks([action.raw_output])
+          newChunks = bounded.chunks
+          newTotalBytes = bounded.total
         }
 
         newContent = [
@@ -3430,33 +3541,21 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   )
 
   // ── RAF batching for tool_call_update events ──
-  const pendingToolCallUpdates = useRef<
-    Array<{
-      contextKey: string
-      tool_call_id: string
-      title: string | null
-      fallback_title: string
-      fallback_kind: string
-      status: string | null
-      content: string | null
-      raw_input: string | null
-      raw_output: string | null
-      raw_output_append?: boolean
-      locations: unknown
-      meta: ToolCallMeta
-      images: ToolCallImage[] | null
-    }>
-  >([])
+  const pendingToolCallUpdates = useRef(
+    new Map<string, ToolCallUpdateAccumulator>()
+  )
   const toolCallUpdateRafId = useRef<number | null>(null)
 
   const flushPendingToolCallUpdates = useCallback(() => {
-    if (pendingToolCallUpdates.current.length === 0) return
+    if (pendingToolCallUpdates.current.size === 0) return
     if (toolCallUpdateRafId.current !== null) {
       cancelAnimationFrame(toolCallUpdateRafId.current)
       toolCallUpdateRafId.current = null
     }
-    const batch = pendingToolCallUpdates.current
-    pendingToolCallUpdates.current = []
+    const batch = Array.from(pendingToolCallUpdates.current.values(), (item) =>
+      item.finish()
+    )
+    pendingToolCallUpdates.current.clear()
     dispatch({ type: "BATCH_TOOL_CALL_UPDATES", actions: batch })
   }, [dispatch])
 
@@ -3585,9 +3684,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             images: e.images ?? null,
           })
           break
-        case "tool_call_update":
+        case "tool_call_update": {
           flushStreamingQueue()
-          pendingToolCallUpdates.current.push({
+          const update: ToolCallUpdatePayload = {
             contextKey,
             tool_call_id: e.tool_call_id,
             title: e.title,
@@ -3601,9 +3700,26 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             locations: e.locations ?? null,
             meta: (e.meta as ToolCallMeta) ?? null,
             images: e.images ?? null,
-          })
+          }
+          const updateKey = `${contextKey}\u0000${e.tool_call_id}`
+          const accumulator = pendingToolCallUpdates.current.get(updateKey)
+          if (
+            accumulator === undefined &&
+            pendingToolCallUpdates.current.size >= MAX_PENDING_TOOL_CALL_UPDATES
+          ) {
+            flushPendingToolCallUpdates()
+          }
+          if (accumulator) {
+            accumulator.add(update)
+          } else {
+            pendingToolCallUpdates.current.set(
+              updateKey,
+              new ToolCallUpdateAccumulator(update)
+            )
+          }
           scheduleToolCallUpdateFlush()
           break
+        }
         case "permission_resolved":
           // Backend signals a permission was answered (this window's local
           // respondPermission, a sibling window, a server-mode peer, or

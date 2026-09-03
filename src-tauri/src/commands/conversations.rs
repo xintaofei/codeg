@@ -24,6 +24,15 @@ use crate::web::event_bridge::{
     IMPORT_SCAN_PROGRESS_EVENT, TABS_CHANGED_EVENT,
 };
 
+// Transcript parsers materialize the whole native session before the response
+// window is sliced. A single large Codex rollout can therefore consume several
+// GiB transiently, and `spawn_blocking` keeps running even after its HTTP caller
+// disconnects. Serialize these parses so tab restores/refetches cannot overlap
+// multiple copies and drive the server into swap/OOM. Waiters remain ordinary
+// cancellable async tasks until they own the permit.
+static TRANSCRIPT_PARSE_CONCURRENCY: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(1);
+
 #[derive(Default)]
 pub(crate) struct ListAllConversationsOptions {
     pub(crate) folder_ids: Option<Vec<i32>>,
@@ -1179,6 +1188,13 @@ pub async fn get_folder_conversation_core(
 
     let (mut turns, session_stats, resolved_ext_id, parsed_title, parsed_model, transcript_watermark) =
         if let Some(ref ext_id) = summary.external_id {
+        let _parse_permit = TRANSCRIPT_PARSE_CONCURRENCY
+            .acquire()
+            .await
+            .map_err(|error| {
+                AppCommandError::task_execution_failed("Conversation parser is unavailable")
+                    .with_detail(error.to_string())
+            })?;
         let at = summary.agent_type;
         let eid = ext_id.clone();
         let db_created_at = summary.created_at;
