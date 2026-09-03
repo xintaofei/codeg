@@ -7925,8 +7925,14 @@ fn classify_session_load_failure(
     //                          "The Claude Agent process exited unexpectedly…"
     //  - "session has ended" → SESSION_ENDED_MESSAGE
     //  - "Session not found" → a plain Error rethrown as an Internal error
-    const UNRECOVERABLE: &[&str] =
-        &["process exited", "session has ended", "Session not found"];
+    // Codex when the rollout file was deleted out from under us:
+    //  - "failed to resolve rollout path '…': file does not exist"
+    const UNRECOVERABLE: &[&str] = &[
+        "process exited",
+        "session has ended",
+        "Session not found",
+        "failed to resolve rollout",
+    ];
     if UNRECOVERABLE.iter().any(|s| message.contains(s)) {
         return Some("session_unavailable");
     }
@@ -14353,6 +14359,17 @@ mod tests {
             classify_session_load_failure(
                 sacp::schema::ErrorCode::InternalError,
                 "Session not found",
+            ),
+            Some("session_unavailable"),
+        );
+        // Codex deleted the rollout out from under a still-listed conversation.
+        assert_eq!(
+            classify_session_load_failure(
+                sacp::schema::ErrorCode::InternalError,
+                "Failed to load session, starting new: Internal error: { \"details\": \
+                 \"failed to resolve rollout path '/Users/feng/.codex/sessions/2026/08/20/\
+                 rollout-2026-08-20T12-48-42-01a01d7f-fe42-72a1-a6ac-fb9eae4de407.json': \
+                 file does not exist\" }",
             ),
             Some("session_unavailable"),
         );

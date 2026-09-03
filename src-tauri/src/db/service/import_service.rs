@@ -339,6 +339,162 @@ pub(crate) async fn sync_imported_sessions(
     refreshed
 }
 
+/// Soft-delete imported conversations whose agent-side session files are gone.
+///
+/// The sidebar reads SQLite, not the agent session directories: once a row is
+/// imported (or an ACP session is bound), deleting the rollout on disk leaves a
+/// ghost that still opens — and then fails with "failed to resolve rollout
+/// path". This reconcile walks the same row set the import scan already loaded
+/// and removes every live, non-delegation row whose `(agent_type, external_id)`
+/// is absent from `present`.
+///
+/// `present` is the set of session ids still on disk for each agent (from the
+/// filesystem scan, plus Codex archived rollouts). Rows younger than
+/// [`PRUNE_GRACE`] are skipped so a just-created ACP session whose rollout has
+/// not landed yet is not deleted mid-handshake.
+///
+/// Returns the soft-deleted conversation ids so the caller can broadcast
+/// `conversation://changed` Deleted events and run tab/canvas cleanup.
+pub(crate) async fn prune_missing_imported_sessions(
+    conn: &DatabaseConnection,
+    rows: &[conversation::Model],
+    present: &std::collections::HashSet<(String, String)>,
+) -> Vec<i32> {
+    use chrono::{Duration, Utc};
+
+    /// Brand-new ACP sessions can bind an `external_id` a moment before the
+    /// agent writes its rollout. Skip anything that young.
+    const PRUNE_GRACE: Duration = Duration::seconds(120);
+
+    let cutoff = Utc::now() - PRUNE_GRACE;
+    let mut pruned = Vec::new();
+    for row in rows {
+        if row.deleted_at.is_some() {
+            continue;
+        }
+        // Delegation children are handled when their parent is pruned (below),
+        // or when their parent is already gone (orphaned-child pass at the end).
+        if row.parent_id.is_some() {
+            continue;
+        }
+        let Some(external_id) = row.external_id.as_deref() else {
+            continue;
+        };
+        if present.contains(&(row.agent_type.clone(), external_id.to_string())) {
+            continue;
+        }
+        if row.created_at > cutoff {
+            continue;
+        }
+        match conversation_service::soft_delete(conn, row.id).await {
+            Ok(()) => {
+                tracing::info!(
+                    conversation_id = row.id,
+                    agent_type = %row.agent_type,
+                    external_id,
+                    "pruned conversation whose agent session file is gone"
+                );
+                pruned.push(row.id);
+                if let Ok(children) = conversation_service::list_children(conn, row.id).await {
+                    for child in children {
+                        match conversation_service::soft_delete(conn, child.id).await {
+                            Ok(()) => pruned.push(child.id),
+                            Err(e) => tracing::warn!(
+                                conversation_id = child.id,
+                                parent_id = row.id,
+                                error = %e,
+                                "failed to prune child of missing imported session"
+                            ),
+                        }
+                    }
+                }
+            }
+            Err(e) => tracing::warn!(
+                conversation_id = row.id,
+                error = %e,
+                "failed to prune missing imported session"
+            ),
+        }
+    }
+
+    // A previous prune (before cascade) — or a cross-agent child of a pruned
+    // parent — may leave live children hanging off an already-deleted parent.
+    // Soft-delete those orphans so they cannot resurface through
+    // include_children / child_count paths. Query the DB directly rather than
+    // trusting `rows`: the list_all Codex-only pass never sees a Claude child
+    // of a deleted Codex parent.
+    use sea_orm::EntityTrait;
+    let Ok(live_children) = conversation::Entity::find()
+        .filter(conversation::Column::ParentId.is_not_null())
+        .filter(conversation::Column::DeletedAt.is_null())
+        .all(conn)
+        .await
+    else {
+        return pruned;
+    };
+    for row in live_children {
+        let Some(parent_id) = row.parent_id else {
+            continue;
+        };
+        let parent_gone = match conversation::Entity::find_by_id(parent_id).one(conn).await {
+            Ok(Some(parent)) => parent.deleted_at.is_some(),
+            Ok(None) => true,
+            Err(_) => continue,
+        };
+        if !parent_gone {
+            continue;
+        }
+        match conversation_service::soft_delete(conn, row.id).await {
+            Ok(()) => {
+                tracing::info!(
+                    conversation_id = row.id,
+                    parent_id,
+                    "pruned orphaned child of a deleted conversation"
+                );
+                pruned.push(row.id);
+            }
+            Err(e) => tracing::warn!(
+                conversation_id = row.id,
+                parent_id,
+                error = %e,
+                "failed to prune orphaned child"
+            ),
+        }
+    }
+    pruned
+}
+
+/// Build the on-disk presence set from a scan's summaries, then add every Codex
+/// session that still has a rollout under `sessions/` or `archived_sessions/`.
+/// Archived sessions are absent from the normal Codex parser listing but must
+/// not be pruned — they reopen via `codex unarchive`.
+///
+/// Returns `None` when the Codex disk walk fails: callers must skip prune
+/// entirely rather than treat "unknown" as "empty".
+pub(crate) fn present_keys_with_codex_disk(
+    summaries: &[(AgentType, ConversationSummary)],
+) -> Option<std::collections::HashSet<(String, String)>> {
+    let mut present: std::collections::HashSet<(String, String)> = summaries
+        .iter()
+        .map(|(at, s)| (agent_type_db_str(at), s.id.clone()))
+        .collect();
+    match crate::parsers::codex::CodexParser::new().present_session_ids() {
+        Ok(ids) => {
+            for id in ids {
+                present.insert((agent_type_db_str(&AgentType::Codex), id));
+            }
+            Some(present)
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "codex disk presence walk failed; skipping prune of missing imported sessions"
+            );
+            None
+        }
+    }
+}
+
 /// Insert a brand-new conversation, or — when it already exists — refresh it in
 /// place from the freshly parsed session file (see [`refresh_existing`]).
 async fn import_one(
@@ -936,6 +1092,79 @@ mod tests {
         assert_eq!(row.message_count, 2);
         assert_eq!(row.title.as_deref(), Some("original"));
         assert!(row.deleted_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn prune_missing_imported_sessions_soft_deletes_absent_rows() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-prune-missing").await;
+        let at = AgentType::Codex;
+
+        let old = Utc::now() - Duration::hours(2);
+        import_one(
+            &db.conn,
+            folder,
+            &at,
+            &timed_summary("gone-session", Some("ghost"), old, 3),
+        )
+        .await
+        .expect("import ghost");
+        import_one(
+            &db.conn,
+            folder,
+            &at,
+            &timed_summary("live-session", Some("kept"), old, 2),
+        )
+        .await
+        .expect("import live");
+        let gone_id = find_id(&db.conn, "gone-session").await;
+        let live_id = find_id(&db.conn, "live-session").await;
+
+        let present = std::collections::HashSet::from([(
+            agent_type_db_str(&at),
+            "live-session".to_string(),
+        )]);
+        let rows = external_rows(&db.conn).await;
+        assert_eq!(
+            prune_missing_imported_sessions(&db.conn, &rows, &present).await,
+            vec![gone_id]
+        );
+
+        let gone = find_row(&db.conn, "gone-session").await;
+        assert!(gone.deleted_at.is_some(), "absent session must be pruned");
+        let live = find_row(&db.conn, "live-session").await;
+        assert!(live.deleted_at.is_none(), "present session must stay");
+        assert_eq!(live.id, live_id);
+    }
+
+    #[tokio::test]
+    async fn prune_missing_imported_sessions_skips_fresh_rows() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-prune-grace").await;
+        let at = AgentType::Codex;
+
+        // Just created — rollout may not be on disk yet. Use a summary whose
+        // started_at is *now* (timed_summary backs it by an hour).
+        let now = Utc::now();
+        let mut fresh = summary("brand-new", Some("inflight"));
+        fresh.started_at = now;
+        fresh.ended_at = Some(now);
+        fresh.message_count = 0;
+        import_one(&db.conn, folder, &at, &fresh)
+            .await
+            .expect("import");
+        let id = find_id(&db.conn, "brand-new").await;
+        let rows = external_rows(&db.conn).await;
+        let present = std::collections::HashSet::new();
+        assert!(
+            prune_missing_imported_sessions(&db.conn, &rows, &present)
+                .await
+                .is_empty(),
+            "a just-created session must survive the grace window"
+        );
+        let row = find_row(&db.conn, "brand-new").await;
+        assert!(row.deleted_at.is_none());
+        assert_eq!(row.id, id);
     }
 
     #[tokio::test]

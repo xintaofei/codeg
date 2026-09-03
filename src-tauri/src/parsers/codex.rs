@@ -173,17 +173,76 @@ impl CodexParser {
         if session_id.is_empty() || session_id.contains(['/', '\\']) || session_id.contains("..") {
             return None;
         }
-        WalkDir::new(&self.base_dir)
+        self.find_rollout_in_dir(&self.base_dir, session_id)
+    }
+
+    /// Every session id that still has a rollout under `sessions/` or
+    /// `archived_sessions/`. Used to prune DB rows whose agent-side files are
+    /// gone without opening each file.
+    ///
+    /// Returns `Err` when the walk hits an I/O / permission error: callers must
+    /// treat that as "disk presence unknown" and **skip** prune, never as an
+    /// empty set (an empty set means "successfully observed zero rollouts").
+    pub(crate) fn present_session_ids(&self) -> Result<HashSet<String>, std::io::Error> {
+        let mut ids = HashSet::new();
+        self.collect_session_ids_from_dir(&self.base_dir, &mut ids)?;
+        if let Some(home) = self.base_dir.parent() {
+            self.collect_session_ids_from_dir(&home.join("archived_sessions"), &mut ids)?;
+        }
+        Ok(ids)
+    }
+
+    fn find_rollout_in_dir(
+        &self,
+        dir: &Path,
+        session_id: &str,
+    ) -> Option<std::path::PathBuf> {
+        if !dir.exists() {
+            return None;
+        }
+        WalkDir::new(dir)
             .into_iter()
             .filter_map(Result::ok)
             .map(|entry| entry.path().to_path_buf())
             .find(|path| {
-                if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                let ext = path.extension().and_then(|e| e.to_str());
+                // Codex historically wrote `.json`; current rollouts are `.jsonl`.
+                if ext != Some("jsonl") && ext != Some("json") {
                     return false;
                 }
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
                 name.starts_with("rollout-") && name.contains(session_id)
             })
+    }
+
+    fn collect_session_ids_from_dir(
+        &self,
+        dir: &Path,
+        ids: &mut HashSet<String>,
+    ) -> Result<(), std::io::Error> {
+        if !dir.exists() {
+            return Ok(());
+        }
+        for entry in WalkDir::new(dir).into_iter() {
+            let entry = entry.map_err(|e| {
+                std::io::Error::new(
+                    e.io_error()
+                        .map(|io| io.kind())
+                        .unwrap_or(std::io::ErrorKind::Other),
+                    e.to_string(),
+                )
+            })?;
+            let path = entry.path();
+            let ext = path.extension().and_then(|e| e.to_str());
+            if ext != Some("jsonl") && ext != Some("json") {
+                continue;
+            }
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if let Some(id) = session_id_from_rollout_filename(&name) {
+                ids.insert(id);
+            }
+        }
+        Ok(())
     }
 
     /// Load Codex's append-only session title index. The transcript remains the
@@ -739,6 +798,35 @@ impl AgentParser for CodexParser {
             conversation_id.to_string(),
         ))
     }
+}
+
+/// Extract the session id embedded in a Codex rollout filename
+/// (`rollout-<timestamp>-<session-id>.jsonl`). The id is the trailing UUID.
+fn session_id_from_rollout_filename(name: &str) -> Option<String> {
+    let stem = name
+        .strip_prefix("rollout-")?
+        .strip_suffix(".jsonl")
+        .or_else(|| name.strip_prefix("rollout-")?.strip_suffix(".json"))?;
+    // UUID is 8-4-4-4-12 (36 chars with hyphens) at the end of the stem.
+    if stem.len() < 36 {
+        return None;
+    }
+    let candidate = &stem[stem.len() - 36..];
+    let mut parts = candidate.split('-');
+    let looks_like_uuid = matches!(
+        (
+            parts.next().map(|p| p.len()),
+            parts.next().map(|p| p.len()),
+            parts.next().map(|p| p.len()),
+            parts.next().map(|p| p.len()),
+            parts.next().map(|p| p.len()),
+            parts.next(),
+        ),
+        (Some(8), Some(4), Some(4), Some(4), Some(12), None)
+    ) && candidate
+        .bytes()
+        .all(|b| b.is_ascii_hexdigit() || b == b'-');
+    looks_like_uuid.then(|| candidate.to_string())
 }
 
 fn parse_codex_json_arg(payload: &serde_json::Value) -> Option<serde_json::Value> {
@@ -5577,6 +5665,38 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
 
 #[cfg(test)]
 mod tests {
+
+    /// An empty, readable sessions dir is a successful empty presence set —
+    /// callers may prune. An unreadable dir must return Err so callers skip
+    /// prune instead of treating the failure as "zero rollouts".
+    #[test]
+    fn present_session_ids_distinguishes_empty_from_unreadable() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let sessions_dir = temp_dir.path().join("sessions");
+        fs::create_dir_all(&sessions_dir).expect("sessions");
+        let parser = CodexParser::with_base_dir(sessions_dir.clone());
+        assert!(
+            parser
+                .present_session_ids()
+                .expect("readable empty dir")
+                .is_empty()
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&sessions_dir, fs::Permissions::from_mode(0o000))
+                .expect("chmod");
+            let result = CodexParser::with_base_dir(sessions_dir.clone()).present_session_ids();
+            // Restore so tempfile cleanup can remove the dir.
+            fs::set_permissions(&sessions_dir, fs::Permissions::from_mode(0o755))
+                .expect("chmod restore");
+            assert!(
+                result.is_err(),
+                "unreadable sessions dir must not look like an empty successful walk"
+            );
+        }
+    }
 
     /// codex-acp 1.8.0 forks BY REFERENCE: the child's rollout carries no
     /// history, only `forked_from_id` + `forked_from_ordinal_exclusive`. Read
