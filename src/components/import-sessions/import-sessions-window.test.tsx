@@ -75,7 +75,8 @@ function session(
   externalId: string,
   agentType: string,
   title: string,
-  status: "new" | "imported" | "deleted"
+  status: "new" | "imported" | "deleted",
+  archived = false
 ) {
   return {
     external_id: externalId,
@@ -87,6 +88,7 @@ function session(
     model: null,
     git_branch: null,
     status,
+    archived,
   }
 }
 
@@ -103,6 +105,8 @@ function scanFixture(): ScanResult {
           session("a1", "claude_code", "Alpha one", "new"),
           session("a2", "codex", "Alpha two", "new"),
           session("a3", "codex", "Alpha old", "imported"),
+          session("a4", "codex", "Alpha archived", "new", true),
+          session("a5", "claude_code", "Alpha archived claude", "new", true),
         ],
       },
       {
@@ -118,8 +122,8 @@ function scanFixture(): ScanResult {
       },
     ],
     no_folder_count: 1,
-    total_sessions: 5,
-    importable_count: 3,
+    total_sessions: 7,
+    importable_count: 5,
   } as ScanResult
 }
 
@@ -165,9 +169,10 @@ describe("ImportSessionsWindow", () => {
 
     expect(await screen.findByText("alpha")).toBeVisible()
     expect(screen.getByText("beta")).toBeVisible()
-    // All five sessions render as rows under their folders.
     expect(screen.getByText("Alpha one")).toBeVisible()
     expect(screen.getByText("Beta gone")).toBeVisible()
+    expect(screen.queryByText("Alpha archived")).toBeNull()
+    expect(screen.queryByText("Alpha archived claude")).toBeNull()
     // The not-in-codeg folder carries the "New" badge; the existing one not.
     const alphaHeader = screen
       .getByText("alpha")
@@ -176,7 +181,7 @@ describe("ImportSessionsWindow", () => {
     expect(alphaHeader.textContent).toContain("New")
     // Summary footer counts come from the scan payload.
     expect(
-      screen.getByText("5 sessions · 3 importable · 2 folders")
+      screen.getByText("7 sessions · 5 importable · 2 folders")
     ).toBeVisible()
     expect(screen.getByText("1 without a project folder skipped")).toBeVisible()
   })
@@ -253,11 +258,27 @@ describe("ImportSessionsWindow", () => {
     renderWindow()
     await screen.findByText("alpha")
 
-    fireEvent.click(screen.getByRole("switch"))
+    const switches = screen.getAllByRole("switch")
+    fireEvent.click(switches[0])
     expect(screen.queryByText("Alpha old")).toBeNull()
     expect(screen.queryByText("Beta gone")).toBeNull()
     expect(screen.getByText("Alpha one")).toBeVisible()
     expect(screen.getByText("Beta new")).toBeVisible()
+  })
+
+  it("hides archived sessions by default and shows them when the filter is off", async () => {
+    renderWindow()
+    await screen.findByText("alpha")
+
+    expect(screen.queryByText("Alpha archived")).toBeNull()
+    expect(screen.queryByText("Alpha archived claude")).toBeNull()
+    expect(screen.getByText("Alpha one")).toBeVisible()
+
+    const switches = screen.getAllByRole("switch")
+    fireEvent.click(switches[1])
+    expect(screen.getByText("Alpha archived")).toBeVisible()
+    expect(screen.getByText("Alpha archived claude")).toBeVisible()
+    expect(screen.getAllByText("Archived").length).toBeGreaterThanOrEqual(2)
   })
 
   it("imports exactly the selected keys and shows the summary", async () => {

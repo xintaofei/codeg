@@ -649,6 +649,7 @@ impl CodexParser {
             parent_id,
             parent_tool_use_id: None,
             delegation_call_id: None,
+            archived: false,
         }))
     }
 }
@@ -665,6 +666,81 @@ fn resolve_codex_home_dir_from(
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| home_dir.unwrap_or_default().join(".codex"))
+}
+
+/// Codex Desktop / CLI persist `threads.archived` in `state_<n>.sqlite`.
+/// Newest schema file wins. Missing DB or column is "not archived".
+fn load_codex_archived_ids(codex_home: &Path) -> HashSet<String> {
+    let Some(db_path) = newest_codex_state_db(codex_home) else {
+        return HashSet::new();
+    };
+    let Ok(conn) = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) else {
+        return HashSet::new();
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id FROM threads WHERE COALESCE(archived, 0) != 0",
+    ) else {
+        return HashSet::new();
+    };
+    let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) else {
+        return HashSet::new();
+    };
+    rows.filter_map(Result::ok).collect()
+}
+
+fn newest_codex_state_db(codex_home: &Path) -> Option<PathBuf> {
+    let mut best: Option<(u32, PathBuf)> = None;
+    let entries = fs::read_dir(codex_home).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(rest) = name.strip_prefix("state_") else {
+            continue;
+        };
+        let Some(num) = rest.strip_suffix(".sqlite") else {
+            continue;
+        };
+        let Ok(version) = num.parse::<u32>() else {
+            continue;
+        };
+        if best.as_ref().is_none_or(|(v, _)| version >= *v) {
+            best = Some((version, entry.path()));
+        }
+    }
+    best.map(|(_, path)| path)
+}
+
+#[cfg(test)]
+mod archived_flag_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn load_codex_archived_ids_reads_newest_state_db() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("state_4.sqlite"), b"not a db").unwrap();
+        let db5 = dir.path().join("state_5.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&db5).expect("create db");
+            conn.execute(
+                "CREATE TABLE threads (id TEXT PRIMARY KEY, archived INTEGER)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO threads (id, archived) VALUES ('live-1', 0), ('arch-1', 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let ids = load_codex_archived_ids(dir.path());
+        assert!(ids.contains("arch-1"));
+        assert!(!ids.contains("live-1"));
+        assert_eq!(newest_codex_state_db(dir.path()), Some(db5));
+    }
 }
 
 impl AgentParser for CodexParser {
@@ -702,6 +778,15 @@ impl AgentParser for CodexParser {
                     conversations.push(summary);
                 }
                 _ => continue,
+            }
+        }
+
+        let archived = load_codex_archived_ids(
+            self.base_dir.parent().unwrap_or(self.base_dir.as_path()),
+        );
+        for conversation in &mut conversations {
+            if archived.contains(&conversation.id) {
+                conversation.archived = true;
             }
         }
 
@@ -4340,6 +4425,7 @@ impl CodexParser {
             parent_id,
             parent_tool_use_id: None,
             delegation_call_id: None,
+            archived: false,
         };
 
         Ok(ConversationDetail {

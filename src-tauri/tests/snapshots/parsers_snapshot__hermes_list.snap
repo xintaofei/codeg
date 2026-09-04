@@ -13,6 +13,20 @@ expression: conversations
     "ended_at": "[ts]",
     "message_count": 5,
     "model": "gpt-5.5",
-    "git_branch": null
+    "git_branch": null,
+    "archived": false
+  },
+  {
+    "id": "hermes-sess-archived",
+    "agent_type": "hermes",
+    "folder_path": "/Users/demo/arch",
+    "folder_name": "arch",
+    "title": "archived one",
+    "started_at": "[ts]",
+    "ended_at": "[ts]",
+    "message_count": 1,
+    "model": "gpt-5.5",
+    "git_branch": null,
+    "archived": true
   }
 ]

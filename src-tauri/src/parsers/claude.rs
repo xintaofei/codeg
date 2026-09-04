@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -857,6 +858,7 @@ impl ClaudeParser {
         let mut first_timestamp: Option<DateTime<Utc>> = None;
         let mut last_timestamp: Option<DateTime<Utc>> = None;
         let mut message_count: u32 = 0;
+        let mut archived = false;
 
         for line in reader.lines() {
             let line = match line {
@@ -871,6 +873,12 @@ impl ClaudeParser {
                 Ok(v) => v,
                 Err(_) => continue,
             };
+
+            // Read before skip filters: Desktop/CLI may stamp this on a
+            // metadata record that is not a user/assistant turn.
+            if let Some(flag) = value.get("isArchived").and_then(|v| v.as_bool()) {
+                archived = flag;
+            }
 
             let msg_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
@@ -979,6 +987,7 @@ impl ClaudeParser {
             parent_id: None,
             parent_tool_use_id: None,
             delegation_call_id: None,
+            archived,
         }))
     }
 }
@@ -995,6 +1004,99 @@ fn resolve_claude_config_dir_from(
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| home_dir.unwrap_or_default().join(".claude"))
+}
+
+/// Claude Desktop stores Code sessions as
+/// `claude-code-sessions/{org}/{user}/local_{id}.json` with `isArchived`.
+/// Classic Electron uses `%AppData%/Claude`. The Windows Store package
+/// virtualizes that to
+/// `%LocalAppData%/Packages/Claude_*/LocalCache/Roaming/Claude`.
+fn claude_desktop_sessions_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(config) = dirs::config_dir() {
+        roots.push(config.join("Claude").join("claude-code-sessions"));
+    }
+    if let Some(local) = dirs::data_local_dir() {
+        let packages = local.join("Packages");
+        if let Ok(entries) = fs::read_dir(&packages) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if !name.starts_with("Claude_") {
+                    continue;
+                }
+                roots.push(
+                    entry
+                        .path()
+                        .join("LocalCache")
+                        .join("Roaming")
+                        .join("Claude")
+                        .join("claude-code-sessions"),
+                );
+            }
+        }
+    }
+    roots
+}
+
+fn session_id_from_desktop_filename(name: &str) -> Option<String> {
+    let stem = name.strip_suffix(".json")?;
+    let id = stem.strip_prefix("local_")?;
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
+fn load_claude_desktop_archived_ids(root: &Path) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    if !root.is_dir() {
+        return ids;
+    }
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(id) = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(session_id_from_desktop_filename)
+            else {
+                continue;
+            };
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            if value.get("isArchived").and_then(|v| v.as_bool()) == Some(true) {
+                ids.insert(id);
+                if let Some(session_id) = value.get("sessionId").and_then(|v| v.as_str()) {
+                    if !session_id.is_empty() {
+                        ids.insert(session_id.to_string());
+                    }
+                }
+                if let Some(cli_id) = value.get("cliSessionId").and_then(|v| v.as_str()) {
+                    if !cli_id.is_empty() {
+                        ids.insert(cli_id.to_string());
+                    }
+                }
+            }
+        }
+    }
+    ids
 }
 
 impl AgentParser for ClaudeParser {
@@ -1046,6 +1148,18 @@ impl AgentParser for ClaudeParser {
                     }
                     Ok(None) => continue,
                     Err(_) => continue,
+                }
+            }
+        }
+
+        let mut archived = HashSet::new();
+        for root in claude_desktop_sessions_roots() {
+            archived.extend(load_claude_desktop_archived_ids(&root));
+        }
+        if !archived.is_empty() {
+            for conversation in &mut conversations {
+                if archived.contains(&conversation.id) {
+                    conversation.archived = true;
                 }
             }
         }
@@ -2018,6 +2132,7 @@ impl ClaudeParser {
             parent_id: None,
             parent_tool_use_id: None,
             delegation_call_id: None,
+            archived: false,
         };
 
         Ok(ConversationDetail {
@@ -5503,5 +5618,68 @@ mod tests {
             }
             other => panic!("expected ToolResult, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn jsonl_is_archived_marks_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("-tmp-demo");
+        std::fs::create_dir_all(&proj).unwrap();
+        let path = proj.join("sess-archived.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"user","sessionId":"sess-archived","timestamp":"2026-07-07T03:40:00.000Z","cwd":"/tmp/demo","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}"#,
+                "\n",
+                r#"{"type":"custom-title","sessionId":"sess-archived","isArchived":true}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let parser = ClaudeParser::with_base_dir(dir.path().to_path_buf());
+        let listed = parser.list_conversations().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].archived);
+        assert_eq!(listed[0].id, "sess-archived");
+    }
+
+    #[test]
+    fn desktop_sidecar_is_archived_overlays_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("org").join("user");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(
+            live.join("local_sess-desk.json"),
+            r#"{"isArchived":true,"sessionId":"sess-desk"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            live.join("local_sess-open.json"),
+            r#"{"isArchived":false,"sessionId":"sess-open"}"#,
+        )
+        .unwrap();
+        let ids = load_claude_desktop_archived_ids(dir.path());
+        assert!(ids.contains("sess-desk"));
+        assert!(!ids.contains("sess-open"));
+        assert_eq!(
+            session_id_from_desktop_filename("local_sess-desk.json").as_deref(),
+            Some("sess-desk")
+        );
+    }
+
+    #[test]
+    fn desktop_sidecar_indexes_session_id_and_cli_session_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("org").join("user");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(
+            live.join("local_file-id.json"),
+            r#"{"isArchived":true,"sessionId":"sess-json","cliSessionId":"cli-json"}"#,
+        )
+        .unwrap();
+        let ids = load_claude_desktop_archived_ids(dir.path());
+        assert!(ids.contains("file-id"));
+        assert!(ids.contains("sess-json"));
+        assert!(ids.contains("cli-json"));
     }
 }

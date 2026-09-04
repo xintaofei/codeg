@@ -597,6 +597,7 @@ fn build_scan_result(
             model: summary.model,
             git_branch: summary.git_branch,
             status,
+            archived: summary.archived,
         });
     }
 
@@ -5091,6 +5092,7 @@ mod tests {
                 parent_id: None,
                 parent_tool_use_id: None,
                 delegation_call_id: None,
+                archived: false,
             },
         )
     }
@@ -5151,6 +5153,15 @@ mod tests {
         assert_eq!(by_id["gone"], ScanSessionStatus::Deleted);
         assert_eq!(result.total_sessions, 3);
         assert_eq!(result.importable_count, 1, "only New counts as importable");
+    }
+
+    #[test]
+    fn scan_preserves_cli_archived_flag() {
+        let (agent, mut summary) =
+            scan_summary("arch", AgentType::Codex, Some("/tmp/p"), at(0));
+        summary.archived = true;
+        let result = build_scan_result(vec![(agent, summary)], &HashMap::new(), &[]);
+        assert!(result.folders[0].sessions[0].archived);
     }
 
     #[test]

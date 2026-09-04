@@ -1635,6 +1635,8 @@
     "searchPlaceholder": "Buscar título o ruta…",
     "allAgents": "Todos los agentes",
     "onlyImportable": "Solo importables",
+    "hideArchived": "Ocultar archivadas",
+    "statusArchived": "Archivada",
     "selectAll": "Seleccionar todo",
     "clearSelection": "Limpiar",
     "expandAll": "Expandir todo",

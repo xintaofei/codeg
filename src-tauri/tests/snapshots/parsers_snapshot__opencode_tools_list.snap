@@ -13,7 +13,8 @@ expression: conversations
     "ended_at": "[ts]",
     "message_count": 2,
     "model": "claude-sonnet-4-6",
-    "git_branch": null
+    "git_branch": null,
+    "archived": false
   },
   {
     "id": "oc-tools-001-child",
@@ -26,6 +27,7 @@ expression: conversations
     "message_count": 1,
     "model": null,
     "git_branch": null,
-    "parent_id": "oc-tools-001"
+    "parent_id": "oc-tools-001",
+    "archived": false
   }
 ]
