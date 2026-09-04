@@ -1287,7 +1287,15 @@
       "sendAttributionHeader": "API에 속성/청구 식별자 전송",
       "sendAttributionHeaderAria": "API에 Claude Code 속성/청구 식별자 전송",
       "disableNonessentialTraffic": "텔레메트리 또는 불필요한 네트워크 요청 비활성화",
-      "disableNonessentialTrafficAria": "Claude Code 텔레메트리 또는 불필요한 네트워크 요청 비활성화"
+      "disableNonessentialTrafficAria": "Claude Code 텔레메트리 또는 불필요한 네트워크 요청 비활성화",
+      "permissionModeLabel": "권한 모드",
+      "permissionModeHint": "CLI 새 세션의 permissions.defaultMode 를 기록합니다. 고른 모드는 CodeG composer 기본값에도 반영되어, 이전 채팅에서 고른 모드가 연결 시 조용히 이기지 않습니다. 기본값 사용은 composer 마지막 값을 그대로 둡니다.",
+      "permissionModeAria": "Claude Code 권한 모드",
+      "permissionUnset": "기본값 사용",
+      "permission_default": "수동",
+      "permission_acceptEdits": "편집 수락",
+      "permission_auto": "자동",
+      "permission_bypassPermissions": "권한 우회"
     },
     "dialogs": {
       "confirmDeleteProvider": "Provider {providerId}를 삭제하시겠습니까?",

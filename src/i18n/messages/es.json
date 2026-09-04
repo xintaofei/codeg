@@ -1287,7 +1287,15 @@
       "sendAttributionHeader": "Enviar identificador de atribución/facturación a la API",
       "sendAttributionHeaderAria": "Enviar el identificador de atribución/facturación de Claude Code a la API",
       "disableNonessentialTraffic": "Desactivar la telemetría o las solicitudes de red innecesarias",
-      "disableNonessentialTrafficAria": "Desactivar la telemetría o las solicitudes de red innecesarias de Claude Code"
+      "disableNonessentialTrafficAria": "Desactivar la telemetría o las solicitudes de red innecesarias de Claude Code",
+      "permissionModeLabel": "Modo de permisos",
+      "permissionModeHint": "Escribe permissions.defaultMode para las sesiones nuevas de la CLI. El modo elegido también queda como valor predeterminado del composer de CodeG, para que una elección anterior no gane en silencio al conectar. Usar el predeterminado deja el último valor del composer como está.",
+      "permissionModeAria": "Modo de permisos de Claude Code",
+      "permissionUnset": "Usar el predeterminado",
+      "permission_default": "Manual",
+      "permission_acceptEdits": "Aceptar ediciones",
+      "permission_auto": "Auto",
+      "permission_bypassPermissions": "Omitir permisos"
     },
     "dialogs": {
       "confirmDeleteProvider": "¿Eliminar proveedor {providerId}?",

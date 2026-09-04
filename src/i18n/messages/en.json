@@ -1287,7 +1287,15 @@
       "sendAttributionHeader": "Send attribution/billing identifier to the API",
       "sendAttributionHeaderAria": "Send Claude Code attribution/billing identifier to the API",
       "disableNonessentialTraffic": "Disable telemetry or redundant network requests",
-      "disableNonessentialTrafficAria": "Disable Claude Code telemetry or redundant network requests"
+      "disableNonessentialTrafficAria": "Disable Claude Code telemetry or redundant network requests",
+      "permissionModeLabel": "Permission mode",
+      "permissionModeHint": "Writes permissions.defaultMode for new CLI sessions. A chosen mode is also saved as CodeG's composer default so a previous chat pick cannot silently win. Use default leaves the composer last-used as-is.",
+      "permissionModeAria": "Claude Code permission mode",
+      "permissionUnset": "Use default",
+      "permission_default": "Manual",
+      "permission_acceptEdits": "Accept Edits",
+      "permission_auto": "Auto",
+      "permission_bypassPermissions": "Bypass Permissions"
     },
     "dialogs": {
       "confirmDeleteProvider": "Delete Provider {providerId}?",

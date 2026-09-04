@@ -37,6 +37,7 @@ import {
 } from "lucide-react"
 import { parse as parseTomlDocument } from "smol-toml"
 import { isDesktop, openUrl } from "@/lib/platform"
+import { saveModeIdPreference } from "@/lib/selector-prefs-storage"
 import { getActiveRemoteConnectionId } from "@/lib/transport"
 import { toast } from "sonner"
 import {
@@ -230,6 +231,11 @@ interface AgentDraft {
   claudeCustomModelOption: string
   claudeCustomModelOptionName: string
   claudeCustomModelOptionDescription: string
+  // Claude Code `permissions.defaultMode` in ~/.claude/settings.json. Empty
+  // string = unset (leave the CLI default and CodeG's composer last-used).
+  // A chosen value is also written to `codeg:selector-prefs` on save so a
+  // stickier composer pick cannot silently win on connect.
+  claudePermissionMode: ClaudePermissionMode
   // Claude Code hardening toggles (native config `env`). `claudeSendAttributionHeader`
   // → CLAUDE_CODE_ATTRIBUTION_HEADER (on="1"/off="0"), default off (don't send).
   // `claudeDisableNonessentialTraffic` → CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,
@@ -632,6 +638,103 @@ const CLAUDE_ENV_FLAG_OFF = "0"
 const CLAUDE_SEND_ATTRIBUTION_HEADER_DEFAULT = false
 const CLAUDE_DISABLE_NONESSENTIAL_TRAFFIC_DEFAULT = true
 
+// Official Claude Code permission modes written to
+// `permissions.defaultMode` in ~/.claude/settings.json. Empty string means
+// the key is unset (Claude picks its own start mode). `manual` is the
+// documented alias of `default`. `plan` and `dontAsk` are valid disk values
+// we do not offer as options; they must round-trip so the control cannot
+// silently replace them with unset.
+type ClaudePermissionMode =
+  | ""
+  | "default"
+  | "acceptEdits"
+  | "auto"
+  | "bypassPermissions"
+  | "plan"
+  | "dontAsk"
+
+const CLAUDE_PERMISSION_UNSET = "__codeg_claude_perm_unset__"
+
+const CLAUDE_PERMISSION_MODE_VALUES: ReadonlyArray<
+  "default" | "acceptEdits" | "auto" | "bypassPermissions"
+> = ["default", "acceptEdits", "auto", "bypassPermissions"]
+
+function isOfferedClaudePermissionMode(
+  mode: ClaudePermissionMode
+): mode is (typeof CLAUDE_PERMISSION_MODE_VALUES)[number] {
+  return (CLAUDE_PERMISSION_MODE_VALUES as readonly string[]).includes(mode)
+}
+
+export function normalizeClaudePermissionMode(
+  value: unknown
+): ClaudePermissionMode {
+  if (typeof value !== "string") return ""
+  const normalized = value.trim()
+  if (normalized === "manual") return "default"
+  if (
+    normalized === "default" ||
+    normalized === "acceptEdits" ||
+    normalized === "auto" ||
+    normalized === "bypassPermissions" ||
+    normalized === "plan" ||
+    normalized === "dontAsk"
+  ) {
+    return normalized
+  }
+  return ""
+}
+
+export function readClaudePermissionMode(
+  config: Record<string, unknown>
+): ClaudePermissionMode {
+  const perms = config.permissions
+  if (!perms || typeof perms !== "object" || Array.isArray(perms)) return ""
+  return normalizeClaudePermissionMode(
+    (perms as Record<string, unknown>).defaultMode
+  )
+}
+
+/**
+ * Write or clear `permissions.defaultMode` in Claude's native settings.json
+ * text, preserving other permission rules (allow/deny/ask). Never writes
+ * `skipDangerousModePermissionPrompt`: that flag is a record of the user
+ * accepting Claude Code's own bypass dialog, not a behavior switch, and
+ * forging it from this dropdown would suppress a safety interlock outside
+ * codeg. Clearing the mode also leaves any existing skip flag alone.
+ * Pure, shared by the settings handler and tests.
+ */
+export function applyClaudePermissionModeToConfigText(
+  configText: string,
+  mode: ClaudePermissionMode
+): { configText: string; recoveredFromInvalid: boolean } {
+  const parseResult = parseConfigJsonText(configText)
+  const config: Record<string, unknown> = parseResult.error
+    ? {}
+    : { ...parseResult.config }
+  const existingPerms =
+    config.permissions &&
+    typeof config.permissions === "object" &&
+    !Array.isArray(config.permissions)
+      ? { ...(config.permissions as Record<string, unknown>) }
+      : {}
+  if (mode) {
+    existingPerms.defaultMode = mode
+    config.permissions = existingPerms
+  } else {
+    delete existingPerms.defaultMode
+    if (Object.keys(existingPerms).length === 0) {
+      delete config.permissions
+    } else {
+      config.permissions = existingPerms
+    }
+  }
+  return {
+    configText:
+      Object.keys(config).length === 0 ? "" : JSON.stringify(config, null, 2),
+    recoveredFromInvalid: Boolean(parseResult.error),
+  }
+}
+
 const GEMINI_AUTH_MODES = [
   "custom",
   "login_google",
@@ -979,6 +1082,7 @@ function extractImportantConfigValues(
   claudeCustomModelOption: string
   claudeCustomModelOptionName: string
   claudeCustomModelOptionDescription: string
+  claudePermissionMode: ClaudePermissionMode
   claudeSendAttributionHeader: boolean
   claudeDisableNonessentialTraffic: boolean
   configError: string | null
@@ -1024,6 +1128,9 @@ function extractImportantConfigValues(
     CLAUDE_MODEL_ENV_KEYS.claudeCustomModelOptionDescription,
   ])
 
+  const claudePermissionMode: ClaudePermissionMode =
+    agentType === "claude_code" ? readClaudePermissionMode(config) : ""
+
   // Present in env → on iff value is "1"; absent → the toggle's default.
   const attributionRaw = findEnvValue(mergedEnv, [
     CLAUDE_ATTRIBUTION_HEADER_ENV_KEY,
@@ -1063,6 +1170,7 @@ function extractImportantConfigValues(
       agentType === "claude_code" ? claudeCustomModelOptionName : "",
     claudeCustomModelOptionDescription:
       agentType === "claude_code" ? claudeCustomModelOptionDescription : "",
+    claudePermissionMode,
     claudeSendAttributionHeader,
     claudeDisableNonessentialTraffic,
     configError: parseResult.error,
@@ -3722,6 +3830,7 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     claudeCustomModelOptionName: important.claudeCustomModelOptionName,
     claudeCustomModelOptionDescription:
       important.claudeCustomModelOptionDescription,
+    claudePermissionMode: important.claudePermissionMode,
     claudeSendAttributionHeader: important.claudeSendAttributionHeader,
     claudeDisableNonessentialTraffic:
       important.claudeDisableNonessentialTraffic,
@@ -5729,6 +5838,7 @@ export function AcpAgentSettings() {
         claudeCustomModelOptionName: important.claudeCustomModelOptionName,
         claudeCustomModelOptionDescription:
           important.claudeCustomModelOptionDescription,
+        claudePermissionMode: important.claudePermissionMode,
         claudeSendAttributionHeader: important.claudeSendAttributionHeader,
         claudeDisableNonessentialTraffic:
           important.claudeDisableNonessentialTraffic,
@@ -5766,6 +5876,34 @@ export function AcpAgentSettings() {
           configText: nextJson.configText,
         }
       })
+    },
+    [selectedAgent, selectedDraft, t, updateSelectedDraft]
+  )
+
+  const handleClaudePermissionModeChange = useCallback(
+    (nextValue: ClaudePermissionMode) => {
+      if (
+        !selectedAgent ||
+        !selectedDraft ||
+        selectedAgent.agent_type !== "claude_code"
+      )
+        return
+      const next = applyClaudePermissionModeToConfigText(
+        selectedDraft.configText,
+        nextValue
+      )
+      if (next.recoveredFromInvalid) {
+        toast.warning(t("warnings.nativeJsonRecoveredStructured"))
+      }
+      setConfigErrors((prev) => ({
+        ...prev,
+        [selectedAgent.agent_type]: null,
+      }))
+      updateSelectedDraft((current) => ({
+        ...current,
+        claudePermissionMode: nextValue,
+        configText: next.configText,
+      }))
     },
     [selectedAgent, selectedDraft, t, updateSelectedDraft]
   )
@@ -11690,6 +11828,56 @@ supports_websockets = true`}
                           </p>
                         </div>
                         <div className="space-y-1.5">
+                          <label className="text-2xs text-muted-foreground">
+                            {t("claude.permissionModeLabel")}
+                          </label>
+                          <Select
+                            value={
+                              selectedDraft.claudePermissionMode ||
+                              CLAUDE_PERMISSION_UNSET
+                            }
+                            onValueChange={(nextValue) => {
+                              handleClaudePermissionModeChange(
+                                nextValue === CLAUDE_PERMISSION_UNSET
+                                  ? ""
+                                  : (nextValue as ClaudePermissionMode)
+                              )
+                            }}
+                          >
+                            <SelectTrigger
+                              className="w-full"
+                              aria-label={t("claude.permissionModeAria")}
+                            >
+                              <SelectValue
+                                placeholder={t("claude.permissionUnset")}
+                              />
+                            </SelectTrigger>
+                            <SelectContent align="start">
+                              <SelectItem value={CLAUDE_PERMISSION_UNSET}>
+                                {t("claude.permissionUnset")}
+                              </SelectItem>
+                              {CLAUDE_PERMISSION_MODE_VALUES.map((value) => (
+                                <SelectItem key={value} value={value}>
+                                  {t(`claude.permission_${value}`)}
+                                </SelectItem>
+                              ))}
+                              {selectedDraft.claudePermissionMode &&
+                              !isOfferedClaudePermissionMode(
+                                selectedDraft.claudePermissionMode
+                              ) ? (
+                                <SelectItem
+                                  value={selectedDraft.claudePermissionMode}
+                                >
+                                  {selectedDraft.claudePermissionMode}
+                                </SelectItem>
+                              ) : null}
+                            </SelectContent>
+                          </Select>
+                          <p className="text-2xs text-muted-foreground">
+                            {t("claude.permissionModeHint")}
+                          </p>
+                        </div>
+                        <div className="space-y-1.5">
                           <div className="flex items-center justify-between rounded-md border px-3 py-2">
                             <label className="text-2xs text-muted-foreground">
                               {t("claude.sendAttributionHeader")}
@@ -11840,6 +12028,21 @@ supports_websockets = true`}
                               )
                             )
                             .then(() => {
+                              // A chosen Claude default must also become CodeG's
+                              // new-chat composer default. Connect applies
+                              // selector-prefs after the adapter reads
+                              // settings.json, so without this write-through a
+                              // stickier last-used mode silently wins. Unset
+                              // leaves the composer last-used alone.
+                              if (
+                                selectedAgent.agent_type === "claude_code" &&
+                                selectedDraft.claudePermissionMode
+                              ) {
+                                saveModeIdPreference(
+                                  "claude_code",
+                                  selectedDraft.claudePermissionMode
+                                )
+                              }
                               // Reflect the provider-authoritative rewrite AND the
                               // materialized hardening flags in the editors so the
                               // textareas don't show stale values until reload —

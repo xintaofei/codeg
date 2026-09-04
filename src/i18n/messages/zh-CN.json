@@ -1287,7 +1287,15 @@
       "sendAttributionHeader": "向接口发送归属/计费标识",
       "sendAttributionHeaderAria": "向接口发送 Claude Code 归属/计费标识",
       "disableNonessentialTraffic": "禁用遥测或多余的网络请求",
-      "disableNonessentialTrafficAria": "禁用 Claude Code 遥测或多余的网络请求"
+      "disableNonessentialTrafficAria": "禁用 Claude Code 遥测或多余的网络请求",
+      "permissionModeLabel": "权限模式",
+      "permissionModeHint": "写入 CLI 新会话的 permissions.defaultMode。选定的模式同时会成为 CodeG 的 composer 默认值，避免之前聊天里选过的模式在连接时悄悄覆盖。使用默认则不改动 composer 上次使用的值。",
+      "permissionModeAria": "Claude Code 权限模式",
+      "permissionUnset": "使用默认",
+      "permission_default": "手动",
+      "permission_acceptEdits": "接受编辑",
+      "permission_auto": "自动",
+      "permission_bypassPermissions": "绕过权限"
     },
     "dialogs": {
       "confirmDeleteProvider": "确认删除 Provider {providerId}？",
