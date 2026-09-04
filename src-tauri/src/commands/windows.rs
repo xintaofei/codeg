@@ -1933,6 +1933,7 @@ fn load_macos_tray_template_icon() -> Result<tauri::image::Image<'static>, Strin
 /// `on_menu_event` handler in `lib.rs`.
 pub const TRAY_MENU_ID_PREFIX: &str = "tray:";
 pub const TRAY_MENU_ID_SHOW: &str = "tray:show";
+pub const TRAY_MENU_ID_LOGS: &str = "tray:logs";
 pub const TRAY_MENU_ID_QUIT: &str = "tray:quit";
 pub const TRAY_ICON_ID: &str = "codeg-tray";
 
@@ -1975,6 +1976,7 @@ pub fn show_main_window(app: &AppHandle) {
 #[cfg(feature = "tauri-runtime")]
 struct TrayLabels {
     show_workspace: &'static str,
+    open_logs: &'static str,
     quit: &'static str,
 }
 
@@ -1984,42 +1986,52 @@ fn tray_labels_for(locale: crate::models::system::AppLocale) -> TrayLabels {
     match locale {
         AppLocale::ZhCn => TrayLabels {
             show_workspace: "显示工作台",
+            open_logs: "打开日志目录",
             quit: "退出 Codeg",
         },
         AppLocale::ZhTw => TrayLabels {
             show_workspace: "顯示工作臺",
+            open_logs: "開啟日誌目錄",
             quit: "退出 Codeg",
         },
         AppLocale::Ja => TrayLabels {
             show_workspace: "ワークスペースを表示",
+            open_logs: "ログフォルダーを開く",
             quit: "Codeg を終了",
         },
         AppLocale::Ko => TrayLabels {
             show_workspace: "워크스페이스 표시",
+            open_logs: "로그 폴더 열기",
             quit: "Codeg 종료",
         },
         AppLocale::Es => TrayLabels {
             show_workspace: "Mostrar el área de trabajo",
+            open_logs: "Abrir carpeta de registros",
             quit: "Salir de Codeg",
         },
         AppLocale::De => TrayLabels {
             show_workspace: "Arbeitsbereich anzeigen",
+            open_logs: "Protokollordner öffnen",
             quit: "Codeg beenden",
         },
         AppLocale::Fr => TrayLabels {
             show_workspace: "Afficher l'espace de travail",
+            open_logs: "Ouvrir le dossier des journaux",
             quit: "Quitter Codeg",
         },
         AppLocale::Pt => TrayLabels {
             show_workspace: "Mostrar área de trabalho",
+            open_logs: "Abrir pasta de registros",
             quit: "Sair do Codeg",
         },
         AppLocale::Ar => TrayLabels {
             show_workspace: "إظهار مساحة العمل",
+            open_logs: "فتح مجلد السجلات",
             quit: "إنهاء Codeg",
         },
         AppLocale::En => TrayLabels {
             show_workspace: "Show Workspace",
+            open_logs: "Open Logs Folder",
             quit: "Quit Codeg",
         },
     }
@@ -2046,10 +2058,12 @@ pub fn install_tray_icon(
         true,
         None::<&str>,
     )?;
+    let logs_item =
+        MenuItem::with_id(app, TRAY_MENU_ID_LOGS, labels.open_logs, true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, TRAY_MENU_ID_QUIT, labels.quit, true, None::<&str>)?;
     let menu = MenuBuilder::new(app)
-        .items(&[&show_item, &separator, &quit_item])
+        .items(&[&show_item, &logs_item, &separator, &quit_item])
         .build()?;
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ICON_ID)
@@ -2126,10 +2140,12 @@ pub fn refresh_tray_menu(
         true,
         None::<&str>,
     )?;
+    let logs_item =
+        MenuItem::with_id(app, TRAY_MENU_ID_LOGS, labels.open_logs, true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, TRAY_MENU_ID_QUIT, labels.quit, true, None::<&str>)?;
     let menu = MenuBuilder::new(app)
-        .items(&[&show_item, &separator, &quit_item])
+        .items(&[&show_item, &logs_item, &separator, &quit_item])
         .build()?;
 
     tray.set_menu(Some(menu))?;
