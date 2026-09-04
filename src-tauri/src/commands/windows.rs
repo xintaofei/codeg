@@ -332,6 +332,7 @@ impl Default for CommitWindowState {
 fn resolve_settings_route(section: Option<&str>) -> &'static str {
     match section {
         Some("appearance") => "settings/appearance",
+        Some("general") => "settings/general",
         Some("agents") => "settings/agents",
         Some("mcp") => "settings/mcp",
         Some("skills") => "settings/skills",
