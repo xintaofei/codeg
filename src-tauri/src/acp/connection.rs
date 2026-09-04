@@ -3832,20 +3832,31 @@ fn build_client_capabilities(
         meta.insert("subagent-transcript".to_string(), serde_json::Value::Bool(true));
     }
     // claude-agent-acp 0.73.0 added "asyncTasks", and it is advertised — to
-    // claude ONLY, because codex-acp 1.8.0 does not implement the channel
-    // (its bundle contains no `asyncTasks` string at all). It publishes the
-    // lifecycle of Claude's NON-AGENT background work (background shells,
-    // workflows, monitors) as `async_task_spawned` / `_progress` /
-    // `_state_update`, all on the parent session id. Unlike the two capabilities
-    // below, this one adds something codeg cannot get anywhere else: the
-    // transcript watcher (`background_watch`) can see that a task was launched
-    // but explicitly CANNOT tell a still-running task from one whose CLI died,
-    // it never sees workflow/monitor tasks at all (they produce no tool call),
-    // and there is no way to stop a task from outside. This channel carries a
-    // real terminal edge, a liveness boundary, an output file path, and the
-    // `_session/async_task/stop` control. Sub-agent tasks stay out of it by the
-    // adapter's own filter (`taskType: "local_agent"` is marked ignored), so
-    // advertising this does not disturb the sub-agent surfaces.
+    // claude ONLY. It publishes the lifecycle of Claude's NON-AGENT background
+    // work (background shells, workflows, monitors) as `async_task_spawned` /
+    // `_progress` / `_state_update`, all on the parent session id. Unlike the
+    // two capabilities below, this one adds something codeg cannot get
+    // anywhere else: the transcript watcher (`background_watch`) can see that a
+    // task was launched but explicitly CANNOT tell a still-running task from
+    // one whose CLI died, it never sees workflow/monitor tasks at all (they
+    // produce no tool call), and there is no way to stop a task from outside.
+    // This channel carries a real terminal edge, a liveness boundary, an output
+    // file path, and the `_session/async_task/stop` control. Sub-agent tasks
+    // stay out of it by the adapter's own filter (`taskType: "local_agent"` is
+    // marked ignored), so advertising this does not disturb the sub-agent
+    // surfaces.
+    //
+    // codex-acp 1.10.0 implements the same capability name (it was absent
+    // through 1.8.0), so "codex cannot answer" is no longer why it is withheld
+    // there. The reason is now that it buys less: codex publishes background
+    // SHELLS only, with no `async_task_progress`, no `outputFilePath` and no
+    // `usage`, and it sets `showInTranscript: false` because the terminal
+    // already has a tool call — so the frames add a terminal-state edge and a
+    // stop control to a card codeg draws anyway, rather than revealing work it
+    // otherwise cannot see. Turning it on is a behavior change that should
+    // carry its own reasoning and verification, not ride a pin bump;
+    // `air_async_task_delta` is already agent-agnostic and reads both variants
+    // codex emits, so only this advertisement stands in the way.
     //
     // The remaining two AIR capabilities are deliberately still out.
     // claude-agent-acp 0.69.0 and codex-acp 1.4.0 added
@@ -14174,10 +14185,13 @@ mod tests {
             // And exactly this much. Adding a capability here is not free — it
             // is what turns the corresponding behavior on.
             //
-            // "asyncTasks" (claude-agent-acp 0.73.0) IS wanted, and only claude
-            // has it: codex-acp 1.8.0 contains no async-task code at all, so
-            // advertising it there would be a promise about a channel that
-            // cannot answer.
+            // "asyncTasks" (claude-agent-acp 0.73.0) IS wanted, and stays
+            // claude-only. codex-acp 1.10.0 does implement the name, so this is
+            // no longer a promise codex cannot answer — its channel is just
+            // narrower (background shells only, no progress frames, and
+            // `showInTranscript: false` because the terminal already has a tool
+            // call). Enabling it for codex is its own change; see the
+            // advertisement site.
             //
             // The other two stay out. "agentFileChangeReport"
             // (claude-agent-acp 0.69.0 / codex-acp 1.4.0) buys an extra model

@@ -895,9 +895,96 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // three names). Steering still ships no `promptRequired` opt-in
             // (tarball grep: zero hits), and there is still no `engines.node`,
             // so the 20.0.0 floor is retained.
+            //
+            // 1.9.0 and 1.10.0 are both small, and neither moves a surface
+            // codeg reads today: `sessionCapabilities` is byte-identical to
+            // 1.8.0's, so `supports_fork` and the rest are unchanged, and the
+            // entire `initialize` delta across the two releases is one new
+            // agent capability (`_meta.authStatus`) plus a fourth name in the
+            // AIR array. The reason to take them is `@openai/codex`.
+            //
+            // (a) 1.9.0 reports the agent's auth identity (#467). A new
+            // presence-only `agentCapabilities._meta.authStatus = {}` means
+            // "this agent pushes `_auth/status_update`", and it then pushes
+            // `{authStatus: {kind, label, detail?, account?}}` — `kind` one of
+            // `account` / `api_key` / `external` / `gateway` / `none`, `label`
+            // already presentable ("ChatGPT Pro", "OpenAI API key", "AWS
+            // Bedrock", "Not logged in"). Deliberately NOT bilateral: there is
+            // no client capability to advertise and no request to make, and it
+            // pushes on every connection, deduped by payload equality with the
+            // first push always sent. It reports the AGENT-owned login only —
+            // `applyGatewayConfig` now records whether routing came from the
+            // `gateway` auth method or from ACP `providers/set`, and the latter
+            // is excluded on purpose.
+            //
+            // codeg drops it. `_auth/status_update` reaches
+            // `maybe_emit_ext_notification`, no mapper claims it, and
+            // `is_known_ext_method` is false, so it leaves on the
+            // unrecognized-ext-notification `debug!`. That is the correct
+            // no-op and exactly the tolerance that arm exists for. Worth a
+            // second look only if the version card ever grows an identity
+            // line: this is the one frame either adapter sends that names the
+            // account paying for the session.
+            //
+            // (b) 1.9.0 also completes `/status` usage and limits (#463) via
+            // `src/RateLimitsMap.ts` and the app-server `account/rateLimits/read`
+            // + `account/rateLimits/updated`. Not a wire shape at all — the map
+            // is rendered by `buildStatusMessage` into the `/status` markdown
+            // and arrives as an ordinary `agent_message_chunk`.
+            //
+            // (c) 1.10.0 exposes background terminals as async tasks (#460),
+            // and this is the one that could have bitten. It adds
+            // `src/async-tasks/{AsyncTaskExtension,CodexBackgroundTerminalTasks}.ts`
+            // and `src/AcpSessionExtensions.ts`, whose whole body is a cast
+            // that lets a notification OUTSIDE the SDK schema typecheck —
+            // which is precisely what `async_task_spawned` and
+            // `async_task_state_update` are. Neither variant can deserialize
+            // into `agent-client-protocol-schema` 0.11.7's `SessionUpdate`,
+            // the same wall the subagent RFD hit.
+            //
+            // They stay off the wire, and not by luck. `createAsyncTasks`
+            // passes `clientSupportsAirCapability(caps, "asyncTasks")` into the
+            // manager as `enabled`, `isActive()` is `enabled && !disposed`, and
+            // every entry point (`handleNotification`, `observeCommandStarted`,
+            // `observeCommandCompleted`, `sync`, `stop`) returns early on it.
+            // `build_client_capabilities` sends Codex `["sessionFailure"]`, so
+            // `enabled` is false for the whole connection and neither variant —
+            // nor the paired `tool_call_update` carrying
+            // `_meta.jetbrains.air.asyncTasks.backgrounded` — is ever emitted.
+            // `_session/async_task/stop` is client-initiated, so it costs
+            // nothing either.
+            //
+            // Two comments asserting codex has no async-task code are corrected
+            // with this bump, because the channel is real now. Advertising it
+            // to Codex is a separate change, not a pin bump, and it buys less
+            // than Claude's did: the vocabulary is background SHELLS only,
+            // there is no `async_task_progress`, no `outputFilePath` and no
+            // `usage`, and codex sets `showInTranscript: false` because the
+            // terminal ALREADY has a tool call — the frame adds a terminal-state
+            // edge and a stop control to a card codeg draws anyway, where for
+            // Claude it was the only sight of workflow and monitor tasks at all.
+            // `air_async_task_delta` is not gated on `agent_type` and already
+            // reads both variants and every field codex populates, so the
+            // consumer side is done whenever that case gets made.
+            //
+            // (d) `@openai/codex` moves ^0.152.0 → ^0.153.3 across the two
+            // releases (#469, #476), and this is the actual reason to bump. The
+            // adapter bundle names exactly one model, `gpt-5.6-luna` for
+            // `TitleGenerator`; every id the picker offers comes from the
+            // pinned core. Caret on a `0.x` pins the MINOR, so 1.8.0's
+            // ^0.152.0 resolves no higher than 0.152.1 and cannot reach a 0.153
+            // core however long it sits. That is why 1.8.0 cannot list
+            // `gpt-6-astra` and 1.10.0 can.
+            //
+            // Re-checked against both tarballs and unchanged: native subagent
+            // sessions and `agentFileChangeReport` still not adopted, the
+            // `SessionFork` fork-point resolution (`messageId` /
+            // `messageFingerprint` / `messageOccurrence`) untouched, still no
+            // `promptRequired` steering opt-in (tarball grep: zero hits), and
+            // still no `engines.node`, so the 20.0.0 floor is retained.
             distribution: AgentDistribution::Npx {
-                version: "1.8.0",
-                package: "@agentclientprotocol/codex-acp@1.8.0",
+                version: "1.10.0",
+                package: "@agentclientprotocol/codex-acp@1.10.0",
                 cmd: "codex-acp",
                 args: &[],
                 env: &[],
@@ -1809,8 +1896,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Codex,
-            "1.8.0",
-            "@agentclientprotocol/codex-acp@1.8.0",
+            "1.10.0",
+            "@agentclientprotocol/codex-acp@1.10.0",
             Some("20.0.0"),
         );
         assert_npx_version(AgentType::Pi, "0.0.33", "pi-acp@0.0.33", Some("22.0.0"));
