@@ -5,7 +5,7 @@ use serde::Deserialize;
 #[cfg(feature = "tauri-runtime")]
 use std::time::Duration;
 #[cfg(feature = "tauri-runtime")]
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, EventTarget, Manager, WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(feature = "tauri-runtime")]
 use crate::app_error::AppCommandError;
@@ -171,6 +171,67 @@ pub async fn reorder_remote_workspace_connections(
     remote_workspace_connection_service::reorder(&db.conn, ids).await
 }
 
+/// Tauri event used to hand an already-open remote workspace window a folder
+/// to open. MUST match `REMOTE_OPEN_FOLDER_EVENT` in
+/// `src/lib/remote-workspace.ts`.
+#[cfg(feature = "tauri-runtime")]
+const REMOTE_OPEN_FOLDER_EVENT: &str = "remote-open-folder";
+
+/// Query param carrying the same request to a window that is being spawned
+/// (an event can't reach a webview that doesn't exist yet). MUST match the
+/// param read by `RemoteWorkspaceOpenFolderListener`.
+#[cfg(feature = "tauri-runtime")]
+const OPEN_FOLDER_PATH_PARAM: &str = "openFolderPath";
+
+#[cfg(feature = "tauri-runtime")]
+#[derive(Clone, serde::Serialize)]
+struct RemoteOpenFolderPayload {
+    path: String,
+}
+
+/// Spawn (and register) the window bound to a remote connection. `extra_query`
+/// is appended verbatim to the workspace URL and must already be URL-encoded.
+#[cfg(feature = "tauri-runtime")]
+fn build_remote_workspace_window(
+    app: &AppHandle,
+    id: i32,
+    name: &str,
+    extra_query: &str,
+) -> Result<tauri::WebviewWindow, AppCommandError> {
+    let label = format!("remote-workspace-{id}");
+    let window_instance_id = new_remote_window_instance_id();
+    let url = WebviewUrl::App(
+        format!(
+            "workspace?remoteConnectionId={id}&remoteWindowId={window_instance_id}{extra_query}"
+        )
+        .into(),
+    );
+    let builder = WebviewWindowBuilder::new(app, &label, url)
+        .title(format!("Codeg - {name}"))
+        .inner_size(1260.0, 860.0)
+        .min_inner_size(400.0, 600.0)
+        .center();
+    let builder = crate::commands::windows::apply_platform_window_style(builder);
+    // Remote workspace windows load the same `/workspace` route with the taller
+    // h-10 title bar, so they get the workspace traffic-light position (not the
+    // shorter auxiliary-window default).
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .traffic_light_position(crate::commands::windows::workspace_window_traffic_light_position());
+    let window = builder
+        .build()
+        .map_err(|e| AppCommandError::window("Failed to open remote workspace", e.to_string()))?;
+    if let Some(proxy) =
+        app.try_state::<std::sync::Arc<crate::commands::remote_proxy::RemoteProxyState>>()
+    {
+        proxy
+            .inner()
+            .register_window_instance_cleanup(&window, window_instance_id);
+    }
+    crate::commands::windows::post_window_setup(&window);
+    Ok(window)
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn open_remote_workspace(
@@ -194,32 +255,53 @@ pub async fn open_remote_workspace(
 
     validate_remote_health(&connection.base_url, &connection.token, &connection.headers).await?;
 
-    let window_instance_id = new_remote_window_instance_id();
-    let url = WebviewUrl::App(
-        format!("workspace?remoteConnectionId={id}&remoteWindowId={window_instance_id}").into(),
-    );
-    let builder = WebviewWindowBuilder::new(&app, &label, url)
-        .title(format!("Codeg - {}", connection.name))
-        .inner_size(1260.0, 860.0)
-        .min_inner_size(400.0, 600.0)
-        .center();
-    let builder = crate::commands::windows::apply_platform_window_style(builder);
-    // Remote workspace windows load the same `/workspace` route with the taller
-    // h-10 title bar, so they get the workspace traffic-light position (not the
-    // shorter auxiliary-window default).
-    #[cfg(target_os = "macos")]
-    let builder = builder
-        .traffic_light_position(crate::commands::windows::workspace_window_traffic_light_position());
-    let window = builder
-        .build()
-        .map_err(|e| AppCommandError::window("Failed to open remote workspace", e.to_string()))?;
-    if let Some(proxy) =
-        app.try_state::<std::sync::Arc<crate::commands::remote_proxy::RemoteProxyState>>()
-    {
-        proxy
-            .inner()
-            .register_window_instance_cleanup(&window, window_instance_id);
+    build_remote_workspace_window(&app, id, &connection.name, "")?;
+    Ok(())
+}
+
+/// Open a folder that lives on a remote workspace host.
+///
+/// Folders belong to the backend that owns their paths, so this never opens the
+/// folder here — it raises (or spawns) the window bound to `connection_id` and
+/// hands it the path. That window opens the folder through its own transport,
+/// which keeps the folder in the workspace that owns it and lets any failure
+/// surface where the user is looking.
+///
+/// A live window gets a Tauri event; a window we have to spawn gets the path as
+/// a URL param, since an event can't reach a webview that doesn't exist yet.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn open_remote_workspace_folder(
+    app: AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    id: i32,
+    path: String,
+) -> Result<(), AppCommandError> {
+    let connection = remote_workspace_connection_service::get(&db.conn, id)
+        .await
+        .map_err(AppCommandError::db)?
+        .ok_or_else(|| AppCommandError::not_found(format!("Remote connection {id} not found")))?;
+
+    let label = format!("remote-workspace-{id}");
+    if let Some(existing) = app.get_webview_window(&label) {
+        let _ = existing.unminimize();
+        existing.set_focus().map_err(|e| {
+            AppCommandError::window("Failed to focus remote workspace", e.to_string())
+        })?;
+        app.emit_to(
+            EventTarget::webview(&label),
+            REMOTE_OPEN_FOLDER_EVENT,
+            RemoteOpenFolderPayload { path },
+        )
+        .map_err(|e| {
+            AppCommandError::window("Failed to open the folder in the remote workspace", e.to_string())
+        })?;
+        return Ok(());
     }
-    crate::commands::windows::post_window_setup(&window);
+
+    validate_remote_health(&connection.base_url, &connection.token, &connection.headers).await?;
+
+    let query = format!("&{}={}", OPEN_FOLDER_PATH_PARAM, urlencoding::encode(&path));
+    build_remote_workspace_window(&app, id, &connection.name, &query)?;
     Ok(())
 }

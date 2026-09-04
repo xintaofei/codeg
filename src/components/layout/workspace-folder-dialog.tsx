@@ -6,16 +6,21 @@ import {
   AlertTriangle,
   ArrowLeft,
   Check,
+  ChevronRight,
   FolderOpen,
   Link2,
   Link2Off,
   Loader2,
+  Monitor,
   MonitorDot,
   Pencil,
   Plus,
   RefreshCw,
+  Search,
+  Server,
   Trash2,
   X,
+  type LucideIcon,
 } from "lucide-react"
 import {
   Dialog,
@@ -52,10 +57,16 @@ import {
   repairFolderLink,
 } from "@/lib/api"
 import { useImeGuard } from "@/hooks/use-ime-guard"
+import { useRemoteWorkspaceConnections } from "@/hooks/use-remote-workspace-connections"
 import { isDesktop, openFileDialog } from "@/lib/platform"
 import { parentFsPath } from "@/lib/path-utils"
 import { getActiveRemoteConnectionId } from "@/lib/transport"
 import { toErrorMessage } from "@/lib/app-error"
+import {
+  getRemoteHomeDirectory,
+  listRemoteDirectoryEntries,
+  openRemoteWorkspaceFolder,
+} from "@/lib/remote-workspace"
 import {
   basenameOf,
   linkNameKey,
@@ -68,10 +79,20 @@ import type {
   FolderLinkDetail,
   FolderLinkPlan,
   FolderLinkStatus,
+  RemoteWorkspaceConnection,
 } from "@/lib/types"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 
-type View = "pick-root" | "links" | "add-targets"
+type View = "pick-workspace" | "pick-root" | "links" | "add-targets"
+
+/**
+ * Where the folder being picked will live. `local` is the machine codeg is
+ * running on; `remote` is one of the connected codeg-servers, whose folders
+ * can only be opened in that workspace's own window.
+ */
+type WorkspaceChoice =
+  | { kind: "local" }
+  | { kind: "remote"; connection: RemoteWorkspaceConnection }
 
 interface WorkspaceFolderDialogProps {
   open: boolean
@@ -94,6 +115,12 @@ interface WorkspaceFolderDialogProps {
  * step 2 links any number of other directories in as subdirectories of that
  * root. Reopened from the folder menu, it starts at step 2 so links can be
  * renamed, repaired, or removed later.
+ *
+ * On a local desktop window with remote workspaces connected, step 0 asks
+ * *which* workspace to browse first: this machine, or one of the connected
+ * servers. Picking a remote one browses that host's filesystem and opens the
+ * folder in its own window — folders belong to the backend that owns their
+ * paths, so a remote folder can't be opened into this workspace's list.
  */
 export function WorkspaceFolderDialog({
   open,
@@ -104,9 +131,13 @@ export function WorkspaceFolderDialog({
   const t = useTranslations("Folder.workspaceDialog")
   const tBrowser = useTranslations("DirectoryBrowser")
   const openFolder = useAppWorkspaceStore((s) => s.openFolder)
+  const { connections, refresh: refreshConnections } =
+    useRemoteWorkspaceConnections()
 
   const manageMode = !!folder
   const [view, setView] = useState<View>(manageMode ? "links" : "pick-root")
+  const [choice, setChoice] = useState<WorkspaceChoice | null>(null)
+  const [workspaceQuery, setWorkspaceQuery] = useState("")
   const [rootFolder, setRootFolder] = useState<FolderDetail | null>(
     folder ?? null
   )
@@ -130,8 +161,22 @@ export function WorkspaceFolderDialog({
   const [renameValue, setRenameValue] = useState("")
   const [busyLinkId, setBusyLinkId] = useState<number | null>(null)
 
-  const nativePickerAvailable =
-    isDesktop() && getActiveRemoteConnectionId() === null
+  // A remote-desktop window already *is* a workspace; only the local window
+  // gets to choose between them. The system picker is local-only for the same
+  // reason: it opens a dialog on this machine.
+  const isLocalDesktop = isDesktop() && getActiveRemoteConnectionId() === null
+  const nativePickerAvailable = isLocalDesktop && choice?.kind !== "remote"
+
+  // Stable per chosen host — DirectoryBrowser restarts its session whenever the
+  // source identity changes, so an inline object would reset it every render.
+  const remoteFileSystem = useMemo(() => {
+    if (choice?.kind !== "remote") return undefined
+    const { id } = choice.connection
+    return {
+      home: () => getRemoteHomeDirectory(id),
+      list: (path: string) => listRemoteDirectoryEntries(id, path),
+    }
+  }, [choice])
 
   const linkBrowseStart = useMemo(
     () =>
@@ -139,11 +184,38 @@ export function WorkspaceFolderDialog({
     [rootFolder]
   )
 
+  // Re-read on mount and on every open: connections come and go from another
+  // window (the settings window), so a list captured at mount goes stale. A
+  // window bound to a remote server has no local list to offer.
+  useEffect(() => {
+    if (manageMode || !isLocalDesktop) return
+    void refreshConnections()
+  }, [open, manageMode, isLocalDesktop, refreshConnections])
+
+  // Identity of the connection list, compared by content: every load hands back
+  // a fresh array, so an id-based key is what tells "the list changed" apart
+  // from "the same list arrived again".
+  const connectionKey = connections.map((c) => c.id).join(",")
+  // Mirrored so the reset below can read the list the view was decided from
+  // without re-running when it loads.
+  const connectionKeyRef = useRef(connectionKey)
+  useEffect(() => {
+    connectionKeyRef.current = connectionKey
+  }, [connectionKey])
+  const decidedKeyRef = useRef<string | null>(null)
+
   // Reset to a clean session on every real open, so a dialog reopened after a
   // cancel never shows the previous run's picks.
   useEffect(() => {
     if (!open) return
-    setView(folder ? "links" : "pick-root")
+    const known = connectionKeyRef.current
+    decidedKeyRef.current = known
+    const canChooseWorkspace = !folder && isLocalDesktop && known !== ""
+    setView(
+      folder ? "links" : canChooseWorkspace ? "pick-workspace" : "pick-root"
+    )
+    setChoice(canChooseWorkspace ? null : { kind: "local" })
+    setWorkspaceQuery("")
     setRootFolder(folder ?? null)
     setRootPath(folder?.path ?? "")
     setTargetPath("")
@@ -156,7 +228,33 @@ export function WorkspaceFolderDialog({
     setOpeningRoot(false)
     setCreating(false)
     setPreviewing(false)
-  }, [open, folder])
+  }, [open, folder, isLocalDesktop])
+
+  // The reload kicked off on open lands *after* the view was decided, so the
+  // decision above is made from whatever the list held before it. Correct the
+  // one case that matters — the list gained or lost every connection while the
+  // dialog sat closed — and then leave the user alone: later steps (a picked
+  // root, the linking view) are never interrupted.
+  useEffect(() => {
+    if (!open || manageMode || !isLocalDesktop) return
+    const previous = decidedKeyRef.current
+    if (previous === null || previous === connectionKey) return
+    decidedKeyRef.current = connectionKey
+
+    if (previous === "" && connectionKey !== "" && view === "pick-root") {
+      // Nothing to choose between when the dialog opened; now there is.
+      setChoice(null)
+      setView("pick-workspace")
+    } else if (
+      previous !== "" &&
+      connectionKey === "" &&
+      view === "pick-workspace"
+    ) {
+      // The last connection went away while the chooser was up.
+      setChoice({ kind: "local" })
+      setView("pick-root")
+    }
+  }, [open, manageMode, isLocalDesktop, connectionKey, view])
 
   const refreshLinks = useCallback(async (folderId: number) => {
     setLoadingLinks(true)
@@ -176,8 +274,35 @@ export function WorkspaceFolderDialog({
 
   // ── Step 1: workspace root ────────────────────────────────────────────────
 
+  /**
+   * Hand a remote folder to its own workspace window. There is no step 2 here:
+   * the folder lands in another backend, so linking, renaming and repairing it
+   * are that window's job (its folder menu reopens this dialog in manage mode,
+   * against the backend that owns the links).
+   */
+  const commitRemoteRoot = useCallback(
+    async (connection: RemoteWorkspaceConnection, path: string) => {
+      setOpeningRoot(true)
+      try {
+        await openRemoteWorkspaceFolder(connection.id, path)
+        onOpenChange(false)
+      } catch (err) {
+        toast.error(t("remoteOpenFailed", { name: connection.name }), {
+          description: toErrorMessage(err),
+        })
+      } finally {
+        setOpeningRoot(false)
+      }
+    },
+    [onOpenChange, t]
+  )
+
   const commitRoot = useCallback(
     async (path: string) => {
+      if (choice?.kind === "remote") {
+        await commitRemoteRoot(choice.connection, path)
+        return
+      }
       setOpeningRoot(true)
       try {
         const detail = await openFolder(path)
@@ -190,7 +315,7 @@ export function WorkspaceFolderDialog({
         setOpeningRoot(false)
       }
     },
-    [openFolder, onFolderOpened, t]
+    [choice, commitRemoteRoot, openFolder, onFolderOpened, t]
   )
 
   const handleConfirmRoot = useCallback(async () => {
@@ -377,6 +502,8 @@ export function WorkspaceFolderDialog({
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  const remoteChoice = choice?.kind === "remote" ? choice.connection : null
+
   const title =
     view === "add-targets"
       ? t("addTargetsTitle")
@@ -384,22 +511,113 @@ export function WorkspaceFolderDialog({
         ? t("manageTitle")
         : t("title")
 
+  // Same rule for every row: match the name or the host it reads.
+  const query = workspaceQuery.trim().toLowerCase()
+  const matchesQuery = (...fields: string[]) =>
+    query === "" || fields.some((f) => f.toLowerCase().includes(query))
+  const localMatches = matchesQuery(t("thisPc"), t("thisPcHint"))
+  const matchingConnections = connections.filter((connection) =>
+    matchesQuery(connection.name, connection.base_url)
+  )
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
-            {view === "pick-root"
-              ? t("pickRootDescription")
-              : view === "add-targets"
-                ? t("addTargetsDescription")
-                : t("linksDescription")}
+            {view === "pick-workspace"
+              ? t("pickWorkspaceDescription")
+              : view === "pick-root"
+                ? remoteChoice
+                  ? t("pickRootRemoteDescription", { name: remoteChoice.name })
+                  : t("pickRootDescription")
+                : view === "add-targets"
+                  ? t("addTargetsDescription")
+                  : t("linksDescription")}
           </DialogDescription>
         </DialogHeader>
 
+        {view === "pick-workspace" ? (
+          <>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={workspaceQuery}
+                onChange={(e) => setWorkspaceQuery(e.target.value)}
+                placeholder={t("searchWorkspaces")}
+                className="h-8 pl-8 text-sm"
+                autoFocus
+              />
+            </div>
+            <ScrollArea className="h-[18.75rem] rounded-md border">
+              <div className="divide-y">
+                {localMatches ? (
+                  <WorkspaceRow
+                    icon={Monitor}
+                    name={t("thisPc")}
+                    hint={t("thisPcHint")}
+                    onSelect={() => {
+                      setChoice({ kind: "local" })
+                      setView("pick-root")
+                    }}
+                  />
+                ) : null}
+                {matchingConnections.map((connection) => (
+                  <WorkspaceRow
+                    key={connection.id}
+                    icon={Server}
+                    name={connection.name}
+                    hint={connection.base_url}
+                    onSelect={() => {
+                      setChoice({ kind: "remote", connection })
+                      setRootPath("")
+                      setView("pick-root")
+                    }}
+                  />
+                ))}
+                {!localMatches && matchingConnections.length === 0 ? (
+                  <div className="p-6 text-center text-sm text-muted-foreground">
+                    {t("noWorkspaceMatch", { query: workspaceQuery.trim() })}
+                  </div>
+                ) : null}
+              </div>
+            </ScrollArea>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                type="button"
+                onClick={() => onOpenChange(false)}
+              >
+                {tBrowser("cancel")}
+              </Button>
+            </DialogFooter>
+          </>
+        ) : null}
+
         {view === "pick-root" ? (
           <>
+            {isLocalDesktop && connections.length > 0 ? (
+              <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2">
+                {remoteChoice ? (
+                  <Server className="size-4 shrink-0 text-muted-foreground" />
+                ) : (
+                  <Monitor className="size-4 shrink-0 text-muted-foreground" />
+                )}
+                <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                  {remoteChoice ? remoteChoice.name : t("thisPc")}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  type="button"
+                  className="h-6 shrink-0 px-2 text-xs"
+                  onClick={() => setView("pick-workspace")}
+                >
+                  {t("changeWorkspace")}
+                </Button>
+              </div>
+            ) : null}
             <DirectoryBrowser
               ref={rootBrowserRef}
               active={open && view === "pick-root"}
@@ -407,6 +625,7 @@ export function WorkspaceFolderDialog({
               onValueChange={setRootPath}
               onQuickSelect={commitRoot}
               onBusyChange={setBrowserBusy}
+              fileSystem={remoteFileSystem}
               pathInputAction={
                 nativePickerAvailable ? (
                   <NativePickerButton
@@ -420,9 +639,15 @@ export function WorkspaceFolderDialog({
               <Button
                 variant="outline"
                 type="button"
-                onClick={() => onOpenChange(false)}
+                onClick={() =>
+                  isLocalDesktop && connections.length > 0
+                    ? setView("pick-workspace")
+                    : onOpenChange(false)
+                }
               >
-                {tBrowser("cancel")}
+                {isLocalDesktop && connections.length > 0
+                  ? t("back")
+                  : tBrowser("cancel")}
               </Button>
               <Button
                 type="button"
@@ -432,7 +657,7 @@ export function WorkspaceFolderDialog({
                 {openingRoot ? (
                   <Loader2 className="size-4 animate-spin" />
                 ) : null}
-                {t("next")}
+                {remoteChoice ? t("openInWorkspace") : t("next")}
               </Button>
             </DialogFooter>
           </>
@@ -692,6 +917,41 @@ function NativePickerButton({
         <TooltipContent>{t("useSystemPicker")}</TooltipContent>
       </Tooltip>
     </TooltipProvider>
+  )
+}
+
+/**
+ * One row of the workspace chooser: a full-width target with the workspace name
+ * and, underneath, what machine it actually reads (the local machine, or the
+ * server URL). Rows commit on click — the chooser is a single decision, so a
+ * select-then-confirm step would just add a keystroke.
+ */
+function WorkspaceRow({
+  icon: Icon,
+  name,
+  hint,
+  onSelect,
+}: {
+  icon: LucideIcon
+  name: string
+  hint: string
+  onSelect: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-muted/50"
+    >
+      <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium">{name}</span>
+        <span className="block truncate font-mono text-xs text-muted-foreground">
+          {hint}
+        </span>
+      </span>
+      <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+    </button>
   )
 }
 
