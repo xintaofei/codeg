@@ -30,7 +30,7 @@
     "resources": {
       "../out": "web/"
     },
-    "externalBin": ["binaries/codeg-mcp"],
+    "externalBin": ["binaries/codeg-mcp", "binaries/codeg-tsnet"],
     "windows": {
       "nsis": {
         "installerHooks": "./windows/installer-hooks.nsh"

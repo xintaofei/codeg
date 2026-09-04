@@ -4612,10 +4612,13 @@ export async function getWebServerStatus(): Promise<WebServerInfo | null> {
   return getTransport().call("get_web_server_status")
 }
 
+export type WebServiceBindMode = "loopback" | "lan"
+
 export interface WebServiceConfig {
   token: string | null
   port: number | null
   autoStart: boolean
+  bindMode?: WebServiceBindMode
 }
 
 export async function getWebServiceConfig(): Promise<WebServiceConfig> {
@@ -4633,6 +4636,42 @@ export type WebServicePortState = "free" | "occupied" | "unknown"
 export interface WebServicePortProbe {
   port: number
   state: WebServicePortState
+}
+
+export type FunnelStatus = {
+  enabled: boolean
+  url?: string | null
+  target?: string | null
+  loginUrl?: string | null
+  unavailableReason?: string | null
+}
+
+export async function tailscaleServeStatus(): Promise<FunnelStatus> {
+  return getTransport().call("tailscale_serve_status")
+}
+
+export async function tailscaleServeEnable(
+  port: number
+): Promise<FunnelStatus> {
+  return getTransport().call("tailscale_serve_enable", { port })
+}
+
+export async function tailscaleServeDisable(): Promise<FunnelStatus> {
+  return getTransport().call("tailscale_serve_disable")
+}
+
+export async function tailscaleFunnelStatus(): Promise<FunnelStatus> {
+  return getTransport().call("tailscale_funnel_status")
+}
+
+export async function tailscaleFunnelEnable(
+  port: number
+): Promise<FunnelStatus> {
+  return getTransport().call("tailscale_funnel_enable", { port })
+}
+
+export async function tailscaleFunnelDisable(): Promise<FunnelStatus> {
+  return getTransport().call("tailscale_funnel_disable")
 }
 
 export async function probeWebServicePort(

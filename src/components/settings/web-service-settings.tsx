@@ -35,6 +35,13 @@ import {
   getWebServiceConfig,
   updateWebServiceConfig,
   probeWebServicePort,
+  tailscaleFunnelDisable,
+  tailscaleFunnelEnable,
+  tailscaleFunnelStatus,
+  tailscaleServeDisable,
+  tailscaleServeEnable,
+  tailscaleServeStatus,
+  type FunnelStatus,
   type WebServerInfo,
   type WebServicePortProbe,
 } from "@/lib/api"
@@ -43,6 +50,8 @@ const DEFAULT_PORT = 3080
 import { openUrl } from "@/lib/platform"
 import { copyTextToClipboard } from "@/lib/utils"
 import { useCopiedFlag } from "@/hooks/use-copied-flag"
+import { displayAddresses } from "@/lib/tailscale-funnel"
+import { pairingMode, pairingQrValue } from "@/lib/codeg-pairing"
 
 // Remembers which reachable address the user last chose to display/open.
 // Keyed by host (IP) only, so the choice survives a port change.
@@ -78,11 +87,13 @@ function AddressBar({
   addresses,
   hasMultiple,
   onSelect,
+  qrValue,
 }: {
   address: string
   addresses: string[]
   hasMultiple: boolean
   onSelect: (address: string) => void
+  qrValue: string
 }) {
   const t = useTranslations("WebServiceSettings")
   const [copied, markCopied] = useCopiedFlag()
@@ -149,7 +160,8 @@ function AddressBar({
       </div>
       <AddressQrcodeDialog
         open={qrOpen}
-        address={address}
+        address={qrValue}
+        displayAddress={address}
         onOpenChange={setQrOpen}
       />
     </>
@@ -159,10 +171,12 @@ function AddressBar({
 function AddressQrcodeDialog({
   open,
   address,
+  displayAddress,
   onOpenChange,
 }: {
   open: boolean
   address: string
+  displayAddress: string
   onOpenChange: (open: boolean) => void
 }) {
   const t = useTranslations("WebServiceSettings")
@@ -177,7 +191,7 @@ function AddressQrcodeDialog({
             <QRCodeSVG value={address} size={208} marginSize={0} />
           </div>
           <code className="text-center text-xs break-all text-muted-foreground select-all">
-            {address}
+            {displayAddress}
           </code>
           <p className="text-center text-xs text-muted-foreground">
             {t("qrcodeHint")}
@@ -286,6 +300,9 @@ export function WebServiceSettings() {
   const [error, setError] = useState("")
   const [portProbe, setPortProbe] = useState<WebServicePortProbe | null>(null)
   const [autoStart, setAutoStart] = useState(false)
+  const [lanAccess, setLanAccess] = useState(false)
+  const [serve, setServe] = useState<FunnelStatus | null>(null)
+  const [funnel, setFunnel] = useState<FunnelStatus | null>(null)
   const [configLoaded, setConfigLoaded] = useState(false)
   const [selectedAddress, setSelectedAddress] = useState<string | null>(null)
 
@@ -304,6 +321,7 @@ export function WebServiceSettings() {
         token: null,
         port: null,
         autoStart: false,
+        bindMode: "loopback" as const,
       }
       const [info, configResult] = await Promise.all([
         getWebServerStatus(),
@@ -314,6 +332,18 @@ export function WebServiceSettings() {
       const savedConfig = configResult.config
       setStatus(info)
       setAutoStart(savedConfig.autoStart ?? false)
+      setLanAccess(savedConfig.bindMode === "lan")
+      try {
+        const [serveStatus, funnelStatus] = await Promise.all([
+          tailscaleServeStatus(),
+          tailscaleFunnelStatus(),
+        ])
+        setServe(serveStatus)
+        setFunnel(funnelStatus)
+      } catch {
+        setServe(null)
+        setFunnel(null)
+      }
       if (info) {
         setPort(String(info.port))
         setToken(info.token)
@@ -340,15 +370,29 @@ export function WebServiceSettings() {
 
   // Pick which reachable address to display/open. Keep a still-valid prior
   // choice; otherwise honor the remembered host, falling back to the first
-  // entry (loopback). Selection is display-only — the service always binds
-  // 0.0.0.0, so every listed address stays reachable regardless of choice.
+  // entry (loopback). A loopback bind only advertises 127.0.0.1. LAN bind
+  // advertises every local IPv4; the selector is display-only.
   useEffect(() => {
-    const addresses = status?.addresses ?? []
+    const addresses = displayAddresses(
+      status?.addresses ?? [],
+      serve?.url ?? funnel?.url
+    )
     if (addresses.length === 0) {
       setSelectedAddress(null)
       return
     }
     setSelectedAddress((prev) => {
+      const remoteUrl = serve?.url ?? funnel?.url ?? null
+      if (
+        remoteUrl &&
+        addresses.includes(remoteUrl) &&
+        (!prev ||
+          !addresses.includes(prev) ||
+          addressHost(prev) === "127.0.0.1" ||
+          addressHost(prev) === "localhost")
+      ) {
+        return remoteUrl
+      }
       if (prev && addresses.includes(prev)) return prev
       const savedHost = readSavedDisplayHost()
       const matched = savedHost
@@ -356,7 +400,7 @@ export function WebServiceSettings() {
         : undefined
       return matched ?? addresses[0]
     })
-  }, [status])
+  }, [status, serve?.url, funnel?.url])
 
   function handleSelectAddress(address: string) {
     setSelectedAddress(address)
@@ -372,7 +416,7 @@ export function WebServiceSettings() {
   }
 
   const persistWebServiceConfig = useCallback(
-    async (nextAutoStart = autoStart) => {
+    async (nextAutoStart = autoStart, nextLanAccess = lanAccess) => {
       const portNum = parseInt(port, 10)
       if (!Number.isFinite(portNum) || portNum < 1 || portNum > 65535) {
         return
@@ -383,12 +427,13 @@ export function WebServiceSettings() {
           port: portNum,
           token: token.trim() || null,
           autoStart: nextAutoStart,
+          bindMode: nextLanAccess ? "lan" : "loopback",
         })
       } catch {
         setError(t("saveConfigFailed"))
       }
     },
-    [autoStart, port, t, token]
+    [autoStart, lanAccess, port, t, token]
   )
 
   useEffect(() => {
@@ -421,6 +466,7 @@ export function WebServiceSettings() {
       const portNum = parseInt(port, 10) || DEFAULT_PORT
       const info = await startWebServer({
         port: portNum,
+        host: lanAccess ? "0.0.0.0" : "127.0.0.1",
         token: token.trim() || null,
       })
       setStatus(info)
@@ -458,6 +504,8 @@ export function WebServiceSettings() {
     try {
       await stopWebServer()
       setStatus(null)
+      setServe(null)
+      setFunnel(null)
       // After stop, re-probe so the user can see whether the port was
       // released cleanly or is being held by an orphan child process.
       probePort(parseInt(port, 10) || DEFAULT_PORT)
@@ -469,8 +517,12 @@ export function WebServiceSettings() {
   }
 
   const isRunning = status !== null
-  const currentAddress = selectedAddress ?? status?.addresses[0] ?? null
-  const hasMultipleAddresses = (status?.addresses.length ?? 0) > 1
+  const visibleAddresses = displayAddresses(
+    status?.addresses ?? [],
+    serve?.url ?? funnel?.url
+  )
+  const currentAddress = selectedAddress ?? visibleAddresses[0] ?? null
+  const hasMultipleAddresses = visibleAddresses.length > 1
   const showStaleBanner =
     !isRunning &&
     portProbe !== null &&
@@ -549,6 +601,115 @@ export function WebServiceSettings() {
             </div>
           </div>
 
+          <div className="flex items-center gap-4">
+            <label className="w-20 text-sm font-medium">{t("lanAccess")}</label>
+            <div className="flex min-w-0 items-center gap-3">
+              <Switch
+                checked={lanAccess}
+                disabled={isRunning}
+                onCheckedChange={(checked) => {
+                  setLanAccess(checked)
+                  void persistWebServiceConfig(autoStart, checked)
+                }}
+              />
+              <span className="text-sm text-muted-foreground">
+                {t("lanAccessHint")}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <label className="w-20 text-sm font-medium">{t("private")}</label>
+            <div className="flex min-w-0 flex-col gap-1">
+              <div className="flex items-center gap-3">
+                <Switch
+                  checked={Boolean(serve?.enabled)}
+                  disabled={!isRunning || loading}
+                  onCheckedChange={(checked) => {
+                    void (async () => {
+                      setLoading(true)
+                      setError("")
+                      try {
+                        const portNum = parseInt(port, 10) || DEFAULT_PORT
+                        const next = checked
+                          ? await tailscaleServeEnable(portNum)
+                          : await tailscaleServeDisable()
+                        setServe(next)
+                        if (checked) setFunnel({ enabled: false })
+                        if (next.loginUrl) {
+                          void openUrl(next.loginUrl)
+                        }
+                        if (next.unavailableReason) {
+                          setError(next.unavailableReason)
+                        }
+                      } catch (e: unknown) {
+                        const msg =
+                          e && typeof e === "object" && "message" in e
+                            ? String((e as { message: string }).message)
+                            : t("privateFailed")
+                        setError(msg)
+                      } finally {
+                        setLoading(false)
+                      }
+                    })()
+                  }}
+                />
+                <span className="text-sm text-muted-foreground">
+                  {t("privateHint")}
+                </span>
+              </div>
+              {serve?.url ? (
+                <code className="truncate text-xs">{serve.url}</code>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <label className="w-20 text-sm font-medium">{t("anywhere")}</label>
+            <div className="flex min-w-0 flex-col gap-1">
+              <div className="flex items-center gap-3">
+                <Switch
+                  checked={Boolean(funnel?.enabled)}
+                  disabled={!isRunning || loading}
+                  onCheckedChange={(checked) => {
+                    void (async () => {
+                      setLoading(true)
+                      setError("")
+                      try {
+                        const portNum = parseInt(port, 10) || DEFAULT_PORT
+                        const next = checked
+                          ? await tailscaleFunnelEnable(portNum)
+                          : await tailscaleFunnelDisable()
+                        setFunnel(next)
+                        if (checked) setServe({ enabled: false })
+                        if (next.loginUrl) {
+                          void openUrl(next.loginUrl)
+                        }
+                        if (next.unavailableReason) {
+                          setError(next.unavailableReason)
+                        }
+                      } catch (e: unknown) {
+                        const msg =
+                          e && typeof e === "object" && "message" in e
+                            ? String((e as { message: string }).message)
+                            : t("anywhereFailed")
+                        setError(msg)
+                      } finally {
+                        setLoading(false)
+                      }
+                    })()
+                  }}
+                />
+                <span className="text-sm text-muted-foreground">
+                  {t("anywhereHint")}
+                </span>
+              </div>
+              {funnel?.url ? (
+                <code className="truncate text-xs">{funnel.url}</code>
+              ) : null}
+            </div>
+          </div>
+
           {/* Start/Stop button */}
           <div className="flex items-center gap-4">
             <label className="w-20 text-sm font-medium">{t("status")}</label>
@@ -573,10 +734,8 @@ export function WebServiceSettings() {
 
           {error && <p className="text-sm text-destructive">{error}</p>}
 
-          {/* Address (only when running). The listener is bound to
-              0.0.0.0, so every local IP reaches the service; the selector
-              only changes which address is shown and opened by the arrow —
-              it never changes what the service actually listens on. */}
+          {/* Address (only when running). Loopback bind shows 127.0.0.1.
+              LAN bind lists every local IPv4; the selector is display-only. */}
           {isRunning && currentAddress && (
             <div className="space-y-2">
               <div className="text-xs font-medium text-muted-foreground">
@@ -584,9 +743,17 @@ export function WebServiceSettings() {
               </div>
               <AddressBar
                 address={currentAddress}
-                addresses={status.addresses}
+                addresses={visibleAddresses}
                 hasMultiple={hasMultipleAddresses}
                 onSelect={handleSelectAddress}
+                qrValue={pairingQrValue({
+                  url: currentAddress,
+                  token,
+                  mode: pairingMode({
+                    serveEnabled: Boolean(serve?.enabled),
+                    funnelEnabled: Boolean(funnel?.enabled),
+                  }),
+                })}
               />
               {hasMultipleAddresses && (
                 <p className="text-xs text-muted-foreground">
