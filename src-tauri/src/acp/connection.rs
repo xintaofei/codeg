@@ -8932,6 +8932,46 @@ async fn run_conversation_loop<'a>(
                     }
                 }
 
+                // grok can LOSE the `session/prompt` response: when the first
+                // prompt races a slow MCP-server initialization (measured on a
+                // live stuck child: prompt sent at ~0.7s, `mcp_initialized` at
+                // ~35s), grok streams the whole turn and announces its end on
+                // the private ext channel but never answers the prompt request
+                // itself — and in that state `turn_completed` and
+                // `_x.ai/session/prompt_complete` never arrive either. With no
+                // response and no StopReason message the loop below can never
+                // break, which strands the conversation row `in_progress` and
+                // any delegation waiting on this child `running` forever
+                // (#551).
+                //
+                // The rescue is a grace timer ARMED by grok's turn-end frames
+                // and DISARMED by any frame that shows grok is still working
+                // (see `GrokTurnSignal`). Disarming is what makes it safe:
+                // `response_completed` is emitted once per MODEL RESPONSE, not
+                // once per turn — measured against the pinned 1.0.5, a plain
+                // four-step file task emits it four times (5.7s / 8.0s / 9.4s /
+                // 11.6s), each ~1ms before the `tool_call` it introduces. A
+                // timer merely counting down from the first sighting would cut
+                // every tool-using turn short; here that `tool_call` disarms it
+                // ~1ms later and the long tool run happens with no timer armed
+                // at all. The final sighting re-arms and is then beaten by the
+                // real response (33ms on a healthy turn), so the healthy path
+                // never reaches the timer.
+                //
+                // `sleep` registers with the timer wheel on first poll, and a
+                // disabled `select!` arm is never polled — so for every other
+                // agent, and for every grok turn that ends normally, this costs
+                // nothing beyond the stack slot.
+                let grok_lost_response_grace =
+                    tokio::time::sleep(std::time::Duration::from_secs(3600));
+                tokio::pin!(grok_lost_response_grace);
+                // `Some(stop_reason)` once armed; `None` while grok is working.
+                // Holds the reason to finish the turn with: grok's own when it
+                // stated one (`turn_completed` / `prompt_complete`), else
+                // `end_turn` — `response_completed` carries no stop reason, and
+                // in the stuck case no frame that does ever arrives.
+                let mut grok_lost_response_reason: Option<String> = None;
+
                 // Read updates until turn completes.
                 // We must also listen for commands (e.g. RespondPermission)
                 // to avoid deadlocking when the agent awaits a permission response.
@@ -8971,6 +9011,27 @@ async fn run_conversation_loop<'a>(
                                     // isn't misclassified as `"empty"` at turn end.
                                     if grok_ext_notification_is_turn_output(&dispatch, agent_type) {
                                         probe.saw_agent_output = true;
+                                    }
+                                    // Lost-response rescue bookkeeping — see the
+                                    // grace-timer comment above the loop. A
+                                    // turn-end frame (re-)arms the timer with
+                                    // the best stop reason grok has stated so
+                                    // far; anything that shows grok still
+                                    // working disarms it outright.
+                                    match grok_turn_signal(&dispatch, agent_type, &sid.0) {
+                                        GrokTurnSignal::Ended { stop_reason } => {
+                                            grok_lost_response_reason = Some(
+                                                stop_reason.unwrap_or_else(|| "end_turn".into()),
+                                            );
+                                            grok_lost_response_grace.as_mut().reset(
+                                                tokio::time::Instant::now()
+                                                    + GROK_LOST_PROMPT_RESPONSE_GRACE,
+                                            );
+                                        }
+                                        GrokTurnSignal::Working => {
+                                            grok_lost_response_reason = None;
+                                        }
+                                        GrokTurnSignal::Unrelated => {}
                                     }
                                     // Grok has no `usage_update` channel; its
                                     // cumulative token count rides the outer
@@ -9248,6 +9309,78 @@ async fn run_conversation_loop<'a>(
                                     inj.broker.cancel_by_parent_turn(conn_id).await;
                                 }
                             }
+                            break;
+                        }
+                        // grok lost-response rescue (see the grace-timer
+                        // comment above the loop): grok announced the end of a
+                        // response, produced nothing since, and the real
+                        // `session/prompt` response still has not arrived.
+                        // Complete the turn from the notification instead of
+                        // hanging forever. Mirrors the StopReason-message exit
+                        // above — including deliberately NOT calling
+                        // `record_turn_end`: the response `_meta` this exit
+                        // stands in for never existed, and the streamed tail
+                        // was already persisted.
+                        () = grok_lost_response_grace.as_mut(), if grok_lost_response_reason.is_some() => {
+                            // Armed by the branch above, so this is infallible;
+                            // taken (not cloned) because the loop breaks here.
+                            let raw_reason_str = grok_lost_response_reason
+                                .take()
+                                .unwrap_or_else(|| "end_turn".into());
+                            tracing::warn!(
+                                "[ACP] grok never answered session/prompt {}s after announcing \
+                                 the end of its response; completing the turn from the \
+                                 notification (session={}, stop_reason={raw_reason_str})",
+                                GROK_LOST_PROMPT_RESPONSE_GRACE.as_secs(),
+                                sid.0,
+                            );
+                            if !tracked_terminal_tool_calls.is_empty() {
+                                poll_tracked_terminal_tool_calls(
+                                    terminal_runtime.as_ref(),
+                                    &sid,
+                                    state,
+                                    emitter,
+                                    &mut tracked_terminal_tool_calls,
+                                )
+                                .await;
+                            }
+                            let (reason_str, empty_report) =
+                                finish_turn_reason(&probe, &raw_reason_str, stderr_tail);
+                            if let Some(err_event) = turn_failure_error_event(
+                                reason_str,
+                                agent_type,
+                                empty_report.as_ref(),
+                            ) {
+                                emit_with_state(state, emitter, err_event).await;
+                            }
+                            if reason_str == "end_turn" {
+                                journal_turn_span(&mut turn_timing_probe, conn_id, &sid.0).await;
+                            }
+                            drain_permissions_then_emit(
+                                perms,
+                                state,
+                                emitter,
+                                AcpEvent::TurnComplete {
+                                    session_id: sid.0.to_string(),
+                                    stop_reason: reason_str.into(),
+                                    agent_type: agent_type.to_string(),
+                                },
+                            )
+                            .await;
+                            if reason_str != "end_turn" {
+                                if let Some(inj) = delegation_injection {
+                                    inj.broker.cancel_by_parent_turn(conn_id).await;
+                                }
+                            }
+                            // Same reason the Cancel arm below drains it: this
+                            // exit leaves the request outstanding, and dropping
+                            // the receiver makes sacp log "receiver dropped" if
+                            // the agent does eventually answer. In the genuine
+                            // lost-response case nothing ever arrives and the
+                            // task simply ends with the connection.
+                            tokio::spawn(async move {
+                                let _ = prompt_response.await;
+                            });
                             break;
                         }
                         _ = terminal_poll_interval.tick(), if !tracked_terminal_tool_calls.is_empty() => {
@@ -11758,6 +11891,115 @@ fn map_claude_sdk_ext_notification(notification: &UntypedMessage) -> Option<AcpE
 const GROK_EXT_UPDATE_METHODS: [&str; 2] =
     ["_x.ai/session_notification", "_x.ai/session/update"];
 
+/// grok's third turn-end method. Unlike [`GROK_EXT_UPDATE_METHODS`] it does not
+/// wrap its payload in `update` — `stopReason` sits directly on `params`.
+const GROK_PROMPT_COMPLETE_METHOD: &str = "_x.ai/session/prompt_complete";
+
+/// How long after grok's last turn-end frame the turn loop keeps waiting for the
+/// real `session/prompt` response before completing the turn from that frame
+/// (#551). On a healthy turn the response follows within milliseconds (33ms
+/// measured against the pinned 1.0.5), so a live response path never gets near
+/// this; the lost-response case never delivers one at all, so anything finite
+/// works and 10s leaves a slow-but-alive response path winning cleanly.
+const GROK_LOST_PROMPT_RESPONSE_GRACE: std::time::Duration =
+    std::time::Duration::from_secs(10);
+
+/// What one grok frame says about whether the turn is over — the input to the
+/// lost-response rescue in `run_conversation_loop`.
+///
+/// The distinction that matters is `Ended` vs `Working`, and getting it wrong in
+/// either direction is a real bug: treat a `Working` frame as `Ended` and the
+/// rescue truncates a live turn; treat an `Ended` frame as `Working` and #551
+/// hangs again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GrokTurnSignal {
+    /// grok says a response finished. ARMS the rescue.
+    ///
+    /// `stop_reason` is `Some` only for the frames that state one
+    /// (`turn_completed`, `prompt_complete`); `response_completed` carries none,
+    /// and in the stuck case no frame that does ever arrives.
+    Ended { stop_reason: Option<String> },
+    /// grok is still producing this turn. DISARMS the rescue.
+    ///
+    /// Critically this covers `tool_call`: `response_completed` fires once per
+    /// MODEL RESPONSE, and on a tool-using turn the `tool_call` it introduces
+    /// lands ~1ms later, so this is what keeps a multi-step turn — including the
+    /// minutes-long tool runs inside it — out of the rescue's reach.
+    Working,
+    /// Says nothing about the turn: catalogue / settings / queue / MCP chatter,
+    /// another session's frame, or any non-grok agent.
+    Unrelated,
+}
+
+/// `sessionUpdate` kinds that ride the turn stream but describe the SESSION
+/// rather than progress on the current response. They must not disarm the
+/// rescue: in the stuck capture the last thing to arrive was session-level
+/// chatter (`_x.ai/mcp_initialized` at ~35s), and letting that disarm would
+/// re-hang the very case this exists for.
+const GROK_SESSION_LEVEL_UPDATES: [&str; 5] = [
+    "available_commands_update",
+    "session_info_update",
+    "current_mode_update",
+    "model_changed",
+    "usage_update",
+];
+
+/// Classify one grok frame for the lost-response rescue. See [`GrokTurnSignal`].
+///
+/// Unknown `sessionUpdate` kinds fall into `Working` on purpose: an update codeg
+/// has never seen is far more likely to be new turn content than a new way of
+/// saying "the turn ended", and that direction fails safe (the rescue stays
+/// disarmed, i.e. today's behavior) rather than cutting a live turn short.
+fn grok_turn_signal(
+    dispatch: &Dispatch,
+    agent_type: AgentType,
+    session_id: &str,
+) -> GrokTurnSignal {
+    if !matches!(agent_type, AgentType::Grok) {
+        return GrokTurnSignal::Unrelated;
+    }
+    let Dispatch::Notification(notification) = dispatch else {
+        return GrokTurnSignal::Unrelated;
+    };
+    let method = notification.method();
+    let is_update_method = GROK_EXT_UPDATE_METHODS.contains(&method) || method == "session/update";
+    if !is_update_method && method != GROK_PROMPT_COMPLETE_METHOD {
+        return GrokTurnSignal::Unrelated;
+    }
+    let params = notification.params();
+    // A frame for another session says nothing about this turn. Frames with no
+    // session id at all (`_x.ai/models/update`, `announcements/update`, …) never
+    // reach here — they fail the method check above.
+    if params.get("sessionId").and_then(|v| v.as_str()) != Some(session_id) {
+        return GrokTurnSignal::Unrelated;
+    }
+    if method == GROK_PROMPT_COMPLETE_METHOD {
+        return GrokTurnSignal::Ended {
+            stop_reason: params
+                .get("stopReason")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        };
+    }
+    let Some(update) = params.get("update") else {
+        return GrokTurnSignal::Unrelated;
+    };
+    let Some(kind) = update.get("sessionUpdate").and_then(|v| v.as_str()) else {
+        return GrokTurnSignal::Unrelated;
+    };
+    match kind {
+        "response_completed" => GrokTurnSignal::Ended { stop_reason: None },
+        "turn_completed" => GrokTurnSignal::Ended {
+            stop_reason: update
+                .get("stop_reason")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        },
+        k if GROK_SESSION_LEVEL_UPDATES.contains(&k) => GrokTurnSignal::Unrelated,
+        _ => GrokTurnSignal::Working,
+    }
+}
+
 /// A stable id for a synthetic event derived from a grok ext notification —
 /// grok stamps `params._meta.eventId`; fall back to a fresh uuid.
 fn grok_ext_event_id(params: &serde_json::Value) -> String {
@@ -13274,6 +13516,249 @@ mod tests {
             PermissionQueue::default(),
             Arc::new(std::sync::Mutex::new(Vec::new())),
         )
+    }
+
+    // ── grok lost prompt response (#551) ────────────────────────────────────
+
+    fn grok_ext_dispatch(method: &str, params: serde_json::Value) -> Dispatch {
+        Dispatch::Notification(
+            UntypedMessage::new(method, params).expect("fixture frame must serialize"),
+        )
+    }
+
+    /// One `sessionUpdate`-shaped frame on grok's private ext channel.
+    fn grok_update(session_id: &str, update: serde_json::Value) -> Dispatch {
+        grok_ext_dispatch(
+            "_x.ai/session_notification",
+            serde_json::json!({ "sessionId": session_id, "update": update }),
+        )
+    }
+
+    /// The `_x.ai/session_notification` frame captured on the wire from a live
+    /// stuck delegation child (grok 1.0.5): the turn streamed fully, this
+    /// notification arrived, and the `session/prompt` response never did.
+    fn grok_response_completed_dispatch(session_id: &str) -> Dispatch {
+        grok_update(
+            session_id,
+            serde_json::json!({
+                "sessionUpdate": "response_completed",
+                "usage": {
+                    "input_tokens": 76195,
+                    "output_tokens": 40,
+                    "cache_read_input_tokens": 11648,
+                    "cache_creation_input_tokens": 0,
+                    "reasoning_tokens": 35
+                }
+            }),
+        )
+    }
+
+    fn signal(d: &Dispatch) -> GrokTurnSignal {
+        grok_turn_signal(d, AgentType::Grok, "s-1")
+    }
+
+    #[test]
+    fn grok_turn_signal_arms_on_the_live_stuck_frame() {
+        assert_eq!(
+            signal(&grok_response_completed_dispatch("s-1")),
+            GrokTurnSignal::Ended { stop_reason: None },
+            "response_completed states no stop reason; the caller defaults it"
+        );
+    }
+
+    #[test]
+    fn grok_turn_signal_prefers_a_stated_stop_reason() {
+        // The two frames that DO carry one. In the stuck case neither arrives,
+        // which is why `response_completed` has to arm at all — but when they
+        // do, the turn must finish with grok's reason, not a synthesized
+        // `end_turn` (a refusal reported as success would reach the parent as
+        // `DelegationOutcome::Ok`).
+        assert_eq!(
+            signal(&grok_update(
+                "s-1",
+                serde_json::json!({ "sessionUpdate": "turn_completed", "stop_reason": "refusal" })
+            )),
+            GrokTurnSignal::Ended {
+                stop_reason: Some("refusal".into())
+            }
+        );
+        assert_eq!(
+            signal(&grok_ext_dispatch(
+                GROK_PROMPT_COMPLETE_METHOD,
+                serde_json::json!({
+                    "sessionId": "s-1",
+                    "promptId": "p-1",
+                    "stopReason": "max_tokens"
+                })
+            )),
+            GrokTurnSignal::Ended {
+                stop_reason: Some("max_tokens".into())
+            }
+        );
+    }
+
+    #[test]
+    fn grok_turn_signal_treats_turn_content_as_working() {
+        // The regression guard for the whole design: `response_completed` fires
+        // once per MODEL RESPONSE, and on a tool-using turn the `tool_call` it
+        // introduces arrives ~1ms later (measured, pinned 1.0.5: four
+        // `response_completed` frames in one 11.6s four-step task). Each of
+        // these must DISARM, or the rescue cuts every tool-using turn short.
+        for kind in [
+            "tool_call",
+            "tool_call_update",
+            "agent_message_chunk",
+            "agent_thought_chunk",
+            "plan",
+            "user_message_chunk",
+            "subagent_started",
+            "task_backgrounded",
+            "auto_compact_completed",
+            "a_kind_codeg_has_never_seen",
+        ] {
+            assert_eq!(
+                signal(&grok_update(
+                    "s-1",
+                    serde_json::json!({ "sessionUpdate": kind })
+                )),
+                GrokTurnSignal::Working,
+                "`{kind}` must disarm the lost-response rescue"
+            );
+        }
+        // The standard ACP envelope carries the same variants — grok's tool
+        // calls and message chunks ride `session/update`, not the ext method,
+        // so missing it here would leave the rescue armed through a tool run.
+        assert_eq!(
+            signal(&grok_ext_dispatch(
+                "session/update",
+                serde_json::json!({
+                    "sessionId": "s-1",
+                    "update": { "sessionUpdate": "tool_call", "toolCallId": "c-1" }
+                })
+            )),
+            GrokTurnSignal::Working
+        );
+    }
+
+    #[test]
+    fn grok_turn_signal_ignores_session_level_chatter() {
+        // These ride the turn stream but say nothing about the current
+        // response. They must NOT disarm: in the stuck capture the last frame
+        // to arrive was session-level (`mcp_initialized`, ~17s after the turn
+        // ended), and disarming on it would re-hang #551.
+        for kind in GROK_SESSION_LEVEL_UPDATES {
+            assert_eq!(
+                signal(&grok_update(
+                    "s-1",
+                    serde_json::json!({ "sessionUpdate": kind })
+                )),
+                GrokTurnSignal::Unrelated,
+                "`{kind}` must neither arm nor disarm"
+            );
+        }
+        // Session-less ext chatter never even reaches the `update` shape.
+        for method in [
+            "_x.ai/models/update",
+            "_x.ai/announcements/update",
+            "_x.ai/queue/changed",
+            "_x.ai/mcp_initialized",
+        ] {
+            assert_eq!(
+                signal(&grok_ext_dispatch(
+                    method,
+                    serde_json::json!({ "sessionId": "s-1", "mcpToolCount": 0 })
+                )),
+                GrokTurnSignal::Unrelated,
+                "`{method}` must neither arm nor disarm"
+            );
+        }
+    }
+
+    #[test]
+    fn grok_turn_signal_requires_this_session_and_this_agent() {
+        let d = grok_response_completed_dispatch("s-1");
+        assert_eq!(
+            grok_turn_signal(&d, AgentType::Grok, "s-2"),
+            GrokTurnSignal::Unrelated,
+            "another session's frame must not touch this turn's rescue"
+        );
+        assert_eq!(
+            grok_turn_signal(&d, AgentType::Codex, "s-1"),
+            GrokTurnSignal::Unrelated,
+            "the rescue is grok-only"
+        );
+    }
+
+    /// Replay of the arm/disarm state machine the turn loop runs, over the two
+    /// frame sequences that decide whether this feature is correct. Keeping the
+    /// fold here (rather than only inside `run_conversation_loop`) is what makes
+    /// the multi-step case testable at all.
+    fn replay(frames: &[Dispatch]) -> Option<String> {
+        let mut armed: Option<String> = None;
+        for d in frames {
+            match grok_turn_signal(d, AgentType::Grok, "s-1") {
+                GrokTurnSignal::Ended { stop_reason } => {
+                    armed = Some(stop_reason.unwrap_or_else(|| "end_turn".into()));
+                }
+                GrokTurnSignal::Working => armed = None,
+                GrokTurnSignal::Unrelated => {}
+            }
+        }
+        armed
+    }
+
+    #[test]
+    fn grok_rescue_stays_disarmed_through_a_multi_step_turn() {
+        // The wire order measured against the pinned 1.0.5 for a four-step file
+        // task: every `response_completed` is followed by the `tool_call` it
+        // introduces. At no point after the first frame is the rescue left
+        // armed while grok still has work to do.
+        let mut frames = Vec::new();
+        for _ in 0..3 {
+            frames.push(grok_response_completed_dispatch("s-1"));
+            frames.push(grok_update(
+                "s-1",
+                serde_json::json!({ "sessionUpdate": "tool_call" }),
+            ));
+            assert_eq!(
+                replay(&frames),
+                None,
+                "a tool_call must disarm the rescue before the tool runs"
+            );
+        }
+        // Final model response, then grok's real turn end.
+        frames.push(grok_response_completed_dispatch("s-1"));
+        frames.push(grok_update(
+            "s-1",
+            serde_json::json!({ "sessionUpdate": "turn_completed", "stop_reason": "end_turn" }),
+        ));
+        assert_eq!(
+            replay(&frames),
+            Some("end_turn".into()),
+            "the turn really is over here — the real response then wins the select"
+        );
+    }
+
+    #[test]
+    fn grok_rescue_stays_armed_through_the_stuck_capture() {
+        // What the stuck child actually sent: the streamed turn, then
+        // `response_completed`, then nothing but session-level chatter.
+        let frames = [
+            grok_update(
+                "s-1",
+                serde_json::json!({ "sessionUpdate": "agent_message_chunk" }),
+            ),
+            grok_response_completed_dispatch("s-1"),
+            grok_ext_dispatch(
+                "_x.ai/mcp_initialized",
+                serde_json::json!({ "sessionId": "s-1", "mcpToolCount": 12 }),
+            ),
+        ];
+        assert_eq!(
+            replay(&frames),
+            Some("end_turn".into()),
+            "the rescue must survive trailing session chatter, or #551 hangs again"
+        );
     }
 
     #[test]
