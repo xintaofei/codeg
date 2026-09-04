@@ -3489,7 +3489,11 @@
         "skip": "Skip",
         "next": "Next",
         "submit": "Submit",
-        "submitError": "Couldn't submit. Please try again."
+        "submitError": "Couldn't submit. Please try again.",
+        "collapse": "Collapse",
+        "expand": "Expand",
+        "float": "Pop out",
+        "dock": "Back to panel"
       },
       "planApproval": {
         "title": "The agent has a plan — review it",

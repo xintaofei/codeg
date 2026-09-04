@@ -3489,7 +3489,11 @@
         "skip": "건너뛰기",
         "next": "다음",
         "submit": "제출",
-        "submitError": "제출하지 못했습니다. 다시 시도해 주세요."
+        "submitError": "제출하지 못했습니다. 다시 시도해 주세요.",
+        "collapse": "접기",
+        "expand": "펼치기",
+        "float": "분리 창",
+        "dock": "패널로 돌아가기"
       },
       "planApproval": {
         "title": "에이전트가 계획을 제시했습니다 — 검토하세요",
