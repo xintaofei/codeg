@@ -4,6 +4,7 @@ import {
   MAX_PARSE_BYTES,
   MAX_TRANSLATION_CHARS,
   STREAM_TAIL_CHUNK_MAX_CHARS,
+  buildContextPrefix,
   buildNumberedRequest,
   hasSameTranslationPlaceholders,
   joinTranslated,
@@ -388,6 +389,19 @@ describe("missingSourceNumbers normalization", () => {
         "zh"
       )
     ).toBe(true)
+  })
+})
+
+describe("buildContextPrefix", () => {
+  it("truncates both sides from the end and marks the block read-only", () => {
+    const prefix = buildContextPrefix({
+      source: "x".repeat(600) + "结尾原文",
+      translation: "y".repeat(600) + "结尾译文",
+    })
+    expect(prefix).toContain("结尾原文")
+    expect(prefix).toContain("结尾译文")
+    expect(prefix).not.toContain("x".repeat(600))
+    expect(prefix).toContain("do NOT translate")
   })
 })
 

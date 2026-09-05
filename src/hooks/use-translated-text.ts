@@ -9,6 +9,7 @@ import {
 import { getTranslationSettings, translateTexts } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import {
+  buildContextPrefix,
   buildNumberedRequest,
   hasSameTranslationPlaceholders,
   mergeUnit,
@@ -19,6 +20,7 @@ import {
   realignTranslationPlaceholders,
   shouldTranslate,
   splitForTranslation,
+  type ContextReference,
 } from "@/lib/translation"
 import type { TranslationSettings } from "@/lib/types"
 
@@ -147,6 +149,12 @@ export function translationCacheKey({
   // Length-prefixed like the backend cache key: joining on a separator that
   // can appear inside `text` lets two different field sets render the same
   // string and serve each other's translations.
+  //
+  // The key deliberately EXCLUDES the carry-context reference: requests are
+  // addressed by their segment text, so the same paragraph translates once
+  // and is reused everywhere. The context block only shapes quality — a
+  // reference-less retry of the same segment must still hit the cached
+  // translation instead of paying for it twice.
   return [
     blockKey,
     uiLocale,
@@ -271,7 +279,8 @@ export async function requestNumberedGroup(
   segments: readonly string[],
   uiLocale: string,
   priority: boolean = false,
-  targetLang?: string | null
+  targetLang?: string | null,
+  context?: ContextReference
 ): Promise<string[] | null> {
   if (segments.length === 0) return []
   // A lone segment rides as itself: the numbering protocol exists to make
@@ -282,12 +291,15 @@ export async function requestNumberedGroup(
   // rides into the rendered text.
   const single = segments.length === 1
   const numbered = single ? segments[0] : buildNumberedRequest(segments)
+  // The reference block rides in the SAME request body — no extra round
+  // trip, no extra RPM spend; the prompt marks it read-only.
+  const outbound = context ? buildContextPrefix(context) + numbered : numbered
   const effectiveTarget =
     targetLang ?? cachedSettings?.targetLang ?? (uiLocale as string | null)
   let result
   try {
     const results = await translateTexts(
-      [numbered],
+      [outbound],
       uiLocale,
       priority,
       targetLang ?? null
@@ -338,7 +350,8 @@ export async function requestTranslationDetailed(
   key: string,
   priority: boolean = false,
   targetLang?: string | null,
-  mask: MaskedSourceFactory = maskForTranslation
+  mask: MaskedSourceFactory = maskForTranslation,
+  context?: ContextReference
 ): Promise<TranslationAttempt> {
   const cached = translatedCache.get(key)
   if (cached !== undefined) return { text: cached }
@@ -381,10 +394,13 @@ export async function requestTranslationDetailed(
           // request, judged, done. Routing it through the numbered group
           // would double the attempts whenever a gate fails — and gates fail
           // on exactly the endpoints that can least afford it.
+          const outbound = context
+            ? buildContextPrefix(context) + segments[0]
+            : segments[0]
           let result
           try {
             const results = await translateTexts(
-              segments,
+              [outbound],
               uiLocale,
               priority,
               targetLang ?? null
@@ -411,7 +427,8 @@ export async function requestTranslationDetailed(
           segments,
           uiLocale,
           priority,
-          targetLang
+          targetLang,
+          context
         )
         if (!translations) {
           groupFailed = true
@@ -431,7 +448,11 @@ export async function requestTranslationDetailed(
           .map((value, index) => (value === null ? index : -1))
           .filter((index) => index >= 0)
         const results = await translateTexts(
-          failed.map((index) => chunks[index]),
+          failed.map((index) =>
+            context
+              ? buildContextPrefix(context) + chunks[index]
+              : chunks[index]
+          ),
           uiLocale,
           priority,
           targetLang ?? null

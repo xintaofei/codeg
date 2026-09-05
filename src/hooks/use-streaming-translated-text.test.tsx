@@ -24,22 +24,29 @@ const ENABLED = {
   selectionTargetLang: null,
   toggleAlwaysVisible: false,
   batchMaxChars: null,
+  carryContext: true,
 }
 
 type Texts = string[]
 
 /** A well-behaved endpoint: prefix every chunk so restores stay verifiable,
- * and answer a numbered group in kind so grouped dispatches succeed. */
+ * and answer a numbered group in kind so grouped dispatches succeed. A
+ * well-behaved endpoint also never outputs the carry-context reference
+ * block, so it is stripped from the request before echoing. */
 const ok = async (texts: Texts) =>
-  texts.map((text) => {
+  texts.map((raw) => {
+    const text = raw.replace(
+      /^\[Reference for consistency only[\s\S]*?\[End of reference[^\n]*\n/,
+      ""
+    )
     if (/^\[1\] /m.test(text)) {
       const segments = text.split(/(?:^|\n)\[\d+\] /).slice(1)
       const reply = segments
         .map((segment, index) => `[${index + 1}] 译:${segment.trim()}`)
         .join("\n\n")
-      return { key: text, text: reply, fromCache: false }
+      return { key: raw, text: reply, fromCache: false }
     }
-    return { key: text, text: `译:${text}`, fromCache: false }
+    return { key: raw, text: `译:${text}`, fromCache: false }
   })
 
 const WINDOW = 3_500
@@ -138,10 +145,16 @@ describe("useStreamingTranslatedText", () => {
     await advance(WINDOW)
     // The three sealed units ride ONE numbered request — that is what the
     // grouping buys: one round trip per pacing window, not one per paragraph.
+    // carryContext is on: the request carries the previous piece ("one") as a
+    // read-only reference ahead of the numbered body.
     expect(mocks.translate).toHaveBeenCalledTimes(2)
-    expect(mocks.translate.mock.calls[1][0]).toEqual([
-      "[1] two\n\n[2] three\n\n[3] four",
-    ])
+    expect(mocks.translate.mock.calls[1][0][0]).toContain(
+      "[Reference for consistency only"
+    )
+    expect(mocks.translate.mock.calls[1][0][0]).toContain("Source: one")
+    expect(mocks.translate.mock.calls[1][0][0]).toContain(
+      "[1] two\n\n[2] three\n\n[3] four"
+    )
   })
 
   it("dispatches before the window once enough new text sealed", async () => {
@@ -160,7 +173,10 @@ describe("useStreamingTranslatedText", () => {
     await flush()
 
     expect(mocks.translate).toHaveBeenCalledTimes(2)
-    expect(mocks.translate.mock.calls[1][0]).toEqual([`${filler}\n\n`])
+    // The batch carries the previous piece ("seed") as its consistency
+    // reference, with the filler unit as the actual payload.
+    expect(mocks.translate.mock.calls[1][0][0]).toContain("Source: seed")
+    expect(mocks.translate.mock.calls[1][0][0]).toContain(filler)
   })
 
   it("sends each sealed unit byte for byte inside its numbered group", async () => {
@@ -224,12 +240,11 @@ describe("useStreamingTranslatedText", () => {
 
     rerender({ text: fullText, isStreaming: false })
     await flush()
-    expect(mocks.translate).toHaveBeenLastCalledWith(
-      ["p3"],
-      "zh-CN",
-      false,
-      null
-    )
+    // The settle flush rides without a reference (the whole block is one
+    // request and the model sees the full text), so the payload is "p3" raw.
+    const lastCall = mocks.translate.mock.calls.at(-1)![0] as string[]
+    expect(lastCall[0]).toContain("p3")
+    expect(lastCall[0]).not.toContain("[Reference for consistency")
     expect(result.current.display).toBe("译:p1\n\n译:p2\n\n译:p3")
   })
 
@@ -488,5 +503,30 @@ describe("streaming batching width and pacing", () => {
     expect(mocks.translate).not.toHaveBeenCalledTimes(2)
     await advance(1_000) // 累计 3s
     expect(mocks.translate).toHaveBeenCalledTimes(2)
+  })
+
+  it("prepends the previous piece as a reference when carryContext is on", async () => {
+    const mod = await setup()
+    mocks.translate.mockImplementation(ok)
+    const { rerender } = renderStream(
+      mod,
+      { text: "第一段落内容。\n\n", isStreaming: true },
+      "k"
+    )
+    await flush()
+    rerender({
+      text: "第一段落内容。\n\n第二段落紧随其后。\n\n",
+      isStreaming: true,
+    })
+    await flush()
+    await advance(3_000)
+    const sent = mocks.translate.mock.calls.map((call) =>
+      (call[0] as string[]).join("\n---\n")
+    )
+    const withRef = sent.filter((text) =>
+      text.includes("[Reference for consistency")
+    )
+    expect(withRef.length).toBeGreaterThanOrEqual(1)
+    expect(withRef[0]).toContain("第一段落内容。")
   })
 })

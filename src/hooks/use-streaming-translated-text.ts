@@ -16,6 +16,7 @@ import {
   mergeUnit,
   splitStableUnits,
   tailChunksFor,
+  type ContextReference,
 } from "@/lib/translation"
 
 import {
@@ -423,7 +424,8 @@ export function useStreamingTranslatedText({
     /** One segment, retried with backoff so a 429 blip cannot strand a line. */
     const requestSegmentWithRetry = async (
       segment: Segment,
-      key: string
+      key: string,
+      context?: ContextReference
     ): Promise<string | null> => {
       for (let attempt = 0; ; attempt += 1) {
         // The detailed variant so the failure reason survives for the
@@ -432,7 +434,10 @@ export function useStreamingTranslatedText({
           segment.text,
           uiLocale,
           key,
-          priority
+          priority,
+          undefined,
+          undefined,
+          context
         )
         if (
           attempt_.text !== null ||
@@ -463,6 +468,21 @@ export function useStreamingTranslatedText({
       dispatchedEndRef.current = Math.max(dispatchedEndRef.current, pos)
       lastDispatchAtRef.current = Date.now()
       lastDispatchCoveredRef.current = pos
+
+      // Terminology consistency: the piece immediately before this batch
+      // rides along (source + translation, tail-truncated) as a read-only
+      // reference inside the same request body — no extra round trip. One
+      // segment back is enough; history never accumulates.
+      let context: ContextReference | undefined
+      if (settings.carryContext) {
+        const batchStart = batch[0].start
+        let prev: Piece | undefined
+        for (const piece of progressRef.current.pieces.values()) {
+          if (piece.end <= batchStart && (!prev || piece.end > prev.end))
+            prev = piece
+        }
+        if (prev) context = { source: prev.source, translation: prev.text }
+      }
 
       const sent = batch.map((segment) => ({
         segment,
@@ -548,7 +568,9 @@ export function useStreamingTranslatedText({
         void requestNumberedGroup(
           batch.map((segment) => segment.text),
           uiLocale,
-          priority
+          priority,
+          undefined,
+          context
         ).then((translations) => {
           if (translations) {
             land(translations)
@@ -556,7 +578,7 @@ export function useStreamingTranslatedText({
           }
           void Promise.all(
             sent.map(({ segment, key }) =>
-              requestSegmentWithRetry(segment, key)
+              requestSegmentWithRetry(segment, key, context)
             )
           ).then(land)
         })
@@ -564,7 +586,9 @@ export function useStreamingTranslatedText({
       }
 
       void Promise.all(
-        sent.map(({ segment, key }) => requestSegmentWithRetry(segment, key))
+        sent.map(({ segment, key }) =>
+          requestSegmentWithRetry(segment, key, context)
+        )
       ).then(land)
       return true
     }

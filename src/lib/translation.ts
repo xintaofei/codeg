@@ -209,6 +209,34 @@ export function buildNumberedRequest(segments: readonly string[]): string {
 }
 
 /**
+ * 参考块携带的上一段原文/译文各自截断长度——只取紧邻当前请求的尾部，
+ * 恒定上限让每条请求的上下文成本与文档长度无关。
+ */
+export const CONTEXT_REFERENCE_MAX_CHARS = 500
+
+export interface ContextReference {
+  source: string
+  translation: string
+}
+
+/**
+ * 上一段的原文+译文，作为"仅供参考"块拼在正文前。术语一致性的锚点
+ * 只需要相邻段：滑动一段即够，不累积历史。块内明示不得翻译或续写，
+ * 且不含任何 `[n]` 形状，不会干扰 numbered 协议的解析。
+ */
+export function buildContextPrefix(reference: ContextReference): string {
+  const source = reference.source.slice(-CONTEXT_REFERENCE_MAX_CHARS)
+  const translation = reference.translation.slice(-CONTEXT_REFERENCE_MAX_CHARS)
+  return [
+    "[Reference for consistency only — do NOT translate, continue, or output this block.]",
+    `Source: ${source}`,
+    `Translation: ${translation}`,
+    "[End of reference. Translate ONLY the numbered segments below.]",
+    "",
+  ].join("\n")
+}
+
+/**
  * Read a numbered reply back into its per-segment translations.
  *
  * Strict by design: every line group must open with the exact `[n]` header,
