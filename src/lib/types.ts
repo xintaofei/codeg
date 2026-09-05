@@ -3491,6 +3491,164 @@ export interface SkillSyncReport {
   errors: string[]
 }
 
+/**
+ * Which dialect the translation endpoint speaks. `auto` lets the backend read
+ * it off the host (Anthropic / Gemini / Ollama are recognised, anything else is
+ * treated as OpenAI-compatible); the rest pin it when a reverse proxy hides the
+ * provider. Mirrors `api_format` in `src-tauri/src/translation/settings.rs`.
+ */
+export type TranslationApiFormat =
+  | "auto"
+  | "openai"
+  | "anthropic"
+  | "gemini"
+  | "ollama"
+
+/**
+ * One endpoint in the translation rotation pool. Mirrors `ProviderConfig` in
+ * `src-tauri/src/translation/settings.rs`.
+ */
+export interface TranslationProvider {
+  /** Stable identity the pool's runtime state keys on; empty until saved. */
+  id: string
+  /** Optional label shown in the settings page. */
+  name?: string | null
+  baseUrl: string
+  /** Masked on every read; the real key never leaves the backend. */
+  apiKey: string
+  model: string
+  apiFormat: TranslationApiFormat
+  /** Pool membership; the master `enabled` still gates the whole feature. */
+  enabled: boolean
+  /**
+   * Requests-per-minute ceiling the adaptive limiter may climb to. `null`
+   * lets the limiter explore on its own; the backend clamps to 2-600.
+   */
+  rpmCap: number | null
+}
+
+export interface TranslationSettings {
+  enabled: boolean
+  /**
+   * The endpoint rotation pool. Requests rotate across the enabled members;
+   * a legacy single-endpoint row arrives as a one-element list.
+   */
+  providers: TranslationProvider[]
+  baseUrl: string
+  /** Legacy single-endpoint mirror of `providers[0]`. */
+  apiKey: string
+  model: string
+  /** `null` follows the current interface locale. */
+  targetLang: string | null
+  translateThinking: boolean
+  apiFormat: TranslationApiFormat
+  /** Offer 翻译 in the text-selection bubble. */
+  selectionTranslate: boolean
+  /** Target language for selection translation; `null` follows `targetLang`. */
+  selectionTargetLang: string | null
+  /** Show translation toggle buttons without waiting for a hover. */
+  toggleAlwaysVisible: boolean
+  /**
+   * Character ceiling for one outbound request when small adjacent segments
+   * are coalesced into one numbered request. `null` keeps the built-in
+   * default (3000); the backend clamps to 500-20000.
+   */
+  batchMaxChars: number | null
+  /**
+   * Prepend the previous segment's source and translation as a read-only
+   * terminology reference (at most 500+500 chars), so the independent
+   * per-segment requests stay consistent. Default on; adds no extra requests.
+   */
+  carryContext: boolean
+}
+
+/** One pool member's health score, mirroring the Rust
+ * `ProviderHealthStatus` (src-tauri/src/translation/pool.rs). */
+export interface TranslationProviderHealth {
+  /** 0-100 composite. */
+  score: number
+  /** 0-1 dimension sub-scores. */
+  quality: number
+  stability: number
+  speed: number
+  /** Events the score judged; below the minimum sample the score is the
+   * neutral observing value. */
+  sample: number
+  observing: boolean
+  /** Below the degrade threshold: only serves fallback (or probe) traffic. */
+  degraded: boolean
+}
+
+/** One pool member's live state, for the settings page's status badges. */
+export interface TranslationPoolStatus {
+  id: string
+  name: string | null
+  baseUrl: string
+  model: string
+  /** The adaptive limiter's current allowance; 0 before the first request. */
+  allowedRpm: number
+  /** `Retry-After` parking remaining, ms; 0 when dispatchable. */
+  cooldownRemainingMs: number
+  /** Set when the provider was retired for the session, with the reason. */
+  disabledReason: string | null
+  /** POSTs actually dispatched in the current wall-clock minute. The allowed
+   * rate is what the limiter grants; this is what the endpoint really
+   * serves — the number "rate is high but nothing translates" turns on. */
+  dispatchedLastMinute: number
+  /** The member's current health, when its window has anything in it. */
+  health: TranslationProviderHealth | null
+}
+
+export interface TranslationResult {
+  key: string
+  text: string
+  fromCache: boolean
+  /** Why this chunk has no translation; present only when it failed. The
+   * successful siblings of a failed batch are still returned (and cached),
+   * so a retry only re-requests the failed chunks. */
+  error?: string
+  /** The pool member that produced (or failed) this slot, when one was
+   * picked; cache and native-skip slots have none. */
+  providerId?: string
+  /** Round-trip of the deciding attempt, milliseconds. */
+  latencyMs?: number
+}
+
+/** One provider's transport/quality counters, mirroring the Rust
+ * `ProviderMetricsSnapshot` (src-tauri/src/translation/metrics.rs). */
+export interface TranslationProviderMetrics {
+  sent: number
+  ok: number
+  gateRejected: number
+  rateLimited: number
+  httpError: number
+  networkError: number
+  parseError: number
+  avgLatencyMs: number
+  dispatchedLastMinute: number
+}
+
+/** Process-wide translation counters, mirroring the Rust
+ * `TranslationMetricsSnapshot`. In-memory only; resets on restart. */
+export interface TranslationMetricsSnapshot {
+  dispatchedTotal: number
+  cacheHits: number
+  servedTotal: number
+  gateRejectedTotal: number
+  gateRejectedInvented: number
+  gateRejectedEcho: number
+  gateRejectedDroppedNumbers: number
+  truncatedTotal: number
+  /** Keyed by the provider id, joinable with `TranslationPoolStatus.id`. */
+  providers: Record<string, TranslationProviderMetrics>
+}
+
+export interface TranslationCacheStats {
+  memoryEntries: number
+  diskEntries: number
+  diskBytes: number
+}
+
 export interface SystemProxySettings {
   enabled: boolean
   proxy_url: string | null

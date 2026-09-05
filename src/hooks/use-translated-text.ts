@@ -35,6 +35,7 @@ const DISABLED_SETTINGS: TranslationSettings = {
   selectionTargetLang: null,
   toggleAlwaysVisible: false,
   batchMaxChars: null,
+  carryContext: false,
 }
 
 /** The grouped-request width when the user left the setting empty. */
