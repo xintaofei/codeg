@@ -364,29 +364,23 @@ describe("missingSourceNumbers normalization", () => {
     expect(
       missingSourceNumbers(
         "Git 2.34 shipped in 2023 with 15 fixes",
-        "Git 2．34 于 2023 年发布，包含 15 项修复",
-        "zh"
+        "Git 2．34 于 2023 年发布，包含 15 项修复"
       )
     ).toBe(false)
   })
   it("accepts thousands separators dropped or added", () => {
-    expect(
-      missingSourceNumbers("about 1,234 users", "约 1234 名用户", "zh")
-    ).toBe(false)
+    expect(missingSourceNumbers("about 1,234 users", "约 1234 名用户")).toBe(
+      false
+    )
   })
   it("tolerates one missing run, rejects losing half", () => {
     expect(
-      missingSourceNumbers(
-        "versions 12, 34, 56 and 999",
-        "版本 12、34 和 56",
-        "zh"
-      )
+      missingSourceNumbers("versions 12, 34, 56 and 999", "版本 12、34 和 56")
     ).toBe(false)
     expect(
       missingSourceNumbers(
         "versions 12, 34, 56 and 78 were tested",
-        "测试了版本 12 和 34",
-        "zh"
+        "测试了版本 12 和 34"
       )
     ).toBe(true)
   })

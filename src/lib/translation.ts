@@ -221,8 +221,10 @@ export interface ContextReference {
 
 /**
  * 上一段的原文+译文，作为"仅供参考"块拼在正文前。术语一致性的锚点
- * 只需要相邻段：滑动一段即够，不累积历史。块内明示不得翻译或续写，
- * 且不含任何 `[n]` 形状，不会干扰 numbered 协议的解析。
+ * 只需要相邻段：滑动一段即够，不累积历史。块内明示不得翻译或续写。
+ * 脚手架行不含 `[n]` 形状；插值的上一段文本若含行首编号并被模型回显，
+ * numbered 解析将失败并安全降级为逐段请求（preamble 非空 → parse
+ * 返回 null → 逐段回退，per-chunk 门各自把关）。
  */
 export function buildContextPrefix(reference: ContextReference): string {
   const source = reference.source.slice(-CONTEXT_REFERENCE_MAX_CHARS)
@@ -346,7 +348,8 @@ export function missingSourceNumbers(
   translated: string
 ): boolean {
   const prose = chunk.replace(/\[\s*\[?_?CBLK\d+\s*\]\s*\]?/g, "")
-  const runs = normalizeNumberText(prose).match(/\d{2,}/g) ?? []
+  // 与后端 `!runs.contains(current)` 口径对齐：同一 run 只计一次。
+  const runs = [...new Set(normalizeNumberText(prose).match(/\d{2,}/g) ?? [])]
   if (runs.length === 0) return false
   const normalized = normalizeNumberText(translated)
   const missing = runs.filter((run) => !normalized.includes(run))
@@ -362,13 +365,11 @@ export interface TailChunk {
 }
 
 /**
- * Streaming tail-chunk width bounds. The floor keeps a payload from shattering
- * into single sentences; the ceiling keeps live translation fresh. The old
- * fixed 600-char width cut long paragraphs mid-sentence, and a model handed
- * half a sentence can only translate it broken — the main source of fragment
- * quality complaints.
+ * Streaming tail-chunk width ceiling; the floor is
+ * [`TAIL_MIN_SENTENCE_CHARS`] below. The old fixed 600-char width cut long
+ * paragraphs mid-sentence, and a model handed half a sentence can only
+ * translate it broken — the main source of fragment quality complaints.
  */
-export const STREAM_TAIL_CHUNK_MIN_CHARS = 600
 export const STREAM_TAIL_CHUNK_MAX_CHARS = 1500
 
 const STRONG_SENTENCE_END = new Set("。！？!?…".split(""))
