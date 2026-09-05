@@ -2767,6 +2767,7 @@
       "confirmCloseDirtyTab": "Fechar \"{title}\" sem salvar?",
       "confirmCloseOtherDirtyTabs": "Fechar outras abas com alterações não salvas?",
       "confirmCloseAllDirtyTabs": "Fechar todas as abas com alterações não salvas?",
+      "confirmLeaveWorkspace": "Sair do espaço de trabalho?",
       "unableLoadContent": "Não foi possível carregar o conteúdo.\n\n{message}",
       "previewRequestTimedOut": "A solicitação de preview expirou",
       "diffRequestTimedOut": "A solicitação de Diff expirou",

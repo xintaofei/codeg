@@ -2767,6 +2767,7 @@
       "confirmCloseDirtyTab": "文件“{title}”有未保存更改，确定关闭吗？",
       "confirmCloseOtherDirtyTabs": "其它标签页有未保存更改，确定关闭吗？",
       "confirmCloseAllDirtyTabs": "存在未保存更改，确定关闭全部标签页吗？",
+      "confirmLeaveWorkspace": "要离开工作区吗？",
       "unableLoadContent": "无法加载内容。\n\n{message}",
       "previewRequestTimedOut": "预览请求超时",
       "diffRequestTimedOut": "Diff 请求超时",

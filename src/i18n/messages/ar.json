@@ -2767,6 +2767,7 @@
       "confirmCloseDirtyTab": "إغلاق \"{title}\" بدون حفظ؟",
       "confirmCloseOtherDirtyTabs": "إغلاق التبويبات الأخرى التي تحتوي تغييرات غير محفوظة؟",
       "confirmCloseAllDirtyTabs": "إغلاق جميع التبويبات التي تحتوي تغييرات غير محفوظة؟",
+      "confirmLeaveWorkspace": "مغادرة مساحة العمل؟",
       "unableLoadContent": "تعذر تحميل المحتوى.\n\n{message}",
       "previewRequestTimedOut": "انتهت مهلة طلب المعاينة",
       "diffRequestTimedOut": "انتهت مهلة طلب Diff",

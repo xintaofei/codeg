@@ -2767,6 +2767,7 @@
       "confirmCloseDirtyTab": "¿Cerrar \"{title}\" sin guardar?",
       "confirmCloseOtherDirtyTabs": "¿Cerrar otras pestañas con cambios sin guardar?",
       "confirmCloseAllDirtyTabs": "¿Cerrar todas las pestañas con cambios sin guardar?",
+      "confirmLeaveWorkspace": "¿Salir del espacio de trabajo?",
       "unableLoadContent": "No se puede cargar el contenido.\n\n{message}",
       "previewRequestTimedOut": "La solicitud de vista previa agotó el tiempo",
       "diffRequestTimedOut": "La solicitud de Diff agotó el tiempo",

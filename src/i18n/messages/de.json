@@ -2767,6 +2767,7 @@
       "confirmCloseDirtyTab": "„{title}“ ohne Speichern schließen?",
       "confirmCloseOtherDirtyTabs": "Andere Tabs mit ungespeicherten Änderungen schließen?",
       "confirmCloseAllDirtyTabs": "Alle Tabs mit ungespeicherten Änderungen schließen?",
+      "confirmLeaveWorkspace": "Arbeitsbereich verlassen?",
       "unableLoadContent": "Inhalt konnte nicht geladen werden.\n\n{message}",
       "previewRequestTimedOut": "Vorschauanfrage hat das Zeitlimit überschritten",
       "diffRequestTimedOut": "Diff-Anfrage hat das Zeitlimit überschritten",

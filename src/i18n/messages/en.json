@@ -2767,6 +2767,7 @@
       "confirmCloseDirtyTab": "Close \"{title}\" without saving?",
       "confirmCloseOtherDirtyTabs": "Close other tabs with unsaved changes?",
       "confirmCloseAllDirtyTabs": "Close all tabs with unsaved changes?",
+      "confirmLeaveWorkspace": "Leave the workspace?",
       "unableLoadContent": "Unable to load content.\n\n{message}",
       "previewRequestTimedOut": "Preview request timed out",
       "diffRequestTimedOut": "Diff request timed out",

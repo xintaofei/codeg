@@ -2767,6 +2767,7 @@
       "confirmCloseDirtyTab": "檔案「{title}」有未儲存變更，確定關閉嗎？",
       "confirmCloseOtherDirtyTabs": "其他分頁有未儲存變更，確定關閉嗎？",
       "confirmCloseAllDirtyTabs": "存在未儲存變更，確定關閉全部分頁嗎？",
+      "confirmLeaveWorkspace": "要離開工作區嗎？",
       "unableLoadContent": "無法載入內容。\n\n{message}",
       "previewRequestTimedOut": "預覽請求逾時",
       "diffRequestTimedOut": "Diff 請求逾時",

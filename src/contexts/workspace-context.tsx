@@ -12,6 +12,7 @@ import {
 } from "react"
 import { useTranslations } from "next-intl"
 import { useActiveFolder } from "@/contexts/active-folder-context"
+import { useBrowserBackWindow } from "@/contexts/workspace-window-history"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { buildFileTabId } from "@/lib/file-tab-id"
 import {
@@ -111,7 +112,9 @@ interface WorkspaceActionsValue {
   switchFileTab: (tabId: string) => void
   closeFileTab: (tabId: string) => void
   closeOtherFileTabs: (tabId: string) => void
-  closeAllFileTabs: () => void
+  /** Returns false when the user vetoes the dirty-tabs confirm, so the
+   *  browser-back integration can restore the history entry it consumed. */
+  closeAllFileTabs: () => boolean
   reorderFileTabs: (tabs: FileWorkspaceTab[]) => void
   // Open a file tab. Accepts absolute paths, `~/` paths (expanded via the
   // backend home dir), and paths relative to a folder root. `folderId` is
@@ -2243,13 +2246,15 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     [activateFilePane, t]
   )
 
-  const closeAllFileTabs = useCallback(() => {
-    setFileTabs((prev) => {
-      if (prev.some(isDirtyFileTab)) {
-        const confirmed = window.confirm(t("confirmCloseAllDirtyTabs"))
-        if (!confirmed) return prev
-      }
+  const closeAllFileTabs = useCallback((): boolean => {
+    // Confirm outside the state updater: the browser-back handler needs the
+    // veto synchronously to decide whether to restore the history entry.
+    if (fileTabsRef.current.some(isDirtyFileTab)) {
+      const confirmed = window.confirm(t("confirmCloseAllDirtyTabs"))
+      if (!confirmed) return false
+    }
 
+    setFileTabs((prev) => {
       for (const tab of prev) {
         const closed = snapshotFileTab(tab)
         if (closed) pushClosedTab(closed)
@@ -2261,7 +2266,14 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       activateConversationPane()
       return []
     })
+    return true
   }, [activateConversationPane, t])
+
+  useBrowserBackWindow({
+    open: fileTabs.length > 0,
+    onClose: closeAllFileTabs,
+    key: "file-workspace",
+  })
 
   const reorderFileTabs = useCallback((tabs: FileWorkspaceTab[]) => {
     setFileTabs(tabs)

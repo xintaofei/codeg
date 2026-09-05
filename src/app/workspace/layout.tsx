@@ -35,6 +35,8 @@ import {
   WorkbenchRouteProvider,
   useWorkbenchRoute,
 } from "@/contexts/workbench-route-context"
+import { WorkspaceWindowHistoryProvider } from "@/contexts/workspace-window-history"
+
 import {
   WorkbenchRoutePage,
   WorkbenchRouteStrip,
@@ -1267,8 +1269,9 @@ function WorkbenchRouteConversationSync() {
 
 function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
   return (
-    <AppWorkspaceProvider>
-      <AlertProvider>
+    <WorkspaceWindowHistoryProvider>
+      <AppWorkspaceProvider>
+        <AlertProvider>
         <GitCredentialProvider>
           <TaskProvider>
             <AcpConnectionsProvider>
@@ -1314,8 +1317,9 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
             </AcpConnectionsProvider>
           </TaskProvider>
         </GitCredentialProvider>
-      </AlertProvider>
-    </AppWorkspaceProvider>
+        </AlertProvider>
+      </AppWorkspaceProvider>
+    </WorkspaceWindowHistoryProvider>
   )
 }
 

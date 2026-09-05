@@ -13,6 +13,7 @@ import { OverlayScrollbarsInit } from "@/components/overlay-scrollbars-init"
 import { ClipboardFallbackInit } from "@/components/clipboard-fallback-init"
 import { WebConnectionGuard } from "@/components/connection/web-connection-guard"
 import { WindowResizeGrips } from "@/components/layout/window-resize-grips"
+import { WorkspaceLeaveGuard } from "@/components/workspace/workspace-leave-guard"
 
 export const viewport: Viewport = {
   width: "device-width",
@@ -73,6 +74,7 @@ export default async function RootLayout({
                 <ClipboardFallbackInit />
                 <WebConnectionGuard />
                 <WindowResizeGrips />
+                <WorkspaceLeaveGuard />
                 {children}
               </AppearanceProvider>
             </ThemeProvider>

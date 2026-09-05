@@ -8,6 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react"
+import { useBrowserBackWindow } from "@/contexts/workspace-window-history"
 
 /**
  * The view occupying the main content region. `"conversations"` is the default
@@ -76,6 +77,12 @@ export function WorkbenchRouteProvider({ children }: { children: ReactNode }) {
 
   const setRoute = useCallback((id: WorkbenchRouteId) => setRouteId(id), [])
   const openConversations = useCallback(() => setRouteId("conversations"), [])
+
+  useBrowserBackWindow({
+    open: routeId !== "conversations",
+    onClose: openConversations,
+    key: "workbench-route",
+  })
 
   const value = useMemo<WorkbenchRouteContextValue>(
     () => ({

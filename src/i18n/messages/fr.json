@@ -2767,6 +2767,7 @@
       "confirmCloseDirtyTab": "Fermer « {title} » sans enregistrer ?",
       "confirmCloseOtherDirtyTabs": "Fermer les autres onglets avec des modifications non enregistrées ?",
       "confirmCloseAllDirtyTabs": "Fermer tous les onglets avec des modifications non enregistrées ?",
+      "confirmLeaveWorkspace": "Quitter l'espace de travail ?",
       "unableLoadContent": "Impossible de charger le contenu.\n\n{message}",
       "previewRequestTimedOut": "La requête de prévisualisation a expiré",
       "diffRequestTimedOut": "La requête Diff a expiré",

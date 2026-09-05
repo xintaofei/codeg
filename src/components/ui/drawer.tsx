@@ -9,6 +9,7 @@ import { attachRef } from "@/lib/attach-ref"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { XIcon } from "lucide-react"
+import { useBrowserBackWindow } from "@/contexts/workspace-window-history"
 
 type DrawerContextProps = {
   hasSnapPoints: boolean
@@ -177,6 +178,20 @@ function Drawer({
   showSwipeHandle?: boolean
 }) {
   const hasSnapPoints = snapPoints != null && snapPoints.length > 0
+  useBrowserBackWindow({
+    open: props.open ?? false,
+    onClose: () =>
+      onOpenChange?.(false, {
+        reason: "none",
+        event: new Event("close"),
+        cancel: () => {},
+        allowPropagation: () => {},
+        isCanceled: false,
+        isPropagationAllowed: true,
+        trigger: undefined,
+        preventUnmountOnClose: () => {},
+      }),
+  })
   const contextValue = React.useMemo(
     () => ({ hasSnapPoints, modal, showSwipeHandle, swipeDirection }),
     [hasSnapPoints, modal, showSwipeHandle, swipeDirection]
