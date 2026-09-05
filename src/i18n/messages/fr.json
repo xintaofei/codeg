@@ -196,7 +196,32 @@
       "panelOpacityHint": "Opacité de la barre latérale, des panneaux et des barres d'onglets. Plus c'est bas, plus l'image transparaît.",
       "errorTooLarge": "L'image est trop volumineuse (16 Mo maximum).",
       "errorUnsupportedFormat": "Format d'image non pris en charge. Choisissez un PNG, JPEG, WebP ou GIF.",
-      "errorUploadFailed": "Échec de la définition de l'image d'arrière-plan."
+      "errorUploadFailed": "Échec de la définition de l'image d'arrière-plan.",
+      "market": {
+        "open": "Marché des fonds d'écran",
+        "title": "Marché des fonds d'écran",
+        "description": "Parcourez la galerie publique Wallhaven ; cliquez pour télécharger et appliquer.",
+        "searchPlaceholder": "Rechercher des fonds d'écran…",
+        "categories": {
+          "all": "Tout",
+          "general": "Paysages",
+          "anime": "Anime",
+          "people": "Personnes"
+        },
+        "pageInfo": "Page {page} sur {lastPage}",
+        "prevPage": "Précédent",
+        "nextPage": "Suivant",
+        "loading": "Chargement…",
+        "empty": "Aucun fond d'écran correspondant.",
+        "error": "Échec du chargement du marché des fonds d'écran.",
+        "retry": "Réessayer",
+        "apply": "Appliquer",
+        "applying": "Application…",
+        "applied": "Utilisé",
+        "downloadFailed": "Échec du téléchargement. Veuillez réessayer.",
+        "appliedToast": "Fond d'écran appliqué",
+        "credit": "Images de wallhaven.cc · SFW uniquement"
+      }
     }
   },
   "SystemSettings": {

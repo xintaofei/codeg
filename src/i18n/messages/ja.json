@@ -196,7 +196,32 @@
       "panelOpacityHint": "サイドバー・パネル・タブバーの不透明度です。低いほど画像が透けて見えます。",
       "errorTooLarge": "画像が大きすぎます（最大 16 MB）。",
       "errorUnsupportedFormat": "対応していない画像形式です。PNG・JPEG・WebP・GIF から選んでください。",
-      "errorUploadFailed": "背景画像の設定に失敗しました。"
+      "errorUploadFailed": "背景画像の設定に失敗しました。",
+      "market": {
+        "open": "壁紙マーケット",
+        "title": "壁紙マーケット",
+        "description": "Wallhaven の公開ギャラリーを閲覧し、クリックでダウンロードして適用。",
+        "searchPlaceholder": "壁紙を検索…",
+        "categories": {
+          "all": "すべて",
+          "general": "風景",
+          "anime": "アニメ",
+          "people": "人物"
+        },
+        "pageInfo": "{page} / {lastPage} ページ",
+        "prevPage": "前へ",
+        "nextPage": "次へ",
+        "loading": "読み込み中…",
+        "empty": "一致する壁紙がありません。",
+        "error": "壁紙マーケットの読み込みに失敗しました。",
+        "retry": "再試行",
+        "apply": "適用",
+        "applying": "適用中…",
+        "applied": "使用中",
+        "downloadFailed": "ダウンロードに失敗しました。再試行してください。",
+        "appliedToast": "壁紙を適用しました",
+        "credit": "画像提供 wallhaven.cc · SFW のみ"
+      }
     }
   },
   "SystemSettings": {

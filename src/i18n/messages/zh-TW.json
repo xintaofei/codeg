@@ -196,7 +196,32 @@
       "panelOpacityHint": "側邊欄、面板與標籤列的不透明程度。越低，透出的圖片越多。",
       "errorTooLarge": "圖片太大（最大 16 MB）。",
       "errorUnsupportedFormat": "不支援的圖片格式，請選擇 PNG、JPEG、WebP 或 GIF。",
-      "errorUploadFailed": "設定背景圖片失敗。"
+      "errorUploadFailed": "設定背景圖片失敗。",
+      "market": {
+        "open": "桌布市集",
+        "title": "桌布市集",
+        "description": "瀏覽 Wallhaven 公開圖庫，點擊即可下載並套用。",
+        "searchPlaceholder": "搜尋桌布…",
+        "categories": {
+          "all": "全部",
+          "general": "風景",
+          "anime": "二次元",
+          "people": "人物"
+        },
+        "pageInfo": "第 {page} / {lastPage} 頁",
+        "prevPage": "上一頁",
+        "nextPage": "下一頁",
+        "loading": "載入中…",
+        "empty": "沒有找到符合的桌布。",
+        "error": "桌布市集載入失敗。",
+        "retry": "重試",
+        "apply": "套用",
+        "applying": "套用中…",
+        "applied": "使用中",
+        "downloadFailed": "下載失敗，請重試。",
+        "appliedToast": "桌布已套用",
+        "credit": "圖片來源 wallhaven.cc · 僅 SFW 內容"
+      }
     }
   },
   "SystemSettings": {

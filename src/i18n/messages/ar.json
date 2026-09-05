@@ -196,7 +196,32 @@
       "panelOpacityHint": "مدى عتامة الشريط الجانبي واللوحات وأشرطة التبويب. الأقل يُظهر المزيد من الصورة.",
       "errorTooLarge": "الصورة كبيرة جدًا (16 ميجابايت كحد أقصى).",
       "errorUnsupportedFormat": "صيغة صورة غير مدعومة. اختر ملف PNG أو JPEG أو WebP أو GIF.",
-      "errorUploadFailed": "فشل تعيين صورة الخلفية."
+      "errorUploadFailed": "فشل تعيين صورة الخلفية.",
+      "market": {
+        "open": "سوق الخلفيات",
+        "title": "سوق الخلفيات",
+        "description": "تصفح معرض Wallhaven العام؛ انقر للتنزيل والتطبيق.",
+        "searchPlaceholder": "ابحث عن خلفيات…",
+        "categories": {
+          "all": "الكل",
+          "general": "مناظر",
+          "anime": "أنمي",
+          "people": "أشخاص"
+        },
+        "pageInfo": "صفحة {page} من {lastPage}",
+        "prevPage": "السابق",
+        "nextPage": "التالي",
+        "loading": "جارٍ التحميل…",
+        "empty": "لا توجد خلفيات مطابقة.",
+        "error": "فشل تحميل سوق الخلفيات.",
+        "retry": "إعادة المحاولة",
+        "apply": "تطبيق",
+        "applying": "جارٍ التطبيق…",
+        "applied": "قيد الاستخدام",
+        "downloadFailed": "فشل التنزيل، حاول مجددًا.",
+        "appliedToast": "تم تطبيق الخلفية",
+        "credit": "الصور من wallhaven.cc · محتوى آمن فقط"
+      }
     }
   },
   "SystemSettings": {

@@ -196,7 +196,32 @@
       "panelOpacityHint": "O quão opacos são a barra lateral, os painéis e as barras de abas. Mais baixo deixa a imagem transparecer mais.",
       "errorTooLarge": "A imagem é muito grande (máx. 16 MB).",
       "errorUnsupportedFormat": "Formato de imagem não suportado. Escolha um PNG, JPEG, WebP ou GIF.",
-      "errorUploadFailed": "Falha ao definir a imagem de fundo."
+      "errorUploadFailed": "Falha ao definir a imagem de fundo.",
+      "market": {
+        "open": "Mercado de papéis",
+        "title": "Mercado de papéis de parede",
+        "description": "Navegue pela galeria pública do Wallhaven; clique para baixar e aplicar.",
+        "searchPlaceholder": "Pesquisar papéis…",
+        "categories": {
+          "all": "Tudo",
+          "general": "Paisagens",
+          "anime": "Anime",
+          "people": "Pessoas"
+        },
+        "pageInfo": "Página {page} de {lastPage}",
+        "prevPage": "Anterior",
+        "nextPage": "Próxima",
+        "loading": "Carregando…",
+        "empty": "Nenhum papel de parede correspondente.",
+        "error": "Falha ao carregar o mercado de papéis.",
+        "retry": "Tentar novamente",
+        "apply": "Aplicar",
+        "applying": "Aplicando…",
+        "applied": "Em uso",
+        "downloadFailed": "Falha no download. Tente novamente.",
+        "appliedToast": "Papel de parede aplicado",
+        "credit": "Imagens de wallhaven.cc · apenas SFW"
+      }
     }
   },
   "SystemSettings": {

@@ -1550,6 +1550,18 @@ pub fn build_router(
             "/background_clear",
             post(handlers::background::background_clear),
         )
+        .route(
+            "/background_market_search",
+            post(handlers::background::background_market_search),
+        )
+        .route(
+            "/background_market_asset",
+            post(handlers::background::background_market_asset),
+        )
+        .route(
+            "/background_market_download",
+            post(handlers::background::background_market_download),
+        )
         // ─── Pet ───
         .route("/pet_list", post(handlers::pet::pet_list))
         .route("/pet_get", post(handlers::pet::pet_get))

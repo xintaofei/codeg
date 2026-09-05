@@ -196,7 +196,32 @@
       "panelOpacityHint": "Wie deckend Seitenleiste, Panels und Tab-Leisten sind. Niedriger lässt mehr vom Bild durchscheinen.",
       "errorTooLarge": "Bild ist zu groß (max. 16 MB).",
       "errorUnsupportedFormat": "Nicht unterstütztes Bildformat. Wähle ein PNG, JPEG, WebP oder GIF.",
-      "errorUploadFailed": "Hintergrundbild konnte nicht festgelegt werden."
+      "errorUploadFailed": "Hintergrundbild konnte nicht festgelegt werden.",
+      "market": {
+        "open": "Hintergrund-Markt",
+        "title": "Hintergrund-Markt",
+        "description": "Durchsuche die öffentliche Wallhaven-Galerie; per Klick herunterladen und anwenden.",
+        "searchPlaceholder": "Hintergründe suchen…",
+        "categories": {
+          "all": "Alle",
+          "general": "Landschaften",
+          "anime": "Anime",
+          "people": "Personen"
+        },
+        "pageInfo": "Seite {page} von {lastPage}",
+        "prevPage": "Zurück",
+        "nextPage": "Weiter",
+        "loading": "Lädt…",
+        "empty": "Keine passenden Hintergründe gefunden.",
+        "error": "Der Hintergrund-Markt konnte nicht geladen werden.",
+        "retry": "Erneut versuchen",
+        "apply": "Anwenden",
+        "applying": "Wird angewendet…",
+        "applied": "In Verwendung",
+        "downloadFailed": "Download fehlgeschlagen. Bitte erneut versuchen.",
+        "appliedToast": "Hintergrund angewendet",
+        "credit": "Bilder von wallhaven.cc · nur SFW"
+      }
     }
   },
   "SystemSettings": {

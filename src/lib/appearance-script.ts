@@ -48,6 +48,10 @@ export const STORAGE_KEY_WORKSPACE_BG_PANEL_OPACITY =
 // 写/换/删图后 bump，让 workspace 窗口经 storage 事件重新读盘。不需预水合。
 export const STORAGE_KEY_WORKSPACE_BG_IMAGE_VERSION =
   "codeg-workspace-bg-image-version"
+// 壁纸市场：当前背景的来源页（https://wallhaven.cc/w/<id>），仅用于市场卡片的
+// 「使用中」标记。本地选图 / 移除背景时清除；不参与渲染，丢了也只是标记失灵。
+export const STORAGE_KEY_WORKSPACE_BG_SOURCE_URL =
+  "codeg-workspace-bg-source-url"
 
 // 自定义样式（外观设置页）。全部需要预水合 —— 少一帧就会看到「基底预设 → 用户配色」
 // 的跳变，比没有这个功能更糟。

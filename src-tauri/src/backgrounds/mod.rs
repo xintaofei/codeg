@@ -22,6 +22,8 @@ use crate::app_error::AppCommandError;
 use crate::models::background::BackgroundAsset;
 use crate::paths::codeg_backgrounds_root;
 
+pub mod marketplace;
+
 /// Smallest plausible image payload; rejecting tiny inputs early avoids
 /// decoding random files.
 const MIN_BG_BYTES: usize = 64;
@@ -109,7 +111,7 @@ fn ensure_backgrounds_root() -> Result<PathBuf, AppCommandError> {
     Ok(root)
 }
 
-fn write_background_atomic(bytes: &[u8]) -> Result<(), AppCommandError> {
+pub(crate) fn write_background_atomic(bytes: &[u8]) -> Result<(), AppCommandError> {
     let root = ensure_backgrounds_root()?;
     let final_path = root.join(BACKGROUND_FILENAME);
     let tmp_path = root.join(format!("{BACKGROUND_FILENAME}.tmp"));

@@ -196,7 +196,32 @@
       "panelOpacityHint": "Cuán opacos son la barra lateral, los paneles y las barras de pestañas. Más bajo deja ver más la imagen.",
       "errorTooLarge": "La imagen es demasiado grande (máx. 16 MB).",
       "errorUnsupportedFormat": "Formato de imagen no admitido. Elige un PNG, JPEG, WebP o GIF.",
-      "errorUploadFailed": "No se pudo establecer la imagen de fondo."
+      "errorUploadFailed": "No se pudo establecer la imagen de fondo.",
+      "market": {
+        "open": "Mercado de fondos",
+        "title": "Mercado de fondos",
+        "description": "Explora la galería pública de Wallhaven; haz clic para descargar y aplicar.",
+        "searchPlaceholder": "Buscar fondos…",
+        "categories": {
+          "all": "Todo",
+          "general": "Paisajes",
+          "anime": "Anime",
+          "people": "Personas"
+        },
+        "pageInfo": "Página {page} de {lastPage}",
+        "prevPage": "Anterior",
+        "nextPage": "Siguiente",
+        "loading": "Cargando…",
+        "empty": "No se encontraron fondos coincidentes.",
+        "error": "No se pudo cargar el mercado de fondos.",
+        "retry": "Reintentar",
+        "apply": "Aplicar",
+        "applying": "Aplicando…",
+        "applied": "En uso",
+        "downloadFailed": "Error de descarga. Reinténtalo.",
+        "appliedToast": "Fondo aplicado",
+        "credit": "Imágenes de wallhaven.cc · solo SFW"
+      }
     }
   },
   "SystemSettings": {

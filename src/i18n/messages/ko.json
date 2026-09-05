@@ -196,7 +196,32 @@
       "panelOpacityHint": "사이드바, 패널, 탭 바의 불투명도입니다. 낮을수록 이미지가 더 많이 비쳐 보입니다.",
       "errorTooLarge": "이미지가 너무 큽니다(최대 16 MB).",
       "errorUnsupportedFormat": "지원하지 않는 이미지 형식입니다. PNG, JPEG, WebP, GIF 중에서 선택하세요.",
-      "errorUploadFailed": "배경 이미지 설정에 실패했습니다."
+      "errorUploadFailed": "배경 이미지 설정에 실패했습니다.",
+      "market": {
+        "open": "배경화면 마켓",
+        "title": "배경화면 마켓",
+        "description": "Wallhaven 공개 갤러리를 탐색하고 클릭해서 다운로드 후 적용하세요.",
+        "searchPlaceholder": "배경화면 검색…",
+        "categories": {
+          "all": "전체",
+          "general": "풍경",
+          "anime": "애니메이션",
+          "people": "인물"
+        },
+        "pageInfo": "{page} / {lastPage} 페이지",
+        "prevPage": "이전",
+        "nextPage": "다음",
+        "loading": "불러오는 중…",
+        "empty": "일치하는 배경화면이 없습니다.",
+        "error": "배경화면 마켓을 불러오지 못했습니다.",
+        "retry": "재시도",
+        "apply": "적용",
+        "applying": "적용 중…",
+        "applied": "사용 중",
+        "downloadFailed": "다운로드에 실패했습니다. 다시 시도해 주세요.",
+        "appliedToast": "배경화면이 적용되었습니다",
+        "credit": "이미지 제공 wallhaven.cc · SFW만 표시"
+      }
     }
   },
   "SystemSettings": {
