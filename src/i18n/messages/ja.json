@@ -721,7 +721,9 @@
       "noConfigAvailable": "このエージェントには設定可能な項目がありません。",
       "modeLabel": "モード",
       "agentDefaultHint": "エージェント既定: {value}",
-      "defaultOptionLabel": "既定（{value}）"
+      "defaultOptionLabel": "既定（{value}）",
+      "continuationEnable": "修正ラウンド（実験的）",
+      "continuationEnableHint": "完了した委譲のサブセッションへメインエージェントが修正依頼を送れるようにします。既定はオフ。"
     },
     "actions": {
       "dragSort": "ドラッグして並べ替え",
@@ -3286,7 +3288,27 @@
             "child_unknown": "サブエージェント: エラー",
             "unknown": "不明なタスク"
           }
-        }
+        },
+        "collabTitle": "修正ラウンド",
+        "collabTurnOrdinal": "第 {ordinal} ラウンド",
+        "collabInitiatedByParent": "メインエージェントが開始",
+        "collabReworkLabel": "修正依頼",
+        "collabShowResult": "結果を表示",
+        "collabHideResult": "結果を隠す",
+        "collabResultTruncated": "切り詰められています — 完全な出力は子セッションで確認してください",
+        "collabLoadOlder": "前のラウンドを読み込む",
+        "collabBlockedNotice": "結果を確認できないラウンドがあります。新しい操作の前に実際の成果物を確認してください。",
+        "collabOutcomeUnknownNotice": "結果不明 — このラウンドが実行されたか証明できません。実際の成果物を確認してください。",
+        "collabState_accepted": "受付済み",
+        "collabState_preparing": "準備中",
+        "collabState_dispatching": "送信中",
+        "collabState_running": "実行中",
+        "collabState_cancel_requested": "キャンセル要求中",
+        "collabState_completed": "完了",
+        "collabState_failed": "失敗",
+        "collabState_canceled": "キャンセル済み",
+        "collabState_interrupted": "中断",
+        "collabState_outcome_unknown": "結果不明"
       },
       "contentParts": {
         "showingTailOutput": "パフォーマンスのため、ストリーミング中は末尾出力を表示しています。",

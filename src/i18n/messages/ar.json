@@ -721,7 +721,9 @@
       "noConfigAvailable": "لا يحتوي هذا الوكيل على خيارات قابلة للضبط.",
       "modeLabel": "الوضع",
       "agentDefaultHint": "افتراضي الوكيل: {value}",
-      "defaultOptionLabel": "افتراضي ({value})"
+      "defaultOptionLabel": "افتراضي ({value})",
+      "continuationEnable": "جولات إعادة العمل (تجريبي)",
+      "continuationEnableHint": "اسمح للوكيل الرئيسي بإرسال إعادة العمل إلى الجلسة الفرعية لتفويض مكتمل. معطل افتراضياً."
     },
     "actions": {
       "dragSort": "اسحب لإعادة الترتيب",
@@ -3286,7 +3288,27 @@
             "child_unknown": "الوكيل الفرعي: خطأ",
             "unknown": "مهمة غير معروفة"
           }
-        }
+        },
+        "collabTitle": "جولات إعادة العمل",
+        "collabTurnOrdinal": "الجولة {ordinal}",
+        "collabInitiatedByParent": "بدأها الوكيل الرئيسي",
+        "collabReworkLabel": "طلب إعادة العمل",
+        "collabShowResult": "إظهار النتيجة",
+        "collabHideResult": "إخفاء النتيجة",
+        "collabResultTruncated": "مقتطعة — افتح الجلسة الفرعية للمخرجات الكاملة",
+        "collabLoadOlder": "تحميل جولات أقدم",
+        "collabBlockedNotice": "تعذر تأكيد إحدى النتائج. تحقق من المخرجات الفعلية قبل بدء أي شيء جديد على هذه الجلسة.",
+        "collabOutcomeUnknownNotice": "النتيجة غير معروفة — لا يمكن إثبات تنفيذ هذه الجولة؛ تحقق من المخرجات الفعلية.",
+        "collabState_accepted": "مقبولة",
+        "collabState_preparing": "قيد التحضير",
+        "collabState_dispatching": "قيد الإرسال",
+        "collabState_running": "قيد التنفيذ",
+        "collabState_cancel_requested": "طُلب الإلغاء",
+        "collabState_completed": "مكتملة",
+        "collabState_failed": "فاشلة",
+        "collabState_canceled": "ملغاة",
+        "collabState_interrupted": "مقاطعة",
+        "collabState_outcome_unknown": "نتيجة غير معروفة"
       },
       "contentParts": {
         "showingTailOutput": "يتم عرض نهاية المخرجات أثناء البث لتحسين الأداء.",

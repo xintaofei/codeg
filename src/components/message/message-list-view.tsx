@@ -1564,6 +1564,7 @@ export function MessageListView({
           <SubAgentOverlay
             key={subAgentOverlayKey}
             delegations={lastAssistantDelegations}
+            parentConversationId={conversationId}
             overlayKey={subAgentOverlayKey}
           />
         </div>

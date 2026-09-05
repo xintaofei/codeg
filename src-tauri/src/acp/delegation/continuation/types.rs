@@ -364,7 +364,7 @@ impl ContinuationErrorCode {
 /// The typed rejection every continuation entry returns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContinuationError {
-    pub schema_version: i32,
+    pub schema_version: SchemaVersion1,
     pub error_code: ContinuationErrorCode,
     pub message: String,
     /// Filled only when the rejection is not an existence leak: a caller that
@@ -376,7 +376,7 @@ pub struct ContinuationError {
 impl ContinuationError {
     pub fn new(code: ContinuationErrorCode, message: impl Into<String>) -> Self {
         Self {
-            schema_version: CONTINUATION_SCHEMA_VERSION,
+            schema_version: SchemaVersion1,
             error_code: code,
             message: message.into(),
             session_id: None,
@@ -410,11 +410,43 @@ impl From<StrictAttachError> for ContinuationError {
     }
 }
 
+/// A single schema-version field with a closed accepted value: the contract
+/// tests (Rust AND TypeScript, sharing the same fixtures) reject any version
+/// the parser does not know, instead of guessing at new shapes. Serializes
+/// as the bare number `1` — matching the frozen fixtures byte-for-byte.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SchemaVersion1;
+
+impl SchemaVersion1 {
+    pub fn value(&self) -> i32 {
+        CONTINUATION_SCHEMA_VERSION
+    }
+}
+
+impl Serialize for SchemaVersion1 {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_i32(CONTINUATION_SCHEMA_VERSION)
+    }
+}
+
+impl<'de> Deserialize<'de> for SchemaVersion1 {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let v = i32::deserialize(deserializer)?;
+        if v == CONTINUATION_SCHEMA_VERSION {
+            Ok(SchemaVersion1)
+        } else {
+            Err(serde::de::Error::custom(format!(
+                "unsupported schema_version {v}; this build understands                  {CONTINUATION_SCHEMA_VERSION}"
+            )))
+        }
+    }
+}
+
 /// Acceptance receipt for `continue_with_session`: the turn exists and is
 /// tracked, but nothing about it is complete yet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnAck {
-    pub schema_version: i32,
+    pub schema_version: SchemaVersion1,
     pub session_id: String,
     pub turn_id: String,
     pub source_task_id: String,
@@ -427,7 +459,7 @@ pub struct TurnAck {
 /// a live snapshot (cleared on restart), not a resumable authorization.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TurnReport {
-    pub schema_version: i32,
+    pub schema_version: SchemaVersion1,
     pub session_id: String,
     pub turn_id: String,
     pub source_task_id: String,
@@ -450,7 +482,7 @@ pub struct TurnReport {
 /// Session-level summary for `close_session` and the read-only UI snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSummary {
-    pub schema_version: i32,
+    pub schema_version: SchemaVersion1,
     pub session_id: String,
     pub source_task_id: String,
     pub child_conversation_id: i32,

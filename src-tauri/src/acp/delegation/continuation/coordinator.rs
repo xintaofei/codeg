@@ -19,8 +19,8 @@ use crate::acp::delegation::continuation::runtime::{
 };
 use crate::acp::delegation::continuation::types::{
     cap_turn_result_text, validate_turn_request, CollaborationSessionState, ContinuationError,
-    ContinuationErrorCode, SessionSummary, TurnAck, TurnReport, TurnState, TurnTerminal,
-    CONTINUATION_SCHEMA_VERSION,
+    ContinuationErrorCode, SchemaVersion1, SessionSummary, TurnAck, TurnReport, TurnState,
+    TurnTerminal,
 };
 use crate::db::entities::collaboration_session;
 use crate::db::service::collaboration_service::{self, SettlePayload};
@@ -749,7 +749,7 @@ impl ContinuationCoordinator {
             None
         };
         Ok(TurnReport {
-            schema_version: CONTINUATION_SCHEMA_VERSION,
+            schema_version: SchemaVersion1,
             session_id: session.id,
             turn_id: turn.id,
             source_task_id: session.source_task_id,
@@ -891,7 +891,7 @@ impl ContinuationCoordinator {
             .map_err(|e| { tracing::warn!("[continuation] storage op failed: {e}"); storage_unavailable() })?
             .ok_or_else(storage_unavailable)?;
         Ok(SessionSummary {
-            schema_version: CONTINUATION_SCHEMA_VERSION,
+            schema_version: SchemaVersion1,
             session_id: session.id,
             source_task_id: session.source_task_id,
             child_conversation_id: session.child_conversation_id,
@@ -927,7 +927,7 @@ impl ContinuationCoordinator {
             None => Ok(None),
             Some(session) if session.parent_conversation_id != parent.conversation_id => Ok(None),
             Some(session) => Ok(Some(SessionSummary {
-                schema_version: CONTINUATION_SCHEMA_VERSION,
+                schema_version: SchemaVersion1,
                 session_id: session.id,
                 source_task_id: session.source_task_id,
                 child_conversation_id: session.child_conversation_id,
@@ -962,7 +962,7 @@ impl ContinuationCoordinator {
         for turn in turns {
             let state = TurnState::parse(&turn.state).unwrap_or(TurnState::OutcomeUnknown);
             reports.push(TurnReport {
-                schema_version: CONTINUATION_SCHEMA_VERSION,
+                schema_version: SchemaVersion1,
                 session_id: session.id.clone(),
                 turn_id: turn.id,
                 source_task_id: session.source_task_id.clone(),
@@ -1037,7 +1037,7 @@ impl ContinuationCoordinator {
         };
         let state = TurnState::parse(&active.state).unwrap_or(TurnState::OutcomeUnknown);
         Ok(Some(TurnReport {
-            schema_version: CONTINUATION_SCHEMA_VERSION,
+            schema_version: SchemaVersion1,
             session_id: active.session_id,
             turn_id: active.id,
             source_task_id: String::new(), // caller joins via the session summary
@@ -1072,7 +1072,7 @@ impl ContinuationCoordinator {
             .await
             .ok()??;
         Some(SessionSummary {
-            schema_version: CONTINUATION_SCHEMA_VERSION,
+            schema_version: SchemaVersion1,
             session_id: row.id,
             source_task_id: row.source_task_id,
             child_conversation_id: row.child_conversation_id,
@@ -1093,7 +1093,7 @@ impl ContinuationCoordinator {
 
 fn turn_ack(source_task_id: &str, turn: &crate::db::entities::collaboration_turn::Model) -> TurnAck {
     TurnAck {
-        schema_version: CONTINUATION_SCHEMA_VERSION,
+        schema_version: SchemaVersion1,
         session_id: turn.session_id.clone(),
         turn_id: turn.id.clone(),
         source_task_id: source_task_id.to_string(),

@@ -22,7 +22,14 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
-import { AlertTriangle, Bubbles, Gauge, HardDrive, Power } from "lucide-react"
+import {
+  AlertTriangle,
+  Bubbles,
+  Gauge,
+  HardDrive,
+  Power,
+  Repeat,
+} from "lucide-react"
 import { toast } from "sonner"
 
 import { SettingCard, SettingRow } from "@/components/shared/setting-card"
@@ -37,7 +44,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   acpListAgents,
   type DelegationSettings,
+  getContinuationSettings,
   getDelegationSettings,
+  setContinuationSettings,
   setDelegationSettings,
 } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
@@ -72,6 +81,10 @@ export function DelegationSettingsSection() {
     Partial<Record<AgentType, AgentDelegationDefaults>>
   >({})
   const [loadError, setLoadError] = useState<string | null>(null)
+  // The continuable-delegation experiment (rework rounds on completed
+  // sources). A separate flag from `enabled` — it builds ON delegation but
+  // stays default-off even when delegation is on (v2 design D6).
+  const [continuationEnabled, setContinuationEnabled] = useState(false)
   // Enabled agents whose per-agent sandbox switch withholds the delegation
   // tools (see `withheldByHostTools`). Empty until the agent list loads, and
   // left empty if it fails — this is an explanatory note, never a gate.
@@ -79,14 +92,22 @@ export function DelegationSettingsSection() {
 
   useEffect(() => {
     let cancelled = false
-    void getDelegationSettings()
-      .then((s) => {
+    void getDelegationSettings().then((s) => {
+      if (cancelled) return
+      setEnabled(s.enabled)
+      setDepth(s.depth_limit)
+      setCacheMb(s.completed_cache_max_mb)
+      setAgentDefaults(s.agent_defaults ?? {})
+      setLoadError(null)
+    })
+    void getContinuationSettings()
+      .then((c) => {
         if (cancelled) return
-        setEnabled(s.enabled)
-        setDepth(s.depth_limit)
-        setCacheMb(s.completed_cache_max_mb)
-        setAgentDefaults(s.agent_defaults ?? {})
-        setLoadError(null)
+        setContinuationEnabled(c.continuable_delegation_enabled)
+      })
+      .catch(() => {
+        // Load failure keeps the default (off); the save path reports its
+        // own errors, so a silent default here is the honest choice.
       })
       .catch((err: unknown) => {
         if (cancelled) return
@@ -149,6 +170,16 @@ export function DelegationSettingsSection() {
       setDepth(applied.depth_limit)
       setCacheMb(applied.completed_cache_max_mb)
       setAgentDefaults(applied.agent_defaults ?? {})
+      // The experiment flag is a separate persistence + live apply.
+      await setContinuationSettings({
+        continuable_delegation_enabled: continuationEnabled,
+      })
+      // Mirror any server-side clamps / filter passes back into the UI so the
+      // inputs reflect what was actually persisted.
+      setEnabled(applied.enabled)
+      setDepth(applied.depth_limit)
+      setCacheMb(applied.completed_cache_max_mb)
+      setAgentDefaults(applied.agent_defaults ?? {})
       toast.success(t("saved"))
     } catch (err: unknown) {
       toast.error(t("saveFailed"), {
@@ -157,7 +188,7 @@ export function DelegationSettingsSection() {
     } finally {
       setSaving(false)
     }
-  }, [enabled, depth, cacheMb, agentDefaults, t])
+  }, [enabled, depth, cacheMb, agentDefaults, continuationEnabled, t])
 
   return (
     <SettingsSection
@@ -193,6 +224,20 @@ export function DelegationSettingsSection() {
                   checked={enabled}
                   onCheckedChange={setEnabled}
                   disabled={loading}
+                />
+              }
+            />
+            <SettingRow
+              icon={Repeat}
+              title={t("continuationEnable")}
+              description={t("continuationEnableHint")}
+              htmlFor="delegation-continuation-enabled"
+              control={
+                <Switch
+                  id="delegation-continuation-enabled"
+                  checked={continuationEnabled}
+                  onCheckedChange={setContinuationEnabled}
+                  disabled={loading || !enabled}
                 />
               }
             />

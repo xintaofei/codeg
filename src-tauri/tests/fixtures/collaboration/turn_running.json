@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "session_id": "session-1",
+  "turn_id": "turn-1",
+  "source_task_id": "task-0",
+  "ordinal": 1,
+  "state": "running",
+  "message": "rework instruction",
+  "initiator_kind": "parent_agent",
+  "initiator_parent_conversation_id": 1,
+  "result_text": null,
+  "text_truncated": false,
+  "error_code": null,
+  "error_message": null,
+  "blocked_on": null,
+  "created_at": "2026-09-05T08:00:00Z",
+  "started_at": "2026-09-05T08:00:01Z",
+  "finished_at": null,
+  "version": 3
+}

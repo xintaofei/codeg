@@ -4853,6 +4853,21 @@ export async function getDelegationSettings(): Promise<DelegationSettings> {
   return getTransport().call("get_delegation_settings")
 }
 
+/** Wire payload for the continuable-delegation experiment toggle. */
+export interface ContinuationSettings {
+  continuable_delegation_enabled: boolean
+}
+
+export async function getContinuationSettings(): Promise<ContinuationSettings> {
+  return getTransport().call("get_continuation_settings")
+}
+
+export async function setContinuationSettings(
+  settings: ContinuationSettings
+): Promise<ContinuationSettings> {
+  return getTransport().call("set_continuation_settings", { settings })
+}
+
 export async function setDelegationSettings(
   settings: DelegationSettings
 ): Promise<DelegationSettings> {

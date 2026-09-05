@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "session_id": "session-1",
+  "turn_id": "turn-1",
+  "source_task_id": "task-0",
+  "ordinal": 1,
+  "state": "failed",
+  "message": "rework instruction",
+  "initiator_kind": "parent_agent",
+  "initiator_parent_conversation_id": 1,
+  "result_text": null,
+  "text_truncated": false,
+  "error_code": "resume_failed",
+  "error_message": "the rework prompt could not be delivered",
+  "blocked_on": null,
+  "created_at": "2026-09-05T08:00:00Z",
+  "started_at": "2026-09-05T08:00:01Z",
+  "finished_at": "2026-09-05T08:00:03Z",
+  "version": 2
+}

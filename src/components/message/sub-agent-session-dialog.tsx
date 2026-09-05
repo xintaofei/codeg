@@ -28,6 +28,7 @@
 import { useTranslations } from "next-intl"
 
 import { AgentIcon } from "@/components/agent-icon"
+import { CollaborationTurnList } from "@/components/message/collaboration-turn-list"
 import { LiveTranscriptView } from "@/components/message/live-transcript-view"
 import {
   Drawer,
@@ -52,6 +53,17 @@ interface Props {
    * live stream (the agent CLI writes its JSONL asynchronously).
    */
   kickoffTask?: string | null
+  /**
+   * The frozen delegation task this drawer's child continues — scopes the
+   * read-only collaboration turn list. `null`/undefined (model not yet
+   * resolved, or a non-delegation viewer) hides the section.
+   */
+  sourceTaskId?: string | null
+  /**
+   * The parent conversation that owns the source — the other half of the
+   * read-only query's scoping pair. Absent in tests / overlay-less mounts.
+   */
+  parentConversationId?: number | null
 }
 
 export function SubAgentSessionDialog({
@@ -61,6 +73,8 @@ export function SubAgentSessionDialog({
   childConnectionId,
   agentType,
   kickoffTask,
+  sourceTaskId,
+  parentConversationId,
 }: Props) {
   const t = useTranslations("Folder.chat.delegation")
 
@@ -94,6 +108,14 @@ export function SubAgentSessionDialog({
                 {agentType ? getAgentLabel(agentType) : t("unknownAgent")}
               </span>
             </div>
+            {sourceTaskId && parentConversationId ? (
+              <CollaborationTurnList
+                open={open}
+                childConversationId={childConversationId}
+                parentConversationId={parentConversationId}
+                sourceTaskId={sourceTaskId}
+              />
+            ) : null}
             <LiveTranscriptView
               conversationId={childConversationId}
               connectionId={childConnectionId}

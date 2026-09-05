@@ -116,6 +116,7 @@ export function DelegatedSubThread({
           childConnectionId={childConnectionId}
           agentType={agentType}
           kickoffTask={task}
+          sourceTaskId={taskId}
         />
       )}
     </div>

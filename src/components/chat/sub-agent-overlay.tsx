@@ -35,6 +35,10 @@ import {
 interface SubAgentOverlayProps {
   /** The `delegate_to_agent` tool calls in the last assistant reply. */
   delegations: DelegationCardSource[]
+  /** The conversation this overlay renders in — the collaboration turn
+   *  list scopes its read-only query by it. Optional only because tests
+   *  render rows without a conversation. */
+  parentConversationId?: number | null
   /** Stable key for the current "last assistant reply": collapse/expand state
    *  is remembered per key (and the parent also remounts via `key` on change,
    *  resetting state across conversations/messages). */
@@ -45,6 +49,7 @@ interface SubAgentOverlayProps {
 
 export const SubAgentOverlay = memo(function SubAgentOverlay({
   delegations,
+  parentConversationId = null,
   overlayKey,
   defaultExpanded = false,
 }: SubAgentOverlayProps) {
@@ -101,7 +106,11 @@ export const SubAgentOverlay = memo(function SubAgentOverlay({
 
         <div className="max-h-96 overflow-y-auto p-2 space-y-1.5">
           {delegations.map((source) => (
-            <SubAgentOverlayRow key={source.parentToolUseId} source={source} />
+            <SubAgentOverlayRow
+              key={source.parentToolUseId}
+              source={source}
+              parentConversationId={parentConversationId}
+            />
           ))}
         </div>
       </div>
@@ -111,8 +120,10 @@ export const SubAgentOverlay = memo(function SubAgentOverlay({
 
 const SubAgentOverlayRow = memo(function SubAgentOverlayRow({
   source,
+  parentConversationId,
 }: {
   source: DelegationCardSource
+  parentConversationId?: number | null
 }) {
   const t = useTranslations("Folder.chat.delegation")
   // Same host as the inline card — so the two entry points share one viewer,
@@ -203,6 +214,8 @@ const SubAgentOverlayRow = memo(function SubAgentOverlayRow({
           childConnectionId={childConnectionId}
           agentType={agentType}
           kickoffTask={task}
+          parentConversationId={parentConversationId}
+          sourceTaskId={taskId}
         />
       )}
     </>

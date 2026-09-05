@@ -721,7 +721,9 @@
       "noConfigAvailable": "Este agente não possui opções configuráveis.",
       "modeLabel": "Modo",
       "agentDefaultHint": "Padrão do agente: {value}",
-      "defaultOptionLabel": "Padrão ({value})"
+      "defaultOptionLabel": "Padrão ({value})",
+      "continuationEnable": "Rodadas de retrabalho (experimental)",
+      "continuationEnableHint": "Permite que o agente principal envie retrabalhos à sub-sessão de uma delegação concluída. Desativado por padrão."
     },
     "actions": {
       "dragSort": "Arraste para reordenar",
@@ -3286,7 +3288,27 @@
             "child_unknown": "subagente: erro",
             "unknown": "tarefa desconhecida"
           }
-        }
+        },
+        "collabTitle": "Rodadas de retrabalho",
+        "collabTurnOrdinal": "Rodada {ordinal}",
+        "collabInitiatedByParent": "Iniciada pelo agente principal",
+        "collabReworkLabel": "Solicitação de retrabalho",
+        "collabShowResult": "Mostrar resultado",
+        "collabHideResult": "Ocultar resultado",
+        "collabResultTruncated": "truncado — abra a sessão filha para a saída completa",
+        "collabLoadOlder": "Carregar rodadas anteriores",
+        "collabBlockedNotice": "Não foi possível confirmar um resultado. Verifique os artefatos reais antes de iniciar algo novo nesta sessão.",
+        "collabOutcomeUnknownNotice": "Resultado desconhecido — não é possível provar que esta rodada executou; verifique os artefatos reais.",
+        "collabState_accepted": "Aceita",
+        "collabState_preparing": "Preparando",
+        "collabState_dispatching": "Enviando",
+        "collabState_running": "Executando",
+        "collabState_cancel_requested": "Cancelamento solicitado",
+        "collabState_completed": "Concluída",
+        "collabState_failed": "Falhou",
+        "collabState_canceled": "Cancelada",
+        "collabState_interrupted": "Interrompida",
+        "collabState_outcome_unknown": "Resultado desconhecido"
       },
       "contentParts": {
         "showingTailOutput": "Mostrando a saída final durante o streaming para melhor desempenho.",

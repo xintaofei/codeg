@@ -721,7 +721,9 @@
       "noConfigAvailable": "This agent has no configurable options.",
       "modeLabel": "Mode",
       "agentDefaultHint": "Agent default: {value}",
-      "defaultOptionLabel": "Default ({value})"
+      "defaultOptionLabel": "Default ({value})",
+      "continuationEnable": "Rework rounds (experimental)",
+      "continuationEnableHint": "Let the main agent send rework rounds back to a completed delegation's sub-session. Default off."
     },
     "actions": {
       "dragSort": "Drag to reorder",
@@ -3286,7 +3288,27 @@
             "child_unknown": "subagent unknown error",
             "unknown": "unknown task"
           }
-        }
+        },
+        "collabTitle": "Rework rounds",
+        "collabTurnOrdinal": "Round {ordinal}",
+        "collabInitiatedByParent": "Initiated by the main agent",
+        "collabReworkLabel": "Rework request",
+        "collabShowResult": "Show result",
+        "collabHideResult": "Hide result",
+        "collabResultTruncated": "truncated — open the child session for the full output",
+        "collabLoadOlder": "Load earlier rounds",
+        "collabBlockedNotice": "An outcome could not be confirmed. Check the actual artifacts before starting anything new on this session.",
+        "collabOutcomeUnknownNotice": "Result unknown — the host cannot prove whether this round ran; inspect the actual artifacts.",
+        "collabState_accepted": "Accepted",
+        "collabState_preparing": "Preparing",
+        "collabState_dispatching": "Dispatching",
+        "collabState_running": "Running",
+        "collabState_cancel_requested": "Cancel requested",
+        "collabState_completed": "Completed",
+        "collabState_failed": "Failed",
+        "collabState_canceled": "Canceled",
+        "collabState_interrupted": "Interrupted",
+        "collabState_outcome_unknown": "Outcome unknown"
       },
       "contentParts": {
         "showingTailOutput": "Showing tail output while streaming for performance.",

@@ -721,7 +721,9 @@
       "noConfigAvailable": "Cet agent n’a aucune option configurable.",
       "modeLabel": "Mode",
       "agentDefaultHint": "Valeur par défaut de l’agent : {value}",
-      "defaultOptionLabel": "Par défaut ({value})"
+      "defaultOptionLabel": "Par défaut ({value})",
+      "continuationEnable": "Tours de retravail (expérimental)",
+      "continuationEnableHint": "Permet à l'agent principal d'envoyer des retravails à la sous-session d'une délégation terminée. Désactivé par défaut."
     },
     "actions": {
       "dragSort": "Glisser pour réordonner",
@@ -3286,7 +3288,27 @@
             "child_unknown": "sous-agent : erreur",
             "unknown": "tâche inconnue"
           }
-        }
+        },
+        "collabTitle": "Tours de retravail",
+        "collabTurnOrdinal": "Tour {ordinal}",
+        "collabInitiatedByParent": "Lancé par l'agent principal",
+        "collabReworkLabel": "Demande de retravail",
+        "collabShowResult": "Afficher le résultat",
+        "collabHideResult": "Masquer le résultat",
+        "collabResultTruncated": "tronqué — ouvrez la session enfant pour la sortie complète",
+        "collabLoadOlder": "Charger les tours précédents",
+        "collabBlockedNotice": "Un résultat n'a pas pu être confirmé. Vérifiez les artefacts réels avant de lancer quoi que ce soit de nouveau.",
+        "collabOutcomeUnknownNotice": "Résultat inconnu — impossible de prouver que ce tour a tourné ; vérifiez les artefacts réels.",
+        "collabState_accepted": "Accepté",
+        "collabState_preparing": "Préparation",
+        "collabState_dispatching": "Envoi",
+        "collabState_running": "En cours",
+        "collabState_cancel_requested": "Annulation demandée",
+        "collabState_completed": "Terminé",
+        "collabState_failed": "Échec",
+        "collabState_canceled": "Annulé",
+        "collabState_interrupted": "Interrompu",
+        "collabState_outcome_unknown": "Résultat inconnu"
       },
       "contentParts": {
         "showingTailOutput": "Affichage de la fin de la sortie pendant le streaming pour de meilleures performances.",

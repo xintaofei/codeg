@@ -721,7 +721,9 @@
       "noConfigAvailable": "該智慧體沒有可設定項。",
       "modeLabel": "模式",
       "agentDefaultHint": "智慧體預設：{value}",
-      "defaultOptionLabel": "預設（{value}）"
+      "defaultOptionLabel": "預設（{value}）",
+      "continuationEnable": "返工輪次（實驗）",
+      "continuationEnableHint": "允許主 Agent 把返工要求交回已完成委託的子會話。預設關閉。"
     },
     "actions": {
       "dragSort": "拖拽排序",
@@ -3286,7 +3288,27 @@
             "child_unknown": "子代理未知錯誤",
             "unknown": "未知任務"
           }
-        }
+        },
+        "collabTitle": "返工輪次",
+        "collabTurnOrdinal": "第 {ordinal} 輪",
+        "collabInitiatedByParent": "主 Agent 發起",
+        "collabReworkLabel": "返工要求",
+        "collabShowResult": "展開結果",
+        "collabHideResult": "收合結果",
+        "collabResultTruncated": "已截斷——開啟子會話查看完整輸出",
+        "collabLoadOlder": "載入更早的輪次",
+        "collabBlockedNotice": "有一個輪次的結果無法確認。請先檢查實際產物，再對本會話發起新操作。",
+        "collabOutcomeUnknownNotice": "結果未知——系統無法證明該輪次是否已執行，請檢查實際產物。",
+        "collabState_accepted": "已受理",
+        "collabState_preparing": "準備中",
+        "collabState_dispatching": "派發中",
+        "collabState_running": "執行中",
+        "collabState_cancel_requested": "已請求取消",
+        "collabState_completed": "已完成",
+        "collabState_failed": "失敗",
+        "collabState_canceled": "已取消",
+        "collabState_interrupted": "已中斷",
+        "collabState_outcome_unknown": "結果未知"
       },
       "contentParts": {
         "showingTailOutput": "為確保效能，串流輸出時僅顯示尾端內容。",

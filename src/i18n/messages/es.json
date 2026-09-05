@@ -721,7 +721,9 @@
       "noConfigAvailable": "Este agente no tiene opciones configurables.",
       "modeLabel": "Modo",
       "agentDefaultHint": "Predeterminado del agente: {value}",
-      "defaultOptionLabel": "Predeterminado ({value})"
+      "defaultOptionLabel": "Predeterminado ({value})",
+      "continuationEnable": "Rondas de retrabajo (experimental)",
+      "continuationEnableHint": "Permite que el agente principal envíe retrabajos a la subsesión de una delegación completada. Desactivado por defecto."
     },
     "actions": {
       "dragSort": "Arrastrar para reordenar",
@@ -3286,7 +3288,27 @@
             "child_unknown": "subagente: error",
             "unknown": "tarea desconocida"
           }
-        }
+        },
+        "collabTitle": "Rondas de retrabajo",
+        "collabTurnOrdinal": "Ronda {ordinal}",
+        "collabInitiatedByParent": "Iniciada por el agente principal",
+        "collabReworkLabel": "Solicitud de retrabajo",
+        "collabShowResult": "Mostrar resultado",
+        "collabHideResult": "Ocultar resultado",
+        "collabResultTruncated": "truncado — abre la sesión hija para la salida completa",
+        "collabLoadOlder": "Cargar rondas anteriores",
+        "collabBlockedNotice": "No se pudo confirmar un resultado. Revisa los artefactos reales antes de iniciar algo nuevo en esta sesión.",
+        "collabOutcomeUnknownNotice": "Resultado desconocido — no se puede probar si esta ronda se ejecutó; revisa los artefactos reales.",
+        "collabState_accepted": "Aceptada",
+        "collabState_preparing": "Preparando",
+        "collabState_dispatching": "Enviando",
+        "collabState_running": "Ejecutando",
+        "collabState_cancel_requested": "Cancelación solicitada",
+        "collabState_completed": "Completada",
+        "collabState_failed": "Fallida",
+        "collabState_canceled": "Cancelada",
+        "collabState_interrupted": "Interrumpida",
+        "collabState_outcome_unknown": "Resultado desconocido"
       },
       "contentParts": {
         "showingTailOutput": "Mostrando la salida final durante el streaming para mejorar el rendimiento.",

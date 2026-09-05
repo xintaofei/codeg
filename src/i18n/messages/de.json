@@ -721,7 +721,9 @@
       "noConfigAvailable": "Dieser Agent hat keine konfigurierbaren Optionen.",
       "modeLabel": "Modus",
       "agentDefaultHint": "Agent-Standard: {value}",
-      "defaultOptionLabel": "Standard ({value})"
+      "defaultOptionLabel": "Standard ({value})",
+      "continuationEnable": "Überarbeitungsrunden (experimentell)",
+      "continuationEnableHint": "Erlaubt dem Haupt-Agent, Überarbeitungen an die Sub-Sitzung einer abgeschlossenen Delegation zu senden. Standardmäßig aus."
     },
     "actions": {
       "dragSort": "Zum Neuordnen ziehen",
@@ -3286,7 +3288,27 @@
             "child_unknown": "Subagent: Fehler",
             "unknown": "unbekannte Aufgabe"
           }
-        }
+        },
+        "collabTitle": "Überarbeitungsrunden",
+        "collabTurnOrdinal": "Runde {ordinal}",
+        "collabInitiatedByParent": "Vom Haupt-Agent gestartet",
+        "collabReworkLabel": "Überarbeitungsanfrage",
+        "collabShowResult": "Ergebnis anzeigen",
+        "collabHideResult": "Ergebnis ausblenden",
+        "collabResultTruncated": "gekürzt — vollständige Ausgabe in der Child-Sitzung öffnen",
+        "collabLoadOlder": "Frühere Runden laden",
+        "collabBlockedNotice": "Ein Ergebnis konnte nicht bestätigt werden. Prüfen Sie die tatsächlichen Artefakte, bevor Sie etwas Neues starten.",
+        "collabOutcomeUnknownNotice": "Ergebnis unbekannt — es lässt sich nicht beweisen, ob diese Runde lief; prüfen Sie die tatsächlichen Artefakte.",
+        "collabState_accepted": "Angenommen",
+        "collabState_preparing": "Wird vorbereitet",
+        "collabState_dispatching": "Wird gesendet",
+        "collabState_running": "Läuft",
+        "collabState_cancel_requested": "Abbruch angefragt",
+        "collabState_completed": "Abgeschlossen",
+        "collabState_failed": "Fehlgeschlagen",
+        "collabState_canceled": "Abgebrochen",
+        "collabState_interrupted": "Unterbrochen",
+        "collabState_outcome_unknown": "Ergebnis unbekannt"
       },
       "contentParts": {
         "showingTailOutput": "Zur besseren Performance wird während des Streamings nur die Endausgabe angezeigt.",

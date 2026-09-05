@@ -4,8 +4,8 @@
 //! queries.
 
 use crate::acp::delegation::continuation::{
-    CollaborationSessionState, ContinuationCoordinator, SessionSummary, TurnReport,
-    CONTINUATION_SCHEMA_VERSION,
+    CollaborationSessionState, ContinuationCoordinator, SchemaVersion1, SessionSummary,
+    TurnReport,
 };
 use crate::app_error::AppCommandError;
 
@@ -19,7 +19,7 @@ pub const COLLAB_SNAPSHOT_MAX_LIMIT: u32 = 100;
 /// the two are indistinguishable by design (no existence leak).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CollaborationSnapshot {
-    pub schema_version: i32,
+    pub schema_version: SchemaVersion1,
     pub session: Option<SessionSummary>,
     /// Turns ordered by ordinal. ALWAYS includes the session's active turn
     /// (never hidden behind pagination) so a poll never leaves it stuck.
@@ -51,7 +51,7 @@ pub async fn get_collaboration_session_core(
 
     let Some(session) = session else {
         return Ok(CollaborationSnapshot {
-            schema_version: CONTINUATION_SCHEMA_VERSION,
+            schema_version: SchemaVersion1,
             session: None,
             turns: Vec::new(),
             next_after_ordinal: None,
@@ -88,7 +88,7 @@ pub async fn get_collaboration_session_core(
     };
 
     Ok(CollaborationSnapshot {
-        schema_version: CONTINUATION_SCHEMA_VERSION,
+        schema_version: SchemaVersion1,
         session: Some(session),
         turns,
         next_after_ordinal,

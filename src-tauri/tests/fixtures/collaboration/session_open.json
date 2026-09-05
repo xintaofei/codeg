@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "session_id": "session-1",
+  "source_task_id": "task-0",
+  "child_conversation_id": 42,
+  "state": "open"
+}
