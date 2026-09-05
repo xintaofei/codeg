@@ -817,14 +817,11 @@ pub(crate) async fn import_selected_from_summaries(
         });
         let created = row.map(|r| r.deleted).unwrap_or(true);
 
-        // `add_folder` is the only fallible step here — `import_summaries` is
+        // Folder registration is the only fallible step here — `import_summaries` is
         // resilient (per-row failures are counted, never aborting the group), so
         // a partial failure still commits and reports its good rows and still
         // broadcasts the folder it created.
-        match folder_service::add_folder(conn, &target_path)
-            .await
-            .map_err(AppCommandError::from)
-        {
+        match crate::commands::folders::add_imported_folder_core(conn, &target_path).await {
             Ok(entry) => {
                 let folder_id = entry.id;
                 let (tally, _updated_ids, failed_in_group) =
@@ -5102,6 +5099,27 @@ mod tests {
         }
     }
 
+    /// Run git with a self-contained identity so worktree tests never depend on
+    /// or modify the developer's global configuration.
+    fn git_run(dir: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .output()
+            .expect("spawn git");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn scan_groups_normalized_path_variants_into_one_folder() {
         // A trailing-slash cwd variant must land in the same group as the bare
@@ -5279,6 +5297,99 @@ mod tests {
         let convs = conversation::Entity::find().all(&db.conn).await.unwrap();
         assert_eq!(convs.len(), 2);
         assert!(convs.iter().all(|c| c.folder_id == folder_rows[0].id));
+    }
+
+    #[tokio::test]
+    async fn batch_import_groups_existing_worktree_under_registered_root_idempotently() {
+        use sea_orm::EntityTrait;
+
+        let db = fresh_in_memory_db().await;
+        let repo_dir = tempfile::tempdir().expect("tempdir");
+        git_run(repo_dir.path(), &["init", "-q", "-b", "main"]);
+        git_run(
+            repo_dir.path(),
+            &["commit", "-q", "--allow-empty", "-m", "base"],
+        );
+        let worktree_path = repo_dir.path().join("imported-wt");
+        let worktree = worktree_path.to_str().expect("utf-8 path").to_string();
+        git_run(
+            repo_dir.path(),
+            &["worktree", "add", "-q", "-b", "imported-wt", &worktree],
+        );
+
+        let root_path = repo_dir.path().to_str().expect("utf-8 path");
+        // Git prints the canonical main-worktree path; register an equivalent
+        // non-canonical spelling to prove the parent lookup canonicalizes DB
+        // paths before matching.
+        let root_spelling = format!("{root_path}/.");
+        let root_id = seed_folder(&db, &root_spelling).await;
+        // Reproduce the pre-fix state: a previous import registered the linked
+        // worktree as a top-level folder because it used plain `add_folder`.
+        let legacy = folder_service::add_folder(&db.conn, &worktree)
+            .await
+            .expect("legacy worktree folder");
+        assert_eq!(
+            folder_service::get_folder_by_id(&db.conn, legacy.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .parent_id,
+            None
+        );
+
+        let summaries = || {
+            vec![scan_summary(
+                "worktree-session",
+                AgentType::Codex,
+                Some(&worktree),
+                at(0),
+            )]
+        };
+        let selections = || vec![key_of(AgentType::Codex, "worktree-session")];
+
+        let first = import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            summaries(),
+            selections(),
+        )
+        .await
+        .expect("first import");
+        assert_eq!(first.imported, 1);
+        assert_eq!(first.folders[0].folder_id, legacy.id, "row reconciled in place");
+        assert_eq!(
+            folder_service::get_folder_by_id(&db.conn, legacy.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .parent_id,
+            Some(root_id),
+            "linked worktree must group under the registered main worktree"
+        );
+
+        let second = import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            summaries(),
+            selections(),
+        )
+        .await
+        .expect("repeat import");
+        assert_eq!(second.imported, 0);
+        assert_eq!(second.skipped, 1);
+        assert_eq!(second.folders[0].folder_id, legacy.id);
+
+        let folders = crate::db::entities::folder::Entity::find()
+            .all(&db.conn)
+            .await
+            .unwrap();
+        assert_eq!(folders.len(), 2, "repeat import must not duplicate folders");
+        let conversations = conversation::Entity::find().all(&db.conn).await.unwrap();
+        assert_eq!(
+            conversations.len(),
+            1,
+            "repeat import must not duplicate the session"
+        );
     }
 
     #[tokio::test]
