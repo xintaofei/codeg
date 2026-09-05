@@ -23,12 +23,13 @@ use crate::commands::collaboration::{self, CollaborationSnapshot};
 #[serde(rename_all = "camelCase")]
 pub struct GetCollaborationSessionParams {
     pub source_task_id: String,
-    #[serde(default)]
+    #[serde(default, alias = "after_ordinal")]
     pub after_ordinal: i32,
     pub limit: Option<u32>,
     /// The parent conversation that owns the source. Resolved over the
     /// bearer-authenticated channel; the coordinator re-scopes every read by
     /// it, so a wrong id yields the same empty snapshot as an unknown source.
+    #[serde(alias = "parent_conversation_id")]
     pub parent_conversation_id: i32,
 }
 
