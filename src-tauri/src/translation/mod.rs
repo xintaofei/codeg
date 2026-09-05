@@ -251,6 +251,27 @@ fn normalize_number_text(text: &str) -> String {
     out
 }
 
+/// Strips the leading context-reference block the frontend prepends to an
+/// outbound request (`buildContextPrefix` in `src/lib/translation.ts`): the
+/// previous segment's source + translation, framed between the
+/// `[Reference for consistency only…]` and `[End of reference…]` scaffolding
+/// lines. That block is the MODEL's consistency anchor and still rides to the
+/// endpoint with the request — but it is not content, so every LOCAL judgment
+/// here (skip detection, cache key, quality-gate source) must see only the
+/// body after it. Without stripping, the reference's numbers count as source
+/// numbers the model was told not to output, so `missing_source_numbers`
+/// rejects a faithful translation every time; its English boilerplate also
+/// unconditionally clears the echo gate's ≥30-Latin-letters bar. Texts
+/// without the prefix pass through unchanged.
+fn strip_context_reference(text: &str) -> String {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"\A\[Reference for consistency only[\s\S]*?\[End of reference[^\n]*\n")
+            .expect("valid regex")
+    });
+    re.replace(text, "").into_owned()
+}
+
 /// The three gates in their evaluation order, each tagged with the rejection
 /// bucket the metrics record. The user-facing message is unchanged; the tag
 /// is what the status strip and the health score see.
@@ -372,18 +393,27 @@ pub async fn translate_with_cache(
     // that is entirely cached makes no request at all.
     let mut results: Vec<Option<TranslationResult>> = Vec::with_capacity(texts.len());
     let mut misses: Vec<String> = Vec::new();
+    // The stripped bodies, positionally aligned with `misses`: the endpoint
+    // gets the full outbound (reference block included), while the gates and
+    // the cache insert below judge the body only.
+    let mut miss_bodies: Vec<String> = Vec::new();
     let mut miss_positions: Vec<usize> = Vec::new();
 
     for (index, text) in texts.iter().enumerate() {
-        let key = TranslationCache::key_for(text, &target_lang, &provider_id);
+        // The context reference rides in the same request body as the
+        // consistency anchor for the MODEL, but it is not content: skip
+        // detection and the cache key must judge the body after it, or the
+        // reference could skew both.
+        let body = strip_context_reference(text);
+        let key = TranslationCache::key_for(&body, &target_lang, &provider_id);
         // An already-target-language chunk skips the endpoint entirely: every
         // failure mode it has (empty, truncated, invented) damages text that
         // was already what the reader wanted to see.
-        if already_in_target_language(text, &target_lang) {
+        if already_in_target_language(&body, &target_lang) {
             translation_metrics().record_served();
             results.push(Some(TranslationResult {
                 key,
-                text: text.clone(),
+                text: body,
                 from_cache: false,
                 error: None,
                 provider_id: None,
@@ -391,7 +421,7 @@ pub async fn translate_with_cache(
             }));
             continue;
         }
-        match cache.get(text, &target_lang, &provider_id) {
+        match cache.get(&body, &target_lang, &provider_id) {
             Some(hit) => {
                 translation_metrics().record_cache_hit();
                 translation_metrics().record_served();
@@ -408,6 +438,7 @@ pub async fn translate_with_cache(
                 results.push(None);
                 miss_positions.push(index);
                 misses.push(text.clone());
+                miss_bodies.push(body);
             }
         }
     }
@@ -427,8 +458,12 @@ pub async fn translate_with_cache(
         // caller discards the failed slots but the cached successes make its
         // bounded retry converge — it re-requests only what is still missing.
         let mut failures = 0usize;
-        for (slot, outcome) in miss_positions.into_iter().zip(translated) {
-            let source = &texts[slot];
+        for (i, outcome) in translated.into_iter().enumerate() {
+            let slot = miss_positions[i];
+            // The request itself carried the full outbound; the gate and the
+            // cache insert below judge the stripped body, so the context
+            // reference can never skew a gate or fragment the cache.
+            let source = &miss_bodies[i];
             let key = TranslationCache::key_for(source, &target_lang, &provider_id);
             match outcome.result {
                 Ok(translation) => {
@@ -728,5 +763,206 @@ mechanics — this is a meta/educational query, exempt from the review gate.";
         assert!(!already_in_target_language(intro, "zh-TW"));
         // Latin-script targets have no reliable script test.
         assert!(!already_in_target_language(intro, "en"));
+    }
+
+    /// The frontend prepends the previous segment as a read-only reference
+    /// block to the same outbound text. The numbers in that block belong to
+    /// the PREVIOUS segment and the model is told not to output the block, so
+    /// the quality gate must judge the body alone — otherwise every faithful
+    /// translation of a chunk whose predecessor carried numbers dies as
+    /// DroppedNumbers (and the retry carries the prefix again: a loop).
+    #[test]
+    fn the_context_reference_block_is_stripped_before_the_gates() {
+        let reference = build_reference_prefix(
+            "Git 2.34 shipped in 2023 with 15 fixes",
+            "Git 2．34 于 2023 年发布，包含 15 项修复",
+        );
+        let body = "Since Git 2.34 the default strategy is ort, introduced in 2021.";
+        let translation = "自 Git 2.34 起默认策略是 ort，于 2021 年引入。";
+
+        let combined = reference + body;
+        let stripped = strip_context_reference(&combined);
+        assert_eq!(stripped, body);
+        // The previous segment's numbers are gone from the judged source: the
+        // faithful translation passes, where the unstripped text would count
+        // 2023/15 as dropped and refuse it.
+        assert!(missing_source_numbers(&stripped, translation).is_none());
+        assert!(missing_source_numbers(&combined, translation).is_some());
+        // The echo gate's ≥30-Latin-letter bar is measured on the body too —
+        // the reference's ~120 English boilerplate letters no longer count.
+        assert!(echo_or_refusal_error(&stripped, "没有目标文字的回复", "zh-CN").is_none());
+    }
+
+    /// Skip detection, the cache key, and the request body all use the
+    /// stripped text: an English reference block around an already-Chinese
+    /// body must still take the verbatim-return path (no endpoint call), and
+    /// the returned text must be the body, not the reference-laden original.
+    #[tokio::test]
+    async fn skip_detection_judges_the_body_behind_the_reference() {
+        let settings = TranslationSettings {
+            enabled: true,
+            base_url: "https://api.example.invalid".to_string(),
+            api_key: "k".to_string(),
+            model: "m".to_string(),
+            target_lang: Some("zh-CN".to_string()),
+            ..Default::default()
+        };
+        let body = "Git merge 是一个纯知识性问题（不涉及代码读写与项目文件），直接作答。";
+        let text = build_reference_prefix(
+            "A merge integrates two divergent lines of development into one history.",
+            "合并将两条分化的开发路径整合进同一条历史。",
+        ) + body;
+        let result = translate_with_cache(
+            std::slice::from_ref(&text),
+            "zh-CN",
+            &settings,
+            client::Priority::Background,
+            None,
+        )
+        .await
+        .expect("the stripped body is already Chinese; no request may happen");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].text, body);
+        assert_eq!(result[0].error, None);
+    }
+
+    /// The reference block is stripped from LOCAL judgments only: the model
+    /// must still receive it as the term-consistency anchor. Observed at the
+    /// wire, against a stub endpoint that captures the chat request body.
+    #[tokio::test]
+    async fn the_reference_block_still_rides_to_the_endpoint() {
+        use std::io::{Read, Write};
+        use std::sync::{Arc, Mutex};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a stub endpoint");
+        let port = listener.local_addr().expect("local addr").port();
+        let captured: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+        let writer = Arc::clone(&captured);
+        std::thread::spawn(move || {
+            let (mut stream, _) = match listener.accept() {
+                Ok(accepted) => accepted,
+                Err(_) => return,
+            };
+            let mut buf: Vec<u8> = Vec::new();
+            let mut chunk = [0u8; 8192];
+            loop {
+                let n = match stream.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                buf.extend_from_slice(&chunk[..n]);
+                // Stop once the body is complete: headers end, then
+                // Content-Length bytes of payload.
+                if let Some(header_end) =
+                    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
+                {
+                    let headers = String::from_utf8_lossy(&buf[..header_end]).to_lowercase();
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.strip_prefix("content-length:")?
+                                .trim()
+                                .parse::<usize>()
+                                .ok()
+                        })
+                        .unwrap_or(0);
+                    if buf.len() >= header_end + length {
+                        break;
+                    }
+                }
+            }
+            let raw = String::from_utf8_lossy(&buf);
+            let body = raw.split("\r\n\r\n").nth(1).unwrap_or("");
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) {
+                *writer.lock().unwrap() = Some(parsed);
+            }
+            // A faithful zh translation of the body, so every gate passes and
+            // the chunk is served rather than refused.
+            let reply = r#"{"choices":[{"message":{"role":"assistant","content":"合并策略已成为现代 Git 的默认配置。"},"finish_reason":"stop"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+
+        let settings = TranslationSettings {
+            enabled: true,
+            base_url: format!("http://127.0.0.1:{port}/v1"),
+            api_key: "k".to_string(),
+            model: "m".to_string(),
+            api_format: "openai".to_string(),
+            target_lang: Some("zh-CN".to_string()),
+            ..Default::default()
+        };
+        let body = "The merge strategy became the default in modern Git.";
+        // A per-run alphabetic suffix keeps the cache key fresh: the
+        // process-wide disk cache must never serve this test from a previous
+        // run, or the stub endpoint would see no request at all.
+        let salt = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .subsec_nanos();
+        let salt: String = (0..8)
+            .map(|i| {
+                let letter = ((salt >> (i * 3)) & 0x1f) % 26;
+                char::from(b'a' + letter as u8)
+            })
+            .collect();
+        let body = format!("{body} Variant {salt} applies here.");
+        let text = build_reference_prefix(
+            "A merge integrates two divergent lines of development into one history.",
+            "合并将两条分化的开发路径整合进一条历史。",
+        ) + &body;
+        let result = translate_with_cache(
+            std::slice::from_ref(&text),
+            "zh-CN",
+            &settings,
+            client::Priority::Background,
+            None,
+        )
+        .await
+        .expect("the stub endpoint answers");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].text, "合并策略已成为现代 Git 的默认配置。");
+
+        let captured = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the stub endpoint saw the request");
+        let content = captured["messages"][1]["content"]
+            .as_str()
+            .expect("the chat request carries the text as the user message");
+        assert_eq!(
+            content, text,
+            "the endpoint request body is the FULL outbound, reference block included"
+        );
+        assert!(content.contains("[Reference for consistency only"));
+        assert!(content.ends_with(&body));
+    }
+
+    /// A text without the prefix must be untouched by the stripping, so every
+    /// existing path behaves exactly as before.
+    #[test]
+    fn a_text_without_a_reference_prefix_passes_through_unchanged() {
+        let text = "Since Git 2.34 the default strategy is ort.";
+        assert_eq!(strip_context_reference(text), text);
+        // Near-miss shapes that merely CONTAIN the scaffolding mid-text are
+        // left alone: only a leading block is context.
+        let mid = "正文 [Reference for consistency only] [End of reference] 正文";
+        assert_eq!(strip_context_reference(mid), mid);
+    }
+
+    /// The exact wire shape `buildContextPrefix` (src/lib/translation.ts)
+    /// emits, reproduced here so the tests exercise the same bytes the
+    /// frontend sends.
+    fn build_reference_prefix(source: &str, translation: &str) -> String {
+        format!(
+            "[Reference for consistency only — do NOT translate, continue, or output this block.]\n\
+             Source: {source}\n\
+             Translation: {translation}\n\
+             [End of reference. Translate ONLY the numbered segments below.]\n"
+        )
     }
 }
