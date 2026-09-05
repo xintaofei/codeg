@@ -80,6 +80,7 @@ import {
   createChatDir,
   createConversation,
   getFolderConversation,
+  hideConversationTurns,
   openSettingsWindow,
 } from "@/lib/api"
 import { isWindowedDetail } from "@/lib/turn-window"
@@ -91,9 +92,14 @@ import {
 } from "@/lib/queue-flush"
 import { TurnBusyError } from "@/lib/turn-busy"
 import {
+  contentBlocksToPromptInput,
+  timestampsToHideFrom,
+} from "@/lib/edit-user-message"
+import {
   getConversationIdByExternalIdFromStore,
   getRuntimeSession,
   getTimelineTurns,
+  selectTimelineTurns,
   useConversationRuntimeActions,
   useConversationRuntimeStore,
 } from "@/stores/conversation-runtime-store"
@@ -282,6 +288,7 @@ const ConversationTabView = memo(function ConversationTabView({
   const {
     appendOptimisticTurn,
     removeOptimisticTurn,
+    truncateTurnsFrom,
     appendViewerUserTurn,
     completeTurn,
     refetchDetail,
@@ -306,6 +313,10 @@ const ConversationTabView = memo(function ConversationTabView({
     number | null
   >(null)
   const dbConversationId = conversationId ?? createdConversationId
+  const [editingUserTurn, setEditingUserTurn] = useState<{
+    turnId: string
+    blocks: PromptInputBlock[]
+  } | null>(null)
   const [draftAgentType, setDraftAgentType] = useState<AgentType>(agentType)
   const selectedAgent = conversationId != null ? agentType : draftAgentType
   // Seed from localStorage so the React state reflects the user's saved
@@ -995,11 +1006,51 @@ const ConversationTabView = memo(function ConversationTabView({
       // deliver to the wrong workspace. Same predicate the flush effect uses.
       if (!connectionReady) return
 
+      const replacing = editingUserTurn
+      if (replacing) {
+        // The replacement is this send. Drop the edited turn and everything
+        // after it from the transcript we show, then persist the hide set so
+        // a reload does not resurrect the tail. The agent still has those
+        // turns in its own store — ACP cannot rewind them — and this prompt
+        // is the new latest instruction, same as a native "I meant this".
+        const wasPrompting = connStatus === "prompting"
+        if (wasPrompting) {
+          handleCancel()
+        }
+        const timeline = selectTimelineTurns(
+          useConversationRuntimeStore.getState(),
+          effectiveConversationId
+        )
+        const hidden = timestampsToHideFrom(
+          timeline.map((item) => item.turn),
+          replacing.turnId
+        )
+        const persistId = dbConvIdRef.current
+        if (persistId != null && hidden.length > 0) {
+          void hideConversationTurns(persistId, hidden).catch((err) => {
+            console.error("[ConversationTabView] hide edited turns:", err)
+          })
+        }
+        truncateTurnsFrom(effectiveConversationId, replacing.turnId, hidden)
+        setEditingUserTurn(null)
+        if (wasPrompting) {
+          // Do not race session/cancel. Queue the replacement so it flushes
+          // once the connection is idle, same as a mid-turn typed follow-up.
+          mqEnqueue(draft, selectedModeIdArg ?? null)
+          return
+        }
+      }
+
       const fromQueueFlush = opts?.fromQueueFlush ?? false
       // Preserve FIFO: a direct send issued while the queue is non-empty joins
       // the tail rather than racing ahead of the queued items. Read the
       // queue length synchronously (it reflects a same-tick bounce requeue).
-      if (shouldQueueDirectSend(fromQueueFlush, mqGetQueueLength())) {
+      // An edit-and-send is a replacement of history, not a new follow-up, so
+      // it must not wait behind items queued against the discarded tail.
+      if (
+        !replacing &&
+        shouldQueueDirectSend(fromQueueFlush, mqGetQueueLength())
+      ) {
         mqEnqueue(draft, selectedModeIdArg ?? null)
         return
       }
@@ -1219,6 +1270,10 @@ const ConversationTabView = memo(function ConversationTabView({
     [
       appendOptimisticTurn,
       removeOptimisticTurn,
+      truncateTurnsFrom,
+      editingUserTurn,
+      handleCancel,
+      connStatus,
       mqEnqueue,
       mqRequeueFront,
       mqGetQueueLength,
@@ -1585,6 +1640,7 @@ const ConversationTabView = memo(function ConversationTabView({
 
   const handleQueueEdit = useCallback(
     (id: string) => {
+      setEditingUserTurn(null)
       mqStartEditing(id)
     },
     [mqStartEditing]
@@ -1602,6 +1658,22 @@ const ConversationTabView = memo(function ConversationTabView({
     },
     [mqEditingItemId, mqUpdateItem]
   )
+
+  const handleEditUserMessage = useCallback(
+    (turn: MessageTurn) => {
+      if (turn.role !== "user" || conn.isViewer) return
+      mqCancelEditing()
+      setEditingUserTurn({
+        turnId: turn.id,
+        blocks: contentBlocksToPromptInput(turn.blocks),
+      })
+    },
+    [conn.isViewer, mqCancelEditing]
+  )
+
+  const handleCancelUserEdit = useCallback(() => {
+    setEditingUserTurn(null)
+  }, [])
 
   const showDraftHeader = !hasPersistedConversation && !hasSentMessage
   const isWelcomeMode = showDraftHeader
@@ -1985,6 +2057,7 @@ const ConversationTabView = memo(function ConversationTabView({
             ? handleForkFromTurn
             : undefined
         }
+        onEditUserMessage={!conn.isViewer ? handleEditUserMessage : undefined}
       />
     </GoalControlProvider>
   )
@@ -2120,6 +2193,10 @@ const ConversationTabView = memo(function ConversationTabView({
       isEditingQueueItem={mqEditingItemId != null}
       onSaveQueueEdit={handleSaveQueueEdit}
       onCancelQueueEdit={handleQueueCancelEdit}
+      isEditingUserMessage={editingUserTurn != null}
+      editingUserTurnId={editingUserTurn?.turnId ?? null}
+      editingUserBlocks={editingUserTurn?.blocks ?? null}
+      onCancelUserEdit={handleCancelUserEdit}
       onSteer={
         // Any working delivery channel, not just the native push: the pull
         // tool records a waiting note the agent reads on its next check, and

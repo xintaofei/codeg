@@ -3178,6 +3178,8 @@
         "emptyConversation": "この会話にはメッセージがありません。",
         "systemMessage": "システムメッセージ",
         "copyMessage": "コピー",
+        "editMessage": "編集",
+        "editingMessage": "このメッセージを編集中です。送信すると置き換わり、ここから続きを送ります。",
         "forkFromHere": "ここから分岐",
         "forkBusy": "ターンの実行中は分岐できません",
         "forkNotReady": "この返信からはまだ分岐できません。少し待ってからお試しください",

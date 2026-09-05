@@ -3178,6 +3178,8 @@
         "emptyConversation": "Keine Nachrichten in dieser Unterhaltung.",
         "systemMessage": "Systemnachricht",
         "copyMessage": "Kopieren",
+        "editMessage": "Bearbeiten",
+        "editingMessage": "Diese Nachricht wird bearbeitet. Senden ersetzt sie und macht hier weiter.",
         "forkFromHere": "Ab hier verzweigen",
         "forkBusy": "Verzweigen nicht möglich, während ein Zug läuft",
         "forkNotReady": "Von dieser Antwort kann noch nicht verzweigt werden – bitte gleich erneut versuchen",

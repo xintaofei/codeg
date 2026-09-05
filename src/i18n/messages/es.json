@@ -3178,6 +3178,8 @@
         "emptyConversation": "No hay mensajes en esta conversación.",
         "systemMessage": "Mensaje del sistema",
         "copyMessage": "Copiar",
+        "editMessage": "Editar",
+        "editingMessage": "Editando este mensaje. Enviar lo reemplaza y continúa desde aquí.",
         "forkFromHere": "Bifurcar desde aquí",
         "forkBusy": "No se puede bifurcar mientras hay un turno en curso",
         "forkNotReady": "Todavía no se puede bifurcar desde esta respuesta; inténtalo en un momento",

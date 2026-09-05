@@ -3178,6 +3178,8 @@
         "emptyConversation": "No messages in this conversation.",
         "systemMessage": "System message",
         "copyMessage": "Copy",
+        "editMessage": "Edit",
+        "editingMessage": "Editing this message. Send to replace it and continue from here.",
         "forkFromHere": "Fork from here",
         "forkBusy": "Can't fork while a turn is running",
         "forkNotReady": "Can't fork from this reply just yet — try again in a moment",

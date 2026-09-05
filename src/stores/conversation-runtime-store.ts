@@ -403,6 +403,15 @@ type Action =
       id: string
     }
   | {
+      // Edit-previous-message: drop the edited user turn and every later turn
+      // from every in-memory list so the composer send starts a clean tail.
+      // `hiddenTimestampsMs` is the same set persisted to the DB.
+      type: "TRUNCATE_TURNS_FROM"
+      conversationId: number
+      fromTurnId: string
+      hiddenTimestampsMs: number[]
+    }
+  | {
       // Cross-client VIEWER synthesizes the sender's user turn from a
       // `user_message` event / snapshot. Idempotent + sender-guarded in the
       // reducer (never fires on a client that has its own in-flight send).
@@ -2308,6 +2317,33 @@ function reducer(
       }))
     }
 
+    case "TRUNCATE_TURNS_FROM": {
+      const current = state.byConversationId.get(action.conversationId)
+      if (!current) return state
+      const hidden = new Set(action.hiddenTimestampsMs)
+      const keep = (turn: MessageTurn) => {
+        if (turn.id === action.fromTurnId) return false
+        const ms = Date.parse(turn.timestamp)
+        return !Number.isFinite(ms) || !hidden.has(ms)
+      }
+      const nextDetailTurns = current.detail
+        ? current.detail.turns.filter(keep)
+        : null
+      return updateSessionInState(state, action.conversationId, (s) => ({
+        ...s,
+        detail:
+          s.detail && nextDetailTurns
+            ? { ...s.detail, turns: nextDetailTurns }
+            : s.detail,
+        localTurns: s.localTurns.filter(keep),
+        optimisticTurns: s.optimisticTurns.filter(keep),
+        backgroundTurns: s.backgroundTurns.filter((entry) => keep(entry.turn)),
+        liveMessage: null,
+        syncState: "idle",
+        activeTurnToken: null,
+      }))
+    }
+
     case "APPEND_VIEWER_USER_TURN": {
       const current =
         state.byConversationId.get(action.conversationId) ??
@@ -2692,6 +2728,11 @@ export interface RuntimeActions {
     turnToken: string
   ) => void
   removeOptimisticTurn: (conversationId: number, id: string) => void
+  truncateTurnsFrom: (
+    conversationId: number,
+    fromTurnId: string,
+    hiddenTimestampsMs: number[]
+  ) => void
   appendViewerUserTurn: (conversationId: number, turn: MessageTurn) => void
   applyBackgroundActivity: (
     conversationId: number,
@@ -3916,6 +3957,13 @@ export const useConversationRuntimeStore = create<ConversationRuntimeStore>()((
       }),
     removeOptimisticTurn: (conversationId, id) =>
       dispatch({ type: "REMOVE_OPTIMISTIC_TURN", conversationId, id }),
+    truncateTurnsFrom: (conversationId, fromTurnId, hiddenTimestampsMs) =>
+      dispatch({
+        type: "TRUNCATE_TURNS_FROM",
+        conversationId,
+        fromTurnId,
+        hiddenTimestampsMs,
+      }),
     appendViewerUserTurn: (conversationId, turn) =>
       dispatch({ type: "APPEND_VIEWER_USER_TURN", conversationId, turn }),
     applyBackgroundActivity: (conversationId, turns, watermark) =>

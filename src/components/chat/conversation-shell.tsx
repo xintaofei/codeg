@@ -124,6 +124,10 @@ interface ConversationShellProps {
   isEditingQueueItem?: boolean
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
+  isEditingUserMessage?: boolean
+  editingUserTurnId?: string | null
+  editingUserBlocks?: PromptInputBlock[] | null
+  onCancelUserEdit?: () => void
   /** Send the draft into the RUNNING turn over the session's live-feedback
    *  channel. Present only for sessions with a working delivery channel;
    *  threaded straight through to the composer. `blocks` carries the full
@@ -202,6 +206,10 @@ export function ConversationShell({
   isEditingQueueItem,
   onSaveQueueEdit,
   onCancelQueueEdit,
+  isEditingUserMessage,
+  editingUserTurnId,
+  editingUserBlocks,
+  onCancelUserEdit,
   onSteer,
   steerChannel,
   topBanner,
@@ -373,6 +381,10 @@ export function ConversationShell({
               isEditingQueueItem={isEditingQueueItem}
               onSaveQueueEdit={onSaveQueueEdit}
               onCancelQueueEdit={onCancelQueueEdit}
+              isEditingUserMessage={isEditingUserMessage}
+              editingUserTurnId={editingUserTurnId}
+              editingUserBlocks={editingUserBlocks}
+              onCancelUserEdit={onCancelUserEdit}
               onSteer={onSteer}
               steerChannel={steerChannel}
               onAddFeedback={onAddFeedback}

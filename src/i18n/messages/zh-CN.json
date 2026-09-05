@@ -3178,6 +3178,8 @@
         "emptyConversation": "当前会话暂无消息。",
         "systemMessage": "系统消息",
         "copyMessage": "复制",
+        "editMessage": "编辑",
+        "editingMessage": "正在编辑这条消息。发送后会替换它并从这里继续。",
         "forkFromHere": "从此处分叉",
         "forkBusy": "当前有回合正在进行，暂不可分叉",
         "forkNotReady": "这条回复暂时还不能作为分叉点，请稍后再试",

@@ -54,6 +54,7 @@ import {
   CheckIcon,
   CopyIcon,
   Loader2,
+  Pencil,
   Plus,
   RefreshCw,
   ListTodo,
@@ -66,6 +67,7 @@ import {
   extractLatestPlanEntriesFromMessages,
 } from "@/lib/agent-plan"
 import type { AgentType, ConnectionStatus, MessageTurn } from "@/lib/types"
+import { canEditUserTurn } from "@/lib/edit-user-message"
 import { copyTextToClipboard } from "@/lib/utils"
 import { VirtualizedMessageThread } from "@/components/message/virtualized-message-thread"
 import { SelectionActionBubble } from "@/components/message/selection-action-bubble"
@@ -141,6 +143,11 @@ interface MessageListViewProps {
    * (see `forkBusy`) rather than making every reply's footer flicker.
    */
   onForkFromTurn?: (turnId: string) => void
+  /**
+   * Edit a persisted user turn (restore it into the composer). Absent in
+   * read-only embeds (sub-agent dialog, live task transcript).
+   */
+  onEditUserMessage?: (turn: MessageTurn) => void
 }
 
 export interface ResolvedMessageGroup {
@@ -741,6 +748,26 @@ const UserMessageCopyButton = memo(function UserMessageCopyButton({
   )
 })
 
+const UserMessageEditButton = memo(function UserMessageEditButton({
+  turn,
+  onEdit,
+}: {
+  turn: MessageTurn
+  onEdit: (turn: MessageTurn) => void
+}) {
+  const t = useTranslations("Folder.chat.messageList")
+  return (
+    <MessageAction
+      tooltip={t("editMessage")}
+      className="opacity-0 group-hover/user-msg:opacity-100 transition-opacity self-end"
+      onClick={() => onEdit(turn)}
+      size="icon-xs"
+    >
+      <Pencil size={12} />
+    </MessageAction>
+  )
+})
+
 const UserMessageTaskButton = memo(function UserMessageTaskButton({
   parts,
 }: {
@@ -824,6 +851,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   onForkFromTurn,
   forkDisabled = false,
   isThreadTail = false,
+  onEdit,
 }: {
   group: ResolvedMessageGroup
   dimmed?: boolean
@@ -840,6 +868,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   /** Whether nothing follows this group in the thread — the one position where
    *  a turn the backend cannot name still forks where the user pointed. */
   isThreadTail?: boolean
+  onEdit?: (turn: MessageTurn) => void
 }) {
   if (group.role === "system") {
     return <CollapsibleSystemMessage parts={group.parts} />
@@ -860,6 +889,9 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
         ) : null}
         {group.role === "user" ? (
           <div className="group/user-msg flex w-fit ml-auto max-w-full items-start gap-1">
+            {onEdit && sourceTurns?.[0] ? (
+              <UserMessageEditButton turn={sourceTurns[0]} onEdit={onEdit} />
+            ) : null}
             <UserMessageTaskButton parts={group.parts} />
             <UserMessageCopyButton parts={group.parts} />
             <MessageContent>
@@ -979,6 +1011,7 @@ export function MessageListView({
   onAskSelection,
   onSaveNoteSelection,
   onForkFromTurn,
+  onEditUserMessage,
 }: MessageListViewProps) {
   const t = useTranslations("Folder.chat.messageList")
   const sharedT = useTranslations("Folder.chat.shared")
@@ -1274,6 +1307,15 @@ export function MessageListView({
                 onForkFromTurn={onForkFromTurn}
                 forkDisabled={forkBusy}
                 isThreadTail={item.isThreadTail}
+                onEdit={
+                  onEditUserMessage &&
+                  canEditUserTurn({
+                    role: item.group.role,
+                    phase: item.phase,
+                  })
+                    ? onEditUserMessage
+                    : undefined
+                }
               />
             </div>
           )
@@ -1299,6 +1341,7 @@ export function MessageListView({
       handleRoundOpenChange,
       onForkFromTurn,
       forkBusy,
+      onEditUserMessage,
     ]
   )
 

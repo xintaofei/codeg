@@ -3178,6 +3178,8 @@
         "emptyConversation": "이 대화에는 메시지가 없습니다.",
         "systemMessage": "시스템 메시지",
         "copyMessage": "복사",
+        "editMessage": "편집",
+        "editingMessage": "이 메시지를 편집 중입니다. 보내면 이 내용으로 바꾸고 여기서 이어갑니다.",
         "forkFromHere": "여기서 분기",
         "forkBusy": "턴이 실행 중일 때는 분기할 수 없습니다",
         "forkNotReady": "아직 이 응답에서 분기할 수 없습니다. 잠시 후 다시 시도하세요",
