@@ -1126,6 +1126,11 @@ pub struct AgentConnection {
     /// the tree without waiting, so the agent may still be alive and still
     /// needs the backstop.
     pub child_pid: Arc<std::sync::atomic::AtomicU32>,
+    /// The resolved launch directory this connection was started in (the same
+    /// `launch_cwd` the process and ACP session got). Captured for the
+    /// delegation outcome's resume binding — the canonical cwd a strict
+    /// re-attach must reproduce. `None` only for synthetic test connections.
+    pub working_dir: Option<String>,
 }
 
 impl AgentConnection {
@@ -2076,6 +2081,7 @@ pub async fn spawn_agent_connection(
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             last_observed_fingerprint: config_fingerprint.clone(),
             config_fingerprint,
+            working_dir: Some(launch_cwd.to_string_lossy().into_owned()),
             child_pid,
         },
     );

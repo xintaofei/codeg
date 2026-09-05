@@ -9,6 +9,7 @@ pub mod chat_channel_sender_context;
 pub mod chat_channel_thread_binding;
 pub mod conversation;
 pub mod custom_agent;
+pub mod delegation_outcome;
 pub mod folder;
 pub mod folder_command;
 pub mod folder_group;

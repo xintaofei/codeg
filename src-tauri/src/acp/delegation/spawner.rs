@@ -75,6 +75,21 @@ impl ResumedSpawn {
     }
 }
 
+/// Non-sensitive facts captured from a LIVE child connection so a successful
+/// delegation result can freeze a resume binding (v2 design §5.3). Contains
+/// ONLY identities — never tokens, API keys, or environment variables:
+/// * `external_session_id` — the agent-assigned ACP session id the child is
+///   running in (what a strict re-attach must load).
+/// * `cwd` — the resolved launch directory the child actually ran in.
+/// * `config_fingerprint` — the canonical execution-config identity captured
+///   at spawn, so a later re-attach can verify the configuration still matches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeBindingFacts {
+    pub external_session_id: Option<String>,
+    pub cwd: Option<String>,
+    pub config_fingerprint: Option<String>,
+}
+
 /// Capabilities the delegation broker needs from whatever owns the ACP
 /// connections. v1 production impl is `Arc<ConnectionManager>` (see
 /// `acp/manager.rs`); tests use `mock::MockSpawner`.
@@ -166,6 +181,17 @@ pub trait ConnectionSpawner: Send + Sync {
     /// calling on a connection with nothing in flight is a no-op success.
     async fn cancel(&self, conn_id: &str) -> Result<(), SpawnerError>;
 
+    /// Capture the non-sensitive resume-binding facts (see
+    /// [`ResumeBindingFacts`]) from a LIVE child connection. Best-effort:
+    /// `None` when the connection is gone or this runtime cannot provide the
+    /// facts, in which case the outcome row stores a null binding and the
+    /// source is simply never continuable. Default `None` so test doubles
+    /// (and any spawner without access to connection state) stay unchanged;
+    /// the production `ConnectionManagerSpawner` overrides it.
+    async fn capture_resume_binding(&self, _conn_id: &str) -> Option<ResumeBindingFacts> {
+        None
+    }
+
     /// Tear down the child connection. Always called after the broker has
     /// resolved (or failed) the pending call, to enforce v1's one-shot
     /// semantics.
@@ -215,6 +241,9 @@ pub mod mock {
         /// exercise a parent cancel landing in the spawn window. `None`
         /// (default) = no gate, return immediately.
         pub spawn_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        /// Facts `capture_resume_binding` returns for EVERY connection.
+        /// `None` (default) = the default trait answer: no binding available.
+        pub resume_binding_facts: Mutex<Option<ResumeBindingFacts>>,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -399,6 +428,10 @@ pub mod mock {
         async fn cancel(&self, conn_id: &str) -> Result<(), SpawnerError> {
             self.cancels.lock().await.push(conn_id.to_string());
             Ok(())
+        }
+
+        async fn capture_resume_binding(&self, _conn_id: &str) -> Option<ResumeBindingFacts> {
+            self.resume_binding_facts.lock().await.clone()
         }
 
         async fn disconnect(&self, conn_id: &str) -> Result<(), SpawnerError> {

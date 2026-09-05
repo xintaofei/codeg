@@ -71,3 +71,44 @@ async fn delegation_columns_default_to_null_on_existing_create() {
     assert_eq!(fetched.parent_tool_use_id, None);
     assert_eq!(fetched.delegation_call_id, None);
 }
+
+/// The m20260905_000001 migration created the immutable `delegation_outcome`
+/// table and the SeaORM entity round-trips a completed result through it.
+#[tokio::test]
+async fn delegation_outcome_table_round_trip() {
+    use codeg_lib::db::entities::delegation_outcome;
+
+    let db = fresh_in_memory_db().await;
+    let now = chrono::Utc::now();
+    let active = delegation_outcome::ActiveModel {
+        task_id: Set("00000000-0000-0000-0000-0000000000aa".to_string()),
+        parent_conversation_id: Set(1),
+        parent_tool_use_id: Set(Some("toolu_abc123".to_string())),
+        child_conversation_id: Set(Some(42)),
+        agent_type: Set("claude_code".to_string()),
+        status: Set("completed".to_string()),
+        text: Set("成功结果".to_string()),
+        duration_ms: Set(1234),
+        text_truncated: Set(false),
+        completed_at: Set(now),
+        schema_version: Set(1),
+        resume_binding_json: Set(Some(
+            r#"{"schema_version":1,"agent_type":"claude_code","external_session_id":"ext-1","cwd":"/work","config_fingerprint":"fp"}"#
+                .to_string(),
+        )),
+    };
+    active.insert(&db.conn).await.expect("insert");
+
+    let fetched = delegation_outcome::Entity::find_by_id("00000000-0000-0000-0000-0000000000aa")
+        .one(&db.conn)
+        .await
+        .expect("query ok")
+        .expect("row exists");
+    assert_eq!(fetched.parent_conversation_id, 1);
+    assert_eq!(fetched.child_conversation_id, Some(42));
+    assert_eq!(fetched.text, "成功结果");
+    assert_eq!(fetched.duration_ms, 1234);
+    assert!(!fetched.text_truncated);
+    assert_eq!(fetched.schema_version, 1);
+    assert!(fetched.resume_binding_json.is_some());
+}

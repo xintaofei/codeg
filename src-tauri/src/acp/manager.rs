@@ -407,6 +407,7 @@ impl ConnectionManager {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            working_dir: None,
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         let mut map = self.connections.lock().await;
@@ -450,6 +451,7 @@ impl ConnectionManager {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            working_dir: None,
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         self.connections.lock().await.insert(id.to_string(), conn);
@@ -2501,6 +2503,27 @@ impl ConnectionManager {
         connections.get(conn_id).map(|conn| conn.state.clone())
     }
 
+    /// Capture the non-sensitive resume-binding facts (external session id,
+    /// resolved launch cwd, execution-config fingerprint) for a live
+    /// connection. Consumed by the delegation broker when freezing a
+    /// successful outcome's resume binding; identities only — never tokens,
+    /// API keys, or environment variables. `None` when the connection is gone.
+    pub async fn resume_binding_facts(
+        &self,
+        conn_id: &str,
+    ) -> Option<crate::acp::delegation::spawner::ResumeBindingFacts> {
+        let connections = self.connections.lock().await;
+        let entry = connections.get(conn_id)?;
+        let cwd = entry.working_dir.clone();
+        let config_fingerprint = entry.config_fingerprint.clone();
+        let state = entry.state.read().await;
+        Some(crate::acp::delegation::spawner::ResumeBindingFacts {
+            external_session_id: state.external_id.clone(),
+            cwd,
+            config_fingerprint: Some(config_fingerprint),
+        })
+    }
+
     /// Like `get_state`, but also clones the connection's `EventEmitter`.
     /// Used by the lifecycle subscriber when it needs to both update the
     /// per-session state and re-broadcast a derived event (e.g. emitting
@@ -3658,6 +3681,13 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
             .await
             .map_err(|e| crate::acp::delegation::spawner::SpawnerError::Disconnect(e.to_string()))
     }
+
+    async fn capture_resume_binding(
+        &self,
+        conn_id: &str,
+    ) -> Option<crate::acp::delegation::spawner::ResumeBindingFacts> {
+        self.manager.resume_binding_facts(conn_id).await
+    }
 }
 
 /// Production impl of `ParentSessionLookup` for the delegation listener.
@@ -3824,6 +3854,7 @@ mod tests {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            working_dir: None,
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
     }
@@ -4154,6 +4185,7 @@ mod tests {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            working_dir: None,
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         mgr.connections
@@ -5047,6 +5079,7 @@ mod tests {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            working_dir: None,
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         let mgr = ConnectionManager::new();
@@ -6688,6 +6721,7 @@ mod tests {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            working_dir: None,
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         let mgr = Arc::new(ConnectionManager::new());
@@ -7359,6 +7393,7 @@ mod tests {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            working_dir: None,
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         let mgr = ConnectionManager::new();

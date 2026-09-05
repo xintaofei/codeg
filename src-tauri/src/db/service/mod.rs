@@ -6,6 +6,7 @@ pub mod chat_channel_message_log_service;
 pub mod chat_channel_service;
 pub mod conversation_service;
 pub mod custom_agent_service;
+pub mod delegation_outcome_service;
 pub mod folder_command_service;
 pub mod folder_group_service;
 pub mod folder_link_service;
