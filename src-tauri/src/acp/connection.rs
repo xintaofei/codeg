@@ -1294,6 +1294,55 @@ async fn record_prompt(agent_type: AgentType, session_id: &str, blocks: &[Conten
     let _ = tokio::time::timeout(std::time::Duration::from_millis(2000), ack).await;
 }
 
+/// Journal directory for an agent whose prompts codeg keeps a safety copy of,
+/// or `None` for custom agents, whose prompts [`record_prompt`] already stores
+/// in their full transcript.
+///
+/// The inverse gate of [`transcript_dir_for`], for the inverse reason: a
+/// built-in's own store is written by the agent, so codeg holds NO copy of a
+/// sent prompt — and an agent that dies before flushing (a wedged CLI, a crash
+/// on the first turn, a session file that was never created) takes the user's
+/// message with it. The journal is the one line per turn that makes that
+/// impossible. It records to its own root (`paths::codeg_prompt_journal_root`)
+/// so none of the transcript-store consumers start seeing built-in files.
+fn prompt_journal_dir_for(agent_type: AgentType) -> Option<&'static str> {
+    match agent_type.custom_id() {
+        Some(_) => None,
+        None => Some(registry::registry_id_for(agent_type)),
+    }
+}
+
+/// Record an outgoing prompt for a BUILT-IN agent into the prompt journal, and
+/// wait (briefly) for it to land. No-op for custom agents.
+///
+/// Written before the request is dispatched, like [`record_prompt`], and
+/// bound-waited for the same reason record_prompt is: the reader is a
+/// different party (the conversation read path's journal fallback), and a
+/// prompt that is still in the writer's queue when the app is torn down is
+/// exactly the prompt this journal exists to keep.
+///
+/// The journal deliberately records prompts ONLY — never the agent's output.
+/// The agent's own store stays the source of truth for the conversation; the
+/// journal is read purely as a fallback when that store has nothing for the
+/// session (see `get_folder_conversation_core`), so the two can never disagree
+/// about a turn both of them have.
+async fn record_prompt_journal(agent_type: AgentType, session_id: &str, blocks: &[ContentBlock]) {
+    let Some(dir) = prompt_journal_dir_for(agent_type) else {
+        return;
+    };
+    let Ok(payload) = serde_json::to_value(blocks) else {
+        return;
+    };
+    let ack = crate::acp_transcript::record_entry_in(
+        &crate::paths::codeg_prompt_journal_root(),
+        dir,
+        session_id,
+        crate::acp_transcript::EntryKind::Prompt,
+        payload,
+    );
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(2000), ack).await;
+}
+
 /// Record a turn's completion for a custom agent, and wait (briefly) for it to
 /// land. No-op for agents with their own store.
 ///
@@ -8856,6 +8905,7 @@ async fn run_conversation_loop<'a>(
                 // instantly — and awaited, so the replay gate can never see
                 // this conversation as transcript-less (see `record_prompt`).
                 record_prompt(agent_type, &sid.0, &prompt_blocks).await;
+                record_prompt_journal(agent_type, &sid.0, &prompt_blocks).await;
                 let turn_started_at_ms = crate::acp_transcript::now_epoch_ms();
                 let prompt_request = PromptRequest::new(sid.clone(), prompt_blocks);
                 // Snapshot the stderr write position BEFORE the request is
@@ -13196,6 +13246,34 @@ async fn emit_conversation_update(
 mod tests {
     use super::*;
     use sacp::schema::{Diff, SessionConfigId};
+
+    // ── Prompt journal gate ─────────────────────────────────────────────────
+    //
+    // The journal and the custom-agent transcript are complementary by
+    // construction: every agent type lands in exactly one of the two
+    // recorders, so no prompt is stored twice and none is stored nowhere.
+
+    #[test]
+    fn prompt_journal_gate_covers_built_ins_and_skips_custom() {
+        for built_in in [AgentType::ClaudeCode, AgentType::Codex, AgentType::Grok] {
+            assert_eq!(
+                prompt_journal_dir_for(built_in),
+                Some(registry::registry_id_for(built_in)),
+                "a built-in agent's prompts must be journaled"
+            );
+            assert!(
+                transcript_dir_for(built_in).is_none(),
+                "a built-in agent must not also get a full codeg transcript"
+            );
+        }
+        let custom = AgentType::Custom("my-agent");
+        assert_eq!(
+            prompt_journal_dir_for(custom),
+            None,
+            "a custom agent's prompts already live in its full transcript"
+        );
+        assert!(transcript_dir_for(custom).is_some());
+    }
 
     /// Unwrap a select selector. The Grok synthesizers below only ever build
     /// selects, so any other kind is a test failure rather than a branch to
