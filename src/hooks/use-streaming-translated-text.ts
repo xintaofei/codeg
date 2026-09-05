@@ -23,6 +23,7 @@ import {
   requestTranslationDetailed,
   translationCacheKey,
   useTranslationSettingsSnapshot,
+  DEFAULT_BATCH_CHARS,
   type TranslatedTextState,
 } from "./use-translated-text"
 
@@ -228,15 +229,20 @@ function segmentsFor(text: string, mergeUpTo = 0): Segment[] {
  * The contiguous run of work starting at `from`: segments beyond it, clipped
  * where the chain already stands mid-segment. A gap (coverage ending before
  * the next segment starts) stops the run — the settle flush converges it.
+ * The batch fills up to `maxChars` of source text (an empty batch excepted —
+ * a lone over-wide segment must still go out) and at most `maxUnits`
+ * segments, keeping failure isolation at segment granularity.
  */
 function batchFrom(
   segments: readonly Segment[],
   from: number,
   pieces: ReadonlyMap<number, Piece>,
-  maxUnits: number
+  maxUnits: number,
+  maxChars: number
 ): Segment[] {
   const batch: Segment[] = []
   let pos = from
+  let batchChars = 0
   for (const segment of segments) {
     if (segment.end <= pos) continue
     // A retry pass after a rollback re-walks the same segments; skipping the
@@ -251,11 +257,15 @@ function batchFrom(
     const start = Math.max(segment.start, pos)
     if (start > pos) break
     if (start > segment.start && segment.end - start < MIN_CLIP_CHARS) break
+    const segChars = segment.end - start
+    // 宽度封顶；空批次例外——单独的超宽段落也必须走得出去。
+    if (batch.length > 0 && batchChars + segChars > maxChars) break
     batch.push({
       start,
       end: segment.end,
       text: segment.text.slice(start - segment.start),
     })
+    batchChars += segChars
     pos = segment.end
     if (batch.length >= maxUnits) break
   }
@@ -397,6 +407,10 @@ export function useStreamingTranslatedText({
   useEffect(() => {
     const isCurrent = () => aliveRef.current && blockKeyRef.current === blockKey
 
+    // Grouped-request width from the settings page; the same ceiling the
+    // settled hook uses for its mergeUnitGroups batches.
+    const batchWidth = settings.batchMaxChars ?? DEFAULT_BATCH_CHARS
+
     const scheduleRetry = (retry: () => void, delay: number) => {
       clearTimer()
       timerRef.current = window.setTimeout(() => {
@@ -441,7 +455,8 @@ export function useStreamingTranslatedText({
         segmentsRef.current,
         from,
         progressRef.current.pieces,
-        STREAM_MAX_UNITS_PER_DISPATCH
+        STREAM_MAX_UNITS_PER_DISPATCH,
+        batchWidth
       )
       if (batch.length === 0) return false
       const pos = batch[batch.length - 1].end

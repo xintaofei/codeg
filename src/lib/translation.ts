@@ -7,12 +7,13 @@ export const MAX_PARSE_BYTES = 256 * 1024
  * Streaming (incremental thinking) translation pacing. A slow endpoint needs
  * several seconds per request, so the floor is an interval rather than a
  * debounce: whichever of "enough time passed" / "enough new text arrived"
- * comes first wins. 1.5 s is the reader's patience threshold — slower than
- * this and the live translation visibly lags the stream — while still leaving
- * most of a shared per-minute quota to generation.
+ * comes first wins. 3 s / 800 chars keeps each payload wide enough for the
+ * model to translate in context — thinner batches fragment sentences and
+ * read broken — while still leaving most of a shared per-minute quota to
+ * generation.
  */
-export const STREAM_MIN_INTERVAL_MS = 1500
-export const STREAM_MIN_NEW_CHARS = 150
+export const STREAM_MIN_INTERVAL_MS = 3000
+export const STREAM_MIN_NEW_CHARS = 800
 /** Consecutive all-failed dispatches after which incremental work pauses. */
 export const STREAM_FAILURE_PAUSE_LIMIT = 3
 /**
@@ -23,12 +24,12 @@ export const STREAM_FAILURE_PAUSE_LIMIT = 3
  */
 export const STREAM_PAUSE_COOLDOWN_MS = 30_000
 /**
- * At most this many sealed units go out in one incremental dispatch. Five
- * keeps a burst inside the endpoint's concurrency gate while letting a
- * fast-streaming reply translate several paragraphs per window; larger bursts
- * only manufacture 429s — the failures cost quota too.
+ * At most this many sealed units go out in one incremental dispatch. Twelve,
+ * combined with the batch's character ceiling, lets a fast-streaming reply
+ * translate a dozen paragraphs per round trip without manufacturing 429s —
+ * larger bursts only spend quota on failures.
  */
-export const STREAM_MAX_UNITS_PER_DISPATCH = 5
+export const STREAM_MAX_UNITS_PER_DISPATCH = 12
 /** Wait before re-dispatching after a wholly failed batch. */
 export const STREAM_FAILURE_RETRY_MS = 4000
 /** Per-unit retries inside one dispatch: 429 blips must not strand a line. */
