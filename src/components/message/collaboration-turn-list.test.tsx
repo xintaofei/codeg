@@ -203,8 +203,7 @@ describe("CollaborationTurnList", () => {
     // The stale running view must NOT replace the completed one — a second
     // poll returns it, and the version ratchet drops it.
     await act(async () => {
-      ;(await mockGetCollaborationSession.mock.results.length,
-        Promise.resolve())
+      await Promise.resolve()
     })
     await vi.waitFor(() => {
       expect(screen.getByText("Completed")).toBeInTheDocument()

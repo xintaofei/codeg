@@ -25,7 +25,7 @@ use sacp::schema::{HttpHeader, McpServer, McpServerHttp, McpServerSse, McpServer
 use sacp::util::MatchDispatch;
 use sacp::{
     on_receive_notification, on_receive_request, Agent, Client, ConnectTo, ConnectionTo, Dispatch,
-    JsonRpcRequest, Responder, Role, SessionMessage, UntypedMessage,
+    JsonRpcRequest, Responder, SessionMessage, UntypedMessage,
 };
 use sacp_tokio::AcpAgent;
 use tokio::sync::{mpsc, oneshot, RwLock};
@@ -13687,7 +13687,7 @@ pub struct InMemoryAgentTransport {
 impl ConnectTo<Client> for InMemoryAgentTransport {
     async fn connect_to(
         self,
-        client: impl ConnectTo<<Client as Role>::Counterpart>,
+        client: impl ConnectTo<sacp::role::acp::Agent>,
     ) -> Result<(), sacp::Error> {
         use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
         // Role `Agent` wire contract (mirrors the real stdio wiring in

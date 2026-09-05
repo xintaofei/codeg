@@ -5,6 +5,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 vi.mock("@/lib/api", () => ({
   getDelegationSettings: vi.fn(),
   setDelegationSettings: vi.fn(),
+  getContinuationSettings: vi.fn(async () => ({
+    continuable_delegation_enabled: false,
+  })),
+  setContinuationSettings: vi.fn(),
   acpListAgents: vi.fn(),
 }))
 

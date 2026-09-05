@@ -36,6 +36,10 @@ vi.mock("@/lib/api", () => ({
     agent_defaults: {},
   })),
   setDelegationSettings: vi.fn(async (v: unknown) => v),
+  getContinuationSettings: vi.fn(async () => ({
+    continuable_delegation_enabled: false,
+  })),
+  setContinuationSettings: vi.fn(),
   acpListAgents: vi.fn(async () => []),
   getFeedbackSettings: vi.fn(async () => ({ enabled: false })),
   setFeedbackSettings: vi.fn(async (v: unknown) => v),
