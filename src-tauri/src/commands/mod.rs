@@ -35,6 +35,7 @@ pub mod remote_proxy;
 #[cfg(feature = "tauri-runtime")]
 pub mod remote_workspace;
 pub mod science;
+pub mod semantic;
 pub mod session_info;
 pub mod system_settings;
 pub mod terminal;

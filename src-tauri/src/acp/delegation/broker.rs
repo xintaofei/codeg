@@ -1151,9 +1151,8 @@ fn classify_locked(inner: &PendingInner, parent_connection_id: &str, task_id: &s
 }
 
 /// Map a terminal [`DelegationTaskReport`] back to a [`DelegationOutcome`] for
-/// the test-only `handle_request` shim (so pre-async tests keep asserting on
-/// the old outcome shape).
-#[cfg(any(test, feature = "test-utils"))]
+/// the `handle_request` entry point (so callers can await a single outcome
+/// instead of driving the start/poll/collect shape by hand).
 fn report_to_outcome(report: &DelegationTaskReport) -> DelegationOutcome {
     use crate::acp::delegation::types::DelegationSuccess;
     match report.status {
@@ -4429,7 +4428,6 @@ impl DelegationBroker {
     /// the terminal report back to a `DelegationOutcome`. Keeps the broker's
     /// extensive setup-window race tests exercising the same lifecycle without
     /// each rewriting to the start/poll/collect shape.
-    #[cfg(any(test, feature = "test-utils"))]
     pub async fn handle_request(&self, req: DelegationRequest) -> DelegationOutcome {
         let parent_connection_id = req.parent_connection_id.clone();
         let parent_conversation_id = Some(req.parent_conversation_id);

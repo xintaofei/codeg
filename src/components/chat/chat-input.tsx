@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl"
 import type {
   AgentType,
   ConnectionStatus,
+  FolderKind,
   PromptCapabilitiesInfo,
   PromptDraft,
   PromptInputBlock,
@@ -91,6 +92,9 @@ interface ChatInputProps {
    *  (new-conversation) composer, which sits in a roomy empty state; active and
    *  historical conversations keep the compact default. */
   tall?: boolean
+  /** Folder kind of the session. When `semantic` the composer renders the
+   *  semantic intent form instead of the rich editor. */
+  folderKind?: FolderKind
 }
 
 export const ChatInput = memo(function ChatInput({
@@ -136,6 +140,7 @@ export const ChatInput = memo(function ChatInput({
   onInjectConsumed,
   flush = false,
   tall = false,
+  folderKind,
 }: ChatInputProps) {
   const t = useTranslations("Folder.chat.chatInput")
   const isConnected = status === "connected"
@@ -229,6 +234,7 @@ export const ChatInput = memo(function ChatInput({
         feedbackAddDisabled={feedbackAddDisabled}
         injectContent={injectContent}
         onInjectConsumed={onInjectConsumed}
+        folderKind={folderKind}
         placeholder={
           isConnecting
             ? t("connecting")
