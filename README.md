@@ -197,6 +197,9 @@ Details in [Privacy & Security](https://docs.codeg.app/reference/privacy).
 
 ## 👥 Community
 
+Contributions are welcome. Please read the [contribution guide](./CONTRIBUTING.md)
+before opening an issue or pull request.
+
 - Scan the QR code below to join our WeChat group for discussions, feedback, and updates
 
 <img src="./docs/images/weixin-light.jpg#gh-light-mode-only" alt="WeChat" width="240" />
