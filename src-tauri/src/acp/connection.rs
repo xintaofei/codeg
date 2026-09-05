@@ -24,11 +24,15 @@ use sacp::schema::{
 use sacp::schema::{HttpHeader, McpServer, McpServerHttp, McpServerSse, McpServerStdio};
 use sacp::util::MatchDispatch;
 use sacp::{
-    on_receive_notification, on_receive_request, Agent, Client, ConnectionTo, Dispatch,
-    JsonRpcRequest, Responder, SessionMessage, UntypedMessage,
+    on_receive_notification, on_receive_request, Agent, Client, ConnectTo, ConnectionTo, Dispatch,
+    JsonRpcRequest, Responder, Role, SessionMessage, UntypedMessage,
 };
 use sacp_tokio::AcpAgent;
 use tokio::sync::{mpsc, oneshot, RwLock};
+
+use crate::acp::delegation::continuation::{
+    SessionRecovery, StrictAttachError, StrictAttachErrorCode, StrictReady,
+};
 
 use crate::acp::agent_mentions::append_agent_routes;
 use crate::acp::background_watch;
@@ -1508,7 +1512,10 @@ fn agent_debug_callback(
     }
 }
 
-async fn build_agent(
+/// Build the concrete ACP agent transport for `agent_type` — the exact launch
+/// the ordinary connection path uses. Shared with the strict attach entry so a
+/// strict recovery launches the same binary the binding was verified against.
+pub(crate) async fn build_agent(
     agent_type: AgentType,
     runtime_env: &BTreeMap<String, String>,
     cwd: &Path,
@@ -1952,6 +1959,98 @@ pub async fn spawn_agent_connection(
     delegation_injection: Option<DelegationInjection>,
     terminal_shell_config: TerminalShellRuntimeConfig,
 ) -> Result<tokio::sync::oneshot::Receiver<()>, AcpError> {
+    // Resolve the launch cwd from the same `working_dir` (via the same helper)
+    // that run_connection uses for the session/new request, so the process
+    // cwd, the ACP session cwd, and any os.getcwd()-derived agent state all
+    // agree. Computed here because `working_dir` is moved into run_connection
+    // below.
+    let launch_cwd = resolve_working_dir(working_dir.as_deref());
+    // Connection-scoped ring buffer of the agent's stderr, populated by the
+    // `with_debug` callback `build_agent` installs and read at turn end when a
+    // turn is diagnosed as silently empty. Created here so both the spawn side
+    // and the conversation loop share the same buffer.
+    let stderr_tail = Arc::new(StderrTail::new());
+    let agent = build_agent(agent_type, &runtime_env, &launch_cwd, &stderr_tail).await?;
+    // Canonical config fingerprint of what this process is launching with.
+    // Derived from the same `runtime_env` we hand the agent (minus per-launch
+    // volatile keys) plus the agent's native config file content, so a later
+    // settings save can be compared against it to detect a stale running session.
+    let config_fingerprint = crate::commands::acp::fingerprint_config(agent_type, &runtime_env);
+    spawn_agent_connection_with_transport(
+        agent,
+        connection_id,
+        agent_type,
+        working_dir,
+        session_id,
+        runtime_env,
+        owner_window_label,
+        emitter,
+        connections,
+        preferred_mode_id,
+        preferred_config_values,
+        delegation_injection,
+        terminal_shell_config,
+        config_fingerprint,
+        stderr_tail,
+        SessionRecovery::AllowNewFallback,
+    )
+    .await
+}
+
+/// Register and drive a connection over an ALREADY-BUILT transport.
+///
+/// The production entry [`spawn_agent_connection`] builds the real agent
+/// process transport from `runtime_env` and delegates here with
+/// [`SessionRecovery::AllowNewFallback`]; the strict attach entry and tests
+/// call this directly with their own transport. Everything else — session
+/// state, fs/host-tools policy from `runtime_env`, config fingerprint
+/// verification against a strict binding, connection registration, teardown
+/// cascade — is identical for both.
+/// Transport hook for the OS-pid observers the manager stores on the
+/// connection entry (shutdown kill-tree backstop). A real process transport
+/// publishes its pid on spawn and clears it on reap; an in-memory test
+/// transport has no process and does nothing.
+pub trait PidObservable: Sized {
+    fn observe_process_pid(self, _pid: Arc<std::sync::atomic::AtomicU32>) -> Self {
+        self
+    }
+}
+
+impl PidObservable for AcpAgent {
+    fn observe_process_pid(self, pid: Arc<std::sync::atomic::AtomicU32>) -> Self {
+        self.on_spawn({
+            let cell = Arc::clone(&pid);
+            move |os_pid| cell.store(os_pid, std::sync::atomic::Ordering::SeqCst)
+        })
+        // Paired with `on_spawn`: publish 0 again once the process has been
+        // reaped, so the shutdown backstop can never `kill_tree` a pid the OS
+        // has already handed to someone else. Fires ONLY on a real reap — a
+        // connection that merely ended keeps its pid published, because the
+        // vendored `ChildGuard` signals the tree without waiting and the agent
+        // may still be running.
+        .on_exit(move || pid.store(0, std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn spawn_agent_connection_with_transport<A: ConnectTo<Client> + PidObservable + 'static>(
+    agent: A,
+    connection_id: String,
+    agent_type: AgentType,
+    working_dir: Option<String>,
+    session_id: Option<String>,
+    runtime_env: BTreeMap<String, String>,
+    owner_window_label: String,
+    emitter: EventEmitter,
+    connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
+    preferred_mode_id: Option<String>,
+    preferred_config_values: BTreeMap<String, String>,
+    delegation_injection: Option<DelegationInjection>,
+    terminal_shell_config: TerminalShellRuntimeConfig,
+    config_fingerprint: String,
+    stderr_tail: Arc<StderrTail>,
+    recovery: SessionRecovery,
+) -> Result<tokio::sync::oneshot::Receiver<()>, AcpError> {
     // Create the authoritative session state up front. Subsequent emit_with_state
     // calls write through this state and increment its seq counter so the first
     // event the frontend sees has seq=1, not the placeholder 0 from Phase 0.
@@ -1999,27 +2098,19 @@ pub async fn spawn_agent_connection(
     // backstop when the connection driver thread is torn down by process exit
     // before `ChildGuard::drop` can run. 0 = not spawned yet / unknown.
     let child_pid = Arc::new(std::sync::atomic::AtomicU32::new(0));
-    // Connection-scoped ring buffer of the agent's stderr, populated by the
-    // `with_debug` callback `build_agent` installs and read at turn end when a
-    // turn is diagnosed as silently empty. Created here so both the spawn side
-    // and the conversation loop share the same buffer.
-    let stderr_tail = Arc::new(StderrTail::new());
-    let agent = build_agent(agent_type, &runtime_env, &launch_cwd, &stderr_tail)
-        .await?
-        .on_spawn({
-            let child_pid = Arc::clone(&child_pid);
-            move |pid| child_pid.store(pid, std::sync::atomic::Ordering::SeqCst)
-        })
-        // Paired with `on_spawn`: publish 0 again once the process has been
-        // reaped, so the shutdown backstop can never `kill_tree` a pid the OS
-        // has already handed to someone else. Fires ONLY on a real reap — a
-        // connection that merely ended keeps its pid published, because the
-        // vendored `ChildGuard` signals the tree without waiting and the agent
-        // may still be running.
-        .on_exit({
-            let child_pid = Arc::clone(&child_pid);
-            move || child_pid.store(0, std::sync::atomic::Ordering::SeqCst)
-        });
+    // Strict binding verification happens BEFORE the agent process is even
+    // built/launched: a mismatched cwd or execution-config identity is a
+    // typed failure with zero protocol traffic — there is no session to
+    // fall back to and nothing to leak.
+    if let SessionRecovery::RequireExisting(gate) = &recovery {
+        if let Err(err) = gate.verify_launch(&launch_cwd, &config_fingerprint) {
+            gate.fail(err.clone()).await;
+            return Err(AcpError::Protocol(format!(
+                "strict attach: binding verification failed: {err}"
+            )));
+        }
+    }
+    let agent = agent.observe_process_pid(child_pid.clone());
 
     // Path policy for the ACP `fs/*` channel. Built HERE rather than inside
     // `run_connection` because it needs the full `runtime_env` (only the git
@@ -2057,13 +2148,6 @@ pub async fn spawn_agent_connection(
     let cleanup_connections = connections.clone();
     let cleanup_connection_id = connection_id.clone();
     let state_clone = Arc::clone(&session_state);
-
-    // Canonical config fingerprint of what this process is launching with.
-    // Derived from the same `runtime_env` we hand the agent (minus per-launch
-    // volatile keys) plus the agent's native config file content, so a later
-    // settings save can be compared against it to detect a stale running session.
-    let config_fingerprint =
-        crate::commands::acp::fingerprint_config(agent_type, &runtime_env);
 
     // Insert the entry BEFORE spawning the background task so that a
     // fast-failing `run_connection` can never remove it before it was
@@ -2128,6 +2212,7 @@ pub async fn spawn_agent_connection(
             fs_policy,
             host_tools,
             stderr_tail,
+            recovery,
         )
         .await;
 
@@ -3319,7 +3404,8 @@ async fn apply_grok_preferred_options(
     opts: &mut Vec<SessionConfigOptionInfo>,
     preferred_config_values: &BTreeMap<String, String>,
     specs: &HashMap<String, GrokModelSpec>,
-) {
+) -> Vec<String> {
+    let mut failures = Vec::new();
     // Model preference — a pure `set_model` (no effort override). On success we
     // also re-point the effort selector at the newly-preferred model (grok ships
     // per-model effort only at birth, never on set_model).
@@ -3352,9 +3438,12 @@ async fn apply_grok_preferred_options(
                         set_grok_effort_selector_for_model(opts, &pref, specs);
                     }
                 }
-                Err(e) => tracing::error!(
-                    "[ACP] failed to apply preferred grok model '{pref}' on connect: {e}"
-                ),
+                Err(e) => {
+                    tracing::error!(
+                        "[ACP] failed to apply preferred grok model '{pref}' on connect: {e}"
+                    );
+                    failures.push(format!("model '{pref}': {e}"));
+                }
             }
         }
     }
@@ -3372,14 +3461,18 @@ async fn apply_grok_preferred_options(
                 if let Some(model_id) = model_id {
                     match set_grok_model(cx, session_id, model_id, Some(pref.clone())).await {
                         Ok(()) => sel.current_value = pref.clone(),
-                        Err(e) => tracing::error!(
-                            "[ACP] failed to apply preferred grok effort '{pref}' on connect: {e}"
-                        ),
+                        Err(e) => {
+                            tracing::error!(
+                                "[ACP] failed to apply preferred grok effort '{pref}' on connect: {e}"
+                            );
+                            failures.push(format!("effort '{pref}': {e}"));
+                        }
                     }
                 }
             }
         }
     }
+    failures
 }
 
 /// The Grok model selector's current value, read from an in-memory options list.
@@ -3621,6 +3714,12 @@ async fn emit_grok_incompatible_agent_switch(
 /// synthesized `x.ai/sessionConfig` (parity path); for every other agent it runs
 /// the standard preference-application + sacp-mapping pipeline unchanged.
 #[allow(clippy::too_many_arguments)]
+/// Apply the preferred session options, returning the updated option list
+/// ALONGSIDE every failure that was tolerated. The ordinary establishment
+/// paths log-and-continue (a stale preference must not block a session), but
+/// the strict recovery path needs the REAL result — it treats a non-empty
+/// failure list as "config not applied", so the failures are collected here
+/// instead of being silently dropped.
 async fn apply_and_emit_session_config_options(
     cx: &ConnectionTo<Agent>,
     session: &mut sacp::ActiveSession<'_, Agent>,
@@ -3632,7 +3731,7 @@ async fn apply_and_emit_session_config_options(
     preferred_mode_id: Option<&str>,
     preferred_config_values: &BTreeMap<String, String>,
     initial_config_options: Vec<SessionConfigOption>,
-) {
+) -> (Vec<SessionConfigOption>, Vec<String>) {
     // Every establishment starts from an empty ledger. `SessionState` outlives a
     // fork transition, so without this the child would inherit — and defend —
     // whatever the parent asserted, on paths that never write it back: Grok's
@@ -3648,7 +3747,7 @@ async fn apply_and_emit_session_config_options(
             // flat-fallback branch.
             state.write().await.grok_model_specs = (!specs.is_empty()).then(|| specs.clone());
             let session_id = session.session_id().clone();
-            apply_grok_preferred_options(
+            let failures = apply_grok_preferred_options(
                 cx,
                 &session_id,
                 &mut opts,
@@ -3657,12 +3756,12 @@ async fn apply_and_emit_session_config_options(
             )
             .await;
             emit_session_config_options_info(state, emitter, opts).await;
-            return;
+            return (Vec::new(), failures);
         }
         // No x.ai/sessionConfig (unexpected): fall through to the standard path,
         // which for Grok emits an empty list (no selectors) — same as before.
     }
-    let updated = apply_preferred_session_options(
+    let (updated, failures) = apply_preferred_session_options(
         cx,
         session,
         state,
@@ -3672,7 +3771,8 @@ async fn apply_and_emit_session_config_options(
         initial_config_options,
     )
     .await;
-    emit_session_config_options_values(state, emitter, updated).await;
+    emit_session_config_options_values(state, emitter, updated.clone()).await;
+    (updated, failures)
 }
 
 /// Grok's initialize still advertises `image: false` — the coding model
@@ -3721,7 +3821,11 @@ async fn emit_prompt_capabilities(
     .await;
 }
 
-fn resolve_working_dir(working_dir: Option<&str>) -> PathBuf {
+/// Canonicalize a launch working directory: absolute paths pass through,
+/// relative paths anchor to the process cwd, and `None` falls back to the
+/// process cwd (or home). Shared with the strict attach entry so the manager
+/// verifies the binding against the SAME resolution the connection performs.
+pub(crate) fn resolve_working_dir(working_dir: Option<&str>) -> PathBuf {
     match working_dir {
         Some(dir) => {
             let path = PathBuf::from(dir);
@@ -4703,8 +4807,20 @@ fn canonical_spec_to_mcp_server(name: &str, spec: &serde_json::Value) -> Result<
         session_id = ?session_id,
     )
 )]
-async fn run_connection(
-    agent: AcpAgent,
+/// Drive one ACP connection to completion.
+///
+/// `A` is the wire transport: the production caller passes a real
+/// [`AcpAgent`] (a child process), tests pass an in-memory fake. Both are
+/// plain `ConnectTo<Client>` transports — the entire establishment chain
+/// below (initialize → resume → load → new) runs identically over either.
+///
+/// `recovery` selects the session-recovery strategy. `AllowNewFallback` is
+/// the historical chain (resume → load → **new**); `RequireExisting` makes
+/// every `session/new` decision point a typed failure instead — see
+/// [`SessionRecovery`].
+#[allow(clippy::too_many_arguments)]
+async fn run_connection<A: ConnectTo<Client> + 'static>(
+    agent: A,
     connection_id: String,
     agent_type: AgentType,
     working_dir: Option<String>,
@@ -4723,6 +4839,7 @@ async fn run_connection(
     // callback installed by `build_agent`. Read only when a turn ends without
     // agent output, to attach evidence to the synthesized error.
     stderr_tail: Arc<StderrTail>,
+    recovery: SessionRecovery,
 ) -> Result<(), AcpError> {
     let pending_perms: PendingPermissions =
         Arc::new(tokio::sync::Mutex::new(PermissionQueue::default()));
@@ -5381,7 +5498,7 @@ async fn run_connection(
                             )
                             .await;
                             emit_session_modes(&state, &emitter_clone, session.modes()).await;
-                            apply_and_emit_session_config_options(
+                            let (_updated, config_failures) = apply_and_emit_session_config_options(
                                 &cx,
                                 &mut session,
                                 &state,
@@ -5394,6 +5511,33 @@ async fn run_connection(
                                 initial_config_options.unwrap_or_default(),
                             )
                             .await;
+                            // Strict recovery: readiness is a typed verdict
+                            // delivered ONLY after recovery + config both truly
+                            // succeeded — the earlier Connected/SessionStarted
+                            // events prove nothing. A failed config application
+                            // is a failed attach: no Ready, no prompt, no
+                            // session/new.
+                            if let SessionRecovery::RequireExisting(gate) = &recovery {
+                                if !config_failures.is_empty() {
+                                    gate.fail(StrictAttachError::new(
+                                        StrictAttachErrorCode::ResumeFailed,
+                                        format!(
+                                            "session recovered but preferred config application \
+                                             failed: {}",
+                                            config_failures.join("; ")
+                                        ),
+                                    ))
+                                    .await;
+                                    return Err(sacp::util::internal_error(
+                                        "strict attach: config application failed",
+                                    ));
+                                }
+                                gate.ready(StrictReady {
+                                    connection_id: conn_id.clone(),
+                                    external_session_id: sid.clone(),
+                                })
+                                .await;
+                            }
                             emit_selectors_ready(&state, &emitter_clone).await;
 
                             let loop_result = run_conversation_loop(
@@ -5622,7 +5766,7 @@ async fn run_connection(
                         )
                         .await;
                         emit_session_modes(&state, &emitter_clone, session.modes()).await;
-                        apply_and_emit_session_config_options(
+                        let (_updated, config_failures) = apply_and_emit_session_config_options(
                             &cx,
                             &mut session,
                             &state,
@@ -5637,6 +5781,30 @@ async fn run_connection(
                             initial_config_options.unwrap_or_default(),
                         )
                         .await;
+                        // Strict recovery via session/load: same readiness
+                        // contract as the resume arm — only after the replay
+                        // was drained (above) AND config applied cleanly.
+                        if let SessionRecovery::RequireExisting(gate) = &recovery {
+                            if !config_failures.is_empty() {
+                                gate.fail(StrictAttachError::new(
+                                    StrictAttachErrorCode::ResumeFailed,
+                                    format!(
+                                        "session recovered but preferred config application \
+                                         failed: {}",
+                                        config_failures.join("; ")
+                                    ),
+                                ))
+                                .await;
+                                return Err(sacp::util::internal_error(
+                                    "strict attach: config application failed",
+                                ));
+                            }
+                            gate.ready(StrictReady {
+                                connection_id: conn_id.clone(),
+                                external_session_id: sid.clone(),
+                            })
+                            .await;
+                        }
                         emit_selectors_ready(&state, &emitter_clone).await;
 
                         let loop_result = run_conversation_loop(
@@ -5677,6 +5845,33 @@ async fn run_connection(
                         .await
                     }
                     Err(e) => {
+                        // Strict recovery stops HERE: no classification ladder,
+                        // no session/new fallback — a failed recovery of a
+                        // required-existing session is a typed failure, never a
+                        // fresh session masquerading as the old one.
+                        if let SessionRecovery::RequireExisting(gate) = &recovery {
+                            let (code, detail) = if !attempted_load {
+                                (
+                                    StrictAttachErrorCode::ResumeUnsupported,
+                                    "the agent supports neither session/resume nor \
+                                     session/load"
+                                        .to_string(),
+                                )
+                            } else {
+                                (
+                                    StrictAttachErrorCode::ResumeFailed,
+                                    format!("session/load failed: {e}"),
+                                )
+                            };
+                            tracing::warn!(
+                                "[ACP][strict] session recovery of {sid} failed ({code:?}); \
+                                 refusing to fall back to session/new"
+                            );
+                            gate.fail(StrictAttachError::new(code, detail)).await;
+                            return Err(sacp::util::internal_error(format!(
+                                "strict attach: session recovery failed for {sid}"
+                            )));
+                        }
                         // session/load failed. Classify it: an unrecoverable
                         // historical session — the agent has no record of it
                         // (ResourceNotFound, -32002) or the agent process/session
@@ -5866,6 +6061,23 @@ async fn run_connection(
                 }
             } else {
                 // Create new session
+                // Strict recovery never mints a session: with `session_id`
+                // absent there is no existing session to attach to, which is
+                // itself the failure. Unreachable via the strict entry (the
+                // manager requires an external session id), guarded here so
+                // the guarantee does not depend on every caller's discipline.
+                if let SessionRecovery::RequireExisting(gate) = &recovery {
+                    gate.fail(StrictAttachError::new(
+                        StrictAttachErrorCode::ResumeUnsupported,
+                        "no external session id was supplied; there is no \
+                         existing session to recover"
+                            .to_string(),
+                    ))
+                    .await;
+                    return Err(sacp::util::internal_error(
+                        "strict attach: no external session id to recover",
+                    ));
+                }
                 let (new_resp, grok_models_raw) = send_new_session_capturing_models(
                     &cx,
                     agent_type,
@@ -6980,7 +7192,8 @@ async fn apply_preferred_session_options(
     preferred_mode_id: Option<&str>,
     preferred_config_values: &BTreeMap<String, String>,
     initial_config_options: Vec<SessionConfigOption>,
-) -> Vec<SessionConfigOption> {
+) -> (Vec<SessionConfigOption>, Vec<String>) {
+    let mut failures = Vec::new();
     if let Some(pref_mode) = preferred_mode_id {
         let needs_apply = session
             .modes()
@@ -6990,12 +7203,13 @@ async fn apply_preferred_session_options(
         if needs_apply {
             if let Err(e) = set_session_mode(session, state, emitter, pref_mode.to_string()).await {
                 tracing::error!("[ACP] failed to apply preferred mode '{pref_mode}' on connect: {e}");
+                failures.push(format!("mode '{pref_mode}': {e}"));
             }
         }
     }
 
     if preferred_config_values.is_empty() {
-        return initial_config_options;
+        return (initial_config_options, failures);
     }
 
     let session_id = session.session_id().clone();
@@ -7027,10 +7241,13 @@ async fn apply_preferred_session_options(
         let value = encode_config_option_value(is_boolean, value_id);
         match set_session_config_option_inner(cx, &session_id, config_id.clone(), value).await {
             Ok(updated) => options = updated,
-            Err(e) => tracing::error!(
-                "[ACP] failed to apply preferred config '{config_id}'='{value_id}' \
-                 on connect: {e}"
-            ),
+            Err(e) => {
+                tracing::error!(
+                    "[ACP] failed to apply preferred config '{config_id}'='{value_id}' \
+                     on connect: {e}"
+                );
+                failures.push(format!("config '{config_id}'='{value_id}': {e}"));
+            }
         }
     }
 
@@ -7051,7 +7268,7 @@ async fn apply_preferred_session_options(
         .map(|(config_id, value_id)| (config_id.clone(), value_id.clone()))
         .collect();
 
-    options
+    (options, failures)
 }
 
 /// Compare an agent-pushed config-option list against the values codeg asserted
@@ -13425,6 +13642,81 @@ async fn emit_conversation_update(
         }
     }
 }
+
+/// An in-memory ACP agent transport for tests: instead of spawning a child
+/// process, the client is wired to two duplex byte streams whose AGENT ends
+/// the test drives itself. This is the seam that lets the REAL establishment
+/// chain (`initialize` → `session/resume` → `session/load` → `session/new`,
+/// exactly as `run_connection` implements it) be exercised against a fake
+/// agent that records every method call and answers according to the scenario
+/// under test.
+///
+/// The agent ends are exposed raw (bytes in / bytes out): a test speaks
+/// newline-delimited JSON-RPC on them, mirroring what a real agent's stdio
+/// carries. Nothing in this type touches the agent side — recording and
+/// responses are entirely the test's job.
+#[cfg(any(test, feature = "test-utils"))]
+pub struct InMemoryAgentTransport {
+    /// The agent's stdin: the transport writes CLIENT requests here (what a
+    /// real agent process would read from its stdin).
+    pub agent_stdin: tokio::io::DuplexStream,
+    /// The agent's stdout: the transport reads AGENT responses from here
+    /// (what a real agent process would write to its stdout).
+    pub agent_stdout: tokio::io::DuplexStream,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl ConnectTo<Client> for InMemoryAgentTransport {
+    async fn connect_to(
+        self,
+        client: impl ConnectTo<<Client as Role>::Counterpart>,
+    ) -> Result<(), sacp::Error> {
+        use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+        // Role `Agent` wire contract (mirrors the real stdio wiring in
+        // sacp-tokio): `outgoing` = the agent's stdin (client requests arrive
+        // here), `incoming` = the agent's stdout (agent responses are read
+        // from here). Tokio duplex streams implement tokio's IO traits;
+        // sacp's byte transport wants futures' — bridge with tokio-util's
+        // compat adapters.
+        let transport = sacp::ByteStreams::new(
+            self.agent_stdin.compat_write(),
+            self.agent_stdout.compat(),
+        );
+        ConnectTo::<Client>::connect_to(transport, client).await
+    }
+}
+
+/// Pair the client-side transport halves with the agent ends handed to the
+/// test's fake agent. The returned transport goes into
+/// [`spawn_agent_connection_with_transport`]; the ends go to the fake.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn in_memory_agent_pair(buffer: usize) -> (InMemoryAgentTransport, InMemoryAgentEnds) {
+    let (agent_stdin, fake_stdin_reader) = tokio::io::duplex(buffer);
+    let (fake_stdout_writer, agent_stdout) = tokio::io::duplex(buffer);
+    (
+        InMemoryAgentTransport {
+            agent_stdin,
+            agent_stdout,
+        },
+        InMemoryAgentEnds {
+            client_to_agent: fake_stdin_reader,
+            agent_to_client: fake_stdout_writer,
+        },
+    )
+}
+
+/// The agent-side ends of the in-memory wire (what the test's fake agent
+/// reads and writes).
+#[cfg(any(test, feature = "test-utils"))]
+pub struct InMemoryAgentEnds {
+    /// The fake agent reads client requests here.
+    pub client_to_agent: tokio::io::DuplexStream,
+    /// The fake agent writes responses here.
+    pub agent_to_client: tokio::io::DuplexStream,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl PidObservable for InMemoryAgentTransport {}
 
 #[cfg(test)]
 mod tests {

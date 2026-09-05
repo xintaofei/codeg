@@ -2503,6 +2503,174 @@ impl ConnectionManager {
         connections.get(conn_id).map(|conn| conn.state.clone())
     }
 
+    /// Strictly attach an EXISTING external agent session (v2 design §5.3).
+    ///
+    /// Unlike [`Self::spawn_agent`] this entry:
+    /// * verifies the recorded resume binding BEFORE any agent process starts
+    ///   (cwd must exist and match the binding; the freshly computed config
+    ///   fingerprint must match the recorded one — a changed environment is a
+    ///   typed `binding_mismatch`, never a silent relaunch);
+    /// * refuses to reuse a live connection hosting the same external session
+    ///   (a continuation round must own its connection; stealing one the user
+    ///   or another driver holds would let a teardown kill it mid-run);
+    /// * passes the strict recovery policy down the wire so the
+    ///   `resume → load → new` chain can NEVER reach `session/new`; and
+    /// * returns only a typed verdict: [`StrictReady`] after recovery, replay
+    ///   drain, and config application all truly succeeded, or a
+    ///   [`StrictAttachError`] (`resume_timeout` when the handshake exceeds
+    ///   `timeout`).
+    ///
+    /// The connection this call creates is registered under the manager like
+    /// any other and tears itself down on failure; the caller sends no prompt
+    /// until it has seen `Ready`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn attach_existing_session_strict(
+        &self,
+        agent_type: AgentType,
+        working_dir: String,
+        external_session_id: String,
+        runtime_env: BTreeMap<String, String>,
+        owner_window_label: String,
+        emitter: EventEmitter,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+        expected_cwd: PathBuf,
+        expected_config_fingerprint: String,
+        timeout: Duration,
+    ) -> Result<crate::acp::delegation::continuation::StrictReady, crate::acp::delegation::continuation::StrictAttachError>
+    {
+        use crate::acp::delegation::continuation::{
+            SessionRecovery, StrictAttachError, StrictAttachErrorCode, StrictOutcome,
+        };
+        use crate::acp::connection::spawn_agent_connection_with_transport;
+
+
+        // --- Binding sanity (cheap, pre-spawn) --------------------------------
+        if external_session_id.trim().is_empty() {
+            return Err(StrictAttachError::new(
+                StrictAttachErrorCode::BindingMismatch,
+                "the recorded binding carries no external session id",
+            ));
+        }
+        // cwd 指向既有目录/既有 worktree — never a fresh directory conjured for
+        // the continuation.
+        if !expected_cwd.is_dir() {
+            return Err(StrictAttachError::new(
+                StrictAttachErrorCode::BindingMismatch,
+                format!(
+                    "the recorded working directory {} no longer exists",
+                    expected_cwd.display()
+                ),
+            ));
+        }
+
+        // --- No live connection may be hijacked -------------------------------
+        let working_dir_path = std::path::PathBuf::from(&working_dir);
+        if self
+            .find_connection_for_reuse(
+                agent_type,
+                Some(&working_dir_path),
+                Some(external_session_id.as_str()),
+            )
+            .await
+            .is_some()
+        {
+            return Err(StrictAttachError::new(
+                StrictAttachErrorCode::ResumeFailed,
+                "a live connection already hosts this session; a continuation \
+                 round must not share it"
+                    .to_string(),
+            ));
+        }
+
+        // --- Launch the connection under the strict policy --------------------
+        // The same launch the ordinary path performs: resolve the cwd, compute
+        // the config fingerprint, build the agent transport. The gate verifies
+        // the binding against these BEFORE the driver thread starts.
+        let launch_cwd = crate::acp::connection::resolve_working_dir(Some(&working_dir));
+        let config_fingerprint = crate::commands::acp::fingerprint_config(agent_type, &runtime_env);
+
+        let (gate, mut verdict_rx) =
+            crate::acp::delegation::continuation::StrictAttachGate::channel(
+                expected_cwd,
+                expected_config_fingerprint,
+            );
+        if let Err(err) = gate.verify_launch(&launch_cwd, &config_fingerprint) {
+            gate.fail(err.clone()).await;
+            return Err(err);
+        }
+
+        let stderr_tail = Arc::new(crate::acp::stderr_tail::StderrTail::new());
+        let agent = crate::acp::connection::build_agent(
+            agent_type,
+            &runtime_env,
+            &launch_cwd,
+            &stderr_tail,
+        )
+        .await
+        .map_err(|e| {
+            StrictAttachError::new(
+                StrictAttachErrorCode::ResumeFailed,
+                format!("agent launch failed: {e}"),
+            )
+        })?;
+
+        let connection_id = uuid::Uuid::new_v4().to_string();
+        let spawn_result = spawn_agent_connection_with_transport(
+            agent,
+            connection_id.clone(),
+            agent_type,
+            Some(working_dir),
+            Some(external_session_id),
+            runtime_env,
+            owner_window_label,
+            emitter,
+            self.connections.clone(),
+            preferred_mode_id,
+            preferred_config_values,
+            self.delegation_snapshot(),
+            self.terminal_shell_config.clone(),
+            config_fingerprint,
+            stderr_tail,
+            SessionRecovery::RequireExisting(gate),
+        )
+        .await;
+        if let Err(spawn_err) = spawn_result {
+            // Binding verification (or registration) failed before the driver
+            // thread started. The gate usually already carries the precise
+            // typed failure — prefer it over the opaque AcpError.
+            match tokio::time::timeout(Duration::from_secs(1), &mut verdict_rx).await {
+                Ok(Ok(StrictOutcome::Failed(e))) => return Err(e),
+                _ => {
+                    return Err(StrictAttachError::new(
+                        StrictAttachErrorCode::ResumeFailed,
+                        format!("strict attach failed to launch: {spawn_err}"),
+                    ));
+                }
+            }
+        }
+
+        // --- Await the typed verdict (bounded) --------------------------------
+        match tokio::time::timeout(timeout, &mut verdict_rx).await {
+            Ok(Ok(StrictOutcome::Ready(ready))) => Ok(ready),
+            Ok(Ok(StrictOutcome::Failed(e))) => Err(e),
+            // The connection ended without ever reporting readiness — treat it
+            // as a failed recovery, never as success.
+            Ok(Err(_receiver_dropped)) => Err(StrictAttachError::new(
+                StrictAttachErrorCode::ResumeFailed,
+                "the connection ended before reporting strict readiness",
+            )),
+            Err(_elapsed) => Err(StrictAttachError::new(
+                StrictAttachErrorCode::ResumeTimeout,
+                format!(
+                    "strict attach did not become ready within {}ms; the agent \
+                     may still be recovering — no prompt was sent",
+                    timeout.as_millis()
+                ),
+            )),
+        }
+    }
+
     /// Capture the non-sensitive resume-binding facts (external session id,
     /// resolved launch cwd, execution-config fingerprint) for a live
     /// connection. Consumed by the delegation broker when freezing a
