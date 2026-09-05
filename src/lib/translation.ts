@@ -287,15 +287,42 @@ export function missingTargetScript(
  * Only runs of ≥2 digits count — a lone "v5"-style digit is too noisy — and
  * masked regions (code, URLs, math) are excluded up front, so their numbers
  * never reach this gate. A false positive costs one discarded attempt and a
- * retry; a missed invention poisons the cache for every later render.
+ * retry; a missed invention poisons the cache for every later render. Both
+ * sides are normalized first (fullwidth digits/punctuation folded to ASCII,
+ * thousands separators stripped), and the gate tolerates a single lost run —
+ * only a reply that sheds at least two runs (or half of them) is refused, so
+ * a reflowed "1,234" or one dropped tail number no longer discards a faithful
+ * translation.
  */
+const FULLWIDTH_CHAR = /[０-９．，]/g
+
+/**
+ * 数字比较前的归一化：全角数字/句点/逗号折叠为半角，剥掉夹在数字间的
+ * 千分位逗号——与后端 `normalize_number_text` 同一套规则，两端判定
+ * 必须一致，否则同一回复一边通过一边被拒。
+ */
+export function normalizeNumberText(text: string): string {
+  return text
+    .replace(FULLWIDTH_CHAR, (ch) =>
+      ch === "．"
+        ? "."
+        : ch === "，"
+          ? ","
+          : String.fromCharCode(ch.charCodeAt(0) - 0xfee0)
+    )
+    .replace(/(?<=\d),(?=\d)/g, "")
+}
+
 export function missingSourceNumbers(
   chunk: string,
   translated: string
 ): boolean {
   const prose = chunk.replace(/\[\s*\[?_?CBLK\d+\s*\]\s*\]?/g, "")
-  const runs = prose.match(/\d{2,}/g) ?? []
-  return runs.some((run) => !translated.includes(run))
+  const runs = normalizeNumberText(prose).match(/\d{2,}/g) ?? []
+  if (runs.length === 0) return false
+  const normalized = normalizeNumberText(translated)
+  const missing = runs.filter((run) => !normalized.includes(run))
+  return missing.length >= 2 && missing.length * 2 >= runs.length
 }
 
 export interface TailChunk {

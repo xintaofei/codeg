@@ -358,6 +358,39 @@ describe("missingSourceNumbers", () => {
   })
 })
 
+describe("missingSourceNumbers normalization", () => {
+  it("accepts fullwidth digits and fullwidth decimal points", () => {
+    expect(
+      missingSourceNumbers(
+        "Git 2.34 shipped in 2023 with 15 fixes",
+        "Git 2．34 于 2023 年发布，包含 15 项修复",
+        "zh"
+      )
+    ).toBe(false)
+  })
+  it("accepts thousands separators dropped or added", () => {
+    expect(
+      missingSourceNumbers("about 1,234 users", "约 1234 名用户", "zh")
+    ).toBe(false)
+  })
+  it("tolerates one missing run, rejects losing half", () => {
+    expect(
+      missingSourceNumbers(
+        "versions 12, 34, 56 and 999",
+        "版本 12、34 和 56",
+        "zh"
+      )
+    ).toBe(false)
+    expect(
+      missingSourceNumbers(
+        "versions 12, 34, 56 and 78 were tested",
+        "测试了版本 12 和 34",
+        "zh"
+      )
+    ).toBe(true)
+  })
+})
+
 describe("mergeUnit", () => {
   it("re-attaches the blank-line separator the source ended with", () => {
     // Every endpoint trims its reply; without this the join glues paragraphs.
