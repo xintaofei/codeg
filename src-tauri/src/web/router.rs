@@ -66,6 +66,18 @@ pub fn build_router(
             post(handlers::delegation::set_delegation_settings),
         )
         .route(
+            "/get_continuation_settings",
+            post(handlers::delegation::get_continuation_settings),
+        )
+        .route(
+            "/set_continuation_settings",
+            post(handlers::delegation::set_continuation_settings),
+        )
+        .route(
+            "/get_collaboration_session",
+            post(handlers::collaboration::get_collaboration_session),
+        )
+        .route(
             "/get_feedback_settings",
             post(handlers::feedback::get_feedback_settings),
         )

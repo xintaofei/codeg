@@ -8,6 +8,7 @@ pub mod chat_authoring;
 pub mod chat_channel;
 pub mod conversations;
 pub mod custom_skills;
+pub mod collaboration;
 pub mod delegation;
 mod error;
 pub mod event_metrics;

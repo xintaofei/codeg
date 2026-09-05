@@ -814,6 +814,12 @@ pub(crate) async fn do_start_web_server_tauri(
             .state::<Arc<crate::acp::delegation::broker::DelegationBroker>>()
             .inner()
             .clone(),
+        // Reuse the managed collaboration coordinator so HTTP-side
+        // continuation settings target the same flag the listener reads.
+        continuation_coordinator: app
+            .state::<Arc<crate::acp::delegation::continuation::ContinuationCoordinator>>()
+            .inner()
+            .clone(),
         delegation_tokens: app
             .state::<Arc<crate::acp::delegation::listener::TokenRegistry>>()
             .inner()

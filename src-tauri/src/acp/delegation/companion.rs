@@ -45,15 +45,20 @@ use crate::acp::chat_authoring::{
     NewAutomationSpec, NewWorkTaskSpec, MAX_PROMPT_CHARS, MAX_TITLE_CHARS,
 };
 use crate::acp::delegation::transport::{
-    client_ask_round_trip, client_cancel, client_cancel_task_round_trip, client_commit_feedback,
+    client_ask_round_trip, client_cancel, client_cancel_session_turn_round_trip,
+    client_cancel_task_round_trip, client_close_session_round_trip,
+    client_commit_feedback, client_continue_with_session_round_trip,
     client_create_automation_round_trip, client_create_work_task_round_trip,
-    client_feedback_round_trip, client_resume_task_round_trip, client_round_trip,
-    client_session_round_trip, client_status_round_trip, client_task_complete_round_trip,
+    client_feedback_round_trip, client_get_session_turn_status_round_trip,
+    client_resume_task_round_trip, client_round_trip, client_session_round_trip,
+    client_status_round_trip, client_task_complete_round_trip,
     client_task_progress_round_trip, BrokerAskRequest, BrokerCancelRequest,
-    BrokerCancelTaskRequest, BrokerCommitFeedbackRequest, BrokerCreateAutomationRequest,
-    BrokerCreateWorkTaskRequest, BrokerFeedbackRequest, BrokerRequest, BrokerResponse,
-    BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
-    BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
+    BrokerCancelSessionTurnRequest, BrokerCancelTaskRequest, BrokerCloseSessionRequest,
+    BrokerCommitFeedbackRequest, BrokerContinueWithSessionRequest,
+    BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerFeedbackRequest,
+    BrokerGetSessionTurnStatusRequest, BrokerRequest, BrokerResponse, BrokerResumeTaskRequest,
+    BrokerSessionRequest, BrokerStatusRequest, BrokerTaskCompleteRequest,
+    BrokerTaskProgressRequest,
 };
 use crate::acp::question::parse_questions;
 use crate::acp::session_info::MAX_SESSION_MESSAGES;
@@ -153,6 +158,10 @@ pub struct CompanionFeatures {
     pub automations: bool,
     /// `create_work_task` — queue a card on the work-task board from chat.
     pub taskboard: bool,
+    /// Continuation tools (`continue_with_session` / `get_session_turn_status`
+    /// / `cancel_session_turn` / `close_session`) — the continuable-delegation
+    /// MVP. Injected only when the user-level experiment is on at launch.
+    pub continuation: bool,
 }
 
 impl CompanionFeatures {
@@ -172,6 +181,7 @@ impl CompanionFeatures {
                 tasks: false,
                 automations: false,
                 taskboard: false,
+                continuation: false,
             };
         };
         let mut f = Self {
@@ -182,6 +192,7 @@ impl CompanionFeatures {
             tasks: false,
             automations: false,
             taskboard: false,
+            continuation: false,
         };
         for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             match tok {
@@ -192,6 +203,7 @@ impl CompanionFeatures {
                 "tasks" => f.tasks = true,
                 "automations" => f.automations = true,
                 "taskboard" => f.taskboard = true,
+                "continuation" => f.continuation = true,
                 _ => {}
             }
         }
@@ -209,6 +221,8 @@ impl CompanionFeatures {
             "create_work_task" => self.taskboard,
             "delegate_to_agent" | "get_delegation_status" | "cancel_delegation"
             | "resume_delegation" => self.delegation,
+            "continue_with_session" | "get_session_turn_status" | "cancel_session_turn"
+            | "close_session" => self.continuation,
             _ => false,
         }
     }
@@ -769,8 +783,131 @@ async fn build_tools_call_spawn(
                 Box::pin(async move { client_create_work_task_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_authoring_result).await
         }
+        // --- Continuation group (continuable-delegation MVP) -------------------
+        // Business errors come back as a serialized ContinuationError inside a
+        // successful tool result (`structuredContent.error`), NOT as a JSON-RPC
+        // error — permission/feature/owner rejections are answers, not
+        // protocol faults.
+        "continue_with_session" => {
+            let arg = |name: &str| -> Option<String> {
+                arguments
+                    .get(name)
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            };
+            let (Some(source_task_id), Some(request_id), Some(message)) =
+                (arg("source_task_id"), arg("request_id"), arg("message"))
+            else {
+                return LineAction::Respond(err(
+                    id,
+                    -32602,
+                    "continue_with_session requires non-empty string source_task_id,                      request_id, and message",
+                ));
+            };
+            let req = BrokerContinueWithSessionRequest {
+                token: ctx.token.clone(),
+                source_task_id,
+                request_id,
+                message,
+            };
+            let round_trip =
+                Box::pin(async move { client_continue_with_session_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_continuation_result).await
+        }
+        "get_session_turn_status" => {
+            let Some(turn_id) = arguments
+                .get("turn_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .filter(|s| !s.is_empty())
+            else {
+                return LineAction::Respond(err(
+                    id,
+                    -32602,
+                    "get_session_turn_status requires a non-empty string turn_id",
+                ));
+            };
+            // Bounded wait only — an absent/zero wait_ms is an immediate poll;
+            // anything above the 30s wire cap is clamped so a confused agent
+            // cannot park the companion indefinitely.
+            let wait_ms = arguments
+                .get("wait_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                .min(30_000);
+            let req = BrokerGetSessionTurnStatusRequest {
+                token: ctx.token.clone(),
+                turn_id,
+                wait_ms,
+            };
+            let round_trip = Box::pin(async move {
+                client_get_session_turn_status_round_trip(&socket, &req).await
+            });
+            register_and_spawn(inflight, id, None, round_trip, render_continuation_result).await
+        }
+        "cancel_session_turn" => {
+            let Some(turn_id) = arguments
+                .get("turn_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .filter(|s| !s.is_empty())
+            else {
+                return LineAction::Respond(err(
+                    id,
+                    -32602,
+                    "cancel_session_turn requires a non-empty string turn_id",
+                ));
+            };
+            let req = BrokerCancelSessionTurnRequest {
+                token: ctx.token.clone(),
+                turn_id,
+            };
+            let round_trip = Box::pin(async move {
+                client_cancel_session_turn_round_trip(&socket, &req).await
+            });
+            register_and_spawn(inflight, id, None, round_trip, render_continuation_result).await
+        }
+        "close_session" => {
+            let Some(session_id) = arguments
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .filter(|s| !s.is_empty())
+            else {
+                return LineAction::Respond(err(
+                    id,
+                    -32602,
+                    "close_session requires a non-empty string session_id",
+                ));
+            };
+            let req = BrokerCloseSessionRequest {
+                token: ctx.token.clone(),
+                session_id,
+            };
+            let round_trip =
+                Box::pin(async move { client_close_session_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_continuation_result).await
+        }
         other => LineAction::Respond(err(id, -32602, format!("unknown tool: {other}"))),
     }
+}
+
+/// Render a continuation result. On success `outcome` IS the schema_version=1
+/// wire DTO; on a business rejection it is `{ "error": ContinuationError }`.
+/// Both render as a successful tool result carrying the envelope in
+/// `structuredContent` and the JSON in the text content — the same
+/// "business errors are answers" contract the delegation status tools use.
+fn render_continuation_result(outcome: &Value) -> Value {
+    let is_error = outcome.get("error").is_some();
+    serde_json::json!({
+        "content": [{
+            "type": "text",
+            "text": serde_json::to_string_pretty(outcome)
+                .unwrap_or_else(|_| outcome.to_string()),
+        }],
+        "structuredContent": outcome.clone(),
+        "isError": is_error,
+    })
 }
 
 /// Register the inflight entry and build the [`SpawnedCall`] that races the
@@ -1583,6 +1720,7 @@ mod tests {
             tasks: false,
             automations: false,
             taskboard: false,
+            continuation: false,
         })
     }
 
@@ -2174,6 +2312,7 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: false,
+            continuation: false,
     };
     const BOTH: CompanionFeatures = CompanionFeatures {
         delegation: true,
@@ -2183,6 +2322,7 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: false,
+            continuation: false,
     };
     const ASK_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -2192,6 +2332,7 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: false,
+            continuation: false,
     };
     const SESSIONS_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -2201,6 +2342,7 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: false,
+            continuation: false,
     };
 
     fn list_tool_names(action: LineAction) -> Vec<String> {
@@ -2539,6 +2681,7 @@ mod tests {
         tasks: false,
         automations: true,
         taskboard: false,
+            continuation: false,
     };
     const TASKBOARD_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -2548,6 +2691,7 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: true,
+            continuation: false,
     };
 
     /// The two authoring groups gate independently: enabling one must not

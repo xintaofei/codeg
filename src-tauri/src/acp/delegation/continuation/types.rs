@@ -440,7 +440,7 @@ pub struct TurnReport {
     pub text_truncated: bool,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
-    pub blocked_on: Option<&'static str>,
+    pub blocked_on: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,

@@ -18,6 +18,7 @@ use std::time::Duration;
 use sea_orm::DatabaseConnection;
 use tokio::sync::{broadcast, mpsc};
 
+use crate::acp::delegation::continuation::CollaborationSessionState as codeg_types_CollabState;
 use crate::acp::delegation::broker::{DelegationBroker, DelegationMatchKey};
 use crate::acp::delegation::types::{DelegationError, DelegationOutcome, DelegationSuccess};
 use crate::acp::internal_bus::InternalEventBus;
@@ -151,8 +152,9 @@ async fn handle_event_with_retry(
     manager: &ConnectionManager,
     envelope: &EventEnvelope,
     broker: Option<&Arc<DelegationBroker>>,
+    collaboration: Option<&Arc<crate::acp::delegation::continuation::ContinuationCoordinator>>,
 ) {
-    match handle_event(db_conn, manager, envelope, broker).await {
+    match handle_event(db_conn, manager, envelope, broker, collaboration).await {
         Ok(()) => return,
         Err(e) => {
             tracing::warn!(
@@ -163,7 +165,7 @@ async fn handle_event_with_retry(
     }
     for (attempt, backoff) in HANDLE_EVENT_RETRY_BACKOFFS.iter().enumerate() {
         tokio::time::sleep(*backoff).await;
-        match handle_event(db_conn, manager, envelope, broker).await {
+        match handle_event(db_conn, manager, envelope, broker, collaboration).await {
             Ok(()) => return,
             Err(e) => {
                 let attempt_num = attempt + 2;
@@ -184,11 +186,13 @@ async fn handle_event_with_retry(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_event(
     db_conn: &DatabaseConnection,
     manager: &ConnectionManager,
     envelope: &EventEnvelope,
     broker: Option<&Arc<DelegationBroker>>,
+    collaboration: Option<&Arc<crate::acp::delegation::continuation::ContinuationCoordinator>>,
 ) -> Result<(), DbError> {
     match &envelope.payload {
         // NOTE: parent-side `delegate_to_agent` tool_call_id capture used to
@@ -298,6 +302,56 @@ pub(crate) async fn handle_event(
                 .await;
             }
 
+            // Continuation routing FIRST: if this connection is the active
+            // execution owner of a collaboration turn, the terminal belongs
+            // to that round — settle it with the coordinator and do NOT let
+            // the one-shot broker complete the original task again.
+            if let Some(collab) = collaboration.as_ref() {
+                let owner = collab
+                    .execution_owner(&envelope.connection_id)
+                    .await;
+                if let Some((turn_id, execution_id)) = owner {
+                    let terminal = stop_reason_to_terminal(stop_reason.as_str(), last_text);
+                    match collab.settle(&turn_id, &execution_id, terminal).await {
+                        Ok(applied) => {
+                            if applied {
+                                tracing::info!(
+                                    "[continuation][lifecycle] turn {turn_id} settled from                                      execution {execution_id}"
+                                );
+                                return Ok(());
+                            }
+                            // A stale terminal for a superseded execution —
+                            // quarantine it (never let it fall through to the
+                            // one-shot broker: that would complete T0 again).
+                            tracing::info!(
+                                "[continuation][lifecycle] stale terminal for turn                                  {turn_id} (execution {execution_id}) quarantined"
+                            );
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "[continuation][lifecycle] settle failed for turn {turn_id}: {e}"
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
+                // Reserved-but-not-ours: a child under an open collaboration
+                // session with NO matching execution is a stale/foreign
+                // event — ignore it entirely (it must not complete the old
+                // task either).
+                if let Some(session) = collab
+                    .session_summary_for_child(cid)
+                    .await
+                {
+                    if session.state != codeg_types_CollabState::Closed {
+                        tracing::info!(
+                            "[continuation][lifecycle] event for reserved child {cid} with no                              matching execution ignored"
+                        );
+                        return Ok(());
+                    }
+                }
+            }
             // If this conversation was spawned by a delegation, resolve the
             // pending broker call. The broker maps the outcome onto the
             // parent's `tool_use_id` via the registered `call_id`.
@@ -364,6 +418,27 @@ pub(crate) async fn handle_event(
 /// paths (`timeout` / `cancel_by_child_connection` / `cancel_by_parent`)
 /// also surface the event — see
 /// `.docs/issues/2026-05-24-delegation-termination-cascade.md`.
+/// Map a wire stop reason (plus the turn's last text) onto the collaboration
+/// turn terminal. Mirrors `forward_turn_complete_to_broker`'s outcome
+/// mapping so the two routes can never disagree about what a stop reason
+/// means.
+fn stop_reason_to_terminal(
+    stop_reason: &str,
+    last_text: Option<String>,
+) -> crate::acp::delegation::continuation::TurnTerminal {
+    use crate::acp::delegation::continuation::TurnTerminal;
+    match stop_reason {
+        "end_turn" => TurnTerminal::Completed {
+            text: last_text.unwrap_or_default(),
+        },
+        "cancelled" => TurnTerminal::Canceled,
+        other => TurnTerminal::Failed {
+            code: "child_failed".to_string(),
+            message: format!("the rework round ended with stop reason `{other}`"),
+        },
+    }
+}
+
 async fn forward_turn_complete_to_broker(
     db_conn: &DatabaseConnection,
     broker: &DelegationBroker,
@@ -517,6 +592,36 @@ async fn handle_terminal_event(
 /// caller arrived via `Error` rather than a bare `Disconnected`). It gets
 /// stitched into the broker's canceled reason so the parent's
 /// `delegate_to_agent` tool-call result surfaces the real failure cause.
+/// Route a child connection terminal (disconnect / error) to the
+/// collaboration coordinator when that connection owns an execution. The
+/// outcome is UNKNOWABLE in this case — the send may have happened — so the
+/// turn settles `outcome_unknown` and the session blocks. Returns `true`
+/// when handled (the one-shot broker must not also fire).
+async fn forward_disconnect_to_continuation(
+    collaboration: Option<&Arc<crate::acp::delegation::continuation::ContinuationCoordinator>>,
+    connection_id: &str,
+) -> bool {
+    let Some(collab) = collaboration else {
+        return false;
+    };
+    let Some((turn_id, execution_id)) = collab.execution_owner(connection_id).await else {
+        return false;
+    };
+    match collab.settle_unknown(&turn_id, &execution_id).await {
+        Ok(applied) => {
+            if !applied {
+                tracing::info!(
+                    "[continuation][lifecycle] disconnect arrived for already-settled turn                      {turn_id}; ignored"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!("[continuation][lifecycle] unknown-settle failed for {turn_id}: {e}");
+        }
+    }
+    true
+}
+
 async fn forward_disconnect_to_broker(
     broker: &DelegationBroker,
     connection_id: &str,
@@ -1469,11 +1574,13 @@ mod delegation_registration_tests {
 /// receiver from DB-write latency — a slow SQLite write on connection A no
 /// longer blocks events for connection B from being drained off the
 /// broadcast buffer (the prior failure mode that pushed `lagged_count`).
+#[allow(clippy::too_many_arguments)]
 async fn connection_worker_loop(
     connection_id: String,
     db: DatabaseConnection,
     manager: ConnectionManager,
     broker: Option<Arc<DelegationBroker>>,
+    collaboration: Option<Arc<crate::acp::delegation::continuation::ContinuationCoordinator>>,
     mut rx: mpsc::Receiver<Arc<EventEnvelope>>,
 ) {
     // 1-entry HashMap so we can reuse `handle_terminal_event` (also keeps the
@@ -1508,7 +1615,14 @@ async fn connection_worker_loop(
                     tracing::error!("[lifecycle][ERROR] terminal event for {connection_id}: {e}");
                 }
                 if let Some(b) = broker.as_ref() {
-                    forward_disconnect_to_broker(b.as_ref(), &connection_id, None).await;
+                    if !forward_disconnect_to_continuation(
+                        collaboration.as_ref(),
+                        &connection_id,
+                    )
+                    .await
+                    {
+                        forward_disconnect_to_broker(b.as_ref(), &connection_id, None).await;
+                    }
                 }
                 terminal_dispatched = true;
             }
@@ -1551,12 +1665,20 @@ async fn connection_worker_loop(
                 }
                 if let Some(b) = broker.as_ref() {
                     let detail = format_terminal_error(message, code.as_deref());
-                    forward_disconnect_to_broker(b.as_ref(), &connection_id, Some(&detail)).await;
+                    if !forward_disconnect_to_continuation(
+                        collaboration.as_ref(),
+                        &connection_id,
+                    )
+                    .await
+                    {
+                        forward_disconnect_to_broker(b.as_ref(), &connection_id, Some(&detail))
+                            .await;
+                    }
                 }
                 terminal_dispatched = true;
             }
             _ => {
-                handle_event_with_retry(&db, &manager, envelope, broker.as_ref()).await;
+                handle_event_with_retry(&db, &manager, envelope, broker.as_ref(), collaboration.as_ref()).await;
             }
         }
     }
@@ -1586,6 +1708,20 @@ pub fn lifecycle_subscriber_task(
     manager: ConnectionManager,
     bus: Arc<InternalEventBus>,
     broker: Option<Arc<DelegationBroker>>,
+) -> impl Future<Output = ()> + Send + 'static {
+    lifecycle_subscriber_task_with_continuation(db_conn, manager, bus, broker, None)
+}
+
+/// As [`lifecycle_subscriber_task`], plus the collaboration-turn coordinator
+/// when the continuable-delegation MVP is wired. The coordinator gets FIRST
+/// claim on child terminals (by execution owner) and parent disconnects;
+/// without it behavior is byte-identical to the plain variant.
+pub fn lifecycle_subscriber_task_with_continuation(
+    db_conn: DatabaseConnection,
+    manager: ConnectionManager,
+    bus: Arc<InternalEventBus>,
+    broker: Option<Arc<DelegationBroker>>,
+    collaboration: Option<Arc<crate::acp::delegation::continuation::ContinuationCoordinator>>,
 ) -> impl Future<Output = ()> + Send + 'static {
     let mut rx = bus.subscribe();
     let metrics = Arc::clone(bus.metrics());
@@ -1635,12 +1771,14 @@ pub fn lifecycle_subscriber_task(
                         let db_clone = db_conn.clone();
                         let mgr_clone = manager.clone_ref();
                         let broker_clone = broker.clone();
+                        let collab_clone = collaboration.clone();
                         let id_clone = conn_id.clone();
                         tokio::spawn(connection_worker_loop(
                             id_clone,
                             db_clone,
                             mgr_clone,
                             broker_clone,
+                            collab_clone,
                             worker_rx,
                         ));
                         tx
@@ -1782,7 +1920,7 @@ mod tests {
                 session_id: "ext-99".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None).await.unwrap();
         let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
             .await
             .unwrap();
@@ -1817,7 +1955,7 @@ mod tests {
                 session_id: "ext-99".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None).await.unwrap();
 
         // external_id persisted on the row...
         let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
@@ -1861,7 +1999,7 @@ mod tests {
                 title: "  Fix login flow  ".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None).await.unwrap();
 
         let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
             .await
@@ -1909,7 +2047,7 @@ mod tests {
                 title: "agent title".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &locked_env, None)
+        handle_event(&db.conn, &mgr, &locked_env, None, None)
             .await
             .unwrap();
         let unbound_env = EventEnvelope {
@@ -1919,7 +2057,7 @@ mod tests {
                 title: "should not land anywhere".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &unbound_env, None)
+        handle_event(&db.conn, &mgr, &unbound_env, None, None)
             .await
             .unwrap();
 
@@ -1980,7 +2118,7 @@ mod tests {
                 session_id: "session-S2".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None).await.unwrap();
 
         // The deleted row is untouched: still deleted, still S1, same updated_at.
         let after = conversation::Entity::find_by_id(conv.id)
@@ -2028,7 +2166,7 @@ mod tests {
                 session_id: "should-not-write".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None).await.unwrap();
 
         // Sentinel row must still have no external_id — dispatcher correctly
         // skipped the write because the connection had no conversation_id.
@@ -2090,7 +2228,7 @@ mod tests {
                 agent_type: "claude_code".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None).await.unwrap();
         assert_eq!(
             read_row_status(&db, conv.id).await,
             ConversationStatus::PendingReview
@@ -2141,7 +2279,7 @@ mod tests {
                     agent_type: "open_code".into(),
                 },
             };
-            handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+            handle_event(&db.conn, &mgr, &env, None, None).await.unwrap();
             assert_eq!(
                 read_row_status(&db, conv.id).await,
                 ConversationStatus::Cancelled,
@@ -2179,7 +2317,7 @@ mod tests {
                 agent_type: "claude_code".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None).await.unwrap();
         assert_eq!(
             read_row_status(&db, conv.id).await,
             ConversationStatus::InProgress,
@@ -2213,7 +2351,7 @@ mod tests {
                 agent_type: "claude_code".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None).await.unwrap();
         assert_eq!(
             read_row_status(&db, sentinel.id).await,
             ConversationStatus::InProgress,
@@ -2458,7 +2596,7 @@ mod tests {
             connection_id: "c1".to_string(),
             payload: AcpEvent::ContentDelta { text: "hi".into(), parent_tool_use_id: None },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None).await.unwrap();
 
         let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
             .await

@@ -966,6 +966,24 @@ impl ConnectionManager {
             )
         };
 
+        // Collaboration write reservation: a child session accepted into a
+        // collaboration session is written to exclusively by the turn
+        // coordinator until it closes. An ordinary prompt (UI, chat channel,
+        // caller-supplied row) targeted at a RESERVED conversation is refused
+        // here — a backend rejection, not a disabled button. Unreserved
+        // conversations behave exactly as before.
+        if let Some(conversation_id) = conversation_id {
+            if let Some(collab) = self.delegation_snapshot().and_then(|d| d.collaboration) {
+                if collab.child_is_reserved(conversation_id).await {
+                    return Err(AcpError::protocol(
+                        format!(
+                            "conversation {conversation_id} is reserved for delegation                              rework; send your feedback through the active rework turn                              instead (session_reserved_for_delegation)"
+                        ),
+                    ));
+                }
+            }
+        }
+
         // Reject a concurrent prompt while a turn is already in flight, BEFORE
         // any side effects (row creation, InProgress emit, user-message
         // broadcast). `send_prompt_inner` re-checks and sets the flag
@@ -2789,6 +2807,37 @@ impl ConnectionManager {
         }
         let text = trimmed.to_string();
         let blocks = blocks.filter(|b| !b.is_empty());
+        // Collaboration write reservation (mid-turn steering included): a
+        // reserved child conversation may only be written through the active
+        // rework turn. `check_user_feedback`/native steering against it is
+        // refused here, before any delivery.
+        {
+            let reserved = {
+                let connections = self.connections.lock().await;
+                let conn = connections.get(conn_id);
+                match conn {
+                    Some(conn) => {
+                        let cid = conn.state.read().await.conversation_id;
+                        match cid {
+                            Some(cid) => {
+                                match self.delegation_snapshot().and_then(|d| d.collaboration) {
+                                    Some(collab) => collab.child_is_reserved(cid).await,
+                                    None => false,
+                                }
+                            }
+                            None => false,
+                        }
+                    }
+                    None => false,
+                }
+            };
+            if reserved {
+                return Err(AcpError::protocol(
+                    "this session is reserved for delegation rework; feedback                      arrives through the active rework turn                      (session_reserved_for_delegation)"
+                        .to_string(),
+                ));
+            }
+        }
         let (state, cmd_tx, emitter) = {
             let connections = self.connections.lock().await;
             let conn = connections

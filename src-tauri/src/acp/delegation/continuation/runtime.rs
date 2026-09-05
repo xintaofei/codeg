@@ -72,7 +72,7 @@ pub trait ContinuationRuntime: Send + Sync {
 
     /// The blocking prompt currently parked on this connection, if any:
     /// `"permission"` or `"question"`. `None` = working normally.
-    async fn blocked_on(&self, connection_id: &str) -> Option<&'static str>;
+    async fn blocked_on(&self, connection_id: &str) -> Option<String>;
 }
 
 /// No-op runtime: every call fails loudly. Used when the coordinator is
@@ -106,7 +106,7 @@ impl ContinuationRuntime for NoopRuntime {
         Ok(())
     }
 
-    async fn blocked_on(&self, _connection_id: &str) -> Option<&'static str> {
+    async fn blocked_on(&self, _connection_id: &str) -> Option<String> {
         None
     }
 }

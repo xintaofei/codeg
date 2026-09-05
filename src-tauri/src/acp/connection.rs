@@ -4343,6 +4343,13 @@ impl AgentAvailabilityLookup for DbAgentAvailabilityLookup {
 #[derive(Clone)]
 pub struct DelegationInjection {
     pub broker: Arc<crate::acp::delegation::broker::DelegationBroker>,
+    /// The collaboration-turn coordinator, when the continuable-delegation
+    /// MVP is wired. `None` on test paths that build an injection by hand.
+    /// Consulted for (a) lifecycle routing of child terminals to the owning
+    /// execution and (b) the session write reservation enforced on every
+    /// ordinary prompt/feedback send.
+    pub collaboration:
+        Option<Arc<crate::acp::delegation::continuation::ContinuationCoordinator>>,
     pub tokens: Arc<crate::acp::delegation::listener::TokenRegistry>,
     pub socket_path: PathBuf,
     /// Which agents are currently disabled in settings, read at injection
@@ -4482,6 +4489,9 @@ struct CompanionFeatureFlags {
     automations: bool,
     /// `create_work_task`, gated by the chat-authoring setting.
     taskboard: bool,
+    /// Continuation tools, gated by the continuable-delegation experiment
+    /// flag (read at injection time; the listener re-checks server-side).
+    continuation: bool,
 }
 
 /// The `--features` value for a companion launch, or `None` when no group is
@@ -4511,6 +4521,9 @@ fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<String> {
     }
     if flags.taskboard {
         features.push("taskboard");
+    }
+    if flags.continuation {
+        features.push("continuation");
     }
     if features.is_empty() {
         return None;
@@ -4600,6 +4613,10 @@ where
     } else {
         Vec::new()
     };
+    let continuation_enabled = match injection.collaboration.as_ref() {
+        Some(c) => c.is_enabled().await,
+        None => false,
+    };
     let flags = CompanionFeatureFlags {
         delegation: delegation_enabled,
         feedback: feedback_enabled,
@@ -4608,6 +4625,7 @@ where
         tasks: tasks_enabled,
         automations: authoring.automations_enabled,
         taskboard: authoring.work_tasks_enabled,
+        continuation: continuation_enabled && host_tools.hosts_channels(),
     };
     // `None` (no feature enabled) short-circuits BEFORE the binary lookup, the
     // token registration and the server append: there is no companion to launch,
@@ -4796,18 +4814,8 @@ fn canonical_spec_to_mcp_server(name: &str, spec: &serde_json::Value) -> Result<
 }
 
 /// The main ACP connection loop.
-#[allow(clippy::too_many_arguments)]
-#[tracing::instrument(
-    name = "connection",
-    skip_all,
-    fields(
-        connection_id = %connection_id,
-        agent_type = ?agent_type,
-        working_dir = ?working_dir,
-        session_id = ?session_id,
-    )
-)]
-/// Drive one ACP connection to completion.
+///
+/// # Drive one ACP connection to completion
 ///
 /// `A` is the wire transport: the production caller passes a real
 /// [`AcpAgent`] (a child process), tests pass an in-memory fake. Both are
@@ -4819,6 +4827,16 @@ fn canonical_spec_to_mcp_server(name: &str, spec: &serde_json::Value) -> Result<
 /// every `session/new` decision point a typed failure instead — see
 /// [`SessionRecovery`].
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(
+    name = "connection",
+    skip_all,
+    fields(
+        connection_id = %connection_id,
+        agent_type = ?agent_type,
+        working_dir = ?working_dir,
+        session_id = ?session_id,
+    )
+)]
 async fn run_connection<A: ConnectTo<Client> + 'static>(
     agent: A,
     connection_id: String,
@@ -21312,6 +21330,7 @@ mod tests {
         ));
         DelegationInjection {
             broker,
+            collaboration: None,
             tokens: Arc::new(TokenRegistry::default()),
             socket_path: std::path::PathBuf::from("/tmp/codeg-mcp.sock"),
             agent_availability,
@@ -21519,8 +21538,12 @@ mod tests {
                 tasks: true,
                 automations: true,
                 taskboard: true,
+                continuation: true,
             }),
-            Some("delegation,feedback,ask,sessions,tasks,automations,taskboard".to_string())
+            Some(
+                "delegation,feedback,ask,sessions,tasks,automations,taskboard,continuation"
+                    .to_string(),
+            )
         );
     }
 

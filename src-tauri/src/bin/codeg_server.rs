@@ -265,6 +265,7 @@ async fn async_main() -> ExitCode {
         question_config,
         session_info_config,
         chat_authoring_config,
+        continuation_coordinator,
     ) = codeg_lib::app_state::build_delegation_stack(
         &connection_manager,
         db.conn.clone(),
@@ -285,6 +286,7 @@ async fn async_main() -> ExitCode {
         ),
         pet_state: pet_state_handle.clone(),
         delegation_broker: delegation_broker.clone(),
+        continuation_coordinator: continuation_coordinator.clone(),
         delegation_tokens: delegation_tokens.clone(),
         delegation_socket_path: delegation_socket_path.clone(),
         feedback_config: feedback_config.clone(),
@@ -375,7 +377,15 @@ async fn async_main() -> ExitCode {
                 state.emitter.clone(),
                 chat_authoring_config.clone(),
             )),
+            // The coordinator hands the listener its collaboration arms and
+            // reads its feature switch at call time.
+            Some(continuation_coordinator.clone()),
         );
+        // Startup recovery BEFORE the listener accepts: a restarted host must
+        // settle interrupted/unknown turns before any new admission.
+        if let Err(e) = continuation_coordinator.recover_on_startup().await {
+            tracing::warn!("[continuation] startup recovery failed: {e}");
+        }
         let socket = delegation_socket_path.clone();
         tokio::spawn(async move {
             if let Err(e) = listener.run(socket).await {
@@ -442,11 +452,12 @@ async fn async_main() -> ExitCode {
     // broker is supplied so TurnComplete on a delegation child resolves the
     // parent's pending `delegate_to_agent` tool_use_id and emits
     // `DelegationCompleted`.
-    tokio::spawn(codeg_lib::lifecycle_subscriber_task(
+    tokio::spawn(codeg_lib::acp::lifecycle_subscriber_task_with_continuation(
         state.db.conn.clone(),
         state.connection_manager.clone_ref(),
         state.acp_event_bus.clone(),
         Some(state.delegation_broker.clone()),
+        Some(continuation_coordinator),
     ));
 
     // Spawn the desktop pet state mapper so server-mode browsers viewing

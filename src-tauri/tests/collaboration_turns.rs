@@ -48,7 +48,7 @@ struct MockRuntime {
     send_count: AtomicUsize,
     cancel_count: AtomicUsize,
     disconnect_count: AtomicUsize,
-    blocked: tokio::sync::Mutex<Option<&'static str>>,
+    blocked: tokio::sync::Mutex<Option<String>>,
 }
 
 impl MockRuntime {
@@ -113,8 +113,8 @@ impl ContinuationRuntime for MockRuntime {
         Ok(())
     }
 
-    async fn blocked_on(&self, _connection_id: &str) -> Option<&'static str> {
-        *self.blocked.lock().await
+    async fn blocked_on(&self, _connection_id: &str) -> Option<String> {
+        (*self.blocked.lock().await).as_deref().map(str::to_string)
     }
 }
 
@@ -246,12 +246,12 @@ async fn continue_twice_is_idempotent() {
     let h = harness().await;
     let ack1 = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k1", "m1", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
         .await
         .expect("first continue");
     let ack2 = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k1", "m1", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
         .await
         .expect("replayed continue");
 
@@ -276,14 +276,14 @@ async fn same_request_different_message_conflicts() {
     let h = harness().await;
     let ack = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k1", "m1", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
         .await
         .expect("first");
     wait_for_state(&h.coordinator, h.parent, &ack.turn_id, &[TurnState::Running]).await;
 
     let err = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k1", "m2", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m2", None)
         .await
         .expect_err("conflicting payload");
     assert_eq!(err_code(&err), ContinuationErrorCode::RequestConflict);
@@ -307,8 +307,8 @@ async fn concurrent_continue_admits_only_one() {
     let p1 = h.parent;
     let p2 = h.parent;
     let (r1, r2) = tokio::join!(
-        c1.continue_turn(p1, SOURCE_TASK, "k1", "m1", None),
-        c2.continue_turn(p2, SOURCE_TASK, "k2", "m2", None),
+        c1.continue_turn(p1, "parent-conn", SOURCE_TASK, "k1", "m1", None),
+        c2.continue_turn(p2, "parent-conn", SOURCE_TASK, "k2", "m2", None),
     );
     let (ok_count, busy_count) = match (&r1, &r2) {
         (Ok(_), Err(e)) | (Err(e), Ok(_)) => {
@@ -329,7 +329,7 @@ async fn second_round_gets_new_turn_same_session() {
     let h = harness().await;
     let ack1 = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k1", "m1", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
         .await
         .unwrap();
     wait_for_state(&h.coordinator, h.parent, &ack1.turn_id, &[TurnState::Running]).await;
@@ -353,7 +353,7 @@ async fn second_round_gets_new_turn_same_session() {
 
     let ack2 = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k2", "m2", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k2", "m2", None)
         .await
         .expect("second round");
     assert_eq!(ack2.session_id, ack1.session_id);
@@ -382,7 +382,7 @@ async fn terminal_during_dispatching_stays_terminal() {
     // settle is CAS-guarded.
     let ack = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k1", "m1", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
         .await
         .unwrap();
     // The drive may already be running; poll for dispatching or running and
@@ -425,7 +425,7 @@ async fn only_one_terminal_wins() {
     let h = harness().await;
     let ack = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k1", "m1", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
         .await
         .unwrap();
     let (turn, execution) = loop {
@@ -466,7 +466,7 @@ async fn closed_session_rejects_new_rounds_without_a_second_session() {
     let h = harness().await;
     let ack = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k1", "m1", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
         .await
         .unwrap();
     wait_for_state(&h.coordinator, h.parent, &ack.turn_id, &[TurnState::Running]).await;
@@ -489,7 +489,7 @@ async fn closed_session_rejects_new_rounds_without_a_second_session() {
 
     let err = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k9", "m9", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k9", "m9", None)
         .await
         .expect_err("closed session");
     assert_eq!(err_code(&err), ContinuationErrorCode::SessionClosed);
@@ -516,7 +516,7 @@ async fn disabled_feature_blocks_new_rounds_but_replays_existing_requests() {
     let h = harness().await;
     let ack = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k1", "m1", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
         .await
         .unwrap();
     wait_for_state(&h.coordinator, h.parent, &ack.turn_id, &[TurnState::Running]).await;
@@ -535,14 +535,14 @@ async fn disabled_feature_blocks_new_rounds_but_replays_existing_requests() {
     // Same payload → original handle, even with the feature off.
     let replay = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k1", "m1", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
         .await
         .unwrap();
     assert_eq!(replay.turn_id, ack.turn_id);
     // New payload → feature_disabled.
     let err = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k9", "m9", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k9", "m9", None)
         .await
         .expect_err("new rounds need the feature");
     assert_eq!(err_code(&err), ContinuationErrorCode::FeatureDisabled);
@@ -565,7 +565,7 @@ async fn cancel_before_send_never_sends() {
     let gate = h.runtime.install_attach_gate().await;
     let ack = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k1", "m1", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
         .await
         .unwrap();
     // Drive is parked inside attach (preparing). Cancel now.
@@ -590,7 +590,7 @@ async fn cancel_running_goes_cancel_requested_then_unknown_blocks() {
     let h = harness().await;
     let ack = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k1", "m1", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
         .await
         .unwrap();
     wait_for_state(&h.coordinator, h.parent, &ack.turn_id, &[TurnState::Running]).await;
@@ -618,7 +618,7 @@ async fn cancel_running_goes_cancel_requested_then_unknown_blocks() {
     // A blocked session admits nothing new.
     let err = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k2", "m2", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k2", "m2", None)
         .await
         .expect_err("blocked session");
     assert_eq!(err_code(&err), ContinuationErrorCode::SessionBlocked);
@@ -740,7 +740,7 @@ async fn storage_failure_at_dispatch_prevents_send_and_blocks() {
     let gate = h.runtime.install_attach_gate().await;
     let _ack = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k1", "m1", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
         .await
         .unwrap();
     // Wait until the drive is parked INSIDE attach (the accepted→preparing
@@ -784,7 +784,7 @@ async fn storage_failure_at_admission_admits_nothing() {
         .expect("drop turn table");
     let err = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k1", "m1", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
         .await
         .expect_err("admission must fail");
     // A dead store admits nothing — the honest error is storage_unavailable,
@@ -806,14 +806,14 @@ async fn cross_parent_access_is_opaque() {
     let foreign = VerifiedParent { conversation_id: 99 };
     let err = h
         .coordinator
-        .continue_turn(foreign, SOURCE_TASK, "k1", "m1", None)
+        .continue_turn(foreign, "foreign-conn", SOURCE_TASK, "k1", "m1", None)
         .await
         .expect_err("foreign parent");
     assert_eq!(err_code(&err), ContinuationErrorCode::NotFoundOrForbidden);
     // The real parent still works.
     let ack = h
         .coordinator
-        .continue_turn(h.parent, SOURCE_TASK, "k1", "m1", None)
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
         .await
         .unwrap();
     assert_eq!(ack.state, TurnState::Accepted);

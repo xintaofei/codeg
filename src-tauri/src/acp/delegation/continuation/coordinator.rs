@@ -41,6 +41,9 @@ pub struct VerifiedParent {
 struct ExecutionOwner {
     turn_id: String,
     execution_id: String,
+    /// The parent ACP connection that initiated the round — used to cascade
+    /// cancel when the parent goes away (never trusted from the wire).
+    parent_connection_id: String,
 }
 
 #[derive(Clone)]
@@ -138,6 +141,7 @@ impl ContinuationCoordinator {
     pub async fn continue_turn(
         &self,
         parent: VerifiedParent,
+        parent_connection_id: &str,
         source_task_id: &str,
         request_id: &str,
         message: &str,
@@ -342,9 +346,17 @@ impl ContinuationCoordinator {
         let execution_id = turn.execution_id.clone();
         let message_owned = message.to_string();
         let session_id_owned = session.id.clone();
+        let parent_conn_owned = parent_connection_id.to_string();
         tokio::spawn(async move {
             coordinator
-                .drive(turn_id, execution_id, session_id_owned, binding, message_owned)
+                .drive(
+                    turn_id,
+                    execution_id,
+                    session_id_owned,
+                    parent_conn_owned,
+                    binding,
+                    message_owned,
+                )
                 .await;
         });
 
@@ -360,6 +372,7 @@ impl ContinuationCoordinator {
         turn_id: String,
         execution_id: String,
         session_id: String,
+        parent_connection_id: String,
         binding: AttachTarget,
         message: String,
     ) {
@@ -409,6 +422,7 @@ impl ContinuationCoordinator {
             ExecutionOwner {
                 turn_id: turn_id.clone(),
                 execution_id: execution_id.clone(),
+                parent_connection_id,
             },
         );
         // Persist the diagnostic connection id (also what cancel uses to
@@ -759,7 +773,7 @@ impl ContinuationCoordinator {
     async fn blocked_probe(
         &self,
         turn: &crate::db::entities::collaboration_turn::Model,
-    ) -> Option<&'static str> {
+    ) -> Option<String> {
         let connection_id = turn.connection_id.as_deref()?;
         self.runtime.blocked_on(connection_id).await
     }
@@ -969,6 +983,102 @@ impl ContinuationCoordinator {
             });
         }
         Ok(Some(reports))
+    }
+
+    /// Parent connection went away (disconnect / teardown): cancel every
+    /// turn it owns and settle them canceled. The relationship survives in a
+    /// safe terminal state; nothing escapes the parent cleanup boundary.
+    pub async fn cancel_by_parent_connection(&self, parent_connection_id: &str) {
+        let owned: Vec<(String, String, String)> = {
+            let executions = self.executions.lock().await;
+            executions
+                .values()
+                .filter(|o| o.parent_connection_id == parent_connection_id)
+                .map(|o| (o.turn_id.clone(), o.execution_id.clone(), o.turn_id.clone()))
+                .collect()
+        };
+        for (turn_id, execution_id, _) in owned {
+            // Best-effort cancel of the in-flight agent turn, then settle:
+            // the parent is gone, so the round is over from the platform's
+            // point of view.
+            if let Some(connection_id) = self.connection_of_turn(&turn_id).await {
+                let _ = self.runtime.cancel(&connection_id).await;
+            }
+            let _ = collaboration_service::cas_turn_state(
+                &self.db.conn,
+                &turn_id,
+                Some(&execution_id),
+                &collaboration_service::ACTIVE_TURN_STATES,
+                "canceled",
+                false,
+            )
+            .await;
+            if let Some(connection_id) = self.connection_of_turn(&turn_id).await {
+                self.release_connection(&turn_id, &connection_id).await;
+            }
+            self.settle_notify.notify_waiters();
+        }
+    }
+
+    /// The session's active turn as a full report (`None` when idle) — the
+    /// read-only UI uses it to keep the live round visible across pagination.
+    pub async fn active_turn_of_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<TurnReport>, ContinuationError> {
+        let Some(active) = collaboration_service::active_turn(&self.db.conn, session_id)
+            .await
+            .map_err(|e| {
+                tracing::warn!("[continuation] active-turn lookup failed: {e}");
+                storage_unavailable()
+            })?
+        else {
+            return Ok(None);
+        };
+        let state = TurnState::parse(&active.state).unwrap_or(TurnState::OutcomeUnknown);
+        Ok(Some(TurnReport {
+            schema_version: CONTINUATION_SCHEMA_VERSION,
+            session_id: active.session_id,
+            turn_id: active.id,
+            source_task_id: String::new(), // caller joins via the session summary
+            ordinal: active.ordinal,
+            state,
+            message: active.message,
+            initiator_kind: active.initiator_kind,
+            initiator_parent_conversation_id: active.initiator_parent_conversation_id,
+            result_text: active.result_text,
+            text_truncated: active.text_truncated,
+            error_code: active.error_code,
+            error_message: active.error_message,
+            blocked_on: None,
+            created_at: active.created_at,
+            started_at: active.started_at,
+            finished_at: active.finished_at,
+            version: active.version,
+        }))
+    }
+
+    /// The collaboration session holding this child conversation, if any
+    /// (lifecycle routing consults it to quarantine stale events for
+    /// reserved children).
+    pub async fn session_summary_for_child(
+        &self,
+        child_conversation_id: i32,
+    ) -> Option<SessionSummary> {
+        use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+        let row = collaboration_session::Entity::find()
+            .filter(collaboration_session::Column::ChildConversationId.eq(child_conversation_id))
+            .one(&self.db.conn)
+            .await
+            .ok()??;
+        Some(SessionSummary {
+            schema_version: CONTINUATION_SCHEMA_VERSION,
+            session_id: row.id,
+            source_task_id: row.source_task_id,
+            child_conversation_id: row.child_conversation_id,
+            state: CollaborationSessionState::parse(&row.state)
+                .unwrap_or(CollaborationSessionState::Open),
+        })
     }
 
     /// The reservation check ordinary write paths consult (Task 4 wiring):

@@ -6,6 +6,7 @@ pub mod background;
 pub mod backup;
 pub mod canvas;
 pub mod chat_authoring;
+pub mod collaboration;
 pub mod chat_channel;
 pub mod conversations;
 pub mod custom_agents;

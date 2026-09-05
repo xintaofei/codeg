@@ -18,10 +18,12 @@ use tokio::sync::RwLock;
 use crate::acp::delegation::broker::{DelegationBroker, StatusWait};
 use crate::acp::delegation::transport::{
     read_frame, write_frame, BrokerAskRequest, BrokerCancelRequest, BrokerCancelTaskRequest,
-    BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerMessage, BrokerRequest,
-    BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerResponse,
-    BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
-    BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
+    BrokerCancelSessionTurnRequest, BrokerCloseSessionRequest, BrokerCommitFeedbackRequest,
+    BrokerContinueWithSessionRequest, BrokerCreateAutomationRequest,
+    BrokerCreateWorkTaskRequest, BrokerFeedbackRequest, BrokerGetSessionTurnStatusRequest,
+    BrokerMessage, BrokerRequest, BrokerResponse, BrokerResumeTaskRequest,
+    BrokerSessionRequest, BrokerStatusRequest, BrokerTaskCompleteRequest,
+    BrokerTaskProgressRequest,
 };
 use crate::acp::delegation::types::{
     DelegationRequest, DelegationTaskReport, ResumeDelegationRequest, TaskStatus,
@@ -110,6 +112,12 @@ pub struct DelegationListener {
     /// feature flags at call time, so flipping the setting off stops writes
     /// from sessions that were launched while it was on.
     pub authoring: Arc<dyn ChatAuthoringAccess>,
+    /// The collaboration-turn coordinator for the continuation tools
+    /// (`continue_with_session` / `get_session_turn_status` /
+    /// `cancel_session_turn` / `close_session`). `None` on builds/tests that
+    /// don't wire the continuable-delegation MVP; those arms then answer the
+    /// not-found-or-forbidden envelope instead (no feature leak, no crash).
+    pub collaboration: Option<Arc<crate::acp::delegation::continuation::ContinuationCoordinator>>,
 }
 
 impl DelegationListener {
@@ -123,6 +131,9 @@ impl DelegationListener {
         session_info: Arc<dyn SessionInfoAccess>,
         tasks: Arc<dyn WorkTaskToolAccess>,
         authoring: Arc<dyn ChatAuthoringAccess>,
+        collaboration: Option<
+            Arc<crate::acp::delegation::continuation::ContinuationCoordinator>,
+        >,
     ) -> Arc<Self> {
         Arc::new(Self {
             broker,
@@ -133,6 +144,7 @@ impl DelegationListener {
             session_info,
             tasks,
             authoring,
+            collaboration,
         })
     }
 
@@ -355,6 +367,39 @@ impl DelegationListener {
                     outcome: Value::Null,
                 }
             }
+            BrokerMessage::ContinueWithSession(req) => {
+                // `get_session_turn_status` may bounded-wait; a cancel of the
+                // tool call drops the companion's socket, so race the wait
+                // against peer-close like `Status` does.
+                let fut = self.process_continue_with_session(req);
+                tokio::pin!(fut);
+                let mut probe = [0u8; 1];
+                let resp = tokio::select! {
+                    biased;
+                    r = &mut fut => continuation_response(r)?,
+                    _ = conn.read(&mut probe) => return Ok(()),
+                };
+                write_frame(conn, &resp).await?;
+                return Ok(());
+            }
+            BrokerMessage::GetSessionTurnStatus(req) => {
+                let fut = self.process_get_session_turn_status(req);
+                tokio::pin!(fut);
+                let mut probe = [0u8; 1];
+                let resp = tokio::select! {
+                    biased;
+                    r = &mut fut => continuation_response(r)?,
+                    _ = conn.read(&mut probe) => return Ok(()),
+                };
+                write_frame(conn, &resp).await?;
+                return Ok(());
+            }
+            BrokerMessage::CancelSessionTurn(req) => {
+                continuation_response(self.process_cancel_session_turn(req).await)?
+            }
+            BrokerMessage::CloseSession(req) => {
+                continuation_response(self.process_close_session(req).await)?
+            }
         };
         write_frame(conn, &resp).await?;
         Ok(())
@@ -512,6 +557,139 @@ impl DelegationListener {
     async fn feedback_target(&self, req: &BrokerFeedbackRequest) -> Option<String> {
         let entry = self.tokens.lookup(&req.token).await?;
         Some(entry.parent_connection_id)
+    }
+
+    // -----------------------------------------------------------------------
+    // Continuation arms (continuable-delegation MVP)
+    //
+    // Identity: the per-launch token resolves the parent ACP connection, and
+    // the listener resolves that connection's CURRENT persisted conversation
+    // via `ParentSessionLookup` — never an LLM-supplied parent id. Every
+    // rejection is a serialized ContinuationError inside a successful tool
+    // result; unknown token/parent yields not_found_or_forbidden with no
+    // existence leak.
+    // -----------------------------------------------------------------------
+
+    /// Resolve the trusted (parent connection, parent conversation) pair.
+    async fn continuation_target(
+        &self,
+        token: &str,
+    ) -> Result<
+        (
+            String,
+            crate::acp::delegation::continuation::VerifiedParent,
+        ),
+        crate::acp::delegation::continuation::ContinuationError,
+    > {
+        use crate::acp::delegation::continuation::{
+            ContinuationError, ContinuationErrorCode, VerifiedParent,
+        };
+        let Some(entry) = self.tokens.lookup(token).await else {
+            return Err(ContinuationError::new(
+                ContinuationErrorCode::NotFoundOrForbidden,
+                "no continuable source under this session",
+            ));
+        };
+        let Some(conversation_id) = self
+            .parent_lookup
+            .current_conversation_id(&entry.parent_connection_id)
+            .await
+        else {
+            return Err(ContinuationError::new(
+                ContinuationErrorCode::NotFoundOrForbidden,
+                "no continuable source under this session",
+            ));
+        };
+        Ok((
+            entry.parent_connection_id,
+            VerifiedParent {
+                conversation_id,
+            },
+        ))
+    }
+
+    fn coordinator_or_unavailable(
+        &self,
+    ) -> Result<
+        Arc<crate::acp::delegation::continuation::ContinuationCoordinator>,
+        crate::acp::delegation::continuation::ContinuationError,
+    > {
+        use crate::acp::delegation::continuation::{
+            ContinuationError, ContinuationErrorCode,
+        };
+        self.collaboration.clone().ok_or_else(|| {
+            ContinuationError::new(
+                ContinuationErrorCode::NotFoundOrForbidden,
+                "no continuable source under this session",
+            )
+        })
+    }
+
+    async fn process_continue_with_session(
+        &self,
+        req: BrokerContinueWithSessionRequest,
+    ) -> Result<serde_json::Value, crate::acp::delegation::continuation::ContinuationError> {
+        use crate::acp::delegation::continuation::ContinuationError;
+        let coordinator = self.coordinator_or_unavailable()?;
+        let (parent_conn, parent) = self.continuation_target(&req.token).await?;
+        let ack = coordinator
+            .continue_turn(
+                parent,
+                &parent_conn,
+                &req.source_task_id,
+                &req.request_id,
+                &req.message,
+                None,
+            )
+            .await?;
+        serde_json::to_value(ack).map_err(|e| {
+            ContinuationError::new(
+                crate::acp::delegation::continuation::ContinuationErrorCode::StorageUnavailable,
+                format!("could not serialize ack: {e}"),
+            )
+        })
+    }
+
+    async fn process_get_session_turn_status(
+        &self,
+        req: BrokerGetSessionTurnStatusRequest,
+    ) -> Result<serde_json::Value, crate::acp::delegation::continuation::ContinuationError> {
+        let coordinator = self.coordinator_or_unavailable()?;
+        let (_, parent) = self.continuation_target(&req.token).await?;
+        let report = coordinator.get_turn(parent, &req.turn_id, req.wait_ms).await?;
+        serde_json::to_value(report)
+            .map_err(|e| crate::acp::delegation::continuation::ContinuationError::new(
+                crate::acp::delegation::continuation::ContinuationErrorCode::StorageUnavailable,
+                format!("could not serialize report: {e}"),
+            ))
+    }
+
+    async fn process_cancel_session_turn(
+        &self,
+        req: BrokerCancelSessionTurnRequest,
+    ) -> Result<serde_json::Value, crate::acp::delegation::continuation::ContinuationError> {
+        let coordinator = self.coordinator_or_unavailable()?;
+        let (_, parent) = self.continuation_target(&req.token).await?;
+        let report = coordinator.cancel_turn(parent, &req.turn_id).await?;
+        serde_json::to_value(report)
+            .map_err(|e| crate::acp::delegation::continuation::ContinuationError::new(
+                crate::acp::delegation::continuation::ContinuationErrorCode::StorageUnavailable,
+                format!("could not serialize report: {e}"),
+            ))
+    }
+
+    async fn process_close_session(
+        &self,
+        req: BrokerCloseSessionRequest,
+    ) -> Result<serde_json::Value, crate::acp::delegation::continuation::ContinuationError> {
+        let coordinator = self.coordinator_or_unavailable()?;
+        let (_, parent) = self.continuation_target(&req.token).await?;
+        let summary = coordinator.close_session(parent, &req.session_id).await?;
+        serde_json::to_value(summary)
+            .map_err(|e| crate::acp::delegation::continuation::ContinuationError::new(
+                crate::acp::delegation::continuation::ContinuationErrorCode::StorageUnavailable,
+                format!("could not serialize summary: {e}"),
+            ))
     }
 
     /// Validate the token and resolve the `ask_user_question` target: the
@@ -768,6 +946,22 @@ fn session_response(info: SessionInfo) -> std::io::Result<BrokerResponse> {
 /// Serialize a [`TaskReportAck`] into a [`BrokerResponse`] for the
 /// `TaskProgress` / `TaskComplete` arms — the companion renders it into the
 /// tool result.
+/// Serialize a continuation arm result: `Ok(dto)` renders as the schema_version=1
+/// wire DTO; `Err(ContinuationError)` renders as `{ "error": ... }` — both are
+/// SUCCESSFUL tool results (`isError` flags the latter), keeping business
+/// rejections out of the JSON-RPC error channel.
+fn continuation_response(
+    result: Result<serde_json::Value, crate::acp::delegation::continuation::ContinuationError>,
+) -> std::io::Result<BrokerResponse> {
+    let outcome = match result {
+        Ok(dto) => dto,
+        Err(e) => serde_json::json!({ "error": e }),
+    };
+    serde_json::to_vec(&outcome)
+        .map(|_| BrokerResponse { outcome })
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}")))
+}
+
 fn task_ack_response(ack: TaskReportAck) -> std::io::Result<BrokerResponse> {
     Ok(BrokerResponse {
         outcome: serde_json::to_value(&ack).map_err(|e| {
@@ -1099,6 +1293,7 @@ mod tests {
             Arc::new(StubSessionInfo::default()),
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
+            None,
         )
     }
 
@@ -1121,6 +1316,7 @@ mod tests {
             Arc::new(StubSessionInfo::default()),
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
+            None,
         )
     }
 
@@ -1144,6 +1340,7 @@ mod tests {
             Arc::new(StubSessionInfo::default()),
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
+            None,
         )
     }
 
@@ -1166,6 +1363,7 @@ mod tests {
             session_info,
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
+            None,
         )
     }
 
@@ -1190,6 +1388,7 @@ mod tests {
             Arc::new(StubSessionInfo::default()),
             Arc::new(StubTaskTools),
             authoring,
+            None,
         )
     }
 

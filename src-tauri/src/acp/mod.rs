@@ -37,7 +37,7 @@ pub mod work_task_tools;
 
 pub use idle_sweep::{idle_sweep_task, idle_timeout_from_env, SWEEP_INTERVAL_SECS};
 pub use internal_bus::{EventBusMetrics, EventBusMetricsSnapshot, InternalEventBus};
-pub use lifecycle::lifecycle_subscriber_task;
+pub use lifecycle::{lifecycle_subscriber_task, lifecycle_subscriber_task_with_continuation};
 pub use session_state::{LiveSessionSnapshot, SessionState};
 // Re-export the inner types of LiveSessionSnapshot for downstream consumers; not all are
 // directly named in Rust today (they ride along through the snapshot struct), so silence

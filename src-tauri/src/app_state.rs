@@ -37,6 +37,10 @@ pub struct AppState {
     /// requests here. v1 uses the default `DelegationConfig`; settings UI
     /// hot-swaps via `delegation_broker.set_config`.
     pub delegation_broker: Arc<DelegationBroker>,
+    /// Collaboration-turn coordinator for the continuable-delegation MVP
+    /// (v2 design). Default OFF; the settings command flips it at runtime.
+    pub continuation_coordinator:
+        Arc<crate::acp::delegation::continuation::ContinuationCoordinator>,
     /// Per-launch ephemeral tokens identifying parent ACP connections.
     /// Registered when `load_mcp_servers_for_agent` injects the
     /// `codeg-mcp` MCP entry, revoked on parent teardown.
@@ -104,11 +108,9 @@ pub fn default_chat_channel_manager() -> ChatChannelManager {
 /// The listener task is _not_ spawned here — callers spawn it after they
 /// own an `Arc<AppState>` (or the relevant pieces) so the listener can
 /// borrow the long-lived state without circular Arc shenanigans.
-pub fn build_delegation_stack(
-    connection_manager: &ConnectionManager,
-    db_conn: sea_orm::DatabaseConnection,
-    data_dir: PathBuf,
-) -> (
+/// The tuple `build_delegation_stack` returns — wired once, destructured by
+/// each runtime entry point.
+pub type DelegationStack = (
     Arc<DelegationBroker>,
     Arc<TokenRegistry>,
     PathBuf,
@@ -116,7 +118,14 @@ pub fn build_delegation_stack(
     crate::acp::question::QuestionRuntimeConfig,
     crate::acp::session_info::SessionInfoRuntimeConfig,
     crate::acp::chat_authoring::ChatAuthoringRuntimeConfig,
-) {
+    Arc<crate::acp::delegation::continuation::ContinuationCoordinator>,
+);
+
+pub fn build_delegation_stack(
+    connection_manager: &ConnectionManager,
+    db_conn: sea_orm::DatabaseConnection,
+    data_dir: PathBuf,
+) -> DelegationStack {
     use crate::acp::connection::DelegationInjection;
     use crate::acp::delegation::broker::{
         ChildStatusLookup, ConversationDepthLookup, DbChildStatusLookup, DbDelegationOutcomeStore,
@@ -164,7 +173,16 @@ pub fn build_delegation_stack(
         DelegationBroker::with_writers(spawner, depth_lookup, meta_writer, event_emitter)
             .with_status_lookup(status_lookup)
             .with_live_reply_lookup(live_reply_lookup)
-            .with_outcome_store(outcome_store),
+            .with_outcome_store(outcome_store.clone()),
+    );
+    let continuation_coordinator = Arc::new(
+        crate::acp::delegation::continuation::ContinuationCoordinator::new(
+            Arc::new(AppDatabase {
+                conn: db_conn.clone(),
+            }),
+            Arc::new(crate::acp::delegation::continuation::NoopRuntime),
+            outcome_store,
+        ),
     );
     let tokens = Arc::new(TokenRegistry::default());
     let socket_path = default_socket_path(&std::env::temp_dir());
@@ -177,6 +195,7 @@ pub fn build_delegation_stack(
     // without an extra parameter at every call site.
     connection_manager.install_delegation(DelegationInjection {
         broker: broker.clone(),
+        collaboration: Some(continuation_coordinator.clone()),
         tokens: tokens.clone(),
         socket_path: socket_path.clone(),
         agent_availability,
@@ -196,7 +215,16 @@ pub fn build_delegation_stack(
         }) as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
     });
 
-    (broker, tokens, socket_path, feedback, ask, sessions, authoring)
+    (
+        broker,
+        tokens,
+        socket_path,
+        feedback,
+        ask,
+        sessions,
+        authoring,
+        continuation_coordinator,
+    )
 }
 
 impl AppState {
@@ -225,6 +253,7 @@ impl AppState {
             question_config,
             session_info_config,
             chat_authoring_config,
+            continuation_coordinator,
         ) = build_delegation_stack(&connection_manager, db.conn.clone(), data_dir.clone());
 
         Self {
@@ -244,6 +273,7 @@ impl AppState {
             ),
             pet_state: crate::pet_state_mapper::new_pet_state_handle(),
             delegation_broker,
+            continuation_coordinator,
             delegation_tokens,
             delegation_socket_path,
             feedback_config,

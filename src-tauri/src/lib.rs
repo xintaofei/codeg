@@ -66,6 +66,7 @@ mod tauri_app {
         automation as automation_commands, background as background_commands, backup,
         canvas as canvas_commands,
         chat_authoring as chat_authoring_commands, chat_channel as chat_channel_commands,
+        collaboration as collaboration_commands,
         conversations,
         custom_skills as custom_skills_commands, delegation as delegation_commands,
         experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
@@ -763,12 +764,14 @@ mod tauri_app {
                         question_config,
                         session_info_config,
                         chat_authoring_config,
+                        continuation_coordinator,
                     ) = crate::app_state::build_delegation_stack(
                         &cm_state,
                         db_conn.clone(),
                         effective_data_dir.clone(),
                     );
                     app.manage(broker.clone());
+                    app.manage(continuation_coordinator.clone());
                     app.manage(tokens.clone());
                     app.manage(feedback_config.clone());
                     app.manage(question_config.clone());
@@ -852,7 +855,20 @@ mod tauri_app {
                                 chat_authoring_config.clone(),
                             ),
                         ),
+                        // The collaboration arms share the managed
+                        // coordinator (Task 4 dual-mode wiring).
+                        Some(continuation_coordinator.clone()),
                     );
+                    // Startup recovery BEFORE the listener accepts (v2 design
+                    // §5.2: recovery precedes admission).
+                    {
+                        let coordinator = continuation_coordinator.clone();
+                        tauri::async_runtime::block_on(async move {
+                            if let Err(e) = coordinator.recover_on_startup().await {
+                                tracing::warn!("[continuation] startup recovery failed: {e}");
+                            }
+                        });
+                    }
                     tauri::async_runtime::spawn(async move {
                         if let Err(e) = listener.run(socket_path).await {
                             tracing::info!("[delegation] listener exited: {e}");
@@ -874,12 +890,21 @@ mod tauri_app {
                         .state::<std::sync::Arc<crate::acp::InternalEventBus>>()
                         .inner()
                         .clone();
-                    tauri::async_runtime::spawn(crate::acp::lifecycle_subscriber_task(
-                        db_conn,
-                        cm,
-                        bus,
-                        Some(broker_for_lifecycle),
-                    ));
+                    let continuation_for_lifecycle = app
+                        .state::<std::sync::Arc<
+                            crate::acp::delegation::continuation::ContinuationCoordinator,
+                        >>()
+                        .inner()
+                        .clone();
+                    tauri::async_runtime::spawn(
+                        crate::acp::lifecycle_subscriber_task_with_continuation(
+                            db_conn,
+                            cm,
+                            bus,
+                            Some(broker_for_lifecycle),
+                            Some(continuation_for_lifecycle),
+                        ),
+                    );
                 }
 
                 match tauri::async_runtime::block_on(web::load_web_service_config(&db.conn)) {
@@ -1379,6 +1404,9 @@ mod tauri_app {
                 logging_commands::open_logs_dir,
                 delegation_commands::get_delegation_settings,
                 delegation_commands::set_delegation_settings,
+                delegation_commands::get_continuation_settings,
+                delegation_commands::set_continuation_settings,
+                collaboration_commands::get_collaboration_session,
                 feedback_commands::get_feedback_settings,
                 feedback_commands::set_feedback_settings,
                 feedback_commands::submit_session_feedback,

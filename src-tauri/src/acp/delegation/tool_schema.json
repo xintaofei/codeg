@@ -4,7 +4,10 @@
     "description": "Hand off a self-contained sub-task to a separate local AI agent that runs in its own session. ASYNCHRONOUS: returns a task_id right away and the sub-agent keeps working in the background — this call never blocks. So you can fan out several delegations at once and keep working, then collect the results with get_delegation_status by passing the task_ids array (one id to poll a single task, or many at once to poll the whole fan-out in one call) — or stop one early with cancel_delegation(task_id). The sub-agent CANNOT see this conversation, your open files, or earlier turns — it starts cold, so `task` must carry everything it needs. Best for independent, parallelizable work you can describe up front; not for steps that need your ongoing back-and-forth. RECOGNIZING AN EXPLICIT DELEGATION REQUEST: the user can name a sub-agent directly in their message — it appears as `@AgentName` or as a Markdown link `[@AgentName](codeg://agent/<agent_type>)`. Such a mention IS an explicit instruction to delegate the associated work to that agent, even when the user never names this tool. If the message names several agents, make one call per agent, each carrying that agent's slice of the work.",
     "inputSchema": {
       "type": "object",
-      "required": ["agent_type", "task"],
+      "required": [
+        "agent_type",
+        "task"
+      ],
       "properties": {
         "agent_type": {
           "type": "string",
@@ -43,11 +46,15 @@
     "description": "Collect delegated task results — or check on them — by the task_ids from delegate_to_agent. Pass a single id in the array to poll one task, or many at once to poll a whole fan-out in a single call. The response is ALWAYS a JSON object {\"tasks\":[...]} with one entry per id, in the order you asked — one entry for a single id, several for a fan-out; every entry carries that task's task_id and status, so you can always tell which task it is and where it stands. The wait_ms argument picks the mode: omit it for a non-blocking snapshot (poll), or pass wait_ms to wait — wait_ms>0 blocks up to that many ms (capped at 60000; re-call to keep waiting), wait_ms=0 blocks with no timeout for as long as the sub-agent runs. When polling several, the wait returns as soon as ANY requested task reaches a terminal state, so re-call to keep collecting the rest. When you just need the results, prefer blocking over repeated polling. Each task reports its current state — running, or a terminal completed / failed / canceled (or unknown if the id isn't recognized); a finished task includes its full result text. A wait ALSO returns early when a sub-agent becomes blocked on the user: that entry stays status \"running\" but carries blocked_on, meaning the sub-agent is parked on a permission / question / plan approval in Codeg and will not progress until a human answers. Tell the user about it — that is the one case where speaking up mid-wait is right — then wait again; each distinct prompt wakes the wait exactly once, so re-calling is safe and will not spin. While tasks are still running and you are simply waiting, do NOT emit any user-facing message between calls — just call again silently. Skip status narration like \"still running\", \"not returned yet\", or \"continuing to wait\"; it fragments the conversation. Speak to the user only when there is a terminal result to report, a task is blocked_on them, or something genuinely needs their input.",
     "inputSchema": {
       "type": "object",
-      "required": ["task_ids"],
+      "required": [
+        "task_ids"
+      ],
       "properties": {
         "task_ids": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "minItems": 1,
           "description": "One or more task_ids returned by delegate_to_agent — pass a single id to poll one task, or several to poll them together in one call. The response is always a JSON object {\"tasks\":[...]} with one entry per id (in this order) — one entry for a single id — and each entry carries that task's task_id and status. With wait_ms set, the call returns as soon as ANY of these tasks reaches a terminal state, or becomes blocked on you (status stays \"running\", plus a blocked_on field)."
         },
@@ -64,7 +71,9 @@
     "description": "Stop a running delegated task by its task_id and tear down its sub-agent — use this only when you no longer want the result. Don't cancel just because a task is taking a while: substantial work can legitimately run for a long time, so prefer waiting on it (get_delegation_status with wait_ms) over canceling. If the task has already finished, nothing is canceled and its final result is returned instead.",
     "inputSchema": {
       "type": "object",
-      "required": ["task_id"],
+      "required": [
+        "task_id"
+      ],
       "properties": {
         "task_id": {
           "type": "string",
@@ -78,7 +87,9 @@
     "description": "Resume a delegated task that was INTERRUPTED — canceled, or cut off when a session/app terminated unexpectedly — so its sub-agent picks the ORIGINAL task back up in its own session with all prior context and work intact, under the SAME task_id (keep collecting it with get_delegation_status, or stop it again with cancel_delegation). STRICT SCOPE: this tool ONLY revives interrupted work; it takes no task text and must NOT be used to iterate on, extend, retry, or redo a task. A task that is still running, or that already finished on its own (completed or failed), is refused with error_code \"not_resumable\" and its actual status — for follow-up or retry work, start a fresh delegate_to_agent call instead. The optional `reason` is context about WHY the run is being resumed (e.g. \"the app was killed mid-run\"), passed to the sub-agent as interruption context — never new instructions.",
     "inputSchema": {
       "type": "object",
-      "required": ["task_id"],
+      "required": [
+        "task_id"
+      ],
       "properties": {
         "task_id": {
           "type": "string",
@@ -104,7 +115,9 @@
     "description": "Ask the user one or more multiple-choice questions and BLOCK until they answer. The questions render as interactive cards above the user's input box; this call returns only once the user submits their choices (or dismisses the card). Use ONLY when you are blocked on a decision that is genuinely the user's to make — one you cannot resolve from the request, the code, or sensible defaults (e.g. which approach, which format, which library, which of several files). Do NOT use it to ask 'should I proceed?' or to confirm an obvious default, and do NOT use it for open-ended questions that aren't a small set of discrete choices. The user can always pick 'Other' and type a custom answer, so don't add your own 'Other' option. If you want to recommend a choice, put it first and append ' (Recommended)' to its label. Prefer ONE call with a few related questions over many sequential calls.",
     "inputSchema": {
       "type": "object",
-      "required": ["questions"],
+      "required": [
+        "questions"
+      ],
       "properties": {
         "questions": {
           "type": "array",
@@ -113,7 +126,12 @@
           "description": "1-4 questions to ask in this single call.",
           "items": {
             "type": "object",
-            "required": ["question", "header", "multiSelect", "options"],
+            "required": [
+              "question",
+              "header",
+              "multiSelect",
+              "options"
+            ],
             "properties": {
               "question": {
                 "type": "string",
@@ -135,7 +153,10 @@
                 "description": "2-4 selectable choices.",
                 "items": {
                   "type": "object",
-                  "required": ["label", "description"],
+                  "required": [
+                    "label",
+                    "description"
+                  ],
                   "properties": {
                     "label": {
                       "type": "string",
@@ -159,7 +180,9 @@
     "description": "Look up a session/conversation the user referenced in their message and return what it is: its title, which agent ran it, its status, workspace folder, git branch, model, message count, and token-usage stats — and, on request, a compact view of its most recent messages. RECOGNIZING A MENTIONED SESSION: the user can @-mention a past session directly in their message — it appears as a Markdown link `[Session title](codeg://session/<number>)`, whose text is that session's title and whose `<number>` is codeg's internal conversation id (e.g. `[Fix auth](codeg://session/214)` is the session titled 'Fix auth'). Such a mention IS the user explicitly pointing you at that session, even when they never name this tool — call it whenever what that session is about or what happened in it matters to the request (e.g. to continue its work, build on its results, answer questions about it, or summarize it). If the message mentions several sessions, make one call per session. Pass the NUMBER from the reference as `session_id` (it is codeg's internal conversation id, NOT the agent's own session id). The result is read-only and never modifies the session. A session that no longer exists returns a `found: false` result you can act on — it is not an error.",
     "inputSchema": {
       "type": "object",
-      "required": ["session_id"],
+      "required": [
+        "session_id"
+      ],
       "properties": {
         "session_id": {
           "type": "integer",
@@ -178,7 +201,10 @@
     "description": "Save a codeg Automation: a reusable job — a prompt plus a target project — that codeg runs on a cron schedule (or on demand) without anyone present. Use it when the user asks for work that should REPEAT or happen at a TIME rather than right now: 'every morning', 'each Monday', 'nightly', 'every 30 minutes', 'before standup', 'set up a recurring …'. Do NOT use it for work the user wants done in this conversation — just do that work. Each run starts a fresh headless session in its own worktree with no memory of this chat, so `prompt` must be completely self-contained: state the goal, the relevant paths, and what a finished run looks like. Creating an automation does not run it now; the tool returns the id and the next fire time so you can tell the user when it will first go off. The user can edit, disable, run, or delete it on the Automations page.",
     "inputSchema": {
       "type": "object",
-      "required": ["name", "prompt"],
+      "required": [
+        "name",
+        "prompt"
+      ],
       "properties": {
         "name": {
           "type": "string",
@@ -198,7 +224,10 @@
         },
         "action": {
           "type": "string",
-          "enum": ["launch_session", "enqueue_task"],
+          "enum": [
+            "launch_session",
+            "enqueue_task"
+          ],
           "description": "What a fire does. 'launch_session' (default) runs the prompt immediately in a headless agent session. 'enqueue_task' instead drops a card on the user's to-dos for the board's queue to pick up — use it when the user wants scheduled work to land somewhere they review rather than run unattended."
         },
         "agent_type": {
@@ -221,7 +250,10 @@
     "description": "Queue a card on codeg's to-dos. A task is a unit of work an agent later executes on its own branch/worktree, then hands back for the user to review and merge. Use it when the user wants work PARKED rather than done now — 'add a task to…', 'put this on the board', 'we should also fix X later' — or when you are splitting a large request into reviewable pieces and the user asked for that. Do NOT use it to do the thing the user just asked you to do in this conversation, and do NOT queue a task per trivial step. The executing agent starts cold with no view of this chat, so `prompt` must carry the full briefing. The tool returns the task id; the user tracks it in their to-dos.",
     "inputSchema": {
       "type": "object",
-      "required": ["title", "prompt"],
+      "required": [
+        "title",
+        "prompt"
+      ],
       "properties": {
         "title": {
           "type": "string",
@@ -247,7 +279,9 @@
     "description": "Report a short progress milestone for the work task you are executing. It shows up on the task's board card and timeline in real time, so the user can follow along without opening the session. Call it at meaningful checkpoints — finished exploring, tests passing, starting the refactor — not for every small step. Fire-and-forget: it never blocks your work and returns immediately.",
     "inputSchema": {
       "type": "object",
-      "required": ["message"],
+      "required": [
+        "message"
+      ],
       "properties": {
         "message": {
           "type": "string",
@@ -261,11 +295,17 @@
     "description": "Report the final outcome of the work task you are executing. Call it once, just before you end your reply. Pass verdict 'success' when the change is done and ready to review, 'needs_review' when it works but a human should double-check something specific (say what in the summary), or 'blocked' when you could not complete the task (the summary must say why). The task settles when your turn ends: success and needs_review send it to review, blocked marks it failed. If you never call this tool the task still settles normally from your turn's end.",
     "inputSchema": {
       "type": "object",
-      "required": ["verdict"],
+      "required": [
+        "verdict"
+      ],
       "properties": {
         "verdict": {
           "type": "string",
-          "enum": ["success", "needs_review", "blocked"],
+          "enum": [
+            "success",
+            "needs_review",
+            "blocked"
+          ],
           "description": "How the task ended from your point of view."
         },
         "summary": {
@@ -273,6 +313,90 @@
           "description": "Short result summary shown on the task card: what changed, and anything the reviewer should look at."
         }
       }
+    }
+  },
+  {
+    "name": "continue_with_session",
+    "description": "Start a rework round on a PREVIOUSLY COMPLETED delegation task you own. This is an explicit rework of an existing source: the rework `message` is delivered to the SAME sub-agent session (its prior context is restored), NOT a fresh session. `request_id` is your idempotency key — retrying with the same request_id and message returns the existing turn handle instead of starting again. The ack only means the round was ACCEPTED; it is NOT the result. Poll the returned turn_id with get_session_turn_status. Only tasks that completed successfully (and expose no `continuable` hint via get_delegation_status) are valid sources; resume_delegation remains the tool for INTERRUPTED (canceled) tasks.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source_task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "source_task_id",
+        "request_id",
+        "message"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_session_turn_status",
+    "description": "Report the state of one rework turn created by continue_with_session. `wait_ms` (0-30000, default 0) bounds how long the call may wait for a terminal state; a non-terminal report means YOU decide whether to poll again. The report includes the turn's message, state, result text (with a truncation flag) or error, and who initiated it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "turn_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "wait_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30000
+        }
+      },
+      "required": [
+        "turn_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "cancel_session_turn",
+    "description": "Cancel one rework turn. Before the rework prompt was sent the turn is simply canceled; after it was sent the agent is asked to stop and the turn reports cancel_requested until it settles. Always re-query with get_session_turn_status to learn the final state.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "turn_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "turn_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "close_session",
+    "description": "Explicitly end the collaboration session for a delegation source. History stays readable, but no further rework rounds can start on that source, and the child session returns to normal chat use. Fails while a turn is still active — cancel and query it first.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "additionalProperties": false
     }
   }
 ]
