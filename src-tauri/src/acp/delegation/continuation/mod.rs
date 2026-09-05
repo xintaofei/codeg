@@ -10,6 +10,10 @@
 //! typed verdict delivered AFTER recovery, replay drain, and successful
 //! config application, and any failure is reported instead of papered over.
 
+pub mod coordinator;
+pub mod runtime;
 pub mod types;
 
+pub use coordinator::*;
+pub use runtime::*;
 pub use types::*;

@@ -4,6 +4,8 @@ pub mod automation;
 pub mod automation_run;
 pub mod canvas_node;
 pub mod chat_channel;
+pub mod collaboration_session;
+pub mod collaboration_turn;
 pub mod chat_channel_message_log;
 pub mod chat_channel_sender_context;
 pub mod chat_channel_thread_binding;
