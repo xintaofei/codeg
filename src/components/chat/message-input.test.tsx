@@ -826,6 +826,294 @@ describe("MessageInput collapsed selectors popover", () => {
   })
 })
 
+// The model picker's free-text escape hatch: a brand-new model is often live on
+// the wire before the agent's curated list catches up, so every model-picker
+// surface offers a trailing "Use custom model ID..." row that opens a small
+// entry dialog. The typed id then takes the exact same
+// `onConfigOptionChange` path as picking an advertised option.
+describe("MessageInput custom model id entry", () => {
+  afterEach(() => cleanup())
+
+  const LONG_MODEL_OPTION: SessionConfigOptionInfo = {
+    id: "model",
+    name: "Model",
+    description: null,
+    category: null,
+    kind: {
+      type: "select",
+      current_value: "openrouter/model-0",
+      options: Array.from({ length: 30 }, (_, i) => ({
+        value: `openrouter/model-${i}`,
+        name: `openrouter/model-${i}`,
+        description: null,
+      })),
+      groups: [],
+    },
+  }
+
+  it("routes a typed id from the inline dropdown through the option path", async () => {
+    const user = userEvent.setup()
+    const onConfigOptionChange = vi.fn()
+    const { container } = renderInput({
+      configOptions: [MODEL_OPTION],
+      onConfigOptionChange,
+    })
+    await waitFor(() =>
+      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+
+    await user.click(screen.getByRole("button", { name: "Model: Default" }))
+    await user.click(
+      await screen.findByRole("menuitem", { name: MSGS.customModelEntry })
+    )
+
+    const dialog = await screen.findByRole("dialog", {
+      name: MSGS.customModelTitle,
+    })
+    await user.type(
+      within(dialog).getByLabelText(MSGS.customModelInputLabel),
+      "claude-fable-5-1"
+    )
+    await user.click(
+      within(dialog).getByRole("button", { name: MSGS.customModelApply })
+    )
+
+    expect(onConfigOptionChange).toHaveBeenCalledWith(
+      "model",
+      "claude-fable-5-1"
+    )
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: MSGS.customModelTitle })
+      ).toBeNull()
+    )
+  })
+
+  it("submits on Enter with the id trimmed, and blocks blank ids", async () => {
+    const user = userEvent.setup()
+    const onConfigOptionChange = vi.fn()
+    const { container } = renderInput({
+      configOptions: [MODEL_OPTION],
+      onConfigOptionChange,
+    })
+    await waitFor(() =>
+      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+
+    await user.click(screen.getByRole("button", { name: "Model: Default" }))
+    await user.click(
+      await screen.findByRole("menuitem", { name: MSGS.customModelEntry })
+    )
+    const dialog = await screen.findByRole("dialog", {
+      name: MSGS.customModelTitle,
+    })
+    const input = within(dialog).getByLabelText(MSGS.customModelInputLabel)
+    const apply = within(dialog).getByRole("button", {
+      name: MSGS.customModelApply,
+    })
+
+    // Whitespace is not an id: the submit stays disabled and Enter is inert.
+    expect(apply).toBeDisabled()
+    await user.type(input, "   ")
+    expect(apply).toBeDisabled()
+    await user.keyboard("{Enter}")
+    expect(onConfigOptionChange).not.toHaveBeenCalled()
+
+    // A real id submits on Enter, trimmed of the stray whitespace.
+    await user.clear(input)
+    await user.type(input, "  claude-fable-5-1  ")
+    await user.keyboard("{Enter}")
+    expect(onConfigOptionChange).toHaveBeenCalledWith(
+      "model",
+      "claude-fable-5-1"
+    )
+  })
+
+  it("keeps Cancel side-effect-free and reopens with a blank field", async () => {
+    const user = userEvent.setup()
+    const onConfigOptionChange = vi.fn()
+    const { container } = renderInput({
+      configOptions: [MODEL_OPTION],
+      onConfigOptionChange,
+    })
+    await waitFor(() =>
+      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+
+    await user.click(screen.getByRole("button", { name: "Model: Default" }))
+    await user.click(
+      await screen.findByRole("menuitem", { name: MSGS.customModelEntry })
+    )
+    let dialog = await screen.findByRole("dialog", {
+      name: MSGS.customModelTitle,
+    })
+    await user.type(
+      within(dialog).getByLabelText(MSGS.customModelInputLabel),
+      "half-typed"
+    )
+    await user.click(within(dialog).getByRole("button", { name: MSGS.cancel }))
+    expect(onConfigOptionChange).not.toHaveBeenCalled()
+
+    // The abandoned draft does not survive into the next open.
+    await user.click(screen.getByRole("button", { name: "Model: Default" }))
+    await user.click(
+      await screen.findByRole("menuitem", { name: MSGS.customModelEntry })
+    )
+    dialog = await screen.findByRole("dialog", {
+      name: MSGS.customModelTitle,
+    })
+    expect(
+      within(dialog).getByLabelText(MSGS.customModelInputLabel)
+    ).toHaveValue("")
+  })
+
+  it("offers the entry only on the MODEL option, never other selects", async () => {
+    const user = userEvent.setup()
+    const effortOption: SessionConfigOptionInfo = {
+      id: "effort",
+      name: "Effort",
+      description: null,
+      category: "thought_level",
+      kind: {
+        type: "select",
+        current_value: "default",
+        options: [
+          { value: "default", name: "Default", description: null },
+          { value: "high", name: "High", description: null },
+        ],
+        groups: [],
+      },
+    }
+    const { container } = renderInput({
+      configOptions: [effortOption],
+      onConfigOptionChange: vi.fn(),
+    })
+    await waitFor(() =>
+      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+
+    await user.click(screen.getByRole("button", { name: "Effort: Default" }))
+    // The rows themselves render (it's a real select)…
+    expect(
+      await screen.findByRole("menuitemradio", { name: /High/ })
+    ).toBeInTheDocument()
+    // …but the free-text escape hatch is a model-picker affordance only.
+    expect(
+      screen.queryByRole("menuitem", { name: MSGS.customModelEntry })
+    ).toBeNull()
+  })
+
+  it("pins the entry under the searchable popover, beyond any filter", async () => {
+    const user = userEvent.setup()
+    const onConfigOptionChange = vi.fn()
+    const { container } = renderInput({
+      configOptions: [LONG_MODEL_OPTION],
+      onConfigOptionChange,
+    })
+    await waitFor(() =>
+      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+
+    // The wide surface for a long list is the searchable popover. (The shared
+    // `openrouter/` prefix is stripped from the trigger label — the provider
+    // is implied by the group the model sits in.)
+    await user.click(screen.getByRole("button", { name: "Model: model-0" }))
+    const search = await screen.findByRole("combobox")
+    // A brand-new id matches nothing — exactly when the entry must survive.
+    await user.type(search, "claude-fable-5-1")
+    expect(screen.getByText(MSGS.noModels)).toBeInTheDocument()
+    await user.click(
+      screen.getByRole("button", { name: MSGS.customModelEntry })
+    )
+
+    const dialog = await screen.findByRole("dialog", {
+      name: MSGS.customModelTitle,
+    })
+    await user.type(
+      within(dialog).getByLabelText(MSGS.customModelInputLabel),
+      "claude-fable-5-1"
+    )
+    await user.click(
+      within(dialog).getByRole("button", { name: MSGS.customModelApply })
+    )
+    expect(onConfigOptionChange).toHaveBeenCalledWith(
+      "model",
+      "claude-fable-5-1"
+    )
+  })
+
+  it("offers the entry in the collapsed cog panel too", async () => {
+    const user = userEvent.setup()
+    const onConfigOptionChange = vi.fn()
+    const { container } = renderInput({
+      configOptions: [MODEL_OPTION],
+      onConfigOptionChange,
+    })
+    await waitFor(() =>
+      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+
+    const settingsLabel = MSGS.agentSettings
+    await user.click(screen.getByRole("button", { name: settingsLabel }))
+    const popover = await screen.findByRole("dialog", { name: settingsLabel })
+    await user.click(
+      within(popover).getByRole("button", { name: MSGS.customModelEntry })
+    )
+
+    // Picking the entry closes the cog popover, like a selection would…
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: settingsLabel })).toBeNull()
+    )
+    // …and hands over to the shared dialog.
+    expect(
+      await screen.findByRole("dialog", { name: MSGS.customModelTitle })
+    ).toBeInTheDocument()
+  })
+
+  it("shows the raw current id when it is not among the options", async () => {
+    // An agent can track a model OUTSIDE its advertised options (a custom
+    // pick it adopted, a refusal fallback, a resumed allowlist-excluded
+    // model). Every trigger falls back to the raw id rather than a blank or
+    // a stale advertised label.
+    const user = userEvent.setup()
+    const rawCurrent: SessionConfigOptionInfo = {
+      id: "model",
+      name: "Model",
+      description: "Pick the model",
+      category: null,
+      kind: {
+        type: "select",
+        current_value: "claude-fable-5-1",
+        options: [
+          { value: "default", name: "Default", description: null },
+          { value: "opus", name: "Opus", description: null },
+        ],
+        groups: [],
+      },
+    }
+    const { container } = renderInput({
+      configOptions: [rawCurrent],
+      onConfigOptionChange: vi.fn(),
+    })
+    await waitFor(() =>
+      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+
+    // The wide inline trigger names the raw id…
+    expect(
+      screen.getByRole("button", { name: "Model: claude-fable-5-1" })
+    ).toBeInTheDocument()
+
+    // …and so does the collapsed rail's summary row.
+    const settingsLabel = MSGS.agentSettings
+    await user.click(screen.getByRole("button", { name: settingsLabel }))
+    const popover = await screen.findByRole("dialog", { name: settingsLabel })
+    expect(
+      within(popover).getByRole("button", { name: /claude-fable-5-1/ })
+    ).toBeInTheDocument()
+  })
+})
+
 // The `/` list is the agent's own `availableCommands`, which only arrive with
 // the connection. The editor is typable throughout that wait, so a `/` typed
 // mid-connect opens the panel on a loading row instead of doing nothing.

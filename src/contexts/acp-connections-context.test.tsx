@@ -2328,9 +2328,9 @@ describe("AcpConnectionsProvider Grok cross-agent-type model switch", () => {
   })
 
   it("does not strand a verdict when the set fails outright", async () => {
-    // A failed `set_config_option` emits only a recoverable Error — no option
-    // snapshot at all. Nothing may linger to be charged against a later,
-    // unrelated update.
+    // A failed `set_config_option` re-emits the last adopted options (the
+    // revert) followed by a recoverable Error — no rejection verdict. Nothing
+    // may linger to be charged against a later, unrelated update.
     const handlers = await connectGrokOwner()
     emitAcpEvent(handlers, {
       seq: 1,
@@ -2346,19 +2346,77 @@ describe("AcpConnectionsProvider Grok cross-agent-type model switch", () => {
     emitAcpEvent(handlers, {
       seq: 2,
       connection_id: "spawned-conn",
+      type: "session_config_options",
+      config_options: grokModelOptions("grok-4.5"),
+    })
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
       type: "error",
       message: "Failed to set config option: boom",
       agent_type: "grok",
       code: null,
     })
     emitAcpEvent(handlers, {
-      seq: 3,
+      seq: 4,
       connection_id: "spawned-conn",
       type: "session_config_options",
       config_options: grokModelOptions("grok-4.5"),
     })
 
+    // The optimistic pick snapped back to the model actually in effect…
+    expect(
+      h.store!.getConnection(TAB)!.configOptions?.[0]?.kind.current_value
+    ).toBe("grok-4.5")
+    // …and none of those snapshots reads as a rejection verdict.
     expect(h.toastWarning).not.toHaveBeenCalled()
+  })
+
+  it("drops a sibling option the agent no longer advertises after a model switch", async () => {
+    // A model switch rebuilds the agent's whole option list — the claude
+    // adapter seeds effort levels per model, and a model outside its metadata
+    // (a free-typed custom id) carries none, so its answer simply omits the
+    // effort option. The store must adopt each broadcast wholesale: a stale
+    // effort selector left behind would offer levels that silently no-op.
+    const handlers = await connectGrokOwner()
+    const withEffort: SessionConfigOptionInfo[] = [
+      ...grokModelOptions("grok-4.5"),
+      {
+        id: "effort",
+        name: "Effort",
+        category: "thought_level",
+        kind: {
+          type: "select",
+          current_value: "default",
+          options: [
+            { value: "default", name: "Default" },
+            { value: "high", name: "High" },
+          ],
+          groups: [],
+        },
+      },
+    ]
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "session_config_options",
+      config_options: withEffort,
+    })
+    expect(h.store!.getConnection(TAB)!.configOptions).toHaveLength(2)
+
+    // The agent adopts the custom id and answers with a list that has no
+    // effort option (and a current model value outside the advertised rows).
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "session_config_options",
+      config_options: grokModelOptions("grok-4.5-fable"),
+    })
+
+    const options = h.store!.getConnection(TAB)!.configOptions!
+    expect(options).toHaveLength(1)
+    expect(options[0].id).toBe("model")
+    expect(options[0].kind.current_value).toBe("grok-4.5-fable")
   })
 })
 

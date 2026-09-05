@@ -3611,6 +3611,26 @@ async fn emit_grok_incompatible_agent_switch(
     .await;
 }
 
+/// Revert the composer's optimistic selection after a `set_config_option` the
+/// agent refused OUTRIGHT (a JSON-RPC error — e.g. a free-typed model id the
+/// agent won't accept). A refusal carries no settling option list, so without
+/// this the client keeps showing the value it applied optimistically while the
+/// agent runs something else. Re-emitting the last ADOPTED list (`apply_event`
+/// stores every broadcast into `state.config_options`, and the failed set never
+/// got one) snaps every surface back to the truth. Same recovery shape as
+/// [`emit_grok_incompatible_agent_switch`]; a no-op before the first list.
+async fn revert_config_options_after_failed_set(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+) {
+    // Clone out of the read guard BEFORE emitting — the `emit_*` helpers take
+    // this same state's write lock (see the deadlock note on the Grok twin).
+    let current = state.read().await.config_options.clone();
+    if let Some(opts) = current {
+        emit_session_config_options_info(state, emitter, opts).await;
+    }
+}
+
 /// Emit the composer's session config-option selectors. For Grok this reads the
 /// synthesized `x.ai/sessionConfig` (parity path); for every other agent it runs
 /// the standard preference-application + sacp-mapping pipeline unchanged.
@@ -9467,6 +9487,13 @@ async fn run_conversation_loop<'a>(
                                         .await
                                     };
                                     if let Err(e) = set_result {
+                                        // Revert first, then report — the
+                                        // composer snaps back before the toast
+                                        // appears (see the Grok twin's test).
+                                        revert_config_options_after_failed_set(
+                                            state, emitter,
+                                        )
+                                        .await;
                                         emit_with_state(
                                             state,
                                             emitter,
@@ -9754,6 +9781,9 @@ async fn run_conversation_loop<'a>(
                     set_session_config_option(&cx, &sid, state, emitter, config_id, value_id).await
                 };
                 if let Err(e) = set_result {
+                    // Revert first, then report — the composer snaps back
+                    // before the toast appears (see the Grok twin's test).
+                    revert_config_options_after_failed_set(state, emitter).await;
                     emit_with_state(
                         state,
                         emitter,
@@ -18506,6 +18536,80 @@ mod tests {
             Some(GROK_INCOMPATIBLE_AGENT_ERROR_CODE)
         );
         assert!(!errors[0].1, "recoverable, not terminal");
+    }
+
+    #[tokio::test]
+    async fn failed_set_config_option_revert_reemits_last_adopted_options() {
+        use std::time::Duration;
+
+        // The composer optimistically applied a free-typed model id and the
+        // agent refused the set with a JSON-RPC error — no settling option
+        // list follows, so the revert must re-emit the last ADOPTED list.
+        let mut st = SessionState::new(
+            "conn-test".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "win".to_string(),
+            None,
+        );
+        st.config_options = Some(grok_model_options("grok-4.5"));
+        let state = Arc::new(RwLock::new(st));
+        let emitter = EventEmitter::Noop;
+
+        // Same deadlock guard as the Grok twin: the helper must clone the
+        // options out of the read guard before `emit_*` takes the write lock.
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            revert_config_options_after_failed_set(&state, &emitter),
+        )
+        .await
+        .expect("revert must complete, not deadlock on the state lock");
+
+        let guard = state.read().await;
+        let events = guard.recent_events_after(0).expect("events recorded");
+        let reverted = events
+            .iter()
+            .find_map(|e| match &e.payload {
+                AcpEvent::SessionConfigOptions { config_options } => {
+                    Some(config_options.clone())
+                }
+                _ => None,
+            })
+            .expect("a session_config_options revert is emitted");
+        // The re-broadcast carries the adopted value, not the refused pick.
+        let sel = expect_select(&reverted[0].kind);
+        assert_eq!(sel.current_value, "grok-4.5");
+    }
+
+    #[tokio::test]
+    async fn failed_set_config_option_revert_is_a_noop_before_the_first_list() {
+        // A refusal can race the very first `session_config_options` (prefs
+        // applied at connect). With nothing adopted yet there is nothing
+        // truthful to re-emit — the revert must stay silent, not broadcast an
+        // empty selector list that would blank the composer.
+        let st = SessionState::new(
+            "conn-test".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "win".to_string(),
+            None,
+        );
+        assert!(st.config_options.is_none());
+        let state = Arc::new(RwLock::new(st));
+        let emitter = EventEmitter::Noop;
+
+        revert_config_options_after_failed_set(&state, &emitter).await;
+
+        let guard = state.read().await;
+        let no_config_emit = guard
+            .recent_events_after(0)
+            .map(|events| {
+                !events.iter().any(|e| {
+                    matches!(&e.payload, AcpEvent::SessionConfigOptions { .. })
+                })
+            })
+            .unwrap_or(true);
+        assert!(no_config_emit, "nothing adopted yet, nothing to re-emit");
     }
 
     #[test]

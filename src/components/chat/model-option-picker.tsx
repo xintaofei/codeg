@@ -21,6 +21,10 @@ interface ModelOptionPickerProps {
    *  headerless group for a long flat list). */
   groups: ModelOptionGroup[]
   onSelect: (configId: string, valueId: string) => void
+  /** When set, a pinned "Use custom model ID..." footer opens free-text entry.
+   *  Sits below the list (not inside it) so it stays reachable even when a
+   *  search leaves no matching rows — the very case a brand-new id hits. */
+  onUseCustomModel?: () => void
 }
 
 // Wide-form model picker for LONG model lists: a trigger button opening a
@@ -36,6 +40,7 @@ export function ModelOptionPicker({
   option,
   groups,
   onSelect,
+  onUseCustomModel,
 }: ModelOptionPickerProps) {
   const t = useTranslations("Folder.chat.messageInput")
   const [open, setOpen] = useState(false)
@@ -89,7 +94,7 @@ export function ModelOptionPicker({
         // the popup opens upward and the list's own cap (`MAX_LIST_HEIGHT_REM`) is
         // a rem — at high zoom it outgrows the space above the trigger. The list
         // inside is flex-shrinkable, so it gives way to this cap.
-        className="max-h-(--radix-popover-content-available-height) w-[22rem] max-w-[calc(100vw-1rem)] overflow-hidden p-0"
+        className="flex max-h-(--radix-popover-content-available-height) w-[22rem] max-w-[calc(100vw-1rem)] flex-col overflow-hidden p-0"
       >
         <ModelOptionList
           groups={groups}
@@ -104,6 +109,20 @@ export function ModelOptionPicker({
           emptyLabel={t("noModels")}
           autoFocus
         />
+        {onUseCustomModel && (
+          <div className="shrink-0 border-t p-1">
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false)
+                onUseCustomModel()
+              }}
+              className="w-full rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            >
+              {t("customModelEntry")}
+            </button>
+          </div>
+        )}
       </PopoverContent>
     </Popover>
   )

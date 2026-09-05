@@ -81,6 +81,7 @@ import {
   InlineSessionConfigToggle,
 } from "@/components/chat/session-config-selector"
 import { ModelOptionPicker } from "@/components/chat/model-option-picker"
+import { CustomModelIdDialog } from "@/components/chat/custom-model-id-dialog"
 import { SelectorTooltip } from "@/components/chat/selector-tooltip"
 import {
   SessionSelectorsPanel,
@@ -406,6 +407,14 @@ export function MessageInput({
   // pick closes it explicitly — matching the prior cog menu, which also closed
   // on every selection.
   const [collapsedSelectorsOpen, setCollapsedSelectorsOpen] = useState(false)
+  // Which config option the custom-model-id dialog is entering a value for
+  // (`null` = closed). Every model-picker surface — the wide dropdown, the
+  // searchable popover, and the collapsed cog panel — funnels here, and the
+  // submitted id goes through the exact same `onConfigOptionChange` path as
+  // picking an advertised option.
+  const [customModelConfigId, setCustomModelConfigId] = useState<string | null>(
+    null
+  )
   // Keep the collapsed settings popover open while dragging the (virtualized)
   // model list's native scrollbar — see `useScrollbarSafeDismiss`.
   const collapsedSelectorsGuard = useScrollbarSafeDismiss()
@@ -1457,6 +1466,12 @@ export function MessageInput({
               />
             )
           }
+          // Only the MODEL option gets the free-text "Use custom model ID..."
+          // escape hatch — a brand-new model is often live on the wire before
+          // the agent's curated list catches up. Other selects never do.
+          const onUseCustomModel = isModelConfigOption(option)
+            ? () => setCustomModelConfigId(option.id)
+            : undefined
           // Long model lists get the searchable + virtualized popover (a Radix
           // menu of hundreds of items is the scroll jank); every other option —
           // and short model lists — keep the lightweight inline dropdown.
@@ -1470,6 +1485,7 @@ export function MessageInput({
                 onSelect={(configId, valueId) =>
                   onConfigOptionChange?.(configId, valueId)
                 }
+                onUseCustomModel={onUseCustomModel}
               />
             )
           }
@@ -1480,6 +1496,12 @@ export function MessageInput({
               derivedGroups={deriveModelGroups(option)}
               onSelect={(configId, valueId) =>
                 onConfigOptionChange?.(configId, valueId)
+              }
+              customModelEntry={
+                onUseCustomModel && {
+                  label: t("customModelEntry"),
+                  onOpen: onUseCustomModel,
+                }
               }
             />
           )
@@ -1586,6 +1608,14 @@ export function MessageInput({
               inputLabel: t("searchModelAria"),
               listLabel: t("modelListLabel"),
               empty: t("noModels"),
+            },
+          }),
+          // Same escape hatch as the wide pickers: only the MODEL option
+          // offers free-text entry, routed through the shared dialog.
+          ...(isModelConfigOption(option) && {
+            customEntry: {
+              label: t("customModelEntry"),
+              onSelect: () => setCustomModelConfigId(option.id),
             },
           }),
         })
@@ -2116,6 +2146,20 @@ export function MessageInput({
           initialPath={defaultPath ?? undefined}
         />
       )}
+      <CustomModelIdDialog
+        open={customModelConfigId !== null}
+        onClose={() => setCustomModelConfigId(null)}
+        onSubmit={(modelId) => {
+          // The typed id takes the exact path an advertised pick takes —
+          // optimistic apply, saved preference, `session/set_config_option` —
+          // so an agent that settles elsewhere or refuses is reported by the
+          // same rejection surfaces.
+          if (customModelConfigId) {
+            onConfigOptionChange?.(customModelConfigId, modelId)
+          }
+          setCustomModelConfigId(null)
+        }}
+      />
     </div>
   )
 }
