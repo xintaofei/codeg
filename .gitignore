@@ -61,3 +61,10 @@ src-tauri/binaries/
 # executable then sits untracked in the repo root — which is enough to fail a
 # work task's "worktree is clean" check at delivery.
 /rust_out
+
+# Agent/tool session state and scratch outputs
+.ccg/
+.zcode/
+src-tauri/runtest.*
+src-tauri/translation_out.txt
+src/probe.test.ts

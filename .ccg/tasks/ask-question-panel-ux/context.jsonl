@@ -1,4 +1,0 @@
-{"_example": "Fill with {\"file\": \"path\", \"reason\": \"why\"}. Seed rows are skipped."}
-{"file": "src/components/chat/conversation-shell.tsx", "reason": "AskQuestionCard 钉在 composer 上方的挂载点（:274-286）"}
-{"file": "src/components/chat/ask-question-card.tsx", "reason": "卡片本体，max-h-[88svh]（:446）"}
-{"file": "src/components/chat/plan-approval-card.tsx", "reason": "同槽位的计划审批卡，槽位行为需一致"}
