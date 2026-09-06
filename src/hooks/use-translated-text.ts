@@ -12,6 +12,7 @@ import {
   buildContextPrefix,
   buildNumberedRequest,
   buildTranslateBody,
+  echoVerbatimError,
   hasSameTranslationPlaceholders,
   mergeUnit,
   mergeUnitGroups,
@@ -233,6 +234,19 @@ function judgeChunkTranslation(
       `[translation] discarded ${label}: the reply is far longer than its source (${translated.length} vs ${chunk.length} characters) — the endpoint answered with invented content`
     )
     return { error: "INVENTED_CONTENT" }
+  }
+  // A verbatim echo of a code-heavy chunk carries the source's own words —
+  // the target-script gate cannot see it (few or no Latin letters survive
+  // the mask, or the reply is the source's English prose itself). This gate
+  // compares content, not script coverage.
+  if (
+    effectiveTarget &&
+    echoVerbatimError(chunk, translated, effectiveTarget)
+  ) {
+    console.warn(
+      `[translation] discarded ${label}: the reply is the source returned verbatim — the endpoint echoed the chunk`
+    )
+    return { error: "ECHO_VERBATIM" }
   }
   // An echo (English in, English out) or a bare refusal carries no
   // target-script character at all; serving either shows the reader a

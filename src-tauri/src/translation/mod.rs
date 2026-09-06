@@ -137,6 +137,15 @@ fn strip_translation_placeholders(text: &str) -> String {
     re.replace_all(text, "").into_owned()
 }
 
+/// Whitespace-insensitive text for the exact-echo comparison: trim plus
+/// collapse every whitespace run to a single space. An endpoint's reflow of
+/// the same words is still an echo. Mirrors `normalizeEchoText` in
+/// src/lib/translation.ts — the two gates must agree or one reply passes one
+/// side and fails the other.
+fn normalize_echo_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Whether `translated` looks like an echo or a refusal rather than a
 /// translation: the target language is CJK, the source carries real prose
 /// (≥30 Latin letters outside masked placeholders), and the reply contains
@@ -162,6 +171,22 @@ fn echo_or_refusal_error(
     // Placeholder tokens (`[[CBLK<n>]]`, loose imitations thereof) stand in
     // for code and must not count as prose.
     let prose = strip_translation_placeholders(source);
+    // Exact echo, judged before the letters bar: a code-heavy chunk masks
+    // down to placeholders plus a few words, so its verbatim echo never
+    // reaches 30 letters and the script gate below cannot see it either
+    // (observed on a relay). Content equality is what catches it — tokens
+    // stripped from both sides, because an echo carries the same tokens the
+    // source does. A placeholder-only chunk skips: echoing `[[CBLK0]]` back
+    // IS the correct translation.
+    if !prose.trim().is_empty()
+        && normalize_echo_text(&prose)
+            == normalize_echo_text(&strip_translation_placeholders(translated))
+    {
+        return Some(
+            "The reply is the source returned verbatim — the endpoint echoed the chunk"
+                .to_string(),
+        );
+    }
     let letters = prose.chars().filter(|c| c.is_ascii_alphabetic()).count();
     if letters < 30 {
         return None;
@@ -679,14 +704,41 @@ mechanics — this is a meta/educational query, exempt from the review gate.";
         let real = "用户询问了一个关于 Git 合并机制的知识性问题——这是元问题，无需审查。";
         assert!(echo_or_refusal_error(source, real, "zh-CN").is_none());
 
-        // Masked placeholders do not count as prose: a mostly-code chunk with
-        // a handful of words is exempt (its legit translation may lack CJK).
-        let code_chunk = "[[CBLK0]] git merge --abort [[CBLK1]] done";
-        assert!(echo_or_refusal_error(code_chunk, code_chunk, "zh-CN").is_none());
+        // Masked placeholders do not count as prose for the SCRIPT gate: a
+        // mostly-code chunk with a handful of words is exempt from it (its
+        // legit translation may lack CJK). Its verbatim echo is the
+        // exact-echo gate's catch — see the dedicated test below.
 
         // Latin-script targets are never gated, and non-CJK targets skip.
         assert!(echo_or_refusal_error(source, refusal, "en").is_none());
         assert!(echo_or_refusal_error(source, refusal, "fr").is_none());
+    }
+
+    /// A code-heavy chunk masks down to placeholders plus a few words — under
+    /// the ≥30-letter bar its verbatim echo slipped through every gate and
+    /// was served as a "translation". Content equality catches it; a real
+    /// translation keeping the placeholders passes; a placeholder-only chunk
+    /// echoed back is correct and must stay exempt.
+    #[test]
+    fn an_exact_echo_of_a_code_heavy_chunk_is_refused() {
+        let chunk = "[[CBLK0]] git merge --abort [[CBLK1]] done";
+        assert!(echo_or_refusal_error(chunk, chunk, "zh-CN").is_some());
+        // Whitespace reflow is still an echo.
+        assert!(echo_or_refusal_error(
+            chunk,
+            "[[CBLK0]]  git  merge --abort\n[[CBLK1]] done",
+            "zh-CN"
+        )
+        .is_some());
+        assert!(echo_or_refusal_error(
+            chunk,
+            "[[CBLK0]] 放弃一次合并 [[CBLK1]] 完成",
+            "zh-CN"
+        )
+        .is_none());
+        // A placeholder-only chunk echoed back IS the correct translation.
+        assert!(echo_or_refusal_error("[[CBLK0]]\n\n", "[[CBLK0]]\n\n", "zh-CN").is_none());
+        assert!(echo_or_refusal_error("done", "done", "en").is_none());
     }
 
     /// A user pointing at their own endpoint may want a language the UI does

@@ -310,6 +310,66 @@ export function missingTargetScript(
 }
 
 /**
+ * Whitespace-insensitive text for the exact-echo comparison: trim plus
+ * collapse every whitespace run to a single space. An endpoint's reflow of
+ * the same words is still an echo. Same rules as the backend's
+ * `normalize_echo_text` — the two gates must agree or one reply passes one
+ * side and fails the other.
+ */
+export function normalizeEchoText(text: string): string {
+  return text.trim().replace(/\s+/g, " ")
+}
+
+/**
+ * Exact-echo gate: the reply is the source returned verbatim. Code-heavy
+ * chunks mask down to placeholders plus a few words, so they slip under the
+ * ≥30-letter prose bar of [`missingTargetScript`] — an echoed reply then
+ * passed every gate and was served as a "translation" (observed on a relay).
+ * Placeholder tokens are stripped from BOTH sides before comparing: a
+ * verbatim echo carries the same tokens the source does, and the tokens are
+ * opaque noise for this comparison. A placeholder-only chunk (nothing left
+ * after stripping) skips the gate — echoing `[[CBLK0]]` back IS the correct
+ * translation. Like [`missingTargetScript`] this gates CJK targets only:
+ * a Latin-script target has no equivalent test.
+ */
+/** The loose placeholder shapes a model may echo back; shared by the mask's
+ * restoration checks and the echo gate. */
+export const TRANSLATION_PLACEHOLDER_LOOSE = /\[\s*\[?_?CBLK\d+\s*\]\s*\]?/g
+
+/**
+ * Exact-echo gate: the reply is the source returned verbatim. Code-heavy
+ * chunks mask down to placeholders plus a few words, so they slip under the
+ * ≥30-letter prose bar of [`missingTargetScript`] — an echoed reply then
+ * passed every gate and was served as a "translation" (observed on a relay).
+ * Placeholder tokens are stripped from BOTH sides before comparing: a
+ * verbatim echo carries the same tokens the source does, and the tokens are
+ * opaque noise for this comparison. A placeholder-only chunk (nothing left
+ * after stripping) skips the gate — echoing `[[CBLK0]]` back IS the correct
+ * translation. Like [`missingTargetScript`] this gates CJK targets only:
+ * a Latin-script target has no equivalent test.
+ */
+export function echoVerbatimError(
+  chunk: string,
+  translated: string,
+  targetLang: string
+): boolean {
+  const lang = targetLang.trim().toLowerCase()
+  if (
+    !(lang === "zh" || lang.startsWith("zh-") || lang === "ja" || lang === "ko")
+  ) {
+    return false
+  }
+  const source = normalizeEchoText(
+    chunk.replace(TRANSLATION_PLACEHOLDER_LOOSE, "")
+  )
+  if (!source) return false
+  return (
+    normalizeEchoText(translated.replace(TRANSLATION_PLACEHOLDER_LOOSE, "")) ===
+    source
+  )
+}
+
+/**
  * Digit runs of two or more digits that the source prose carries and the
  * translation dropped. A model that answers the text instead of translating
  * it routinely sheds the concrete numbers ("Git 2.34" → "Git 较新版本");

@@ -7,6 +7,7 @@ import {
   buildContextPrefix,
   buildNumberedRequest,
   buildTranslateBody,
+  echoVerbatimError,
   hasSameTranslationPlaceholders,
   joinTranslated,
   mergeUnit,
@@ -352,6 +353,49 @@ describe("missingTargetScript", () => {
   it("never gates Latin-script targets", () => {
     expect(missingTargetScript(PROSE, PROSE, "en")).toBe(false)
     expect(missingTargetScript(PROSE, PROSE, "fr")).toBe(false)
+  })
+})
+
+describe("echoVerbatimError", () => {
+  it("flags a verbatim echo regardless of the prose bar", () => {
+    // Code-heavy chunks mask down to placeholders plus a few words — under
+    // missingTargetScript's ≥30-letter bar an echo here slipped through.
+    expect(
+      echoVerbatimError(
+        "[[CBLK0]] git merge --abort [[CBLK1]] done",
+        "[[CBLK0]] git merge --abort [[CBLK1]] done",
+        "zh-CN"
+      )
+    ).toBe(true)
+    // Whitespace reflow is still an echo.
+    expect(
+      echoVerbatimError(
+        "[[CBLK0]] git merge --abort [[CBLK1]] done",
+        "[[CBLK0]]  git  merge --abort\n[[CBLK1]] done",
+        "zh-CN"
+      )
+    ).toBe(true)
+  })
+
+  it("passes a real translation that keeps the placeholders", () => {
+    expect(
+      echoVerbatimError(
+        "[[CBLK0]] git merge --abort [[CBLK1]] done",
+        "[[CBLK0]] 放弃一次合并 [[CBLK1]] 完成",
+        "zh-CN"
+      )
+    ).toBe(false)
+  })
+
+  it("skips a placeholder-only chunk — echoing it back is correct", () => {
+    expect(echoVerbatimError("[[CBLK0]]\n\n", "[[CBLK0]]\n\n", "zh-CN")).toBe(
+      false
+    )
+  })
+
+  it("never gates Latin-script targets", () => {
+    expect(echoVerbatimError("done", "done", "en")).toBe(false)
+    expect(echoVerbatimError("done", "done", "fr")).toBe(false)
   })
 })
 
