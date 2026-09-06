@@ -374,6 +374,7 @@ async fn translate_one(
     target_lang: &str,
     picked: &PickedProvider,
     priority: Priority,
+    trace: Option<&str>,
 ) -> ChunkOutcome {
     let client = match http_client() {
         Ok(client) => client,
@@ -438,8 +439,16 @@ async fn translate_one(
             }
         };
 
+        // The trace id (the calling UI block) tags every log line a request
+        // produces, so one block's traffic can be picked out of a mixed log —
+        // the difference between "an endpoint failed" and "YOUR paragraph
+        // failed, three times, on this endpoint".
+        let tag = trace
+            .filter(|trace| !trace.is_empty())
+            .map(|trace| format!("[{trace}] "))
+            .unwrap_or_default();
         tracing::debug!(
-            "[translation] sending {} chars to {} (lane {:?}, attempt {}): {}",
+            "[translation] {tag}sending {} chars to {} (lane {:?}, attempt {}): {}",
             text.chars().count(),
             picked.id(),
             priority,
@@ -468,7 +477,7 @@ async fn translate_one(
                     slow_reported = true;
                     let elapsed = started.elapsed().as_millis() as u64;
                     tracing::warn!(
-                        "[translation] request to {} still in flight after {}ms — \
+                        "[translation] request to {tag}{} still in flight after {}ms — \
                          halving its rate for the remainder of the wait",
                         picked.id(),
                         elapsed
@@ -511,13 +520,13 @@ async fn translate_one(
                         _ => parse_translation(&bytes),
                     };
                     match &parsed {
-                        Err(err) => log_failure("parse the translation response", picked.id(), err),
+                        Err(err) => log_failure(&format!("{tag}parse the translation response"), picked.id(), err),
                         // DEBUG diagnostics for the "endpoint answers fine but
                         // nothing renders" class of report: the frontend
                         // discards a translation whose placeholders drifted,
                         // and this snippet is where the drift is visible.
                         Ok(translated) => tracing::debug!(
-                            "[translation] response from {} in {latency}ms: {}",
+                            "[translation] {tag}response from {} in {latency}ms: {}",
                             picked.id(),
                             translated.chars().take(400).collect::<String>()
                         ),
@@ -577,7 +586,7 @@ async fn translate_one(
                 if status.is_client_error() {
                     picked.report_client_error(&err.message);
                 }
-                log_failure(&format!("endpoint answered HTTP {status}"), picked.id(), &err);
+                log_failure(&format!("{tag}endpoint answered HTTP {status}"), picked.id(), &err);
                 metrics.record_attempt(picked.id(), ProviderEventKind::HttpError, latency);
                 if !is_retryable(Some(status)) {
                     return ChunkOutcome {
@@ -894,6 +903,7 @@ pub async fn translate_batch(
     target_lang: &str,
     settings: &TranslationSettings,
     priority: Priority,
+    trace: Option<&str>,
 ) -> Vec<ChunkOutcome> {
     join_all(texts.iter().map(|text| async move {
         // Re-pick per chunk: the rotation spreads the batch, and a provider
@@ -909,7 +919,7 @@ pub async fn translate_batch(
                 };
             }
         };
-        translate_one(text, target_lang, &picked, priority).await
+        translate_one(text, target_lang, &picked, priority, trace).await
     }))
     .await
 }
@@ -936,6 +946,7 @@ pub async fn test_connection(
         target_lang,
         &picked,
         Priority::Priority,
+        None,
     )
     .await
     .result
@@ -1078,6 +1089,7 @@ mod tests {
             "zh-CN",
             &settings,
             Priority::Background,
+            None,
         ));
         assert!(out.is_empty());
     }

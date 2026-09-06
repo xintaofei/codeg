@@ -927,7 +927,9 @@ export function useStreamingTranslatedText({
           uiLocale,
           priority,
           undefined,
-          context
+          context,
+          0,
+          blockKey
         ).then((translations) => {
           if (translations) {
             land(translations)

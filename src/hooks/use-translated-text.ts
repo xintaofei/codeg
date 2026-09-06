@@ -172,6 +172,19 @@ export function translationCacheKey({
     .join(":")
 }
 
+/**
+ * The calling block's identity from a length-prefixed cache key: the first
+ * field is the blockKey (see `translationCacheKey`), and the backend's
+ * dispatch logs carry it so one UI block's requests can be picked out of a
+ * mixed traffic log.
+ */
+function traceFromCacheKey(key: string): string {
+  const colon = key.indexOf(":")
+  const length = Number(key.slice(0, colon))
+  if (!Number.isFinite(length) || length < 0) return ""
+  return key.slice(colon + 1, colon + 1 + length)
+}
+
 export async function requestTranslation(
   text: string,
   uiLocale: string,
@@ -299,7 +312,8 @@ export async function requestNumberedGroup(
   priority: boolean = false,
   targetLang?: string | null,
   context?: ContextReference,
-  variant: number = 0
+  variant: number = 0,
+  trace?: string
 ): Promise<string[] | null> {
   if (segments.length === 0) return []
   // A lone segment rides as itself: the numbering protocol exists to make
@@ -328,7 +342,8 @@ export async function requestNumberedGroup(
       [outbound],
       uiLocale,
       priority,
-      targetLang ?? null
+      targetLang ?? null,
+      trace
     )
     result = results[0]
   } catch (error) {
@@ -395,6 +410,8 @@ export async function requestTranslationDetailed(
     if (!chunks) return { text: null, error: "SELECTION_TOO_LONG" }
     const effectiveTarget =
       targetLang ?? cachedSettings?.targetLang ?? (uiLocale as string | null)
+    // The calling block's short id, riding to the backend's dispatch logs.
+    const trace = traceFromCacheKey(key)
     // Every outbound rides the XML envelope (source as DATA), and a retry
     // variant escalates the constraint line — an identical request at
     // temperature 0 returns an identical wrong answer, so retries must
@@ -449,7 +466,8 @@ export async function requestTranslationDetailed(
             [outbound(half)],
             uiLocale,
             priority,
-            targetLang ?? null
+            targetLang ?? null,
+            trace
           )
           result = results[0]
         } catch {
@@ -523,7 +541,8 @@ export async function requestTranslationDetailed(
           priority,
           targetLang,
           context,
-          variant
+          variant,
+          trace
         )
         if (!translations) {
           groupFailed = true
@@ -546,7 +565,8 @@ export async function requestTranslationDetailed(
           failed.map((index) => outbound(chunks[index])),
           uiLocale,
           priority,
-          targetLang ?? null
+          targetLang ?? null,
+          trace
         )
         if (results.length !== failed.length) {
           console.warn(

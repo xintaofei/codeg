@@ -1723,7 +1723,8 @@ export async function translateTexts(
   texts: string[],
   uiLocale: string,
   priority: boolean = false,
-  targetLang?: string | null
+  targetLang?: string | null,
+  trace?: string
 ): Promise<TranslationResult[]> {
   // Long thinking blocks run many backend chunks, each with its own scaled
   // deadline (up to ~120 s); the transport's default 60 s web-call timeout
@@ -1731,10 +1732,17 @@ export async function translateTexts(
   // `priority` puts reader-facing prose on the backend's fast lane; background
   // thinking polish queues separately so it can never delay the reply body.
   // `targetLang` lets the selection card aim at its own language without
-  // touching the configured one.
+  // touching the configured one. `trace` carries the calling block's short id
+  // so the backend's dispatch logs correlate with one UI block.
   return getTransport().call(
     "translation_translate",
-    { texts, uiLocale, priority, targetLang: targetLang ?? null },
+    {
+      texts,
+      uiLocale,
+      priority,
+      targetLang: targetLang ?? null,
+      trace: trace ?? null,
+    },
     { timeoutMs: 300_000 }
   )
 }

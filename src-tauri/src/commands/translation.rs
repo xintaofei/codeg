@@ -149,6 +149,7 @@ pub async fn translation_translate_core(
     ui_locale: &str,
     priority: translation::client::Priority,
     override_target_lang: Option<String>,
+    trace: Option<String>,
 ) -> Result<Vec<TranslationResult>, AppCommandError> {
     let settings = translation::settings::load(conn).await;
     translation::translate_with_cache(
@@ -157,6 +158,7 @@ pub async fn translation_translate_core(
         &settings,
         priority,
         override_target_lang.as_deref(),
+        trace.as_deref(),
     )
     .await
 }
@@ -231,6 +233,7 @@ pub async fn translation_translate(
     ui_locale: String,
     priority: Option<bool>,
     target_lang: Option<String>,
+    trace: Option<String>,
     db: State<'_, AppDatabase>,
 ) -> Result<Vec<TranslationResult>, AppCommandError> {
     let priority = if priority.unwrap_or(false) {
@@ -238,7 +241,7 @@ pub async fn translation_translate(
     } else {
         translation::client::Priority::Background
     };
-    translation_translate_core(&db.conn, texts, &ui_locale, priority, target_lang).await
+    translation_translate_core(&db.conn, texts, &ui_locale, priority, target_lang, trace).await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -360,6 +363,7 @@ mod tests {
             "zh-CN",
             translation::client::Priority::Background,
             None,
+            None,
         )
         .await;
 
@@ -378,6 +382,7 @@ mod tests {
             Vec::new(),
             "zh-CN",
             translation::client::Priority::Priority,
+            None,
             None,
         )
         .await

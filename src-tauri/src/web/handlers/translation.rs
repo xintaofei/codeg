@@ -60,6 +60,9 @@ pub struct TranslateParams {
     pub priority: bool,
     #[serde(default)]
     pub target_lang: Option<String>,
+    /// The calling UI block's short id, for correlating dispatch logs.
+    #[serde(default)]
+    pub trace: Option<String>,
 }
 
 fn default_locale() -> String {
@@ -121,6 +124,7 @@ pub async fn translation_translate(
             &params.ui_locale,
             priority,
             params.target_lang,
+            params.trace,
         )
         .await?,
     ))

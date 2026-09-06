@@ -413,6 +413,7 @@ pub async fn translate_with_cache(
     settings: &TranslationSettings,
     priority: client::Priority,
     override_target_lang: Option<&str>,
+    trace: Option<&str>,
 ) -> Result<Vec<TranslationResult>, AppCommandError> {
     if !settings.enabled {
         return Err(AppCommandError::configuration_missing(
@@ -498,6 +499,7 @@ pub async fn translate_with_cache(
             display_language(&target_lang),
             settings,
             priority,
+            trace,
         )
         .await;
 
@@ -783,6 +785,7 @@ mechanics — this is a meta/educational query, exempt from the review gate.";
             &settings,
             client::Priority::Background,
             None,
+            None,
         )
         .await;
         assert!(result.is_err());
@@ -807,6 +810,7 @@ mechanics — this is a meta/educational query, exempt from the review gate.";
             "zh-CN",
             &settings,
             client::Priority::Background,
+            None,
             None,
         )
         .await
@@ -893,6 +897,7 @@ mechanics — this is a meta/educational query, exempt from the review gate.";
             "zh-CN",
             &settings,
             client::Priority::Background,
+            None,
             None,
         )
         .await
@@ -999,6 +1004,7 @@ mechanics — this is a meta/educational query, exempt from the review gate.";
             "zh-CN",
             &settings,
             client::Priority::Background,
+            None,
             None,
         )
         .await
