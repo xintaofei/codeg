@@ -423,33 +423,31 @@ describe("splitChunkForHalfRetry", () => {
   })
 
   it("never splits inside a placeholder token", () => {
-    // Place the token so its natural midpoint sits at the chunk midpoint.
-    const head = sentence.repeat(8) // 480
+    // No sentence ends or whitespace anywhere, so the boundary is the raw
+    // midpoint (607) — and the token sits squarely across it ([606, 615)).
+    // The boundary must move past the token's end (615), leaving the token
+    // whole on the first side.
     const token = "[[CBLK7]]"
-    const tail = sentence.repeat(11) // 660 → total 1149, midpoint 574
-    const chunk = head + token + tail
+    const chunk = "a".repeat(606) + token + "b".repeat(600)
     const halves = splitChunkForHalfRetry(chunk)!
     expect(halves[0] + halves[1]).toBe(chunk)
+    expect(halves[0].length).toBe(606 + token.length)
     expect(halves[0]).toContain(token)
-    expect(() =>
-      halves[1].match(/\[\s*\[?_?CBLK\d+\s*\]\s*\]?(?!.*\[\[)/)
-    ).toBeTruthy()
-    // The token must survive verbatim on ONE side.
-    const both = halves.filter((half) => half.includes("CBLK7"))
-    expect(both).toHaveLength(1)
+    expect(halves[1]).not.toContain("CBLK")
   })
 
   it("never splits a surrogate pair", () => {
-    // An emoji right at the computed midpoint must land whole on one side.
-    const head = sentence.repeat(9) // 540
+    // No sentence ends or whitespace anywhere, so the boundary is the raw
+    // midpoint (601) — and the two-code-unit emoji sits squarely across it
+    // ([600, 602)). The boundary must nudge past the pair, leaving the emoji
+    // whole on the first side.
     const emoji = "🚀"
-    const tail = sentence.repeat(10) // 600 → total 1142 (surrogate counts 2)
-    const chunk = head + emoji + tail
-    const halves = splitChunkForHalfRetry(chunk)
-    expect(halves).not.toBeNull()
-    expect(halves![0] + halves![1]).toBe(chunk)
-    expect(chunk.includes("\uFFFD")).toBe(false)
-    expect((halves![0] + halves![1]).includes(emoji)).toBe(true)
+    const chunk = "a".repeat(600) + emoji + "b".repeat(600)
+    const halves = splitChunkForHalfRetry(chunk)!
+    expect(halves[0] + halves[1]).toBe(chunk)
+    expect(halves[0].length).toBe(602)
+    expect(halves[0]).toContain(emoji)
+    expect(halves[0] + halves[1]).not.toContain("\uFFFD")
   })
 })
 

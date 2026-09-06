@@ -794,6 +794,9 @@ export function useStreamingTranslatedText({
         blockKey,
         fresh.map((segment) => segment.text)
       )
+      // `pos` may cover a skipped (still-inflight) segment: its own land()
+      // failure rolls the cursor back to it, and the settle flush skips
+      // without pinning — so covering it here never strands those bytes.
       const pos = fresh[fresh.length - 1].end
       dispatchedEndRef.current = Math.max(dispatchedEndRef.current, pos)
       lastDispatchAtRef.current = Date.now()

@@ -433,28 +433,24 @@ export async function requestTranslationDetailed(
       )
     }
 
-    // An invention-shaped rejection (the reply answers the text instead of
-    // translating it — a self-written essay, a far-too-long document) on a
-    // wide chunk buys ONE split retry: the endpoint had too much rope, so
-    // the chunk goes back out as two halves judged independently. Any other
-    // rejection, a short chunk, or a half that fails again keeps the
-    // original verdict — the retry must not paper over a genuinely bad
-    // endpoint, and that verdict is what the caller reports.
-    const judgeOrSplit = async (
-      index: number,
-      translated: string
-    ): Promise<{ aligned?: string; error?: string }> => {
-      const judged = judgeChunk(index, translated)
-      if (!judged.error) return judged
-      if (
-        judged.error !== "INVENTED_CONTENT" &&
-        !judged.error.includes("far longer than its source")
-      ) {
-        return judged
-      }
-      const chunk = chunks[index]
-      const halves = splitChunkForHalfRetry(chunk)
-      if (!halves) return judged
+    // An invention-shaped rejection — the reply answers the text instead of
+    // translating it (a self-written essay, a far-too-long document) — buys
+    // ONE split retry for a wide chunk: the endpoint had too much rope, so
+    // the chunk goes back out as two halves judged independently. The shape
+    // arrives through two doors: the frontend judge's INVENTED_CONTENT code,
+    // and the backend's length-gate message on `result.error` — the latter
+    // is the common one, because the backend gate rejects before the reply
+    // ever reaches the judge. Any other rejection, a short chunk, or a half
+    // that fails again keeps the original verdict — the retry must not
+    // paper over a genuinely bad endpoint, and that verdict is what the
+    // caller reports.
+    const isInventionShape = (error: string | null | undefined) =>
+      error === "INVENTED_CONTENT" ||
+      (error?.includes("far longer than its source") ?? false)
+
+    const splitRetry = async (index: number): Promise<string | null> => {
+      const halves = splitChunkForHalfRetry(chunks[index])
+      if (!halves) return null
       console.warn(
         `[translation] chunk ${index} of ${key} answered the text instead of translating it — retrying as two halves`
       )
@@ -471,23 +467,38 @@ export async function requestTranslationDetailed(
           )
           result = results[0]
         } catch {
-          return judged
+          return null
         }
-        if (!result || result.error) return judged
+        if (!result || result.error) return null
         const halfJudged = judgeChunkTranslation(
           half,
           stripTranslateEnvelope(result.text),
           effectiveTarget,
           `half of chunk ${index} of ${key}`
         )
-        if (halfJudged.error || halfJudged.aligned === undefined) return judged
+        if (halfJudged.error || halfJudged.aligned === undefined) return null
         parts.push(halfJudged.aligned)
       }
       // Re-attach the separator the split boundary consumed, then join the
       // halves back into one chunk-sized translation — the caller stores it
       // under the whole chunk's piece, exactly as an unsplit reply would
-      // have landed.
-      return { aligned: mergeUnit(halves[0], parts[0]) + parts[1] }
+      // have landed. Same-line boundaries leave their space on the second
+      // half's front (the endpoint trims its reply), so it rides back in
+      // here; newline separators are already handled by the mergeUnit on
+      // the left and must not double up.
+      const lead = (/^\s+/.exec(halves[1])?.[0] ?? "").replace(/\n/g, "")
+      return mergeUnit(halves[0], parts[0]) + lead + parts[1]
+    }
+
+    const judgeOrSplit = async (
+      index: number,
+      translated: string
+    ): Promise<{ aligned?: string; error?: string }> => {
+      const judged = judgeChunk(index, translated)
+      if (!judged.error) return judged
+      if (judged.error !== "INVENTED_CONTENT") return judged
+      const split = await splitRetry(index)
+      return split ? { aligned: split } : judged
     }
 
     try {
@@ -520,6 +531,16 @@ export async function requestTranslationDetailed(
             return { text: null, error: toErrorMessage(error) }
           }
           if (!result || result.error) {
+            // The backend's length gate is the door the observed invention
+            // actually came through: the reply never reaches the judge, so
+            // this is where the split retry fires for it.
+            if (result?.error && isInventionShape(result.error)) {
+              const split = await splitRetry(group[0])
+              if (split !== null) {
+                aligned[group[0]] = split
+                continue
+              }
+            }
             console.warn(
               `[translation] chunk ${group[0]} of ${key} failed: ${result?.error ?? "no result"}`
             )
@@ -582,6 +603,16 @@ export async function requestTranslationDetailed(
           // backend cached the successful siblings, so the bounded retry
           // re-requests only the failed chunks and the batch converges.
           if (result.error) {
+            // Same door as the lone-chunk path: a backend length-gate
+            // rejection of one chunk in a burst gets its split retry here,
+            // while transport and other gate errors keep the early return.
+            if (isInventionShape(result.error)) {
+              const split = await splitRetry(index)
+              if (split !== null) {
+                aligned[index] = split
+                continue
+              }
+            }
             console.warn(
               `[translation] chunk ${index} of ${key} failed: ${result.error}`
             )

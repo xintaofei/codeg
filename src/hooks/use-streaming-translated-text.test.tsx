@@ -147,6 +147,42 @@ describe("useStreamingTranslatedText", () => {
     expect(result.current.display.endsWith("译:tail")).toBe(true)
   })
 
+  it("splits after a backend length-gate rejection, not just a judged one", async () => {
+    const mod = await setup()
+    // The backend's own gate rejects the reply before the frontend judge
+    // ever sees it — the observed production shape ("far longer than its
+    // source"). The chunk must still come back out as two halves.
+    const paragraph =
+      "The commit graph walks every merge step by careful step. ".repeat(18)
+    const full = `${paragraph}\n\ntail`
+    mocks.translate.mockImplementation(async (texts: Texts) =>
+      texts.map((raw) => {
+        if (raw.includes(paragraph)) {
+          return {
+            key: raw,
+            text: "",
+            error: `The translation is far longer than its source (3000 vs ${paragraph.length} characters)`,
+            fromCache: false,
+          }
+        }
+        const text = unwrap(raw)
+        return { key: raw, text: `译:${text.trim()}`, fromCache: false }
+      })
+    )
+    const { rerender, result } = renderStream(
+      mod,
+      { text: full, isStreaming: true },
+      "backend-split"
+    )
+    await flush()
+    await advance(WINDOW)
+    expect(result.current.display).toContain("译:")
+    rerender({ text: full, isStreaming: false })
+    await flush()
+    await advance(WINDOW)
+    expect(result.current.display.endsWith("译:tail")).toBe(true)
+  })
+
   it("sends nothing while no unit has sealed", async () => {
     const mod = await setup()
     mocks.translate.mockImplementation(ok)
