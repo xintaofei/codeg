@@ -3,6 +3,31 @@ fn main() {
     {
         ensure_sidecar_placeholder();
         tauri_build::build();
+        // tauri-build embeds the comctl32-v6 SxS manifest (resource.lib) only
+        // into the binaries (`cargo:rustc-link-arg-bins`). Test binaries link
+        // the same lib, whose tauri code imports TaskDialogIndirect & friends
+        // — entry points that exist only in comctl32 v6. Without the manifest
+        // a test exe loads comctl32 v5 and dies at load with
+        // STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139).
+        //
+        // Linking resource.lib into the tests cannot happen from here:
+        // `cargo:rustc-link-arg-tests` skips the lib's unit-test harness
+        // (it only reaches tests/*.rs), and the unspecific
+        // `cargo:rustc-link-arg` reaches the bins too, where the duplicate
+        // resources fail the link with CVT1100. The embedding therefore lives
+        // in lib.rs as a `#[cfg(test)] #[link(...)]`, which is scoped to the
+        // test compilations alone; this directive only makes resource.lib
+        // findable on the library search path.
+        let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR is always set");
+        println!("cargo:rustc-link-search=native={out_dir}");
+        // Integration tests (tests/*.rs) link the lib WITHOUT cfg(test), so
+        // the #[cfg(test)] #[link] in lib.rs is inert for them — their exes
+        // would load comctl32 v5 and die at load with
+        // STATUS_ENTRYPOINT_NOT_FOUND on TaskDialogIndirect. This directive
+        // reaches exactly those targets, complementing the lib-side
+        // attribute without ever hitting the same compilation twice.
+        let resource = std::path::Path::new(&out_dir).join("resource.lib");
+        println!("cargo:rustc-link-arg-tests={}", resource.display());
     }
 }
 
