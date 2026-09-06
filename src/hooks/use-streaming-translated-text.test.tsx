@@ -555,6 +555,59 @@ describe("useStreamingTranslatedText", () => {
     expect(result.current.display).not.toContain("译:")
   })
 
+  it("persists a landing that races a re-key so the next instance restores it", async () => {
+    const mod = await setup()
+    let resolveRequest: (() => void) | null = null
+    mocks.translate.mockImplementation(
+      (texts: Texts) =>
+        new Promise((resolve) => {
+          resolveRequest = () =>
+            resolve(
+              texts.map((raw) => ({
+                key: raw,
+                text: `译:${unwrap(raw).trim()}`,
+                fromCache: false,
+              }))
+            )
+        })
+    )
+    const full = "one\n\n"
+    const render = (blockKey: string) =>
+      renderHook(
+        ({ blockKey: key }: { blockKey: string }) =>
+          mod.useStreamingTranslatedText({
+            text: full,
+            isStreaming: false,
+            shouldLoad: true,
+            uiLocale: "zh-CN",
+            blockKey: key,
+            enabled: true,
+          }),
+        { initialProps: { blockKey } }
+      )
+    const first = render("race-a")
+    await flush()
+    expect(mocks.translate).toHaveBeenCalledTimes(1)
+
+    // The settle reparse re-keys the block while the request is on the wire.
+    await act(async () => {
+      first.rerender({ blockKey: "race-b" })
+    })
+    // The reply lands under the old key: it must still reach the store.
+    await act(async () => {
+      resolveRequest?.()
+    })
+
+    // A fresh instance at the new key restores by content and does not pay
+    // for the segment again.
+    const spent = mocks.translate.mock.calls.length
+    const second = render("race-b")
+    await flush()
+    await advance(WINDOW)
+    expect(second.result.current.display).toContain("译:one")
+    expect(mocks.translate.mock.calls.length).toBe(spent)
+  })
+
   it("pauses after repeated failed batches and still converges on settle", async () => {
     const mod = await setup()
     mocks.translate.mockRejectedValue(new Error("endpoint down"))

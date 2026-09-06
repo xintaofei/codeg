@@ -149,6 +149,29 @@ function savePieces(
 }
 
 /**
+ * Merge landed pieces into the block's store entry, synchronously. Every
+ * request path calls this BEFORE its instance-liveness gate: a landing that
+ * races a re-key is otherwise dropped there and re-requested from scratch by
+ * the replacement instance — observed as the same tail segment fetched three
+ * times, each reply arriving fine and each discard re-queueing it. The
+ * content-addressed restore hands the pieces to whoever takes the key next.
+ * The whole read-merge-write is synchronous, so two landings cannot clobber
+ * each other between the read and the write.
+ */
+function mergePiecesIntoStore(
+  blockKey: string,
+  landed: ReadonlyArray<Piece>
+): void {
+  if (landed.length === 0) return
+  const merged = new Map(pieceStore.get(blockKey) ?? [])
+  for (const piece of landed) {
+    const existing = merged.get(piece.start)
+    if (!existing || existing.end < piece.end) merged.set(piece.start, piece)
+  }
+  savePieces(blockKey, merged)
+}
+
+/**
  * A source region whose translation never landed, kept alive across the
  * component instance. The variant-retry chain in `requestSegmentWithRetry`
  * (and the settle flush's bounded retries) live on the instance — an unmount
@@ -752,6 +775,16 @@ export function useStreamingTranslatedText({
             return
           }
           noteGapSuccess(gap.text)
+          // Persist before the liveness gate, like `land` does: a replay that
+          // lands just as the block re-keys must not re-request its segment.
+          mergePiecesIntoStore(key, [
+            {
+              start: gap.start,
+              end: gap.end,
+              text: value,
+              source: gap.text,
+            },
+          ])
           if (!isCurrent()) return
           landed += 1
           clearGaps(key, gap.start, gap.end)
@@ -949,6 +982,22 @@ export function useStreamingTranslatedText({
             recordGap(blockKey, segment)
           }
         })
+        // Persist BEFORE the liveness gate (see `mergePiecesIntoStore`): a
+        // re-key between dispatch and this callback must not cost the reply.
+        const landedPieces: Piece[] = []
+        sent.forEach(({ segment }, offset) => {
+          const value = results[offset]
+          if (value !== null) {
+            noteGapSuccess(segment.text)
+            landedPieces.push({
+              start: segment.start,
+              end: segment.end,
+              text: value,
+              source: segment.text,
+            })
+          }
+        })
+        mergePiecesIntoStore(blockKey, landedPieces)
         if (!isCurrent()) return
         // Any landing clears the amber flag: the failure it reported is no
         // longer the newest fact about this block.
@@ -978,10 +1027,10 @@ export function useStreamingTranslatedText({
           return { pieces: next }
         })
         // Whatever landed covers its recorded gap; drop it so a later remount
-        // does not re-request finished work.
+        // does not re-request finished work. (noteGapSuccess already ran
+        // before the liveness gate, alongside the store merge.)
         sent.forEach(({ segment }, offset) => {
           if (results[offset] !== null) {
-            noteGapSuccess(segment.text)
             clearGaps(blockKey, segment.start, segment.end)
           }
         })
@@ -1125,6 +1174,18 @@ export function useStreamingTranslatedText({
           // Released first, before the liveness gate: the claim must not
           // outlive the request that holds it.
           releaseInflight(blockKey, [pending])
+          // Persist before the liveness gate (see `mergePiecesIntoStore`): a
+          // re-key between dispatch and this callback must not cost the reply.
+          if (attempt.text !== null) {
+            mergePiecesIntoStore(blockKey, [
+              {
+                start: covered,
+                end: gapEnd,
+                text: attempt.text,
+                source: text.slice(covered, gapEnd),
+              },
+            ])
+          }
           if (!isCurrent()) return
           if (attempt.text === null) {
             if (attempt.error) setLastError(attempt.error)
