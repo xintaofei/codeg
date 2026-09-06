@@ -33,6 +33,13 @@ import { AgentPlanOverlay } from "@/components/chat/agent-plan-overlay"
 import { SubAgentOverlay } from "@/components/chat/sub-agent-overlay"
 import { SessionViewerHost } from "@/components/message/session-viewer-host"
 import { normalizeToolName } from "@/lib/tool-call-normalization"
+import {
+  requestTranslationDetailed,
+  translationCacheKey,
+  useTranslationSettingsSnapshot,
+  useTranslationEnabled,
+} from "@/hooks/use-translated-text"
+import { maskPlainText } from "@/components/ai-elements/markdown-mask"
 import { isDelegateToAgentToolName } from "@/lib/delegation-card"
 import type { DelegationCardSource } from "@/hooks/use-delegation-card-model"
 import {
@@ -55,7 +62,7 @@ import {
 } from "lucide-react"
 import { useCreateTaskFromMessage } from "./use-create-task-from-message"
 import { Button } from "@/components/ui/button"
-import { useTranslations } from "next-intl"
+import { useLocale, useTranslations } from "next-intl"
 import {
   buildPlanKey,
   extractLatestPlanEntriesFromMessages,
@@ -841,6 +848,41 @@ export function MessageListView({
 }: MessageListViewProps) {
   const t = useTranslations("Folder.chat.messageList")
   const sharedT = useTranslations("Folder.chat.shared")
+  const uiLocale = useLocale()
+  const translateEnabled = useTranslationEnabled()
+  const translateSettings = useTranslationSettingsSnapshot()
+  // Selection text is plain rendered prose, NOT Markdown source — the fences
+  // and backticks are gone by the time the DOM is read — so it skips literal
+  // masking entirely: the markup patterns would only mangle real content here
+  // (a Git conflict hunk reads as a fake `<tag>`, "$100 and $200" as math).
+  // The card targets its own language when one was picked; the cache key
+  // carries that language so the two never serve each other.
+  const handleTranslateSelection = useCallback(
+    async (text: string) => {
+      if (!translateEnabled || !translateSettings.selectionTranslate) {
+        return { text: null, error: "DISABLED" }
+      }
+      const selectionLang = translateSettings.selectionTargetLang
+      const effective = { ...translateSettings, targetLang: selectionLang }
+      const key = translationCacheKey({
+        blockKey: "selection",
+        text,
+        uiLocale,
+        settings: effective,
+      })
+      // A hand-initiated translation is the reader's explicit ask — priority
+      // lane. The detailed attempt carries the failure reason for the card.
+      return requestTranslationDetailed(
+        text,
+        uiLocale,
+        key,
+        true,
+        selectionLang,
+        maskPlainText
+      )
+    },
+    [uiLocale, translateEnabled, translateSettings]
+  )
   // Subscribe to only this conversation's session + derived timeline. Another
   // conversation's streaming token no longer re-renders this view; the timeline
   // selector returns a reference-stable array (memoized per session object) so
@@ -1417,6 +1459,7 @@ export function MessageListView({
           onQuote={onQuoteSelection}
           onAsk={onAskSelection}
           onSaveAsNote={onSaveNoteSelection}
+          onTranslate={translateEnabled ? handleTranslateSelection : undefined}
         />
       </div>
     </SessionViewerHost>

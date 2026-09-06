@@ -242,10 +242,67 @@ describe("useStreamingTranslatedText", () => {
     await flush()
     // The settle flush rides without a reference (the whole block is one
     // request and the model sees the full text), so the payload is "p3" raw.
-    const lastCall = mocks.translate.mock.calls.at(-1)![0] as string[]
+    const lastCall = mocks.translate.mock.calls[
+      mocks.translate.mock.calls.length - 1
+    ][0] as string[]
     expect(lastCall[0]).toContain("p3")
     expect(lastCall[0]).not.toContain("[Reference for consistency")
     expect(result.current.display).toBe("译:p1\n\n译:p2\n\n译:p3")
+  })
+
+  it("bounds the settle flush at the nearest piece beyond a chain gap", async () => {
+    const mod = await setup()
+    // The endpoint refuses the GAP chunk until settle: mid-stream, its
+    // siblings (one/three/four) land as pieces while the chain stays broken
+    // at the gap — later paragraphs are translated but unrenderable.
+    let gapAllowed = false
+    mocks.translate.mockImplementation(async (texts: Texts) =>
+      texts.map((text) => {
+        if (!gapAllowed && text.includes("GAP")) {
+          return { key: text, text: "", error: "RATE", fromCache: false }
+        }
+        if (/^\[1\] /m.test(text)) {
+          const segments = text.split(/(?:^|\n)\[\d+\] /).slice(1)
+          return {
+            key: text,
+            text: segments
+              .map((segment, index) => `[${index + 1}] 译:${segment.trim()}`)
+              .join("\n\n"),
+            fromCache: false,
+          }
+        }
+        return { key: text, text: `译:${text.trim()}`, fromCache: false }
+      })
+    )
+    const fullText = "one\n\nGAP\n\nthree\n\nfour\n\n"
+    const { rerender, result } = renderStream(
+      mod,
+      { text: fullText, isStreaming: true },
+      "gap"
+    )
+    // Exhaust the streaming retries (2 × backoff) and the pause cooldown so
+    // the machine is in its settled-input state with the gap still open.
+    await advance(60_000)
+    expect(result.current.display).toBe("译:one\n\nGAP\n\nthree\n\nfour\n\n")
+
+    gapAllowed = true
+    rerender({ text: fullText, isStreaming: false })
+    await flush()
+    await advance(WINDOW)
+
+    // The settle flush re-requests ONLY the gap: the pieces behind it
+    // (three/four) already sit in the store, and an unbounded flush would
+    // have re-translated all of them in one giant request.
+    const settleCall = mocks.translate.mock.calls[
+      mocks.translate.mock.calls.length - 1
+    ][0] as string[]
+    expect(settleCall[0]).toBe("GAP\n\n")
+    expect(settleCall[0]).not.toContain("three")
+    // The chain reconnects through the filled gap and the stored pieces
+    // render immediately — no re-translation wait for the settled tail.
+    expect(result.current.display).toBe(
+      "译:one\n\n译:GAP\n\n译:three\n\n译:four\n\n"
+    )
   })
 
   it("re-flushes the tail when in-flight units land after the settle flush", async () => {

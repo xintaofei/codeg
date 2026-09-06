@@ -14,6 +14,7 @@ const LOGS_DIR_NAME: &str = "logs";
 const TURN_TIMINGS_DIR_NAME: &str = "turn-timings";
 const ACP_TRANSCRIPTS_DIR_NAME: &str = "acp-transcripts";
 const BACKGROUNDS_DIR_NAME: &str = "backgrounds";
+const CACHE_DIR_NAME: &str = "cache";
 
 /// `$CODEG_HOME` if set (and non-empty), else `~/.codeg/`.
 ///
@@ -167,6 +168,27 @@ pub fn codeg_acp_transcripts_root() -> PathBuf {
     dirs::home_dir()
         .map(|h| h.join(CODEG_DIR_NAME).join(ACP_TRANSCRIPTS_DIR_NAME))
         .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME).join(ACP_TRANSCRIPTS_DIR_NAME))
+}
+
+/// Root directory for regenerable caches — content whose loss costs a refetch
+/// and nothing else. Unlike every other root here, deleting this one is a
+/// supported user action, so nothing that must survive a wipe may live under
+/// it.
+///
+/// Resolution mirrors [`codeg_turn_timings_root`]:
+/// 1. `$CODEG_HOME/cache`
+/// 2. `$CODEG_DATA_DIR/cache` (server-mode data directory)
+/// 3. `~/.codeg/cache` (desktop default)
+pub fn codeg_cache_dir() -> PathBuf {
+    if let Some(custom) = std::env::var_os("CODEG_HOME").filter(|s| !s.is_empty()) {
+        return PathBuf::from(custom).join(CACHE_DIR_NAME);
+    }
+    if let Some(data) = std::env::var_os("CODEG_DATA_DIR").filter(|s| !s.is_empty()) {
+        return PathBuf::from(data).join(CACHE_DIR_NAME);
+    }
+    dirs::home_dir()
+        .map(|h| h.join(CODEG_DIR_NAME).join(CACHE_DIR_NAME))
+        .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME).join(CACHE_DIR_NAME))
 }
 
 /// Single source of truth for "where does the database live, and where

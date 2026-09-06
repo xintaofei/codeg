@@ -684,6 +684,43 @@ pub fn build_router(
             "/update_system_terminal_settings",
             post(handlers::system_settings::update_system_terminal_settings),
         )
+        // ─── Content translation ───
+        .route(
+            "/translation_get_settings",
+            post(handlers::translation::translation_get_settings),
+        )
+        .route(
+            "/translation_update_settings",
+            post(handlers::translation::translation_update_settings),
+        )
+        .route(
+            "/translation_test",
+            post(handlers::translation::translation_test),
+        )
+        .route(
+            "/translation_list_models",
+            post(handlers::translation::translation_list_models),
+        )
+        .route(
+            "/translation_translate",
+            post(handlers::translation::translation_translate),
+        )
+        .route(
+            "/translation_cache_stats",
+            post(handlers::translation::translation_cache_stats),
+        )
+        .route(
+            "/translation_clear_cache",
+            post(handlers::translation::translation_clear_cache),
+        )
+        .route(
+            "/translation_pool_status",
+            post(handlers::translation::translation_pool_status),
+        )
+        .route(
+            "/translation_metrics",
+            post(handlers::translation::translation_metrics),
+        )
         // ─── Logging ───
         .route(
             "/get_log_settings",

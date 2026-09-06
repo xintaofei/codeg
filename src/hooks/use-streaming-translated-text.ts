@@ -161,6 +161,32 @@ function chainEnd(
 }
 
 /**
+ * The nearest piece start beyond `from` whose stored source still matches the
+ * current text — the point where the chain can reconnect. `textLength` when
+ * none exists. Settle paths bound their requests here: the display chain
+ * stops at the first gap, but pieces beyond the gap are still good, and an
+ * unbounded flush would re-translate all of that held content in one giant
+ * request (the observed 19-second settle stall).
+ */
+function nextValidPieceStart(
+  pieces: ReadonlyMap<number, Piece>,
+  from: number,
+  text: string
+): number {
+  let nearest = text.length
+  for (const piece of pieces.values()) {
+    if (
+      piece.start > from &&
+      piece.end <= text.length &&
+      text.slice(piece.start, piece.end) === piece.source
+    ) {
+      nearest = Math.min(nearest, piece.start)
+    }
+  }
+  return nearest
+}
+
+/**
  * A clipped straddle shorter than this waits for the settle flush instead of
  * spending a request on a handful of characters (a sealed unit can overlap
  * tail chunks already dispatched into its region).
@@ -593,14 +619,13 @@ export function useStreamingTranslatedText({
       return true
     }
 
-    // Settled convergence: request whatever the translated chain has not
-    // covered as a single remainder. Cold-mounted old messages degrade to one
+    // Settled convergence: request one gap at a time, bounded by the nearest
+    // reconnectable piece. Cold-mounted old messages degrade to one
     // whole-block request, the same shape the settled hook would have made.
     //
-    // One flush per boundary, not once per block: when a segment result that
-    // was in flight at settle time lands afterwards, the chain moves past the
-    // remainder's start and the re-request covers the new tail — the
-    // overlapped region it refetches is content-addressed cache material.
+    // One flush per boundary, not once per block: when a gap fills, the chain
+    // walks straight through every piece behind it and the next effect run
+    // flushes the next gap (or none).
     const flushSettled = () => {
       clearTimer()
 
@@ -608,8 +633,34 @@ export function useStreamingTranslatedText({
       if (settledBoundaryRef.current === covered) return
       settledBoundaryRef.current = covered
 
-      const pending = text.slice(covered)
-      if (!pending.trim()) return
+      // The chain stops at the first gap, but valid pieces may continue
+      // beyond it (mid-stream partial failures whose later siblings landed).
+      // Bounding the flush there re-requests only the gap itself; unbounded,
+      // the flush re-translates everything the store already holds in one
+      // request — quota spent twice and a minutes-long generation the reader
+      // waits out staring at the old display.
+      const gapEnd = nextValidPieceStart(progress.pieces, covered, text)
+      const pending = text.slice(covered, gapEnd)
+      if (!pending.trim()) {
+        // A whitespace-only gap still blocks the chain (the walk needs a
+        // piece at every offset): stitch it with an identity piece so the
+        // pieces beyond it render — no request, no gates to fool.
+        if (gapEnd > covered) {
+          setProgress((prev) => {
+            if (prev.pieces.has(covered)) return prev
+            const next = new Map(prev.pieces)
+            next.set(covered, {
+              start: covered,
+              end: gapEnd,
+              text: pending,
+              source: pending,
+            })
+            savePieces(blockKey, next)
+            return { pieces: next }
+          })
+        }
+        return
+      }
 
       const key = translationCacheKey({
         blockKey,
@@ -645,9 +696,9 @@ export function useStreamingTranslatedText({
             const next = new Map(prev.pieces)
             next.set(covered, {
               start: covered,
-              end: text.length,
+              end: gapEnd,
               text: attempt.text ?? "",
-              source: text.slice(covered),
+              source: text.slice(covered, gapEnd),
             })
             savePieces(blockKey, next)
             return { pieces: next }
@@ -662,20 +713,12 @@ export function useStreamingTranslatedText({
     }
 
     if (!isStreaming) {
-      // Keep the normal batch machinery running after settle instead of
-      // flushing the whole remainder as one request. The single flush was
-      // fragile twice over: under the relay's rate limit it failed wholesale
-      // (three backoff attempts, then the tail stayed raw forever), and one
-      // model omission inside the big remainder erased every uncovered
-      // paragraph from the display at once. Batched segments isolate each
-      // failure, and requestTranslation splits whatever is left internally.
-      if (consecutiveFailuresRef.current < STREAM_FAILURE_PAUSE_LIMIT) {
-        const settledFrom = Math.max(
-          chainEnd(progress.pieces, text.length),
-          dispatchedEndRef.current
-        )
-        if (dispatchBatch(settledFrom)) return clearTimer
-      }
+      // Settle converges through the bounded flush alone. The merged-segment
+      // batch used to run here first, but its span lookups key on segment
+      // starts — merge redraws those boundaries, and every span reaching past
+      // the chain re-requested the units the store already holds (the settle
+      // stall). The bounded flush covers the same ground one gap at a time,
+      // and requestTranslation splits whatever a gap contains internally.
       flushSettled()
       return clearTimer
     }

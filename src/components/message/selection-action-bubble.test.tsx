@@ -15,6 +15,29 @@ vi.mock("sonner", () => ({
 import { SelectionActionBubble } from "./selection-action-bubble"
 import enMessages from "@/i18n/messages/en.json"
 
+// FE-5 owns the message files; the bubble's tests only need the selection keys,
+// so the baseline is overlaid with whatever exists under `Folder.chat.messageList`
+// plus the keys this slice renders. Pointing at `enMessages` directly would make
+// every new FE-5 key a compile error here until it lands.
+const messages = {
+  ...enMessages,
+  Folder: {
+    ...enMessages.Folder,
+    chat: {
+      ...enMessages.Folder.chat,
+      messageList: {
+        ...enMessages.Folder.chat.messageList,
+        selectionTranslate: "Translate",
+        selectionTranslating: "Translating…",
+        selectionTranslateFailed: "Translation failed",
+        selectionTranslateTruncated: "Selection cut at {limit} characters",
+        selectionTranslateOriginal: "Original",
+        selectionTranslateClose: "Close translation",
+      },
+    },
+  },
+}
+
 // The container's box. jsdom does no layout, so every rect the component reads
 // is stubbed: the container via Element.prototype, the selection via the fake
 // Range below.
@@ -102,7 +125,7 @@ function selectionChanged() {
  * faithful shape for the button-sensitive cases.
  */
 function firePointer(
-  type: "pointerdown" | "pointerup" | "pointercancel",
+  type: "pointerdown" | "pointerup" | "pointercancel" | "pointermove",
   target: Element,
   init: MouseEventInit = {}
 ) {
@@ -116,19 +139,24 @@ function firePointer(
 function Harness({
   onQuote,
   onAsk,
+  onTranslate,
 }: {
   onQuote?: (text: string) => void
   onAsk?: (selection: string, question: string) => void
+  onTranslate?: (
+    text: string
+  ) => Promise<{ text: string | null; error?: string } | null>
 }) {
   const ref = useRef<HTMLDivElement>(null)
   return (
-    <NextIntlClientProvider locale="en" messages={enMessages}>
+    <NextIntlClientProvider locale="en" messages={messages}>
       <div ref={ref} data-testid="box">
         <p data-testid="para">hello world</p>
         <SelectionActionBubble
           containerRef={ref}
           onQuote={onQuote}
           onAsk={onAsk}
+          onTranslate={onTranslate}
         />
       </div>
     </NextIntlClientProvider>
@@ -143,6 +171,16 @@ function openAskComposer(container: HTMLElement, text = "hello") {
     fireEvent.click(screen.getByRole("button", { name: "Ask" }))
   })
   return screen.getByRole("textbox", { name: "Ask about this selection…" })
+}
+
+/** Select `text`, open the translation card, and hand back the toolbar. */
+function openTranslateCard(container: HTMLElement, text = "hello") {
+  mockSelection(container.querySelector("[data-testid=para]"), text)
+  selectionChanged()
+  act(() => {
+    fireEvent.click(screen.getByRole("button", { name: "Translate" }))
+  })
+  return screen.getByRole("toolbar")
 }
 
 let rectSpy: ReturnType<typeof vi.spyOn>
@@ -171,12 +209,18 @@ function mockToolbarWidth(width: number) {
 }
 
 /**
- * Like {@link mockToolbarWidth}, but the toolbar reports a DIFFERENT width once
- * the ask composer replaces the button row — which is the whole reason the
- * clamp has to be recomputed when it opens. The mode is read off the element's
- * own content, so no test has to sequence the two widths by hand.
+ * Like {@link mockToolbarWidth}, but the toolbar reports a DIFFERENT width for
+ * each face it can show — which is the whole reason the clamp has to be
+ * recomputed when one opens. The face is read off the element's own content, so
+ * no test has to sequence the widths by hand: the ask composer owns the input,
+ * and the translation card grows again once the result (the only selectable
+ * text in the bubble) replaces its spinner.
  */
-function mockToolbarWidthByMode(buttonsWidth: number, askWidth: number) {
+function mockToolbarWidthByMode(
+  buttonsWidth: number,
+  askWidth: number,
+  card?: { loading: number; done: number }
+) {
   const original = Object.getOwnPropertyDescriptor(
     HTMLElement.prototype,
     "offsetWidth"
@@ -184,7 +228,13 @@ function mockToolbarWidthByMode(buttonsWidth: number, askWidth: number) {
   Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
     configurable: true,
     get(this: HTMLElement) {
-      return this.querySelector("input") ? askWidth : buttonsWidth
+      if (this.querySelector("input")) return askWidth
+      if (card && this.querySelector("[role=status], [data-selectable]")) {
+        return this.querySelector("[data-selectable]")
+          ? card.done
+          : card.loading
+      }
+      return buttonsWidth
     },
   })
   return () => {
@@ -716,5 +766,354 @@ describe("SelectionActionBubble", () => {
       vi.useRealTimers()
     }
     expect(screen.getByRole("toolbar")).toBeTruthy()
+  })
+
+  it("drops the dragged-card offset when a new selection is made", () => {
+    // Drag the translation card away, close it, select again: the fresh
+    // button row must sit at the NEW selection, not stay pinned to wherever
+    // the previous card was dragged. The offset is visual state of one card,
+    // not of the bubble.
+    const onTranslate = vi.fn().mockResolvedValue({ text: "hola" })
+    const { container } = render(
+      <Harness onQuote={vi.fn()} onTranslate={onTranslate} />
+    )
+    const restoreWidth = mockToolbarWidth(100)
+
+    // Open the card and drag it by the header.
+    mockSelection(container.querySelector("[data-testid=para]"), "hello")
+    selectionChanged()
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Translate" }))
+    })
+    const handle = screen
+      .getByRole("toolbar")
+      .querySelector("[data-drag-handle]") as HTMLElement
+    firePointer("pointerdown", handle, {
+      button: 0,
+      clientX: 100,
+      clientY: 100,
+    })
+    firePointer("pointermove", handle, { clientX: 400, clientY: 500 })
+    firePointer("pointerup", handle)
+    const dragged = screen.getByRole("toolbar")
+    const draggedLeft = dragged.style.left
+    expect(Number(draggedLeft.replace("px", ""))).toBeGreaterThan(300)
+
+    // Dismiss the card, then make a NEW selection: the button row's left
+    // must be back at the selection's centre (offset zeroed).
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Close translation" }))
+    })
+    mockSelection(container.querySelector("[data-testid=para]"), "world")
+    selectionChanged()
+    const fresh = screen.getByRole("toolbar")
+    expect(fresh.style.left).toBe("140px")
+    expect(fresh.style.top).toBe("92px")
+
+    restoreWidth()
+  })
+
+  it("omits the translate action when no translate handler is given", () => {
+    // Translation off in settings means the host passes no handler at all.
+    const { container } = render(<Harness onQuote={vi.fn()} />)
+    mockSelection(container.querySelector("[data-testid=para]"), "hello")
+    selectionChanged()
+
+    expect(screen.getByRole("button", { name: "Copy Text" })).toBeTruthy()
+    expect(screen.queryByRole("button", { name: "Translate" })).toBeNull()
+  })
+
+  it("places translate as the toolbar's rightmost action", () => {
+    const { container } = render(
+      <Harness onQuote={vi.fn()} onAsk={vi.fn()} onTranslate={vi.fn()} />
+    )
+    mockSelection(container.querySelector("[data-testid=para]"), "hello")
+    selectionChanged()
+
+    const names = Array.from(
+      screen.getByRole("toolbar").querySelectorAll("button")
+    ).map((button) => button.textContent?.trim())
+    expect(names[names.length - 1]).toBe("Translate")
+  })
+
+  it("swaps the buttons for a card and keeps the selection while translating", async () => {
+    const onTranslate = vi.fn().mockResolvedValue({ text: "hola" })
+    const { container } = render(
+      <Harness onQuote={vi.fn()} onTranslate={onTranslate} />
+    )
+    const toolbar = openTranslateCard(container, "hello")
+
+    // The card replaces the actions — the toolbar can't do both at once — and
+    // reports progress while the request is out.
+    expect(screen.queryByRole("button", { name: "Copy Text" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull()
+    expect(screen.getByRole("status", { name: "Translating…" })).toBeTruthy()
+
+    await act(async () => {})
+
+    expect(onTranslate).toHaveBeenCalledWith("hello")
+    expect(screen.getByText("hola")).toBeTruthy()
+    // Unlike every other action, translating does NOT dismiss: the result is
+    // the toolbar, and the selection it belongs to stays put underneath it.
+    expect(removeAllRanges).not.toHaveBeenCalled()
+    expect(toolbar.isConnected).toBe(true)
+    expect(screen.getByText("Original")).toBeTruthy()
+  })
+
+  it.each([
+    ["resolves null", () => vi.fn().mockResolvedValue(null)],
+    ["rejects", () => vi.fn().mockRejectedValue(new Error("offline"))],
+  ])("reports the failure inline when the handler %s", async (_l, make) => {
+    const { container } = render(<Harness onTranslate={make()} />)
+    openTranslateCard(container)
+
+    await act(async () => {})
+
+    // Inline, not a toast: unlike copy, the surface that would show the
+    // confirmation is still on screen.
+    expect(screen.getByText("Translation failed")).toBeTruthy()
+    expect(toastError).not.toHaveBeenCalled()
+    expect(screen.queryByRole("status")).toBeNull()
+    expect(screen.getByRole("toolbar")).toBeTruthy()
+  })
+
+  it("shows the failure reason and offers a retry on the card", async () => {
+    const onTranslate = vi
+      .fn()
+      .mockResolvedValueOnce({
+        text: null,
+        error: "The translation request failed (NetworkError)",
+      })
+      .mockResolvedValueOnce({ text: "hola" })
+    const { container } = render(<Harness onTranslate={onTranslate} />)
+    openTranslateCard(container)
+
+    await act(async () => {})
+
+    // The endpoint's own reason shows below the failure line...
+    expect(
+      screen.getByText("The translation request failed (NetworkError)")
+    ).toBeTruthy()
+    // ...and a retry re-runs the SAME original text.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    })
+    expect(onTranslate).toHaveBeenCalledTimes(2)
+    expect(onTranslate).toHaveBeenLastCalledWith("hello")
+    await act(async () => {})
+    expect(screen.getByText("hola")).toBeTruthy()
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull()
+  })
+
+  it("maps a gate code to its message on the failure card", async () => {
+    const { container } = render(
+      <Harness
+        onTranslate={vi
+          .fn()
+          .mockResolvedValue({ text: null, error: "ECHO_OR_REFUSAL" })}
+      />
+    )
+    openTranslateCard(container)
+
+    await act(async () => {})
+
+    expect(
+      screen.getByText("The endpoint echoed the source or refused the request.")
+    ).toBeTruthy()
+  })
+
+  it("cuts an overlong selection to the cap and says it did", async () => {
+    const onTranslate = vi.fn().mockResolvedValue({ text: "translated" })
+    const { container } = render(<Harness onTranslate={onTranslate} />)
+    openTranslateCard(container, "a".repeat(2500))
+
+    await act(async () => {})
+
+    // The handler receives the cut text, never the full selection...
+    expect(onTranslate).toHaveBeenCalledWith("a".repeat(2000))
+    // ...and the user is told, so a short translation of a long selection
+    // doesn't read as a broken one.
+    expect(screen.getByRole("toolbar").textContent).toMatch(/2,?000/)
+    expect(screen.getByText("translated")).toBeTruthy()
+  })
+
+  it.each([
+    [
+      "Escape",
+      () => {
+        act(() => {
+          fireEvent.keyDown(document.body, { key: "Escape" })
+        })
+      },
+    ],
+    [
+      "a press outside",
+      () => {
+        act(() => {
+          fireEvent.pointerDown(document.body)
+        })
+      },
+    ],
+    [
+      "the card's close button",
+      () => {
+        act(() => {
+          fireEvent.click(
+            screen.getByRole("button", { name: "Close translation" })
+          )
+        })
+      },
+    ],
+  ])("closes the translation card on %s", async (_label, close) => {
+    const { container } = render(
+      <Harness onTranslate={vi.fn().mockResolvedValue({ text: "hola" })} />
+    )
+    openTranslateCard(container)
+    await act(async () => {})
+    expect(screen.getByText("hola")).toBeTruthy()
+
+    close()
+
+    expect(screen.queryByRole("toolbar")).toBeNull()
+    // And it stays closed: a stale card must not come back on the next
+    // selectionchange the page happens to fire.
+    selectionChanged()
+    expect(screen.queryByText("hola")).toBeNull()
+  })
+
+  it("shows the question box and the translation card one at a time", async () => {
+    const { container } = render(
+      <Harness
+        onAsk={vi.fn()}
+        onTranslate={vi.fn().mockResolvedValue({ text: "hola" })}
+      />
+    )
+    openTranslateCard(container)
+    await act(async () => {})
+
+    // Translating: no composer, and no way to open one.
+    expect(screen.queryByRole("textbox")).toBeNull()
+    expect(screen.queryByRole("button", { name: "Ask" })).toBeNull()
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Close translation" }))
+    })
+
+    // Asking: no card, and no way to open one.
+    openAskComposer(container)
+    expect(screen.queryByText("Original")).toBeNull()
+    expect(screen.queryByRole("button", { name: "Translate" })).toBeNull()
+  })
+
+  it("drops a translation that lands after its card was replaced", async () => {
+    // Content-addressed translations can take a while, so a slow first request
+    // can easily outlive the card that asked for it. Letting it land would
+    // overwrite a newer answer — or resurrect a dismissed card entirely.
+    const resolvers: Array<(attempt: { text: string }) => void> = []
+    const onTranslate = vi.fn(
+      () =>
+        new Promise<{ text: string }>((resolve) => {
+          resolvers.push(resolve)
+        })
+    )
+    const { container } = render(<Harness onTranslate={onTranslate} />)
+    openTranslateCard(container, "hello")
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Close translation" }))
+    })
+
+    openTranslateCard(container, "second selection")
+    await act(async () => {
+      resolvers[1]({ text: "second translation" })
+    })
+    expect(screen.getByText("second translation")).toBeTruthy()
+
+    await act(async () => {
+      resolvers[0]({ text: "first translation" })
+    })
+    expect(screen.queryByText("first translation")).toBeNull()
+    expect(screen.getByText("second translation")).toBeTruthy()
+  })
+
+  it("re-clamps again when the result widens the card", async () => {
+    // The card opens narrow (a spinner) and grows when the translation lands,
+    // and the frame loop is frozen throughout — so both steps have to clamp
+    // themselves or the card ends up sheared by the panel's overflow-hidden.
+    //
+    // 160 wide → half 80 → x clamped into [88, 312];
+    // 300 wide → half 150 → x clamped into [158, 242].
+    const restore = mockToolbarWidthByMode(160, 300, {
+      loading: 160,
+      done: 300,
+    })
+    try {
+      const { container } = render(
+        <Harness onTranslate={vi.fn().mockResolvedValue({ text: "hola" })} />
+      )
+      // Hard against the container's left edge, so both clamps actually bite.
+      mockSelection(container.querySelector("[data-testid=para]"), "hello", {
+        ...SELECTION_RECT,
+        left: 0,
+        right: 40,
+        width: 40,
+        x: 0,
+      } as DOMRect)
+      selectionChanged()
+      selectionChanged()
+      expect(screen.getByRole("toolbar").style.left).toBe("88px")
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: "Translate" }))
+      })
+      expect(screen.getByRole("toolbar").style.left).toBe("88px")
+
+      await act(async () => {})
+      expect(screen.getByRole("toolbar").style.left).toBe("158px")
+    } finally {
+      restore()
+    }
+  })
+
+  it("freezes every tracker while the translation card is open", async () => {
+    // The regression this guards: the freeze predicate has three readers
+    // (selectionchange, the deferred pointerup read, and the frame loop), and a
+    // mode that teaches only some of them to stand down leaves the card hanging
+    // at stale coordinates — or tears it down mid-request.
+    const { container } = render(
+      <Harness onTranslate={vi.fn().mockResolvedValue({ text: "hola" })} />
+    )
+    const para = container.querySelector("[data-testid=para]")
+    openTranslateCard(container)
+    await act(async () => {})
+    expect(screen.getByRole("toolbar").style.top).toBe("92px")
+
+    // The selection collapses underneath (a tap on touch does exactly this).
+    mockSelection(null, "")
+    selectionChanged()
+    expect(screen.getByText("hola")).toBeTruthy()
+    expect(screen.getByRole("toolbar").style.top).toBe("92px")
+
+    // Same selection, new geometry — as after a scroll.
+    mockSelection(para, "hello", {
+      ...SELECTION_RECT,
+      top: 260,
+      bottom: 280,
+      y: 260,
+    } as DOMRect)
+    selectionChanged()
+    expect(screen.getByRole("toolbar").style.top).toBe("92px")
+
+    // The deferred pointerup read and the frame loop honour it too.
+    vi.useFakeTimers()
+    try {
+      act(() => {
+        fireEvent.pointerUp(document)
+        vi.runAllTimers()
+        vi.advanceTimersByTime(50)
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(screen.getByRole("toolbar").style.top).toBe("92px")
   })
 })

@@ -1,0 +1,5 @@
+{"_example": "Fill with {\"file\": \"path\", \"reason\": \"why\"}. Seed rows are skipped."}
+{"file": "D:/CLIGUI/work/.doc/20260831-codeg-翻译中间件-计划.md", "reason": "一期实施计划（D-1..D-16 决策与风险表是本轮迭代的基线约束）"}
+{"file": "D:/CLIGUI/work/.doc/20260901-codeg-翻译中间件-复查.md", "reason": "一期实现落点对照表（本轮改动需与其锚点一致）"}
+{"file": "D:/CLIGUI/work/codeg/.ccg/tasks/translation-iteration-2/requirements.md", "reason": "本轮结构化需求（P1-P6 + 验收矩阵）"}
+{"file": "D:/CLIGUI/work/codeg/.ccg/tasks/translation-iteration-2/analysis.md", "reason": "Phase 2 三方分析综合与主控裁决（architect 必须遵循）"}

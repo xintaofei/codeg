@@ -35,6 +35,17 @@ function keyEvent(
   }
 }
 
+describe("events without a key", () => {
+  it("matches nothing instead of crashing when event.key is missing", () => {
+    // IME composition and some synthesized events carry no `key`; observed
+    // live as a TypeError from toLowerCase inside the global keydown handler.
+    const event = keyEvent(undefined as unknown as string)
+    expect(event.key).toBeUndefined()
+    expect(matchShortcutEvent(event, "mod+tab")).toBe(false)
+    expect(matchShortcutEvent(event, "escape")).toBe(false)
+  })
+})
+
 describe("tab cycling shortcuts", () => {
   it("registers next_tab and prev_tab with defaults", () => {
     const ids = SHORTCUT_DEFINITIONS.map((definition) => definition.id)

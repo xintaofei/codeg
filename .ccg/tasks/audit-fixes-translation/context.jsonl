@@ -1,0 +1,5 @@
+{"_example": "Fill with {\"file\": \"path\", \"reason\": \"why\"}. Seed rows are skipped."}
+{"file": "src/components/message/translation-toggle.tsx", "reason": "P1-1 focus 显现缺失；P2-3 定位统一"}
+{"file": "src/components/settings/translation-settings.tsx", "reason": "P1-2 htmlFor 关联缺失；P3-1 Select 宽度；P3-3 formatBytes 抽取来源"}
+{"file": "src/hooks/use-translated-text.ts", "reason": "P2-1 译文 Map 无上限；P3-4 缓存键长度前缀"}
+{"file": "src/components/message/content-parts-renderer.tsx", "reason": "P2-3 toggle 定位统一；P2-2 blockKey 注释声明；P3-2 去哨兵 div"}

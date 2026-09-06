@@ -1,0 +1,3 @@
+{"_example": "Fill with {\"file\": \"path\", \"reason\": \"why\"}. Seed rows are skipped."}
+{"file": ".doc/20260831-codeg-翻译中间件-计划.md", "reason": "实施主计划（零决策点），D-1/D-2 已并入 0901 修订纪要"}
+{"file": ".doc/20260901-codeg-翻译中间件-修订纪要.md", "reason": "可行性复核：D-1/D-2 简化 + isStreaming 多语义澄清 + shouldTranslate 判定函数 + R11"}

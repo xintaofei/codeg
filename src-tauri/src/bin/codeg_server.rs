@@ -254,6 +254,19 @@ async fn async_main() -> ExitCode {
     ));
     let emitter = EventEmitter::web_only(broadcaster.clone(), acp_event_bus.clone());
 
+    // Push translation-pool state changes to connected clients: the settings
+    // page's status strip re-fetches on this event instead of polling.
+    {
+        let emitter = emitter.clone();
+        codeg_lib::translation::pool::on_change(Arc::new(move || {
+            codeg_lib::web::event_bridge::emit_event(
+                &emitter,
+                "translation-pool-changed",
+                serde_json::json!({}),
+            );
+        }));
+    }
+
     // Build AppState
     let pet_state_handle = codeg_lib::pet_state_mapper::new_pet_state_handle();
     let connection_manager = codeg_lib::app_state::default_connection_manager();

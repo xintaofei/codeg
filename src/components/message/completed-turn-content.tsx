@@ -260,6 +260,7 @@ export const CompletedTurnContent = memo(function CompletedTurnContent({
           parts={parts}
           role="assistant"
           isStreaming={isStreaming}
+          keyPrefix="turn-"
         />
       )
     }
@@ -270,6 +271,7 @@ export const CompletedTurnContent = memo(function CompletedTurnContent({
           parts={parts}
           role="assistant"
           isStreaming={isStreaming}
+          keyPrefix="turn-"
         />
       </div>
     )
@@ -314,6 +316,7 @@ export const CompletedTurnContent = memo(function CompletedTurnContent({
                 parts={split.progress}
                 role="assistant"
                 isStreaming={isStreaming}
+                keyPrefix="progress-"
               />
             </div>
           </div>
@@ -324,6 +327,7 @@ export const CompletedTurnContent = memo(function CompletedTurnContent({
           parts={split.answer}
           role="assistant"
           isStreaming={isStreaming}
+          keyPrefix="answer-"
         />
       )}
     </div>

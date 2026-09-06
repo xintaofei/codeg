@@ -33,6 +33,7 @@ pub mod session_info;
 pub mod system_settings;
 pub mod terminal;
 pub mod token_usage;
+pub mod translation;
 mod upload_jail;
 pub mod version_control;
 pub mod web_server;

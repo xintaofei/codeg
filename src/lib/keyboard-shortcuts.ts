@@ -233,7 +233,10 @@ const KEY_LABELS: Record<string, string> = {
   delete: "Delete",
 }
 
-function normalizeKeyToken(rawKey: string): string | null {
+function normalizeKeyToken(rawKey: string | undefined): string | null {
+  // Some events carry no `key` at all — IME composition, certain browser-
+  // synthesized events. A missing token matches nothing, never crashes.
+  if (typeof rawKey !== "string") return null
   const key = rawKey.toLowerCase()
   if (!key) return null
 
