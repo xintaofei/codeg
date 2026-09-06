@@ -488,6 +488,73 @@ describe("useStreamingTranslatedText", () => {
     expect(second.result.current.isTranslated).toBe(true)
   })
 
+  it("lands separator runs as identity pieces without a request", async () => {
+    const mod = await setup()
+    mocks.translate.mockImplementation(ok)
+    const { rerender, result } = renderStream(
+      mod,
+      { text: "---\n\nreal paragraph\n\n", isStreaming: true },
+      "separator"
+    )
+    await flush()
+    await advance(WINDOW)
+    // The separator never rides the wire (checked after unwrapping, since a
+    // carry-context reference may legitimately quote a previous piece).
+    for (const [texts] of mocks.translate.mock.calls) {
+      for (const raw of texts as string[]) {
+        expect(unwrap(raw)).not.toContain("---")
+      }
+    }
+    // Settle: the separator stays raw, the paragraph translates.
+    rerender({ text: "---\n\nreal paragraph\n\n", isStreaming: false })
+    await flush()
+    await advance(WINDOW)
+    expect(result.current.display).toContain("---")
+    expect(result.current.display).toContain("译:real paragraph")
+  })
+
+  it("gives up on a gap after three failed replays", async () => {
+    const mod = await setup()
+    const callTimes: number[] = []
+    mocks.translate.mockImplementation(async (texts: Texts) => {
+      callTimes.push(Date.now())
+      return texts.map((raw) => ({
+        key: raw,
+        text: "",
+        error: "endpoint refuses this chunk",
+        fromCache: false,
+      }))
+    })
+    const { rerender, result } = renderStream(
+      mod,
+      { text: "stubborn\n\n", isStreaming: true },
+      "giveup"
+    )
+    // Streaming attempts fail; the settle flush and the gap replay take
+    // over with their bounded retries (variant escalation each round).
+    await advance(WINDOW)
+    rerender({ text: "stubborn\n\n", isStreaming: false })
+    await flush()
+    // Every retry chain (streaming attempts, settle-flush retries, gap
+    // replay rounds) is bounded — advance until the mock goes silent, then
+    // verify it stays silent. The exact call count races between the two
+    // retry chains, so only the convergence is asserted.
+    let spent = -1
+    for (let i = 0; i < 20; i += 1) {
+      await advance(600_000)
+      if (mocks.translate.mock.calls.length === spent) break
+      spent = mocks.translate.mock.calls.length
+    }
+    expect(spent).toBeGreaterThan(0)
+    // The gap has been dropped, not replayed forever: no further requests,
+    // no recorded gap, and the raw source stays on display.
+    await advance(600_000)
+    expect(mocks.translate.mock.calls.length).toBe(spent)
+    expect(mod.findPendingGaps("stubborn\n\n")).toEqual([])
+    expect(result.current.display).toContain("stubborn")
+    expect(result.current.display).not.toContain("译:")
+  })
+
   it("pauses after repeated failed batches and still converges on settle", async () => {
     const mod = await setup()
     mocks.translate.mockRejectedValue(new Error("endpoint down"))

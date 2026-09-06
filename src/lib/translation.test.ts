@@ -10,6 +10,7 @@ import {
   echoVerbatimError,
   HALF_SPLIT_MIN_CHARS,
   hasSameTranslationPlaceholders,
+  isUntranslatableSegment,
   joinTranslated,
   mergeUnit,
   mergeUnitGroups,
@@ -355,6 +356,43 @@ describe("missingTargetScript", () => {
   it("never gates Latin-script targets", () => {
     expect(missingTargetScript(PROSE, PROSE, "en")).toBe(false)
     expect(missingTargetScript(PROSE, PROSE, "fr")).toBe(false)
+  })
+})
+
+describe("isUntranslatableSegment", () => {
+  it("flags separator and decoration runs with no letters", () => {
+    for (const text of [
+      "---",
+      "***",
+      "___",
+      "===",
+      "~~~",
+      "...",
+      "* * *",
+      "————————",
+      "│ ├── └──",
+      "🚀 🌟",
+      "1.2.3",
+      "42",
+      "   \n\t  ",
+      "",
+    ]) {
+      expect(isUntranslatableSegment(text), JSON.stringify(text)).toBe(true)
+    }
+  })
+
+  it("keeps anything with a letter in any script", () => {
+    for (const text of [
+      "a",
+      "OK",
+      "--- separator ---",
+      "第 1 段",
+      "يوم",
+      "1) hello",
+      "[[CBLK0]] is a token",
+    ]) {
+      expect(isUntranslatableSegment(text), JSON.stringify(text)).toBe(false)
+    }
   })
 })
 

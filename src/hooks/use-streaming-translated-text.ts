@@ -13,6 +13,7 @@ import {
   STREAM_TAIL_CHUNK_MAX_CHARS,
   STREAM_UNIT_RETRY_BASE_MS,
   STREAM_UNIT_RETRY_LIMIT,
+  isUntranslatableSegment,
   mergeUnit,
   splitStableUnits,
   tailChunksFor,
@@ -221,6 +222,35 @@ export function findPendingGaps(
     }
   }
   return matches
+}
+
+/**
+ * Consecutive replay failures per gap text, and the give-up threshold. A gap
+ * that failed every replay N times is not transient: replay always escalates
+ * the constraint variant, so at temperature 0 the Nth attempt is as likely as
+ * the first — keeping it recorded only spends a concurrent slot on a request
+ * whose answer is already known (observed: a thinking-block tail replayed
+ * every widening backoff forever, each round refused by the same gate).
+ * Give-up means the gap is dropped and the raw source stays displayed; the
+ * count is keyed by content (like the gap store itself), so a re-keyed
+ * instance cannot resurrect an abandoned region. A success anywhere clears
+ * the count.
+ */
+const GAP_GIVE_UP_LIMIT = 3
+const gapFailureCounts = new Map<string, number>()
+
+function noteGapFailure(text: string): boolean {
+  const count = (gapFailureCounts.get(text) ?? 0) + 1
+  gapFailureCounts.set(text, count)
+  return count >= GAP_GIVE_UP_LIMIT
+}
+
+function noteGapSuccess(text: string): void {
+  gapFailureCounts.delete(text)
+}
+
+function isAbandonedGap(text: string): boolean {
+  return (gapFailureCounts.get(text) ?? 0) >= GAP_GIVE_UP_LIMIT
 }
 
 /**
@@ -616,7 +646,7 @@ export function useStreamingTranslatedText({
 
     const replayGaps = (targets?: Array<{ key: string; gap: PendingGap }>) => {
       clearReplayTimer()
-      const matches = (
+      const all = (
         targets ??
         findPendingGaps(text).filter(
           ({ gap }) =>
@@ -624,6 +654,37 @@ export function useStreamingTranslatedText({
             !isInflight(blockKey, gap.text)
         )
       ).filter(({ gap }) => text.slice(gap.start, gap.end) === gap.text)
+      // Untranslatable gaps (separator runs the echo gate rightly refused)
+      // never get a request: stitch them with their own bytes and drop the
+      // record — a request could only be refused again.
+      const selfStitch = all.filter(({ gap }) =>
+        isUntranslatableSegment(gap.text)
+      )
+      if (selfStitch.length > 0) {
+        setProgress((prev) => {
+          const next = new Map(prev.pieces)
+          let changed = false
+          for (const { gap } of selfStitch) {
+            if (next.has(gap.start)) continue
+            next.set(gap.start, {
+              start: gap.start,
+              end: gap.end,
+              text: gap.text,
+              source: gap.text,
+            })
+            changed = true
+          }
+          if (!changed) return prev
+          savePieces(blockKey, next)
+          return { pieces: next }
+        })
+        for (const { key, gap } of selfStitch) {
+          clearGaps(key, gap.start, gap.end)
+        }
+      }
+      const matches = all
+        .filter(({ gap }) => !isUntranslatableSegment(gap.text))
+        .filter(({ gap }) => !isAbandonedGap(gap.text))
       if (matches.length === 0) return
       for (const { gap } of matches) {
         replayedGapsRef.current.add(`${gap.start}:${gap.end}`)
@@ -676,6 +737,13 @@ export function useStreamingTranslatedText({
           // refuse every future dispatch of these bytes.
           releaseInflight(blockKey, [gap.text])
           if (value === null) {
+            if (noteGapFailure(gap.text)) {
+              // Given up: drop the record so no later mount re-requests a
+              // region whose replay answer is already known to be refusal.
+              // The raw source stays displayed.
+              clearGaps(key, gap.start, gap.end)
+              return
+            }
             // Still a durable fact about these bytes even when this instance
             // is gone — refresh the record so a later mount retries.
             recordGap(key, gap)
@@ -683,6 +751,7 @@ export function useStreamingTranslatedText({
             failed.push({ key, gap })
             return
           }
+          noteGapSuccess(gap.text)
           if (!isCurrent()) return
           landed += 1
           clearGaps(key, gap.start, gap.end)
@@ -789,15 +858,46 @@ export function useStreamingTranslatedText({
       const fresh = batch.filter(
         (segment) => !isInflight(blockKey, segment.text)
       )
-      if (fresh.length === 0) return false
+      // Untranslatable segments (symbol runs, separators — no letter in any
+      // language to change) land as identity pieces instead of requests: a
+      // request can only be refused by the echo gate and retried forever.
+      const selfLanded = fresh.filter((segment) =>
+        isUntranslatableSegment(segment.text)
+      )
+      const requestable = fresh.filter(
+        (segment) => !isUntranslatableSegment(segment.text)
+      )
+      if (selfLanded.length > 0) {
+        setProgress((prev) => {
+          const next = new Map(prev.pieces)
+          let changed = false
+          for (const segment of selfLanded) {
+            if (next.has(segment.start)) continue
+            next.set(segment.start, {
+              start: segment.start,
+              end: segment.end,
+              text: segment.text,
+              source: segment.text,
+            })
+            changed = true
+          }
+          if (!changed) return prev
+          savePieces(blockKey, next)
+          return { pieces: next }
+        })
+        for (const segment of selfLanded) {
+          clearGaps(blockKey, segment.start, segment.end)
+        }
+      }
+      if (requestable.length === 0) return false
       claimInflight(
         blockKey,
-        fresh.map((segment) => segment.text)
+        requestable.map((segment) => segment.text)
       )
       // `pos` may cover a skipped (still-inflight) segment: its own land()
       // failure rolls the cursor back to it, and the settle flush skips
       // without pinning — so covering it here never strands those bytes.
-      const pos = fresh[fresh.length - 1].end
+      const pos = requestable[requestable.length - 1].end
       dispatchedEndRef.current = Math.max(dispatchedEndRef.current, pos)
       lastDispatchAtRef.current = Date.now()
       lastDispatchCoveredRef.current = pos
@@ -808,7 +908,7 @@ export function useStreamingTranslatedText({
       // segment back is enough; history never accumulates.
       let context: ContextReference | undefined
       if (settings.carryContext) {
-        const batchStart = fresh[0].start
+        const batchStart = requestable[0].start
         let prev: Piece | undefined
         for (const piece of progressRef.current.pieces.values()) {
           if (piece.end <= batchStart && (!prev || piece.end > prev.end))
@@ -817,7 +917,7 @@ export function useStreamingTranslatedText({
         if (prev) context = { source: prev.source, translation: prev.text }
       }
 
-      const sent = fresh.map((segment) => ({
+      const sent = requestable.map((segment) => ({
         segment,
         key: translationCacheKey({
           blockKey,
@@ -881,6 +981,7 @@ export function useStreamingTranslatedText({
         // does not re-request finished work.
         sent.forEach(({ segment }, offset) => {
           if (results[offset] !== null) {
+            noteGapSuccess(segment.text)
             clearGaps(blockKey, segment.start, segment.end)
           }
         })
@@ -924,9 +1025,9 @@ export function useStreamingTranslatedText({
       // Any group failure (transport, unparseable reply, one bad segment)
       // falls back to the per-segment path below, where each piece stands
       // alone and the partial-failure economics are already proven.
-      if (batch.length > 1) {
+      if (requestable.length > 1) {
         void requestNumberedGroup(
-          fresh.map((segment) => segment.text),
+          requestable.map((segment) => segment.text),
           uiLocale,
           priority,
           undefined,
@@ -977,10 +1078,12 @@ export function useStreamingTranslatedText({
       // waits out staring at the old display.
       const gapEnd = nextValidPieceStart(progress.pieces, covered, text)
       const pending = text.slice(covered, gapEnd)
-      if (!pending.trim()) {
-        // A whitespace-only gap still blocks the chain (the walk needs a
-        // piece at every offset): stitch it with an identity piece so the
-        // pieces beyond it render — no request, no gates to fool.
+      // Whitespace-only gaps and untranslatable runs (separators, symbols —
+      // see `isUntranslatableSegment`) both still block the chain while no
+      // piece covers them, and a request for either can only come back
+      // refused. Stitch them with an identity piece so the pieces beyond
+      // render — no request, no gates to fool.
+      if (!pending.trim() || isUntranslatableSegment(pending)) {
         if (gapEnd > covered) {
           setProgress((prev) => {
             if (prev.pieces.has(covered)) return prev
@@ -1025,6 +1128,26 @@ export function useStreamingTranslatedText({
           if (!isCurrent()) return
           if (attempt.text === null) {
             if (attempt.error) setLastError(attempt.error)
+            if (noteGapFailure(pending)) {
+              // Given up on replay too: stitch the raw source so the display
+              // completes and no later mount re-requests a region whose
+              // answer is already known to be refusal.
+              settledBoundaryRef.current = null
+              setProgress((prev) => {
+                if (prev.pieces.has(covered)) return prev
+                const next = new Map(prev.pieces)
+                next.set(covered, {
+                  start: covered,
+                  end: gapEnd,
+                  text: pending,
+                  source: pending,
+                })
+                savePieces(blockKey, next)
+                return { pieces: next }
+              })
+              clearGaps(blockKey, covered, gapEnd)
+              return
+            }
             // Record the region on EVERY failed flush — before the retry
             // budget runs out, too: a remount at any moment must be able to
             // re-request it, whether this instance's retries are still
@@ -1081,6 +1204,7 @@ export function useStreamingTranslatedText({
             return
           }
           settledRetriesRef.current = 0
+          noteGapSuccess(pending)
           setLastError(null)
           setProgress((prev) => {
             const next = new Map(prev.pieces)

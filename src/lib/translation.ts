@@ -321,6 +321,19 @@ export function normalizeEchoText(text: string): string {
 }
 
 /**
+ * Whether a segment carries nothing any language could change: no Unicode
+ * letter anywhere. Translation maps between languages, so a run of symbols,
+ * digits, punctuation, or emoji (`---`, `***`, `___`, table rules, `...`,
+ * `1.2.3`) maps to itself in every pair — sending it out can only buy an
+ * echo-gate rejection and a retry loop (observed: a `---` separator replayed
+ * until the failure budget ran out). One content rule instead of a symbol
+ * whitelist, so any decoration we have never seen is covered too.
+ */
+export function isUntranslatableSegment(text: string): boolean {
+  return !/\p{L}/u.test(text)
+}
+
+/**
  * Exact-echo gate: the reply is the source returned verbatim. Code-heavy
  * chunks mask down to placeholders plus a few words, so they slip under the
  * ≥30-letter prose bar of [`missingTargetScript`] — an echoed reply then
