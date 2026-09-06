@@ -432,7 +432,9 @@ export interface TailChunk {
  */
 export const STREAM_TAIL_CHUNK_MAX_CHARS = 1500
 
-const STRONG_SENTENCE_END = new Set("。！？!?…".split(""))
+// ASCII 句点必须在列：英文是主要源文本，漏掉它会让所有英文
+// 切分退化到"窗口末端空白切"，句子完整性形同虚设。
+const STRONG_SENTENCE_END = new Set("。！？!?….".split(""))
 const WEAK_SENTENCE_END = new Set(";；:：,，、".split(""))
 /** 句末标点后跟着的收尾符号（引号、括号），一并吃进切点。 */
 const CLOSING_MARKS = new Set("」』）)】》〉\"'’”".split(""))
@@ -490,6 +492,59 @@ export function sentenceChunkEnd(
 
 /** Settled 路径窗口更宽，句界下限可以更小。 */
 const TAIL_MIN_SENTENCE_CHARS = 400
+
+/**
+ * Below this an invention-shaped rejection never buys a split: the halves
+ * would be too thin to translate in context, and the endpoint that answered
+ * a 400-character chunk with an essay will answer its halves the same way.
+ */
+export const HALF_SPLIT_MIN_CHARS = 800
+
+/**
+ * Halve a chunk for the invention-shape retry. When an endpoint answers a
+ * wide chunk with a self-written essay (the observed shape: a 423-character
+ * block returned as a 1600-character document), narrowing the input shrinks
+ * the space it can wander in — one split, not recursion: if a half still
+ * comes back invented, the whole chunk is refused as before.
+ *
+ * The boundary prefers a real sentence end near the midpoint (whole
+ * sentences translate far better than fragments), never lands inside a
+ * placeholder token (a split `[[CBLK` would break restoration), and never
+ * splits a surrogate pair. Returns `null` when the chunk is too short or no
+ * safe boundary exists; the two halves always rejoin to the original.
+ */
+export function splitChunkForHalfRetry(chunk: string): [string, string] | null {
+  if (chunk.length <= HALF_SPLIT_MIN_CHARS) return null
+  const target = Math.floor(chunk.length / 2)
+  const window = Math.floor(target / 2)
+  let boundary =
+    sentenceChunkEnd(chunk, 0, target - window, target + window) ?? target
+  if (boundary >= chunk.length) boundary = target
+  // A placeholder token straddling the boundary would split the mask's
+  // opaque token in half — move the boundary past the token's end, however
+  // many tokens sit in a row.
+  for (;;) {
+    const straddle = [...chunk.matchAll(/\[\s*\[?_?CBLK\d+\s*\]\s*\]?/g)].find(
+      (match) =>
+        match.index !== undefined &&
+        match.index < boundary &&
+        match.index + match[0].length > boundary
+    )
+    if (straddle?.index === undefined) break
+    boundary = straddle.index + straddle[0].length
+  }
+  // A surrogate pair straddling the boundary would split one code point into
+  // two replacement characters in the outbound JSON.
+  if (
+    boundary < chunk.length &&
+    /[\uD800-\uDBFF]/.test(chunk[boundary - 1]) &&
+    /[\uDC00-\uDFFF]/.test(chunk[boundary])
+  ) {
+    boundary += 1
+  }
+  if (boundary <= 0 || boundary >= chunk.length) return null
+  return [chunk.slice(0, boundary), chunk.slice(boundary)]
+}
 
 /**
  * Fixed-width pieces of a streaming tail whose bytes can never change.

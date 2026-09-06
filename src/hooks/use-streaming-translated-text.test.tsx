@@ -110,6 +110,43 @@ function renderStream(
 }
 
 describe("useStreamingTranslatedText", () => {
+  it("retries an invented whole-chunk reply as two halves", async () => {
+    const mod = await setup()
+    // A sealed wide paragraph: the endpoint answers it with a self-written
+    // essay (far over the 2.5× invention bar), but translates each half
+    // faithfully when the chunk goes back out split.
+    const paragraph =
+      "The commit graph walks every merge step by careful step. ".repeat(18)
+    const full = `${paragraph}\n\ntail`
+    mocks.translate.mockImplementation(async (texts: Texts) =>
+      texts.map((raw) => {
+        if (raw.includes(paragraph)) {
+          // The invention: the endpoint answered the text, 3× over.
+          return { key: raw, text: "编".repeat(3000), fromCache: false }
+        }
+        const text = unwrap(raw)
+        return { key: raw, text: `译:${text.trim()}`, fromCache: false }
+      })
+    )
+    const { rerender, result } = renderStream(
+      mod,
+      { text: full, isStreaming: true },
+      "half-split"
+    )
+    await flush()
+    await advance(WINDOW)
+    // The halves landed as one chunk-sized piece — the paragraph shows
+    // translated, no invented filler anywhere.
+    expect(result.current.display).toContain("译:")
+    expect(result.current.display).not.toContain("编")
+
+    // Settle: the raw tail flushes through the same well-behaved path.
+    rerender({ text: full, isStreaming: false })
+    await flush()
+    await advance(WINDOW)
+    expect(result.current.display.endsWith("译:tail")).toBe(true)
+  })
+
   it("sends nothing while no unit has sealed", async () => {
     const mod = await setup()
     mocks.translate.mockImplementation(ok)

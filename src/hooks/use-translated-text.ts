@@ -22,6 +22,7 @@ import {
   realignTranslationPlaceholders,
   retryConstraintLine,
   shouldTranslate,
+  splitChunkForHalfRetry,
   splitForTranslation,
   stripTranslateEnvelope,
   type ContextReference,
@@ -415,6 +416,62 @@ export async function requestTranslationDetailed(
       )
     }
 
+    // An invention-shaped rejection (the reply answers the text instead of
+    // translating it — a self-written essay, a far-too-long document) on a
+    // wide chunk buys ONE split retry: the endpoint had too much rope, so
+    // the chunk goes back out as two halves judged independently. Any other
+    // rejection, a short chunk, or a half that fails again keeps the
+    // original verdict — the retry must not paper over a genuinely bad
+    // endpoint, and that verdict is what the caller reports.
+    const judgeOrSplit = async (
+      index: number,
+      translated: string
+    ): Promise<{ aligned?: string; error?: string }> => {
+      const judged = judgeChunk(index, translated)
+      if (!judged.error) return judged
+      if (
+        judged.error !== "INVENTED_CONTENT" &&
+        !judged.error.includes("far longer than its source")
+      ) {
+        return judged
+      }
+      const chunk = chunks[index]
+      const halves = splitChunkForHalfRetry(chunk)
+      if (!halves) return judged
+      console.warn(
+        `[translation] chunk ${index} of ${key} answered the text instead of translating it — retrying as two halves`
+      )
+      const parts: string[] = []
+      for (const half of halves) {
+        let result
+        try {
+          const results = await translateTexts(
+            [outbound(half)],
+            uiLocale,
+            priority,
+            targetLang ?? null
+          )
+          result = results[0]
+        } catch {
+          return judged
+        }
+        if (!result || result.error) return judged
+        const halfJudged = judgeChunkTranslation(
+          half,
+          stripTranslateEnvelope(result.text),
+          effectiveTarget,
+          `half of chunk ${index} of ${key}`
+        )
+        if (halfJudged.error || halfJudged.aligned === undefined) return judged
+        parts.push(halfJudged.aligned)
+      }
+      // Re-attach the separator the split boundary consumed, then join the
+      // halves back into one chunk-sized translation — the caller stores it
+      // under the whole chunk's piece, exactly as an unsplit reply would
+      // have landed.
+      return { aligned: mergeUnit(halves[0], parts[0]) + parts[1] }
+    }
+
     try {
       // Small adjacent chunks travel together: one numbered request per
       // group, `batchMaxChars` wide. A strict-RPM endpoint converges in a
@@ -450,7 +507,7 @@ export async function requestTranslationDetailed(
             )
             return { text: null, error: result?.error ?? "BAD_BATCH" }
           }
-          const judged = judgeChunk(
+          const judged = await judgeOrSplit(
             group[0],
             stripTranslateEnvelope(result.text)
           )
@@ -510,7 +567,10 @@ export async function requestTranslationDetailed(
             )
             return { text: null, error: result.error }
           }
-          const judged = judgeChunk(index, stripTranslateEnvelope(result.text))
+          const judged = await judgeOrSplit(
+            index,
+            stripTranslateEnvelope(result.text)
+          )
           if (judged.error) {
             return { text: null, error: judged.error }
           }

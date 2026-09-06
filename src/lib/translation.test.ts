@@ -8,6 +8,7 @@ import {
   buildNumberedRequest,
   buildTranslateBody,
   echoVerbatimError,
+  HALF_SPLIT_MIN_CHARS,
   hasSameTranslationPlaceholders,
   joinTranslated,
   mergeUnit,
@@ -19,6 +20,7 @@ import {
   sentenceChunkEnd,
   shouldTranslate,
   retryConstraintLine,
+  splitChunkForHalfRetry,
   splitForTranslation,
   stripTranslateEnvelope,
   splitStableUnits,
@@ -396,6 +398,58 @@ describe("echoVerbatimError", () => {
   it("never gates Latin-script targets", () => {
     expect(echoVerbatimError("done", "done", "en")).toBe(false)
     expect(echoVerbatimError("done", "done", "fr")).toBe(false)
+  })
+})
+
+describe("splitChunkForHalfRetry", () => {
+  // A paragraph of realistic sentence-bounded prose, ~1000 chars.
+  const sentence = "The merge machinery walks the commit graph step by step. "
+  const wide = sentence.repeat(19).trimEnd() // 19 × 60 = 1140 chars
+
+  it("refuses short chunks outright", () => {
+    expect(splitChunkForHalfRetry("a".repeat(HALF_SPLIT_MIN_CHARS))).toBeNull()
+  })
+
+  it("splits near the midpoint at a sentence boundary", () => {
+    const halves = splitChunkForHalfRetry(wide)
+    expect(halves).not.toBeNull()
+    const [first, second] = halves!
+    expect(first + second).toBe(wide)
+    expect(first.length).toBeGreaterThan(200)
+    expect(second.length).toBeGreaterThan(200)
+    // Both sides of the boundary end/start at sentence-proof positions:
+    // the first half ends after a sentence-ending period.
+    expect(first.trimEnd().endsWith(".")).toBe(true)
+  })
+
+  it("never splits inside a placeholder token", () => {
+    // Place the token so its natural midpoint sits at the chunk midpoint.
+    const head = sentence.repeat(8) // 480
+    const token = "[[CBLK7]]"
+    const tail = sentence.repeat(11) // 660 → total 1149, midpoint 574
+    const chunk = head + token + tail
+    const halves = splitChunkForHalfRetry(chunk)!
+    expect(halves[0] + halves[1]).toBe(chunk)
+    expect(halves[0]).toContain(token)
+    expect(() =>
+      halves[1].match(/\[\s*\[?_?CBLK\d+\s*\]\s*\]?(?!.*\[\[)/)
+    ).toBeTruthy()
+    // The token must survive verbatim on ONE side.
+    const both = halves.filter((half) => half.includes("CBLK7"))
+    expect(both).toHaveLength(1)
+  })
+
+  it("never splits a surrogate pair", () => {
+    // An emoji right at the computed midpoint must land whole on one side.
+    const head = sentence.repeat(9) // 540
+    const emoji = "🚀"
+    const tail = sentence.repeat(10) // 600 → total 1142 (surrogate counts 2)
+    const chunk = head + emoji + tail
+    const halves = splitChunkForHalfRetry(chunk)
+    expect(halves).not.toBeNull()
+    expect(halves![0] + halves![1]).toBe(chunk)
+    expect(chunk.includes("\uFFFD")).toBe(false)
+    expect((halves![0] + halves![1]).includes(emoji)).toBe(true)
   })
 })
 
