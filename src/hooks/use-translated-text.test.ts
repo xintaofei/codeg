@@ -100,7 +100,7 @@ describe("useTranslatedText", () => {
     await waitFor(() => expect(result.current.isTranslated).toBe(true))
     expect(result.current.display).toBe("你好 `const x = 1`")
     expect(mocks.translate).toHaveBeenCalledWith(
-      ["Hello [[CBLK0]]"],
+      ["<translate target=\"zh-CN\">\nHello [[CBLK0]]\n</translate>"],
       "zh-CN",
       false,
       null
@@ -170,7 +170,7 @@ describe("useTranslatedText", () => {
 
     expect(attempt.text).toBe("冲突标记 <<<<<<< HEAD")
     expect(mocks.translate).toHaveBeenCalledWith(
-      ["a <<<<<<< HEAD hunk"],
+      ["<translate target=\"zh-CN\">\na <<<<<<< HEAD hunk\n</translate>"],
       "zh-CN",
       true,
       null

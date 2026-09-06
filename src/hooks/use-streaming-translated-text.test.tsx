@@ -32,13 +32,19 @@ type Texts = string[]
 /** A well-behaved endpoint: prefix every chunk so restores stay verifiable,
  * and answer a numbered group in kind so grouped dispatches succeed. A
  * well-behaved endpoint also never outputs the carry-context reference
- * block, so it is stripped from the request before echoing. */
-const ok = async (texts: Texts) =>
-  texts.map((raw) => {
-    const text = raw.replace(
+ * block or the <translate> envelope, so both are stripped from the request
+ * before echoing — a real endpoint translates only the inner content. */
+const unwrap = (raw: string) =>
+  raw
+    .replace(
       /^\[Reference for consistency only[\s\S]*?\[End of reference[^\n]*\n/,
       ""
     )
+    .replace(/^<translate[^>]*>\n?/, "")
+    .replace(/\n?<\/translate>\s*$/, "")
+const ok = async (texts: Texts) =>
+  texts.map((raw) => {
+    const text = unwrap(raw)
     if (/^\[1\] /m.test(text)) {
       const segments = text.split(/(?:^|\n)\[\d+\] /).slice(1)
       const reply = segments
@@ -130,9 +136,10 @@ describe("useStreamingTranslatedText", () => {
     )
 
     // The fake clock starts at the real epoch, so a fresh dispatch is always
-    // past the pacing window: the first unit goes out immediately.
+    // past the pacing window: the first unit goes out immediately. The wire
+    // body rides inside the <translate> envelope; judge the inner content.
     expect(mocks.translate).toHaveBeenCalledTimes(1)
-    expect(mocks.translate.mock.calls[0][0]).toEqual(["one\n\n"])
+    expect(unwrap(mocks.translate.mock.calls[0][0][0])).toBe("one\n\n")
 
     rerender({ text: "one\n\ntwo\n\n", isStreaming: true })
     await flush()
@@ -191,8 +198,8 @@ describe("useStreamingTranslatedText", () => {
 
     // Two sealed units share one numbered request; each segment inside it is
     // the unit verbatim (trimmed by the framing, restored by the parser).
-    const sent = mocks.translate.mock.calls.map((call) => call[0])
-    expect(sent).toContainEqual(["[1] First para.\n\n[2] Second para."])
+    const sent = mocks.translate.mock.calls.map((call) => unwrap(call[0][0]))
+    expect(sent).toContainEqual("[1] First para.\n\n[2] Second para.")
   })
 
   it("converges a cold settled block and serves a remount from cache", async () => {
@@ -205,17 +212,17 @@ describe("useStreamingTranslatedText", () => {
     // Settled work rides MERGED segments: adjacent sealed units coalesce into
     // one request-sized span, so a 13k-char reply converges in a handful of
     // round trips instead of one per paragraph.
-    expect(mocks.translate.mock.calls.map((call) => call[0])).toEqual([
-      ["Alpha.\n\nBeta."],
-    ])
+    expect(
+      mocks.translate.mock.calls.map((call) => unwrap(call[0][0]))
+    ).toEqual(["Alpha.\n\nBeta."])
     expect(first.result.current.display).toBe("译:Alpha.\n\nBeta.")
 
     first.unmount()
     const second = renderStream(mod, initial, "cold")
     await flush()
-    expect(mocks.translate.mock.calls.map((call) => call[0])).toEqual([
-      ["Alpha.\n\nBeta."],
-    ])
+    expect(
+      mocks.translate.mock.calls.map((call) => unwrap(call[0][0]))
+    ).toEqual(["Alpha.\n\nBeta."])
     expect(second.result.current.display).toBe("译:Alpha.\n\nBeta.")
   })
 
@@ -257,21 +264,22 @@ describe("useStreamingTranslatedText", () => {
     // at the gap — later paragraphs are translated but unrenderable.
     let gapAllowed = false
     mocks.translate.mockImplementation(async (texts: Texts) =>
-      texts.map((text) => {
-        if (!gapAllowed && text.includes("GAP")) {
-          return { key: text, text: "", error: "RATE", fromCache: false }
+      texts.map((raw) => {
+        if (!gapAllowed && raw.includes("GAP")) {
+          return { key: raw, text: "", error: "RATE", fromCache: false }
         }
+        const text = unwrap(raw)
         if (/^\[1\] /m.test(text)) {
           const segments = text.split(/(?:^|\n)\[\d+\] /).slice(1)
           return {
-            key: text,
+            key: raw,
             text: segments
               .map((segment, index) => `[${index + 1}] 译:${segment.trim()}`)
               .join("\n\n"),
             fromCache: false,
           }
         }
-        return { key: text, text: `译:${text.trim()}`, fromCache: false }
+        return { key: raw, text: `译:${text.trim()}`, fromCache: false }
       })
     )
     const fullText = "one\n\nGAP\n\nthree\n\nfour\n\n"
@@ -284,19 +292,30 @@ describe("useStreamingTranslatedText", () => {
     // the machine is in its settled-input state with the gap still open.
     await advance(60_000)
     expect(result.current.display).toBe("译:one\n\nGAP\n\nthree\n\nfour\n\n")
+    // Every retry changed the request (temperature 0 makes an identical
+    // retry an identical wrong answer): the escalated attempts carry the
+    // strict constraint lines.
+    const gapAttempts = mocks.translate.mock.calls
+      .map((call) => (call[0] as string[])[0])
+      .filter((text) => text.includes("GAP"))
+    expect(
+      gapAttempts.some((text) => text.includes("Strictly translate"))
+    ).toBe(true)
 
     gapAllowed = true
     rerender({ text: fullText, isStreaming: false })
     await flush()
     await advance(WINDOW)
 
-    // The settle flush re-requests ONLY the gap: the pieces behind it
-    // (three/four) already sit in the store, and an unbounded flush would
-    // have re-translated all of them in one giant request.
+    // The settle flush re-requests ONLY the gap, inside the XML envelope:
+    // the pieces behind it (three/four) already sit in the store, and an
+    // unbounded flush would have re-translated all of them in one giant
+    // request.
     const settleCall = mocks.translate.mock.calls[
       mocks.translate.mock.calls.length - 1
     ][0] as string[]
-    expect(settleCall[0]).toBe("GAP\n\n")
+    expect(settleCall[0]).toContain("<translate target=")
+    expect(settleCall[0]).toContain("GAP")
     expect(settleCall[0]).not.toContain("three")
     // The chain reconnects through the filled gap and the stored pieces
     // render immediately — no re-translation wait for the settled tail.
@@ -328,7 +347,7 @@ describe("useStreamingTranslatedText", () => {
     await advance(WINDOW)
     // u1 and u2 ride one numbered group; the tail is not final yet.
     expect(mocks.translate).toHaveBeenCalledTimes(1)
-    expect(mocks.translate.mock.calls[0][0]).toEqual(["[1] u1\n\n[2] u2"])
+    expect(unwrap(mocks.translate.mock.calls[0][0][0])).toBe("[1] u1\n\n[2] u2")
 
     // Settle while the group request is still in flight: the flush cannot
     // know its results yet, so it requests from the untranslated prefix —
@@ -336,7 +355,7 @@ describe("useStreamingTranslatedText", () => {
     rerender({ text: fullText, isStreaming: false })
     await flush()
     expect(mocks.translate).toHaveBeenCalledTimes(2)
-    expect(mocks.translate.mock.calls[1][0]).toEqual([fullText])
+    expect(unwrap(mocks.translate.mock.calls[1][0][0])).toBe(fullText)
 
     // The group lands and moves the translated prefix past the remainder's
     // start. A one-shot settle guard would leave "tail" raw forever.
@@ -349,7 +368,7 @@ describe("useStreamingTranslatedText", () => {
 
     expect(result.current.display).toBe("译:u1\n\n译:u2\n\ntail")
     expect(mocks.translate).toHaveBeenCalledTimes(3)
-    expect(mocks.translate.mock.calls[2][0]).toEqual(["tail"])
+    expect(unwrap(mocks.translate.mock.calls[2][0][0])).toBe("tail")
 
     await act(async () => {
       resolvers[2].resolve([{ key: "", text: "译:tail", fromCache: false }])

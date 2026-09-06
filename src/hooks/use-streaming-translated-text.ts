@@ -455,7 +455,9 @@ export function useStreamingTranslatedText({
     ): Promise<string | null> => {
       for (let attempt = 0; ; attempt += 1) {
         // The detailed variant so the failure reason survives for the
-        // toggle's warning indicator.
+        // toggle's warning indicator. Each retry escalates the request's
+        // constraint variant — at temperature 0 an identical retry returns
+        // an identical wrong answer, so the retry must change the request.
         const attempt_ = await requestTranslationDetailed(
           segment.text,
           uiLocale,
@@ -463,7 +465,8 @@ export function useStreamingTranslatedText({
           priority,
           undefined,
           undefined,
-          context
+          context,
+          attempt
         )
         if (
           attempt_.text !== null ||
@@ -687,6 +690,27 @@ export function useStreamingTranslatedText({
                 STREAM_FAILURE_RETRY_MS *
                   Math.pow(3, settledRetriesRef.current - 1)
               )
+            } else {
+              // The retry budget is spent on this gap. Leaving it raw would
+              // keep the chain broken forever — every already-translated
+              // piece beyond the gap stays hidden behind one stubborn chunk.
+              // Stitch the chain with the raw source instead: the display
+              // completes, the amber flag stays up, and this identity piece
+              // lives in the display store only — never a cached
+              // "translation", so a later cold load still gets fresh attempts.
+              const gapSource = text.slice(covered, gapEnd)
+              setProgress((prev) => {
+                if (prev.pieces.has(covered)) return prev
+                const next = new Map(prev.pieces)
+                next.set(covered, {
+                  start: covered,
+                  end: gapEnd,
+                  text: gapSource,
+                  source: gapSource,
+                })
+                savePieces(blockKey, next)
+                return { pieces: next }
+              })
             }
             return
           }

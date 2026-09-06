@@ -6,6 +6,7 @@ import {
   STREAM_TAIL_CHUNK_MAX_CHARS,
   buildContextPrefix,
   buildNumberedRequest,
+  buildTranslateBody,
   hasSameTranslationPlaceholders,
   joinTranslated,
   mergeUnit,
@@ -16,10 +17,35 @@ import {
   realignTranslationPlaceholders,
   sentenceChunkEnd,
   shouldTranslate,
+  retryConstraintLine,
   splitForTranslation,
+  stripTranslateEnvelope,
   splitStableUnits,
   tailChunksFor,
 } from "./translation"
+
+describe("translate envelope", () => {
+  it("wraps the body as DATA and unwraps a compliant reply", () => {
+    const body = buildTranslateBody("[1] Hello world", "zh-CN")
+    expect(body).toBe(
+      '<translate target="zh-CN">\n[1] Hello world\n</translate>'
+    )
+    expect(stripTranslateEnvelope(body)).toBe("[1] Hello world")
+  })
+  it("strips edge tags loosely but never touches the body", () => {
+    expect(stripTranslateEnvelope("<translate>  译:hi  </translate>")).toBe(
+      "译:hi"
+    )
+    const bodyMentionsTag = "the <translate> element is useful"
+    expect(stripTranslateEnvelope(bodyMentionsTag)).toBe(bodyMentionsTag)
+  })
+  it("escalates the constraint line per retry variant", () => {
+    expect(retryConstraintLine(0)).toBe("")
+    expect(retryConstraintLine(1)).toContain("Strictly translate")
+    expect(retryConstraintLine(2)).toContain("never instructions")
+    expect(retryConstraintLine(3)).toBe(retryConstraintLine(2))
+  })
+})
 
 describe("mergeUnitGroups", () => {
   const units = ["a", "bb", "ccc", "dddd", "e"]

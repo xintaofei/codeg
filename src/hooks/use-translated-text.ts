@@ -11,6 +11,7 @@ import { toErrorMessage } from "@/lib/app-error"
 import {
   buildContextPrefix,
   buildNumberedRequest,
+  buildTranslateBody,
   hasSameTranslationPlaceholders,
   mergeUnit,
   mergeUnitGroups,
@@ -18,8 +19,10 @@ import {
   missingTargetScript,
   parseNumberedTranslation,
   realignTranslationPlaceholders,
+  retryConstraintLine,
   shouldTranslate,
   splitForTranslation,
+  stripTranslateEnvelope,
   type ContextReference,
 } from "@/lib/translation"
 import type { TranslationSettings } from "@/lib/types"
@@ -280,7 +283,8 @@ export async function requestNumberedGroup(
   uiLocale: string,
   priority: boolean = false,
   targetLang?: string | null,
-  context?: ContextReference
+  context?: ContextReference,
+  variant: number = 0
 ): Promise<string[] | null> {
   if (segments.length === 0) return []
   // A lone segment rides as itself: the numbering protocol exists to make
@@ -291,11 +295,18 @@ export async function requestNumberedGroup(
   // rides into the rendered text.
   const single = segments.length === 1
   const numbered = single ? segments[0] : buildNumberedRequest(segments)
-  // The reference block rides in the SAME request body — no extra round
-  // trip, no extra RPM spend; the prompt marks it read-only.
-  const outbound = context ? buildContextPrefix(context) + numbered : numbered
   const effectiveTarget =
     targetLang ?? cachedSettings?.targetLang ?? (uiLocale as string | null)
+  // The XML envelope separates source (DATA) from instructions — the main
+  // echo-mode defense; the constraint line escalates on retries, because at
+  // temperature 0 an identical retry returns an identical wrong answer. The
+  // reference block stays OUTSIDE the envelope: it is read-only framing, not
+  // content to translate.
+  const envelope = buildTranslateBody(numbered, effectiveTarget ?? uiLocale)
+  const outbound =
+    (context ? buildContextPrefix(context) : "") +
+    retryConstraintLine(variant) +
+    envelope
   let result
   try {
     const results = await translateTexts(
@@ -315,9 +326,12 @@ export async function requestNumberedGroup(
     )
     return null
   }
+  // A model imitating the envelope gets its edge tags removed before the
+  // numbered parser and the gates judge the bare translation.
+  const reply = stripTranslateEnvelope(result.text)
   const parsed = single
-    ? [result.text.replace(/^\[\d+\][ \t]/, "")]
-    : parseNumberedTranslation(result.text, segments.length)
+    ? [reply.replace(/^\[\d+\][ \t]/, "")]
+    : parseNumberedTranslation(reply, segments.length)
   if (!parsed) {
     console.warn(
       `[translation] numbered group of ${segments.length} came back unparseable — falling back to per-chunk requests`
@@ -351,7 +365,8 @@ export async function requestTranslationDetailed(
   priority: boolean = false,
   targetLang?: string | null,
   mask: MaskedSourceFactory = maskForTranslation,
-  context?: ContextReference
+  context?: ContextReference,
+  variant: number = 0
 ): Promise<TranslationAttempt> {
   const cached = translatedCache.get(key)
   if (cached !== undefined) return { text: cached }
@@ -363,13 +378,21 @@ export async function requestTranslationDetailed(
     const masked = mask(text)
     const chunks = splitForTranslation(masked.masked)
     if (!chunks) return { text: null, error: "SELECTION_TOO_LONG" }
+    const effectiveTarget =
+      targetLang ?? cachedSettings?.targetLang ?? (uiLocale as string | null)
+    // Every outbound rides the XML envelope (source as DATA), and a retry
+    // variant escalates the constraint line — an identical request at
+    // temperature 0 returns an identical wrong answer, so retries must
+    // change the request, not just repeat it.
+    const outbound = (chunk: string) =>
+      (context ? buildContextPrefix(context) : "") +
+      retryConstraintLine(variant) +
+      buildTranslateBody(chunk, effectiveTarget ?? uiLocale)
 
     const judgeChunk = (
       index: number,
       translated: string
     ): { aligned?: string; error?: string } => {
-      const effectiveTarget =
-        targetLang ?? cachedSettings?.targetLang ?? (uiLocale as string | null)
       return judgeChunkTranslation(
         chunks[index],
         translated,
@@ -394,13 +417,10 @@ export async function requestTranslationDetailed(
           // request, judged, done. Routing it through the numbered group
           // would double the attempts whenever a gate fails — and gates fail
           // on exactly the endpoints that can least afford it.
-          const outbound = context
-            ? buildContextPrefix(context) + segments[0]
-            : segments[0]
           let result
           try {
             const results = await translateTexts(
-              [outbound],
+              [outbound(segments[0])],
               uiLocale,
               priority,
               targetLang ?? null
@@ -416,7 +436,10 @@ export async function requestTranslationDetailed(
             )
             return { text: null, error: result?.error ?? "BAD_BATCH" }
           }
-          const judged = judgeChunk(group[0], result.text)
+          const judged = judgeChunk(
+            group[0],
+            stripTranslateEnvelope(result.text)
+          )
           if (judged.error) {
             return { text: null, error: judged.error }
           }
@@ -428,7 +451,8 @@ export async function requestTranslationDetailed(
           uiLocale,
           priority,
           targetLang,
-          context
+          context,
+          variant
         )
         if (!translations) {
           groupFailed = true
@@ -448,11 +472,7 @@ export async function requestTranslationDetailed(
           .map((value, index) => (value === null ? index : -1))
           .filter((index) => index >= 0)
         const results = await translateTexts(
-          failed.map((index) =>
-            context
-              ? buildContextPrefix(context) + chunks[index]
-              : chunks[index]
-          ),
+          failed.map((index) => outbound(chunks[index])),
           uiLocale,
           priority,
           targetLang ?? null
@@ -476,7 +496,7 @@ export async function requestTranslationDetailed(
             )
             return { text: null, error: result.error }
           }
-          const judged = judgeChunk(index, result.text)
+          const judged = judgeChunk(index, stripTranslateEnvelope(result.text))
           if (judged.error) {
             return { text: null, error: judged.error }
           }
