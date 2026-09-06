@@ -40,6 +40,11 @@ const unwrap = (raw: string) =>
       /^\[Reference for consistency only[\s\S]*?\[End of reference[^\n]*\n/,
       ""
     )
+    // Retry-shape escalation prefixes the envelope with a constraint line
+    // (retryConstraintLine) — instruction, not data, so a faithful
+    // endpoint's reply still translates only the envelope's inner body.
+    .replace(/^Strictly translate[^\n]*\n/, "")
+    .replace(/^You are a translation engine[^\n]*\n/, "")
     .replace(/^<translate[^>]*>\n?/, "")
     .replace(/\n?<\/translate>\s*$/, "")
 const ok = async (texts: Texts) =>

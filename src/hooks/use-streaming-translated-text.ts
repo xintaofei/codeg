@@ -147,6 +147,126 @@ function savePieces(
   }
 }
 
+/**
+ * A source region whose translation never landed, kept alive across the
+ * component instance. The variant-retry chain in `requestSegmentWithRetry`
+ * (and the settle flush's bounded retries) live on the instance — an unmount
+ * while one is asleep or in flight drops it silently, and the re-keyed
+ * instance that replaces the block at settle never runs its `flushSettled`
+ * unless the viewport brings it back (`active` gates the whole main effect).
+ * Failed regions recorded here are what let a later mount re-request them.
+ */
+interface PendingGap {
+  start: number
+  end: number
+  /** The exact source slice at record time; replay validates it verbatim. */
+  text: string
+}
+
+/**
+ * Companion to the piece store with the same lifecycle (and the same LRU
+ * bound): the two track the same population of blocks, so sharing
+ * `PIECE_STORE_LIMIT` keeps a block's gaps from outliving its pieces' eviction
+ * and bounds the replay scan at the same cost.
+ */
+const pendingGapsStore = new Map<string, PendingGap[]>()
+
+/** Record (or refresh) one unlanded region, newest-last for the LRU.
+ * Exported for the tests; module state is the point, not a public API. */
+export function recordGap(blockKey: string, gap: PendingGap): void {
+  const gaps = (pendingGapsStore.get(blockKey) ?? []).filter(
+    (existing) => existing.start !== gap.start || existing.end !== gap.end
+  )
+  gaps.push(gap)
+  pendingGapsStore.delete(blockKey)
+  pendingGapsStore.set(blockKey, gaps)
+  if (pendingGapsStore.size > PIECE_STORE_LIMIT) {
+    const oldest = pendingGapsStore.keys().next().value
+    if (oldest !== undefined) pendingGapsStore.delete(oldest)
+  }
+}
+
+/** Drop every recorded gap fully covered by `[start, end)`.
+ * Exported for the tests. */
+export function clearGaps(blockKey: string, start: number, end: number): void {
+  const gaps = pendingGapsStore.get(blockKey)
+  if (!gaps) return
+  const remaining = gaps.filter((gap) => gap.start < start || gap.end > end)
+  if (remaining.length === gaps.length) return
+  if (remaining.length > 0) pendingGapsStore.set(blockKey, remaining)
+  else pendingGapsStore.delete(blockKey)
+}
+
+/**
+ * Every recorded gap whose source slice still matches the current text
+ * verbatim. The lookup is content-based across all keys, not per blockKey —
+ * the same reason `findStoredPieces` is: the settled turn re-keys the block,
+ * and a gap recorded under the pre-settle key must still be discoverable by
+ * the re-keyed instance. The verbatim check is what keeps a foreign block's
+ * gap (or a region whose bytes shifted) from ever replaying here.
+ */
+/** Exported for the tests. */
+export function findPendingGaps(
+  text: string
+): Array<{ key: string; gap: PendingGap }> {
+  const matches: Array<{ key: string; gap: PendingGap }> = []
+  for (const [key, gaps] of pendingGapsStore) {
+    for (const gap of gaps) {
+      if (
+        gap.end <= text.length &&
+        text.slice(gap.start, gap.end) === gap.text
+      ) {
+        matches.push({ key, gap })
+      }
+    }
+  }
+  return matches
+}
+
+/**
+ * Segment source texts currently out for a blockKey, claimed by every
+ * dispatch path that sends one (streaming batch, settle flush, gap replay).
+ * The dispatch-cursor rollback and the effect re-runs driven by text flushes
+ * re-enter `dispatchBatch` while earlier requests are still on the wire, and
+ * the same segment was observed leaving twice concurrently — once with the
+ * carry-context reference and once without. Claims are keyed by the exact
+ * source text within ONE blockKey; cross-block dedup is out of scope.
+ * Claims always release: every request path settles into a release before
+ * its liveness gate, so an unmount mid-flight cannot strand an entry.
+ */
+const inflightSegments = new Map<string, Set<string>>()
+
+/** Whether `text` is already being fetched for this block. Exported for the
+ * tests. */
+export function isInflight(blockKey: string, text: string): boolean {
+  return inflightSegments.get(blockKey)?.has(text) ?? false
+}
+
+/** Mark segment texts as out for this block; pair with `releaseInflight`.
+ * Exported for the tests. */
+export function claimInflight(
+  blockKey: string,
+  texts: readonly string[]
+): void {
+  let busy = inflightSegments.get(blockKey)
+  if (!busy) {
+    busy = new Set()
+    inflightSegments.set(blockKey, busy)
+  }
+  for (const text of texts) busy.add(text)
+}
+
+/** Release segment texts a settled request claimed. Exported for the tests. */
+export function releaseInflight(
+  blockKey: string,
+  texts: readonly string[]
+): void {
+  const busy = inflightSegments.get(blockKey)
+  if (!busy) return
+  for (const text of texts) busy.delete(text)
+  if (busy.size === 0) inflightSegments.delete(blockKey)
+}
+
 /** Contiguous covered length from 0, ignoring pieces that outrun the text. */
 function chainEnd(
   pieces: ReadonlyMap<number, Piece>,
@@ -350,6 +470,19 @@ export function useStreamingTranslatedText({
   /** Settle flushes failed since the last success; bounded, then give up. */
   const settledRetriesRef = useRef(0)
   const aliveRef = useRef(true)
+  /** Gap identities this instance already sent — one scan per mount/re-key,
+   * never re-fired by a scan; a failure goes back out only through the
+   * bounded replay rounds below. */
+  const replayedGapsRef = useRef<Set<string>>(new Set())
+  /** Replay rounds failed since the last success; bounded, then stand down. */
+  const replayFailuresRef = useRef(0)
+  const replayTimerRef = useRef<number | null>(null)
+  /** What the last replay scan ran for: mount, re-key, or the first non-empty
+   * text after a mount that landed before the reparse filled the parts. */
+  const replayScanRef = useRef<{ key: string | null; sawEmpty: boolean }>({
+    key: null,
+    sawEmpty: false,
+  })
 
   const active = enabled && shouldLoad
 
@@ -428,8 +561,162 @@ export function useStreamingTranslatedText({
     return () => {
       aliveRef.current = false
       clearTimer()
+      if (replayTimerRef.current !== null) {
+        window.clearTimeout(replayTimerRef.current)
+        replayTimerRef.current = null
+      }
     }
   }, [blockKey, clearTimer])
+
+  // Pending-gap replay: a failed region outlives the instance that recorded
+  // it (an unmount mid-variant-retry, the settle re-key replacing the block),
+  // and the replacement's flushSettled only runs when the viewport re-fires
+  // the main effect — a failed chunk could otherwise sit raw for minutes
+  // with its retry chain dead. On mount and on every blockKey change this
+  // instance re-dispatches the recorded gaps for its bytes, deliberately NOT
+  // gated by shouldLoad/viewport: the remaining gates are the request
+  // layer's own budgets (per-attempt variant escalation, then a bounded
+  // number of exponentially backed-off rounds), so a dead endpoint cannot
+  // loop forever. Segments another path already has on the wire are skipped,
+  // not marked — whichever request fails re-records the gap for a later
+  // scan (or the next instance).
+  useEffect(() => {
+    if (!enabled) return
+    const scan = replayScanRef.current
+    const isRekey = scan.key !== blockKey
+    // One scan per mount/re-key, plus one catch-up when a mount that landed
+    // before the settle reparse filled the parts finally sees bytes — the
+    // initializer and the piece-restore effect have the same problem, and a
+    // gap cannot validate against text that was not there yet.
+    if (!isRekey && !(scan.sawEmpty && text.length > 0)) return
+    scan.key = blockKey
+    scan.sawEmpty = text.length === 0
+    if (isRekey) {
+      replayFailuresRef.current = 0
+      replayedGapsRef.current = new Set()
+    }
+
+    const isCurrent = () => aliveRef.current && blockKeyRef.current === blockKey
+
+    const clearReplayTimer = () => {
+      if (replayTimerRef.current !== null) {
+        window.clearTimeout(replayTimerRef.current)
+        replayTimerRef.current = null
+      }
+    }
+
+    const scheduleReplayRetry = (retry: () => void, delay: number) => {
+      clearReplayTimer()
+      replayTimerRef.current = window.setTimeout(() => {
+        replayTimerRef.current = null
+        if (!isCurrent()) return
+        retry()
+      }, delay)
+    }
+
+    const replayGaps = (targets?: Array<{ key: string; gap: PendingGap }>) => {
+      clearReplayTimer()
+      const matches = (
+        targets ??
+        findPendingGaps(text).filter(
+          ({ gap }) =>
+            !replayedGapsRef.current.has(`${gap.start}:${gap.end}`) &&
+            !isInflight(blockKey, gap.text)
+        )
+      ).filter(({ gap }) => text.slice(gap.start, gap.end) === gap.text)
+      if (matches.length === 0) return
+      for (const { gap } of matches) {
+        replayedGapsRef.current.add(`${gap.start}:${gap.end}`)
+        claimInflight(blockKey, [gap.text])
+      }
+
+      const failed: Array<{ key: string; gap: PendingGap }> = []
+      let landed = 0
+      void Promise.all(
+        matches.map(async ({ key, gap }) => {
+          // Same shape as the streaming chain's per-segment retry: each
+          // attempt escalates the constraint variant, because at temperature
+          // 0 an identical retry returns an identical wrong answer.
+          let value: string | null = null
+          let error: string | undefined
+          for (let attempt = 0; ; attempt += 1) {
+            const cacheKey = translationCacheKey({
+              blockKey,
+              text: gap.text,
+              uiLocale,
+              settings,
+            })
+            const attempt_ = await requestTranslationDetailed(
+              gap.text,
+              uiLocale,
+              cacheKey,
+              priority,
+              undefined,
+              undefined,
+              undefined,
+              attempt
+            )
+            if (
+              attempt_.text !== null ||
+              attempt >= STREAM_UNIT_RETRY_LIMIT ||
+              !isCurrent()
+            ) {
+              value = attempt_.text
+              error = attempt_.error
+              break
+            }
+            await new Promise((resolve) =>
+              window.setTimeout(
+                resolve,
+                STREAM_UNIT_RETRY_BASE_MS * (attempt + 1)
+              )
+            )
+          }
+          // Release before every gate: a claim held past an unmount would
+          // refuse every future dispatch of these bytes.
+          releaseInflight(blockKey, [gap.text])
+          if (value === null) {
+            // Still a durable fact about these bytes even when this instance
+            // is gone — refresh the record so a later mount retries.
+            recordGap(key, gap)
+            if (error && isCurrent()) setLastError(error)
+            failed.push({ key, gap })
+            return
+          }
+          if (!isCurrent()) return
+          landed += 1
+          clearGaps(key, gap.start, gap.end)
+          setProgress((prev) => {
+            const existing = prev.pieces.get(gap.start)
+            if (existing && existing.end >= gap.end) return prev
+            const next = new Map(prev.pieces)
+            next.set(gap.start, {
+              start: gap.start,
+              end: gap.end,
+              text: value,
+              source: gap.text,
+            })
+            savePieces(blockKey, next)
+            return { pieces: next }
+          })
+        })
+      ).then(() => {
+        if (!isCurrent()) return
+        if (failed.length === 0) return
+        if (landed > 0) replayFailuresRef.current = 0
+        replayFailuresRef.current += 1
+        if (replayFailuresRef.current >= STREAM_FAILURE_PAUSE_LIMIT) return
+        // Same widening backoff the settle flush uses (4s → 12s → 36s): a
+        // rate-limited endpoint needs a minute of slack, not a tight loop.
+        scheduleReplayRetry(
+          () => replayGaps(failed),
+          STREAM_FAILURE_RETRY_MS * Math.pow(3, replayFailuresRef.current - 1)
+        )
+      })
+    }
+
+    replayGaps()
+  }, [blockKey, enabled, priority, settings, text, uiLocale])
 
   useEffect(() => {
     const isCurrent = () => aliveRef.current && blockKeyRef.current === blockKey
@@ -493,7 +780,21 @@ export function useStreamingTranslatedText({
         batchWidth
       )
       if (batch.length === 0) return false
-      const pos = batch[batch.length - 1].end
+      // In-flight dedup: the cursor rollback and the text-flush effect re-runs
+      // re-enter here while an earlier request for the same bytes is still on
+      // the wire (its land has not run), and the same segment was observed
+      // leaving twice — once with the carry-context reference, once without.
+      // Skipped segments stay unclaimed for the next pass; the claimed ones
+      // release in `land`.
+      const fresh = batch.filter(
+        (segment) => !isInflight(blockKey, segment.text)
+      )
+      if (fresh.length === 0) return false
+      claimInflight(
+        blockKey,
+        fresh.map((segment) => segment.text)
+      )
+      const pos = fresh[fresh.length - 1].end
       dispatchedEndRef.current = Math.max(dispatchedEndRef.current, pos)
       lastDispatchAtRef.current = Date.now()
       lastDispatchCoveredRef.current = pos
@@ -504,7 +805,7 @@ export function useStreamingTranslatedText({
       // segment back is enough; history never accumulates.
       let context: ContextReference | undefined
       if (settings.carryContext) {
-        const batchStart = batch[0].start
+        const batchStart = fresh[0].start
         let prev: Piece | undefined
         for (const piece of progressRef.current.pieces.values()) {
           if (piece.end <= batchStart && (!prev || piece.end > prev.end))
@@ -513,7 +814,7 @@ export function useStreamingTranslatedText({
         if (prev) context = { source: prev.source, translation: prev.text }
       }
 
-      const sent = batch.map((segment) => ({
+      const sent = fresh.map((segment) => ({
         segment,
         key: translationCacheKey({
           blockKey,
@@ -525,6 +826,26 @@ export function useStreamingTranslatedText({
 
       /** Store per-segment results, rolling the cursor back over failures. */
       const land = (results: (string | null)[]) => {
+        // The requests settled either way (the promises always resolve), so
+        // the dedup claims release before every gate below — including the
+        // liveness one — or a re-dispatch of these bytes would be refused
+        // forever.
+        releaseInflight(
+          blockKey,
+          sent.map(({ segment }) => segment.text)
+        )
+        // A failed segment is a durable fact about these source bytes, even
+        // when this instance is already gone — this is the path that survives
+        // an unmount in the middle of a variant-retry chain (the promise
+        // always settles, so `land` always runs). Record the region before
+        // the liveness gate so a later mount can pick it up. segment.text is
+        // exactly text.slice(segment.start, segment.end) — the same invariant
+        // the piece store's source validation relies on.
+        sent.forEach(({ segment }, offset) => {
+          if (results[offset] === null) {
+            recordGap(blockKey, segment)
+          }
+        })
         if (!isCurrent()) return
         // Any landing clears the amber flag: the failure it reported is no
         // longer the newest fact about this block.
@@ -552,6 +873,13 @@ export function useStreamingTranslatedText({
           })
           savePieces(blockKey, next)
           return { pieces: next }
+        })
+        // Whatever landed covers its recorded gap; drop it so a later remount
+        // does not re-request finished work.
+        sent.forEach(({ segment }, offset) => {
+          if (results[offset] !== null) {
+            clearGaps(blockKey, segment.start, segment.end)
+          }
         })
         // Roll the dispatch cursor back to the first chunk that still has no
         // translation (all failed, or a burst where only some chunks made it
@@ -595,7 +923,7 @@ export function useStreamingTranslatedText({
       // alone and the partial-failure economics are already proven.
       if (batch.length > 1) {
         void requestNumberedGroup(
-          batch.map((segment) => segment.text),
+          fresh.map((segment) => segment.text),
           uiLocale,
           priority,
           undefined,
@@ -661,9 +989,22 @@ export function useStreamingTranslatedText({
             savePieces(blockKey, next)
             return { pieces: next }
           })
+          // The region is stitched with the source itself; a stale recorded
+          // gap here would only buy a request a translation gate must refuse.
+          clearGaps(blockKey, covered, gapEnd)
         }
         return
       }
+
+      // The gap replay (or a streaming retry) may already be fetching exactly
+      // these bytes; a second outbound would spend the quota twice. Skip
+      // WITHOUT pinning the boundary — whichever request lands re-runs this
+      // flush with a longer chain.
+      if (isInflight(blockKey, pending)) {
+        settledBoundaryRef.current = null
+        return
+      }
+      claimInflight(blockKey, [pending])
 
       const key = translationCacheKey({
         blockKey,
@@ -673,15 +1014,27 @@ export function useStreamingTranslatedText({
       })
       void requestTranslationDetailed(pending, uiLocale, key, priority).then(
         (attempt) => {
+          // Released first, before the liveness gate: the claim must not
+          // outlive the request that holds it.
+          releaseInflight(blockKey, [pending])
           if (!isCurrent()) return
           if (attempt.text === null) {
+            if (attempt.error) setLastError(attempt.error)
+            // Record the region on EVERY failed flush — before the retry
+            // budget runs out, too: a remount at any moment must be able to
+            // re-request it, whether this instance's retries are still
+            // sleeping, already spent, or about to die with the unmount.
+            recordGap(blockKey, {
+              start: covered,
+              end: gapEnd,
+              text: pending,
+            })
             // A failed settle flush used to pin the boundary and leave the
             // tail raw forever; release it so the bounded retry can converge.
             // The backoff widens each attempt (4s → 12s → 36s): a rate-
             // limited endpoint needs a minute of slack to serve the
             // remainder, and the flat 4s spent all three attempts inside one
             // saturated window.
-            if (attempt.error) setLastError(attempt.error)
             settledBoundaryRef.current = null
             if (settledRetriesRef.current < STREAM_FAILURE_PAUSE_LIMIT) {
               settledRetriesRef.current += 1
@@ -711,6 +1064,14 @@ export function useStreamingTranslatedText({
                 savePieces(blockKey, next)
                 return { pieces: next }
               })
+              // The stitch re-records nothing and clears the recorded gap:
+              // once stitched the display is whole (and the identity piece
+              // restores from the store on remount), so a later instance
+              // re-requesting the region would only flash raw bytes back
+              // over a finished display. The record above still ran first,
+              // so an unmount between the failure and this stitch commit
+              // leaves the gap replayable by the next instance.
+              clearGaps(blockKey, covered, gapEnd)
             }
             return
           }
@@ -727,6 +1088,9 @@ export function useStreamingTranslatedText({
             savePieces(blockKey, next)
             return { pieces: next }
           })
+          // Whatever landed covers its recorded gap; drop it so a later
+          // remount does not re-request finished work.
+          clearGaps(blockKey, covered, gapEnd)
         }
       )
     }
