@@ -63,6 +63,12 @@ pub enum ProviderEventKind {
     NetworkError,
     /// The reply body could not be parsed into a translation.
     ParseError,
+    /// The request was still in flight when the soft in-flight deadline
+    /// passed. Recorded the moment the reader starts visibly waiting on this
+    /// provider — long before the reply lands and the true latency could be
+    /// judged — so the health score and the limiter learn about a slow
+    /// endpoint while its requests are still piling up, not a minute later.
+    SlowInflight,
 }
 
 impl ProviderEventKind {
@@ -75,6 +81,7 @@ impl ProviderEventKind {
             ProviderEventKind::HttpError => "http_error",
             ProviderEventKind::NetworkError => "network_error",
             ProviderEventKind::ParseError => "parse_error",
+            ProviderEventKind::SlowInflight => "slow_inflight",
         }
     }
 }
@@ -120,6 +127,10 @@ impl ProviderCounters {
             ProviderEventKind::ParseError => {
                 self.parse_error.fetch_add(1, Ordering::Relaxed);
             }
+            // A soft, in-flight signal: the reply may still turn out fine, so
+            // it feeds no success/failure counter — only the event window the
+            // health score reads.
+            ProviderEventKind::SlowInflight => {}
         }
         self.push_event(kind, latency_ms);
     }

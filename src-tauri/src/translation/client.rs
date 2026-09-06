@@ -46,6 +46,13 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// spend tens of seconds *thinking* about even a short translation, so a flat
 /// 60 s reads as "endpoint broken" when the endpoint is merely slow.
 const READ_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long a request may stay in flight before the pool treats the provider
+/// as "slow right now": the health window learns at this mark instead of when
+/// the reply lands, and the rate halves so later chunks rotate elsewhere.
+/// Deliberately far below READ_TIMEOUT — the hard timeout judges a broken
+/// endpoint, this judges a reader-visible wait — and deliberately generous:
+/// reasoning relays routinely take 10-20 s on a normal batch.
+const SLOW_INFLIGHT: Duration = Duration::from_secs(30);
 /// Well under the ~30-60 s idle cutoff CDNs apply to keep-alive connections:
 /// a pooled connection older than this is evicted instead of failing the next
 /// request the instant it is reused.
@@ -444,7 +451,37 @@ async fn translate_one(
         for (name, value) in auth_headers(format, &provider.api_key) {
             request = request.header(name, value);
         }
-        let outcome = request.json(&body).send().await;
+        // The soft in-flight deadline: the request keeps waiting for its full
+        // budget, but at the mark the pool already learns the provider is
+        // slow — an endpoint answering in 90 s held a Background-lane slot
+        // for the whole round trip while every queued chunk waited on it, and
+        // the health window only heard about it when the reply landed.
+        let pending = request.json(&body).send();
+        tokio::pin!(pending);
+        let slow_mark = tokio::time::Instant::now() + SLOW_INFLIGHT;
+        let mut slow_reported = false;
+        let outcome = loop {
+            tokio::select! {
+                biased;
+                response = &mut pending => break response,
+                _ = tokio::time::sleep_until(slow_mark), if !slow_reported => {
+                    slow_reported = true;
+                    let elapsed = started.elapsed().as_millis() as u64;
+                    tracing::warn!(
+                        "[translation] request to {} still in flight after {}ms — \
+                         halving its rate for the remainder of the wait",
+                        picked.id(),
+                        elapsed
+                    );
+                    translation_metrics().record_attempt(
+                        picked.id(),
+                        ProviderEventKind::SlowInflight,
+                        elapsed,
+                    );
+                    picked.report_slow_inflight();
+                }
+            }
+        };
         last_latency_ms = started.elapsed().as_millis() as u64;
         let latency = last_latency_ms;
 

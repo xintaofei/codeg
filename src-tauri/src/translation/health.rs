@@ -50,7 +50,9 @@ const QUALITY_REJECT_ZERO: f64 = 0.4;
 /// Stability maps the weighted failure rate onto 1.0 → 0.0. Hard failures
 /// (network, HTTP errors, unparseable bodies) count 1 each; a 429 counts ½ —
 /// it says the endpoint is alive but out of quota, which is a much smaller
-/// sin than not answering.
+/// sin than not answering. A slow-inflight signal counts ½ too: nothing
+/// failed (yet), but the reader is visibly waiting and the lane's slots are
+/// being held — the same "alive but not serving the reader" shape as a 429.
 const STABILITY_FAIL_ZERO: f64 = 0.25;
 
 /// Speed maps the median round-trip onto 1.0 → 0.0 across the observed span
@@ -170,8 +172,16 @@ pub fn health_score(events: &[ProviderEvent], _now: SystemTime) -> HealthScore {
         .iter()
         .filter(|event| event.kind == ProviderEventKind::RateLimited)
         .count() as f64;
+    // Slow-inflight signals weigh like a 429: nothing failed, but the wait is
+    // the reader-visible cost. Their latency is deliberately NOT folded into
+    // the speed window below — the reply that eventually lands records the
+    // true round trip there, and counting both would double-punish one ask.
+    let slow = recent
+        .iter()
+        .filter(|event| event.kind == ProviderEventKind::SlowInflight)
+        .count() as f64;
     let stability =
-        (1.0 - (hard + limited * 0.5) / total / STABILITY_FAIL_ZERO).clamp(0.0, 1.0);
+        (1.0 - (hard + (limited + slow) * 0.5) / total / STABILITY_FAIL_ZERO).clamp(0.0, 1.0);
 
     // Speed: the median round-trip over the events that carried a reply
     // (successes and gate rejections alike — both cost the reader the wait).
@@ -253,6 +263,36 @@ mod tests {
         assert!(health_score(&events(&kinds), now()).observing);
         let kinds = [(K::Ok, 3_000); 8];
         assert!(!health_score(&events(&kinds), now()).observing);
+    }
+
+    /// 半数请求越过软在途线（30s 仍在途）：stability 减半计权，
+    /// 复合分被压到降级线下——慢占道要在请求还挂着的时候就反映，
+    /// 而不是等回复落地。quality 不受影响（没有可判定的回复），
+    /// speed 也不吃这个信号（真实的往返延迟由最终落地的那个事件
+    /// 记录，两边都算会双倍惩罚同一次请求）。
+    #[test]
+    fn half_a_window_slow_inflight_degrades_the_member() {
+        let mut kinds = vec![(K::Ok, 3_000); 10];
+        kinds.extend(vec![(K::SlowInflight, 30_000); 10]);
+        let health = health_score(&events(&kinds), now());
+        assert_eq!(health.stability, 0.0, "ten half-weight waits spend stability");
+        assert_eq!(health.quality, 1.0, "no reply was judged; quality untouched");
+        assert_eq!(health.speed, 1.0, "the true latency rides on the eventual Ok event");
+        assert!(health.degraded(), "score was {}", health.score);
+        assert!(!health.retired(), "slow alone must not retire: score {}", health.score);
+    }
+
+    /// 全是慢信号、没有任何回复：quality 与 speed 都无样本、被剔除，
+    /// 复合分只由 stability 决定——仍然必须能压到降级线，否则一个
+    /// 永远 90s 的端点会顶着"中性"档位继续占道。
+    #[test]
+    fn an_all_slow_window_scores_on_stability_alone() {
+        let kinds = [(K::SlowInflight, 30_000); 8];
+        let health = health_score(&events(&kinds), now());
+        assert_eq!(health.quality, 1.0);
+        assert_eq!(health.speed, 1.0);
+        assert_eq!(health.stability, 0.0);
+        assert!(health.degraded());
     }
 
     fn events(kinds: &[(ProviderEventKind, u64)]) -> Vec<ProviderEvent> {

@@ -219,6 +219,26 @@ impl PickedProvider {
         }
     }
 
+    /// A slow-inflight signal: the request has been on the wire past the soft
+    /// in-flight deadline while the reader stares at an untranslated block.
+    /// Nothing failed — the reply may still land and count normally — but the
+    /// lane's concurrency slots are being held hostage, so the rate halves
+    /// right now instead of after the full round trip. Always observable (the
+    /// rate moved), so always notifies.
+    pub fn report_slow_inflight(&self) {
+        {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .expect("pool runtime lock is never poisoned across a panic-free run");
+            let entry = runtime.entry(self.provider_id.clone()).or_default();
+            if let Some(aimd) = entry.aimd.as_mut() {
+                aimd.penalize(None, Instant::now());
+            }
+        }
+        notify_change();
+    }
+
     /// Space this provider's consecutive dispatches by its adaptive interval.
     /// Atomic slot claiming, one timeline per provider: two callers cannot
     /// pick the same slot and fire together. The interval is read under the
@@ -369,7 +389,11 @@ impl PoolState {
     ///
     /// Among the survivors the highest health wins, and exact ties rotate
     /// strictly — the old idle-time ranking burst A,A,B,B under a two-member
-    /// pool, hammering one endpoint twice before the other saw work.
+    /// pool, hammering one endpoint twice before the other saw work. (Speed
+    /// needs no separate tiebreak: it already weighs inside the composite,
+    /// so a slow member's composite sinks below its faster rival on its
+    /// own — what was missing was the slow signal arriving in time, which
+    /// the SlowInflight event fixes upstream.)
     ///
     /// Every member cooling at once: wait for the earliest cooldown to lapse
     /// (capped), then pick again — failing immediately would surface a 429
@@ -758,6 +782,41 @@ mod tests {
         assert!(
             status[0].allowed_rpm < baseline,
             "a 429 halves the shown rate"
+        );
+    }
+
+    /// A slow-inflight report throttles without parking: the rate halves so
+    /// later chunks rotate elsewhere while the slow request is still on the
+    /// wire, but the provider stays dispatchable — the reply may still be
+    /// fine, and the pacing is the throttle.
+    #[tokio::test]
+    async fn a_slow_inflight_report_halves_the_rate_without_parking() {
+        let providers = vec![provider("slow", "slow.example.com")];
+        let pool = PoolState {
+            runtime: Arc::new(Mutex::new(
+                providers
+                    .iter()
+                    .map(|p| (p.id.clone(), ProviderRuntime::seeded(p)))
+                    .collect(),
+            )),
+            providers,
+            cursor: AtomicUsize::new(0),
+            origin: Instant::now(),
+            _last_dispatch: AtomicU64::new(0),
+        };
+        let picked = pool.pick().await.expect("pick");
+        let baseline = pool.status()[0].allowed_rpm;
+        picked.report_slow_inflight();
+        let status = pool.status();
+        assert!(
+            (status[0].allowed_rpm - (baseline / 2.0)).abs() < f64::EPSILON,
+            "the rate halved: {} -> {}",
+            baseline,
+            status[0].allowed_rpm
+        );
+        assert_eq!(
+            status[0].cooldown_remaining_ms, 0,
+            "no Retry-After was named; the provider stays dispatchable"
         );
     }
 
