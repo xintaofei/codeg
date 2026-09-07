@@ -9013,6 +9013,27 @@ fn unique_skill_root(peer: &SkillPeer, peers: &[SkillPeer]) -> Result<PathBuf, A
     )))
 }
 
+fn preflight_shared_skill_owner(root: &Path, peers: &[SkillPeer]) -> Result<(), AcpError> {
+    let resolved = resolved_skill_root(root)?;
+    for peer in peers {
+        for native in &peer.roots {
+            let resolved_native = resolved_skill_root(native)?;
+            if let Ok(relative) = resolved.strip_prefix(&resolved_native) {
+                // Evaluate the owner's lexical path so aliases cannot erase
+                // that owner's builtin-directory policy.
+                if is_read_only_skill_path(peer.agent, &native.join(relative)) {
+                    return Err(AcpError::protocol(format!(
+                        "shared skill root '{}' is read-only for owning agent {}",
+                        root.display(),
+                        peer.agent
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn create_skill_link(source: &Path, destination: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -9154,6 +9175,7 @@ fn set_shared_skill_enabled(
     if original.enabled == enabled {
         return Ok(original);
     }
+    preflight_shared_skill_owner(root, peers)?;
     let resolved_root = resolved_skill_root(root)?;
     let vault = disabled_skill_root(root);
     let resolved_vault = resolved_skill_root(&vault)?;
@@ -9430,7 +9452,11 @@ fn reject_multiple_active_skills(
     skill_id: &str,
 ) -> Result<(), AcpError> {
     let mut matches = 0;
+    let mut seen_roots = std::collections::HashSet::new();
     for root in roots {
+        if !seen_roots.insert(resolved_skill_root(root)?) {
+            continue;
+        }
         let entries = match fs::read_dir(root) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -13747,20 +13773,29 @@ pub async fn acp_delete_agent_skill(
         )));
     }
     let skill_path = PathBuf::from(&skill.path);
-    for root in &dirs {
-        if !skill_root_is_shared(agent_type, scope, workspace_path.as_deref(), root)? {
-            continue;
-        }
-        if let Some(canonical) =
-            locate_existing_skill(&disabled_skill_root(root), spec.kind, &id, scope, false)
-        {
-            let canonical_path = Path::new(&canonical.path);
-            if skill_path == canonical_path || skill_link_targets(&skill_path, canonical_path) {
-                let peers = skill_peers(workspace_path.as_deref());
-                preflight_disabled_skill_root(root, workspace_path.as_deref())?;
-                return delete_shared_skill(canonical_path, &peers, &id, |from, to| {
-                    fs::rename(from, to)
-                });
+    let peers = skill_peers(workspace_path.as_deref());
+    // A shared root alias can own a vault outside this agent's lexical roots.
+    // Only a direct link to a known peer vault entry establishes ownership.
+    for peer in &peers {
+        for root in &peer.roots {
+            if !skill_root_is_shared(peer.agent, peer.scope, workspace_path.as_deref(), root)? {
+                continue;
+            }
+            if let Some(canonical) = locate_existing_skill(
+                &disabled_skill_root(root),
+                peer.kind,
+                &id,
+                peer.scope,
+                false,
+            ) {
+                let canonical_path = Path::new(&canonical.path);
+                if skill_path == canonical_path || skill_link_targets(&skill_path, canonical_path) {
+                    preflight_shared_skill_owner(root, &peers)?;
+                    preflight_disabled_skill_root(root, workspace_path.as_deref())?;
+                    return delete_shared_skill(canonical_path, &peers, &id, |from, to| {
+                        fs::rename(from, to)
+                    });
+                }
             }
         }
     }
@@ -16901,6 +16936,169 @@ wire_api = "chat"
             })
             .collect();
         (shared, peers)
+    }
+
+    fn shared_skill_custom_def(
+        id: &str,
+        root: &Path,
+    ) -> crate::acp::custom_registry::CustomAgentDef {
+        use crate::acp::custom_registry::{
+            CustomAgentDef, CustomAgentSpec, CustomDistributionKind, NpxSpec,
+        };
+        CustomAgentDef {
+            registry_id: id.into(),
+            name: id.into(),
+            description: String::new(),
+            version: "1.0.0".into(),
+            distribution_kind: CustomDistributionKind::Npx,
+            spec: CustomAgentSpec {
+                npx: Some(NpxSpec {
+                    package: "test-agent@1.0.0".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+            skills_dir: Some(root.to_string_lossy().into_owned()),
+            source: Default::default(),
+            version_probe: None,
+            supports_mcp: true,
+        }
+    }
+
+    #[test]
+    fn shared_skill_reparse_probe_is_accessible_from_acp() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!crate::commands::experts::path_is_reparse_point(tmp.path()));
+    }
+
+    #[test]
+    fn shared_skill_custom_owner_cannot_disable_another_agents_builtin_root() {
+        use crate::acp::custom_registry::{hydrate, hydrate_test_guard};
+        let _registry_guard = hydrate_test_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        temp_env::with_var("GEMINI_HOME", Some(tmp.path()), || {
+            let root = tmp.path().join("antigravity-cli/skills");
+            fs::create_dir_all(root.join("demo")).unwrap();
+            fs::write(root.join("demo/SKILL.md"), "builtin").unwrap();
+            assert!(hydrate(&[shared_skill_custom_def("task2-readonly-owner", &root)]).is_empty());
+            let result =
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(acp_set_agent_skill_enabled(
+                        AgentType::custom("task2-readonly-owner").unwrap(),
+                        AgentSkillScope::Global,
+                        "demo".into(),
+                        None,
+                        false,
+                    ));
+            hydrate(&[]);
+            assert!(result.unwrap_err().to_string().contains("read-only"));
+            assert_eq!(
+                fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+                "builtin"
+            );
+            assert!(!disabled_skill_root(&root).exists());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_skill_alias_roots_do_not_duplicate_followup_toggles() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shared = tmp.path().join(".claude/skills");
+        let cline = tmp.path().join(".cline/skills");
+        fs::create_dir_all(shared.join("demo")).unwrap();
+        fs::write(shared.join("demo/SKILL.md"), "body").unwrap();
+        fs::create_dir_all(&cline).unwrap();
+        fs::create_dir_all(tmp.path().join(".clinerules")).unwrap();
+        std::os::unix::fs::symlink(&cline, tmp.path().join(".clinerules/skills")).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        for (agent, enabled) in [
+            (AgentType::ClaudeCode, false),
+            (AgentType::Cline, false),
+            (AgentType::Cline, true),
+            (AgentType::ClaudeCode, true),
+        ] {
+            let item = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    agent,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    Some(tmp.path().to_string_lossy().into_owned()),
+                    enabled,
+                ))
+                .unwrap();
+            assert_eq!(item.enabled, enabled);
+        }
+        assert!(shared.join("demo/SKILL.md").is_file());
+        assert!(fs::symlink_metadata(cline.join("demo")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_skill_delete_via_alias_canonical_link_is_global() {
+        use crate::acp::custom_registry::{hydrate, hydrate_test_guard};
+        let _registry_guard = hydrate_test_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        temp_env::with_vars(
+            [
+                ("HOME", Some(tmp.path())),
+                ("CODEX_HOME", None::<&Path>),
+                ("GEMINI_HOME", None),
+                ("PI_CODING_AGENT_DIR", None),
+                ("DSH_HOME", None),
+                ("DSH_AGENTS_HOME", None),
+                ("QODER_CONFIG_DIR", None),
+                ("QODER_CLI_HOME", None),
+            ],
+            || {
+                let shared = tmp.path().join(".agents/skills");
+                let alias = tmp.path().join("custom/skills");
+                fs::create_dir_all(shared.join("demo")).unwrap();
+                fs::write(shared.join("demo/SKILL.md"), "body").unwrap();
+                fs::create_dir_all(alias.parent().unwrap()).unwrap();
+                std::os::unix::fs::symlink(&shared, &alias).unwrap();
+                assert!(
+                    hydrate(&[shared_skill_custom_def("task2-alias-owner", &alias)]).is_empty()
+                );
+                let runtime = tokio::runtime::Runtime::new().unwrap();
+                let result = runtime.block_on(async {
+                    acp_set_agent_skill_enabled(
+                        AgentType::custom("task2-alias-owner").unwrap(),
+                        AgentSkillScope::Global,
+                        "demo".into(),
+                        None,
+                        false,
+                    )
+                    .await?;
+                    acp_delete_agent_skill(
+                        AgentType::Codex,
+                        AgentSkillScope::Global,
+                        "demo".into(),
+                        None,
+                    )
+                    .await
+                });
+                let peers = skill_peers(None);
+                hydrate(&[]);
+                result.unwrap();
+                assert!(
+                    !disabled_skill_root(&alias).join("demo").exists(),
+                    "canonical installation remains"
+                );
+                for peer in peers {
+                    for root in peer.roots {
+                        assert!(
+                            fs::symlink_metadata(root.join("demo")).is_err(),
+                            "leftover peer entry: {}",
+                            root.display()
+                        );
+                    }
+                }
+            },
+        );
     }
 
     #[test]

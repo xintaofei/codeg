@@ -467,7 +467,7 @@ pub(crate) fn path_is_symlink(path: &Path) -> bool {
 /// point. `symlink_metadata` reports it as a directory. So we also need to
 /// ask the OS whether the directory is a reparse point.
 #[cfg(windows)]
-fn path_is_reparse_point(path: &Path) -> bool {
+pub(crate) fn path_is_reparse_point(path: &Path) -> bool {
     use std::os::windows::fs::MetadataExt;
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
     fs::symlink_metadata(path)
@@ -476,7 +476,7 @@ fn path_is_reparse_point(path: &Path) -> bool {
 }
 
 #[cfg(not(windows))]
-fn path_is_reparse_point(_path: &Path) -> bool {
+pub(crate) fn path_is_reparse_point(_path: &Path) -> bool {
     false
 }
 
