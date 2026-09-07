@@ -16,11 +16,14 @@
 //! - `registry`   — tab id → surface + last known state
 //! - `surface`    — the enum over the concrete surfaces and their common ops
 //! - `surface_child` / `surface_window` — the concrete builders
+//! - `channel`    — page → host messages from the isolated-world helper
+//! - `shim`       — per-platform WebKit / WebView2 calls (worlds, eval, snapshot)
 //! - `hooks`      — webview callbacks (page load, title) → registry + events
 //! - `events`     — state fan-out to the frontend
 //! - `smoke`      — dev-only puppet driven by a JSON control file (feature
 //!   `browser-smoke`, never in a release build)
 
+pub mod channel;
 pub mod events;
 pub mod hooks;
 pub mod policy;
@@ -33,6 +36,8 @@ pub mod surface;
 pub mod surface_child;
 pub mod surface_window;
 pub mod types;
+
+pub mod shim;
 
 #[cfg(feature = "browser-smoke")]
 pub mod smoke;

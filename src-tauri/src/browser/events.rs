@@ -5,7 +5,10 @@ use tauri::AppHandle;
 
 use crate::web::event_bridge::{emit_event, EventEmitter};
 
-use super::types::{BrowserClosedPayload, BrowserTabState, CLOSED_EVENT, STATE_EVENT};
+use super::types::{
+    BrowserClosedPayload, BrowserPopupPayload, BrowserTabState, CLOSED_EVENT, POPUP_EVENT,
+    STATE_EVENT,
+};
 
 pub fn emit_state(app: &AppHandle, state: &BrowserTabState) {
     emit_event(&EventEmitter::Tauri(app.clone()), STATE_EVENT, state);
@@ -20,4 +23,8 @@ pub fn emit_closed(app: &AppHandle, tab_id: &str, owner_window: &str) {
             owner_window: owner_window.to_string(),
         },
     );
+}
+
+pub fn emit_popup(app: &AppHandle, payload: &BrowserPopupPayload) {
+    emit_event(&EventEmitter::Tauri(app.clone()), POPUP_EVENT, payload);
 }

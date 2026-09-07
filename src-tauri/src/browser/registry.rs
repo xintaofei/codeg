@@ -2,13 +2,29 @@
 //! webview hooks and the window-close cleanup. The mutex is only ever held
 //! for map operations; every surface call happens on a clone taken out of it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, MutexGuard};
+use std::time::Instant;
+
+use serde_json::Value;
 
 use crate::app_error::AppCommandError;
 
 use super::surface::BrowserSurface;
 use super::types::{Bounds, BrowserTabState};
+
+/// Recent user gestures reported by the isolated-world helper (untrusted).
+/// Consumed by the popup router to tell a gesture-backed `window.open` from
+/// an unsolicited one and to match modifier-clicks against navigations.
+#[derive(Debug, Clone)]
+pub struct GestureRecord {
+    pub received: Instant,
+    pub payload: Value,
+}
+
+/// How many gestures to remember per tab; a click storm never needs more
+/// than the last few, and the popup rule only looks one second back.
+pub const GESTURE_RING_CAPACITY: usize = 16;
 
 pub struct BrowserTab {
     pub state: BrowserTabState,
@@ -17,6 +33,19 @@ pub struct BrowserTab {
     /// shown again after being hidden.
     pub last_bounds: Bounds,
     pub visible: bool,
+    pub gestures: VecDeque<GestureRecord>,
+}
+
+impl BrowserTab {
+    pub fn new(state: BrowserTabState, surface: BrowserSurface, bounds: Bounds, visible: bool) -> Self {
+        Self {
+            state,
+            surface,
+            last_bounds: bounds,
+            visible,
+            gestures: VecDeque::with_capacity(GESTURE_RING_CAPACITY),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -107,6 +136,26 @@ impl BrowserRegistry {
             .map(|t| t.state.tab_id.clone())
             .collect();
         ids.into_iter().filter_map(|id| tabs.remove(&id)).collect()
+    }
+
+    pub fn push_gesture(&self, tab_id: &str, payload: Value) {
+        self.update(tab_id, |tab| {
+            if tab.gestures.len() == GESTURE_RING_CAPACITY {
+                tab.gestures.pop_front();
+            }
+            tab.gestures.push_back(GestureRecord {
+                received: Instant::now(),
+                payload,
+            });
+        });
+    }
+
+    /// Newest first.
+    pub fn recent_gestures(&self, tab_id: &str) -> Vec<GestureRecord> {
+        self.lock()
+            .get(tab_id)
+            .map(|tab| tab.gestures.iter().rev().cloned().collect())
+            .unwrap_or_default()
     }
 
     pub fn len(&self) -> usize {

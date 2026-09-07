@@ -11,25 +11,48 @@
 //! caller already is the main thread (wry handlers, window-event hooks).
 //! Never call into a handle while holding the registry mutex — the main
 //! thread may need that mutex to finish the very operation being waited on.
+//!
+//! Page-initiated new windows (`window.open`, `target=_blank`) are handled
+//! here too: the engine asks for a webview, we build one from the opener's
+//! configuration (which is what keeps `window.opener` alive) and hand it back
+//! with `NewWindowResponse::Create`, registering it as a new tab next to the
+//! opener. The host never navigates on the page's behalf.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::thread::ThreadId;
+use std::time::Duration;
 
-use tauri::{AppHandle, Url, WebviewWindow};
-use tauri_runtime_wry::wry::{self, dpi, PageLoadEvent, Rect, WebViewBuilder};
+use tauri::{AppHandle, Manager, Url, WebviewWindow};
+use tauri_runtime_wry::wry::{
+    self, dpi, NewWindowFeatures, NewWindowResponse, PageLoadEvent, Rect, WebViewBuilder,
+};
 
+use super::channel::{self, MessageSink};
+use super::events;
 use super::hooks;
 use super::policy;
-use super::types::Bounds;
+use super::registry::{BrowserRegistry, BrowserTab};
+use super::surface::BrowserSurface;
+use super::types::{
+    Bounds, BrowserPopupPayload, BrowserTabState, ChannelKind, PopupPresentation, SurfaceKind,
+};
+#[cfg(target_os = "macos")]
+use super::shim::macos as shim;
 
 thread_local! {
     static SURFACES: RefCell<HashMap<String, wry::WebView>> = RefCell::new(HashMap::new());
 }
 
 static MAIN_THREAD: OnceLock<ThreadId> = OnceLock::new();
+static POPUP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// How far back a page-initiated new-window request may look for a user
+/// gesture before it counts as an unsolicited popup.
+pub const POPUP_GESTURE_WINDOW: Duration = Duration::from_secs(1);
 
 /// Must be called once from the main thread (tauri's `setup` hook) before any
 /// surface is created; lets `ChildHandle` run inline instead of deadlocking
@@ -72,6 +95,29 @@ fn rect(bounds: Bounds) -> Rect {
         position: dpi::Position::Logical(dpi::LogicalPosition::new(bounds.x, bounds.y)),
         size: dpi::Size::Logical(dpi::LogicalSize::new(bounds.width, bounds.height)),
     }
+}
+
+/// Main thread only: which tab owns the platform webview behind `pointer`
+/// (see `channel::MessageSink`).
+#[cfg(target_os = "macos")]
+fn tab_id_for_webview(pointer: usize) -> Option<String> {
+    SURFACES.with(|s| {
+        s.borrow()
+            .iter()
+            .find(|(_, wv)| shim::webview_pointer(wv) == pointer)
+            .map(|(id, _)| id.clone())
+    })
+}
+
+/// One sink for every tab: messages are attributed by source webview, because
+/// an adopted popup shares its opener's user-content controller.
+#[cfg(target_os = "macos")]
+fn message_sink(app: &AppHandle) -> MessageSink {
+    let app = app.clone();
+    Arc::new(move |raw, main_frame, source| match tab_id_for_webview(source) {
+        Some(tab_id) => channel::handle_message(&app, &tab_id, raw, main_frame),
+        None => tracing::debug!("[browser] channel message from an unknown webview dropped"),
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -158,6 +204,126 @@ impl ChildHandle {
         self.op(|wv| wv.clear_all_browsing_data())
     }
 
+    /// Install the isolated-world helper and the native message handler.
+    /// `Ok(true)` = isolated world, `Ok(false)` = page-world fallback.
+    pub fn install_channel(&self) -> Result<bool, ChildError> {
+        #[cfg(target_os = "macos")]
+        {
+            let sink = message_sink(&self.app);
+            self.with(move |wv| {
+                shim::install_world(wv, &[channel::PREFIX_SCRIPT, channel::HELPER_JS], sink)
+            })?
+            .map_err(ChildError::Op)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Err(ChildError::Op(
+                "page channel is not implemented on this platform yet".into(),
+            ))
+        }
+    }
+
+    /// Evaluate an expression in the helper's world; see `shim::eval_in_world`
+    /// for the result envelope.
+    pub fn eval_in_world(
+        &self,
+        expression: &str,
+        callback: impl Fn(Result<String, String>) + Send + 'static,
+    ) -> Result<(), ChildError> {
+        #[cfg(target_os = "macos")]
+        {
+            let expression = expression.to_string();
+            self.with(move |wv| shim::eval_in_world(wv, &expression, callback))?
+                .map_err(ChildError::Op)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (expression, callback);
+            Err(ChildError::Op(
+                "world evaluation is not implemented on this platform yet".into(),
+            ))
+        }
+    }
+
+    pub fn snapshot_png(
+        &self,
+        callback: impl Fn(Result<Vec<u8>, String>) + Send + 'static,
+    ) -> Result<(), ChildError> {
+        #[cfg(target_os = "macos")]
+        {
+            self.with(move |wv| shim::snapshot_png(wv, callback))?
+                .map_err(ChildError::Op)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = callback;
+            Err(ChildError::Op(
+                "snapshots are not implemented on this platform yet".into(),
+            ))
+        }
+    }
+
+    pub fn go_back(&self) -> Result<(), ChildError> {
+        #[cfg(target_os = "macos")]
+        {
+            self.with(shim::go_back)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Err(ChildError::Op(
+                "history navigation is not implemented on this platform yet".into(),
+            ))
+        }
+    }
+
+    pub fn go_forward(&self) -> Result<(), ChildError> {
+        #[cfg(target_os = "macos")]
+        {
+            self.with(shim::go_forward)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Err(ChildError::Op(
+                "history navigation is not implemented on this platform yet".into(),
+            ))
+        }
+    }
+
+    pub fn can_go_back(&self) -> Result<bool, ChildError> {
+        #[cfg(target_os = "macos")]
+        {
+            self.with(shim::can_go_back)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Ok(false)
+        }
+    }
+
+    pub fn can_go_forward(&self) -> Result<bool, ChildError> {
+        #[cfg(target_os = "macos")]
+        {
+            self.with(shim::can_go_forward)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Ok(false)
+        }
+    }
+
+    pub fn stop(&self) -> Result<(), ChildError> {
+        #[cfg(target_os = "macos")]
+        {
+            self.with(shim::stop_loading)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Err(ChildError::Op(
+                "stop is not implemented on this platform yet".into(),
+            ))
+        }
+    }
+
     /// Detach and drop the webview (on the main thread; wry removes the
     /// native view from the window when the `WebView` drops).
     pub fn close(&self) -> Result<(), ChildError> {
@@ -173,8 +339,71 @@ impl ChildHandle {
     }
 }
 
-/// Build the child webview on `about:blank` at `bounds`. The caller navigates
-/// afterwards, once the page ↔ host channel is installed.
+/// Opener-provided platform configuration for a popup webview.
+#[cfg(target_os = "macos")]
+type OpenerConfiguration = objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>;
+#[cfg(not(target_os = "macos"))]
+type OpenerConfiguration = ();
+
+/// Main thread only. Builds the child webview at `bounds` with every hook
+/// attached and **no URL**: a regular tab is navigated by the caller once the
+/// page channel is installed, a popup is navigated by the engine itself.
+fn build_child(
+    app: &AppHandle,
+    owner: &WebviewWindow,
+    tab_id: &str,
+    label: &str,
+    bounds: Bounds,
+    visible: bool,
+    configuration: Option<OpenerConfiguration>,
+) -> Result<wry::WebView, String> {
+    let nav_id = tab_id.to_string();
+    #[allow(unused_mut)]
+    let mut builder = WebViewBuilder::new()
+        .with_id(label)
+        .with_bounds(rect(bounds))
+        .with_visible(visible)
+        .with_focused(false)
+        .with_devtools(true)
+        .with_hotkeys_zoom(true)
+        .with_navigation_handler(move |url| {
+            let allowed = Url::parse(&url)
+                .map(|u| policy::navigation_allowed(&u))
+                .unwrap_or(false);
+            if !allowed {
+                tracing::info!("[browser] tab {nav_id} blocked navigation to {url}");
+            }
+            allowed
+        })
+        .with_on_page_load_handler({
+            let app = app.clone();
+            let id = tab_id.to_string();
+            move |event, url| {
+                if let Ok(url) = Url::parse(&url) {
+                    hooks::page_load(&app, &id, &url, matches!(event, PageLoadEvent::Started));
+                }
+            }
+        })
+        .with_document_title_changed_handler({
+            let app = app.clone();
+            let id = tab_id.to_string();
+            move |title| hooks::title_changed(&app, &id, title)
+        })
+        // Downloads are refused until the download UI exists (P2).
+        .with_download_started_handler(|_url, _destination| false)
+        .with_new_window_req_handler(new_window_handler(app.clone(), owner.clone(), tab_id.to_string()));
+    #[cfg(target_os = "macos")]
+    if let Some(configuration) = configuration {
+        use tauri_runtime_wry::wry::WebViewBuilderExtMacos;
+        builder = builder.with_webview_configuration(configuration);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = configuration;
+    builder.build_as_child(owner).map_err(|e| e.to_string())
+}
+
+/// Build the child webview for a regular tab. The caller navigates afterwards,
+/// once the page ↔ host channel is installed.
 pub fn create(
     app: &AppHandle,
     owner: &WebviewWindow,
@@ -188,51 +417,146 @@ pub fn create(
         label: label.to_string(),
         app: app.clone(),
     };
+    let app = app.clone();
     let owner = owner.clone();
-    let app_for_hooks = app.clone();
     let id = tab_id.to_string();
     let label = label.to_string();
-    run_on_main(app, move || -> Result<(), String> {
-        let nav_id = id.clone();
-        let builder = WebViewBuilder::new()
-            .with_id(&label)
-            .with_url("about:blank")
-            .with_bounds(rect(bounds))
-            .with_visible(!background)
-            .with_focused(false)
-            .with_devtools(true)
-            .with_hotkeys_zoom(true)
-            .with_navigation_handler(move |url| {
-                let allowed = Url::parse(&url)
-                    .map(|u| policy::navigation_allowed(&u))
-                    .unwrap_or(false);
-                if !allowed {
-                    tracing::info!("[browser] tab {nav_id} blocked navigation to {url}");
-                }
-                allowed
-            })
-            .with_on_page_load_handler({
-                let app = app_for_hooks.clone();
-                let id = id.clone();
-                move |event, url| {
-                    if let Ok(url) = Url::parse(&url) {
-                        hooks::page_load(&app, &id, &url, matches!(event, PageLoadEvent::Started));
-                    }
-                }
-            })
-            .with_document_title_changed_handler({
-                let app = app_for_hooks.clone();
-                let id = id.clone();
-                move |title| hooks::title_changed(&app, &id, title)
-            })
-            // Downloads are refused until the download UI exists (P2).
-            .with_download_started_handler(|_url, _destination| false);
-        let webview = builder
-            .build_as_child(&owner)
-            .map_err(|e| e.to_string())?;
+    run_on_main(&app.clone(), move || -> Result<(), String> {
+        let webview = build_child(&app, &owner, &id, &label, bounds, !background, None)?;
         SURFACES.with(|s| s.borrow_mut().insert(id, webview));
         Ok(())
     })?
     .map_err(ChildError::Op)?;
     Ok(handle)
+}
+
+fn deny(app: &AppHandle, opener_tab_id: &str, url: &str, features: &NewWindowFeatures, reason: &str) -> NewWindowResponse {
+    tracing::info!("[browser] tab {opener_tab_id}: new-window request for {url} denied ({reason})");
+    events::emit_popup(
+        app,
+        &BrowserPopupPayload {
+            presentation: PopupPresentation::Denied,
+            opener_tab_id: opener_tab_id.to_string(),
+            tab_id: None,
+            url: url.to_string(),
+            requested_size: features.size.map(|s| [s.width, s.height]),
+            reason: Some(reason.to_string()),
+        },
+    );
+    NewWindowResponse::Deny
+}
+
+/// wry calls this on the main thread for every page-initiated new window.
+/// Policy (v3 §5.3): scheme allow-list, then a user gesture within
+/// `POPUP_GESTURE_WINDOW` (the popup blocker), then `Create` — the engine
+/// navigates its own webview, so `window.opener`, `Referer` and `noopener`
+/// semantics are exactly what the page asked for; the host only decides how
+/// to present it, and for now every popup is adopted as a tab beside its
+/// opener.
+fn new_window_handler(
+    app: AppHandle,
+    owner: WebviewWindow,
+    opener_tab_id: String,
+) -> impl Fn(String, NewWindowFeatures) -> NewWindowResponse + 'static {
+    move |url, features| {
+        let Some(registry) = app.try_state::<BrowserRegistry>() else {
+            return NewWindowResponse::Deny;
+        };
+        let parsed = match Url::parse(&url) {
+            Ok(u) if policy::navigation_allowed(&u) => u,
+            _ => return deny(&app, &opener_tab_id, &url, &features, "blocked-scheme"),
+        };
+        let has_gesture = registry
+            .recent_gestures(&opener_tab_id)
+            .iter()
+            .any(|g| g.received.elapsed() <= POPUP_GESTURE_WINDOW);
+        if !has_gesture {
+            return deny(&app, &opener_tab_id, &url, &features, "no-gesture");
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let seq = POPUP_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+            let tab_id = format!("{opener_tab_id}-p{seq}");
+            let label = super::tab_label(&tab_id);
+            let bounds = registry
+                .update(&opener_tab_id, |tab| tab.last_bounds)
+                .unwrap_or_default();
+            let configuration = features.opener.target_configuration.clone();
+            let webview = match build_child(&app, &owner, &tab_id, &label, bounds, true, Some(configuration)) {
+                Ok(webview) => webview,
+                Err(err) => {
+                    tracing::warn!("[browser] popup webview creation failed: {err}");
+                    return deny(&app, &opener_tab_id, &url, &features, "create-failed");
+                }
+            };
+            // The platform object WebKit will load the request into.
+            let platform = objc2::rc::Retained::into_super(
+                tauri_runtime_wry::wry::WebViewExtMacOS::webview(&webview),
+            );
+            SURFACES.with(|s| s.borrow_mut().insert(tab_id.clone(), webview));
+            let handle = ChildHandle {
+                tab_id: tab_id.clone(),
+                label,
+                app: app.clone(),
+            };
+            // Same controller as the opener in practice, so this is a no-op
+            // that still reports the channel kind; a fresh controller gets the
+            // full install. Either way it happens before WebKit loads anything.
+            let channel = match handle.install_channel() {
+                Ok(true) => ChannelKind::Degraded, // native once `hello` arrives
+                Ok(false) => ChannelKind::Legacy,
+                Err(err) => {
+                    tracing::warn!("[browser] popup {tab_id}: page channel unavailable ({err})");
+                    ChannelKind::Degraded
+                }
+            };
+            let state = BrowserTabState {
+                tab_id: tab_id.clone(),
+                owner_window: owner.label().to_string(),
+                surface: SurfaceKind::Child,
+                channel,
+                url: String::new(),
+                requested_url: parsed.to_string(),
+                title: String::new(),
+                favicon: None,
+                loading: true,
+                can_go_back: false,
+                can_go_forward: false,
+                origin: None,
+                zoom: 1.0,
+                error: None,
+                remote_host: None,
+                opener_tab_id: Some(opener_tab_id.clone()),
+            };
+            if let Err(err) = registry.insert(BrowserTab::new(
+                state.clone(),
+                BrowserSurface::Child(handle),
+                bounds,
+                true,
+            )) {
+                tracing::warn!("[browser] popup registry insert failed: {err}");
+                SURFACES.with(|s| s.borrow_mut().remove(&tab_id));
+                return deny(&app, &opener_tab_id, &url, &features, "registry");
+            }
+            events::emit_state(&app, &state);
+            events::emit_popup(
+                &app,
+                &BrowserPopupPayload {
+                    presentation: PopupPresentation::Adopted,
+                    opener_tab_id: opener_tab_id.clone(),
+                    tab_id: Some(tab_id),
+                    url: parsed.to_string(),
+                    requested_size: features.size.map(|s| [s.width, s.height]),
+                    reason: None,
+                },
+            );
+            NewWindowResponse::Create { webview: platform }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (&owner, parsed);
+            deny(&app, &opener_tab_id, &url, &features, "unsupported-platform")
+        }
+    }
 }

@@ -20,6 +20,21 @@ pub fn page_load(app: &AppHandle, tab_id: &str, url: &Url, started: bool) {
     let Some(registry) = app.try_state::<BrowserRegistry>() else {
         return;
     };
+    // History flags are only trustworthy once the navigation committed; the
+    // surface call runs inline here (main thread) and never takes the
+    // registry lock itself.
+    let history = if started {
+        None
+    } else {
+        registry
+            .surface(tab_id)
+            .map(|surface| {
+                (
+                    surface.can_go_back().unwrap_or(false),
+                    surface.can_go_forward().unwrap_or(false),
+                )
+            })
+    };
     let state = registry.update_state(tab_id, |state| {
         state.url = url.to_string();
         state.loading = started;
@@ -29,6 +44,10 @@ pub fn page_load(app: &AppHandle, tab_id: &str, url: &Url, started: bool) {
             // The previous document's title must not label the new one; the
             // toolbar falls back to the host until `title_changed` fires.
             state.title.clear();
+        }
+        if let Some((back, forward)) = history {
+            state.can_go_back = back;
+            state.can_go_forward = forward;
         }
     });
     if let Some(state) = state {

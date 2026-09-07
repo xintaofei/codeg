@@ -152,7 +152,7 @@ pub fn open_tab_core(
             )
             .map_err(|e| window_err("Failed to create browser webview", e))?,
         ),
-        _ => BrowserSurface::Window(
+        _ => BrowserSurface::Window(Box::new(
             crate::browser::surface_window::create(
                 app,
                 owner,
@@ -162,7 +162,7 @@ pub fn open_tab_core(
                 params.background,
             )
             .map_err(|e| window_err("Failed to create browser window", e))?,
-        ),
+        )),
     };
 
     let state = BrowserTabState {
@@ -170,7 +170,7 @@ pub fn open_tab_core(
         owner_window: owner.label().to_string(),
         surface: surface.kind(),
         channel: ChannelKind::Degraded,
-        url: "about:blank".to_string(),
+        url: String::new(),
         requested_url: url.to_string(),
         title: String::new(),
         favicon: None,
@@ -181,15 +181,39 @@ pub fn open_tab_core(
         zoom: 1.0,
         error: None,
         remote_host: None,
+        opener_tab_id: None,
     };
-    if let Err(err) = registry.insert(BrowserTab {
-        state: state.clone(),
-        surface: surface.clone(),
-        last_bounds: params.bounds,
-        visible: !params.background,
-    }) {
+    if let Err(err) = registry.insert(BrowserTab::new(
+        state.clone(),
+        surface.clone(),
+        params.bounds,
+        !params.background,
+    )) {
         let _ = surface.close();
         return Err(err);
+    }
+    // The helper must be in place before the first real document loads;
+    // `about:blank` is still showing at this point. A failed install is not
+    // fatal: the tab works, only the page channel is missing.
+    let mut state = state;
+    if surface.is_embedded() {
+        match surface.install_channel() {
+            // Stays `degraded` until the helper's `hello` proves the round trip.
+            Ok(true) => {}
+            Ok(false) => {
+                if let Some(next) =
+                    registry.update_state(&params.tab_id, |s| s.channel = ChannelKind::Legacy)
+                {
+                    state = next;
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "[browser] tab {}: page channel unavailable ({err}); continuing degraded",
+                    params.tab_id
+                );
+            }
+        }
     }
     if params.background && surface.is_embedded() {
         let _ = surface.hide();
@@ -314,6 +338,28 @@ pub fn reload_core(registry: &BrowserRegistry, tab_id: &str) -> Result<(), AppCo
         .map_err(|e| window_err("Failed to reload browser tab", e))
 }
 
+pub fn go_back_core(registry: &BrowserRegistry, tab_id: &str) -> Result<(), AppCommandError> {
+    surface_of(registry, tab_id)?
+        .go_back()
+        .map_err(|e| window_err("Failed to go back", e))
+}
+
+pub fn go_forward_core(registry: &BrowserRegistry, tab_id: &str) -> Result<(), AppCommandError> {
+    surface_of(registry, tab_id)?
+        .go_forward()
+        .map_err(|e| window_err("Failed to go forward", e))
+}
+
+pub fn stop_core(app: &AppHandle, registry: &BrowserRegistry, tab_id: &str) -> Result<(), AppCommandError> {
+    surface_of(registry, tab_id)?
+        .stop()
+        .map_err(|e| window_err("Failed to stop loading", e))?;
+    if let Some(state) = registry.update_state(tab_id, |s| s.loading = false) {
+        events::emit_state(app, &state);
+    }
+    Ok(())
+}
+
 pub fn state_core(registry: &BrowserRegistry, tab_id: &str) -> Result<BrowserTabState, AppCommandError> {
     registry
         .state(tab_id)
@@ -406,6 +452,31 @@ pub async fn browser_reload(
     tab_id: String,
 ) -> Result<(), AppCommandError> {
     reload_core(&registry, &tab_id)
+}
+
+#[tauri::command]
+pub async fn browser_go_back(
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+) -> Result<(), AppCommandError> {
+    go_back_core(&registry, &tab_id)
+}
+
+#[tauri::command]
+pub async fn browser_go_forward(
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+) -> Result<(), AppCommandError> {
+    go_forward_core(&registry, &tab_id)
+}
+
+#[tauri::command]
+pub async fn browser_stop(
+    app: AppHandle,
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+) -> Result<(), AppCommandError> {
+    stop_core(&app, &registry, &tab_id)
 }
 
 #[tauri::command]

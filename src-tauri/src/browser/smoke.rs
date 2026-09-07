@@ -305,6 +305,62 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                 .map_err(|_| "eval timed out".to_string())?;
             Ok(serde_json::from_str(&value).unwrap_or(Value::String(value)))
         }
+        "browser_eval_world" => {
+            let surface = registry
+                .surface(&str_arg(cmd, "tab_id")?)
+                .ok_or("no such tab")?;
+            let js = str_arg(cmd, "js")?;
+            let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
+            surface
+                .eval_in_world(&js, move |value| {
+                    let _ = tx.send(value);
+                })
+                .map_err(err_string)?;
+            let timeout = Duration::from_millis(cmd.get("timeout_ms").and_then(Value::as_u64).unwrap_or(8000));
+            let value = tokio::task::spawn_blocking(move || rx.recv_timeout(timeout))
+                .await
+                .map_err(err_string)?
+                .map_err(|_| "world eval timed out".to_string())??;
+            Ok(serde_json::from_str(&value).unwrap_or(Value::String(value)))
+        }
+        "browser_snapshot" => {
+            let surface = registry
+                .surface(&str_arg(cmd, "tab_id")?)
+                .ok_or("no such tab")?;
+            let path = str_arg(cmd, "path")?;
+            let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<u8>, String>>();
+            surface
+                .snapshot_png(move |png| {
+                    let _ = tx.send(png);
+                })
+                .map_err(err_string)?;
+            let png = tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(10)))
+                .await
+                .map_err(err_string)?
+                .map_err(|_| "snapshot timed out".to_string())??;
+            std::fs::write(&path, &png).map_err(err_string)?;
+            Ok(json!({ "path": path, "bytes": png.len() }))
+        }
+        "browser_back" => {
+            browser_commands::go_back_core(&registry, &str_arg(cmd, "tab_id")?).map_err(err_string)?;
+            Ok(Value::Null)
+        }
+        "browser_forward" => {
+            browser_commands::go_forward_core(&registry, &str_arg(cmd, "tab_id")?).map_err(err_string)?;
+            Ok(Value::Null)
+        }
+        "browser_stop" => {
+            browser_commands::stop_core(app, &registry, &str_arg(cmd, "tab_id")?).map_err(err_string)?;
+            Ok(Value::Null)
+        }
+        "browser_gestures" => {
+            let gestures: Vec<Value> = registry
+                .recent_gestures(&str_arg(cmd, "tab_id")?)
+                .into_iter()
+                .map(|g| json!({ "age_ms": g.received.elapsed().as_millis() as u64, "payload": g.payload }))
+                .collect();
+            Ok(Value::Array(gestures))
+        }
         "browser_focus" => {
             let surface = registry
                 .surface(&str_arg(cmd, "tab_id")?)

@@ -83,6 +83,9 @@ pub struct BrowserTabState {
     pub error: Option<BrowserErrorInfo>,
     /// Set when the tab's traffic egresses through a remote workspace host.
     pub remote_host: Option<String>,
+    /// For a tab adopted from a page-initiated new-window request: the tab
+    /// whose page opened it (that page keeps a live `window.opener`).
+    pub opener_tab_id: Option<String>,
 }
 
 /// Answer to `browser_capabilities`: what this build on this machine can do.
@@ -109,6 +112,29 @@ pub enum SurfaceChoice {
 
 pub const STATE_EVENT: &str = "browser://state";
 pub const CLOSED_EVENT: &str = "browser://closed";
+pub const POPUP_EVENT: &str = "browser://popup";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PopupPresentation {
+    /// The engine-created webview was adopted as a new tab next to its opener.
+    Adopted,
+    /// The request was refused (`reason` says why).
+    Denied,
+}
+
+/// `browser://popup`: outcome of a page-initiated new-window request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserPopupPayload {
+    pub presentation: PopupPresentation,
+    pub opener_tab_id: String,
+    pub tab_id: Option<String>,
+    pub url: String,
+    /// `window.open` size features, when the page asked for any.
+    pub requested_size: Option<[f64; 2]>,
+    pub reason: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -139,6 +165,7 @@ mod tests {
             zoom: 1.0,
             error: None,
             remote_host: None,
+            opener_tab_id: None,
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(json["tabId"], "t1");

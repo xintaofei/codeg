@@ -42,7 +42,8 @@ pub enum BrowserSurface {
         any(target_os = "macos", target_os = "windows")
     ))]
     Child(ChildHandle),
-    Window(tauri::WebviewWindow),
+    /// Boxed: `WebviewWindow` is ~900 bytes and the enum is cloned around.
+    Window(Box<tauri::WebviewWindow>),
 }
 
 // The child arm is compiled out on Linux; the macro keeps every method to one
@@ -125,6 +126,57 @@ impl BrowserSurface {
         per_surface!(self,
             child: |c| Ok(c.set_bounds(bounds)?),
             window: |_w| { let _ = bounds; Ok(()) })
+    }
+
+    pub fn install_channel(&self) -> Result<bool, SurfaceError> {
+        per_surface!(self,
+            child: |c| Ok(c.install_channel()?),
+            window: |_w| Err(SurfaceError("page channel for owned windows lands with the platform shims".into())))
+    }
+
+    pub fn eval_in_world(
+        &self,
+        expression: &str,
+        callback: impl Fn(Result<String, String>) + Send + 'static,
+    ) -> Result<(), SurfaceError> {
+        per_surface!(self,
+            child: |c| Ok(c.eval_in_world(expression, callback)?),
+            window: |_w| { let _ = (expression, callback); Err(SurfaceError("world evaluation for owned windows lands with the platform shims".into())) })
+    }
+
+    pub fn snapshot_png(
+        &self,
+        callback: impl Fn(Result<Vec<u8>, String>) + Send + 'static,
+    ) -> Result<(), SurfaceError> {
+        per_surface!(self,
+            child: |c| Ok(c.snapshot_png(callback)?),
+            window: |_w| { let _ = callback; Err(SurfaceError("snapshots for owned windows land with the platform shims".into())) })
+    }
+
+    pub fn go_back(&self) -> Result<(), SurfaceError> {
+        per_surface!(self,
+            child: |c| Ok(c.go_back()?),
+            window: |_w| Err(SurfaceError("history navigation for owned windows lands with the platform shims".into())))
+    }
+
+    pub fn go_forward(&self) -> Result<(), SurfaceError> {
+        per_surface!(self,
+            child: |c| Ok(c.go_forward()?),
+            window: |_w| Err(SurfaceError("history navigation for owned windows lands with the platform shims".into())))
+    }
+
+    pub fn can_go_back(&self) -> Result<bool, SurfaceError> {
+        per_surface!(self, child: |c| Ok(c.can_go_back()?), window: |_w| Ok(false))
+    }
+
+    pub fn can_go_forward(&self) -> Result<bool, SurfaceError> {
+        per_surface!(self, child: |c| Ok(c.can_go_forward()?), window: |_w| Ok(false))
+    }
+
+    pub fn stop(&self) -> Result<(), SurfaceError> {
+        per_surface!(self,
+            child: |c| Ok(c.stop()?),
+            window: |_w| Err(SurfaceError("stop for owned windows lands with the platform shims".into())))
     }
 
     pub fn set_zoom(&self, factor: f64) -> Result<(), SurfaceError> {
