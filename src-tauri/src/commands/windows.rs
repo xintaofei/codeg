@@ -1914,6 +1914,8 @@ pub async fn update_appearance_mode(
     Ok(())
 }
 
+pub(crate) mod remote_tray;
+
 // ─── System tray icon ──────────────────────────────────────────────────
 
 /// Monochrome template image for the macOS menu bar. AppKit treats an
@@ -1979,6 +1981,7 @@ pub fn show_main_window(app: &AppHandle) {
 #[cfg(feature = "tauri-runtime")]
 struct TrayLabels {
     show_workspace: &'static str,
+    remote_workspaces: &'static str,
     quit: &'static str,
 }
 
@@ -1988,42 +1991,52 @@ fn tray_labels_for(locale: crate::models::system::AppLocale) -> TrayLabels {
     match locale {
         AppLocale::ZhCn => TrayLabels {
             show_workspace: "显示工作台",
+            remote_workspaces: "远程工作区",
             quit: "退出 Codeg",
         },
         AppLocale::ZhTw => TrayLabels {
             show_workspace: "顯示工作臺",
+            remote_workspaces: "遠端工作區",
             quit: "退出 Codeg",
         },
         AppLocale::Ja => TrayLabels {
             show_workspace: "ワークスペースを表示",
+            remote_workspaces: "リモートワークスペース",
             quit: "Codeg を終了",
         },
         AppLocale::Ko => TrayLabels {
             show_workspace: "워크스페이스 표시",
+            remote_workspaces: "원격 워크스페이스",
             quit: "Codeg 종료",
         },
         AppLocale::Es => TrayLabels {
             show_workspace: "Mostrar el área de trabajo",
+            remote_workspaces: "Áreas de trabajo remotas",
             quit: "Salir de Codeg",
         },
         AppLocale::De => TrayLabels {
             show_workspace: "Arbeitsbereich anzeigen",
+            remote_workspaces: "Remote-Arbeitsbereiche",
             quit: "Codeg beenden",
         },
         AppLocale::Fr => TrayLabels {
             show_workspace: "Afficher l'espace de travail",
+            remote_workspaces: "Espaces de travail distants",
             quit: "Quitter Codeg",
         },
         AppLocale::Pt => TrayLabels {
             show_workspace: "Mostrar área de trabalho",
+            remote_workspaces: "Áreas de trabalho remotas",
             quit: "Sair do Codeg",
         },
         AppLocale::Ar => TrayLabels {
             show_workspace: "إظهار مساحة العمل",
+            remote_workspaces: "مساحات العمل البعيدة",
             quit: "إنهاء Codeg",
         },
         AppLocale::En => TrayLabels {
             show_workspace: "Show Workspace",
+            remote_workspaces: "Remote Workspaces",
             quit: "Quit Codeg",
         },
     }
@@ -2039,22 +2052,10 @@ pub fn install_tray_icon(
     app: &AppHandle,
     locale: crate::models::system::AppLocale,
 ) -> tauri::Result<()> {
-    use tauri::menu::{MenuBuilder, MenuItem, PredefinedMenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-    let labels = tray_labels_for(locale);
-    let show_item = MenuItem::with_id(
-        app,
-        TRAY_MENU_ID_SHOW,
-        labels.show_workspace,
-        true,
-        None::<&str>,
-    )?;
-    let separator = PredefinedMenuItem::separator(app)?;
-    let quit_item = MenuItem::with_id(app, TRAY_MENU_ID_QUIT, labels.quit, true, None::<&str>)?;
-    let menu = MenuBuilder::new(app)
-        .items(&[&show_item, &separator, &quit_item])
-        .build()?;
+    app.manage(remote_tray::RemoteTrayState::new(locale));
+    let menu = build_tray_menu(app, locale, &[])?;
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ICON_ID)
         .tooltip("Codeg")
@@ -2104,23 +2105,21 @@ pub fn install_tray_icon(
         .build(app)?;
 
     TRAY_AVAILABLE.store(true, AtomicOrdering::Relaxed);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        remote_tray::refresh_saved_connections(&app).await;
+    });
     Ok(())
 }
 
-/// Rebuild the tray menu in the supplied locale and swap it onto the
-/// existing tray icon. No-op if the tray hasn't been installed yet
-/// (e.g. the language change races setup, or the platform refused the
-/// initial install).
+/// Both startup and subsequent refreshes use the same menu structure.
 #[cfg(feature = "tauri-runtime")]
-pub fn refresh_tray_menu(
+fn build_tray_menu(
     app: &AppHandle,
     locale: crate::models::system::AppLocale,
-) -> tauri::Result<()> {
-    use tauri::menu::{MenuBuilder, MenuItem, PredefinedMenuItem};
-
-    let Some(tray) = app.tray_by_id(TRAY_ICON_ID) else {
-        return Ok(());
-    };
+    connections: &[remote_tray::RemoteTrayEntry],
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{MenuBuilder, MenuItem, PredefinedMenuItem, Submenu};
 
     let labels = tray_labels_for(locale);
     let show_item = MenuItem::with_id(
@@ -2130,14 +2129,24 @@ pub fn refresh_tray_menu(
         true,
         None::<&str>,
     )?;
+    let mut builder = MenuBuilder::new(app).item(&show_item);
+    if !connections.is_empty() {
+        let submenu = Submenu::new(app, labels.remote_workspaces, true)?;
+        for connection in connections {
+            let item = MenuItem::with_id(
+                app,
+                connection.menu_id(),
+                connection.menu_label(),
+                true,
+                None::<&str>,
+            )?;
+            submenu.append(&item)?;
+        }
+        builder = builder.item(&submenu);
+    }
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, TRAY_MENU_ID_QUIT, labels.quit, true, None::<&str>)?;
-    let menu = MenuBuilder::new(app)
-        .items(&[&show_item, &separator, &quit_item])
-        .build()?;
-
-    tray.set_menu(Some(menu))?;
-    Ok(())
+    builder.items(&[&separator, &quit_item]).build()
 }
 
 /// Push the current effective UI locale to the system tray. Called by
@@ -2149,8 +2158,7 @@ pub async fn set_tray_locale(
     app: AppHandle,
     locale: crate::models::system::AppLocale,
 ) -> Result<(), AppCommandError> {
-    refresh_tray_menu(&app, locale)
-        .map_err(|e| AppCommandError::window("Failed to refresh tray menu", e.to_string()))
+    remote_tray::refresh(&app, Some(locale)).await
 }
 
 #[cfg(test)]

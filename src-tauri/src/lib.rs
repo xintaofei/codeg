@@ -1000,13 +1000,13 @@ mod tauri_app {
                 let id = event.id().as_ref().to_string();
 
                 // Tray menu items act in Rust directly: showing the
-                // workspace and quitting are both pure runtime concerns
-                // with no UI state to coordinate.
+                // workspace, opening a saved remote connection, and quitting do
+                // not need a visible main webview.
                 if id.starts_with(windows::TRAY_MENU_ID_PREFIX) {
                     match id.as_str() {
                         windows::TRAY_MENU_ID_SHOW => windows::show_main_window(app),
                         windows::TRAY_MENU_ID_QUIT => app.exit(0),
-                        _ => {}
+                        _ => windows::remote_tray::handle_menu_event(app, &id),
                     }
                     return;
                 }
