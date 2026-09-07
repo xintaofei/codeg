@@ -1652,6 +1652,13 @@ impl ConnectionManager {
     }
 
     pub async fn cancel(&self, db: &DatabaseConnection, conn_id: &str) -> Result<(), AcpError> {
+        let continuation_owned = match self
+            .delegation_snapshot()
+            .and_then(|delegation| delegation.collaboration)
+        {
+            Some(coordinator) => coordinator.execution_owner(conn_id).await.is_some(),
+            None => false,
+        };
         let (cmd_tx, state_arc, emitter) = {
             let connections = self.connections.lock().await;
             let conn = connections
@@ -1664,9 +1671,17 @@ impl ConnectionManager {
             )
         };
         cmd_tx
-            .send(ConnectionCommand::Cancel)
+            .send(if continuation_owned {
+                ConnectionCommand::CancelContinuation
+            } else {
+                ConnectionCommand::Cancel
+            })
             .await
             .map_err(|_| AcpError::ProcessExited)?;
+
+        if continuation_owned {
+            return Ok(());
+        }
 
         // Eagerly flip the row to `Cancelled` so the sidebar/tabs leave the
         // "running" state immediately. The agent typically replies with
@@ -3880,6 +3895,7 @@ mod tests {
     use super::*;
 
     mod continuation;
+    mod continuation_cancel;
 
     use crate::acp::connection::AgentConnection;
     // Test-only: the budget itself is enforced at the append in

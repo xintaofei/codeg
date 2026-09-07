@@ -44,6 +44,13 @@ struct MockRuntime {
     send_results: tokio::sync::Mutex<VecDeque<Result<(), String>>>,
     /// Park the NEXT attach until released (deterministic interleavings).
     attach_gate: tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    /// Announce and park the NEXT send after dispatching is durable.
+    send_gate: tokio::sync::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
     /// Park the NEXT blocked_on probe until released (deterministic
     /// interleavings for the cancel re-decide path).
     blocked_gate:
@@ -68,6 +75,18 @@ impl MockRuntime {
         let (tx, rx) = tokio::sync::oneshot::channel();
         *self.attach_gate.lock().await = Some(rx);
         tx
+    }
+
+    async fn install_send_gate(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        *self.send_gate.lock().await = Some((entered_tx, release_rx));
+        (entered_rx, release_tx)
     }
 
     fn attach_count(&self) -> usize {
@@ -106,6 +125,11 @@ impl ContinuationRuntime for MockRuntime {
 
     async fn send_prompt(&self, _connection_id: &str, _message: &str) -> Result<(), String> {
         self.send_count.fetch_add(1, Ordering::SeqCst);
+        let gate = self.send_gate.lock().await.take();
+        if let Some((entered, release)) = gate {
+            let _ = entered.send(());
+            let _ = release.await;
+        }
         self.send_results
             .lock()
             .await
@@ -645,6 +669,109 @@ async fn cancel_running_goes_cancel_requested_then_unknown_blocks() {
     assert_eq!(err_code(&err), ContinuationErrorCode::SessionBlocked);
 }
 
+#[tokio::test]
+async fn unconfirmed_cancel_deadline_settles_unknown_and_blocks() {
+    let mut h = harness().await;
+    h.coordinator
+        .set_cancel_confirmation_timeout_for_test(Duration::from_millis(40));
+    let ack = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
+        .await
+        .unwrap();
+    wait_for_state(
+        &h.coordinator,
+        h.parent,
+        &ack.turn_id,
+        &[TurnState::Running],
+    )
+    .await;
+    h.coordinator
+        .cancel_turn(h.parent, &ack.turn_id)
+        .await
+        .unwrap();
+    wait_for_state(
+        &h.coordinator,
+        h.parent,
+        &ack.turn_id,
+        &[TurnState::OutcomeUnknown],
+    )
+    .await;
+    let session = collaboration_service::find_session_by_id(&h.db.conn, &ack.session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.state, "blocked");
+}
+
+/// A cancellation can land after `dispatching` is durable while Prompt is
+/// still waiting to enter the connection queue. The first notification may be
+/// consumed by an idle driver, so the drive must re-read after send and repeat
+/// the request while preserving the single durable terminal.
+#[tokio::test]
+async fn cancel_during_dispatch_repeats_after_send_and_terminal_stays_single() {
+    let h = harness().await;
+    let (send_entered, release_send) = h.runtime.install_send_gate().await;
+    let ack = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), send_entered)
+        .await
+        .expect("drive entered send")
+        .expect("send gate signal");
+
+    let report = h
+        .coordinator
+        .cancel_turn(h.parent, &ack.turn_id)
+        .await
+        .unwrap();
+    assert_eq!(report.state, TurnState::CancelRequested);
+    assert_eq!(h.runtime.counters().2, 1, "first cancellation is delivered");
+
+    release_send.send(()).expect("release send");
+    for _ in 0..200 {
+        if h.runtime.counters().2 >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        h.runtime.counters().2,
+        2,
+        "the post-send fresh read must repeat the effective cancellation"
+    );
+
+    let (turn_id, execution_id) = h
+        .coordinator
+        .execution_owner_by_turn(&ack.turn_id)
+        .await
+        .expect("execution remains owned until a real terminal");
+    assert!(h
+        .coordinator
+        .settle(&turn_id, &execution_id, TurnTerminal::Canceled)
+        .await
+        .unwrap());
+    assert!(!h
+        .coordinator
+        .settle(
+            &turn_id,
+            &execution_id,
+            TurnTerminal::Completed {
+                text: "late".into(),
+            },
+        )
+        .await
+        .unwrap());
+    let report = h
+        .coordinator
+        .get_turn(h.parent, &ack.turn_id, 0)
+        .await
+        .unwrap();
+    assert_eq!(report.state, TurnState::Canceled);
+}
+
 // ---------------------------------------------------------------------------
 // Startup recovery (A13 / A14)
 // ---------------------------------------------------------------------------
@@ -879,6 +1006,91 @@ async fn parent_cancel_during_prepare_prevents_dispatch() {
         .await
         .unwrap();
     assert_eq!(report.state, TurnState::Canceled);
+}
+
+#[tokio::test]
+async fn parent_cancel_before_attach_prevents_attach_and_send() {
+    let h = harness().await;
+    let (entered, release) = h
+        .coordinator
+        .install_drive_gate_for_test("before_attach")
+        .await;
+    let ack = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
+        .await
+        .unwrap();
+    entered.await.expect("drive reached pre-attach gate");
+    h.coordinator
+        .cancel_by_parent_connection("parent-conn")
+        .await;
+    release.send(()).expect("release pre-attach gate");
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert_eq!(h.runtime.counters().0, 0);
+    assert_eq!(h.runtime.counters().1, 0);
+    assert_eq!(
+        h.coordinator
+            .get_turn(h.parent, &ack.turn_id, 0)
+            .await
+            .unwrap()
+            .state,
+        TurnState::Canceled
+    );
+}
+
+#[tokio::test]
+async fn parent_cancel_after_attach_before_claim_releases_without_send() {
+    let h = harness().await;
+    let (entered, release) = h
+        .coordinator
+        .install_drive_gate_for_test("after_attach")
+        .await;
+    let ack = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
+        .await
+        .unwrap();
+    entered.await.expect("drive reached post-attach gate");
+    h.coordinator
+        .cancel_by_parent_connection("parent-conn")
+        .await;
+    release.send(()).expect("release post-attach gate");
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert_eq!(h.runtime.counters().0, 1);
+    assert_eq!(h.runtime.counters().1, 0);
+    assert!(h.runtime.counters().3 >= 1, "attached connection is released");
+    assert!(h.coordinator.connection_of_turn(&ack.turn_id).await.is_none());
+}
+
+#[tokio::test]
+async fn parent_cancel_after_atomic_claim_before_dispatch_cancels_owner() {
+    let h = harness().await;
+    let (entered, release) = h
+        .coordinator
+        .install_drive_gate_for_test("after_claim")
+        .await;
+    let ack = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
+        .await
+        .unwrap();
+    entered.await.expect("drive reached post-claim gate");
+    assert!(h.coordinator.connection_of_turn(&ack.turn_id).await.is_some());
+    h.coordinator
+        .cancel_by_parent_connection("parent-conn")
+        .await;
+    release.send(()).expect("release post-claim gate");
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert_eq!(h.runtime.counters().1, 0);
+    assert!(h.runtime.counters().3 >= 1, "claimed connection is released");
+    assert_eq!(
+        h.coordinator
+            .get_turn(h.parent, &ack.turn_id, 0)
+            .await
+            .unwrap()
+            .state,
+        TurnState::Canceled
+    );
 }
 
 /// The attached-round half of F4: cancel delivery FAILURE means the outcome

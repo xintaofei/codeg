@@ -47,6 +47,12 @@ pub struct VerifiedParent {
 /// A round registered against its parent before attach: (turn, session).
 type PendingRound = (String, String);
 
+#[cfg(any(test, feature = "test-utils"))]
+struct TestDriveGate {
+    entered: tokio::sync::oneshot::Sender<()>,
+    release: tokio::sync::oneshot::Receiver<()>,
+}
+
 #[derive(Debug, Clone)]
 struct ExecutionOwner {
     turn_id: String,
@@ -83,6 +89,9 @@ pub struct ContinuationCoordinator {
     admission_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     /// Woken on every settle so bounded `get_turn` waits re-check promptly.
     settle_notify: Arc<Notify>,
+    cancel_confirmation_timeout: Duration,
+    #[cfg(any(test, feature = "test-utils"))]
+    test_drive_gates: Arc<Mutex<HashMap<&'static str, TestDriveGate>>>,
 }
 
 impl ContinuationCoordinator {
@@ -100,6 +109,9 @@ impl ContinuationCoordinator {
             parent_pending: Arc::new(Mutex::new(HashMap::new())),
             admission_locks: Arc::new(Mutex::new(HashMap::new())),
             settle_notify: Arc::new(Notify::new()),
+            cancel_confirmation_timeout: CANCEL_CONFIRMATION_TIMEOUT,
+            #[cfg(any(test, feature = "test-utils"))]
+            test_drive_gates: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -107,6 +119,46 @@ impl ContinuationCoordinator {
     pub fn with_runtime(mut self, runtime: Arc<dyn ContinuationRuntime>) -> Self {
         self.runtime = runtime;
         self
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn set_cancel_confirmation_timeout_for_test(&mut self, timeout: Duration) {
+        self.cancel_confirmation_timeout = timeout;
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn install_drive_gate_for_test(
+        &self,
+        stage: &str,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let stage = match stage {
+            "before_attach" => "before_attach",
+            "after_attach" => "after_attach",
+            "after_claim" => "after_claim",
+            _ => panic!("unknown continuation drive gate: {stage}"),
+        };
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        self.test_drive_gates.lock().await.insert(
+            stage,
+            TestDriveGate {
+                entered: entered_tx,
+                release: release_rx,
+            },
+        );
+        (entered_rx, release_tx)
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    async fn wait_drive_gate_for_test(&self, stage: &'static str) {
+        let gate = { self.test_drive_gates.lock().await.remove(stage) };
+        if let Some(gate) = gate {
+            let _ = gate.entered.send(());
+            let _ = gate.release.await;
+        }
     }
 
     /// Test-only: register an execution owner directly (production does this
@@ -498,7 +550,21 @@ impl ContinuationCoordinator {
         // Strict attach — the ONLY path into the child session. The runtime
         // binds the attached connection to the reserved child conversation
         // row (R1) so lifecycle terminals can settle this round.
-        let parent_conn_id = parent_connection_id.clone();
+        #[cfg(any(test, feature = "test-utils"))]
+        self.wait_drive_gate_for_test("before_attach").await;
+        let still_pending = self
+            .parent_pending
+            .lock()
+            .await
+            .get(&parent_connection_id)
+            .is_some_and(|rounds| {
+                rounds
+                    .iter()
+                    .any(|(pending_turn_id, _)| pending_turn_id == &turn_id)
+            });
+        if !still_pending {
+            return;
+        }
         let connection_id = match self
             .runtime
             .attach_strict(
@@ -522,25 +588,46 @@ impl ContinuationCoordinator {
             }
         };
 
-        // Register the execution owner BEFORE dispatching, so lifecycle
-        // events racing the send already route here.
-        self.executions.lock().await.insert(
-            connection_id.clone(),
-            ExecutionOwner {
-                turn_id: turn_id.clone(),
-                execution_id: execution_id.clone(),
-                session_id: session_id.clone(),
-                parent_connection_id,
-            },
-        );
-        // The round has left the parent-pending registry: from here the
-        // execution registry owns it.
-        {
+        #[cfg(any(test, feature = "test-utils"))]
+        self.wait_drive_gate_for_test("after_attach").await;
+
+        // Atomically hand ownership from the pre-attach registry to the live
+        // execution registry. Parent cleanup takes these locks in the same
+        // order, so it sees the round in exactly one place. If cleanup already
+        // removed the pending claim, this attach lost the race and must be
+        // released without sending.
+        let claimed = {
             let mut pending = self.parent_pending.lock().await;
-            if let Some(list) = pending.get_mut(&parent_conn_id) {
-                list.retain(|(tid, _)| tid != &turn_id);
+            let mut executions = self.executions.lock().await;
+            let present = pending
+                .get_mut(&parent_connection_id)
+                .and_then(|list| {
+                    list.iter()
+                        .position(|(pending_turn_id, _)| pending_turn_id == &turn_id)
+                        .map(|index| {
+                            list.swap_remove(index);
+                        })
+                })
+                .is_some();
+            if present {
+                executions.insert(
+                    connection_id.clone(),
+                    ExecutionOwner {
+                        turn_id: turn_id.clone(),
+                        execution_id: execution_id.clone(),
+                        session_id: session_id.clone(),
+                        parent_connection_id: parent_connection_id.clone(),
+                    },
+                );
             }
+            present
+        };
+        if !claimed {
+            let _ = self.runtime.disconnect(&connection_id).await;
+            return;
         }
+        #[cfg(any(test, feature = "test-utils"))]
+        self.wait_drive_gate_for_test("after_claim").await;
         // Persist the diagnostic connection id (also what cancel uses to
         // reach the agent).
         if let Err(e) = collaboration_service::set_turn_connection(
@@ -610,23 +697,50 @@ impl ContinuationCoordinator {
 
         // dispatching → running. A cancel that raced in keeps
         // `cancel_requested`; the drive no longer owns the terminal.
-        let running = matches!(
-            collaboration_service::cas_turn_state(
-                conn,
-                &turn_id,
-                Some(&execution_id),
-                &["dispatching"],
-                "running",
-                false,
-            )
-            .await,
-            Ok(true)
-        );
-        if !running {
-            // A cancel (or settle) won between dispatch and running: forward
-            // the cancel to the agent, best-effort. The confirmation path
-            // owns the terminal from here.
-            let _ = self.runtime.cancel(&connection_id).await;
+        match collaboration_service::cas_turn_state(
+            conn,
+            &turn_id,
+            Some(&execution_id),
+            &["dispatching"],
+            "running",
+            false,
+        )
+        .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                // Re-read after send. A cancel may have been delivered while
+                // the connection driver was still idle, before Prompt entered
+                // its queue; only a still-live cancel request warrants the
+                // required post-send cancellation. A racing terminal is final
+                // and must never receive a late cancel.
+                match collaboration_service::find_turn(conn, &turn_id).await {
+                    Ok(Some(turn))
+                        if TurnState::parse(&turn.state) == Some(TurnState::CancelRequested) =>
+                    {
+                        if self.runtime.cancel(&connection_id).await.is_err() {
+                            let _ = self.settle_unknown(&turn_id, &execution_id).await;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            "[continuation] post-send state read failed for {turn_id}: {e}"
+                        );
+                        self.isolate_on_storage_failure(
+                            &turn_id,
+                            &session_id,
+                            Some(&connection_id),
+                        )
+                        .await;
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("[continuation] running CAS failed for {turn_id}: {e}");
+                self.isolate_on_storage_failure(&turn_id, &session_id, Some(&connection_id))
+                    .await;
+            }
         }
     }
 
@@ -942,31 +1056,24 @@ impl ContinuationCoordinator {
     ) -> Result<TurnReport, ContinuationError> {
         // Ownership first: the same opaque error for unknown and foreign.
         let _report = self.load_report(parent, turn_id).await?;
-        let mut turn = collaboration_service::find_turn(&self.db.conn, turn_id)
-            .await
-            .map_err(|e| {
-                tracing::warn!("[continuation] cancel lookup failed: {e}");
-                storage_unavailable()
-            })?
-            .ok_or_else(|| {
-                ContinuationError::new(
-                    ContinuationErrorCode::NotFoundOrForbidden,
-                    "no such turn",
-                )
-            })?;
+        self.cancel_fresh(turn_id, None).await?;
+        self.load_report(parent, turn_id).await
+    }
 
-        // The drive advances states concurrently; a CAS can lose or even read
-        // a stale row. Re-read and re-decide (bounded) instead of swallowing
-        // the mismatch (acceptance F7). Every iteration decides on the state
-        // of the FRESHLY READ row (reacceptance R3): a snapshot taken while
-        // the round was still `preparing` must not pin the decision to the
-        // pre-send branch after the drive has moved it to running.
-        for _ in 0..3 {
+    /// Cancel from a freshly read durable state. `connection_hint` comes from
+    /// the atomic parent-cleanup snapshot and closes the brief window before
+    /// `connection_id` is persisted on the turn row.
+    async fn cancel_fresh(
+        &self,
+        turn_id: &str,
+        connection_hint: Option<&str>,
+    ) -> Result<(), ContinuationError> {
+        for _ in 0..4 {
+            let turn = self.reread_for_cancel(turn_id).await?;
             let state = TurnState::parse(&turn.state).unwrap_or(TurnState::OutcomeUnknown);
+            let connection_id = turn.connection_id.as_deref().or(connection_hint);
             match state {
                 TurnState::Accepted | TurnState::Preparing => {
-                    // Not sent yet — CAS straight to canceled; the drive
-                    // observes the loss of its own CAS and never sends.
                     let applied = collaboration_service::cas_turn_state(
                         &self.db.conn,
                         turn_id,
@@ -981,15 +1088,14 @@ impl ContinuationCoordinator {
                         storage_unavailable()
                     })?;
                     if applied {
-                        break;
+                        if let Some(connection_id) = connection_id {
+                            self.release_connection(turn_id, connection_id).await;
+                        }
+                        self.settle_notify.notify_waiters();
+                        return Ok(());
                     }
-                    // Lost: re-read and re-decide — the drive may have moved
-                    // the turn to dispatching/running in the meantime.
-                    turn = self.reread_for_cancel(turn_id).await?;
                 }
-                TurnState::Dispatching | TurnState::Running | TurnState::CancelRequested => {
-                    // Sent (or about to be): request cancellation and wait
-                    // for the confirmation (or its deadline) to settle.
+                TurnState::Dispatching | TurnState::Running => {
                     let applied = collaboration_service::cas_turn_state(
                         &self.db.conn,
                         turn_id,
@@ -1003,26 +1109,40 @@ impl ContinuationCoordinator {
                         tracing::warn!("[continuation] cancel CAS failed: {e}");
                         storage_unavailable()
                     })?;
-                    if applied || turn.state == "cancel_requested" {
-                        if let Some(connection_id) = turn.connection_id.clone() {
-                            let _ = self.runtime.cancel(&connection_id).await;
-                        }
-                        // Arm the confirmation deadline ONCE per transition:
-                        // a lost confirmation must not wedge the session.
-                        self.arm_cancel_deadline(&turn.id, &turn.execution_id);
-                        break;
+                    if !applied {
+                        continue;
                     }
-                    // Lost to a racing terminal (or a state we no longer
-                    // recognize) — re-read once and decide again.
-                    turn = self.reread_for_cancel(turn_id).await?;
+                    let Some(connection_id) = connection_id else {
+                        let _ = self.settle_unknown(turn_id, &turn.execution_id).await;
+                        return Ok(());
+                    };
+                    if self.runtime.cancel(connection_id).await.is_err() {
+                        let _ = self.settle_unknown(turn_id, &turn.execution_id).await;
+                    } else {
+                        self.arm_cancel_deadline(turn_id, &turn.execution_id);
+                    }
+                    self.settle_notify.notify_waiters();
+                    return Ok(());
                 }
-                _ => {
-                    // Terminal already — nothing to cancel.
-                    break;
+                TurnState::CancelRequested => {
+                    let Some(connection_id) = connection_id else {
+                        let _ = self.settle_unknown(turn_id, &turn.execution_id).await;
+                        return Ok(());
+                    };
+                    // Idempotent repeat delivery matters when the first cancel
+                    // was consumed by an idle driver before Prompt was queued.
+                    if self.runtime.cancel(connection_id).await.is_err() {
+                        let _ = self.settle_unknown(turn_id, &turn.execution_id).await;
+                    } else {
+                        self.arm_cancel_deadline(turn_id, &turn.execution_id);
+                    }
+                    self.settle_notify.notify_waiters();
+                    return Ok(());
                 }
+                _ => return Ok(()),
             }
         }
-        self.load_report(parent, turn_id).await
+        Ok(())
     }
 
     /// The bounded cancel-retry loop's re-read: a fresh turn row or the
@@ -1051,8 +1171,9 @@ impl ContinuationCoordinator {
         let coordinator = self.clone();
         let turn_id = turn_id.to_string();
         let execution_id = execution_id.to_string();
+        let timeout = self.cancel_confirmation_timeout;
         tokio::spawn(async move {
-            tokio::time::sleep(CANCEL_CONFIRMATION_TIMEOUT).await;
+            tokio::time::sleep(timeout).await;
             // settle_unknown is CAS-guarded by execution id AND active state:
             // if the confirmation already settled the turn, this is a no-op.
             match coordinator.settle_unknown(&turn_id, &execution_id).await {
@@ -1302,102 +1423,25 @@ impl ContinuationCoordinator {
     ///   command is never treated as the agent's stop confirmation
     ///   (reacceptance R4).
     pub async fn cancel_by_parent_connection(&self, parent_connection_id: &str) {
-        // Phase 1: accepted/preparing rounds — nothing sent, plain cancel.
-        let pending_rounds: Vec<(String, String)> = {
+        // Snapshot both ownership registries atomically, using the same lock
+        // order as the drive's handoff. No attach can disappear between the
+        // pending removal and the execution sweep.
+        let (pending_rounds, owned): (Vec<PendingRound>, Vec<(String, String)>) = {
             let mut pending = self.parent_pending.lock().await;
-            pending.remove(parent_connection_id).unwrap_or_default()
-        };
-        for (turn_id, session_id) in pending_rounds {
-            let applied = collaboration_service::cas_turn_state(
-                &self.db.conn,
-                &turn_id,
-                None,
-                &collaboration_service::ACTIVE_TURN_STATES,
-                "canceled",
-                false,
-            )
-            .await
-            .unwrap_or(false);
-            if !applied {
-                // The drive won a race (already dispatched or attached): it is
-                // in `executions` now — nothing to do here, the phase-2 sweep
-                // below (running after phase 1) can't see it this call. Mark
-                // it by leaving a tombstone? Simplest honest path: re-add so
-                // the sweep below re-examines it.
-                let mut pending = self.parent_pending.lock().await;
-                pending
-                    .entry(parent_connection_id.to_string())
-                    .or_default()
-                    .push((turn_id.clone(), session_id.clone()));
-            }
-        }
-
-        // Phase 2: attached rounds.
-        let owned: Vec<(String, String)> = {
             let executions = self.executions.lock().await;
-            executions
-                .values()
-                .filter(|o| o.parent_connection_id == parent_connection_id)
-                .map(|o| (o.turn_id.clone(), o.execution_id.clone()))
-                .collect()
+            let pending_rounds = pending.remove(parent_connection_id).unwrap_or_default();
+            let owned = executions
+                .iter()
+                .filter(|(_, owner)| owner.parent_connection_id == parent_connection_id)
+                .map(|(connection_id, owner)| (owner.turn_id.clone(), connection_id.clone()))
+                .collect();
+            (pending_rounds, owned)
         };
-        for (turn_id, execution_id) in owned {
-            let cancel_enqueued = match self.connection_of_turn(&turn_id).await {
-                Some(connection_id) => self.runtime.cancel(&connection_id).await.is_ok(),
-                None => false,
-            };
-            if !cancel_enqueued {
-                // The stop could not be delivered: the outcome is unknowable.
-                let _ = self.settle_unknown(&turn_id, &execution_id).await;
-            } else {
-                // A successful enqueue is NOT the agent's stop confirmation
-                // (reacceptance R4): the manager's cancel only hands the
-                // command to the connection's queue. Move the round to
-                // `cancel_requested` and arm the SAME confirmation deadline
-                // `cancel_turn` uses — the agent's terminal settles the
-                // outcome (canceled via lifecycle, or outcome_unknown +
-                // blocked when the deadline expires). Never fabricate a
-                // clean stop from a transport-level Ok.
-                let requested = collaboration_service::cas_turn_state(
-                    &self.db.conn,
-                    &turn_id,
-                    Some(&execution_id),
-                    &["dispatching", "running"],
-                    "cancel_requested",
-                    false,
-                )
-                .await
-                .unwrap_or(false);
-                if requested {
-                    self.arm_cancel_deadline(&turn_id, &execution_id);
-                }
-                // If the CAS lost, a racing terminal already settled the
-                // round (and its own path released the connection) — or the
-                // round was already `cancel_requested` and a deadline is
-                // armed; re-arming is unnecessary.
-            }
-            self.settle_notify.notify_waiters();
+        for (turn_id, _) in pending_rounds {
+            let _ = self.cancel_fresh(&turn_id, None).await;
         }
-
-        // Phase 3: re-sweep the phase-1 re-adds now that the executions sweep
-        // has run (they either appear in `executions` — handled above — or
-        // were genuinely lost races that are now terminal via the drive's own
-        // CAS-failure release; a final CAS attempt is idempotent).
-        let leftover: Vec<(String, String)> = {
-            let mut pending = self.parent_pending.lock().await;
-            pending.remove(parent_connection_id).unwrap_or_default()
-        };
-        for (turn_id, session_id) in leftover {
-            let _ = collaboration_service::cas_turn_state(
-                &self.db.conn,
-                &turn_id,
-                None,
-                &collaboration_service::ACTIVE_TURN_STATES,
-                "canceled",
-                false,
-            )
-            .await;
-            let _ = session_id;
+        for (turn_id, connection_id) in owned {
+            let _ = self.cancel_fresh(&turn_id, Some(&connection_id)).await;
         }
     }
 

@@ -968,6 +968,11 @@ pub enum ConnectionCommand {
         reply: Option<tokio::sync::oneshot::Sender<bool>>,
     },
     Cancel,
+    /// Request cancellation of a coordinator-owned continuation turn without
+    /// manufacturing a local terminal. The coordinator settles only from the
+    /// agent's real stop response (or its own confirmation deadline), so this
+    /// command keeps the in-flight prompt response attached to the driver.
+    CancelContinuation,
     RespondPermission {
         request_id: String,
         option_id: String,
@@ -4382,6 +4387,21 @@ pub struct DelegationInjection {
     /// through this, and the cleanup guard calls `cancel_plan_approvals_by_parent`
     /// on disconnect (mirroring the question teardown cascade).
     pub plan_approvals: Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
+}
+
+/// Tear down work owned by the parent turn while keeping the parent connection
+/// alive for later prompts. The legacy broker and the durable continuation
+/// coordinator must observe the same turn boundary.
+async fn cancel_parent_turn_work(injection: &DelegationInjection, connection_id: &str) {
+    injection
+        .broker
+        .cancel_by_parent_turn(connection_id)
+        .await;
+    if let Some(coordinator) = &injection.collaboration {
+        coordinator
+            .cancel_by_parent_connection(connection_id)
+            .await;
+    }
 }
 
 /// Locate the `codeg-mcp` companion binary across the supported deployment
@@ -9420,7 +9440,7 @@ async fn run_conversation_loop<'a>(
                                     // without race-double-drain.
                                     if reason_str != "end_turn" {
                                         if let Some(inj) = delegation_injection {
-                                            inj.broker.cancel_by_parent_turn(conn_id).await;
+                                            cancel_parent_turn_work(inj, conn_id).await;
                                         }
                                     }
                                     break;
@@ -9527,7 +9547,7 @@ async fn run_conversation_loop<'a>(
                                     // result. Turn-scoped — the connection is
                                     // still alive.
                                     if let Some(inj) = delegation_injection {
-                                        inj.broker.cancel_by_parent_turn(conn_id).await;
+                                        cancel_parent_turn_work(inj, conn_id).await;
                                     }
                                     break;
                                 }
@@ -9630,7 +9650,7 @@ async fn run_conversation_loop<'a>(
                             // same reasons as that branch — see above.
                             if reason_str != "end_turn" {
                                 if let Some(inj) = delegation_injection {
-                                    inj.broker.cancel_by_parent_turn(conn_id).await;
+                                    cancel_parent_turn_work(inj, conn_id).await;
                                 }
                             }
                             break;
@@ -9868,7 +9888,7 @@ async fn run_conversation_loop<'a>(
                                     // drain-first lock guarantees no double
                                     // DelegationCompleted emit.
                                     if let Some(inj) = delegation_injection {
-                                        inj.broker.cancel_by_parent_turn(conn_id).await;
+                                        cancel_parent_turn_work(inj, conn_id).await;
                                         // Reclaim any parked `ask_user_question` /
                                         // Grok `exit_plan_mode` approval owned by this
                                         // connection. Unlike `perms` (drained inline
@@ -9897,6 +9917,28 @@ async fn run_conversation_loop<'a>(
                                         let _ = prompt_response.await;
                                     });
                                     break;
+                                }
+                                Some(ConnectionCommand::CancelContinuation) => {
+                                    // The continuation state machine owns terminal
+                                    // settlement. Deliver the protocol cancel and
+                                    // unblock local resources, while continuing to
+                                    // poll the agent's real prompt response.
+                                    let _ = cx.send_notification_to(
+                                        Agent,
+                                        CancelNotification::new(sid.clone()),
+                                    );
+                                    terminal_runtime
+                                        .release_all_for_session(sid.0.as_ref())
+                                        .await;
+                                    tracked_terminal_tool_calls.clear();
+                                    drain_permissions(perms, state, emitter).await;
+                                    if let Some(inj) = delegation_injection {
+                                        cancel_parent_turn_work(inj, conn_id).await;
+                                        inj.questions.cancel_questions_by_parent(conn_id).await;
+                                        inj.plan_approvals
+                                            .cancel_plan_approvals_by_parent(conn_id)
+                                            .await;
+                                    }
                                 }
                                 Some(ConnectionCommand::Disconnect) | None => {
                                     tracing::info!(
@@ -10081,7 +10123,27 @@ async fn run_conversation_loop<'a>(
                 // backgrounds the slow child teardown): see inner Cancel
                 // handler above for rationale.
                 if let Some(inj) = delegation_injection {
-                    inj.broker.cancel_by_parent_turn(conn_id).await;
+                    cancel_parent_turn_work(inj, conn_id).await;
+                }
+            }
+            Some(ConnectionCommand::CancelContinuation) => {
+                // Cancellation can arrive between the coordinator's durable
+                // `dispatching` write and its Prompt enqueue. Deliver it without
+                // inventing a terminal; a post-send recheck repeats the request
+                // when cancellation remains pending.
+                let cx = session.connection();
+                let sid = session.session_id().clone();
+                let _ = cx.send_notification_to(Agent, CancelNotification::new(sid.clone()));
+                terminal_runtime
+                    .release_all_for_session(sid.0.as_ref())
+                    .await;
+                drain_permissions(perms, state, emitter).await;
+                if let Some(inj) = delegation_injection {
+                    cancel_parent_turn_work(inj, conn_id).await;
+                    inj.questions.cancel_questions_by_parent(conn_id).await;
+                    inj.plan_approvals
+                        .cancel_plan_approvals_by_parent(conn_id)
+                        .await;
                 }
             }
             Some(ConnectionCommand::Fork { fork_point, reply }) => {
