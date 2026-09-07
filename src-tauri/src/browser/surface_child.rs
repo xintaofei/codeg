@@ -324,6 +324,25 @@ impl ChildHandle {
         }
     }
 
+    /// Dev puppet only: native-side state for a tab.
+    pub fn debug_view(&self) -> Result<serde_json::Value, ChildError> {
+        #[cfg(target_os = "macos")]
+        {
+            self.with(|wv| {
+                let mut v = shim::debug_view(wv);
+                v["wryBounds"] = wv
+                    .bounds()
+                    .map(|b| serde_json::json!(format!("{b:?}")))
+                    .unwrap_or(serde_json::Value::Null);
+                v
+            })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Ok(serde_json::Value::Null)
+        }
+    }
+
     /// Detach and drop the webview (on the main thread; wry removes the
     /// native view from the window when the `WebView` drops).
     pub fn close(&self) -> Result<(), ChildError> {

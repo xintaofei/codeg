@@ -192,7 +192,6 @@ export function BrowserSurfaceHost({
     <div
       ref={ref}
       data-browser-surface={backendId ?? undefined}
-      data-browser-visible={lastVisibleRef.current ? "true" : "false"}
       className={cn(
         "relative h-full w-full min-h-0 min-w-0 bg-background",
         className

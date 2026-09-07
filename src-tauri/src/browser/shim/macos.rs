@@ -262,3 +262,26 @@ pub fn stop_loading(webview: &wry::WebView) {
 pub fn webview_pointer(webview: &wry::WebView) -> usize {
     Retained::as_ptr(&webview.webview()) as usize
 }
+
+/// Diagnostic view of the native state (dev puppet only).
+pub fn debug_view(webview: &wry::WebView) -> serde_json::Value {
+    let wk = webview.webview();
+    // SAFETY: main thread, live view.
+    let (hidden, hidden_or_ancestor, has_window, has_superview, frame) = unsafe {
+        let frame = wk.frame();
+        (
+            wk.isHidden(),
+            wk.isHiddenOrHasHiddenAncestor(),
+            wk.window().is_some(),
+            wk.superview().is_some(),
+            [frame.origin.x, frame.origin.y, frame.size.width, frame.size.height],
+        )
+    };
+    serde_json::json!({
+        "hidden": hidden,
+        "hiddenOrAncestor": hidden_or_ancestor,
+        "hasWindow": has_window,
+        "hasSuperview": has_superview,
+        "frame": frame,
+    })
+}

@@ -179,6 +179,13 @@ impl BrowserSurface {
             window: |_w| Err(SurfaceError("stop for owned windows lands with the platform shims".into())))
     }
 
+    /// Dev puppet only.
+    pub fn debug_view(&self) -> Result<serde_json::Value, SurfaceError> {
+        per_surface!(self,
+            child: |c| Ok(c.debug_view()?),
+            window: |w| Ok(serde_json::json!({ "visible": w.is_visible().ok() })))
+    }
+
     pub fn set_zoom(&self, factor: f64) -> Result<(), SurfaceError> {
         per_surface!(self, child: |c| Ok(c.zoom(factor)?), window: |w| Ok(w.set_zoom(factor)?))
     }

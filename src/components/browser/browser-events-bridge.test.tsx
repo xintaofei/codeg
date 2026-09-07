@@ -31,12 +31,17 @@ const mocks = vi.hoisted(() => {
     adoptBrowserTab: vi.fn(() => "browser:opener-p1"),
     closeFileTab: vi.fn(),
     openBrowserTab: vi.fn(() => "browser:new"),
+    browserClose: vi.fn(() => Promise.resolve()),
+    browserListTabs: vi.fn(() =>
+      Promise.resolve([{ tabId: "stale-1" }, { tabId: "stale-2" }])
+    ),
   }
 })
 
 vi.mock("@/lib/browser/browser-api", () => ({
   browserCapabilities: mocks.capabilities,
-  browserClose: vi.fn(() => Promise.resolve()),
+  browserClose: mocks.browserClose,
+  browserListTabs: mocks.browserListTabs,
 }))
 vi.mock("@/lib/transport", () => ({
   getTransport: () => ({ subscribe: mocks.subscribe }),
@@ -72,13 +77,17 @@ describe("BrowserEventsBridge", () => {
     mocks.adoptBrowserTab.mockClear()
     mocks.closeFileTab.mockClear()
     mocks.openBrowserTab.mockClear()
+    mocks.browserClose.mockClear()
     resetBrowserTabStoreForTests()
   })
   afterEach(() => resetBrowserTabStoreForTests())
 
-  it("subscribes to the three streams once the capabilities say a browser exists", async () => {
+  it("subscribes to the streams once the capabilities say a browser exists, after sweeping orphans", async () => {
     const { unmount } = render(<BrowserEventsBridge />)
     await flush()
+    // Surfaces left over from a previous document are closed first.
+    expect(mocks.browserClose).toHaveBeenCalledWith("stale-1")
+    expect(mocks.browserClose).toHaveBeenCalledWith("stale-2")
     expect([...mocks.handlers.keys()].sort()).toEqual([
       "browser://closed",
       "browser://open-request",

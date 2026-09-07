@@ -3,7 +3,11 @@
 import { useEffect } from "react"
 
 import { useWorkspaceActions } from "@/contexts/workspace-context"
-import { browserCapabilities } from "@/lib/browser/browser-api"
+import {
+  browserCapabilities,
+  browserClose,
+  browserListTabs,
+} from "@/lib/browser/browser-api"
 import {
   browserWorkspaceTabId,
   removeBrowserTabState,
@@ -49,6 +53,17 @@ export function BrowserEventsBridge() {
     void (async () => {
       const capabilities = await browserCapabilities()
       if (cancelled || !capabilities.available) return
+      // Tab records are session-only, so any surface the backend still holds
+      // for this window when the bridge first mounts is an orphan of a
+      // previous document (a dev reload, a crashed frontend). Close them,
+      // or they would stay painted over the new UI with nothing to hide them.
+      try {
+        const orphans = await browserListTabs()
+        await Promise.all(orphans.map((tab) => browserClose(tab.tabId)))
+      } catch {
+        /* nothing to sweep */
+      }
+      if (cancelled) return
       const transport = getTransport()
       const subs = await Promise.all([
         transport.subscribe<BrowserTabState>(BROWSER_STATE_EVENT, (state) => {

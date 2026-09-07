@@ -391,6 +391,17 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                 .map_err(|_| "main eval timed out".to_string())?;
             Ok(serde_json::from_str(&value).unwrap_or(Value::String(value)))
         }
+        "browser_debug" => {
+            let tab_id = str_arg(cmd, "tab_id")?;
+            let surface = registry.surface(&tab_id).ok_or("no such tab")?;
+            let (visible, bounds) = registry
+                .update(&tab_id, |t| (t.visible, t.last_bounds))
+                .ok_or("no such tab")?;
+            Ok(json!({
+                "registry": { "visible": visible, "lastBounds": bounds },
+                "native": surface.debug_view().map_err(err_string)?,
+            }))
+        }
         "browser_focus" => {
             let surface = registry
                 .surface(&str_arg(cmd, "tab_id")?)

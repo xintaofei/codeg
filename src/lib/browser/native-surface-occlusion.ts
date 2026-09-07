@@ -13,7 +13,7 @@
 // Zero cost when no browser tab is showing: the store has no subscribers and
 // acquire/release is a counter bump.
 
-import { useEffect, useSyncExternalStore } from "react"
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react"
 
 const holders = new Map<string, number>()
 const listeners = new Set<() => void>()
@@ -72,14 +72,64 @@ export function useNativeSurfaceOccluded(): boolean {
 }
 
 /**
- * For overlay components: hold a lease for as long as the component is
- * mounted (Radix content mounts only while open) and `active` is true.
+ * For components that exist ONLY while their overlay is open: hold a lease
+ * for as long as the component is mounted and `active` is true.
+ *
+ * Not for the shared `*Content` wrappers: React keeps those function
+ * components mounted whenever their parent renders them, open or not — only
+ * the primitive inside unmounts its DOM on close. Those use
+ * `useNativeSurfaceOcclusionRef` and bind the lease to the DOM node instead.
  */
 export function useNativeSurfaceOcclusion(reason: string, active = true): void {
   useEffect(() => {
     if (!active) return
     return acquireNativeSurfaceOcclusion(reason)
   }, [reason, active])
+}
+
+/**
+ * A callback ref that holds a lease exactly while the element it is attached
+ * to is in the DOM — i.e. while the overlay is actually open (Radix and Base
+ * UI unmount closed content, keeping it only through the exit animation).
+ * Compose it with the wrapper's own ref; it returns nothing, so React calls
+ * it again with `null` on detach.
+ */
+export function useNativeSurfaceOcclusionRef(
+  reason: string,
+  active = true
+): (node: Element | null) => void {
+  const releaseRef = useRef<(() => void) | null>(null)
+  // Release on unmount too, in case the element is never detached explicitly.
+  useEffect(
+    () => () => {
+      releaseRef.current?.()
+      releaseRef.current = null
+    },
+    []
+  )
+  return useCallback(
+    (node: Element | null) => {
+      if (node && active) {
+        if (!releaseRef.current) {
+          releaseRef.current = acquireNativeSurfaceOcclusion(reason)
+        }
+      } else {
+        releaseRef.current?.()
+        releaseRef.current = null
+      }
+    },
+    [reason, active]
+  )
+}
+
+/** Acquire a lease imperatively for the lifetime of a DOM node managed by a
+ *  callback ref that returns its own cleanup (React 19 style). */
+export function acquireNativeSurfaceOcclusionFor(
+  reason: string,
+  active: boolean
+): () => void {
+  if (!active) return () => {}
+  return acquireNativeSurfaceOcclusion(reason)
 }
 
 export function resetNativeSurfaceOcclusionForTests(): void {
@@ -143,4 +193,14 @@ export function useFallbackOverlayOpen(): boolean {
     () => fallbackOpen,
     getServerSnapshot
   )
+}
+
+// Dev-only introspection for the puppet / devtools console.
+if (typeof window !== "undefined" && process.env.NODE_ENV !== "production") {
+  ;(window as unknown as Record<string, unknown>).__codegOcclusionDebug =
+    () => ({
+      count,
+      holders: nativeSurfaceOcclusionHolders(),
+      fallbackOpen,
+    })
 }
