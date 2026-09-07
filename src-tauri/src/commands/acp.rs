@@ -8619,54 +8619,195 @@ pub(crate) fn locate_existing_skill_across_dirs(
 // observe one state. No guard is held across an await.
 static SKILL_MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn preflight_skill_symlink_move(source: &Path, destination_root: &Path) -> Result<(), AcpError> {
-    let metadata = fs::symlink_metadata(source)
-        .map_err(|e| AcpError::protocol(format!("failed to inspect skill entry: {e}")))?;
-    if !metadata.file_type().is_symlink() {
-        return Ok(());
-    }
-    let target = fs::read_link(source)
-        .map_err(|e| AcpError::protocol(format!("failed to read skill symlink: {e}")))?;
-    if target.is_absolute() {
-        return Ok(());
-    }
-    let original_target = fs::canonicalize(source)
-        .map_err(|e| AcpError::protocol(format!("failed to resolve skill symlink: {e}")))?;
-    let moved_target = if destination_root.exists() {
-        fs::canonicalize(destination_root.join(&target))
+fn resolved_skill_root(root: &Path) -> Result<PathBuf, AcpError> {
+    let absolute = if root.is_absolute() {
+        root.to_path_buf()
     } else {
-        let parent = destination_root
-            .parent()
-            .ok_or_else(|| AcpError::protocol("skill destination has no parent"))?;
-        let name = destination_root
-            .file_name()
-            .ok_or_else(|| AcpError::protocol("skill destination has no directory name"))?;
-        let mut future_root = fs::canonicalize(parent)
-            .map_err(|e| AcpError::protocol(format!("failed to resolve skill destination: {e}")))?
-            .join(name);
-        // The future root is a new directory, so leading parent components
-        // can be evaluated without creating it. Keep subsequent components
-        // intact so canonicalize still follows any symlinks in the target.
-        let mut remaining = target.components();
-        loop {
-            match remaining.clone().next() {
-                Some(std::path::Component::CurDir) => {
-                    remaining.next();
+        std::env::current_dir()
+            .map_err(|e| AcpError::protocol(format!("failed to resolve current directory: {e}")))?
+            .join(root)
+    };
+    let mut ancestor = absolute.as_path();
+    let mut suffix = Vec::new();
+    loop {
+        match fs::canonicalize(ancestor) {
+            Ok(mut resolved) => {
+                for component in suffix.into_iter().rev() {
+                    resolved.push(component);
                 }
-                Some(std::path::Component::ParentDir) => {
-                    future_root.pop();
-                    remaining.next();
-                }
-                _ => break,
+                return Ok(resolved);
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && fs::symlink_metadata(ancestor).is_err() =>
+            {
+                let Some(name) = ancestor.file_name() else {
+                    return Err(AcpError::protocol(format!(
+                        "failed to resolve skill root '{}': {error}",
+                        root.display()
+                    )));
+                };
+                suffix.push(name.to_os_string());
+                ancestor = ancestor
+                    .parent()
+                    .ok_or_else(|| AcpError::protocol("skill root has no parent"))?;
+            }
+            Err(error) => {
+                return Err(AcpError::protocol(format!(
+                    "failed to resolve skill root '{}': {error}",
+                    root.display()
+                )))
             }
         }
-        fs::canonicalize(future_root.join(remaining.as_path()))
-    };
-    if moved_target.ok().as_ref() != Some(&original_target) {
-        return Err(AcpError::protocol(format!(
-            "relative symlink '{}' would resolve to a different or missing target after moving",
-            source.display()
-        )));
+    }
+}
+
+/// Resolve a path against the filesystem as it would look after one rename.
+/// Destination entries are inspected at their source paths, while symlink
+/// targets are interpreted from their future parents. The old entry is absent.
+fn resolve_skill_path_after_move(
+    path: &Path,
+    source: &Path,
+    destination: &Path,
+    directory: bool,
+    followed_links: usize,
+) -> std::io::Result<PathBuf> {
+    if followed_links > 40 {
+        return Err(std::io::Error::other("too many skill symlinks"));
+    }
+    let mut resolved = PathBuf::new();
+    let mut components = path.components();
+    while let Some(component) = components.next() {
+        match component {
+            std::path::Component::CurDir => continue,
+            std::path::Component::ParentDir => {
+                resolved.pop();
+                continue;
+            }
+            _ => resolved.push(component.as_os_str()),
+        }
+        if matches!(
+            component,
+            std::path::Component::Prefix(_) | std::path::Component::RootDir
+        ) {
+            continue;
+        }
+        // The sibling root may be created by the move, but no other missing
+        // path is treated as present during preflight.
+        if Some(resolved.as_path()) == destination.parent() {
+            continue;
+        }
+        let physical = if resolved == destination {
+            source.to_path_buf()
+        } else if directory && resolved.starts_with(destination) {
+            source.join(
+                resolved
+                    .strip_prefix(destination)
+                    .expect("checked destination prefix"),
+            )
+        } else if resolved == source || (directory && resolved.starts_with(source)) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "target remains in old skill location",
+            ));
+        } else {
+            resolved.clone()
+        };
+        let metadata = fs::symlink_metadata(&physical)?;
+        if metadata.file_type().is_symlink() {
+            let target = fs::read_link(physical)?;
+            let next = if target.is_absolute() {
+                target
+            } else {
+                resolved
+                    .parent()
+                    .unwrap_or_else(|| Path::new(""))
+                    .join(target)
+            };
+            return resolve_skill_path_after_move(
+                &next.join(components.as_path()),
+                source,
+                destination,
+                directory,
+                followed_links + 1,
+            );
+        }
+        if components.clone().next().is_some() && !metadata.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotADirectory,
+                "skill target component is not a directory",
+            ));
+        }
+    }
+    Ok(resolved)
+}
+
+fn preflight_skill_symlink_move(source: &Path, destination_root: &Path) -> Result<(), AcpError> {
+    let source = resolved_skill_root(
+        source
+            .parent()
+            .ok_or_else(|| AcpError::protocol("skill entry has no parent"))?,
+    )?
+    .join(
+        source
+            .file_name()
+            .ok_or_else(|| AcpError::protocol("skill entry has no filename"))?,
+    );
+    let destination =
+        resolved_skill_root(destination_root)?.join(source.file_name().expect("checked filename"));
+    let directory = fs::symlink_metadata(&source)
+        .map_err(|e| AcpError::protocol(format!("failed to inspect skill entry: {e}")))?
+        .is_dir();
+    let mut pending = vec![source.clone()];
+    while let Some(entry) = pending.pop() {
+        let metadata = fs::symlink_metadata(&entry)
+            .map_err(|e| AcpError::protocol(format!("failed to inspect skill entry: {e}")))?;
+        if metadata.file_type().is_symlink() {
+            let target = fs::read_link(&entry)
+                .map_err(|e| AcpError::protocol(format!("failed to read skill symlink: {e}")))?;
+            let original_target = fs::canonicalize(&entry).map_err(|e| {
+                AcpError::protocol(format!(
+                    "failed to resolve skill symlink '{}': {e}",
+                    entry.display()
+                ))
+            })?;
+            let expected_target = if directory && original_target.starts_with(&source) {
+                destination.join(
+                    original_target
+                        .strip_prefix(&source)
+                        .expect("checked source prefix"),
+                )
+            } else {
+                original_target
+            };
+            let future_entry =
+                destination.join(entry.strip_prefix(&source).expect("entry is in bundle"));
+            let moved_target =
+                resolve_skill_path_after_move(&future_entry, &source, &destination, directory, 0);
+            if moved_target.ok().as_ref() != Some(&expected_target) {
+                return Err(AcpError::protocol(format!(
+                    "{}symlink '{}' would resolve to a different or missing target after moving",
+                    if target.is_relative() {
+                        "relative "
+                    } else {
+                        ""
+                    },
+                    entry.display()
+                )));
+            }
+        } else if metadata.is_dir() {
+            for child in fs::read_dir(&entry)
+                .map_err(|e| AcpError::protocol(format!("failed to inspect skill bundle: {e}")))?
+            {
+                pending.push(
+                    child
+                        .map_err(|e| {
+                            AcpError::protocol(format!("failed to inspect skill bundle entry: {e}"))
+                        })?
+                        .path(),
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -8732,25 +8873,66 @@ fn set_private_skill_enabled(
     ))
 }
 
+fn native_skill_roots(workspace_path: Option<&str>) -> Vec<(AgentType, AgentSkillScope, PathBuf)> {
+    let mut roots = Vec::new();
+    for agent in registry::all_acp_agents() {
+        for scope in [AgentSkillScope::Global, AgentSkillScope::Project] {
+            if scope == AgentSkillScope::Project
+                && workspace_path
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .is_none()
+            {
+                continue;
+            }
+            roots.extend(
+                scoped_skill_dirs(agent, scope, workspace_path)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|root| (agent, scope, root)),
+            );
+        }
+    }
+    roots
+}
+
+fn skill_roots_overlap(first: &Path, second: &Path) -> bool {
+    first.starts_with(second) || second.starts_with(first)
+}
+
 fn skill_root_is_shared(
     agent_type: AgentType,
     scope: AgentSkillScope,
     workspace_path: Option<&str>,
     root: &Path,
-) -> bool {
-    let resolved_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    registry::all_acp_agents().into_iter().any(|peer| {
-        peer != agent_type
-            && scoped_skill_dirs(peer, scope, workspace_path)
-                .unwrap_or_default()
-                .iter()
-                .any(|peer_root| {
-                    *peer_root == root
-                        || fs::canonicalize(peer_root)
-                            .map(|path| path == resolved_root)
-                            .unwrap_or(false)
-                })
-    })
+) -> Result<bool, AcpError> {
+    let resolved_root = resolved_skill_root(root)?;
+    for (peer, peer_scope, peer_root) in native_skill_roots(workspace_path) {
+        if (peer != agent_type || peer_scope != scope)
+            && skill_roots_overlap(&resolved_root, &resolved_skill_root(&peer_root)?)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn preflight_disabled_skill_root(
+    root: &Path,
+    workspace_path: Option<&str>,
+) -> Result<(), AcpError> {
+    let vault = disabled_skill_root(root);
+    let resolved_vault = resolved_skill_root(&vault)?;
+    for (_, _, native_root) in native_skill_roots(workspace_path) {
+        if skill_roots_overlap(&resolved_vault, &resolved_skill_root(&native_root)?) {
+            return Err(AcpError::protocol(format!(
+                "disabled skill vault '{}' overlaps native scan root '{}'",
+                vault.display(),
+                native_root.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn reject_multiple_active_skills(
@@ -8794,6 +8976,42 @@ fn reject_multiple_active_skills(
         }
     }
     Ok(())
+}
+
+fn finish_private_skill_toggle(
+    agent_type: AgentType,
+    dirs: &[PathBuf],
+    kind: SkillStorageKind,
+    original: &AgentSkillItem,
+    moved: AgentSkillItem,
+    enabled: bool,
+) -> Result<AgentSkillItem, AcpError> {
+    let authoritative = list_skills_from_roots(original.scope, dirs, kind)
+        .map(|items| items.into_iter().find(|item| item.id == original.id));
+    if let Ok(Some(mut item)) = authoritative {
+        if item.enabled == enabled {
+            apply_skill_capabilities(agent_type, &mut item);
+            return Ok(item);
+        }
+    }
+    if moved.path != original.path {
+        match fs::symlink_metadata(&original.path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return Err(AcpError::protocol(format!(
+                "requested skill state was not reached; rollback refused because original path '{}' is occupied or inaccessible; moved entry remains at '{}'",
+                original.path, moved.path
+            ))),
+        }
+        fs::rename(&moved.path, &original.path).map_err(|error| {
+            AcpError::protocol(format!(
+                "requested skill state was not reached; rollback from '{}' to '{}' failed: {error}",
+                moved.path, original.path
+            ))
+        })?;
+    }
+    Err(AcpError::protocol(
+        "requested skill state was not reached; skill move rolled back",
+    ))
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -12877,7 +13095,7 @@ pub async fn acp_set_agent_skill_enabled(
             "skill '{id}' is a built-in system skill and cannot be toggled"
         )));
     }
-    if skill_root_is_shared(agent_type, scope, workspace_path.as_deref(), root) {
+    if skill_root_is_shared(agent_type, scope, workspace_path.as_deref(), root)? {
         // Task 2 owns peer fan-out and per-agent isolation for shared roots.
         return Err(AcpError::protocol(format!(
             "shared skill root '{}' requires shared-root toggle support",
@@ -12885,11 +13103,11 @@ pub async fn acp_set_agent_skill_enabled(
         )));
     }
     reject_multiple_active_skills(&dirs, spec.kind, &id)?;
-    set_private_skill_enabled(root, spec.kind, scope, &id, enabled)?;
-    let mut authoritative = locate_existing_skill_across_dirs(&dirs, spec.kind, &id, scope)
-        .ok_or_else(|| AcpError::protocol(format!("skill not found after toggle: {id}")))?;
-    apply_skill_capabilities(agent_type, &mut authoritative);
-    Ok(authoritative)
+    if skill.enabled != enabled {
+        preflight_disabled_skill_root(root, workspace_path.as_deref())?;
+    }
+    let moved = set_private_skill_enabled(root, spec.kind, scope, &id, enabled)?;
+    finish_private_skill_toggle(agent_type, &dirs, spec.kind, &skill, moved, enabled)
 }
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
@@ -16309,6 +16527,276 @@ wire_api = "chat"
             .unwrap();
         assert!(enabled.enabled);
         assert_eq!(fs::read_to_string(enabled.path).unwrap(), "updated");
+    }
+
+    #[test]
+    fn skill_enabled_private_safety_postcondition_mismatch_rolls_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("private/skills");
+        let other = tmp.path().join("other/skills");
+        fs::create_dir_all(root.join("demo")).unwrap();
+        fs::write(root.join("demo/SKILL.md"), "original").unwrap();
+        let original = locate_existing_skill(
+            &root,
+            SkillStorageKind::SkillDirectoryOnly,
+            "demo",
+            AgentSkillScope::Project,
+            true,
+        )
+        .unwrap();
+        let moved = set_private_skill_enabled(
+            &root,
+            SkillStorageKind::SkillDirectoryOnly,
+            AgentSkillScope::Project,
+            "demo",
+            false,
+        )
+        .unwrap();
+        fs::create_dir_all(other.join("demo")).unwrap();
+        fs::write(other.join("demo/SKILL.md"), "concurrent copy").unwrap();
+        let result = finish_private_skill_toggle(
+            AgentType::Codex,
+            &[root.clone(), other.clone()],
+            SkillStorageKind::SkillDirectoryOnly,
+            &original,
+            moved,
+            false,
+        );
+        assert!(
+            result.is_err(),
+            "requested state must be a postcondition: {result:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+            "original"
+        );
+        assert_eq!(
+            fs::read_to_string(other.join("demo/SKILL.md")).unwrap(),
+            "concurrent copy"
+        );
+        assert!(!disabled_skill_root(&root).join("demo").exists());
+    }
+
+    #[test]
+    fn skill_enabled_private_safety_missing_post_move_entry_rolls_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        fs::create_dir_all(root.join("demo")).unwrap();
+        fs::write(root.join("demo/SKILL.md"), "original").unwrap();
+        let original = locate_existing_skill(
+            &root,
+            SkillStorageKind::SkillDirectoryOnly,
+            "demo",
+            AgentSkillScope::Project,
+            true,
+        )
+        .unwrap();
+        let moved = set_private_skill_enabled(
+            &root,
+            SkillStorageKind::SkillDirectoryOnly,
+            AgentSkillScope::Project,
+            "demo",
+            false,
+        )
+        .unwrap();
+        fs::rename(
+            Path::new(&moved.path).join("SKILL.md"),
+            Path::new(&moved.path).join("body.saved"),
+        )
+        .unwrap();
+        let result = finish_private_skill_toggle(
+            AgentType::Codex,
+            std::slice::from_ref(&root),
+            SkillStorageKind::SkillDirectoryOnly,
+            &original,
+            moved,
+            false,
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(root.join("demo/body.saved")).unwrap(),
+            "original"
+        );
+        assert!(!disabled_skill_root(&root).join("demo").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn skill_enabled_private_safety_vault_alias_to_native_root_is_rejected() {
+        for destination in [".agents/skills", "skills"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join(".codex/skills");
+            let other = tmp.path().join(destination);
+            fs::create_dir_all(root.join("demo")).unwrap();
+            fs::write(root.join("demo/SKILL.md"), "original").unwrap();
+            fs::create_dir_all(&other).unwrap();
+            std::os::unix::fs::symlink(&other, disabled_skill_root(&root)).unwrap();
+            let result =
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(acp_set_agent_skill_enabled(
+                        AgentType::Codex,
+                        AgentSkillScope::Project,
+                        "demo".into(),
+                        Some(tmp.path().to_string_lossy().into_owned()),
+                        false,
+                    ));
+            assert!(
+                result.is_err(),
+                "vault must not alias any native scan root: {result:?}"
+            );
+            assert_eq!(
+                fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+                "original"
+            );
+            assert!(!other.join("demo").exists());
+            assert_eq!(fs::read_link(disabled_skill_root(&root)).unwrap(), other);
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn skill_enabled_private_safety_bundle_content_link_escape_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        fs::create_dir_all(root.join("demo")).unwrap();
+        fs::write(root.join("body.txt"), "original content").unwrap();
+        std::os::unix::fs::symlink("../body.txt", root.join("demo/SKILL.md")).unwrap();
+        let result = set_private_skill_enabled(
+            &root,
+            SkillStorageKind::SkillDirectoryOnly,
+            AgentSkillScope::Global,
+            "demo",
+            false,
+        );
+        assert!(
+            result.is_err(),
+            "content link must retain its target: {result:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+            "original content"
+        );
+        assert!(!disabled_skill_root(&root).exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn skill_enabled_private_safety_bundle_nested_asset_escape_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        fs::create_dir_all(root.join("demo/assets")).unwrap();
+        fs::write(root.join("demo/SKILL.md"), "body").unwrap();
+        fs::write(root.join("asset.txt"), "original asset").unwrap();
+        std::os::unix::fs::symlink("../../asset.txt", root.join("demo/assets/link")).unwrap();
+        let result = set_private_skill_enabled(
+            &root,
+            SkillStorageKind::SkillDirectoryOnly,
+            AgentSkillScope::Global,
+            "demo",
+            false,
+        );
+        assert!(
+            result.is_err(),
+            "nested asset link must retain its target: {result:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("demo/assets/link")).unwrap(),
+            "original asset"
+        );
+        assert!(!disabled_skill_root(&root).exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn skill_enabled_private_safety_internal_bundle_links_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        fs::create_dir_all(root.join("demo/docs")).unwrap();
+        fs::create_dir_all(root.join("demo/assets")).unwrap();
+        fs::write(root.join("demo/docs/body.md"), "internal content").unwrap();
+        std::os::unix::fs::symlink("docs/body.md", root.join("demo/SKILL.md")).unwrap();
+        std::os::unix::fs::symlink("../docs/body.md", root.join("demo/assets/link")).unwrap();
+        for enabled in [false, true] {
+            let item = set_private_skill_enabled(
+                &root,
+                SkillStorageKind::SkillDirectoryOnly,
+                AgentSkillScope::Global,
+                "demo",
+                enabled,
+            )
+            .unwrap();
+            let path = Path::new(&item.path);
+            assert_eq!(
+                fs::read_to_string(path.join("SKILL.md")).unwrap(),
+                "internal content"
+            );
+            assert_eq!(
+                fs::read_to_string(path.join("assets/link")).unwrap(),
+                "internal content"
+            );
+            assert_eq!(
+                fs::read_link(path.join("SKILL.md")).unwrap(),
+                Path::new("docs/body.md")
+            );
+        }
+    }
+
+    #[test]
+    fn skill_enabled_private_safety_project_root_shared_with_custom_global_is_rejected() {
+        use crate::acp::custom_registry::{
+            hydrate, hydrate_test_guard, CustomAgentDef, CustomAgentSpec, CustomDistributionKind,
+            NpxSpec,
+        };
+        let _registry_guard = hydrate_test_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".codex/skills");
+        fs::create_dir_all(root.join("demo")).unwrap();
+        fs::write(root.join("demo/SKILL.md"), "shared").unwrap();
+        let definition = CustomAgentDef {
+            registry_id: "task1b-cross-scope".into(),
+            name: "Cross Scope".into(),
+            description: String::new(),
+            version: "1.0.0".into(),
+            distribution_kind: CustomDistributionKind::Npx,
+            spec: CustomAgentSpec {
+                npx: Some(NpxSpec {
+                    package: "test-agent@1.0.0".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+            skills_dir: Some(root.to_string_lossy().into_owned()),
+            source: Default::default(),
+            version_probe: None,
+            supports_mcp: true,
+        };
+        assert!(hydrate(&[definition]).is_empty());
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(acp_set_agent_skill_enabled(
+                AgentType::Codex,
+                AgentSkillScope::Project,
+                "demo".into(),
+                Some(tmp.path().to_string_lossy().into_owned()),
+                false,
+            ));
+        hydrate(&[]);
+        assert!(
+            result.is_err(),
+            "global peer root must count as shared: {result:?}"
+        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("shared skill root"));
+        assert_eq!(
+            fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+            "shared"
+        );
+        assert!(!disabled_skill_root(&root).exists());
     }
 
     #[test]
