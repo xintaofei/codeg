@@ -62,17 +62,29 @@ import {
   type WorkspaceExternalConflict,
 } from "@/hooks/use-open-file-tabs-watch"
 import { useOfficeAutoPreview } from "@/lib/office-preview-prefs"
+import { releaseBrowserTab } from "@/lib/browser/browser-tab-store"
+import { hostnameOf, normalizeUrlForDedupe } from "@/lib/browser/browser-url"
 
 export type WorkspaceMode = "conversation" | "fusion"
 export type WorkspacePane = "conversation" | "files"
 
-type FileWorkspaceTabKind = "file" | "diff" | "rich-diff"
+type FileLikeTabKind = "file" | "diff" | "rich-diff"
+type FileWorkspaceTabKind = FileLikeTabKind | "browser"
 type FileSaveState = "idle" | "saving" | "error"
 type LineEnding = "lf" | "crlf" | "mixed" | "none"
 
-export interface FileWorkspaceTab {
+/** Seed of a built-in browser tab. Live state (url, title, loading, history)
+ *  lives in `lib/browser/browser-tab-store`, keyed by the tab id, so page
+ *  activity never churns the `fileTabs` slice. */
+export interface BrowserTabSeed {
+  /** The URL the tab was opened with; the surface navigates to it once. */
+  initialUrl: string
+  /** Set on a tab adopted from another tab's `window.open` (popup). */
+  openerTabId: string | null
+}
+
+interface FileWorkspaceTabBase {
   id: string
-  kind: FileWorkspaceTabKind
   // Repo context for git-scoped diff tabs (working/branch/commit/session
   // diffs are repository operations and need the repo root). Plain file
   // tabs are folder-free: folderId is ALWAYS null and `path` holds the
@@ -107,6 +119,25 @@ export interface FileWorkspaceTab {
   // resolved against disk. Cleared by any successful content reload.
   stale?: boolean
 }
+
+/** A file, a unified diff, or a rich (side-by-side) diff. */
+export interface FileLikeWorkspaceTab extends FileWorkspaceTabBase {
+  kind: FileLikeTabKind
+  browser?: never
+}
+
+/** A built-in browser tab: no path, no editable content. */
+export interface BrowserWorkspaceTab extends FileWorkspaceTabBase {
+  kind: "browser"
+  path: null
+  language: "browser"
+  browser: BrowserTabSeed
+}
+
+// A discriminated union rather than optional fields on one shape: a `file`
+// tab can never carry browser state and a `browser` tab can never be dirty,
+// and the compiler should say so at every switch on `kind`.
+export type FileWorkspaceTab = FileLikeWorkspaceTab | BrowserWorkspaceTab
 
 // The provider value is split across three contexts so high-frequency
 // fileTabs churn (per-keystroke content updates, watcher-driven reloads)
@@ -198,6 +229,22 @@ interface WorkspaceActionsValue {
   reloadActiveFile: () => Promise<void>
   toggleFileTabPreview: (tabId: string) => void
   toggleFilesMaximized: () => void
+  // Open (or re-activate) a built-in browser tab for an http(s) URL. One tab
+  // per URL (fragment ignored): a second open activates the existing tab.
+  // Returns the tab id, or null when the URL does not parse. The native
+  // surface is created by the tab's view when it mounts, not here.
+  openBrowserTab: (
+    url: string,
+    options?: { folderId?: number; activate?: boolean }
+  ) => string | null
+  // Register a tab for a webview the BACKEND already created — a popup the
+  // page opened that the host adopted. `backendTabId` is the backend's id
+  // (`<opener>-p<n>`); the record is inserted right after its opener.
+  adoptBrowserTab: (params: {
+    backendTabId: string
+    url: string
+    openerBackendTabId: string
+  }) => string
 }
 
 interface WorkspaceViewValue {
@@ -313,7 +360,7 @@ const IMAGE_MIME: Record<string, string> = {
 function loadingTab(
   id: string,
   folderId: number | null,
-  kind: FileWorkspaceTabKind,
+  kind: FileLikeTabKind,
   title: string,
   description: string | null,
   path: string | null,
@@ -620,6 +667,93 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       }
     },
     [activateFilePane]
+  )
+
+  const browserTabRecord = useCallback(
+    (
+      backendTabId: string,
+      url: string,
+      folderId: number | null,
+      openerTabId: string | null
+    ): BrowserWorkspaceTab => ({
+      id: buildFileTabId({ kind: "browser", id: backendTabId }),
+      kind: "browser",
+      folderId,
+      title: hostnameOf(url) ?? url,
+      description: null,
+      path: null,
+      language: "browser",
+      content: "",
+      loading: true,
+      readonly: true,
+      browser: { initialUrl: url, openerTabId },
+    }),
+    []
+  )
+
+  const openBrowserTab = useCallback(
+    (url: string, options?: { folderId?: number; activate?: boolean }) => {
+      const normalized = normalizeUrlForDedupe(url)
+      if (!normalized) return null
+      const existing = fileTabsRef.current.find(
+        (tab) =>
+          tab.kind === "browser" &&
+          normalizeUrlForDedupe(tab.browser.initialUrl) === normalized
+      )
+      if (existing) {
+        if (options?.activate !== false) activateTab(existing.id)
+        return existing.id
+      }
+      const record = browserTabRecord(
+        crypto.randomUUID(),
+        url,
+        options?.folderId ?? activeFolderRef.current?.id ?? null,
+        null
+      )
+      if (options?.activate === false) {
+        setFileTabs((prev) =>
+          prev.some((tab) => tab.id === record.id) ? prev : [...prev, record]
+        )
+      } else {
+        seedLoadingTab(record)
+      }
+      return record.id
+    },
+    [activateTab, browserTabRecord, seedLoadingTab]
+  )
+
+  const adoptBrowserTab = useCallback(
+    (params: {
+      backendTabId: string
+      url: string
+      openerBackendTabId: string
+    }) => {
+      const openerId = buildFileTabId({
+        kind: "browser",
+        id: params.openerBackendTabId,
+      })
+      const opener = fileTabsRef.current.find((tab) => tab.id === openerId)
+      const record = browserTabRecord(
+        params.backendTabId,
+        params.url,
+        opener?.folderId ?? activeFolderRef.current?.id ?? null,
+        openerId
+      )
+      setFileTabs((prev) => {
+        if (prev.some((tab) => tab.id === record.id)) return prev
+        const idx = prev.findIndex((tab) => tab.id === openerId)
+        if (idx < 0) return [...prev, record]
+        const next = [...prev]
+        next.splice(idx + 1, 0, record)
+        return next
+      })
+      // A popup is what the user just clicked for: show it, like a browser
+      // would, and the opener stays one tab to the left.
+      setActiveFileTabId(record.id)
+      activateFilePane()
+      return record.id
+    },
+    [activateFilePane, browserTabRecord]
   )
 
   // Mark an existing tab as refreshing. Preserves content / originalContent /
@@ -2293,6 +2427,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         // more than once (StrictMode, or a discarded render replayed).
         const closed = snapshotFileTab(tab)
         if (closed) pushClosedTab(closed)
+        // Idempotent on the backend, so safe under a replayed updater.
+        if (tab.kind === "browser") releaseBrowserTab(tab.id)
 
         const next = prev.filter((candidate) => candidate.id !== tabId)
 
@@ -2345,6 +2481,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           // safe inside an updater React may invoke more than once.
           const closed = snapshotFileTab(closing)
           if (closed) pushClosedTab(closed)
+          if (closing.kind === "browser") releaseBrowserTab(closing.id)
           inFlightLoadsRef.current.delete(closing.id)
         }
 
@@ -2366,6 +2503,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       for (const tab of prev) {
         const closed = snapshotFileTab(tab)
         if (closed) pushClosedTab(closed)
+        if (tab.kind === "browser") releaseBrowserTab(tab.id)
       }
 
       inFlightLoadsRef.current.clear()
@@ -2537,6 +2675,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       reloadActiveFile,
       toggleFileTabPreview,
       toggleFilesMaximized,
+      openBrowserTab,
+      adoptBrowserTab,
     }),
     [
       setActivePane,
@@ -2565,6 +2705,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       reloadActiveFile,
       toggleFileTabPreview,
       toggleFilesMaximized,
+      openBrowserTab,
+      adoptBrowserTab,
     ]
   )
 

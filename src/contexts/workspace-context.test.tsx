@@ -3252,3 +3252,150 @@ describe("unified absolute-path file tabs (outside-workspace opens)", () => {
     )
   })
 })
+
+describe("browser tabs", () => {
+  function BrowserProbe() {
+    const { openBrowserTab, adoptBrowserTab, closeFileTab } =
+      useWorkspaceActions()
+    const { fileTabs, activeFileTabId } = useWorkspaceFileTabs()
+    const { activePane } = useWorkspaceView()
+    return (
+      <div>
+        <button onClick={() => openBrowserTab("https://example.com/docs#top")}>
+          open
+        </button>
+        <button
+          onClick={() =>
+            openBrowserTab("https://example.com/docs#other", {
+              activate: true,
+            })
+          }
+        >
+          open-same
+        </button>
+        <button
+          onClick={() =>
+            openBrowserTab("http://localhost:3000/", { activate: false })
+          }
+        >
+          open-bg
+        </button>
+        <button onClick={() => openBrowserTab("not a url")}>open-bad</button>
+        <button
+          onClick={() => {
+            const opener = fileTabs.find((t) => t.kind === "browser")
+            if (!opener) return
+            const parts = opener.id.slice("browser:".length)
+            adoptBrowserTab({
+              backendTabId: `${parts}-p1`,
+              url: "https://example.com/popup",
+              openerBackendTabId: parts,
+            })
+          }}
+        >
+          adopt
+        </button>
+        <button
+          onClick={() => {
+            if (activeFileTabId) closeFileTab(activeFileTabId)
+          }}
+        >
+          close-active
+        </button>
+        <pre data-testid="tabs">
+          {JSON.stringify(
+            fileTabs.map((t) => ({
+              id: t.id,
+              kind: t.kind,
+              title: t.title,
+              path: t.path,
+              opener: t.kind === "browser" ? t.browser.openerTabId : undefined,
+              url: t.kind === "browser" ? t.browser.initialUrl : undefined,
+            }))
+          )}
+        </pre>
+        <span data-testid="active">{activeFileTabId ?? ""}</span>
+        <span data-testid="pane">{activePane}</span>
+      </div>
+    )
+  }
+
+  function readTabs(): Array<{
+    id: string
+    kind: string
+    title: string
+    path: string | null
+    opener?: string | null
+    url?: string
+  }> {
+    return JSON.parse(screen.getByTestId("tabs").textContent ?? "[]")
+  }
+
+  it("opens one browser tab per URL, activates it, and de-dupes by URL without fragment", () => {
+    render(
+      <WorkspaceProvider>
+        <BrowserProbe />
+      </WorkspaceProvider>
+    )
+    act(() => screen.getByText("open").click())
+    let tabs = readTabs()
+    expect(tabs).toHaveLength(1)
+    expect(tabs[0].kind).toBe("browser")
+    expect(tabs[0].id.startsWith("browser:")).toBe(true)
+    expect(tabs[0].path).toBeNull()
+    expect(tabs[0].title).toBe("example.com")
+    expect(screen.getByTestId("active").textContent).toBe(tabs[0].id)
+    expect(screen.getByTestId("pane").textContent).toBe("files")
+
+    act(() => screen.getByText("open-same").click())
+    tabs = readTabs()
+    expect(tabs).toHaveLength(1)
+
+    act(() => screen.getByText("open-bad").click())
+    expect(readTabs()).toHaveLength(1)
+
+    act(() => screen.getByText("open-bg").click())
+    tabs = readTabs()
+    expect(tabs).toHaveLength(2)
+    // Background open must not steal the active tab.
+    expect(screen.getByTestId("active").textContent).toBe(tabs[0].id)
+  })
+
+  it("inserts an adopted popup right after its opener and activates it", () => {
+    render(
+      <WorkspaceProvider>
+        <BrowserProbe />
+      </WorkspaceProvider>
+    )
+    act(() => screen.getByText("open").click())
+    act(() => screen.getByText("open-bg").click())
+    act(() => screen.getByText("adopt").click())
+    const tabs = readTabs()
+    expect(tabs.map((t) => t.url)).toEqual([
+      "https://example.com/docs#top",
+      "https://example.com/popup",
+      "http://localhost:3000/",
+    ])
+    expect(tabs[1].id).toBe(`${tabs[0].id}-p1`)
+    expect(tabs[1].opener).toBe(tabs[0].id)
+    expect(screen.getByTestId("active").textContent).toBe(tabs[1].id)
+  })
+
+  it("closes a browser tab without a dirty prompt and moves activation to a neighbour", () => {
+    const confirmSpy = vi.spyOn(window, "confirm")
+    render(
+      <WorkspaceProvider>
+        <BrowserProbe />
+      </WorkspaceProvider>
+    )
+    act(() => screen.getByText("open").click())
+    act(() => screen.getByText("open-bg").click())
+    act(() => screen.getByText("close-active").click())
+    expect(confirmSpy).not.toHaveBeenCalled()
+    const tabs = readTabs()
+    expect(tabs).toHaveLength(1)
+    expect(tabs[0].url).toBe("http://localhost:3000/")
+    expect(screen.getByTestId("active").textContent).toBe(tabs[0].id)
+    confirmSpy.mockRestore()
+  })
+})
