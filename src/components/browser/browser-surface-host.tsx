@@ -97,6 +97,18 @@ export function BrowserSurfaceHost({
   const sync = useCallback(() => {
     const el = ref.current
     if (!el || !backendId) return
+    // An owned window is not fitted to this element — the placeholder is
+    // invisible by design — so only the "is this tab on screen" signals
+    // apply, and there are no bounds to push.
+    if (getBrowserTabState(tab.id)?.surface === "window") {
+      if (lastVisibleRef.current !== shouldShow) {
+        lastVisibleRef.current = shouldShow
+        void browserSetVisible(backendId, shouldShow, !shouldShow).catch(
+          () => {}
+        )
+      }
+      return
+    }
     const bounds = measure(el)
     const visible =
       shouldShow && bounds.width > 0 && bounds.height > 0 && elementVisible(el)
@@ -108,7 +120,7 @@ export function BrowserSurfaceHost({
       lastVisibleRef.current = visible
       void browserSetVisible(backendId, visible, !visible).catch(() => {})
     }
-  }, [backendId, shouldShow])
+  }, [backendId, shouldShow, tab.id])
 
   // Create the surface once per tab record; adopted popups and re-mounts
   // already have one (the store knows about it).

@@ -109,7 +109,11 @@ impl BrowserSurface {
     }
 
     pub fn show(&self) -> Result<(), SurfaceError> {
-        per_surface!(self, child: |c| Ok(c.set_visible(true)?), window: |w| Ok(w.show()?))
+        per_surface!(self,
+            child: |c| Ok(c.set_visible(true)?),
+            // Un-hiding alone can leave the window behind its owner; showing
+            // it is a request to see it.
+            window: |w| { w.show()?; w.set_focus()?; Ok(()) })
     }
 
     pub fn set_focus(&self) -> Result<(), SurfaceError> {

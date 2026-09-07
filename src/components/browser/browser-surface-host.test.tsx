@@ -132,6 +132,39 @@ describe("BrowserSurfaceHost", () => {
     )
   })
 
+  it("drives an owned window from tab visibility, not from its invisible placeholder", async () => {
+    // The tab view hides the placeholder (`invisible`) when the page lives in
+    // its own window; the window must still be shown, and never sized.
+    Object.defineProperty(HTMLElement.prototype, "checkVisibility", {
+      configurable: true,
+      value: () => false,
+    })
+    try {
+      api.browserOpenTab.mockImplementation(() =>
+        Promise.resolve({ ...state("host-window"), surface: "window" })
+      )
+      const { unmount } = render(
+        <BrowserSurfaceHost tab={tab("host-window")} />
+      )
+      await flush()
+      expect(api.browserSetBounds).not.toHaveBeenCalled()
+      expect(api.browserSetVisible).toHaveBeenLastCalledWith(
+        "host-window",
+        true,
+        false
+      )
+      unmount()
+      expect(api.browserSetVisible).toHaveBeenLastCalledWith(
+        "host-window",
+        false,
+        false
+      )
+    } finally {
+      delete (HTMLElement.prototype as { checkVisibility?: unknown })
+        .checkVisibility
+    }
+  })
+
   it("does not create a second surface for a tab that already has one", async () => {
     api.browserOpenTab.mockImplementation(() => Promise.resolve(state("host2")))
     const first = render(<BrowserSurfaceHost tab={tab("host2")} />)
