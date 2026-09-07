@@ -48,7 +48,13 @@ export {
   type SessionViewerRequest,
 } from "@/components/message/session-viewer-host-context"
 
-export function SessionViewerHost({ children }: { children: React.ReactNode }) {
+export function SessionViewerHost({
+  children,
+  parentConversationId,
+}: {
+  children: React.ReactNode
+  parentConversationId: number
+}) {
   const [request, setRequest] = React.useState<SessionViewerRequest | null>(
     null
   )
@@ -77,6 +83,7 @@ export function SessionViewerHost({ children }: { children: React.ReactNode }) {
           // re-point.
           key={request.source.parentToolUseId}
           source={request.source}
+          parentConversationId={parentConversationId}
           open={open}
           onOpenChange={setOpen}
         />
@@ -118,14 +125,16 @@ export function SessionViewerHost({ children }: { children: React.ReactNode }) {
  */
 function DelegationViewer({
   source,
+  parentConversationId,
   open,
   onOpenChange,
 }: {
   source: DelegationCardSource
+  parentConversationId: number
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const { agentType, task, childConversationId, childConnectionId } =
+  const { agentType, task, taskId, childConversationId, childConnectionId } =
     useDelegationCardModel(source)
 
   if (childConversationId == null) return null
@@ -138,6 +147,8 @@ function DelegationViewer({
       childConnectionId={childConnectionId}
       agentType={agentType}
       kickoffTask={task}
+      sourceTaskId={taskId}
+      parentConversationId={parentConversationId}
     />
   )
 }

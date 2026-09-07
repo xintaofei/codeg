@@ -116,13 +116,11 @@ function optString(
   key: string,
   what: string
 ): string | null {
-  const v = obj[key]
-  if (v === null || v === undefined) {
-    // `created_at`-style fields must ALWAYS be present per the contract —
-    // only genuinely nullable fields may be absent-or-null. Enforce that by
-    // key: callers know which are which, this helper just normalizes.
-    return null
+  if (!Object.prototype.hasOwnProperty.call(obj, key)) {
+    throw new ContinuationParseError(`${what}.${key} is required`)
   }
+  const v = obj[key]
+  if (v === null) return null
   if (typeof v !== "string") {
     throw new ContinuationParseError(`${what}.${key} must be a string or null`)
   }
@@ -172,8 +170,11 @@ function optTime(
   key: string,
   what: string
 ): string | null {
+  if (!Object.prototype.hasOwnProperty.call(obj, key)) {
+    throw new ContinuationParseError(`${what}.${key} is required`)
+  }
   const v = obj[key]
-  if (v === null || v === undefined) return null
+  if (v === null) return null
   if (typeof v !== "string" || Number.isNaN(Date.parse(v))) {
     throw new ContinuationParseError(
       `${what}.${key} must be an RFC3339 timestamp or null`
@@ -267,19 +268,26 @@ export function parseCollaborationSnapshot(
 ): CollaborationSnapshot {
   const obj = assertObject(raw, "CollaborationSnapshot")
   reqSchemaVersion(obj, "CollaborationSnapshot")
+  if (!Object.prototype.hasOwnProperty.call(obj, "session")) {
+    throw new ContinuationParseError(
+      "CollaborationSnapshot.session is required"
+    )
+  }
   const sessionRaw = obj.session
-  const session =
-    sessionRaw === null || sessionRaw === undefined
-      ? null
-      : parseSessionSummary(sessionRaw)
+  const session = sessionRaw === null ? null : parseSessionSummary(sessionRaw)
   if (!Array.isArray(obj.turns)) {
     throw new ContinuationParseError(
       "CollaborationSnapshot.turns must be an array"
     )
   }
   const turns = obj.turns.map((t) => parseTurnReport(t))
+  if (!Object.prototype.hasOwnProperty.call(obj, "next_after_ordinal")) {
+    throw new ContinuationParseError(
+      "CollaborationSnapshot.next_after_ordinal is required"
+    )
+  }
   const next = obj.next_after_ordinal
-  if (next !== null && next !== undefined && typeof next !== "number") {
+  if (next !== null && typeof next !== "number") {
     throw new ContinuationParseError(
       "CollaborationSnapshot.next_after_ordinal must be a number or null"
     )
@@ -288,7 +296,7 @@ export function parseCollaborationSnapshot(
     schema_version: CONTINUATION_SCHEMA_VERSION,
     session,
     turns,
-    next_after_ordinal: next ?? null,
+    next_after_ordinal: next,
   }
 }
 

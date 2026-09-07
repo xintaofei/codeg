@@ -75,6 +75,35 @@ describe("turn report contract (Rust fixtures)", () => {
       ContinuationParseError
     )
   })
+
+  it.each([
+    "result_text",
+    "error_code",
+    "error_message",
+    "blocked_on",
+    "started_at",
+    "finished_at",
+  ])("rejects a missing nullable %s field", (field) => {
+    const raw = loadFixture("turn_completed.json") as Record<string, unknown>
+    const missing = { ...raw }
+    delete missing[field]
+    expect(() => parseTurnReport(missing)).toThrow(ContinuationParseError)
+  })
+
+  it("accepts explicit null for every nullable turn field", () => {
+    const raw = loadFixture("turn_completed.json") as Record<string, unknown>
+    expect(() =>
+      parseTurnReport({
+        ...raw,
+        result_text: null,
+        error_code: null,
+        error_message: null,
+        blocked_on: null,
+        started_at: null,
+        finished_at: null,
+      })
+    ).not.toThrow()
+  })
 })
 
 describe("session summary contract", () => {
@@ -115,4 +144,16 @@ describe("snapshot contract", () => {
     expect(running.finished_at).toBeNull()
     expect(snap.next_after_ordinal).toBeNull()
   })
+
+  it.each(["session", "next_after_ordinal"])(
+    "rejects a missing nullable %s field",
+    (field) => {
+      const raw = loadFixture("snapshot_empty.json") as Record<string, unknown>
+      const missing = { ...raw }
+      delete missing[field]
+      expect(() => parseCollaborationSnapshot(missing)).toThrow(
+        ContinuationParseError
+      )
+    }
+  )
 })

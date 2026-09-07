@@ -1501,7 +1501,7 @@ export function MessageListView({
     // they scroll out of the buffer. This is the nearest ancestor that owns
     // the virtualizer instead of sitting inside it — and it covers the
     // top-right SubAgentOverlay's rows too.
-    <SessionViewerHost>
+    <SessionViewerHost parentConversationId={conversationId}>
       <div
         ref={selectionBoxRef}
         className="relative flex h-full min-h-0 flex-col"

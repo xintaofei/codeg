@@ -8,30 +8,41 @@
  * unmount the opener directly — the same thing virtualization does, without
  * having to drive a scroll container in jsdom.
  */
-import { act, render, screen } from "@testing-library/react"
+import { act, render, screen, waitFor } from "@testing-library/react"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { NextIntlClientProvider } from "next-intl"
 import { useState } from "react"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
+import enMessages from "@/i18n/messages/en.json"
+import type { CollaborationSnapshot } from "@/lib/collaboration"
 import { SessionViewerHost, useSessionViewerHost } from "./session-viewer-host"
 
-// Both viewers reach the runtime provider tree / the conversation API. Stub
-// them to sentinels that report what they were pointed at — this file is about
-// ownership and lifetime, not about what a transcript renders.
-vi.mock("./sub-agent-session-dialog", () => ({
-  SubAgentSessionDialog: ({
-    open,
-    childConversationId,
-  }: {
-    open: boolean
-    childConversationId: number
-  }) =>
-    open ? (
-      <div
-        data-testid="delegation-viewer"
-        data-conversation-id={childConversationId}
-      />
-    ) : null,
+const mockGetCollaborationSession = vi.fn()
+
+vi.mock("@/lib/collaboration", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/collaboration")>(
+    "@/lib/collaboration"
+  )
+  return {
+    ...actual,
+    getCollaborationSession: (...args: unknown[]) =>
+      mockGetCollaborationSession(...args),
+  }
+})
+
+// Keep the real delegation drawer and CollaborationTurnList so this test
+// crosses the hosted-viewer gate that hid round 1. Only the transcript body is
+// stubbed; its runtime bridge has separate coverage.
+vi.mock("./live-transcript-view", () => ({
+  LiveTranscriptView: ({ conversationId }: { conversationId: number }) => (
+    <div
+      data-testid="delegation-viewer"
+      data-conversation-id={conversationId}
+    />
+  ),
 }))
 vi.mock("./subagent-session-dialog", () => ({
   SubagentSessionDialog: ({
@@ -84,7 +95,7 @@ vi.mock("@/hooks/use-delegation-card-model", () => ({
   useDelegationCardModel: (source: { parentToolUseId: string }) => ({
     agentType: "codex",
     task: "do the thing",
-    taskId: null,
+    taskId: `task-${source.parentToolUseId.replace("tool-", "")}`,
     status: "running",
     errorCode: undefined,
     // Derived from the source, so the assertion below proves the viewer is
@@ -132,17 +143,33 @@ function FileOpener() {
 function Harness({ children }: { children: React.ReactNode }) {
   const [mounted, setMounted] = useState(true)
   return (
-    <SessionViewerHost>
-      <button type="button" onClick={() => setMounted(false)}>
-        scroll away
-      </button>
-      {mounted ? children : null}
-    </SessionViewerHost>
+    <NextIntlClientProvider locale="en" messages={enMessages}>
+      <SessionViewerHost parentConversationId={7}>
+        <button type="button" onClick={() => setMounted(false)}>
+          scroll away
+        </button>
+        {mounted ? children : null}
+      </SessionViewerHost>
+    </NextIntlClientProvider>
   )
 }
 
 describe("SessionViewerHost", () => {
-  it("keeps the viewer open after the card that opened it unmounts", () => {
+  beforeEach(() => {
+    const fixture = JSON.parse(
+      readFileSync(
+        join(
+          __dirname,
+          "../../../src-tauri/tests/fixtures/collaboration/snapshot_page.json"
+        ),
+        "utf8"
+      )
+    ) as CollaborationSnapshot
+    mockGetCollaborationSession.mockReset()
+    mockGetCollaborationSession.mockResolvedValue(fixture)
+  })
+
+  it("keeps a scoped viewer and its first collaboration round open after the card unmounts", async () => {
     render(
       <Harness>
         <OpenerCard toolUseId="tool-42" />
@@ -156,6 +183,13 @@ describe("SessionViewerHost", () => {
       "data-conversation-id",
       "42"
     )
+    await waitFor(() =>
+      expect(mockGetCollaborationSession).toHaveBeenCalledWith({
+        parentConversationId: 7,
+        sourceTaskId: "task-42",
+      })
+    )
+    expect(await screen.findByText("Round 1")).toBeInTheDocument()
 
     // Virtualization, simulated: the row goes away.
     act(() => {
