@@ -10,6 +10,7 @@ import {
   echoVerbatimError,
   HALF_SPLIT_MIN_CHARS,
   hasSameTranslationPlaceholders,
+  isAlreadyInTargetLanguage,
   isUntranslatableSegment,
   joinTranslated,
   mergeUnit,
@@ -393,6 +394,41 @@ describe("isUntranslatableSegment", () => {
     ]) {
       expect(isUntranslatableSegment(text), JSON.stringify(text)).toBe(false)
     }
+  })
+})
+
+describe("isAlreadyInTargetLanguage", () => {
+  it("flags Han-dominant text against a zh display locale", () => {
+    expect(
+      isAlreadyInTargetLanguage(
+        "这是一道纯知识讲解请求，按豁免清单直接回答。",
+        "zh-CN"
+      )
+    ).toBe(true)
+    expect(isAlreadyInTargetLanguage("合并策略", "zh")).toBe(true)
+    // A sprinkling of CJK inside English prose stays translatable.
+    expect(
+      isAlreadyInTargetLanguage(
+        'The gate rules say I must not treat "实质性任务请求" as actionable.',
+        "zh-CN"
+      )
+    ).toBe(false)
+    expect(
+      isAlreadyInTargetLanguage("Paragraph 3 — the merge base.", "zh-CN")
+    ).toBe(false)
+  })
+
+  it("never flags against a non-zh display locale", () => {
+    // zh → ja translation is real work; the script overlap is deliberate.
+    expect(isAlreadyInTargetLanguage("这是一道纯知识讲解请求。", "ja-JP")).toBe(
+      false
+    )
+    expect(isAlreadyInTargetLanguage("合并策略", "en-US")).toBe(false)
+  })
+
+  it("handles letterless and empty text", () => {
+    expect(isAlreadyInTargetLanguage("---", "zh-CN")).toBe(false)
+    expect(isAlreadyInTargetLanguage("", "zh-CN")).toBe(false)
   })
 })
 

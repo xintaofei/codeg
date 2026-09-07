@@ -334,6 +334,32 @@ export function isUntranslatableSegment(text: string): boolean {
 }
 
 /**
+ * Whether a segment is already written in the display language. A model that
+ * follows a global "reply in Chinese" convention drops Chinese preambles into
+ * an otherwise English reply; sending one to a zh target gets the same text
+ * back, the echo gate refuses it, and the segment burns retries it can never
+ * win (its correct translation IS the echo). Han-dominant prose against a
+ * zh display locale is the only conflation made here: other source/target
+ * script pairs share no script, so `missingTargetScript` already covers them.
+ */
+export function isAlreadyInTargetLanguage(
+  text: string,
+  uiLocale: string
+): boolean {
+  const lang = uiLocale.trim().toLowerCase()
+  if (!(lang === "zh" || lang.startsWith("zh-"))) return false
+  let letters = 0
+  let han = 0
+  for (const ch of text) {
+    if (/\p{L}/u.test(ch)) {
+      letters += 1
+      if (/\p{Script=Han}/u.test(ch)) han += 1
+    }
+  }
+  return letters > 0 && han * 2 > letters
+}
+
+/**
  * Exact-echo gate: the reply is the source returned verbatim. Code-heavy
  * chunks mask down to placeholders plus a few words, so they slip under the
  * ≥30-letter prose bar of [`missingTargetScript`] — an echoed reply then

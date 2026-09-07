@@ -427,13 +427,13 @@ describe("useStreamingTranslatedText", () => {
     expect(mocks.translate).toHaveBeenCalledTimes(1)
     expect(unwrap(mocks.translate.mock.calls[0][0][0])).toBe("[1] u1\n\n[2] u2")
 
-    // Settle while the group request is still in flight: the flush cannot
-    // know its results yet, so it requests from the untranslated prefix —
-    // the whole text (the accepted one-shot double-spend).
+    // Settle while the group request is still in flight: the flush holds off
+    // (the in-flight subsegments overlap this gap, and a flush sent past them
+    // that got refused would stitch the whole block raw over their landings),
+    // then re-runs once the landing re-opens the boundary.
     rerender({ text: fullText, isStreaming: false })
     await flush()
-    expect(mocks.translate).toHaveBeenCalledTimes(2)
-    expect(unwrap(mocks.translate.mock.calls[1][0][0])).toBe(fullText)
+    expect(mocks.translate).toHaveBeenCalledTimes(1)
 
     // The group lands and moves the translated prefix past the remainder's
     // start. A one-shot settle guard would leave "tail" raw forever.
@@ -445,11 +445,11 @@ describe("useStreamingTranslatedText", () => {
     })
 
     expect(result.current.display).toBe("译:u1\n\n译:u2\n\ntail")
-    expect(mocks.translate).toHaveBeenCalledTimes(3)
-    expect(unwrap(mocks.translate.mock.calls[2][0][0])).toBe("tail")
+    expect(mocks.translate).toHaveBeenCalledTimes(2)
+    expect(unwrap(mocks.translate.mock.calls[1][0][0])).toBe("tail")
 
     await act(async () => {
-      resolvers[2].resolve([{ key: "", text: "译:tail", fromCache: false }])
+      resolvers[1].resolve([{ key: "", text: "译:tail", fromCache: false }])
       await vi.advanceTimersByTimeAsync(0)
     })
     expect(result.current.display).toBe("译:u1\n\n译:u2\n\n译:tail")
@@ -606,6 +606,81 @@ describe("useStreamingTranslatedText", () => {
     await advance(WINDOW)
     expect(second.result.current.display).toContain("译:one")
     expect(mocks.translate.mock.calls.length).toBe(spent)
+  })
+
+  it("keeps the display chain whole when the first gap is given up", async () => {
+    const mod = await setup()
+    // The lead segment is refused forever while its sibling lands. Giving up
+    // on the lead gap must stitch the raw source, not just drop the record:
+    // a missing piece at offset 0 breaks the chain at the first byte and
+    // blanks every translated paragraph behind it.
+    mocks.translate.mockImplementation(async (texts: Texts) =>
+      texts.map((raw) => {
+        if (raw.includes("stubborn")) {
+          return {
+            key: raw,
+            text: "",
+            error: "endpoint refuses this chunk",
+            fromCache: false,
+          }
+        }
+        const text = unwrap(raw)
+        return { key: raw, text: `译:${text.trim()}`, fromCache: false }
+      })
+    )
+    const { rerender, result } = renderStream(
+      mod,
+      { text: "stubborn opener\n\ngood follower\n\n", isStreaming: true },
+      "chain"
+    )
+    await advance(WINDOW)
+    await advance(WINDOW)
+    rerender({
+      text: "stubborn opener\n\ngood follower\n\n",
+      isStreaming: false,
+    })
+    await flush()
+    // Every retry chain is bounded; advance until the mock goes silent.
+    let spent = -1
+    for (let i = 0; i < 20; i += 1) {
+      await advance(600_000)
+      if (mocks.translate.mock.calls.length === spent) break
+      spent = mocks.translate.mock.calls.length
+    }
+    // The refused lead shows raw; the follower's translation is NOT hidden
+    // behind it.
+    expect(result.current.display).toContain("stubborn opener")
+    expect(result.current.display).toContain("译:good follower")
+    expect(result.current.display).not.toContain("译:stubborn")
+    expect(mod.findPendingGaps("stubborn opener\n\ngood follower\n\n")).toEqual(
+      []
+    )
+  })
+
+  it("lands a Chinese preamble in an English reply without a request", async () => {
+    const mod = await setup()
+    mocks.translate.mockImplementation(ok)
+    const full =
+      "这是一道纯知识讲解请求，按豁免清单直接回答。\n\nEnglish body.\n\n"
+    const { rerender, result } = renderStream(
+      mod,
+      { text: full, isStreaming: true },
+      "zh-preamble"
+    )
+    await flush()
+    await advance(WINDOW)
+    // The Han-dominant preamble never rides the wire; the English body does.
+    for (const [texts] of mocks.translate.mock.calls) {
+      for (const raw of texts as string[]) {
+        expect(unwrap(raw)).not.toContain("纯知识讲解请求")
+      }
+    }
+    rerender({ text: full, isStreaming: false })
+    await flush()
+    await advance(WINDOW)
+    // Chain stays whole: preamble raw, body translated.
+    expect(result.current.display).toContain("这是一道纯知识讲解请求")
+    expect(result.current.display).toContain("译:English body.")
   })
 
   it("pauses after repeated failed batches and still converges on settle", async () => {
@@ -770,10 +845,10 @@ describe("streaming batching width and pacing", () => {
     await flush()
     expect(mocks.translate).toHaveBeenCalledTimes(1)
 
-    rerender({ text: `seed\n\n${"短".repeat(100)}\n\n`, isStreaming: true })
+    rerender({ text: `seed\n\n${"more ".repeat(30)}\n\n`, isStreaming: true })
     await flush()
     await advance(2_000)
-    // 2s < 3s 下限，且新增 102 字符 < 800：不得派发。
+    // 2s < 3s 下限，且新增约 150 字符 < 800：不得派发。
     expect(mocks.translate).not.toHaveBeenCalledTimes(2)
     await advance(1_000) // 累计 3s
     expect(mocks.translate).toHaveBeenCalledTimes(2)
@@ -784,12 +859,12 @@ describe("streaming batching width and pacing", () => {
     mocks.translate.mockImplementation(ok)
     const { rerender } = renderStream(
       mod,
-      { text: "第一段落内容。\n\n", isStreaming: true },
+      { text: "First paragraph content.\n\n", isStreaming: true },
       "k"
     )
     await flush()
     rerender({
-      text: "第一段落内容。\n\n第二段落紧随其后。\n\n",
+      text: "First paragraph content.\n\nSecond paragraph follows.\n\n",
       isStreaming: true,
     })
     await flush()
@@ -801,6 +876,6 @@ describe("streaming batching width and pacing", () => {
       text.includes("[Reference for consistency")
     )
     expect(withRef.length).toBeGreaterThanOrEqual(1)
-    expect(withRef[0]).toContain("第一段落内容。")
+    expect(withRef[0]).toContain("First paragraph content.")
   })
 })

@@ -13,6 +13,7 @@ import {
   STREAM_TAIL_CHUNK_MAX_CHARS,
   STREAM_UNIT_RETRY_BASE_MS,
   STREAM_UNIT_RETRY_LIMIT,
+  isAlreadyInTargetLanguage,
   isUntranslatableSegment,
   mergeUnit,
   splitStableUnits,
@@ -678,10 +679,13 @@ export function useStreamingTranslatedText({
         )
       ).filter(({ gap }) => text.slice(gap.start, gap.end) === gap.text)
       // Untranslatable gaps (separator runs the echo gate rightly refused)
-      // never get a request: stitch them with their own bytes and drop the
-      // record — a request could only be refused again.
-      const selfStitch = all.filter(({ gap }) =>
-        isUntranslatableSegment(gap.text)
+      // and gaps already in the display language never get a request: stitch
+      // them with their own bytes and drop the record — a request could only
+      // be refused again.
+      const selfStitch = all.filter(
+        ({ gap }) =>
+          isUntranslatableSegment(gap.text) ||
+          isAlreadyInTargetLanguage(gap.text, settings.targetLang ?? uiLocale)
       )
       if (selfStitch.length > 0) {
         setProgress((prev) => {
@@ -706,7 +710,14 @@ export function useStreamingTranslatedText({
         }
       }
       const matches = all
-        .filter(({ gap }) => !isUntranslatableSegment(gap.text))
+        .filter(
+          ({ gap }) =>
+            !isUntranslatableSegment(gap.text) &&
+            !isAlreadyInTargetLanguage(
+              gap.text,
+              settings.targetLang ?? uiLocale
+            )
+        )
         .filter(({ gap }) => !isAbandonedGap(gap.text))
       if (matches.length === 0) return
       for (const { gap } of matches) {
@@ -762,8 +773,36 @@ export function useStreamingTranslatedText({
           if (value === null) {
             if (noteGapFailure(gap.text)) {
               // Given up: drop the record so no later mount re-requests a
-              // region whose replay answer is already known to be refusal.
-              // The raw source stays displayed.
+              // region whose replay answer is already known to be refusal —
+              // and STITCH the raw source in, exactly like the settle flush's
+              // whitespace stitch. A dropped gap leaves no piece, and a gap
+              // at offset 0 breaks the display chain at the first byte: the
+              // whole block falls back to raw even though every later piece
+              // is translated (observed: a Chinese preamble in an otherwise
+              // English reply echoed back, blanking all 13 translated
+              // paragraphs behind it).
+              mergePiecesIntoStore(key, [
+                {
+                  start: gap.start,
+                  end: gap.end,
+                  text: gap.text,
+                  source: gap.text,
+                },
+              ])
+              if (isCurrent()) {
+                setProgress((prev) => {
+                  if (prev.pieces.has(gap.start)) return prev
+                  const next = new Map(prev.pieces)
+                  next.set(gap.start, {
+                    start: gap.start,
+                    end: gap.end,
+                    text: gap.text,
+                    source: gap.text,
+                  })
+                  savePieces(blockKey, next)
+                  return { pieces: next }
+                })
+              }
               clearGaps(key, gap.start, gap.end)
               return
             }
@@ -892,13 +931,25 @@ export function useStreamingTranslatedText({
         (segment) => !isInflight(blockKey, segment.text)
       )
       // Untranslatable segments (symbol runs, separators — no letter in any
-      // language to change) land as identity pieces instead of requests: a
-      // request can only be refused by the echo gate and retried forever.
-      const selfLanded = fresh.filter((segment) =>
-        isUntranslatableSegment(segment.text)
+      // language to change) and segments already written in the display
+      // language (a Chinese preamble in an English reply) land as identity
+      // pieces instead of requests: a request for either can only be refused
+      // by the echo gate and retried forever.
+      const selfLanded = fresh.filter(
+        (segment) =>
+          isUntranslatableSegment(segment.text) ||
+          isAlreadyInTargetLanguage(
+            segment.text,
+            settings.targetLang ?? uiLocale
+          )
       )
       const requestable = fresh.filter(
-        (segment) => !isUntranslatableSegment(segment.text)
+        (segment) =>
+          !isUntranslatableSegment(segment.text) &&
+          !isAlreadyInTargetLanguage(
+            segment.text,
+            settings.targetLang ?? uiLocale
+          )
       )
       if (selfLanded.length > 0) {
         setProgress((prev) => {
@@ -1128,11 +1179,16 @@ export function useStreamingTranslatedText({
       const gapEnd = nextValidPieceStart(progress.pieces, covered, text)
       const pending = text.slice(covered, gapEnd)
       // Whitespace-only gaps and untranslatable runs (separators, symbols —
-      // see `isUntranslatableSegment`) both still block the chain while no
-      // piece covers them, and a request for either can only come back
-      // refused. Stitch them with an identity piece so the pieces beyond
-      // render — no request, no gates to fool.
-      if (!pending.trim() || isUntranslatableSegment(pending)) {
+      // see `isUntranslatableSegment`), plus segments already written in the
+      // display language (a Chinese preamble in an English reply), all still
+      // block the chain while no piece covers them, and a request for any of
+      // them can only come back refused. Stitch them with an identity piece
+      // so the pieces beyond render — no request, no gates to fool.
+      if (
+        !pending.trim() ||
+        isUntranslatableSegment(pending) ||
+        isAlreadyInTargetLanguage(pending, settings.targetLang ?? uiLocale)
+      ) {
         if (gapEnd > covered) {
           setProgress((prev) => {
             if (prev.pieces.has(covered)) return prev
@@ -1160,6 +1216,20 @@ export function useStreamingTranslatedText({
       if (isInflight(blockKey, pending)) {
         settledBoundaryRef.current = null
         return
+      }
+      // An in-flight SUBSEGMENT of this gap must also hold the flush off:
+      // its reply will land a piece inside [covered, gapEnd), and a flush
+      // request sent past it would span the same bytes. If that request is
+      // refused and given up, the stitch covers the whole span — and buries
+      // the subsegment's landing under an identity piece the chain can never
+      // see past (observed: a fallback landing racing the settle flush left
+      // the whole block stitched raw). Re-run once the landing re-opens the
+      // boundary.
+      for (const busy of inflightSegments.get(blockKey) ?? []) {
+        if (busy !== pending && pending.includes(busy)) {
+          settledBoundaryRef.current = null
+          return
+        }
       }
       claimInflight(blockKey, [pending])
 
