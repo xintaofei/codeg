@@ -26,7 +26,9 @@ function fetchSkills(
   if (!promise) {
     promise = acpListAgentSkills({ agentType, workspacePath })
       .then((result) => {
-        const skills = result.supported ? result.skills : EMPTY
+        const skills = result.supported
+          ? result.skills.filter((skill) => skill.enabled !== false)
+          : EMPTY
         cache.set(key, skills)
         inflight.delete(key)
         return skills
