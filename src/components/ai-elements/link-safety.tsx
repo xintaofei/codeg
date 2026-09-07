@@ -14,187 +14,19 @@ import { isHomeRelativePath } from "@/lib/file-open-target"
 import { isAbsoluteFilePath } from "@/lib/file-path-display"
 import { cn } from "@/lib/utils"
 
-export interface LocalFileTarget {
-  path: string
-  line: number | null
-}
+import {
+  OS_HANDLER_PROTOCOLS,
+  getAllowedExternalProtocol,
+  normalizeSlashPath,
+  parseLocalFileTarget,
+  type LocalFileTarget,
+} from "@/lib/link-classify"
 
-const WINDOWS_ABSOLUTE_PATH = /^[a-zA-Z]:[\\/]/
-const URL_SCHEME = /^[a-zA-Z][a-zA-Z\d+\-.]*:/
-const ALLOWED_EXTERNAL_PROTOCOLS = new Set([
-  "http:",
-  "https:",
-  "mailto:",
-  "tel:",
-])
-// Protocols handled by the OS (mail client, dialer) rather than a browser
-// page load. They must NOT be opened via `window.open(_, "_blank")` — most
-// browsers leave behind an empty `about:blank` tab once the OS handler fires.
-const OS_HANDLER_PROTOCOLS = new Set(["mailto:", "tel:"])
-
-function normalizeSlashPath(path: string): string {
-  return path.replace(/\\/g, "/")
-}
-
-/** Strip leading slash before Windows drive letter: /C:/foo → C:/foo */
-function stripLeadingSlashOnWindows(p: string): string {
-  if (p.startsWith("/") && WINDOWS_ABSOLUTE_PATH.test(p.slice(1))) {
-    return p.slice(1)
-  }
-  return p
-}
-
-function decodeUriSafely(value: string): string {
-  try {
-    return decodeURIComponent(value)
-  } catch {
-    return value
-  }
-}
-
-function parseLineValue(raw: string | undefined): number | null {
-  if (!raw) return null
-  const line = Number.parseInt(raw, 10)
-  if (!Number.isFinite(line) || line <= 0) return null
-  return line
-}
-
-function parseHashLine(hash: string): number | null {
-  const normalized = hash.startsWith("#") ? hash.slice(1) : hash
-  if (!normalized) return null
-  // `L<start>` / `L<start>-<end>` / `L<start>-L<end>` (GitHub-style) — a range
-  // (e.g. the editor's "add selection" badge `#L10-25`) jumps to its start line.
-  return (
-    parseLineValue(normalized.match(/^L(\d+)(?:-L?\d+)?$/i)?.[1]) ??
-    parseLineValue(normalized.match(/^line=(\d+)$/i)?.[1]) ??
-    parseLineValue(normalized.match(/^(\d+)$/)?.[1])
-  )
-}
-
-function splitPathAndLine(rawPath: string): LocalFileTarget {
-  const trimmed = rawPath.trim()
-  const match = trimmed.match(/^(.*):(\d+)(?::\d+)?$/)
-  if (!match) {
-    return { path: trimmed, line: null }
-  }
-
-  const maybePath = match[1]
-  if (!maybePath || maybePath.endsWith("://")) {
-    return { path: trimmed, line: null }
-  }
-
-  const line = parseLineValue(match[2])
-  if (!line) {
-    return { path: trimmed, line: null }
-  }
-
-  return { path: maybePath, line }
-}
-
-function isLocalPathLike(path: string): boolean {
-  // "//host/…" (forward slashes) is protocol-relative — a WEB url, not a
-  // local path. It must fall through to the external-URL route, never into
-  // local file IO. A "\\server\share" (backslashes) IS a local UNC path
-  // (a web url never uses backslashes) — the form remark-file-uri-links
-  // emits for file://server/share URIs.
-  return (
-    (path.startsWith("/") && !path.startsWith("//")) ||
-    path.startsWith("\\\\") ||
-    path.startsWith("./") ||
-    path.startsWith("../") ||
-    path.startsWith("~/") ||
-    WINDOWS_ABSOLUTE_PATH.test(path)
-  )
-}
-
-/**
- * Parse a link target into a local file path + optional line, or null when it
- * isn't a local file (a web url, an unsupported scheme, a bare-relative path).
- * Exported so the transcript's file-badge action menu (message/
- * file-reference-actions.tsx) resolves a badge's path exactly the way a click
- * on that badge resolves it.
- */
-export function parseLocalFileTarget(rawUrl: string): LocalFileTarget | null {
-  const trimmed = rawUrl.trim()
-  if (!trimmed) return null
-
-  if (trimmed.toLowerCase().startsWith("file://")) {
-    try {
-      const parsed = new URL(trimmed)
-      const rawPathname = decodeUriSafely(parsed.pathname)
-      // A non-empty host is a UNC authority (file://server/share/x) —
-      // preserve it as //server/share/x rather than dropping to /share/x.
-      const normalizedPathname = parsed.host
-        ? `//${parsed.host}${rawPathname}`
-        : stripLeadingSlashOnWindows(rawPathname)
-      const pathAndLine = splitPathAndLine(normalizedPathname)
-      if (!pathAndLine.path) return null
-      return {
-        path: normalizeSlashPath(pathAndLine.path),
-        line: parseHashLine(parsed.hash) ?? pathAndLine.line,
-      }
-    } catch {
-      return null
-    }
-  }
-
-  if (URL_SCHEME.test(trimmed) && !WINDOWS_ABSOLUTE_PATH.test(trimmed)) {
-    return null
-  }
-
-  // Split on raw # / ? before decoding so encoded `%23` / `%3F` inside the
-  // path don't get promoted to fragment/query separators (which would point
-  // the file opener at the wrong file).
-  const hashIndex = trimmed.indexOf("#")
-  const rawHash = hashIndex >= 0 ? trimmed.slice(hashIndex) : ""
-  const beforeHash = hashIndex >= 0 ? trimmed.slice(0, hashIndex) : trimmed
-  const queryIndex = beforeHash.indexOf("?")
-  const rawPathPart =
-    queryIndex >= 0 ? beforeHash.slice(0, queryIndex) : beforeHash
-  const decodedPath = decodeUriSafely(rawPathPart)
-  const pathAndLine = splitPathAndLine(decodedPath)
-  const normalizedPath = stripLeadingSlashOnWindows(pathAndLine.path)
-  if (!isLocalPathLike(normalizedPath)) return null
-
-  return {
-    path: normalizeSlashPath(normalizedPath),
-    line: parseHashLine(rawHash) ?? pathAndLine.line,
-  }
-}
-
-function parseExternalUrl(rawUrl: string): URL | null {
-  const trimmed = rawUrl.trim()
-  if (!trimmed) return null
-
-  if (trimmed.startsWith("//")) {
-    // Protocol-relative: pin to https rather than the page protocol — a
-    // Tauri webview's own scheme (tauri://localhost) would otherwise
-    // classify these as an unsupported protocol, and the desktop opener
-    // capability only allows concrete http(s) URLs.
-    try {
-      return new URL(`https:${trimmed}`)
-    } catch {
-      return null
-    }
-  }
-
-  if (!URL_SCHEME.test(trimmed) || WINDOWS_ABSOLUTE_PATH.test(trimmed)) {
-    return null
-  }
-
-  try {
-    return new URL(trimmed)
-  } catch {
-    return null
-  }
-}
-
-function getAllowedExternalProtocol(rawUrl: string): string | null {
-  const parsed = parseExternalUrl(rawUrl)
-  if (!parsed) return null
-  const protocol = parsed.protocol.toLowerCase()
-  return ALLOWED_EXTERNAL_PROTOCOLS.has(protocol) ? protocol : null
-}
+// The parsing helpers live in `@/lib/link-classify` now (shared with the
+// built-in browser's link decision and the terminal); re-exported here so the
+// transcript-side importers keep their historical entry point.
+export { parseLocalFileTarget }
+export type { LocalFileTarget }
 
 /**
  * True when `window.open` actually opens something — i.e. a real browser.
