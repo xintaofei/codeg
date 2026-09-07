@@ -71,4 +71,3 @@ A component interaction test will verify the complete flow: six visible rows,
 then twelve, then all remaining rows with no footer, followed by folder collapse
 and re-expansion returning to six. Existing tests ensure that pinned, Chat,
 Recent, sticky-header, worktree, and virtual-list behavior does not regress.
-
