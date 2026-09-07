@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -56,6 +57,22 @@ const agent = {
   sort_order: 0,
 } as AcpAgentInfo
 
+const claudeAgent = {
+  agent_type: "claude_code",
+  name: "Claude Code",
+  sort_order: 1,
+} as AcpAgentInfo
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, reject, resolve }
+}
+
 function skill(overrides: Partial<AgentSkillItem> = {}): AgentSkillItem {
   return {
     id: "demo",
@@ -77,8 +94,11 @@ function listResult(item: AgentSkillItem): AgentSkillsListResult {
     message: null,
     locations: [
       {
-        scope: "global",
-        path: "/home/test/.codex/skills",
+        scope: item.scope,
+        path:
+          item.scope === "project"
+            ? "/work/project/.codex/skills"
+            : "/home/test/.codex/skills",
         exists: true,
       },
     ],
@@ -176,26 +196,152 @@ describe("SkillsSettings availability", () => {
   })
 
   it("reloads authoritative state and reports a localized error after failure", async () => {
+    const reload = deferred<AgentSkillsListResult>()
     api.acpSetAgentSkillEnabled.mockRejectedValue(
       new Error("permission denied")
     )
     api.acpListAgentSkills
       .mockResolvedValueOnce(listResult(skill()))
       .mockResolvedValueOnce(listResult(skill()))
-      .mockResolvedValueOnce(listResult(skill()))
+      .mockReturnValueOnce(reload.promise)
 
     renderSettings()
 
     const availability = await screen.findByRole("switch", {
       name: "Toggle Demo Skill for Codex",
     })
+    availability.focus()
     fireEvent.click(availability)
 
     await waitFor(() => expect(api.acpListAgentSkills).toHaveBeenCalledTimes(3))
-    expect(availability).toBeChecked()
+    const switchDuringReload = screen.queryByRole("switch", {
+      name: "Toggle Demo Skill for Codex",
+    })
+    const focusStayedOnSwitch = document.activeElement === switchDuringReload
+
+    await act(async () => {
+      reload.resolve(listResult(skill({ enabled: false })))
+      await reload.promise
+    })
+
+    const authoritativeSwitch = await screen.findByRole("switch", {
+      name: "Toggle Demo Skill for Codex",
+    })
+    await waitFor(() => expect(authoritativeSwitch).not.toBeChecked())
+    expect(switchDuringReload).not.toBeNull()
+    expect(focusStayedOnSwitch).toBe(true)
     expect(toast.error).toHaveBeenCalledWith(
       "Failed to update skill availability",
       { description: "permission denied" }
+    )
+  })
+
+  it("ignores an old agent reload after the selected target changes", async () => {
+    const staleCodexReload = deferred<AgentSkillsListResult>()
+    let codexLoads = 0
+    const codexSkill = skill({ name: "Codex Skill" })
+    const claudeSkill = skill({
+      id: "claude-demo",
+      name: "Claude Skill",
+      path: "/home/test/.claude/skills/claude-demo/SKILL.md",
+    })
+
+    api.acpListAgents.mockResolvedValue([agent, claudeAgent])
+    api.acpListAgentSkills.mockImplementation(
+      (params: { agentType: string; workspacePath?: string | null }) => {
+        if (!("workspacePath" in params)) {
+          return Promise.resolve(
+            listResult(params.agentType === "codex" ? codexSkill : claudeSkill)
+          )
+        }
+        if (params.agentType === "codex") {
+          codexLoads += 1
+          return codexLoads === 1
+            ? Promise.resolve(listResult(codexSkill))
+            : staleCodexReload.promise
+        }
+        return Promise.resolve(listResult(claudeSkill))
+      }
+    )
+
+    renderSettings()
+
+    fireEvent.click(
+      await screen.findByRole("switch", {
+        name: "Toggle Codex Skill for Codex",
+      })
+    )
+    await waitFor(() => expect(codexLoads).toBe(2))
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("combobox"))
+    await user.click(await screen.findByRole("option", { name: "Claude Code" }))
+    await screen.findByRole("switch", {
+      name: "Toggle Claude Skill for Claude Code",
+    })
+
+    await act(async () => {
+      staleCodexReload.resolve(
+        listResult(skill({ name: "Stale Codex Skill", enabled: false }))
+      )
+      await staleCodexReload.promise
+    })
+
+    expect(
+      screen.getByRole("switch", {
+        name: "Toggle Claude Skill for Claude Code",
+      })
+    ).toBeChecked()
+    expect(screen.queryByText("Stale Codex Skill")).not.toBeInTheDocument()
+  })
+
+  it("sends the selected project workspace when toggling a folder skill", async () => {
+    const projectSkill = skill({
+      id: "project-demo",
+      name: "Project Skill",
+      scope: "project",
+      path: "/work/project/.codex/skills/project-demo/SKILL.md",
+    })
+    api.loadFolderHistory.mockResolvedValue([
+      {
+        id: 1,
+        name: "Project",
+        path: "/work/project",
+        last_opened_at: "2026-09-07T00:00:00Z",
+      },
+    ])
+    api.acpListAgentSkills.mockImplementation(
+      (params: { workspacePath?: string | null }) =>
+        Promise.resolve(
+          params.workspacePath === "/work/project"
+            ? listResult(projectSkill)
+            : listResult(skill())
+        )
+    )
+
+    renderSettings()
+
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole("button", { name: "Folder" }))
+    await waitFor(() => expect(api.loadFolderHistory).toHaveBeenCalledTimes(1))
+    await user.click(screen.getAllByRole("combobox")[1])
+    await user.click(
+      await screen.findByRole("option", { name: /Project.*\/work\/project/ })
+    )
+    fireEvent.click(
+      await screen.findByRole("switch", {
+        name: "Toggle Project Skill for Codex",
+      })
+    )
+
+    await waitFor(() =>
+      expect(api.acpSetAgentSkillEnabled).toHaveBeenCalledWith({
+        agentType: "codex",
+        scope: "project",
+        skillId: "project-demo",
+        workspacePath: "/work/project",
+        enabled: false,
+      })
     )
   })
 })

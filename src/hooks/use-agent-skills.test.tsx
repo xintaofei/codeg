@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from "@testing-library/react"
+import { act, renderHook, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { AgentSkillItem } from "@/lib/types"
@@ -49,5 +49,35 @@ describe("useAgentSkills", () => {
     const cached = renderHook(() => useAgentSkills("codex", null))
     expect(cached.result.current.map((item) => item.id)).toEqual(["enabled"])
     expect(api.acpListAgentSkills).toHaveBeenCalledTimes(1)
+  })
+
+  it("replaces a warm cached result after a focus refresh", async () => {
+    api.acpListAgentSkills
+      .mockResolvedValueOnce({
+        supported: true,
+        message: null,
+        locations: [],
+        skills: [skill("demo", true)],
+      })
+      .mockResolvedValueOnce({
+        supported: true,
+        message: null,
+        locations: [],
+        skills: [skill("demo", false)],
+      })
+
+    const prime = renderHook(() => useAgentSkills("codex", null))
+    await waitFor(() => expect(prime.result.current).toHaveLength(1))
+    prime.unmount()
+
+    const warm = renderHook(() => useAgentSkills("codex", null))
+    expect(warm.result.current).toHaveLength(1)
+
+    act(() => {
+      window.dispatchEvent(new Event("focus"))
+    })
+
+    await waitFor(() => expect(warm.result.current).toEqual([]))
+    expect(api.acpListAgentSkills).toHaveBeenCalledTimes(2)
   })
 })

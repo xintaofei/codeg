@@ -52,10 +52,10 @@ export function useAgentSkills(
     () => (agentType ? makeKey(agentType, normalizedPath) : null),
     [agentType, normalizedPath]
   )
-  const cached = useMemo(
-    () => (cacheKey ? (cache.get(cacheKey) ?? null) : null),
-    [cacheKey]
-  )
+  // Read the mutable cache on every render. A focus refresh updates the Map
+  // before setFetched triggers a render, so a mount-time snapshot cannot mask
+  // the authoritative replacement.
+  const cached = cacheKey ? (cache.get(cacheKey) ?? null) : null
   // Track which (agentType, workspacePath) the fetched result belongs to so
   // stale data from a previous key is never returned after a switch.
   const [fetched, setFetched] = useState<{
