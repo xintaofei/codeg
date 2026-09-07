@@ -273,7 +273,8 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
             Ok(json!(state))
         }
         "browser_reload" => {
-            browser_commands::reload_core(&registry, &str_arg(cmd, "tab_id")?).map_err(err_string)?;
+            browser_commands::reload_core(app, &registry, &str_arg(cmd, "tab_id")?)
+                .map_err(err_string)?;
             Ok(Value::Null)
         }
         "browser_close" => {

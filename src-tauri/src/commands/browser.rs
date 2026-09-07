@@ -387,8 +387,23 @@ pub fn navigate_core(
     Ok(state)
 }
 
-pub fn reload_core(registry: &BrowserRegistry, tab_id: &str) -> Result<(), AppCommandError> {
-    surface_of(registry, tab_id)?
+pub fn reload_core(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    tab_id: &str,
+) -> Result<(), AppCommandError> {
+    let surface = surface_of(registry, tab_id)?;
+    // A navigation that failed before committing left no document behind, and
+    // reloading nothing does nothing — the error page's retry button has to
+    // start the requested navigation over.
+    if surface.url().is_err() {
+        let requested = registry.state(tab_id).map(|s| s.requested_url);
+        if let Some(url) = requested.filter(|u| !u.is_empty()) {
+            navigate_core(app, registry, tab_id, &url)?;
+            return Ok(());
+        }
+    }
+    surface
         .reload()
         .map_err(|e| window_err("Failed to reload browser tab", e))
 }
@@ -513,10 +528,11 @@ pub async fn browser_navigate(
 
 #[tauri::command]
 pub async fn browser_reload(
+    app: AppHandle,
     registry: State<'_, BrowserRegistry>,
     tab_id: String,
 ) -> Result<(), AppCommandError> {
-    reload_core(&registry, &tab_id)
+    reload_core(&app, &registry, &tab_id)
 }
 
 #[tauri::command]
