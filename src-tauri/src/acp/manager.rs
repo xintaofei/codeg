@@ -229,6 +229,8 @@ async fn wait_for_session_started(
 
 pub struct ConnectionManager {
     pub(crate) connections: Arc<Mutex<HashMap<String, AgentConnection>>>,
+    pub(crate) resources:
+        crate::acp::connection::lifetime::ConnectionResourceRegistry,
     /// Per-(agent, working_dir, session_id) async mutex. Held across the
     /// dedup-lookup + spawn + SessionStarted-wait critical section so two
     /// concurrent `spawn_agent` calls for the same logical session can't
@@ -305,9 +307,31 @@ impl Default for ConnectionManager {
 }
 
 impl ConnectionManager {
+    async fn lock_spawn_target(
+        &self,
+        agent_type: AgentType,
+        working_dir: PathBuf,
+        session_id: String,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        let key = SpawnDedupKey {
+            agent_type,
+            working_dir: Some(working_dir),
+            session_id,
+        };
+        let lock = {
+            let mut locks = self.spawn_locks.lock().await;
+            locks
+                .entry(key)
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
+    }
+
     pub fn new() -> Self {
         Self {
             connections: Arc::new(Mutex::new(HashMap::new())),
+            resources: Default::default(),
             spawn_locks: Arc::new(Mutex::new(HashMap::new())),
             spawn_handshake_timeout: spawn_handshake_timeout_from_env(),
             terminal_shell_config: TerminalShellRuntimeConfig::new(),
@@ -323,6 +347,7 @@ impl ConnectionManager {
     pub fn clone_ref(&self) -> Self {
         Self {
             connections: self.connections.clone(),
+            resources: self.resources.clone(),
             spawn_locks: self.spawn_locks.clone(),
             spawn_handshake_timeout: self.spawn_handshake_timeout,
             terminal_shell_config: self.terminal_shell_config.clone(),
@@ -374,6 +399,7 @@ impl ConnectionManager {
     fn with_spawn_handshake_timeout(timeout: Duration) -> Self {
         Self {
             connections: Arc::new(Mutex::new(HashMap::new())),
+            resources: Default::default(),
             spawn_locks: Arc::new(Mutex::new(HashMap::new())),
             spawn_handshake_timeout: timeout,
             terminal_shell_config: TerminalShellRuntimeConfig::new(),
@@ -506,19 +532,11 @@ impl ConnectionManager {
         // agent assigns the id).
         let session_id_for_log = session_id.clone();
         let dedup_lock = if let Some(sid) = session_id.as_deref() {
-            let key = SpawnDedupKey {
-                agent_type,
-                working_dir: working_dir_path.clone(),
-                session_id: sid.to_string(),
-            };
-            let mu = {
-                let mut locks = self.spawn_locks.lock().await;
-                locks
-                    .entry(key)
-                    .or_insert_with(|| Arc::new(Mutex::new(())))
-                    .clone()
-            };
-            Some(mu.lock_owned().await)
+            let resolved = crate::acp::connection::resolve_working_dir(working_dir.as_deref());
+            Some(
+                self.lock_spawn_target(agent_type, resolved, sid.to_string())
+                    .await,
+            )
         } else {
             None
         };
@@ -533,6 +551,40 @@ impl ConnectionManager {
                 session_id.as_deref().unwrap_or("")
             );
             return Ok(existing);
+        }
+
+        // `state.external_id` is populated only after SessionStarted. A strict
+        // attach (or an earlier ordinary resume whose handshake timed out) can
+        // therefore already own this exact target while the live-state lookup
+        // above still sees no external id. The resource registry carries the
+        // requested id from before the driver starts, closing that launch gap.
+        if let Some(session_id) = session_id.as_deref() {
+            let launch_cwd = crate::acp::connection::resolve_working_dir(working_dir.as_deref());
+            if let Some(existing) = self
+                .resources
+                .find_target(agent_type, &launch_cwd, session_id)
+                .await
+            {
+                if crate::acp::connection::lifetime::ConnectionResourceRegistry::active_entry_is_exact(
+                    &self.connections,
+                    &existing,
+                )
+                .await
+                {
+                    tracing::info!(
+                        "[ACP] reusing pre-handshake connection id={} for session_id={}",
+                        existing.connection_id,
+                        session_id
+                    );
+                    return Ok(existing.connection_id.clone());
+                }
+                if !existing.lifetime.release_confirmed() {
+                    return Err(AcpError::protocol(format!(
+                        "session {session_id} still has a retained connection being reclaimed"
+                    )));
+                }
+                self.finish_confirmed_reclaim(&existing).await?;
+            }
         }
 
         let connection_id = uuid::Uuid::new_v4().to_string();
@@ -554,6 +606,7 @@ impl ConnectionManager {
             owner_window_label,
             emitter,
             self.connections.clone(),
+            self.resources.clone(),
             preferred_mode_id,
             preferred_config_values,
             self.delegation_snapshot(),
@@ -1659,7 +1712,11 @@ impl ConnectionManager {
             let state = self.get_state(conn_id).await;
             let preclaim_identity = match state {
                 Some(state) => state.read().await.continuation_identity.clone(),
-                None => None,
+                None => self
+                    .resources
+                    .get(conn_id)
+                    .await
+                    .and_then(|resource| resource.continuation_identity.clone()),
             };
             if coordinator
                 .cancel_owned_connection(

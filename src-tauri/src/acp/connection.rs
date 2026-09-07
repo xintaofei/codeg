@@ -62,6 +62,8 @@ use crate::network::proxy;
 use crate::web::event_bridge::{emit_with_state, EventEmitter};
 
 mod pid_observation;
+#[doc(hidden)]
+pub mod lifetime;
 
 pub use pid_observation::PidObservable;
 
@@ -1079,19 +1081,32 @@ fn tag_mcp_suspect(
 ///   captures.
 struct ConnectionCleanupGuard {
     connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
-    connection_id: String,
+    resource: Arc<lifetime::ConnectionResource>,
 }
 
 impl Drop for ConnectionCleanupGuard {
     fn drop(&mut self) {
+        self.resource.lifetime.mark_driver_exited();
+        let connection_id = self.resource.connection_id.clone();
         if let Ok(mut guard) = self.connections.try_lock() {
-            guard.remove(&self.connection_id);
+            if guard
+                .get(&connection_id)
+                .is_some_and(|conn| Arc::ptr_eq(&conn.state, &self.resource.state))
+            {
+                guard.remove(&connection_id);
+            }
             return;
         }
         let connections = self.connections.clone();
-        let connection_id = std::mem::take(&mut self.connection_id);
+        let resource = Arc::clone(&self.resource);
         tokio::spawn(async move {
-            connections.lock().await.remove(&connection_id);
+            let mut active = connections.lock().await;
+            if active
+                .get(&connection_id)
+                .is_some_and(|conn| Arc::ptr_eq(&conn.state, &resource.state))
+            {
+                active.remove(&connection_id);
+            }
         });
     }
 }
@@ -1961,7 +1976,7 @@ const ACP_CONNECTION_STACK_SIZE: usize = 8 * 1024 * 1024;
 /// exits (timeout, error, or clean disconnect), so the manager never
 /// leaks stale entries after a connection tears down.
 #[allow(clippy::too_many_arguments)]
-pub async fn spawn_agent_connection(
+pub(crate) async fn spawn_agent_connection(
     connection_id: String,
     agent_type: AgentType,
     working_dir: Option<String>,
@@ -1970,6 +1985,7 @@ pub async fn spawn_agent_connection(
     owner_window_label: String,
     emitter: EventEmitter,
     connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
+    resources: lifetime::ConnectionResourceRegistry,
     preferred_mode_id: Option<String>,
     preferred_config_values: BTreeMap<String, String>,
     delegation_injection: Option<DelegationInjection>,
@@ -1992,7 +2008,7 @@ pub async fn spawn_agent_connection(
     // volatile keys) plus the agent's native config file content, so a later
     // settings save can be compared against it to detect a stale running session.
     let config_fingerprint = crate::commands::acp::fingerprint_config(agent_type, &runtime_env);
-    spawn_agent_connection_with_transport(
+    spawn_agent_connection_with_transport_managed(
         agent,
         connection_id,
         agent_type,
@@ -2002,6 +2018,7 @@ pub async fn spawn_agent_connection(
         owner_window_label,
         emitter,
         connections,
+        resources,
         preferred_mode_id,
         preferred_config_values,
         delegation_injection,
@@ -2033,6 +2050,50 @@ pub async fn spawn_agent_connection_with_transport<A: ConnectTo<Client> + PidObs
     owner_window_label: String,
     emitter: EventEmitter,
     connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
+    preferred_mode_id: Option<String>,
+    preferred_config_values: BTreeMap<String, String>,
+    delegation_injection: Option<DelegationInjection>,
+    terminal_shell_config: TerminalShellRuntimeConfig,
+    config_fingerprint: String,
+    stderr_tail: Arc<StderrTail>,
+    recovery: SessionRecovery,
+) -> Result<tokio::sync::oneshot::Receiver<()>, AcpError> {
+    spawn_agent_connection_with_transport_managed(
+        agent,
+        connection_id,
+        agent_type,
+        working_dir,
+        session_id,
+        runtime_env,
+        owner_window_label,
+        emitter,
+        connections,
+        Default::default(),
+        preferred_mode_id,
+        preferred_config_values,
+        delegation_injection,
+        terminal_shell_config,
+        config_fingerprint,
+        stderr_tail,
+        recovery,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn spawn_agent_connection_with_transport_managed<
+    A: ConnectTo<Client> + PidObservable + 'static,
+>(
+    agent: A,
+    connection_id: String,
+    agent_type: AgentType,
+    working_dir: Option<String>,
+    session_id: Option<String>,
+    runtime_env: BTreeMap<String, String>,
+    owner_window_label: String,
+    emitter: EventEmitter,
+    connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
+    resources: lifetime::ConnectionResourceRegistry,
     preferred_mode_id: Option<String>,
     preferred_config_values: BTreeMap<String, String>,
     delegation_injection: Option<DelegationInjection>,
@@ -2089,6 +2150,7 @@ pub async fn spawn_agent_connection_with_transport<A: ConnectTo<Client> + PidObs
     // backstop when the connection driver thread is torn down by process exit
     // before `ChildGuard::drop` can run. 0 = not spawned yet / unknown.
     let child_pid = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let process_lifetime = lifetime::ConnectionProcessLifetime::new();
     // Strict binding verification happens BEFORE the agent process is even
     // built/launched: a mismatched cwd or execution-config identity is a
     // typed failure with zero protocol traffic — there is no session to
@@ -2101,7 +2163,7 @@ pub async fn spawn_agent_connection_with_transport<A: ConnectTo<Client> + PidObs
             )));
         }
     }
-    let agent = agent.observe_process_pid(child_pid.clone());
+    let agent = agent.observe_process(child_pid.clone(), Arc::clone(&process_lifetime));
 
     // Path policy for the ACP `fs/*` channel. Built HERE rather than inside
     // `run_connection` because it needs the full `runtime_env` (only the git
@@ -2137,12 +2199,24 @@ pub async fn spawn_agent_connection_with_transport<A: ConnectTo<Client> + PidObs
     let conn_id = connection_id.clone();
     let emitter_clone = emitter.clone();
     let cleanup_connections = connections.clone();
-    let cleanup_connection_id = connection_id.clone();
     let state_clone = Arc::clone(&session_state);
 
     // Insert the entry BEFORE spawning the background task so that a
     // fast-failing `run_connection` can never remove it before it was
     // inserted (would otherwise leak the entry).
+    let resource = lifetime::ConnectionResource::new(
+        connection_id.clone(),
+        cmd_tx.clone(),
+        Arc::clone(&process_lifetime),
+        Arc::clone(&session_state),
+        agent_type,
+        launch_cwd.clone(),
+        session_id.clone(),
+        recovery.continuation_identity().cloned(),
+        matches!(&recovery, SessionRecovery::RequireExisting(_)),
+    );
+    resources.insert(Arc::clone(&resource)).await;
+    resources.retire_when_confirmed(Arc::clone(&resource));
     connections.lock().await.insert(
         connection_id.clone(),
         AgentConnection {
@@ -2177,13 +2251,14 @@ pub async fn spawn_agent_connection_with_transport<A: ConnectTo<Client> + PidObs
     // never leaked.
     let cleanup_guard = ConnectionCleanupGuard {
         connections: cleanup_connections,
-        connection_id: cleanup_connection_id,
+        resource: Arc::clone(&resource),
     };
     let connection_thread = std::thread::Builder::new()
         .name(format!("acp-conn-{conn_id}"))
         .stack_size(ACP_CONNECTION_STACK_SIZE)
         .spawn(move || {
             let _cleanup = cleanup_guard;
+            process_lifetime.mark_driver_running();
             connection_rt.block_on(async move {
         let delegation_for_cleanup = delegation_injection.clone();
         let result = run_connection(

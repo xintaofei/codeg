@@ -45,8 +45,27 @@ pub struct VerifiedParent {
 /// Which live connection currently owns which turn execution. Keyed by
 /// connection id so lifecycle events can find their settle target without
 /// trusting any LLM-supplied identifier.
-/// A round registered against its parent before attach: (turn, session).
-type PendingRound = (String, String);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingClaim {
+    Claimable,
+    Revoked { teardown_started: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachClaim {
+    Claimed,
+    RevokedNeedsRelease,
+    RevokedAlreadyHandled,
+}
+
+/// A round stays visible here from admission until strict attach proves that no
+/// resource exists or atomically transfers a real resource to the execution map.
+#[derive(Debug, Clone)]
+struct PendingRound {
+    turn_id: String,
+    session_id: String,
+    claim: PendingClaim,
+}
 
 #[cfg(any(test, feature = "test-utils"))]
 struct TestDriveGate {
@@ -196,7 +215,7 @@ impl ContinuationCoordinator {
             .lock()
             .await
             .values()
-            .any(|rounds| rounds.iter().any(|(pending_turn_id, _)| pending_turn_id == turn_id))
+            .any(|rounds| rounds.iter().any(|round| round.turn_id == turn_id))
     }
 
     pub async fn set_enabled(&self, enabled: bool) {
@@ -242,6 +261,37 @@ impl ContinuationCoordinator {
             .map(|(conn, _)| conn.clone())
     }
 
+    async fn remove_pending_round(&self, parent_connection_id: &str, turn_id: &str) {
+        let mut pending = self.parent_pending.lock().await;
+        if let Some(rounds) = pending.get_mut(parent_connection_id) {
+            rounds.retain(|round| round.turn_id != turn_id);
+            if rounds.is_empty() {
+                pending.remove(parent_connection_id);
+            }
+        }
+    }
+
+    async fn session_has_runtime_owner(&self, session_id: &str) -> bool {
+        let pending = self.parent_pending.lock().await;
+        let executions = self.executions.lock().await;
+        pending
+            .values()
+            .flatten()
+            .any(|round| round.session_id == session_id)
+            || executions
+                .values()
+                .any(|owner| owner.session_id == session_id)
+    }
+
+    async fn session_has_pending_attach(&self, session_id: &str) -> bool {
+        self.parent_pending
+            .lock()
+            .await
+            .values()
+            .flatten()
+            .any(|round| round.session_id == session_id)
+    }
+
     /// Enter durable cancellation for the execution currently owned by a
     /// public Stop target. Returns false when this connection is not a live
     /// continuation owner, allowing the manager to preserve ordinary chat
@@ -264,20 +314,39 @@ impl ContinuationCoordinator {
             }
         }
 
-        // Match the drive's pending→execution lock order. If the strict
-        // connection is visible before claim, removing its exact pending turn
-        // makes the later claim fail, so it cannot manufacture an owner after
-        // this path has already canceled and released the connection.
+        // Match the drive's pending→execution lock order. A trusted preclaim
+        // stop revokes the claim but keeps it session-visible until attach
+        // returns. Install teardown ownership before any DB/runtime await so a
+        // failed confirmed release remains retryable by close.
         let identity = {
             let mut pending = self.parent_pending.lock().await;
-            let executions = self.executions.lock().await;
+            let mut executions = self.executions.lock().await;
             if let Some(owner) = executions.get(connection_id) {
                 Some((owner.turn_id.clone(), owner.execution_id.clone()))
             } else if let Some((turn_id, execution_id)) = hinted {
-                for rounds in pending.values_mut() {
-                    rounds.retain(|(pending_turn_id, _)| pending_turn_id != &turn_id);
+                let mut pending_owner = None;
+                for (parent_id, rounds) in pending.iter_mut() {
+                    if let Some(round) =
+                        rounds.iter_mut().find(|round| round.turn_id == turn_id)
+                    {
+                        round.claim = PendingClaim::Revoked {
+                            teardown_started: true,
+                        };
+                        pending_owner = Some((round.session_id.clone(), parent_id.clone()));
+                        break;
+                    }
                 }
-                pending.retain(|_, rounds| !rounds.is_empty());
+                if let Some((session_id, parent_connection_id)) = pending_owner {
+                    executions.insert(
+                        connection_id.to_string(),
+                        ExecutionOwner {
+                            turn_id: turn_id.clone(),
+                            execution_id: execution_id.clone(),
+                            session_id,
+                            parent_connection_id,
+                        },
+                    );
+                }
                 Some((turn_id, execution_id))
             } else {
                 None
@@ -400,6 +469,13 @@ impl ContinuationCoordinator {
                     "this request_id was already used with a different message",
                 )
                 .with_ids(Some(&session.id), Some(&turn.id)));
+            }
+            if self.session_has_runtime_owner(&session.id).await {
+                return Err(ContinuationError::new(
+                    ContinuationErrorCode::SessionBusy,
+                    "a prior turn still owns an attaching or unreleased connection",
+                )
+                .with_ids(Some(&session.id), None));
             }
             if session.state == "blocked" {
                 return Err(ContinuationError::new(
@@ -543,7 +619,11 @@ impl ContinuationCoordinator {
             pending
                 .entry(parent_connection_id.to_string())
                 .or_default()
-                .push((turn.id.clone(), session.id.clone()));
+                .push(PendingRound {
+                    turn_id: turn.id.clone(),
+                    session_id: session.id.clone(),
+                    claim: PendingClaim::Claimable,
+                });
         }
 
         let session_id_owned = session.id.clone();
@@ -596,10 +676,8 @@ impl ContinuationCoordinator {
             Ok(true) => {}
             Ok(false) => {
                 // Canceled/lost while parked — drop the parent registration.
-                let mut pending = self.parent_pending.lock().await;
-                if let Some(list) = pending.get_mut(&parent_connection_id) {
-                    list.retain(|(tid, _)| tid != &turn_id);
-                }
+                self.remove_pending_round(&parent_connection_id, &turn_id)
+                    .await;
                 return;
             }
             Err(e) => {
@@ -607,10 +685,8 @@ impl ContinuationCoordinator {
                 // untrustworthy: no send may happen and the session must be
                 // isolated.
                 tracing::warn!("[continuation] preparing CAS failed for {turn_id}: {e}");
-                let mut pending = self.parent_pending.lock().await;
-                if let Some(list) = pending.get_mut(&parent_connection_id) {
-                    list.retain(|(tid, _)| tid != &turn_id);
-                }
+                self.remove_pending_round(&parent_connection_id, &turn_id)
+                    .await;
                 self.isolate_on_storage_failure(&turn_id, &session_id, None)
                     .await;
                 return;
@@ -622,17 +698,18 @@ impl ContinuationCoordinator {
         // row (R1) so lifecycle terminals can settle this round.
         #[cfg(any(test, feature = "test-utils"))]
         self.wait_drive_gate_for_test("before_attach").await;
-        let still_pending = self
+        let pending_claim = self
             .parent_pending
             .lock()
             .await
             .get(&parent_connection_id)
-            .is_some_and(|rounds| {
-                rounds
-                    .iter()
-                    .any(|(pending_turn_id, _)| pending_turn_id == &turn_id)
-            });
-        if !still_pending {
+            .and_then(|rounds| rounds.iter().find(|round| round.turn_id == turn_id))
+            .map(|round| round.claim);
+        if pending_claim != Some(PendingClaim::Claimable) {
+            // Revoked before attach began owns no process. Drain this exact
+            // record so close/admission cannot remain busy forever.
+            self.remove_pending_round(&parent_connection_id, &turn_id)
+                .await;
             return;
         }
         let connection_id = match self
@@ -648,12 +725,45 @@ impl ContinuationCoordinator {
         {
             Ok(conn_id) => conn_id,
             Err(err) => {
+                let retained_connection_id =
+                    err.retained_connection_id().map(str::to_string);
                 let mapped = ContinuationError::from(err);
-                self.settle_failure(&turn_id, &execution_id, &mapped).await;
-                let mut pending = self.parent_pending.lock().await;
-                if let Some(list) = pending.get_mut(&parent_connection_id) {
-                    list.retain(|(tid, _)| tid != &turn_id);
+                {
+                    let mut pending = self.parent_pending.lock().await;
+                    let mut executions = self.executions.lock().await;
+                    if let Some(rounds) = pending.get_mut(&parent_connection_id) {
+                        rounds.retain(|round| round.turn_id != turn_id);
+                        if rounds.is_empty() {
+                            pending.remove(&parent_connection_id);
+                        }
+                    }
+                    if let Some(connection_id) = retained_connection_id.as_ref() {
+                        executions.insert(
+                            connection_id.clone(),
+                            ExecutionOwner {
+                                turn_id: turn_id.clone(),
+                                execution_id: execution_id.clone(),
+                                session_id: session_id.clone(),
+                                parent_connection_id: parent_connection_id.clone(),
+                            },
+                        );
+                    }
                 }
+                if let Some(connection_id) = retained_connection_id.as_ref() {
+                    if let Err(e) = collaboration_service::set_turn_connection(
+                        conn,
+                        &turn_id,
+                        &execution_id,
+                        connection_id,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            "[continuation] could not persist retained connection for {turn_id}: {e}"
+                        );
+                    }
+                }
+                self.settle_failure(&turn_id, &execution_id, &mapped).await;
                 return;
             }
         };
@@ -666,34 +776,72 @@ impl ContinuationCoordinator {
         // order, so it sees the round in exactly one place. If cleanup already
         // removed the pending claim, this attach lost the race and must be
         // released without sending.
-        let claimed = {
+        let claim = {
             let mut pending = self.parent_pending.lock().await;
             let mut executions = self.executions.lock().await;
-            let present = pending
+            let pending_round = pending
                 .get_mut(&parent_connection_id)
                 .and_then(|list| {
                     list.iter()
-                        .position(|(pending_turn_id, _)| pending_turn_id == &turn_id)
-                        .map(|index| {
-                            list.swap_remove(index);
-                        })
-                })
-                .is_some();
-            if present {
-                executions.insert(
-                    connection_id.clone(),
-                    ExecutionOwner {
-                        turn_id: turn_id.clone(),
-                        execution_id: execution_id.clone(),
-                        session_id: session_id.clone(),
-                        parent_connection_id: parent_connection_id.clone(),
-                    },
-                );
+                        .position(|round| round.turn_id == turn_id)
+                        .map(|index| list.swap_remove(index))
+                });
+            if pending
+                .get(&parent_connection_id)
+                .is_some_and(Vec::is_empty)
+            {
+                pending.remove(&parent_connection_id);
             }
-            present
+            match pending_round.map(|round| round.claim) {
+                Some(PendingClaim::Claimable) => {
+                    executions.insert(
+                        connection_id.clone(),
+                        ExecutionOwner {
+                            turn_id: turn_id.clone(),
+                            execution_id: execution_id.clone(),
+                            session_id: session_id.clone(),
+                            parent_connection_id: parent_connection_id.clone(),
+                        },
+                    );
+                    AttachClaim::Claimed
+                }
+                Some(PendingClaim::Revoked {
+                    teardown_started: false,
+                }) => {
+                    executions.insert(
+                        connection_id.clone(),
+                        ExecutionOwner {
+                            turn_id: turn_id.clone(),
+                            execution_id: execution_id.clone(),
+                            session_id: session_id.clone(),
+                            parent_connection_id: parent_connection_id.clone(),
+                        },
+                    );
+                    AttachClaim::RevokedNeedsRelease
+                }
+                Some(PendingClaim::Revoked {
+                    teardown_started: true,
+                }) => AttachClaim::RevokedAlreadyHandled,
+                None => {
+                    // Defensive lost-record fallback: never send and retain a
+                    // teardown owner until confirmed release.
+                    executions.insert(
+                        connection_id.clone(),
+                        ExecutionOwner {
+                            turn_id: turn_id.clone(),
+                            execution_id: execution_id.clone(),
+                            session_id: session_id.clone(),
+                            parent_connection_id: parent_connection_id.clone(),
+                        },
+                    );
+                    AttachClaim::RevokedNeedsRelease
+                }
+            }
         };
-        if !claimed {
-            let _ = self.runtime.disconnect(&connection_id).await;
+        if claim != AttachClaim::Claimed {
+            if claim == AttachClaim::RevokedNeedsRelease {
+                self.release_connection(&turn_id, &connection_id).await;
+            }
             return;
         }
         #[cfg(any(test, feature = "test-utils"))]
@@ -1338,6 +1486,13 @@ impl ContinuationCoordinator {
                     )
                     .with_ids(Some(session_id), None));
                 }
+                if self.session_has_pending_attach(session_id).await {
+                    return Err(ContinuationError::new(
+                        ContinuationErrorCode::SessionBusy,
+                        "a canceled turn is still finishing strict attach cleanup",
+                    )
+                    .with_ids(Some(session_id), None));
+                }
                 // Release BEFORE writing closed (reacceptance R6): the write
                 // reservation is what keeps ordinary writers out of the child
                 // while the platform still holds its connection. Writing
@@ -1502,7 +1657,17 @@ impl ContinuationCoordinator {
         let (pending_rounds, owned): (Vec<PendingRound>, Vec<(String, String)>) = {
             let mut pending = self.parent_pending.lock().await;
             let executions = self.executions.lock().await;
-            let pending_rounds = pending.remove(parent_connection_id).unwrap_or_default();
+            let mut pending_rounds = Vec::new();
+            if let Some(rounds) = pending.get_mut(parent_connection_id) {
+                for round in rounds {
+                    if round.claim == PendingClaim::Claimable {
+                        round.claim = PendingClaim::Revoked {
+                            teardown_started: false,
+                        };
+                        pending_rounds.push(round.clone());
+                    }
+                }
+            }
             let owned = executions
                 .iter()
                 .filter(|(_, owner)| owner.parent_connection_id == parent_connection_id)
@@ -1510,8 +1675,8 @@ impl ContinuationCoordinator {
                 .collect();
             (pending_rounds, owned)
         };
-        for (turn_id, _) in pending_rounds {
-            let _ = self.cancel_fresh(&turn_id, None).await;
+        for round in pending_rounds {
+            let _ = self.cancel_fresh(&round.turn_id, None).await;
         }
         for (turn_id, connection_id) in owned {
             let _ = self.cancel_fresh(&turn_id, Some(&connection_id)).await;

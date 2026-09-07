@@ -27,7 +27,7 @@ use codeg_lib::acp::delegation::continuation::runtime::{
 };
 use codeg_lib::acp::delegation::continuation::{
     CollaborationSessionState, ContinuationError, ContinuationErrorCode, ContinuationCoordinator,
-    StrictAttachError, TurnState, TurnTerminal, VerifiedParent,
+    StrictAttachError, StrictAttachErrorCode, TurnState, TurnTerminal, VerifiedParent,
 };
 use codeg_lib::db::service::collaboration_service;
 use codeg_lib::db::service::delegation_outcome_service::DelegationOutcomeInsert;
@@ -41,6 +41,7 @@ use sea_orm::ConnectionTrait;
 
 #[derive(Default)]
 struct MockRuntime {
+    attach_results: tokio::sync::Mutex<VecDeque<Result<String, StrictAttachError>>>,
     send_results: tokio::sync::Mutex<VecDeque<Result<(), String>>>,
     disconnect_results: tokio::sync::Mutex<VecDeque<Result<(), String>>>,
     last_attached_connection_id: tokio::sync::Mutex<Option<String>>,
@@ -108,6 +109,13 @@ impl MockRuntime {
         self.disconnect_results.lock().await.extend(results);
     }
 
+    async fn queue_attach_results(
+        &self,
+        results: Vec<Result<String, StrictAttachError>>,
+    ) {
+        self.attach_results.lock().await.extend(results);
+    }
+
     async fn last_attached_connection_id(&self) -> String {
         self.last_attached_connection_id
             .lock()
@@ -133,6 +141,13 @@ impl ContinuationRuntime for MockRuntime {
         let gate = self.attach_gate.lock().await.take();
         if let Some(gate) = gate {
             let _ = gate.await;
+        }
+        let queued = self.attach_results.lock().await.pop_front();
+        if let Some(result) = queued {
+            if let Ok(connection_id) = result.as_ref() {
+                *self.last_attached_connection_id.lock().await = Some(connection_id.clone());
+            }
+            return result;
         }
         let connection_id = format!("conn-{}", uuid::Uuid::new_v4());
         *self.last_attached_connection_id.lock().await = Some(connection_id.clone());
@@ -1058,6 +1073,128 @@ async fn parent_cancel_before_attach_prevents_attach_and_send() {
 }
 
 #[tokio::test]
+async fn canceled_inflight_attach_blocks_close_and_new_admission_until_release() {
+    let h = harness().await;
+    let gate = h.runtime.install_attach_gate().await;
+    let ack = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
+        .await
+        .unwrap();
+    for _ in 0..200 {
+        if h.runtime.attach_count() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    h.coordinator.cancel_by_parent_connection("parent-conn").await;
+
+    let close_err = h
+        .coordinator
+        .close_session(h.parent, &ack.session_id)
+        .await
+        .expect_err("in-flight attach must remain visible to close");
+    assert_eq!(err_code(&close_err), ContinuationErrorCode::SessionBusy);
+    let next_err = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k2", "m2", None)
+        .await
+        .expect_err("new admission must see the pending cleanup");
+    assert_eq!(err_code(&next_err), ContinuationErrorCode::SessionBusy);
+
+    drop(gate);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while h.coordinator.has_pending_turn_for_test(&ack.turn_id).await
+            || h.coordinator.connection_of_turn(&ack.turn_id).await.is_some()
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("confirmed release drains both owner registries");
+    assert_eq!(h.runtime.counters().1, 0, "canceled attach never sends");
+    let closed = h
+        .coordinator
+        .close_session(h.parent, &ack.session_id)
+        .await
+        .expect("close succeeds after confirmed release");
+    assert_eq!(closed.state, CollaborationSessionState::Closed);
+    let closed_err = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k3", "m3", None)
+        .await
+        .expect_err("closed relationship stays permanently closed");
+    assert_eq!(err_code(&closed_err), ContinuationErrorCode::SessionClosed);
+}
+
+#[tokio::test]
+async fn failed_attach_retains_cleanup_handle_for_close_retry() {
+    let h = harness().await;
+    h.runtime
+        .queue_attach_results(vec![Err(
+            StrictAttachError::new(
+                StrictAttachErrorCode::ResumeUnsupported,
+                "fixture resume unsupported",
+            )
+            .with_retained_cleanup("retained-fixture", "fixture release timeout"),
+        )])
+        .await;
+    h.runtime
+        .queue_disconnect_results(vec![Err("still owned".to_string()), Ok(())])
+        .await;
+    let ack = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
+        .await
+        .unwrap();
+    wait_for_state(
+        &h.coordinator,
+        h.parent,
+        &ack.turn_id,
+        &[TurnState::Failed],
+    )
+    .await;
+    let report = h
+        .coordinator
+        .get_turn(h.parent, &ack.turn_id, 0)
+        .await
+        .unwrap();
+    assert_eq!(report.error_code.as_deref(), Some("resume_unsupported"));
+    assert!(report
+        .error_message
+        .as_deref()
+        .is_some_and(|message| message.contains("fixture resume unsupported")));
+    assert_eq!(
+        h.coordinator.connection_of_turn(&ack.turn_id).await.as_deref(),
+        Some("retained-fixture")
+    );
+
+    let first = h
+        .coordinator
+        .close_session(h.parent, &ack.session_id)
+        .await
+        .expect_err("failed confirmed release must preserve reservation");
+    assert_eq!(err_code(&first), ContinuationErrorCode::SessionBusy);
+    assert!(
+        h.coordinator
+            .child_is_reserved(h.child_conversation_id)
+            .await
+    );
+    assert_eq!(
+        h.coordinator.connection_of_turn(&ack.turn_id).await.as_deref(),
+        Some("retained-fixture")
+    );
+
+    let closed = h
+        .coordinator
+        .close_session(h.parent, &ack.session_id)
+        .await
+        .expect("retry releases the same retained handle");
+    assert_eq!(closed.state, CollaborationSessionState::Closed);
+    assert!(h.coordinator.connection_of_turn(&ack.turn_id).await.is_none());
+}
+
+#[tokio::test]
 async fn parent_cancel_after_attach_before_claim_releases_without_send() {
     let h = harness().await;
     let (entered, release) = h
@@ -1084,9 +1221,7 @@ async fn parent_cancel_after_attach_before_claim_releases_without_send() {
 #[tokio::test]
 async fn public_stop_after_attach_invalidates_pending_claim_before_release() {
     let h = harness().await;
-    h.runtime
-        .queue_disconnect_results(vec![Ok(()), Err("already released".to_string())])
-        .await;
+    h.runtime.queue_disconnect_results(vec![Ok(())]).await;
     let (entered, release) = h
         .coordinator
         .install_drive_gate_for_test("after_attach")
@@ -1115,14 +1250,19 @@ async fn public_stop_after_attach_invalidates_pending_claim_before_release() {
     );
     release.send(()).expect("release post-attach gate");
     tokio::time::timeout(Duration::from_secs(2), async {
-        while h.runtime.counters().3 < 2 {
+        while h.coordinator.has_pending_turn_for_test(&ack.turn_id).await {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("drive finished the repeated release attempt");
+    .expect("drive drained the revoked preclaim");
 
     assert_eq!(h.runtime.counters().1, 0, "no Prompt may be sent");
+    assert_eq!(
+        h.runtime.counters().3,
+        1,
+        "the resumed drive must not issue a second teardown"
+    );
     assert_eq!(
         h.coordinator
             .get_turn(h.parent, &ack.turn_id, 0)
@@ -1133,7 +1273,7 @@ async fn public_stop_after_attach_invalidates_pending_claim_before_release() {
     );
     assert!(
         h.coordinator.connection_of_turn(&ack.turn_id).await.is_none(),
-        "the failed repeated disconnect must not retain a manufactured owner"
+        "confirmed preclaim release must remove teardown ownership"
     );
     assert!(
         !h.coordinator.has_pending_turn_for_test(&ack.turn_id).await,
@@ -1145,6 +1285,70 @@ async fn public_stop_after_attach_invalidates_pending_claim_before_release() {
         .await
         .expect("a canceled preclaim round remains closable");
     assert_eq!(closed.state, CollaborationSessionState::Closed);
+}
+
+#[tokio::test]
+async fn public_stop_failed_release_keeps_teardown_owner_for_close_retry() {
+    let h = harness().await;
+    h.runtime
+        .queue_disconnect_results(vec![Err("release unconfirmed".to_string()), Ok(())])
+        .await;
+    let (entered, release) = h
+        .coordinator
+        .install_drive_gate_for_test("after_attach")
+        .await;
+    let ack = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
+        .await
+        .unwrap();
+    entered.await.expect("drive reached post-attach gate");
+    let connection_id = h.runtime.last_attached_connection_id().await;
+    let turn = collaboration_service::find_turn(&h.db.conn, &ack.turn_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(h
+        .coordinator
+        .cancel_owned_connection(
+            &connection_id,
+            Some((&turn.id, &turn.execution_id)),
+        )
+        .await
+        .unwrap());
+    release.send(()).expect("release post-attach gate");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while h.coordinator.has_pending_turn_for_test(&ack.turn_id).await {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("drive drains revoked pending marker");
+
+    assert_eq!(h.runtime.counters().1, 0, "no Prompt may be sent");
+    assert_eq!(
+        h.runtime.counters().3,
+        1,
+        "drive must not duplicate the failed preclaim teardown"
+    );
+    assert_eq!(
+        h.coordinator.connection_of_turn(&ack.turn_id).await.as_deref(),
+        Some(connection_id.as_str()),
+        "unconfirmed release keeps the exact teardown owner"
+    );
+    let busy = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k2", "m2", None)
+        .await
+        .expect_err("retained teardown owner fences admission");
+    assert_eq!(err_code(&busy), ContinuationErrorCode::SessionBusy);
+    let closed = h
+        .coordinator
+        .close_session(h.parent, &ack.session_id)
+        .await
+        .expect("close retries and confirms the retained release");
+    assert_eq!(closed.state, CollaborationSessionState::Closed);
+    assert_eq!(h.runtime.counters().3, 2);
 }
 
 #[tokio::test]

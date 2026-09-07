@@ -97,6 +97,10 @@ pub struct StrictReady {
 pub struct StrictAttachError {
     pub code: StrictAttachErrorCode,
     pub message: String,
+    /// Internal manager handle kept when teardown could not be confirmed.
+    /// Deliberately absent from the public wire/DB contract.
+    pub(crate) retained_connection_id: Option<String>,
+    pub(crate) cleanup_detail: Option<String>,
 }
 
 impl StrictAttachError {
@@ -104,7 +108,24 @@ impl StrictAttachError {
         Self {
             code,
             message: message.into(),
+            retained_connection_id: None,
+            cleanup_detail: None,
         }
+    }
+
+    #[doc(hidden)]
+    pub fn with_retained_cleanup(
+        mut self,
+        connection_id: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        self.retained_connection_id = Some(connection_id.into());
+        self.cleanup_detail = Some(detail.into());
+        self
+    }
+
+    pub(crate) fn retained_connection_id(&self) -> Option<&str> {
+        self.retained_connection_id.as_deref()
     }
 }
 
@@ -438,7 +459,11 @@ impl From<StrictAttachError> for ContinuationError {
             S::ResumeFailed => ContinuationErrorCode::ResumeFailed,
             S::ResumeTimeout => ContinuationErrorCode::ResumeTimeout,
         };
-        ContinuationError::new(code, e.message)
+        let message = match e.cleanup_detail {
+            Some(detail) => format!("{}; cleanup pending: {detail}", e.message),
+            None => e.message,
+        };
+        ContinuationError::new(code, message)
     }
 }
 

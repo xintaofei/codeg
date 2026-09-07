@@ -20,49 +20,104 @@ impl ConnectionManager {
     /// [`Self::disconnect_all`]'s ladder for a single connection: fire the
     /// graceful Disconnect, give the driver a short grace window, then
     /// hard-kill the agent process tree via its pid cell and confirm the
-    /// exit through the `on_exit` zeroing. The confirmed exit is what makes
-    /// the release a fact rather than an assertion.
+    /// exit through both the owned-child reaper callback and the driver-exit
+    /// guard. That joint proof makes release a fact rather than an assertion.
     pub async fn disconnect_and_reclaim(&self, conn_id: &str) -> Result<(), AcpError> {
-        const RECLAIM_GRACE: Duration = Duration::from_millis(500);
-        const RECLAIM_EXIT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
-        let reclaimed = {
-            let mut connections = self.connections.lock().await;
-            connections
-                .remove(conn_id)
-                .map(|conn| (conn.cmd_tx, conn.child_pid))
-        };
-        let Some((cmd_tx, child_pid)) = reclaimed else {
+        self.disconnect_and_reclaim_with_timing(
+            conn_id,
+            Duration::from_millis(500),
+            Duration::from_secs(5),
+        )
+        .await
+    }
+
+    pub(super) async fn disconnect_and_reclaim_with_timing(
+        &self,
+        conn_id: &str,
+        grace: Duration,
+        confirmation_timeout: Duration,
+    ) -> Result<(), AcpError> {
+        let Some(resource) = self.resources.get_and_retain(conn_id).await else {
             return Err(AcpError::ConnectionNotFound(conn_id.into()));
         };
         tracing::info!("[ACP] disconnect_and_reclaim connection={}", conn_id);
-        // try_send: a wedged command queue (32 deep) must not park the
-        // reclaim — the backstop kill below is exactly for that connection.
-        let _ = cmd_tx.try_send(ConnectionCommand::Disconnect);
-        tokio::time::sleep(RECLAIM_GRACE).await;
-        let pid = child_pid.load(std::sync::atomic::Ordering::SeqCst);
-        if pid != 0 {
-            // Blocking kill_tree off the async runtime, same as
-            // disconnect_all's backstop.
-            let _ = tokio::task::spawn_blocking(move || kill_tree::blocking::kill_tree(pid)).await;
-            // Confirm the exit via the on_exit zeroing of the pid cell
-            // (bounded): a confirmed death is the only honest "released".
-            let deadline = std::time::Instant::now() + RECLAIM_EXIT_CONFIRM_TIMEOUT;
-            while std::time::Instant::now() < deadline {
-                if child_pid.load(std::sync::atomic::Ordering::SeqCst) == 0 {
-                    tracing::info!(
-                        "[ACP] disconnect_and_reclaim confirmed exit for connection={}",
-                        conn_id
-                    );
-                    return Ok(());
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            return Err(AcpError::protocol(format!(
-                "connection {conn_id}: process tree kill issued but exit was not \
-                 confirmed within {}ms",
-                RECLAIM_EXIT_CONFIRM_TIMEOUT.as_millis()
-            )));
+        let _ = resource.cmd_tx.try_send(ConnectionCommand::Disconnect);
+
+        if tokio::time::timeout(grace, resource.lifetime.wait_until_released())
+            .await
+            .is_ok()
+        {
+            return self.finish_confirmed_reclaim(&resource).await;
         }
+
+        let deadline = tokio::time::Instant::now() + confirmation_timeout;
+        let mut forced_pid = None;
+        loop {
+            let revision = resource.lifetime.revision();
+            if resource.lifetime.release_confirmed() {
+                return self.finish_confirmed_reclaim(&resource).await;
+            }
+
+            if forced_pid.is_none() && resource.lifetime.current_pid().is_some() {
+                let lifetime = Arc::clone(&resource.lifetime);
+                let kill_result =
+                    tokio::task::spawn_blocking(move || lifetime.force_kill_current()).await;
+                match kill_result {
+                    Ok(Some((pid, Ok(_)))) => {
+                        forced_pid = Some(pid);
+                        tracing::info!(
+                            "[ACP] disconnect_and_reclaim forced process tree pid={pid}"
+                        );
+                    }
+                    Ok(Some((pid, Err(e)))) => {
+                        forced_pid = Some(pid);
+                        tracing::debug!(
+                            "[ACP] disconnect_and_reclaim force raced exit pid={pid}: {e}"
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!("[ACP] disconnect_and_reclaim force worker failed: {e}")
+                    }
+                }
+            }
+
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Err(AcpError::protocol(format!(
+                    "connection {conn_id}: release was not confirmed by both the driver and \
+                     owned process reaper within {}ms; retained for retry",
+                    confirmation_timeout.as_millis()
+                )));
+            }
+            let remaining = deadline - now;
+            let _ =
+                tokio::time::timeout(remaining, resource.lifetime.wait_for_change_since(revision))
+                    .await;
+        }
+    }
+
+    pub(super) async fn finish_confirmed_reclaim(
+        &self,
+        resource: &Arc<crate::acp::connection::lifetime::ConnectionResource>,
+    ) -> Result<(), AcpError> {
+        debug_assert!(resource.lifetime.release_confirmed());
+        {
+            let mut active = self.connections.lock().await;
+            if active
+                .get(&resource.connection_id)
+                .is_some_and(|conn| Arc::ptr_eq(&conn.state, &resource.state))
+            {
+                active.remove(&resource.connection_id);
+            }
+        }
+        self.resources
+            .remove_exact(&resource.connection_id, resource)
+            .await;
+        tracing::info!(
+            "[ACP] disconnect_and_reclaim confirmed driver exit and process reap connection={}",
+            resource.connection_id
+        );
         Ok(())
     }
 
@@ -106,7 +161,7 @@ impl ConnectionManager {
         crate::acp::delegation::continuation::StrictReady,
         crate::acp::delegation::continuation::StrictAttachError,
     > {
-        use crate::acp::connection::spawn_agent_connection_with_transport;
+        use crate::acp::connection::spawn_agent_connection_with_transport_managed;
         use crate::acp::delegation::continuation::{
             SessionRecovery, StrictAttachError, StrictAttachErrorCode, StrictOutcome,
         };
@@ -130,25 +185,6 @@ impl ConnectionManager {
             ));
         }
 
-        // --- No live connection may be hijacked -------------------------------
-        let working_dir_path = std::path::PathBuf::from(&working_dir);
-        if self
-            .find_connection_for_reuse(
-                agent_type,
-                Some(&working_dir_path),
-                Some(external_session_id.as_str()),
-            )
-            .await
-            .is_some()
-        {
-            return Err(StrictAttachError::new(
-                StrictAttachErrorCode::ResumeFailed,
-                "a live connection already hosts this session; a continuation \
-                 round must not share it"
-                    .to_string(),
-            ));
-        }
-
         // --- Launch the connection under the strict policy --------------------
         // The same launch the ordinary path performs: resolve the cwd, compute
         // the config fingerprint, build the agent transport. The gate verifies
@@ -168,6 +204,60 @@ impl ConnectionManager {
             return Err(err);
         }
 
+        // Serialize exact-target inspection, registration, verdict, and any
+        // immediate cleanup with ordinary resume launches. Requested external
+        // identity in the retained resource covers the pre-SessionStarted gap.
+        let _target_guard = self
+            .lock_spawn_target(agent_type, launch_cwd.clone(), external_session_id.clone())
+            .await;
+        if let Some(existing) = self
+            .resources
+            .find_target(agent_type, &launch_cwd, &external_session_id)
+            .await
+        {
+            if crate::acp::connection::lifetime::ConnectionResourceRegistry::active_entry_is_exact(
+                &self.connections,
+                &existing,
+            )
+            .await
+            {
+                return Err(StrictAttachError::new(
+                    StrictAttachErrorCode::ResumeFailed,
+                    "a live connection already hosts this session; a continuation \
+                     round must not share it",
+                ));
+            }
+            let retained = self.resources.retain_exact(&existing).await;
+            if !retained && !existing.lifetime.release_confirmed() {
+                return Err(StrictAttachError::new(
+                    StrictAttachErrorCode::ResumeFailed,
+                    "a previous connection changed while its release was being inspected",
+                ));
+            } else if retained && !existing.lifetime.release_confirmed() {
+                if let Err(cleanup_err) = self.disconnect_and_reclaim(&existing.connection_id).await
+                {
+                    return Err(StrictAttachError::new(
+                        StrictAttachErrorCode::ResumeFailed,
+                        "a previous connection for this session is still being reclaimed",
+                    )
+                    .with_retained_cleanup(
+                        existing.connection_id.clone(),
+                        cleanup_err.to_string(),
+                    ));
+                }
+            } else if retained {
+                self.finish_confirmed_reclaim(&existing)
+                    .await
+                    .map_err(|e| {
+                        StrictAttachError::new(
+                            StrictAttachErrorCode::ResumeFailed,
+                            "a previous connection for this session could not be retired",
+                        )
+                        .with_retained_cleanup(existing.connection_id.clone(), e.to_string())
+                    })?;
+            }
+        }
+
         let stderr_tail = Arc::new(crate::acp::stderr_tail::StderrTail::new());
         let agent = crate::acp::connection::build_agent(
             agent_type,
@@ -184,7 +274,7 @@ impl ConnectionManager {
         })?;
 
         let connection_id = uuid::Uuid::new_v4().to_string();
-        let spawn_result = spawn_agent_connection_with_transport(
+        let spawn_result = spawn_agent_connection_with_transport_managed(
             agent,
             connection_id.clone(),
             agent_type,
@@ -194,6 +284,7 @@ impl ConnectionManager {
             owner_window_label,
             emitter,
             self.connections.clone(),
+            self.resources.clone(),
             preferred_mode_id,
             preferred_config_values,
             self.delegation_snapshot(),
@@ -207,34 +298,34 @@ impl ConnectionManager {
             // Binding verification (or registration) failed before the driver
             // thread started. The gate usually already carries the precise
             // typed failure — prefer it over the opaque AcpError.
-            match tokio::time::timeout(Duration::from_secs(1), &mut verdict_rx).await {
-                Ok(Ok(StrictOutcome::Failed(e))) => return Err(e),
-                _ => {
-                    return Err(StrictAttachError::new(
-                        StrictAttachErrorCode::ResumeFailed,
-                        format!("strict attach failed to launch: {spawn_err}"),
-                    ));
-                }
-            }
+            let primary = match tokio::time::timeout(Duration::from_secs(1), &mut verdict_rx).await
+            {
+                Ok(Ok(StrictOutcome::Failed(e))) => e,
+                _ => StrictAttachError::new(
+                    StrictAttachErrorCode::ResumeFailed,
+                    format!("strict attach failed to launch: {spawn_err}"),
+                ),
+            };
+            return Err(self.cleanup_strict_failure(&connection_id, primary).await);
         }
 
         // --- Await the typed verdict (bounded) --------------------------------
         match tokio::time::timeout(timeout, &mut verdict_rx).await {
             Ok(Ok(StrictOutcome::Ready(ready))) => Ok(ready),
             Ok(Ok(StrictOutcome::Failed(e))) => {
-                // The strict path rejected itself before or after launch; the
-                // driver thread tears the connection down on its own error
-                // unwind, but a typed failure delivered while the connection
-                // is still alive needs an explicit reclaim here.
-                let _ = self.disconnect(&connection_id).await;
-                Err(e)
+                Err(self.cleanup_strict_failure(&connection_id, e).await)
             }
             // The connection ended without ever reporting readiness — treat it
             // as a failed recovery, never as success.
-            Ok(Err(_receiver_dropped)) => Err(StrictAttachError::new(
-                StrictAttachErrorCode::ResumeFailed,
-                "the connection ended before reporting strict readiness",
-            )),
+            Ok(Err(_receiver_dropped)) => Err(self
+                .cleanup_strict_failure(
+                    &connection_id,
+                    StrictAttachError::new(
+                        StrictAttachErrorCode::ResumeFailed,
+                        "the connection ended before reporting strict readiness",
+                    ),
+                )
+                .await),
             Err(_elapsed) => {
                 // Timed out waiting for the handshake. The driver is parked
                 // in `block_task()` and NEVER reads the queued Disconnect,
@@ -244,24 +335,32 @@ impl ConnectionManager {
                 // and block every future strict resume of the same session
                 // (acceptance F9, reacceptance R7). A late Ready lands on a
                 // dead connection and is harmless.
-                let reclaim = self.disconnect_and_reclaim(&connection_id).await;
-                Err(StrictAttachError::new(
+                let primary = StrictAttachError::new(
                     StrictAttachErrorCode::ResumeTimeout,
-                    match reclaim {
-                        Ok(()) => format!(
-                            "strict attach did not become ready within {}ms; the launched \
-                             connection's process tree was killed and its exit confirmed; \
-                             no prompt was sent",
-                            timeout.as_millis()
-                        ),
-                        Err(reclaim_err) => format!(
-                            "strict attach did not become ready within {}ms and the \
-                             launched connection could not be fully reclaimed ({reclaim_err}); \
-                             no prompt was sent",
-                            timeout.as_millis()
-                        ),
-                    },
-                ))
+                    format!(
+                        "strict attach did not become ready within {}ms; no prompt was sent",
+                        timeout.as_millis()
+                    ),
+                );
+                Err(self.cleanup_strict_failure(&connection_id, primary).await)
+            }
+        }
+    }
+
+    pub(super) async fn cleanup_strict_failure(
+        &self,
+        connection_id: &str,
+        primary: crate::acp::delegation::continuation::StrictAttachError,
+    ) -> crate::acp::delegation::continuation::StrictAttachError {
+        match self.disconnect_and_reclaim(connection_id).await {
+            Ok(()) => primary,
+            Err(cleanup_err) => {
+                if self.resources.get(connection_id).await.is_some() {
+                    primary.with_retained_cleanup(connection_id, cleanup_err.to_string())
+                } else {
+                    // Registration can fail before a driver/resource exists.
+                    primary
+                }
             }
         }
     }

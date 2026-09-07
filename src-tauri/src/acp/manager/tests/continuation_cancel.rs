@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use crate::acp::connection::{
-    in_memory_agent_pair, spawn_agent_connection_with_transport, InMemoryAgentEnds,
+    in_memory_agent_pair, spawn_agent_connection_with_transport_managed, InMemoryAgentEnds,
     InMemoryAgentTransport,
 };
 use crate::acp::delegation::continuation::SessionRecovery;
@@ -377,7 +377,7 @@ async fn spawn_test_connection_with_recovery(
 ) {
     let external_session_id = matches!(&recovery, SessionRecovery::RequireExisting(_))
         .then(|| "cancel-probe-session".to_string());
-    spawn_agent_connection_with_transport(
+    spawn_agent_connection_with_transport_managed(
         transport,
         connection_id.to_string(),
         AgentType::ClaudeCode,
@@ -387,6 +387,7 @@ async fn spawn_test_connection_with_recovery(
         "test-window".to_string(),
         emitter,
         Arc::clone(&manager.connections),
+        manager.resources.clone(),
         None,
         BTreeMap::new(),
         manager.delegation_snapshot(),
@@ -469,6 +470,30 @@ async fn run_cancel_probe_agent(ends: InMemoryAgentEnds) -> CancelProbe {
 }
 
 #[tokio::test]
+async fn confirmed_reclaim_accepts_not_spawned_only_after_real_driver_exit() {
+    let manager = ConnectionManager::new();
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let (transport, ends) = in_memory_agent_pair(64 * 1024);
+    let _probe = run_cancel_probe_agent(ends).await;
+    let connection_id = "graceful-no-process";
+    spawn_test_connection(
+        &manager,
+        EventEmitter::Noop,
+        data_dir.path(),
+        connection_id,
+        transport,
+    )
+    .await;
+
+    manager
+        .disconnect_and_reclaim(connection_id)
+        .await
+        .expect("driver consumes Disconnect and proves no process spawned");
+    assert!(manager.get_state(connection_id).await.is_none());
+    assert_eq!(manager.resources.len().await, 0);
+}
+
+#[tokio::test]
 async fn owned_cancel_does_not_emit_local_terminal_while_prompt_reply_is_withheld() {
     let db = test_helpers::fresh_in_memory_db().await;
     let manager = ConnectionManager::new();
@@ -487,7 +512,7 @@ async fn owned_cancel_does_not_emit_local_terminal_while_prompt_reply_is_withhel
     let (transport, ends) = in_memory_agent_pair(64 * 1024);
     let probe = run_cancel_probe_agent(ends).await;
     let connection_id = "owned-cancel-probe".to_string();
-    spawn_agent_connection_with_transport(
+    spawn_agent_connection_with_transport_managed(
         transport,
         connection_id.clone(),
         AgentType::ClaudeCode,
@@ -497,6 +522,7 @@ async fn owned_cancel_does_not_emit_local_terminal_while_prompt_reply_is_withhel
         "test-window".to_string(),
         emitter,
         Arc::clone(&manager.connections),
+        manager.resources.clone(),
         None,
         BTreeMap::new(),
         manager.delegation_snapshot(),

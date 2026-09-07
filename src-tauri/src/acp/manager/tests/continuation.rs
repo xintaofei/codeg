@@ -1,52 +1,268 @@
 use super::*;
 
-/// Reacceptance R7: reclaiming a stuck connection must kill the whole
-/// agent process tree even when the graceful command path is unavailable
-/// (the receiver here is dropped — the stand-in for a driver parked in
-/// the resume/load handshake that never reads `cmd_rx`), and must
-/// CONFIRM the exit via the pid cell before reporting success.
-/// Unix-only (relies on `sh` / `kill(2)`).
+#[tokio::test]
+async fn requested_external_id_blocks_manager_resume_admission_until_release_proof() {
+    use crate::acp::connection::lifetime::{
+        ConnectionProcessLifetime, ConnectionResource,
+    };
+    use crate::acp::delegation::continuation::StrictAttachErrorCode;
+
+    let mgr = ConnectionManager::new();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cwd = dir.path().to_path_buf();
+    let cwd_text = cwd.to_string_lossy().into_owned();
+    let connection_id = "pre-handshake-owner";
+    let external_id = "requested-before-session-started";
+    let agent_type = AgentType::Custom("task6b-missing-agent");
+    let _cmd_rx = insert_live_connection(
+        &mgr,
+        connection_id,
+        agent_type,
+        Some(cwd.clone()),
+    )
+    .await;
+    let (cmd_tx, state) = {
+        let active = mgr.connections.lock().await;
+        let connection = active.get(connection_id).expect("active owner");
+        (connection.cmd_tx.clone(), Arc::clone(&connection.state))
+    };
+    assert!(
+        state.read().await.external_id.is_none(),
+        "fixture must cover the pre-SessionStarted identity gap"
+    );
+
+    let lifetime = ConnectionProcessLifetime::new();
+    let resource = ConnectionResource::new(
+        connection_id.to_string(),
+        cmd_tx,
+        Arc::clone(&lifetime),
+        state,
+        agent_type,
+        cwd.clone(),
+        Some(external_id.to_string()),
+        None,
+        true,
+    );
+    mgr.resources.insert(Arc::clone(&resource)).await;
+    mgr.resources.retire_when_confirmed(Arc::clone(&resource));
+
+    // The ordinary path does not launch a second process while the original
+    // connection is active, even though its observed external id is absent.
+    let reused = mgr
+        .spawn_agent(
+            agent_type,
+            Some(cwd_text.clone()),
+            Some(external_id.to_string()),
+            BTreeMap::new(),
+            "test-window".into(),
+            EventEmitter::Noop,
+            None,
+            BTreeMap::new(),
+        )
+        .await
+        .expect("ordinary resume reuses requested-id owner");
+    assert_eq!(reused, connection_id);
+
+    // Strict continuation ownership may never share that same live driver.
+    let fingerprint = crate::commands::acp::fingerprint_config(agent_type, &BTreeMap::new());
+    let strict_err = mgr
+        .attach_existing_session_strict(
+            agent_type,
+            cwd_text.clone(),
+            external_id.to_string(),
+            BTreeMap::new(),
+            "test-window".into(),
+            EventEmitter::Noop,
+            None,
+            BTreeMap::new(),
+            cwd.clone(),
+            fingerprint,
+            Duration::from_millis(20),
+            "turn-admission",
+            "exec-admission",
+        )
+        .await
+        .expect_err("strict resume refuses the live requested-id owner");
+    assert_eq!(strict_err.code, StrictAttachErrorCode::ResumeFailed);
+
+    // Once the active entry disappears, the retained resource remains the
+    // admission fence until both driver exit and no-spawn/reap are proven.
+    mgr.connections.lock().await.remove(connection_id);
+    let draining_err = mgr
+        .spawn_agent(
+            agent_type,
+            Some(cwd_text.clone()),
+            Some(external_id.to_string()),
+            BTreeMap::new(),
+            "test-window".into(),
+            EventEmitter::Noop,
+            None,
+            BTreeMap::new(),
+        )
+        .await
+        .expect_err("ordinary resume refuses an unreleased retained owner");
+    assert!(draining_err.to_string().contains("being reclaimed"));
+
+    lifetime.mark_driver_exited();
+    let after_release = mgr
+        .spawn_agent(
+            agent_type,
+            Some(cwd_text),
+            Some(external_id.to_string()),
+            BTreeMap::new(),
+            "test-window".into(),
+            EventEmitter::Noop,
+            None,
+            BTreeMap::new(),
+        )
+        .await
+        .expect_err("missing custom agent fails only after admission succeeds");
+    assert!(
+        !after_release.to_string().contains("being reclaimed"),
+        "release proof must reopen admission: {after_release}"
+    );
+    assert!(mgr.resources.get(connection_id).await.is_none());
+}
+
+#[tokio::test]
+async fn pid_zero_while_driver_can_spawn_times_out_retains_and_retries() {
+    use crate::acp::connection::lifetime::{
+        ConnectionProcessLifetime, ConnectionResource,
+    };
+    use crate::acp::session_state::SessionState;
+
+    let mgr = ConnectionManager::new();
+    let connection_id = "delayed-before-spawn";
+    let cwd = std::env::current_dir().expect("cwd");
+    let state = Arc::new(tokio::sync::RwLock::new(SessionState::new(
+        connection_id.to_string(),
+        AgentType::ClaudeCode,
+        Some(cwd.clone()),
+        "test-window".to_string(),
+        None,
+    )));
+    let lifetime = ConnectionProcessLifetime::new();
+    let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::channel(1);
+    let resource = ConnectionResource::new(
+        connection_id.to_string(),
+        cmd_tx,
+        Arc::clone(&lifetime),
+        state,
+        AgentType::ClaudeCode,
+        cwd.clone(),
+        Some("delayed-external".to_string()),
+        None,
+        false,
+    );
+    mgr.resources.insert(Arc::clone(&resource)).await;
+    mgr.resources.retire_when_confirmed(Arc::clone(&resource));
+
+    let first = mgr
+        .disconnect_and_reclaim_with_timing(
+            connection_id,
+            Duration::from_millis(5),
+            Duration::from_millis(30),
+        )
+        .await;
+    assert!(first.is_err(), "zero pid while driver may spawn is unconfirmed");
+    assert!(mgr.resources.get(connection_id).await.is_some());
+    assert!(mgr
+        .resources
+        .find_target(AgentType::ClaudeCode, &cwd, "delayed-external")
+        .await
+        .is_some());
+
+    lifetime.mark_driver_exited();
+    mgr.disconnect_and_reclaim(connection_id)
+        .await
+        .expect("retry consumes the retained exact resource");
+    assert!(mgr.resources.get(connection_id).await.is_none());
+}
+
+/// Reacceptance R7: reclaiming a real stuck transport must force its whole
+/// process tree, then wait for both the vendored owned-Child reaper callback
+/// and the real connection driver guard before reporting success.
+/// Unix-only (relies on sh / kill(2)).
 #[cfg(unix)]
 #[tokio::test]
 async fn disconnect_and_reclaim_kills_a_stuck_process_tree_and_confirms_exit() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (mut child, gpid) = spawn_process_tree(&dir.path().join("g.pid")).await;
-
     let mgr = ConnectionManager::new();
-    let conn = fake_connection("conn-stuck", None);
-    conn.child_pid
-        .store(child.id(), std::sync::atomic::Ordering::SeqCst);
-    let cell = Arc::clone(&conn.child_pid);
-    mgr.connections
-        .lock()
-        .await
-        .insert("conn-stuck".to_string(), conn);
-    // Stand-in for the real driver's `on_exit` zeroing: fires once the
-    // process tree is dead. Watching the GRANDCHILD avoids the zombie
-    // subtlety — the unreaped `sh` answers `kill(pid,0)` as alive, while
-    // the reparented `sleep` disappears once the tree is truly killed.
-    let tree_dead_pid = gpid;
-    tokio::spawn(async move {
-        for _ in 0..300 {
-            if !is_alive(tree_dead_pid) {
-                cell.store(0, std::sync::atomic::Ordering::SeqCst);
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    });
-    mgr.disconnect_and_reclaim("conn-stuck")
-        .await
-        .expect("reclaim with a confirmed exit succeeds");
-    assert!(
-        wait_until_dead(gpid).await,
-        "grandchild {gpid} survived — the reclaim did not kill the tree"
+    let root_file = dir.path().join("root.pid");
+    let descendant_file = dir.path().join("descendant.pid");
+    let ready_file = dir.path().join("ready");
+    let script = format!(
+        "trap '' TERM HUP; echo $$ > '{}'; \
+         (trap '' TERM HUP; while :; do :; done) & echo $! > '{}'; \
+         echo ready > '{}'; wait",
+        root_file.display(),
+        descendant_file.display(),
+        ready_file.display(),
     );
-    let _ = child.wait();
+    let agent = sacp_tokio::AcpAgent::from_args(["/bin/sh", "-c", &script])
+        .expect("fixture agent");
+    crate::acp::connection::spawn_agent_connection_with_transport_managed(
+        agent,
+        "conn-stuck".to_string(),
+        AgentType::ClaudeCode,
+        Some(dir.path().to_string_lossy().into_owned()),
+        Some("fixture-session".to_string()),
+        BTreeMap::new(),
+        "test-window".to_string(),
+        EventEmitter::Noop,
+        Arc::clone(&mgr.connections),
+        mgr.resources.clone(),
+        None,
+        BTreeMap::new(),
+        None,
+        mgr.terminal_shell_config(),
+        "fixture-fingerprint".to_string(),
+        Arc::new(crate::acp::stderr_tail::StderrTail::new()),
+        crate::acp::delegation::continuation::SessionRecovery::AllowNewFallback,
+    )
+    .await
+    .expect("spawn real fixture transport");
+
+    for _ in 0..200 {
+        if ready_file.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(ready_file.exists(), "fixture process tree did not become ready");
+    let root_pid: i32 = std::fs::read_to_string(&root_file)
+        .expect("root pid")
+        .trim()
+        .parse()
+        .expect("numeric root pid");
+    let descendant_pid: i32 = std::fs::read_to_string(&descendant_file)
+        .expect("descendant pid")
+        .trim()
+        .parse()
+        .expect("numeric descendant pid");
+
+    let reclaim = mgr.disconnect_and_reclaim("conn-stuck").await;
+    let root_dead = wait_until_dead(root_pid).await;
+    let descendant_dead = wait_until_dead(descendant_pid).await;
+    // Fixture cleanup is restricted to the exact PIDs recorded while the owned
+    // root was alive.
+    if !root_dead {
+        unsafe { libc::kill(root_pid, libc::SIGKILL) };
+    }
+    if !descendant_dead {
+        unsafe { libc::kill(descendant_pid, libc::SIGKILL) };
+    }
+    reclaim.expect("reclaim with actual driver + reaper proof succeeds");
+    assert!(root_dead, "owned root {root_pid} survived reclaim");
+    assert!(
+        descendant_dead,
+        "TERM-ignoring descendant {descendant_pid} survived reclaim"
+    );
     assert!(
         mgr.get_state("conn-stuck").await.is_none(),
         "the reclaimed connection must be deregistered"
     );
+    assert_eq!(mgr.resources.len().await, 0, "confirmed resource retires");
 }
 
 /// Reacceptance R8 + R1: once a child conversation is reserved by an

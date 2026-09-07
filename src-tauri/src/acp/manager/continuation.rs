@@ -226,14 +226,18 @@ impl crate::acp::delegation::continuation::ContinuationRuntime
             .bind_child_conversation(&ready.connection_id, child_conversation_id, target)
             .await
         {
-            let _ = self.manager.disconnect(&ready.connection_id).await;
-            return Err(StrictAttachError::new(
+            let primary = StrictAttachError::new(
                 StrictAttachErrorCode::ResumeFailed,
                 format!(
                     "the resumed connection could not be bound to child \
                      conversation {child_conversation_id}: {detail}"
                 ),
-            ));
+            );
+            return Err(
+                self.manager
+                    .cleanup_strict_failure(&ready.connection_id, primary)
+                    .await,
+            );
         }
         Ok(ready.connection_id)
     }
@@ -266,7 +270,7 @@ impl crate::acp::delegation::continuation::ContinuationRuntime
 
     async fn disconnect(&self, connection_id: &str) -> Result<(), String> {
         self.manager
-            .disconnect(connection_id)
+            .disconnect_and_reclaim(connection_id)
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())
