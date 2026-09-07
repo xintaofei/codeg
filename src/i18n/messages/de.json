@@ -5796,6 +5796,16 @@
       "description": "Eine aus der Unterhaltung geöffnete Webseite",
       "openInWorkspace": "Im Arbeitsbereich öffnen",
       "cannotOpen": "Diese Adresse kann hier nicht geöffnet werden."
+    },
+    "toast": {
+      "firstOpen": "Im integrierten Browser geöffnet",
+      "firstOpenHint": "⌘/Strg+Klick auf einen Link öffnet ihn stattdessen im Systembrowser. Die Voreinstellung lässt sich in den Einstellungen ändern.",
+      "useSystemAlways": "Immer den Systembrowser verwenden"
+    },
+    "link": {
+      "openBuiltin": "Im integrierten Browser öffnen",
+      "openSystem": "Im Systembrowser öffnen",
+      "copy": "Link kopieren"
     }
   }
 }

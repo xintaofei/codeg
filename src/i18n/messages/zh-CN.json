@@ -5796,6 +5796,16 @@
       "description": "从会话中打开的网页",
       "openInWorkspace": "在工作区中打开",
       "cannotOpen": "无法在此打开该地址。"
+    },
+    "toast": {
+      "firstOpen": "已在内置浏览器中打开",
+      "firstOpenHint": "按住 ⌘/Ctrl 点击链接可改用系统浏览器。默认方式可在设置中修改。",
+      "useSystemAlways": "始终使用系统浏览器"
+    },
+    "link": {
+      "openBuiltin": "在内置浏览器中打开",
+      "openSystem": "在系统浏览器中打开",
+      "copy": "复制链接"
     }
   }
 }

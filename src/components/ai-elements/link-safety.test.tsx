@@ -34,6 +34,9 @@ vi.mock("@/lib/platform", () => ({
 vi.mock("@/lib/transport", () => ({
   isDesktop: mocks.isDesktop,
   getActiveRemoteConnectionId: mocks.getActiveRemoteConnectionId,
+  // A desktop window bound to a remote server — mirrors the real helper.
+  isRemoteDesktopMode: () =>
+    mocks.isDesktop() && mocks.getActiveRemoteConnectionId() !== null,
 }))
 
 vi.mock("@/contexts/active-folder-context", () => ({
@@ -45,6 +48,7 @@ vi.mock("@/contexts/active-folder-context", () => ({
 }))
 
 vi.mock("@/contexts/workspace-context", () => ({
+  useOptionalWorkspaceActions: () => null,
   useWorkspaceActions: () => ({
     openFilePreview: mocks.openFilePreview,
   }),

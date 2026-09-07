@@ -21,13 +21,21 @@ const UNAVAILABLE: BrowserCapabilities = {
 }
 
 let capabilitiesPromise: Promise<BrowserCapabilities> | null = null
+let resolvedCapabilities: BrowserCapabilities | null = null
 
 /** Cached for the session: the answer cannot change while the app runs. */
 export function browserCapabilities(): Promise<BrowserCapabilities> {
-  if (!isDesktop()) return Promise.resolve(UNAVAILABLE)
+  if (!isDesktop()) {
+    resolvedCapabilities = UNAVAILABLE
+    return Promise.resolve(UNAVAILABLE)
+  }
   if (!capabilitiesPromise) {
     capabilitiesPromise = getTransport()
       .call<BrowserCapabilities>("browser_capabilities", {})
+      .then((caps) => {
+        resolvedCapabilities = caps
+        return caps
+      })
       .catch((error: unknown) => {
         capabilitiesPromise = null
         return {
@@ -39,9 +47,27 @@ export function browserCapabilities(): Promise<BrowserCapabilities> {
   return capabilitiesPromise
 }
 
+/**
+ * Synchronous view of the answer, for decisions that must happen inside a
+ * click's call stack. `null` until `browserCapabilities()` has resolved once
+ * (the events bridge asks at startup); callers treat null as "not available"
+ * and fall back to the system browser, which is always a safe answer.
+ */
+export function browserCapabilitiesSnapshot(): BrowserCapabilities | null {
+  return resolvedCapabilities
+}
+
 /** Tests only. */
 export function resetBrowserCapabilitiesCacheForTests(): void {
   capabilitiesPromise = null
+  resolvedCapabilities = null
+}
+
+/** Tests only: pretend the capabilities already resolved. */
+export function setBrowserCapabilitiesForTests(
+  caps: BrowserCapabilities | null
+): void {
+  resolvedCapabilities = caps
 }
 
 export interface OpenBrowserTabParams {

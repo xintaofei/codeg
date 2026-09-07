@@ -5796,6 +5796,16 @@
       "description": "從對話中開啟的網頁",
       "openInWorkspace": "在工作區中開啟",
       "cannotOpen": "無法在此開啟此網址。"
+    },
+    "toast": {
+      "firstOpen": "已在內建瀏覽器中開啟",
+      "firstOpenHint": "按住 ⌘/Ctrl 點擊連結可改用系統瀏覽器。預設方式可在設定中修改。",
+      "useSystemAlways": "一律使用系統瀏覽器"
+    },
+    "link": {
+      "openBuiltin": "在內建瀏覽器中開啟",
+      "openSystem": "在系統瀏覽器中開啟",
+      "copy": "複製連結"
     }
   }
 }

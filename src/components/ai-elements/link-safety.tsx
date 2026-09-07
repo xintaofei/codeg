@@ -3,9 +3,12 @@
 import type { ReactNode } from "react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
-import { openUrl } from "@/lib/platform"
-import { getActiveRemoteConnectionId, isDesktop } from "@/lib/transport"
 import { toErrorMessage } from "@/lib/app-error"
+import { openExternalTab, windowOpenReachesABrowser } from "@/lib/link-open"
+import {
+  isPrimaryModifier,
+  useOpenUrlTarget,
+} from "@/hooks/use-open-url-target"
 import type { LinkSafetyConfig, LinkSafetyModalProps } from "streamdown"
 import { toast } from "sonner"
 import { useActiveFolder } from "@/contexts/active-folder-context"
@@ -28,34 +31,6 @@ import {
 export { parseLocalFileTarget }
 export type { LocalFileTarget }
 
-/**
- * True when `window.open` actually opens something — i.e. a real browser.
- *
- * NOT the same question as `isWebOpenerEnvironment` below. A Tauri window bound
- * to a remote codeg-server is still a TAURI WEBVIEW, and a webview that
- * registers no new-window handler opens nothing at all for `window.open` (wry
- * answers with nil on macOS, `SetHandled(true)` on Windows). Lumping remote
- * windows in with web mode here left every http(s) link in a remote workspace
- * silently dead; they must take the opener-plugin path instead, which
- * `capabilities/default.json` grants to the `remote-*` windows.
- */
-function windowOpenReachesABrowser(): boolean {
-  return !isDesktop()
-}
-
-/**
- * True when a `mailto:`/`tel:` URL should be handed to the OS through a
- * synthetic anchor rather than the Tauri opener plugin — pure web, or a Tauri
- * window bound to a remote codeg-server.
- *
- * The remote arm stays deliberately: unlike `window.open`, a synthetic anchor
- * DOES reach the OS handler from inside a webview, and it sidesteps the
- * question of whether the opener capability covers non-http(s) schemes.
- */
-function isWebOpenerEnvironment(): boolean {
-  return !isDesktop() || getActiveRemoteConnectionId() !== null
-}
-
 function shouldLetStreamdownOpenExternalUrl(rawUrl: string): boolean {
   if (parseLocalFileTarget(rawUrl)) return false
   const protocol = getAllowedExternalProtocol(rawUrl)
@@ -69,35 +44,30 @@ function shouldLetStreamdownOpenExternalUrl(rawUrl: string): boolean {
   return windowOpenReachesABrowser()
 }
 
-/**
- * Trigger an OS-registered protocol handler (mail client, dialer) from a
- * browser without leaving an empty tab. The synthetic anchor has no
- * `target`, so the browser hands the URL to the OS handler and stays on
- * the current page.
- */
-function dispatchOsHandlerUrl(url: string): void {
-  const anchor = document.createElement("a")
-  anchor.href = url
-  anchor.rel = "noreferrer noopener"
-  document.body.appendChild(anchor)
-  try {
-    anchor.click()
-  } finally {
-    anchor.remove()
-  }
+// `openExternalTab` moved to `@/lib/link-open`; re-exported for the transcript
+// components that import it from here.
+export { openExternalTab }
+
+// The modifier state of the most recent link gesture. Streamdown's link-safety
+// contract hands `useOpenLinkOrFile` only the URL (through its modal hook), so
+// the click handler parks the gesture here and the opener reads it back within
+// the same second. A stale record is ignored.
+let recentLinkGesture: { modifier: boolean; at: number } | null = null
+const LINK_GESTURE_WINDOW_MS = 1000
+
+export function rememberLinkGesture(event: {
+  metaKey?: boolean
+  ctrlKey?: boolean
+}): void {
+  recentLinkGesture = { modifier: isPrimaryModifier(event), at: Date.now() }
 }
 
-/**
- * Open an external URL in a new tab. Callers MUST invoke this inside the
- * click's own call stack — see `openLinkWithSafety`.
- */
-export function openExternalTab(url: string): void {
-  // `noreferrer` (which implies `noopener`) matters for AI-authored links: the
-  // opened page gets no `window.opener` handle back into the app and no
-  // Referer. It also makes `window.open` return null even on success (HTML
-  // window open steps 12 and 17), so the return value carries no signal —
-  // don't test it for a "popup blocked" check, it would fire on every success.
-  window.open(url, "_blank", "noreferrer")
+function consumeLinkGestureModifier(): boolean {
+  const gesture = recentLinkGesture
+  recentLinkGesture = null
+  return gesture !== null && Date.now() - gesture.at <= LINK_GESTURE_WINDOW_MS
+    ? gesture.modifier
+    : false
 }
 
 /**
@@ -115,8 +85,10 @@ export function openExternalTab(url: string): void {
 export function openLinkWithSafety(
   url: string,
   linkSafety: LinkSafetyConfig,
-  decline: () => void
+  decline: () => void,
+  gesture?: { metaKey?: boolean; ctrlKey?: boolean }
 ): void {
+  if (gesture) rememberLinkGesture(gesture)
   const verdict = linkSafety.onLinkCheck?.(url)
   if (verdict === true) {
     openExternalTab(url)
@@ -204,6 +176,7 @@ export function useOpenLinkOrFile() {
   const { activeFolder: folder } = useActiveFolder()
   const folderPath = folder?.path
   const openFileTarget = useOpenFileTarget()
+  const openUrlTarget = useOpenUrlTarget()
 
   return useCallback(
     async (url: string) => {
@@ -239,19 +212,18 @@ export function useOpenLinkOrFile() {
         return
       }
 
-      // Dispatch the CANONICAL form: a protocol-relative "//host/…" must
-      // reach the desktop opener as a concrete https URL — the opener
-      // capability only allows http(s), and raw "//…" would resolve
-      // against the webview's own scheme.
-      const openTarget = url.trim().startsWith("//")
-        ? `https:${url.trim()}`
-        : url
-
+      // http(s) and mailto/tel: the link decision (built-in browser, system
+      // browser, OS handler) runs and executes synchronously; the canonical
+      // form of a protocol-relative "//host/…" is produced in there.
       try {
-        if (OS_HANDLER_PROTOCOLS.has(protocol) && isWebOpenerEnvironment()) {
-          dispatchOsHandlerUrl(openTarget)
-        } else {
-          await openUrl(openTarget)
+        const action = openUrlTarget(url, {
+          source: "transcript",
+          modifier: consumeLinkGestureModifier(),
+        })
+        if (action.kind === "reject") {
+          toast.error(t("errorFailedLink"), {
+            description: t("errorUnsupportedLinkProtocol"),
+          })
         }
       } catch (error) {
         toast.error(t("errorFailedLink"), {
@@ -259,7 +231,7 @@ export function useOpenLinkOrFile() {
         })
       }
     },
-    [folderPath, openFileTarget, t]
+    [folderPath, openFileTarget, openUrlTarget, t]
   )
 }
 

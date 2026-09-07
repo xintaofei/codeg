@@ -23,6 +23,10 @@ import {
 } from "@/lib/terminal/keybar"
 import { TermKeybar } from "@/components/terminal/term-keybar"
 import { useZoomLevel, useTerminalFont } from "@/hooks/use-appearance"
+import {
+  isPrimaryModifier,
+  useOpenUrlTarget,
+} from "@/hooks/use-open-url-target"
 import { detectPlatform } from "@/hooks/use-platform"
 import type { TerminalEvent } from "@/lib/types"
 import type { ITerminalAddon, Terminal as XTermTerminal } from "@xterm/xterm"
@@ -97,6 +101,11 @@ export function TerminalView({
   const isActiveRef = useRef(isActive)
   const isVisibleRef = useRef(isVisible)
   const onProcessExitedRef = useRef(onProcessExited)
+  // Link clicks route through the app's link decision (built-in browser vs
+  // system browser, ⌘/Ctrl inverts). xterm's default handler is a bare
+  // `window.open`, which the desktop webview turns into a dead click.
+  const openUrlTarget = useOpenUrlTarget()
+  const openUrlTargetRef = useRef(openUrlTarget)
   const { zoomLevel } = useZoomLevel()
   const { terminalFontStack, terminalFontSize, terminalLigatures } =
     useTerminalFont()
@@ -201,6 +210,10 @@ export function TerminalView({
   }, [onProcessExited])
 
   useEffect(() => {
+    openUrlTargetRef.current = openUrlTarget
+  }, [openUrlTarget])
+
+  useEffect(() => {
     let cancelled = false
     let cleanup: (() => void) | undefined
 
@@ -212,7 +225,12 @@ export function TerminalView({
       if (cancelled || !containerRef.current) return
 
       const fitAddon = new FitAddon()
-      const webLinksAddon = new WebLinksAddon()
+      const webLinksAddon = new WebLinksAddon((event, uri) => {
+        openUrlTargetRef.current(uri, {
+          source: "terminal",
+          modifier: isPrimaryModifier(event),
+        })
+      })
 
       const term = new Terminal({
         cursorBlink: true,

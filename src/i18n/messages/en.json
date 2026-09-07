@@ -5796,6 +5796,16 @@
       "description": "A web page opened from the conversation",
       "openInWorkspace": "Open in workspace",
       "cannotOpen": "This address can't be opened here."
+    },
+    "toast": {
+      "firstOpen": "Opened in the built-in browser",
+      "firstOpenHint": "⌘/Ctrl-click a link to open it in your system browser instead. Change the default in Settings.",
+      "useSystemAlways": "Always use system browser"
+    },
+    "link": {
+      "openBuiltin": "Open in built-in browser",
+      "openSystem": "Open in system browser",
+      "copy": "Copy link"
     }
   }
 }

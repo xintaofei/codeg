@@ -5796,6 +5796,16 @@
       "description": "Una página web abierta desde la conversación",
       "openInWorkspace": "Abrir en el espacio de trabajo",
       "cannotOpen": "Esta dirección no se puede abrir aquí."
+    },
+    "toast": {
+      "firstOpen": "Abierto en el navegador integrado",
+      "firstOpenHint": "Haz ⌘/Ctrl+clic en un enlace para abrirlo en el navegador del sistema. Cambia el valor predeterminado en Ajustes.",
+      "useSystemAlways": "Usar siempre el navegador del sistema"
+    },
+    "link": {
+      "openBuiltin": "Abrir en el navegador integrado",
+      "openSystem": "Abrir en el navegador del sistema",
+      "copy": "Copiar enlace"
     }
   }
 }

@@ -5796,6 +5796,16 @@
       "description": "会話から開いたウェブページ",
       "openInWorkspace": "ワークスペースで開く",
       "cannotOpen": "このアドレスはここでは開けません。"
+    },
+    "toast": {
+      "firstOpen": "内蔵ブラウザで開きました",
+      "firstOpenHint": "⌘/Ctrl を押しながらリンクをクリックするとシステムのブラウザで開きます。既定は設定で変更できます。",
+      "useSystemAlways": "常にシステムのブラウザを使う"
+    },
+    "link": {
+      "openBuiltin": "内蔵ブラウザで開く",
+      "openSystem": "システムのブラウザで開く",
+      "copy": "リンクをコピー"
     }
   }
 }

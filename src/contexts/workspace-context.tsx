@@ -2780,6 +2780,12 @@ export function useWorkspaceActions(): WorkspaceActionsValue {
   return ctx
 }
 
+/** The actions, or `null` outside a `WorkspaceProvider` — for hooks that can
+ *  degrade (the link opener falls back to the system browser). */
+export function useOptionalWorkspaceActions(): WorkspaceActionsValue | null {
+  return useContext(WorkspaceActionsContext)
+}
+
 // Low-frequency layout state (mode / activePane / filesMaximized). Changes
 // only on fusion transitions, pane switches, and maximize toggles.
 export function useWorkspaceView(): WorkspaceViewValue {
