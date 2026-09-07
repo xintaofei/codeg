@@ -5812,6 +5812,7 @@
       "errorBlocked": "Este endereço está bloqueado no navegador integrado",
       "errorPopupDenied": "Pop-up bloqueado",
       "errorFailed": "Não foi possível carregar esta página",
+      "errorFailedHint": "A ligação ao site não foi estabelecida. Verifique a sua rede e o endereço; pode ser necessário um proxy.",
       "retry": "Tentar novamente",
       "openInSystem": "Abrir no navegador do sistema",
       "ownedWindow": "Esta página é exibida em uma janela própria.",

@@ -12,7 +12,7 @@ use crate::browser::surface::BrowserSurface;
 use crate::browser::types::{
     Bounds, BrowserCapabilities, BrowserTabState, ChannelKind, SurfaceChoice, SurfaceKind,
 };
-use crate::browser::{events, policy, tab_label};
+use crate::browser::{events, hooks, policy, tab_label};
 
 #[cfg(all(
     feature = "browser-child",
@@ -228,6 +228,7 @@ pub fn open_tab_core(
         let _ = surface.close();
         return Err(window_err("Failed to navigate browser tab", err));
     }
+    hooks::begin_load(app, &params.tab_id);
     events::emit_state(app, &state);
     Ok(state)
 }
@@ -381,6 +382,7 @@ pub fn navigate_core(
     surface
         .navigate(url)
         .map_err(|e| window_err("Failed to navigate browser tab", e))?;
+    hooks::begin_load(app, tab_id);
     events::emit_state(app, &state);
     Ok(state)
 }

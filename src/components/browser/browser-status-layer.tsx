@@ -110,6 +110,10 @@ export function BrowserErrorPage({
 }) {
   const t = useTranslations("Browser.status")
   const backendId = browserTabBackendId(tab.id)
+  // Platform errors carry their own (untranslated) text; the one we raise
+  // ourselves for a navigation that never produced a page does not.
+  const detail =
+    error.message || (error.kind === "failed" ? t("errorFailedHint") : "")
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
       <ShieldAlert className="h-8 w-8 text-muted-foreground/60" />
@@ -117,12 +121,10 @@ export function BrowserErrorPage({
         {errorLabel(t, error)}
       </p>
       <p className="max-w-md break-all text-xs text-muted-foreground">
-        {error.url ?? url}
+        {error.url || url}
       </p>
-      {error.message ? (
-        <p className="max-w-md text-xs text-muted-foreground/80">
-          {error.message}
-        </p>
+      {detail ? (
+        <p className="max-w-md text-xs text-muted-foreground/80">{detail}</p>
       ) : null}
       <div className="mt-1 flex items-center gap-2">
         <button
@@ -136,7 +138,7 @@ export function BrowserErrorPage({
         <button
           type="button"
           className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs hover:bg-primary/8"
-          onClick={() => void openUrl(error.url ?? url)}
+          onClick={() => void openUrl(error.url || url)}
         >
           <ExternalLink className="h-3.5 w-3.5" />
           {t("openInSystem")}

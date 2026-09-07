@@ -5812,6 +5812,7 @@
       "errorBlocked": "내장 브라우저에서 열 수 없는 주소입니다",
       "errorPopupDenied": "팝업이 차단되었습니다",
       "errorFailed": "페이지를 불러올 수 없습니다",
+      "errorFailedHint": "사이트에 연결하지 못했습니다. 네트워크와 주소를 확인하세요. 프록시가 필요할 수도 있습니다.",
       "retry": "다시 시도",
       "openInSystem": "시스템 브라우저에서 열기",
       "ownedWindow": "이 페이지는 별도의 창에 표시됩니다.",

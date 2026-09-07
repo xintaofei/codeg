@@ -5812,6 +5812,7 @@
       "errorBlocked": "Diese Adresse ist im integrierten Browser gesperrt",
       "errorPopupDenied": "Pop-up blockiert",
       "errorFailed": "Diese Seite kann nicht geladen werden",
+      "errorFailedHint": "Die Verbindung zur Website kam nicht zustande. Prüfe dein Netzwerk und die Adresse; eventuell ist ein Proxy nötig.",
       "retry": "Erneut versuchen",
       "openInSystem": "Im Systembrowser öffnen",
       "ownedWindow": "Diese Seite wird in einem eigenen Fenster angezeigt.",

@@ -162,9 +162,34 @@ impl ChildHandle {
         self.op(|wv| wv.reload())
     }
 
+    /// The committed URL. `Err` while nothing has committed yet — never
+    /// wry's `url()`, whose `unwrap` of a nil `WKWebView.URL` panics the
+    /// main thread.
     pub fn url(&self) -> Result<String, ChildError> {
-        self.with(|wv| wv.url().map_err(|e| e.to_string()))?
-            .map_err(ChildError::Op)
+        #[cfg(target_os = "macos")]
+        {
+            self.with(shim::current_url)?
+                .ok_or_else(|| ChildError::Op("no committed URL yet".into()))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.with(|wv| wv.url().map_err(|e| e.to_string()))?
+                .map_err(ChildError::Op)
+        }
+    }
+
+    /// Whether the engine still has a navigation in flight.
+    pub fn is_loading(&self) -> Result<bool, ChildError> {
+        #[cfg(target_os = "macos")]
+        {
+            self.with(shim::is_loading)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Err(ChildError::Op(
+                "load state is not implemented on this platform yet".into(),
+            ))
+        }
     }
 
     pub fn evaluate_script(&self, js: &str) -> Result<(), ChildError> {
@@ -587,6 +612,9 @@ fn new_window_handler(
                 SURFACES.with(|s| s.borrow_mut().remove(&tab_id));
                 return deny(&app, &opener_tab_id, &url, &features, "registry");
             }
+            // The engine navigates this webview itself; arm the failed-load
+            // watcher since a never-committing load reports nothing.
+            hooks::begin_load(&app, &tab_id);
             events::emit_state(&app, &state);
             events::emit_popup(
                 &app,

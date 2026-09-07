@@ -5812,6 +5812,7 @@
       "errorBlocked": "内置浏览器不允许打开该地址",
       "errorPopupDenied": "弹窗已拦截",
       "errorFailed": "页面无法加载",
+      "errorFailedHint": "没有连接到该网站。请检查网络和地址，必要时可能需要代理。",
       "retry": "重试",
       "openInSystem": "在系统浏览器中打开",
       "ownedWindow": "该页面显示在独立窗口中。",

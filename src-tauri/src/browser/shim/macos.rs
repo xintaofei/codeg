@@ -276,6 +276,22 @@ pub fn clear_default_data_store(done: impl Fn() + 'static) -> Result<(), String>
     Ok(())
 }
 
+/// `WKWebView.URL`, or `None` before any navigation has committed (and after
+/// a first navigation failed). wry's own `url()` unwraps this and panics.
+pub fn current_url(webview: &wry::WebView) -> Option<String> {
+    let wk = WebViewExtMacOS::webview(webview);
+    // SAFETY: main thread; WebKit hands back an owned NSURL / NSString.
+    unsafe { wk.URL().and_then(|u| u.absoluteString()).map(|s| s.to_string()) }
+}
+
+/// `WKWebView.isLoading`. wry has no navigation-failure callback, so this is
+/// the only way to notice that a load ended without finishing.
+pub fn is_loading(webview: &wry::WebView) -> bool {
+    let wk = WebViewExtMacOS::webview(webview);
+    // SAFETY: main thread.
+    unsafe { wk.isLoading() }
+}
+
 pub fn webview_pointer(webview: &wry::WebView) -> usize {
     Retained::as_ptr(&webview.webview()) as usize
 }
@@ -284,7 +300,7 @@ pub fn webview_pointer(webview: &wry::WebView) -> usize {
 pub fn debug_view(webview: &wry::WebView) -> serde_json::Value {
     let wk = webview.webview();
     // SAFETY: main thread, live view.
-    let (hidden, hidden_or_ancestor, has_window, has_superview, frame) = unsafe {
+    let (hidden, hidden_or_ancestor, has_window, has_superview, frame, loading, has_url) = unsafe {
         let frame = wk.frame();
         (
             wk.isHidden(),
@@ -292,10 +308,14 @@ pub fn debug_view(webview: &wry::WebView) -> serde_json::Value {
             wk.window().is_some(),
             wk.superview().is_some(),
             [frame.origin.x, frame.origin.y, frame.size.width, frame.size.height],
+            wk.isLoading(),
+            wk.URL().is_some(),
         )
     };
     serde_json::json!({
         "hidden": hidden,
+        "isLoading": loading,
+        "hasUrl": has_url,
         "hiddenOrAncestor": hidden_or_ancestor,
         "hasWindow": has_window,
         "hasSuperview": has_superview,

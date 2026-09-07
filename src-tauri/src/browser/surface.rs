@@ -84,10 +84,14 @@ impl BrowserSurface {
         per_surface!(self, child: |c| Ok(c.reload()?), window: |w| Ok(w.reload()?))
     }
 
+    /// Dev puppet only. Owned windows are deliberately not asked: wry 0.55's
+    /// `url()` unwraps `WKWebView.URL`, which is nil until a navigation has
+    /// committed (or after the first one failed), and that unwrap panics the
+    /// main thread. The registry state carries the URL either way.
     pub fn url(&self) -> Result<Url, SurfaceError> {
         per_surface!(self,
             child: |c| Url::parse(&c.url()?).map_err(|e| SurfaceError(e.to_string())),
-            window: |w| Ok(w.url()?))
+            window: |_w| Err(SurfaceError("owned windows report their URL through the tab state".into())))
     }
 
     pub fn eval(&self, js: &str) -> Result<(), SurfaceError> {
@@ -167,6 +171,14 @@ impl BrowserSurface {
         per_surface!(self,
             child: |c| Ok(c.go_forward()?),
             window: |_w| Err(SurfaceError("history navigation for owned windows lands with the platform shims".into())))
+    }
+
+    /// Engine-side "still loading", used to notice failed navigations (wry
+    /// reports no failure event). Owned windows: not yet.
+    pub fn is_loading(&self) -> Result<bool, SurfaceError> {
+        per_surface!(self,
+            child: |c| Ok(c.is_loading()?),
+            window: |_w| Err(SurfaceError("load state for owned windows lands with the platform shims".into())))
     }
 
     pub fn can_go_back(&self) -> Result<bool, SurfaceError> {

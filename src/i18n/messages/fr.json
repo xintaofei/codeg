@@ -5812,6 +5812,7 @@
       "errorBlocked": "Cette adresse est bloquée dans le navigateur intégré",
       "errorPopupDenied": "Fenêtre contextuelle bloquée",
       "errorFailed": "Impossible de charger cette page",
+      "errorFailedHint": "La connexion au site n'a pas abouti. Vérifiez votre réseau et l'adresse ; un proxy est peut-être nécessaire.",
       "retry": "Réessayer",
       "openInSystem": "Ouvrir dans le navigateur système",
       "ownedWindow": "Cette page s'affiche dans sa propre fenêtre.",

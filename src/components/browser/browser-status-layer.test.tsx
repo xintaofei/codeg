@@ -12,7 +12,7 @@ vi.mock("@/contexts/workspace-context", () => ({
 vi.mock("@/lib/browser/browser-api", () => ({ browserReload: vi.fn() }))
 vi.mock("@/lib/platform", () => ({ openUrl: vi.fn() }))
 
-import { BrowserNoticeBar } from "./browser-status-layer"
+import { BrowserErrorPage, BrowserNoticeBar } from "./browser-status-layer"
 import type { BrowserWorkspaceTab } from "@/contexts/workspace-context"
 import enMessages from "@/i18n/messages/en.json"
 import {
@@ -92,5 +92,46 @@ describe("BrowserNoticeBar", () => {
     ).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }))
     expect(screen.queryByText(/Pop-up blocked/)).not.toBeInTheDocument()
+  })
+})
+
+function renderError(error: {
+  kind: string
+  message: string
+  url: string | null
+}) {
+  return render(
+    <NextIntlClientProvider locale="en" messages={enMessages}>
+      <BrowserErrorPage
+        tab={tab}
+        error={error as never}
+        url="https://example.com/"
+      />
+    </NextIntlClientProvider>
+  )
+}
+
+describe("BrowserErrorPage", () => {
+  it("explains a navigation that never produced a page", () => {
+    renderError({
+      kind: "failed",
+      message: "",
+      url: "https://news.example.com/",
+    })
+    expect(screen.getByText("This page can't be loaded")).toBeInTheDocument()
+    expect(screen.getByText("https://news.example.com/")).toBeInTheDocument()
+    expect(screen.getByText(/a proxy may be required/)).toBeInTheDocument()
+  })
+
+  it("prefers the platform's own wording and the tab URL as a fallback", () => {
+    renderError({ kind: "tls", message: "certificate expired", url: null })
+    expect(
+      screen.getByText("This connection is not secure")
+    ).toBeInTheDocument()
+    expect(screen.getByText("https://example.com/")).toBeInTheDocument()
+    expect(screen.getByText("certificate expired")).toBeInTheDocument()
+    expect(
+      screen.queryByText(/a proxy may be required/)
+    ).not.toBeInTheDocument()
   })
 })

@@ -5812,6 +5812,7 @@
       "errorBlocked": "This address is blocked in the built-in browser",
       "errorPopupDenied": "Pop-up blocked",
       "errorFailed": "This page can't be loaded",
+      "errorFailedHint": "The connection didn't reach the site. Check your network and the address; a proxy may be required.",
       "retry": "Retry",
       "openInSystem": "Open in system browser",
       "ownedWindow": "This page is shown in its own window.",

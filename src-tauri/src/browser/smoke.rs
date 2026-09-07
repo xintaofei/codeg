@@ -113,7 +113,12 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                         "position": w.outer_position().ok().map(|p| [p.x, p.y]),
                         "size": w.inner_size().ok().map(|s| [s.width, s.height]),
                         "scale": w.scale_factor().ok(),
-                        "url": w.url().ok().map(|u| u.to_string()),
+                        // Never `url()` a browser window: see `BrowserSurface::url`.
+                        "url": if w.label().starts_with(crate::browser::TAB_LABEL_PREFIX) {
+                            None
+                        } else {
+                            w.url().ok().map(|u| u.to_string())
+                        },
                     })
                 })
                 .collect();

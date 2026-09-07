@@ -5812,6 +5812,7 @@
       "errorBlocked": "內建瀏覽器不允許開啟此網址",
       "errorPopupDenied": "彈出視窗已攔截",
       "errorFailed": "無法載入頁面",
+      "errorFailedHint": "沒有連線到該網站。請檢查網路與網址，必要時可能需要代理。",
       "retry": "重試",
       "openInSystem": "在系統瀏覽器中開啟",
       "ownedWindow": "此頁面顯示在獨立視窗中。",

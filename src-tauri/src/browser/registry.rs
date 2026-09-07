@@ -36,6 +36,9 @@ pub struct BrowserTab {
     /// Whether the surface was built with the inspector enabled (a user
     /// preference read at open time). Popups inherit their opener's value.
     pub devtools: bool,
+    /// Bumped on every navigation start; a load watcher captures it and
+    /// stands down when a newer navigation supersedes its own.
+    pub load_seq: u64,
     pub gestures: VecDeque<GestureRecord>,
 }
 
@@ -53,6 +56,7 @@ impl BrowserTab {
             last_bounds: bounds,
             visible,
             devtools,
+            load_seq: 0,
             gestures: VecDeque::with_capacity(GESTURE_RING_CAPACITY),
         }
     }
