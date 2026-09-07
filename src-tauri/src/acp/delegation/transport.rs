@@ -62,6 +62,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::acp::chat_authoring::{NewAutomationSpec, NewWorkTaskSpec};
 use crate::acp::question::QuestionSpec;
 
+mod continuation;
+pub use continuation::{
+    client_cancel_session_turn_round_trip, client_close_session_round_trip,
+    client_continue_with_session_round_trip, client_get_session_turn_status_round_trip,
+    BrokerCancelSessionTurnRequest, BrokerCloseSessionRequest,
+    BrokerContinueWithSessionRequest, BrokerGetSessionTurnStatusRequest,
+};
+
 /// One delegation call's worth of input forwarded from the companion to the
 /// main process. The main process re-validates `token` and maps
 /// `parent_connection_id` to the live ACP connection.
@@ -244,40 +252,6 @@ pub struct BrokerCreateWorkTaskRequest {
     pub spec: NewWorkTaskSpec,
 }
 
-/// Accept a rework turn on a frozen completed delegation source. Backs the
-/// `continue_with_session` MCP tool (continuation group). The parent
-/// connection id rides the same trusted token framing as every other
-/// message; the listener resolves the persistent parent identity from it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BrokerContinueWithSessionRequest {
-    pub token: String,
-    pub source_task_id: String,
-    pub request_id: String,
-    pub message: String,
-}
-
-/// Poll one collaboration turn. Backs `get_session_turn_status`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BrokerGetSessionTurnStatusRequest {
-    pub token: String,
-    pub turn_id: String,
-    pub wait_ms: u64,
-}
-
-/// Cancel one collaboration turn. Backs `cancel_session_turn`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BrokerCancelSessionTurnRequest {
-    pub token: String,
-    pub turn_id: String,
-}
-
-/// Close a collaboration session. Backs `close_session`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BrokerCloseSessionRequest {
-    pub token: String,
-    pub session_id: String,
-}
-
 /// Tagged top-level message dispatched by the listener. Adding new variants
 /// is the wire-stable way to grow the broker protocol without touching the
 /// frame layer.
@@ -413,51 +387,6 @@ pub async fn client_resume_task_round_trip(
     req: &BrokerResumeTaskRequest,
 ) -> io::Result<BrokerResponse> {
     message_round_trip(socket_path, &BrokerMessage::ResumeTask(req.clone())).await
-}
-
-/// One-shot continuation round-trips: connect, send, read the envelope. The
-/// `outcome` value carries the schema_version=1 wire DTO (TurnAck /
-/// TurnReport / SessionSummary) on success, or a serialized
-/// `ContinuationError` on rejection — the companion renders both as tool
-/// content, keeping business errors out of the JSON-RPC error channel.
-pub async fn client_continue_with_session_round_trip(
-    socket_path: &str,
-    req: &BrokerContinueWithSessionRequest,
-) -> io::Result<BrokerResponse> {
-    message_round_trip(
-        socket_path,
-        &BrokerMessage::ContinueWithSession(req.clone()),
-    )
-    .await
-}
-
-pub async fn client_get_session_turn_status_round_trip(
-    socket_path: &str,
-    req: &BrokerGetSessionTurnStatusRequest,
-) -> io::Result<BrokerResponse> {
-    message_round_trip(
-        socket_path,
-        &BrokerMessage::GetSessionTurnStatus(req.clone()),
-    )
-    .await
-}
-
-pub async fn client_cancel_session_turn_round_trip(
-    socket_path: &str,
-    req: &BrokerCancelSessionTurnRequest,
-) -> io::Result<BrokerResponse> {
-    message_round_trip(
-        socket_path,
-        &BrokerMessage::CancelSessionTurn(req.clone()),
-    )
-    .await
-}
-
-pub async fn client_close_session_round_trip(
-    socket_path: &str,
-    req: &BrokerCloseSessionRequest,
-) -> io::Result<BrokerResponse> {
-    message_round_trip(socket_path, &BrokerMessage::CloseSession(req.clone())).await
 }
 
 /// Dispatch a `check_user_feedback` query and read back the
