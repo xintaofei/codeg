@@ -9071,12 +9071,46 @@ fn shared_skill_restore_links(
     Ok(links)
 }
 
+fn plan_shared_skill_fanout<'a>(
+    selected: &SkillPeer,
+    peers: &'a [SkillPeer],
+    root: &Path,
+    skill: &AgentSkillItem,
+) -> Result<Vec<(&'a SkillPeer, PathBuf)>, AcpError> {
+    let vault = disabled_skill_root(root);
+    preflight_skill_destination(&vault, &skill.id)?;
+    for scan in &selected.roots {
+        preflight_skill_destination(&disabled_skill_root(scan), &skill.id)?;
+    }
+    let source = Path::new(&skill.path);
+    preflight_skill_symlink_move(source, &vault)?;
+    let filename = source
+        .file_name()
+        .ok_or_else(|| AcpError::protocol("skill has no filename"))?;
+    let mut destinations = Vec::new();
+    for peer in shared_skill_affected_peers(selected, peers, root, skill.layout)? {
+        reject_multiple_active_skills(&peer.roots, peer.kind, &skill.id)?;
+        for scan in &peer.roots {
+            preflight_skill_destination(&disabled_skill_root(scan), &skill.id)?;
+        }
+        let destination_root = unique_skill_root(peer, peers)?.ok_or_else(|| {
+            AcpError::protocol(format!(
+                "shared skill root: {} has no unique writable root",
+                peer.agent
+            ))
+        })?;
+        preflight_skill_destination(&destination_root, &skill.id)?;
+        destinations.push((peer, destination_root.join(filename)));
+    }
+    Ok(destinations)
+}
+
 fn listed_skill_can_toggle(
     selected: &SkillPeer,
     peers: &[SkillPeer],
     skill: &AgentSkillItem,
-    workspace_path: Option<&str>,
 ) -> Result<bool, AcpError> {
+    reject_multiple_active_skills(&selected.roots, selected.kind, &skill.id)?;
     let parent = Path::new(&skill.path).parent();
     let root = selected
         .roots
@@ -9093,25 +9127,24 @@ fn listed_skill_can_toggle(
         return Ok(true);
     }
     preflight_shared_skill_owner(root, peers)?;
-    preflight_disabled_skill_root(root, workspace_path)?;
-    let affected = shared_skill_affected_peers(selected, peers, root, skill.layout)?;
+    preflight_disabled_skill_root_with_peers(root, peers)?;
     if skill.enabled {
         if !skill_root_writable(root) || !skill_root_writable(&disabled_skill_root(root)) {
             return Ok(false);
         }
-        for peer in affected {
-            if unique_skill_root(peer, peers)?.is_none() {
-                return Ok(false);
-            }
-        }
+        plan_shared_skill_fanout(selected, peers, root, skill)?;
         return Ok(true);
     }
-    if unique_skill_root(selected, peers)?.is_some() {
+    if let Some(destination_root) = unique_skill_root(selected, peers)? {
+        preflight_skill_destination(&destination_root, &skill.id)?;
         return Ok(true);
     }
     if !skill_root_writable(root) || !skill_root_writable(&disabled_skill_root(root)) {
         return Ok(false);
     }
+    preflight_skill_destination(root, &skill.id)?;
+    preflight_skill_symlink_move(Path::new(&skill.path), root)?;
+    let affected = shared_skill_affected_peers(selected, peers, root, skill.layout)?;
     shared_skill_restore_links(&affected, &skill.id, Path::new(&skill.path))?;
     Ok(true)
 }
@@ -9282,23 +9315,7 @@ fn set_shared_skill_enabled(
     let resolved_root = resolved_skill_root(root)?;
     let vault = disabled_skill_root(root);
     let resolved_vault = resolved_skill_root(&vault)?;
-    for peer in peers {
-        for native in &peer.roots {
-            let resolved_native = resolved_skill_root(native)?;
-            if skill_roots_overlap(&resolved_vault, &resolved_native) {
-                return Err(AcpError::protocol(
-                    "disabled skill vault overlaps native scan root",
-                ));
-            }
-            if resolved_native != resolved_root
-                && resolved_skill_root(&disabled_skill_root(native))? == resolved_vault
-            {
-                return Err(AcpError::protocol(
-                    "shared skill storage: disabled vault has multiple native owners",
-                ));
-            }
-        }
-    }
+    preflight_disabled_skill_root_with_peers(root, peers)?;
     let first_disable = original.enabled
         && resolved_skill_root(Path::new(&original.path).parent().expect("skill parent"))?
             == resolved_root;
@@ -9317,24 +9334,8 @@ fn set_shared_skill_enabled(
     let mut restore_shared = false;
     let mut redundant_links = Vec::new();
     if first_disable {
-        preflight_skill_destination(&vault, &id)?;
-        for scan in &selected.roots {
-            preflight_skill_destination(&disabled_skill_root(scan), &id)?;
-        }
-        preflight_skill_symlink_move(Path::new(&original.path), &vault)?;
-        for peer in shared_skill_affected_peers(selected, peers, root, canonical_item.layout)? {
-            reject_multiple_active_skills(&peer.roots, peer.kind, &id)?;
-            for scan in &peer.roots {
-                preflight_skill_destination(&disabled_skill_root(scan), &id)?;
-            }
-            let destination_root = unique_skill_root(peer, peers)?.ok_or_else(|| {
-                AcpError::protocol(format!(
-                    "shared skill root: {} has no unique writable root",
-                    peer.agent
-                ))
-            })?;
-            preflight_skill_destination(&destination_root, &id)?;
-            destinations.push(destination_root.join(file_name));
+        for (peer, destination) in plan_shared_skill_fanout(selected, peers, root, &original)? {
+            destinations.push(destination);
             affected.push(peer);
         }
     } else if enabled {
@@ -9488,11 +9489,18 @@ fn preflight_disabled_skill_root(
     root: &Path,
     workspace_path: Option<&str>,
 ) -> Result<(), AcpError> {
+    preflight_disabled_skill_root_with_peers(root, &skill_peers(workspace_path))
+}
+
+fn preflight_disabled_skill_root_with_peers(
+    root: &Path,
+    peers: &[SkillPeer],
+) -> Result<(), AcpError> {
     let vault = disabled_skill_root(root);
     let resolved_vault = resolved_skill_root(&vault)?;
     let resolved_root = resolved_skill_root(root)?;
-    for (_, _, native_root) in native_skill_roots(workspace_path) {
-        let resolved_native = resolved_skill_root(&native_root)?;
+    for native_root in peers.iter().flat_map(|peer| &peer.roots) {
+        let resolved_native = resolved_skill_root(native_root)?;
         if skill_roots_overlap(&resolved_vault, &resolved_native) {
             return Err(AcpError::protocol(format!(
                 "disabled skill vault '{}' overlaps native scan root '{}'",
@@ -9501,7 +9509,7 @@ fn preflight_disabled_skill_root(
             )));
         }
         if resolved_native != resolved_root
-            && resolved_vault == resolved_skill_root(&disabled_skill_root(&native_root))?
+            && resolved_vault == resolved_skill_root(&disabled_skill_root(native_root))?
         {
             return Err(AcpError::protocol(format!(
                 "shared skill storage: disabled vault '{}' is shared by native roots '{}' and '{}'; toggling is unsupported",
@@ -13630,8 +13638,7 @@ pub async fn acp_list_agent_skills(
                 .iter()
                 .find(|peer| peer.agent == agent_type && peer.scope == skill.scope)
                 .is_some_and(|selected| {
-                    listed_skill_can_toggle(selected, &peers, skill, workspace_path.as_deref())
-                        .unwrap_or(false)
+                    listed_skill_can_toggle(selected, &peers, skill).unwrap_or(false)
                 });
         }
     }
@@ -17133,6 +17140,96 @@ wire_api = "chat"
         let item = skill_capability_list_project(&runtime, AgentType::ClaudeCode, tmp.path());
         assert!(!item.can_toggle);
         assert!(item.enabled);
+        assert!(shared.join("capability-demo/SKILL.md").is_file());
+        assert!(!disabled_skill_root(&shared).exists());
+    }
+
+    #[test]
+    fn skill_capability_unique_enable_ignores_unneeded_shared_restore_peers() {
+        use crate::acp::custom_registry::{hydrate, hydrate_test_guard};
+        let _registry_guard = hydrate_test_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        let shared = skill_capability_project_fixture(tmp.path());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let workspace = Some(tmp.path().to_string_lossy().into_owned());
+        for agent in [AgentType::ClaudeCode, AgentType::Cline] {
+            runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    agent,
+                    AgentSkillScope::Project,
+                    "capability-demo".into(),
+                    workspace.clone(),
+                    false,
+                ))
+                .unwrap();
+        }
+        let nested = shared.join("nested/skills");
+        fs::create_dir_all(&nested).unwrap();
+        assert!(hydrate(&[shared_skill_custom_def("capability-nested-peer", &nested)]).is_empty());
+        let listed = skill_capability_list_project(&runtime, AgentType::Cline, tmp.path());
+        assert!(!tmp.path().join(".cline/skills/capability-demo").exists());
+        let enabled = runtime.block_on(acp_set_agent_skill_enabled(
+            AgentType::Cline,
+            AgentSkillScope::Project,
+            "capability-demo".into(),
+            workspace,
+            true,
+        ));
+        hydrate(&[]);
+        assert!(
+            enabled.unwrap().enabled,
+            "execution can enable via Cline's unique root"
+        );
+        assert!(
+            listed.can_toggle,
+            "unique enable does not restore the shared root"
+        );
+    }
+
+    #[test]
+    fn skill_capability_shared_peer_duplicate_is_false_before_fanout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shared = skill_capability_project_fixture(tmp.path());
+        let independent = tmp.path().join(".cline/skills/capability-demo");
+        fs::create_dir_all(&independent).unwrap();
+        fs::write(independent.join("SKILL.md"), "independent").unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let listed = skill_capability_list_project(&runtime, AgentType::ClaudeCode, tmp.path());
+        let error = runtime
+            .block_on(acp_set_agent_skill_enabled(
+                AgentType::ClaudeCode,
+                AgentSkillScope::Project,
+                "capability-demo".into(),
+                Some(tmp.path().to_string_lossy().into_owned()),
+                false,
+            ))
+            .unwrap_err();
+        assert!(error.to_string().contains("multiple active skills"));
+        assert!(
+            !listed.can_toggle,
+            "existing peer duplicate blocks the same fanout execution"
+        );
+        assert!(shared.join("capability-demo/SKILL.md").is_file());
+        assert_eq!(
+            fs::read_to_string(independent.join("SKILL.md")).unwrap(),
+            "independent"
+        );
+        assert!(!disabled_skill_root(&shared).exists());
+    }
+
+    #[test]
+    fn skill_capability_existing_fanout_destination_conflict_is_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shared = skill_capability_project_fixture(tmp.path());
+        let peer_root = tmp.path().join(".cline/skills");
+        fs::create_dir_all(&peer_root).unwrap();
+        fs::write(peer_root.join("capability-demo"), "occupied").unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let listed = skill_capability_list_project(&runtime, AgentType::ClaudeCode, tmp.path());
+        assert!(
+            !listed.can_toggle,
+            "existing destination conflicts are deterministic blockers"
+        );
         assert!(shared.join("capability-demo/SKILL.md").is_file());
         assert!(!disabled_skill_root(&shared).exists());
     }
