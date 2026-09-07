@@ -411,19 +411,36 @@ pub fn reload_core(
     tab_id: &str,
 ) -> Result<(), AppCommandError> {
     let surface = surface_of(registry, tab_id)?;
-    // A navigation that failed before committing left no document behind, and
-    // reloading nothing does nothing — the error page's retry button has to
-    // start the requested navigation over.
-    if surface.url().is_err() {
-        let requested = registry.state(tab_id).map(|s| s.requested_url);
-        if let Some(url) = requested.filter(|u| !u.is_empty()) {
-            navigate_core(app, registry, tab_id, &url)?;
-            return Ok(());
-        }
+    let current = registry
+        .state(tab_id)
+        .ok_or_else(|| AppCommandError::not_found(format!("browser tab {tab_id} not found")))?;
+    // Retry rather than reload when the page showing is not the one asked
+    // for: a navigation that failed before committing left nothing to reload
+    // (or left an older document, which the error page now covers), and the
+    // error page's button means "try that address again".
+    let retry = current.error.is_some() || surface.url().is_err();
+    if retry && !current.requested_url.is_empty() {
+        navigate_core(app, registry, tab_id, &current.requested_url)?;
+        return Ok(());
     }
+    // A reload asks for the document that is showing; saying so keeps the
+    // load watcher's "did the requested page arrive" check honest after an
+    // in-page (pushState) navigation moved `url` away from the last request.
+    let state = registry.update_state(tab_id, |state| {
+        if !state.url.is_empty() {
+            state.requested_url = state.url.clone();
+        }
+        state.loading = true;
+        state.error = None;
+    });
     surface
         .reload()
-        .map_err(|e| window_err("Failed to reload browser tab", e))
+        .map_err(|e| window_err("Failed to reload browser tab", e))?;
+    hooks::begin_load(app, tab_id);
+    if let Some(state) = state {
+        events::emit_state(app, &state);
+    }
+    Ok(())
 }
 
 pub fn go_back_core(registry: &BrowserRegistry, tab_id: &str) -> Result<(), AppCommandError> {

@@ -83,9 +83,9 @@ const LOAD_FINISH_GRACE: Duration = Duration::from_millis(300);
 /// wry reports navigation start and finish but never failure, so a DNS,
 /// connection or TLS error would leave `loading: true` forever. Poll the
 /// engine's own flag until it clears; if our state is still loading a moment
-/// later, the load ended without a document — surface it as an error, or,
-/// when an older document is still showing, just stop the spinner. A newer
-/// navigation (higher `load_seq`) retires the watcher.
+/// later, the load ended without the requested page — surface it as an error
+/// (a failed reload of the page already showing just stops the spinner). A
+/// newer navigation (higher `load_seq`) retires the watcher.
 fn watch_load(app: AppHandle, tab_id: String, seq: u64) {
     tauri::async_runtime::spawn(async move {
         loop {
@@ -120,14 +120,19 @@ fn watch_load(app: AppHandle, tab_id: String, seq: u64) {
             let has_document = surface.url().is_ok();
             let next = registry.update_state(&tab_id, |state| {
                 state.loading = false;
-                if !has_document {
-                    // Nothing committed, so `url` is still empty: the error
-                    // page needs the address the user asked for. The wording
-                    // is the status layer's, in the user's language.
-                    let url = if state.url.is_empty() {
-                        state.requested_url.clone()
-                    } else {
+                // The load ended without the requested page: either nothing
+                // ever committed, or an older document is still showing while
+                // the address the user asked for never arrived (a reload that
+                // failed keeps its page and just stops the spinner). The error
+                // page names the requested address; its wording is the status
+                // layer's, in the user's language.
+                let requested_arrived = has_document
+                    && (state.requested_url.is_empty() || state.requested_url == state.url);
+                if !requested_arrived {
+                    let url = if state.requested_url.is_empty() {
                         state.url.clone()
+                    } else {
+                        state.requested_url.clone()
                     };
                     state.error = Some(BrowserErrorInfo {
                         kind: BrowserErrorKind::Failed,
