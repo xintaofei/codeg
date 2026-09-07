@@ -2260,7 +2260,6 @@ pub(crate) async fn spawn_agent_connection_with_transport_managed<
         .stack_size(ACP_CONNECTION_STACK_SIZE)
         .spawn(move || {
             let _cleanup = cleanup_guard;
-            process_lifetime.mark_driver_running();
             connection_rt.block_on(async move {
         let delegation_for_cleanup = delegation_injection.clone();
         let result = run_connection(
@@ -13810,7 +13809,6 @@ mod tests {
             None,
         )));
         let lifetime = lifetime::ConnectionProcessLifetime::new();
-        lifetime.mark_driver_running();
         let (cmd_tx, _cmd_rx) = mpsc::channel(1);
         let resource = lifetime::ConnectionResource::new(
             connection_id.to_string(),

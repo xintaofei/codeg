@@ -19,16 +19,9 @@ pub(crate) enum ProcessPhase {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DriverPhase {
-    Starting,
-    Running,
-    Exited,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct LifetimeState {
     process: ProcessPhase,
-    driver: DriverPhase,
+    driver_exited: bool,
     revision: u64,
 }
 
@@ -50,7 +43,7 @@ impl ConnectionProcessLifetime {
         Arc::new(Self {
             state: Mutex::new(LifetimeState {
                 process: ProcessPhase::NotSpawned,
-                driver: DriverPhase::Starting,
+                driver_exited: false,
                 revision: 0,
             }),
             changed: Notify::new(),
@@ -58,12 +51,8 @@ impl ConnectionProcessLifetime {
         })
     }
 
-    pub(crate) fn mark_driver_running(&self) {
-        self.update(|state| state.driver = DriverPhase::Running);
-    }
-
     pub(crate) fn mark_driver_exited(&self) {
-        self.update(|state| state.driver = DriverPhase::Exited);
+        self.update(|state| state.driver_exited = true);
     }
 
     pub(crate) fn mark_spawned(&self, pid: u32) {
@@ -91,7 +80,7 @@ impl ConnectionProcessLifetime {
 
     pub(crate) fn release_confirmed(&self) -> bool {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.driver == DriverPhase::Exited
+        state.driver_exited
             && matches!(
                 state.process,
                 ProcessPhase::NotSpawned | ProcessPhase::Reaped
@@ -149,12 +138,6 @@ impl ConnectionProcessLifetime {
             }
             notified.await;
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn phases_for_test(&self) -> (ProcessPhase, DriverPhase) {
-        let state = *self.state.lock().unwrap_or_else(|e| e.into_inner());
-        (state.process, state.driver)
     }
 }
 
@@ -331,9 +314,6 @@ mod tests {
         let lifetime = ConnectionProcessLifetime::new();
         assert!(!lifetime.release_confirmed());
 
-        lifetime.mark_driver_running();
-        assert!(!lifetime.release_confirmed());
-
         lifetime.mark_driver_exited();
         assert!(
             lifetime.release_confirmed(),
@@ -344,10 +324,6 @@ mod tests {
         lifetime.mark_spawned(42);
         lifetime.mark_driver_exited();
         assert!(!lifetime.release_confirmed());
-        assert_eq!(
-            lifetime.phases_for_test(),
-            (ProcessPhase::Spawned(42), DriverPhase::Exited)
-        );
         lifetime.mark_reaped();
         assert!(lifetime.release_confirmed());
     }

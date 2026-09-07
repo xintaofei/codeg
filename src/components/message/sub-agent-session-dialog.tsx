@@ -111,7 +111,6 @@ export function SubAgentSessionDialog({
             {sourceTaskId && parentConversationId ? (
               <CollaborationTurnList
                 open={open}
-                childConversationId={childConversationId}
                 parentConversationId={parentConversationId}
                 sourceTaskId={sourceTaskId}
               />

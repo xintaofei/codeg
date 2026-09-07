@@ -1,6 +1,5 @@
 //! Domain / protocol types for the strict recovery boundary.
 //!
-//! `SessionRecoveryPolicy` names the two recovery strategies; the
 //! [`StrictAttachGate`] carries the `RequireExisting` verdict channel through
 //! the spawn path so `run_connection` can report a REAL readiness (or a typed
 //! failure) instead of the implicit "a connection id exists" signal.
@@ -12,25 +11,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::oneshot;
 
-/// Which recovery behavior a connection launch uses.
-///
-/// * `AllowNewFallback` — the ordinary spawn chain (resume → load → **new**):
-///   a failed recovery of a session the caller merely suggested may legally
-///   produce a brand-new agent session. This is the production default for
-///   every pre-existing entry point and must stay untouched.
-/// * `RequireExisting` — the strict boundary: only `session/resume` /
-///   `session/load` against the caller-supplied external session id may
-///   establish the session; a failure is a typed error and **never** falls
-///   through to `session/new`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionRecoveryPolicy {
-    AllowNewFallback,
-    RequireExisting,
-}
-
-/// The launch-time recovery strategy handed to `run_connection`: the policy
-/// plus, for the strict one, the gate that receives the readiness verdict.
+/// The launch-time recovery strategy handed to `run_connection`.
 #[derive(Debug)]
 pub enum SessionRecovery {
     AllowNewFallback,
@@ -139,7 +120,6 @@ impl StrictAttachError {
 #[derive(Clone)]
 pub struct StrictAttachGate {
     tx: Arc<tokio::sync::Mutex<Option<oneshot::Sender<StrictOutcome>>>>,
-    policy: SessionRecoveryPolicy,
     /// The canonical cwd the outcome's binding recorded. A launch resolving to
     /// any other directory is refused BEFORE the agent process starts.
     expected_cwd: PathBuf,
@@ -161,7 +141,6 @@ pub enum StrictOutcome {
 impl std::fmt::Debug for StrictAttachGate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StrictAttachGate")
-            .field("policy", &self.policy)
             .field("expected_cwd", &self.expected_cwd)
             // The fingerprint is a non-sensitive identity hash, but it is
             // still a config identifier — show only its presence/length.
@@ -186,7 +165,6 @@ impl StrictAttachGate {
         (
             Self {
                 tx: Arc::new(tokio::sync::Mutex::new(Some(tx))),
-                policy: SessionRecoveryPolicy::RequireExisting,
                 expected_cwd,
                 expected_config_fingerprint,
                 continuation_identity: None,

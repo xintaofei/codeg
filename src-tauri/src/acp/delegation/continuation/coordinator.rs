@@ -16,7 +16,7 @@ use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::acp::delegation::broker::DelegationOutcomeStore;
 use crate::acp::delegation::continuation::runtime::{
-    AttachTarget, ContinuationRuntime, NoopRuntime,
+    AttachTarget, ContinuationRuntime,
 };
 use crate::acp::delegation::continuation::types::{
     cap_turn_result_text, validate_turn_request, CollaborationSessionState, ContinuationError,
@@ -1770,11 +1770,4 @@ fn storage_unavailable() -> ContinuationError {
         ContinuationErrorCode::StorageUnavailable,
         "the collaboration store is unavailable; nothing was accepted",
     )
-}
-
-/// Keep imports honest when compiled without test wiring.
-#[allow(dead_code)]
-fn _shape_asserts(coordinator: &ContinuationCoordinator, session: &collaboration_session::Model) {
-    let _ = (coordinator, session.state.clone());
-    let _ = NoopRuntime;
 }

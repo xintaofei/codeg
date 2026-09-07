@@ -34,8 +34,6 @@ const POLL_INTERVAL_MS = 1000
 
 interface Props {
   open: boolean
-  /** The child conversation whose drawer this list renders in. */
-  childConversationId: number
   /** The parent conversation that owns the source task (scoping). */
   parentConversationId: number
   /** The frozen delegation task this collaboration continues. */
@@ -45,13 +43,11 @@ interface Props {
 /** Badge variant + emphasis per turn state — presentation only. */
 function stateBadgeTone(state: TurnState): {
   className: string
-  done: boolean
 } {
   if (ACTIVE_TURN_STATES.includes(state)) {
     return {
       className:
         "border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400",
-      done: false,
     }
   }
   switch (state) {
@@ -59,7 +55,6 @@ function stateBadgeTone(state: TurnState): {
       return {
         className:
           "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-        done: true,
       }
     case "failed":
     case "canceled":
@@ -68,11 +63,10 @@ function stateBadgeTone(state: TurnState): {
       return {
         className:
           "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400",
-        done: true,
       }
   }
   // Exhaustive for terminal states; active states returned above.
-  return { className: "border-border text-muted-foreground", done: true }
+  return { className: "border-border text-muted-foreground" }
 }
 
 export function CollaborationTurnList({

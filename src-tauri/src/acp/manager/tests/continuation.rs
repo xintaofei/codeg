@@ -156,7 +156,6 @@ async fn terminal_requested_id_entries_fence_ordinary_resume_until_release_proof
             assert!(state.external_id.is_none());
         }
         let lifetime = ConnectionProcessLifetime::new();
-        lifetime.mark_driver_running();
         let resource = ConnectionResource::new(
             connection_id.clone(),
             cmd_tx,

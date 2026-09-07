@@ -4,8 +4,7 @@
 //! queries.
 
 use crate::acp::delegation::continuation::{
-    CollaborationSessionState, ContinuationCoordinator, SchemaVersion1, SessionSummary,
-    TurnReport,
+    ContinuationCoordinator, SchemaVersion1, SessionSummary, TurnReport,
 };
 use crate::app_error::AppCommandError;
 
@@ -103,10 +102,6 @@ pub async fn get_collaboration_session_core(
 fn app_error(e: crate::acp::delegation::continuation::ContinuationError) -> AppCommandError {
     AppCommandError::task_execution_failed(e.to_string())
 }
-
-// Keep both imports honest in all feature combinations.
-#[allow(dead_code)]
-fn _shape(_s: &CollaborationSessionState) {}
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 #[allow(unused_variables)]

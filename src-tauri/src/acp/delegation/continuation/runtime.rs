@@ -10,7 +10,6 @@
 use async_trait::async_trait;
 
 use crate::acp::delegation::continuation::StrictAttachError;
-use crate::db::entities::collaboration_session;
 
 /// The facts a strict attach needs, extracted from the session's verified
 /// resume binding. Identities only — never tokens or environment variables.
@@ -86,9 +85,11 @@ pub trait ContinuationRuntime: Send + Sync {
 
 /// No-op runtime: every call fails loudly. Used when the coordinator is
 /// constructed without production wiring (tests inject their own double).
+#[cfg(any(test, feature = "test-utils"))]
 #[derive(Default, Clone)]
 pub struct NoopRuntime;
 
+#[cfg(any(test, feature = "test-utils"))]
 #[async_trait]
 impl ContinuationRuntime for NoopRuntime {
     async fn attach_strict(
@@ -121,7 +122,3 @@ impl ContinuationRuntime for NoopRuntime {
         None
     }
 }
-
-/// Keep the session entity import honest for doc links.
-#[allow(dead_code)]
-fn _session_shape(_: &collaboration_session::Model) {}

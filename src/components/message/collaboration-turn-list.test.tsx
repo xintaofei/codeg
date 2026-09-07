@@ -63,7 +63,6 @@ function turn(over: Partial<TurnReport>): TurnReport {
 
 const baseProps = {
   open: true,
-  childConversationId: 42,
   parentConversationId: 7,
   sourceTaskId: "task-0",
 }
