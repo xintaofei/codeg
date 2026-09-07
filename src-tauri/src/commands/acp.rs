@@ -8923,12 +8923,22 @@ fn preflight_disabled_skill_root(
 ) -> Result<(), AcpError> {
     let vault = disabled_skill_root(root);
     let resolved_vault = resolved_skill_root(&vault)?;
+    let resolved_root = resolved_skill_root(root)?;
     for (_, _, native_root) in native_skill_roots(workspace_path) {
-        if skill_roots_overlap(&resolved_vault, &resolved_skill_root(&native_root)?) {
+        let resolved_native = resolved_skill_root(&native_root)?;
+        if skill_roots_overlap(&resolved_vault, &resolved_native) {
             return Err(AcpError::protocol(format!(
                 "disabled skill vault '{}' overlaps native scan root '{}'",
                 vault.display(),
                 native_root.display()
+            )));
+        }
+        if resolved_native != resolved_root
+            && resolved_vault == resolved_skill_root(&disabled_skill_root(&native_root))?
+        {
+            return Err(AcpError::protocol(format!(
+                "shared skill storage: disabled vault '{}' is shared by native roots '{}' and '{}'; toggling is unsupported",
+                vault.display(), root.display(), native_root.display()
             )));
         }
     }
@@ -16797,6 +16807,161 @@ wire_api = "chat"
             "shared"
         );
         assert!(!disabled_skill_root(&root).exists());
+    }
+
+    #[test]
+    fn skill_enabled_private_safety_sibling_custom_roots_cannot_share_vault() {
+        use crate::acp::custom_registry::{
+            hydrate, hydrate_test_guard, CustomAgentDef, CustomAgentSpec, CustomDistributionKind,
+            NpxSpec,
+        };
+        let _registry_guard = hydrate_test_guard();
+        for enabled in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let first_root = tmp.path().join("agent-a");
+            let second_root = tmp.path().join("agent-b");
+            fs::create_dir_all(&first_root).unwrap();
+            fs::create_dir_all(&second_root).unwrap();
+            let vault = disabled_skill_root(&first_root);
+            assert_eq!(vault, disabled_skill_root(&second_root));
+            let source = if enabled {
+                vault.join("demo")
+            } else {
+                first_root.join("demo")
+            };
+            fs::create_dir_all(&source).unwrap();
+            fs::write(source.join("SKILL.md"), "owned by agent A").unwrap();
+            let definitions = [
+                ("task1b-vault-a", &first_root),
+                ("task1b-vault-b", &second_root),
+            ]
+            .map(|(id, root)| CustomAgentDef {
+                registry_id: id.into(),
+                name: id.into(),
+                description: String::new(),
+                version: "1.0.0".into(),
+                distribution_kind: CustomDistributionKind::Npx,
+                spec: CustomAgentSpec {
+                    npx: Some(NpxSpec {
+                        package: "test-agent@1.0.0".into(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                icon_url: None,
+                skills_shared_store: false,
+                skills_dir: Some(root.to_string_lossy().into_owned()),
+                source: Default::default(),
+                version_probe: None,
+                supports_mcp: true,
+            });
+            assert!(hydrate(&definitions).is_empty());
+            let agent = AgentType::custom(if enabled {
+                "task1b-vault-b"
+            } else {
+                "task1b-vault-a"
+            })
+            .unwrap();
+            let result =
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(acp_set_agent_skill_enabled(
+                        agent,
+                        AgentSkillScope::Global,
+                        "demo".into(),
+                        None,
+                        enabled,
+                    ));
+            hydrate(&[]);
+            assert!(
+                result.is_err(),
+                "shared vault must reject before mutation: {result:?}"
+            );
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("shared skill storage"));
+            assert_eq!(
+                fs::read_to_string(source.join("SKILL.md")).unwrap(),
+                "owned by agent A"
+            );
+            assert!(!second_root.join("demo").exists());
+            assert_eq!(vault.exists(), enabled);
+        }
+    }
+
+    #[test]
+    fn skill_enabled_private_safety_read_only_root_cannot_share_vault() {
+        use crate::acp::custom_registry::{
+            hydrate, hydrate_test_guard, CustomAgentDef, CustomAgentSpec, CustomDistributionKind,
+            NpxSpec,
+        };
+        let _registry_guard = hydrate_test_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        temp_env::with_var("GEMINI_HOME", Some(tmp.path()), || {
+            let cli_root =
+                crate::parsers::antigravity::resolve_antigravity_cli_dir().join("skills");
+            let root = cli_root.parent().unwrap().join("custom-skills");
+            fs::create_dir_all(&cli_root).unwrap();
+            fs::create_dir_all(root.join("task1b-readonly-vault-demo")).unwrap();
+            fs::write(
+                root.join("task1b-readonly-vault-demo/SKILL.md"),
+                "owned by custom agent",
+            )
+            .unwrap();
+            assert!(is_read_only_skill_path(AgentType::Antigravity, &cli_root));
+            assert_eq!(disabled_skill_root(&root), disabled_skill_root(&cli_root));
+            let definition = CustomAgentDef {
+                registry_id: "task1b-vault-cli".into(),
+                name: "CLI Vault Test".into(),
+                description: String::new(),
+                version: "1.0.0".into(),
+                distribution_kind: CustomDistributionKind::Npx,
+                spec: CustomAgentSpec {
+                    npx: Some(NpxSpec {
+                        package: "test-agent@1.0.0".into(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                icon_url: None,
+                skills_shared_store: false,
+                skills_dir: Some(root.to_string_lossy().into_owned()),
+                source: Default::default(),
+                version_probe: None,
+                supports_mcp: true,
+            };
+            assert!(hydrate(&[definition]).is_empty());
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let result = runtime.block_on(acp_set_agent_skill_enabled(
+                AgentType::custom("task1b-vault-cli").unwrap(),
+                AgentSkillScope::Global,
+                "task1b-readonly-vault-demo".into(),
+                None,
+                false,
+            ));
+            let listed = runtime
+                .block_on(acp_list_agent_skills(AgentType::Antigravity, None))
+                .unwrap();
+            hydrate(&[]);
+            assert!(
+                result.is_err(),
+                "read-only native root also scans its vault: {result:?}"
+            );
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("shared skill storage"));
+            assert_eq!(
+                fs::read_to_string(root.join("task1b-readonly-vault-demo/SKILL.md")).unwrap(),
+                "owned by custom agent"
+            );
+            assert!(!disabled_skill_root(&root).exists());
+            assert!(!listed
+                .skills
+                .iter()
+                .any(|item| item.id == "task1b-readonly-vault-demo"));
+        });
     }
 
     #[test]
