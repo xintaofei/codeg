@@ -4752,7 +4752,15 @@
     "clearConfirmAction": "Clear",
     "cancel": "Cancel",
     "cleared": "Browsing data cleared",
-    "clearFailed": "Could not clear browsing data: {message}"
+    "clearFailed": "Could not clear browsing data: {message}",
+    "proxyTitle": "Network proxy",
+    "proxyHint": "Browser tabs use the proxy from System settings. Addresses on this machine (localhost) are never proxied.",
+    "proxyOn": "Using {url}",
+    "proxyOff": "Direct connection",
+    "proxyNextTab": "A changed proxy applies to tabs opened from now on.",
+    "proxyRestart": "Restart codeg for browser tabs to use the changed proxy.",
+    "proxyUnsupported": "Not available on this version of macOS (14 or later is needed).",
+    "proxyUnusable": "The configured proxy is not one browser tabs can use (http and socks5 only)."
   },
   "LogsSettings": {
     "loading": "Loading…",

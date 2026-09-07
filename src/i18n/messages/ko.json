@@ -4752,7 +4752,15 @@
     "clearConfirmAction": "지우기",
     "cancel": "취소",
     "cleared": "브라우징 데이터를 지웠습니다",
-    "clearFailed": "브라우징 데이터를 지울 수 없습니다: {message}"
+    "clearFailed": "브라우징 데이터를 지울 수 없습니다: {message}",
+    "proxyTitle": "네트워크 프록시",
+    "proxyHint": "브라우저 탭은 「시스템 설정」의 프록시를 사용합니다. 이 컴퓨터의 주소(localhost)는 프록시를 거치지 않습니다.",
+    "proxyOn": "{url} 사용 중",
+    "proxyOff": "직접 연결",
+    "proxyNextTab": "변경된 프록시는 이후에 여는 탭부터 적용됩니다.",
+    "proxyRestart": "변경된 프록시를 브라우저 탭에서 사용하려면 codeg를 다시 시작하세요.",
+    "proxyUnsupported": "이 macOS 버전에서는 사용할 수 없습니다(macOS 14 이상 필요).",
+    "proxyUnusable": "설정된 프록시는 브라우저 탭에서 사용할 수 없는 종류입니다(http 및 socks5만 지원)."
   },
   "LogsSettings": {
     "loading": "불러오는 중…",

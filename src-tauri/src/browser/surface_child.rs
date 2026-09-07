@@ -27,11 +27,15 @@ use std::thread::ThreadId;
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager, Url, WebviewWindow};
+#[cfg(target_os = "windows")]
+use tauri_runtime_wry::wry::WebContext;
 use tauri_runtime_wry::wry::{
     self, dpi, NewWindowFeatures, NewWindowResponse, PageLoadEvent, Rect, WebViewBuilder,
 };
 
 use super::channel::{self, MessageSink};
+#[cfg(target_os = "windows")]
+use super::profile;
 use super::events;
 use super::hooks;
 use super::policy;
@@ -393,6 +397,14 @@ type OpenerConfiguration = ();
 /// Main thread only. Builds the child webview at `bounds` with every hook
 /// attached and **no URL**: a regular tab is navigated by the caller once the
 /// page channel is installed, a popup is navigated by the engine itself.
+#[cfg(target_os = "windows")]
+thread_local! {
+    // WebView2 keeps a webview's cookies and storage in its environment's
+    // user-data folder; the profile's directory is that folder for every
+    // browser webview of this process. Kept alive like tauri keeps its own.
+    static WEB_CONTEXT: RefCell<Option<WebContext>> = const { RefCell::new(None) };
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_child(
     app: &AppHandle,
@@ -404,11 +416,62 @@ fn build_child(
     devtools: bool,
     configuration: Option<OpenerConfiguration>,
 ) -> Result<wry::WebView, String> {
+    #[cfg(target_os = "windows")]
+    {
+        WEB_CONTEXT.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let context = slot.get_or_insert_with(|| {
+                WebContext::new(Some(profile::directory(profile::DEFAULT_PROFILE_ID)))
+            });
+            configure_child(
+                WebViewBuilder::new_with_web_context(context),
+                app,
+                owner,
+                tab_id,
+                label,
+                bounds,
+                visible,
+                devtools,
+                configuration,
+            )?
+            .build_as_child(owner)
+            .map_err(|e| e.to_string())
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        configure_child(
+            WebViewBuilder::new(),
+            app,
+            owner,
+            tab_id,
+            label,
+            bounds,
+            visible,
+            devtools,
+            configuration,
+        )?
+        .build_as_child(owner)
+        .map_err(|e| e.to_string())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn configure_child<'a>(
+    builder: WebViewBuilder<'a>,
+    app: &AppHandle,
+    owner: &WebviewWindow,
+    tab_id: &str,
+    label: &'a str,
+    bounds: Bounds,
+    visible: bool,
+    devtools: bool,
+    configuration: Option<OpenerConfiguration>,
+) -> Result<WebViewBuilder<'a>, String> {
     let nav_id = tab_id.to_string();
     let nav_app = app.clone();
     let nav_owner = owner.label().to_string();
-    #[allow(unused_mut)]
-    let mut builder = WebViewBuilder::new()
+    let mut builder = builder
         .with_id(label)
         .with_bounds(rect(bounds))
         .with_visible(visible)
@@ -464,13 +527,35 @@ fn build_child(
         .with_download_started_handler(|_url, _destination| false)
         .with_new_window_req_handler(new_window_handler(app.clone(), owner.clone(), tab_id.to_string()));
     #[cfg(target_os = "macos")]
-    if let Some(configuration) = configuration {
+    {
         use tauri_runtime_wry::wry::WebViewBuilderExtMacos;
+        // A popup keeps its opener's configuration (that is what preserves
+        // `window.opener`); a regular tab gets one whose data store is the
+        // browser profile's, so nothing a page stores lands in the app's own
+        // store and the profile's proxy applies.
+        let configuration = match configuration {
+            Some(configuration) => configuration,
+            None => {
+                let mtm = objc2::MainThreadMarker::new().ok_or("not on the main thread")?;
+                super::shim::macos::profile_configuration(mtm)
+            }
+        };
         builder = builder.with_webview_configuration(configuration);
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        use tauri_runtime_wry::wry::WebViewBuilderExtWindows;
+        let _ = configuration;
+        // WebView2 takes the proxy (and everything else) from the environment's
+        // browser arguments: one string for every browser webview of the
+        // process, see `profile::windows_browser_args`.
+        builder = builder.with_additional_browser_args(profile::windows_browser_args(
+            profile::frozen_proxy().as_ref(),
+        ));
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = configuration;
-    builder.build_as_child(owner).map_err(|e| e.to_string())
+    Ok(builder)
 }
 
 /// Build the child webview for a regular tab. The caller navigates afterwards,

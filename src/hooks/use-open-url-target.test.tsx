@@ -44,6 +44,8 @@ const AVAILABLE = {
   platform: "macos",
   channel: "native" as const,
   reasons: [],
+  isolatedStorage: true,
+  proxy: { url: null, applies: "live" as const, reason: null },
 }
 
 describe("useOpenUrlTarget", () => {

@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => {
           platform: "macos",
           channel: "native",
           reasons: [],
+          isolatedStorage: true,
+          proxy: { url: null, applies: "live", reason: null },
         })
     ),
     subscribe: vi.fn((event: string, handler: Handler) => {
@@ -211,6 +213,8 @@ describe("BrowserEventsBridge", () => {
       platform: "web",
       channel: "degraded",
       reasons: ["web"],
+      isolatedStorage: false,
+      proxy: { url: null, applies: "unsupported", reason: null },
     })
     render(<BrowserEventsBridge />)
     await flush()

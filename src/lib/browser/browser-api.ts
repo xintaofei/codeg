@@ -18,6 +18,8 @@ const UNAVAILABLE: BrowserCapabilities = {
   platform: "web",
   channel: "degraded",
   reasons: ["built-in browser needs the desktop runtime"],
+  isolatedStorage: false,
+  proxy: { url: null, applies: "unsupported", reason: null },
 }
 
 let capabilitiesPromise: Promise<BrowserCapabilities> | null = null
@@ -55,6 +57,15 @@ export function browserCapabilities(): Promise<BrowserCapabilities> {
  */
 export function browserCapabilitiesSnapshot(): BrowserCapabilities | null {
   return resolvedCapabilities
+}
+
+/**
+ * Fresh answer, bypassing the session cache: the proxy part changes whenever
+ * the user edits the app's proxy setting, and the settings section shows it.
+ */
+export function browserCapabilitiesNow(): Promise<BrowserCapabilities> {
+  if (!isDesktop()) return Promise.resolve(UNAVAILABLE)
+  return getTransport().call<BrowserCapabilities>("browser_capabilities", {})
 }
 
 /** Tests only. */

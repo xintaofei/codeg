@@ -8,6 +8,7 @@ use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBui
 use super::events;
 use super::hooks;
 use super::policy;
+use super::profile;
 use super::registry::BrowserRegistry;
 
 pub fn create(
@@ -48,6 +49,34 @@ pub fn create(
         .disable_drag_drop_handler()
         .zoom_hotkeys_enabled(true)
         .browser_extensions_enabled(false);
+    // Same container and proxy as the embedded tabs, so a page behaves the
+    // same whichever surface hosts it.
+    #[cfg(target_os = "macos")]
+    // wry falls back to the default store below macOS 14, exactly like the
+    // shim does for embedded tabs; the proxy is a property of the store and
+    // is in place once `profile::prepare` has run.
+    let builder = builder.data_store_identifier(profile::DEFAULT_DATA_STORE_IDENTIFIER);
+    #[cfg(target_os = "windows")]
+    let builder = builder
+        .data_directory(profile::directory(profile::DEFAULT_PROFILE_ID))
+        .additional_browser_args(&profile::windows_browser_args(
+            profile::frozen_proxy().as_ref(),
+        ));
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let builder = {
+        let builder = builder.data_directory(profile::directory(profile::DEFAULT_PROFILE_ID));
+        match profile::current_proxy() {
+            Ok(Some(proxy)) => match Url::parse(&proxy.to_url_string()) {
+                Ok(url) => builder.proxy_url(url),
+                Err(_) => builder,
+            },
+            Ok(None) => builder,
+            Err(reason) => {
+                tracing::warn!("[browser] ignoring the configured proxy: {reason}");
+                builder
+            }
+        }
+    };
     let builder = builder.parent(owner)?;
     let window = builder.build()?;
 

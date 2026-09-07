@@ -59,6 +59,8 @@ pub fn capabilities() -> BrowserCapabilities {
         platform: platform_name().to_string(),
         channel: ChannelKind::Degraded,
         reasons,
+        isolated_storage: crate::browser::profile::isolated_storage(),
+        proxy: crate::browser::profile::proxy_status(),
     }
 }
 
@@ -137,6 +139,8 @@ pub fn open_tab_core(
     }
     let url = parse_web_url(&params.url)?;
     let label = tab_label(&params.tab_id);
+    crate::browser::profile::prepare(app)
+        .map_err(|e| window_err("Failed to prepare the browser profile", e))?;
 
     let surface = match pick_surface(params.surface) {
         #[cfg(all(
@@ -239,36 +243,19 @@ pub fn open_tab_core(
 pub async fn clear_data_core(app: &AppHandle, registry: &BrowserRegistry) -> Result<(), AppCommandError> {
     #[cfg(target_os = "macos")]
     {
-        // Straight at the shared default store: works with no tab open and
-        // reports completion, which a surface's `clear_all_browsing_data`
-        // cannot.
+        // Straight at the profile's store: works with no tab open and reports
+        // completion, which a surface's `clear_all_browsing_data` cannot.
         let _ = registry;
-        let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
-        let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
-        let finish = move |result: Result<(), String>| {
-            if let Some(tx) = tx.lock().unwrap_or_else(|p| p.into_inner()).take() {
-                let _ = tx.send(result);
-            }
-        };
-        app.run_on_main_thread(move || {
-            let on_done = finish.clone();
-            if let Err(err) = crate::browser::shim::macos::clear_default_data_store(move || on_done(Ok(()))) {
-                finish(Err(err));
-            }
+        on_main_until_done(app, "Failed to clear browsing data", |done| {
+            crate::browser::shim::macos::clear_profile_store(done)
         })
-        .map_err(|e| window_err("Failed to clear browsing data", e))?;
-        match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
-            Ok(Ok(Ok(()))) => Ok(()),
-            Ok(Ok(Err(err))) => Err(window_err("Failed to clear browsing data", err)),
-            Ok(Err(_)) => Err(window_err("Failed to clear browsing data", "the request was dropped")),
-            Err(_) => Err(window_err("Failed to clear browsing data", "timed out waiting for WebKit")),
-        }
+        .await
     }
     #[cfg(not(target_os = "macos"))]
     {
         // Until the Windows / Linux shims land, clearing goes through a live
-        // surface (they all share the store); with none open there is nothing
-        // to call into.
+        // surface (they all share the profile); with none open there is
+        // nothing to call into.
         let _ = app;
         let Some(state) = registry.list().into_iter().next() else {
             return Err(AppCommandError::invalid_input(
@@ -278,6 +265,37 @@ pub async fn clear_data_core(app: &AppHandle, registry: &BrowserRegistry) -> Res
         surface_of(registry, &state.tab_id)?
             .clear_browsing_data()
             .map_err(|e| window_err("Failed to clear browsing data", e))
+    }
+}
+
+/// Run `start` on the main thread and wait until the completion callback it
+/// was given has fired (WebKit reports finished removals that way), with a
+/// timeout so a callback that never comes cannot hang the caller.
+#[cfg(target_os = "macos")]
+pub async fn on_main_until_done(
+    app: &AppHandle,
+    what: &str,
+    start: impl FnOnce(Box<dyn Fn() + 'static>) -> Result<(), String> + Send + 'static,
+) -> Result<(), AppCommandError> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+    let finish = move |result: Result<(), String>| {
+        if let Some(tx) = tx.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            let _ = tx.send(result);
+        }
+    };
+    app.run_on_main_thread(move || {
+        let on_done = finish.clone();
+        if let Err(err) = start(Box::new(move || on_done(Ok(())))) {
+            finish(Err(err));
+        }
+    })
+    .map_err(|e| window_err(what, e))?;
+    match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(err))) => Err(window_err(what, err)),
+        Ok(Err(_)) => Err(window_err(what, "the request was dropped")),
+        Err(_) => Err(window_err(what, "timed out waiting for WebKit")),
     }
 }
 

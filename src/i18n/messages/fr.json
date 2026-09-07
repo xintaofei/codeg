@@ -4752,7 +4752,15 @@
     "clearConfirmAction": "Effacer",
     "cancel": "Annuler",
     "cleared": "Données de navigation effacées",
-    "clearFailed": "Impossible d’effacer les données de navigation : {message}"
+    "clearFailed": "Impossible d’effacer les données de navigation : {message}",
+    "proxyTitle": "Proxy réseau",
+    "proxyHint": "Les onglets du navigateur utilisent le proxy des Réglages système. Les adresses de cette machine (localhost) ne passent jamais par le proxy.",
+    "proxyOn": "Utilise {url}",
+    "proxyOff": "Connexion directe",
+    "proxyNextTab": "Un changement de proxy s’applique aux onglets ouverts à partir de maintenant.",
+    "proxyRestart": "Redémarrez codeg pour que les onglets du navigateur utilisent le proxy modifié.",
+    "proxyUnsupported": "Indisponible sur cette version de macOS (14 ou ultérieure requise).",
+    "proxyUnusable": "Le proxy configuré n’est pas d’un type utilisable par les onglets du navigateur (http et socks5 uniquement)."
   },
   "LogsSettings": {
     "loading": "Chargement…",

@@ -14,14 +14,16 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DeclaredClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
-use objc2_foundation::{ns_string, NSDate, NSDictionary, NSError, NSString};
+use objc2_foundation::{ns_string, NSArray, NSDate, NSDictionary, NSError, NSProcessInfo, NSString, NSUUID};
 use objc2_web_kit::{
     WKContentWorld, WKScriptMessage, WKScriptMessageHandler, WKSnapshotConfiguration,
-    WKUserContentController, WKUserScript, WKUserScriptInjectionTime, WKWebsiteDataStore,
+    WKUserContentController, WKUserScript, WKUserScriptInjectionTime, WKWebViewConfiguration,
+    WKWebsiteDataRecord, WKWebsiteDataStore,
 };
 use tauri_runtime_wry::wry::{self, WebViewExtMacOS};
 
 use super::super::channel::MessageSink;
+use super::super::profile::{BrowserProxy, ProxyScheme, DEFAULT_DATA_STORE_IDENTIFIER};
 
 pub const WORLD_NAME: &str = "codeg";
 pub const HANDLER_NAME: &str = "codegBrowser";
@@ -259,23 +261,6 @@ pub fn stop_loading(webview: &wry::WebView) {
 
 /// Identity of the platform webview behind a wry `WebView`, matching the
 /// `source` a message sink receives.
-/// Remove every kind of website data (cookies, caches, storage, …) from the
-/// default data store — the one all browser tabs share, whether or not any
-/// tab is open right now. `done` runs on the main thread once WebKit has
-/// finished.
-pub fn clear_default_data_store(done: impl Fn() + 'static) -> Result<(), String> {
-    let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
-    // SAFETY: main thread; WebKit owns every object handed back.
-    unsafe {
-        let store = WKWebsiteDataStore::defaultDataStore(mtm);
-        let types = WKWebsiteDataStore::allWebsiteDataTypes(mtm);
-        let since = NSDate::dateWithTimeIntervalSince1970(0.0);
-        let handler = RcBlock::new(done);
-        store.removeDataOfTypes_modifiedSince_completionHandler(&types, &since, &handler);
-    }
-    Ok(())
-}
-
 /// `WKWebView.URL`, or `None` before any navigation has committed (and after
 /// a first navigation failed). wry's own `url()` unwraps this and panics.
 pub fn current_url(webview: &wry::WebView) -> Option<String> {
@@ -321,4 +306,289 @@ pub fn debug_view(webview: &wry::WebView) -> serde_json::Value {
         "hasSuperview": has_superview,
         "frame": frame,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Profile: the tabs' own data store and its proxy
+// ---------------------------------------------------------------------------
+
+struct ProfileStore {
+    store: Retained<WKWebsiteDataStore>,
+    /// A store of the profile's own (macOS 14+) rather than WebKit's default
+    /// store, which the app's own webviews live in.
+    isolated: bool,
+    /// Proxy last written to the store, to skip rewriting the same value.
+    proxy: Option<BrowserProxy>,
+}
+
+thread_local! {
+    static PROFILE: RefCell<Option<ProfileStore>> = const { RefCell::new(None) };
+}
+
+fn macos_major_version() -> isize {
+    NSProcessInfo::processInfo().operatingSystemVersion().majorVersion
+}
+
+/// `WKWebsiteDataStore(forIdentifier:)` and `proxyConfigurations` both arrived
+/// in macOS 14; before that the tabs share WebKit's default store with the app
+/// and cannot be proxied. Safe from any thread.
+pub fn supports_isolated_profile() -> bool {
+    macos_major_version() >= 14
+}
+
+/// The profile's data store, created on first use and kept for the life of
+/// the main thread. WebKit hands back the same store for the same identifier,
+/// so owned windows built by tauri with that identifier share it too.
+fn profile_store(mtm: MainThreadMarker) -> Retained<WKWebsiteDataStore> {
+    PROFILE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let entry = slot.get_or_insert_with(|| {
+            let isolated = supports_isolated_profile();
+            // SAFETY: main thread; WebKit owns the store.
+            let store = unsafe {
+                if isolated {
+                    let identifier = NSUUID::from_bytes(DEFAULT_DATA_STORE_IDENTIFIER);
+                    WKWebsiteDataStore::dataStoreForIdentifier(&identifier, mtm)
+                } else {
+                    WKWebsiteDataStore::defaultDataStore(mtm)
+                }
+            };
+            ProfileStore {
+                store,
+                isolated,
+                proxy: None,
+            }
+        });
+        entry.store.clone()
+    })
+}
+
+fn profile_is_isolated() -> bool {
+    PROFILE.with(|slot| slot.borrow().as_ref().map(|entry| entry.isolated).unwrap_or(false))
+}
+
+/// A `WKWebViewConfiguration` whose data store is the profile's. Every regular
+/// tab is built from one; popups inherit their opener's instead.
+pub fn profile_configuration(mtm: MainThreadMarker) -> Retained<WKWebViewConfiguration> {
+    let store = profile_store(mtm);
+    // SAFETY: main thread; both objects are live.
+    unsafe {
+        let configuration = WKWebViewConfiguration::new(mtm);
+        configuration.setWebsiteDataStore(&store);
+        configuration
+    }
+}
+
+/// Create the profile's store if needed and point it at `proxy` (or at no
+/// proxy). Open tabs use the new value for their next connections; setting the
+/// same value again does nothing, so callers can be liberal.
+pub fn ensure_profile(proxy: Option<BrowserProxy>) -> Result<(), String> {
+    let mtm = mtm()?;
+    let store = profile_store(mtm);
+    let unchanged = PROFILE.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|entry| entry.proxy == proxy)
+    });
+    if unchanged {
+        return Ok(());
+    }
+    if !profile_is_isolated() {
+        return match proxy {
+            Some(_) => Err("proxying browser tabs needs macOS 14 or later".to_string()),
+            None => Ok(()),
+        };
+    }
+    let configurations: Retained<NSArray<NSObject>> = match &proxy {
+        Some(proxy) => NSArray::from_retained_slice(&[network::proxy_config(proxy)?]),
+        None => NSArray::new(),
+    };
+    // SAFETY: main thread; `proxyConfigurations` is a public property on
+    // macOS 14+ (checked above). Written through KVC because objc2-web-kit
+    // does not bind Network.framework's types.
+    unsafe {
+        let _: () = msg_send![&*store, setValue: &*configurations, forKey: ns_string!("proxyConfigurations")];
+    }
+    PROFILE.with(|slot| {
+        if let Some(entry) = slot.borrow_mut().as_mut() {
+            entry.proxy = proxy;
+        }
+    });
+    Ok(())
+}
+
+/// Remove every kind of website data (cookies, caches, storage, …) from the
+/// profile, whether or not a tab is open. With a store of its own (macOS 14+)
+/// that is the whole store; when the tabs still share WebKit's default store
+/// with the app, see `clear_shared_store_except_app`. `done` runs on the main
+/// thread once WebKit has finished.
+pub fn clear_profile_store(done: impl Fn() + 'static) -> Result<(), String> {
+    let mtm = mtm()?;
+    let store = profile_store(mtm);
+    if !profile_is_isolated() {
+        return clear_shared_store_except_app(done);
+    }
+    // SAFETY: main thread; WebKit owns every object handed back.
+    unsafe {
+        let types = WKWebsiteDataStore::allWebsiteDataTypes(mtm);
+        let since = NSDate::dateWithTimeIntervalSince1970(0.0);
+        let handler = RcBlock::new(done);
+        store.removeDataOfTypes_modifiedSince_completionHandler(&types, &since, &handler);
+    }
+    Ok(())
+}
+
+/// Clear WebKit's default store one origin at a time, leaving the app's own
+/// origins alone: below macOS 14 the tabs have no store of their own, and a
+/// blanket removal would wipe the workspace's localStorage along with the
+/// pages' cookies.
+pub fn clear_shared_store_except_app(done: impl Fn() + 'static) -> Result<(), String> {
+    let mtm = mtm()?;
+    // SAFETY: main thread; WebKit owns the store.
+    let store = unsafe { WKWebsiteDataStore::defaultDataStore(mtm) };
+    let types = unsafe { WKWebsiteDataStore::allWebsiteDataTypes(mtm) };
+    let done = std::rc::Rc::new(done);
+    let removing_store = store.clone();
+    let removing_types = types.clone();
+    let fetched = RcBlock::new(move |records: std::ptr::NonNull<NSArray<WKWebsiteDataRecord>>| {
+        // SAFETY: WebKit passes a live array on the main thread.
+        let records = unsafe { records.as_ref() };
+        let victims: Vec<Retained<WKWebsiteDataRecord>> = records
+            .iter()
+            .filter(|record| {
+                // SAFETY: live record.
+                let name = unsafe { record.displayName() };
+                !is_app_origin(&name.to_string())
+            })
+            .collect();
+        let victims = NSArray::from_retained_slice(&victims);
+        let done = done.clone();
+        let finished = RcBlock::new(move || done());
+        // SAFETY: main thread; all three arguments are live.
+        unsafe {
+            removing_store.removeDataOfTypes_forDataRecords_completionHandler(
+                &removing_types,
+                &victims,
+                &finished,
+            );
+        }
+    });
+    // SAFETY: main thread.
+    unsafe { store.fetchDataRecordsOfTypes_completionHandler(&types, &fetched) };
+    Ok(())
+}
+
+/// Display names of every record in WebKit's default store (dev puppet only:
+/// evidence that the per-record path spares the app's origins).
+pub fn default_store_record_names(done: impl Fn(Vec<String>) + 'static) -> Result<(), String> {
+    let mtm = mtm()?;
+    // SAFETY: main thread; WebKit owns the store.
+    let store = unsafe { WKWebsiteDataStore::defaultDataStore(mtm) };
+    let types = unsafe { WKWebsiteDataStore::allWebsiteDataTypes(mtm) };
+    let fetched = RcBlock::new(move |records: std::ptr::NonNull<NSArray<WKWebsiteDataRecord>>| {
+        // SAFETY: WebKit passes a live array on the main thread.
+        let records = unsafe { records.as_ref() };
+        let names = records
+            .iter()
+            // SAFETY: live record.
+            .map(|record| unsafe { record.displayName() }.to_string())
+            .collect();
+        done(names);
+    });
+    // SAFETY: main thread.
+    unsafe { store.fetchDataRecordsOfTypes_completionHandler(&types, &fetched) };
+    Ok(())
+}
+
+/// Hosts the app's own webviews are served from — `http://localhost:<port>`
+/// in development, `tauri://localhost` and `http://tauri.localhost` in release
+/// — as WebKit names their data records.
+fn is_app_origin(display_name: &str) -> bool {
+    display_name == "localhost" || display_name.ends_with(".localhost")
+}
+
+mod network {
+    //! Network.framework's proxy-config C API, resolved at run time: the
+    //! symbols exist only on macOS 14+, and a load-time reference would keep
+    //! the whole binary from launching on older systems. The objects it hands
+    //! back are Objective-C objects (`OS_object`), which is what lets them
+    //! ride in an `NSArray` and be retained like any other.
+
+    use std::ffi::{c_char, c_void, CString};
+
+    use objc2::rc::Retained;
+    use objc2::runtime::NSObject;
+
+    use super::{BrowserProxy, ProxyScheme};
+
+    type CreateHost = unsafe extern "C" fn(*const c_char, *const c_char) -> *mut NSObject;
+    type CreateSocks5 = unsafe extern "C" fn(*mut NSObject) -> *mut NSObject;
+    type CreateHttpConnect = unsafe extern "C" fn(*mut NSObject, *mut NSObject) -> *mut NSObject;
+    type AddExcludedDomain = unsafe extern "C" fn(*mut NSObject, *const c_char);
+
+    /// Connections to these hosts never go through the proxy: pages served
+    /// from this machine (dev servers, codeg's own bridges) are the point of
+    /// the built-in browser and must keep working whatever the proxy would do
+    /// with them — the exception every browser and the `NO_PROXY` convention
+    /// make. (A remote-egress profile will want the opposite; it gets its own
+    /// configuration.)
+    const EXCLUDED_DOMAINS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
+
+    fn symbol(name: &str) -> Result<*mut c_void, String> {
+        let c_name = CString::new(name).map_err(|e| e.to_string())?;
+        // SAFETY: a valid C string; RTLD_DEFAULT searches every loaded image.
+        let pointer = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c_name.as_ptr()) };
+        if pointer.is_null() {
+            Err(format!("{name} is not available on this macOS"))
+        } else {
+            Ok(pointer)
+        }
+    }
+
+    pub fn proxy_config(proxy: &BrowserProxy) -> Result<Retained<NSObject>, String> {
+        // SAFETY: the signatures are Network.framework's declared ones.
+        let (create_host, create_socks5, create_http_connect, add_excluded_domain) = unsafe {
+            (
+                std::mem::transmute::<*mut c_void, CreateHost>(symbol("nw_endpoint_create_host")?),
+                std::mem::transmute::<*mut c_void, CreateSocks5>(symbol("nw_proxy_config_create_socksv5")?),
+                std::mem::transmute::<*mut c_void, CreateHttpConnect>(symbol("nw_proxy_config_create_http_connect")?),
+                std::mem::transmute::<*mut c_void, AddExcludedDomain>(symbol("nw_proxy_config_add_excluded_domain")?),
+            )
+        };
+        let host = CString::new(proxy.host.as_str()).map_err(|e| format!("proxy host: {e}"))?;
+        let port = CString::new(proxy.port.to_string()).map_err(|e| format!("proxy port: {e}"))?;
+        // SAFETY: valid C strings; every `create` follows the create rule
+        // (+1), which `Retained::from_raw` takes over.
+        unsafe {
+            let endpoint = Retained::from_raw(create_host(host.as_ptr(), port.as_ptr()))
+                .ok_or_else(|| format!("cannot describe proxy endpoint {}:{}", proxy.host, proxy.port))?;
+            let endpoint_ptr = Retained::as_ptr(&endpoint) as *mut NSObject;
+            let config = match proxy.scheme {
+                ProxyScheme::Http => create_http_connect(endpoint_ptr, std::ptr::null_mut()),
+                ProxyScheme::Socks5 => create_socks5(endpoint_ptr),
+            };
+            let config = Retained::from_raw(config).ok_or("cannot create proxy configuration")?;
+            for domain in EXCLUDED_DOMAINS {
+                let domain = CString::new(domain).expect("static");
+                add_excluded_domain(Retained::as_ptr(&config) as *mut NSObject, domain.as_ptr());
+            }
+            Ok(config)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_app_origin;
+
+    /// The per-record clear must spare every host the app's own webviews are
+    /// served from and nothing else.
+    #[test]
+    fn app_origins_are_recognised_by_record_name() {
+        assert!(is_app_origin("localhost"));
+        assert!(is_app_origin("tauri.localhost"));
+        assert!(!is_app_origin("example.com"));
+        assert!(!is_app_origin("127.0.0.1"));
+        assert!(!is_app_origin("localhost.example.com"));
+    }
 }

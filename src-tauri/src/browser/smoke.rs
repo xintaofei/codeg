@@ -113,12 +113,10 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                         "position": w.outer_position().ok().map(|p| [p.x, p.y]),
                         "size": w.inner_size().ok().map(|s| [s.width, s.height]),
                         "scale": w.scale_factor().ok(),
-                        // Never `url()` a browser window: see `BrowserSurface::url`.
-                        "url": if w.label().starts_with(crate::browser::TAB_LABEL_PREFIX) {
-                            None
-                        } else {
-                            w.url().ok().map(|u| u.to_string())
-                        },
+                        // Never read a URL through tauri: wry panics on a
+                        // webview without a committed document, and even the
+                        // workspace window is one while its first page loads.
+                        "url": Value::Null,
                     })
                 })
                 .collect();
@@ -368,6 +366,38 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                 .collect();
             Ok(Value::Array(gestures))
         }
+        "browser_profile" => Ok(json!({
+            "isolatedStorage": crate::browser::profile::isolated_storage(),
+            "proxy": crate::browser::profile::proxy_status(),
+            "effectiveProxyUrl": crate::network::proxy::effective_proxy_url(),
+        })),
+        // The per-record path older macOS uses, run against the shared
+        // default store here so it can be exercised on a machine that has an
+        // isolated profile.
+        #[cfg(target_os = "macos")]
+        "browser_default_store_records" => {
+            let names = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+            let sink = names.clone();
+            browser_commands::on_main_until_done(app, "list default store records", move |done| {
+                crate::browser::shim::macos::default_store_record_names(move |found| {
+                    *sink.lock().unwrap_or_else(|p| p.into_inner()) = found;
+                    done();
+                })
+            })
+            .await
+            .map_err(err_string)?;
+            let names = names.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            Ok(json!(names))
+        }
+        #[cfg(target_os = "macos")]
+        "browser_clear_shared_records" => {
+            browser_commands::on_main_until_done(app, "clear shared records", |done| {
+                crate::browser::shim::macos::clear_shared_store_except_app(done)
+            })
+            .await
+            .map_err(err_string)?;
+            Ok(Value::Null)
+        }
         "browser_clear_data" => {
             browser_commands::clear_data_core(app, &registry)
                 .await
@@ -390,8 +420,14 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
             Ok(Value::Null)
         }
         // Evaluate in the MAIN (workspace) webview — drives the frontend.
+        // `label` picks another app window (settings, …) instead.
         "main_eval" => {
-            let main = main_window()?;
+            let main = match cmd.get("label").and_then(Value::as_str) {
+                Some(label) => app
+                    .get_webview_window(label)
+                    .ok_or_else(|| format!("no window {label:?}"))?,
+                None => main_window()?,
+            };
             let js = str_arg(cmd, "js")?;
             let (tx, rx) = std::sync::mpsc::channel::<String>();
             main.eval_with_callback(&js, move |value| {

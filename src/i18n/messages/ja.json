@@ -4752,7 +4752,15 @@
     "clearConfirmAction": "消去",
     "cancel": "キャンセル",
     "cleared": "閲覧データを消去しました",
-    "clearFailed": "閲覧データを消去できませんでした: {message}"
+    "clearFailed": "閲覧データを消去できませんでした: {message}",
+    "proxyTitle": "ネットワークプロキシ",
+    "proxyHint": "ブラウザタブは「システム設定」のプロキシを使います。このマシン上のアドレス（localhost）はプロキシを経由しません。",
+    "proxyOn": "{url} を使用中",
+    "proxyOff": "直接接続",
+    "proxyNextTab": "プロキシの変更は、これ以降に開くタブに適用されます。",
+    "proxyRestart": "変更したプロキシをブラウザタブで使うには codeg を再起動してください。",
+    "proxyUnsupported": "このバージョンの macOS では利用できません（macOS 14 以降が必要です）。",
+    "proxyUnusable": "設定されたプロキシはブラウザタブで使用できない種類です（http と socks5 のみ対応）。"
   },
   "LogsSettings": {
     "loading": "読み込み中…",

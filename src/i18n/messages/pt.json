@@ -4752,7 +4752,15 @@
     "clearConfirmAction": "Limpar",
     "cancel": "Cancelar",
     "cleared": "Dados de navegação limpos",
-    "clearFailed": "Não foi possível limpar os dados de navegação: {message}"
+    "clearFailed": "Não foi possível limpar os dados de navegação: {message}",
+    "proxyTitle": "Proxy de rede",
+    "proxyHint": "Os separadores do navegador usam o proxy das Definições do sistema. Os endereços desta máquina (localhost) nunca passam pelo proxy.",
+    "proxyOn": "A usar {url}",
+    "proxyOff": "Ligação direta",
+    "proxyNextTab": "Uma alteração de proxy aplica-se aos separadores abertos a partir de agora.",
+    "proxyRestart": "Reinicie o codeg para os separadores do navegador usarem o proxy alterado.",
+    "proxyUnsupported": "Indisponível nesta versão do macOS (é necessária a 14 ou posterior).",
+    "proxyUnusable": "O proxy configurado não é de um tipo que os separadores do navegador possam usar (apenas http e socks5)."
   },
   "LogsSettings": {
     "loading": "Carregando…",

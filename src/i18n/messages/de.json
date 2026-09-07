@@ -4752,7 +4752,15 @@
     "clearConfirmAction": "Löschen",
     "cancel": "Abbrechen",
     "cleared": "Browserdaten gelöscht",
-    "clearFailed": "Browserdaten konnten nicht gelöscht werden: {message}"
+    "clearFailed": "Browserdaten konnten nicht gelöscht werden: {message}",
+    "proxyTitle": "Netzwerk-Proxy",
+    "proxyHint": "Browser-Tabs verwenden den Proxy aus den Systemeinstellungen. Adressen auf diesem Rechner (localhost) laufen nie über den Proxy.",
+    "proxyOn": "Verwendet {url}",
+    "proxyOff": "Direkte Verbindung",
+    "proxyNextTab": "Ein geänderter Proxy gilt für ab jetzt geöffnete Tabs.",
+    "proxyRestart": "Starte codeg neu, damit Browser-Tabs den geänderten Proxy verwenden.",
+    "proxyUnsupported": "Auf dieser macOS-Version nicht verfügbar (14 oder neuer erforderlich).",
+    "proxyUnusable": "Der konfigurierte Proxy ist kein Typ, den Browser-Tabs verwenden können (nur http und socks5)."
   },
   "LogsSettings": {
     "loading": "Wird geladen…",

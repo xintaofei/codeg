@@ -13,6 +13,7 @@
 //! Module map:
 //! - `types`      — wire types shared with `src/lib/browser/types.ts`
 //! - `policy`     — pure decisions (scheme allow-list, …)
+//! - `profile`    — the tabs' own data store / directory and their proxy
 //! - `registry`   — tab id → surface + last known state
 //! - `surface`    — the enum over the concrete surfaces and their common ops
 //! - `surface_child` / `surface_window` — the concrete builders
@@ -27,6 +28,7 @@ pub mod channel;
 pub mod events;
 pub mod hooks;
 pub mod policy;
+pub mod profile;
 pub mod registry;
 pub mod surface;
 #[cfg(all(

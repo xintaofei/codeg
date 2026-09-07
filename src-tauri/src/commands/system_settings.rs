@@ -273,6 +273,7 @@ pub async fn get_system_proxy_settings(
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn update_system_proxy_settings(
+    app: tauri::AppHandle,
     settings: SystemProxySettings,
     db: State<'_, AppDatabase>,
 ) -> Result<SystemProxySettings, AppCommandError> {
@@ -287,6 +288,7 @@ pub async fn update_system_proxy_settings(
         .map_err(AppCommandError::from)?;
 
     proxy::apply_system_proxy_settings(&normalized)?;
+    crate::browser::profile::proxy_settings_changed(&app);
     Ok(normalized)
 }
 

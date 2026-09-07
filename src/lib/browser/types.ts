@@ -50,12 +50,31 @@ export interface BrowserTabState {
   openerTabId: string | null
 }
 
+/** How the platform takes a change of the app's proxy setting. */
+export type BrowserProxyApplies =
+  | "live"
+  | "next-tab"
+  | "restart"
+  | "unsupported"
+
+export interface BrowserProxyStatus {
+  /** Proxy browser tabs use, as `scheme://host:port`; null = direct. */
+  url: string | null
+  applies: BrowserProxyApplies
+  /** Why `url` is null although a proxy is configured, or why the shown proxy
+   *  is not the configured one (Windows until a restart). */
+  reason: string | null
+}
+
 export interface BrowserCapabilities {
   available: boolean
   surface: SurfaceKind | null
   platform: string
   channel: ChannelKind
   reasons: string[]
+  /** Browsing data lives apart from the app's own web storage. */
+  isolatedStorage: boolean
+  proxy: BrowserProxyStatus
 }
 
 export type SurfaceChoice = "auto" | "child" | "window"

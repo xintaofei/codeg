@@ -40,6 +40,12 @@ describe("browser wire types", () => {
       platform: "macos",
       channel: "degraded",
       reasons: ["page channel not installed yet"],
+      isolatedStorage: true,
+      proxy: {
+        url: "http://127.0.0.1:7890",
+        applies: "live",
+        reason: null,
+      },
     } satisfies BrowserCapabilities
     const popup = {
       presentation: "adopted",

@@ -4752,7 +4752,15 @@
     "clearConfirmAction": "Borrar",
     "cancel": "Cancelar",
     "cleared": "Datos de navegación borrados",
-    "clearFailed": "No se pudieron borrar los datos de navegación: {message}"
+    "clearFailed": "No se pudieron borrar los datos de navegación: {message}",
+    "proxyTitle": "Proxy de red",
+    "proxyHint": "Las pestañas del navegador usan el proxy de Ajustes del sistema. Las direcciones de este equipo (localhost) nunca pasan por el proxy.",
+    "proxyOn": "Usando {url}",
+    "proxyOff": "Conexión directa",
+    "proxyNextTab": "Un cambio de proxy se aplica a las pestañas que se abran a partir de ahora.",
+    "proxyRestart": "Reinicia codeg para que las pestañas del navegador usen el proxy cambiado.",
+    "proxyUnsupported": "No disponible en esta versión de macOS (se necesita 14 o posterior).",
+    "proxyUnusable": "El proxy configurado no es de un tipo que las pestañas del navegador puedan usar (solo http y socks5)."
   },
   "LogsSettings": {
     "loading": "Cargando…",

@@ -4,11 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const mocks = vi.hoisted(() => ({
   browserClearData: vi.fn(),
+  browserCapabilitiesNow: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn() },
 }))
 
 vi.mock("@/lib/browser/browser-api", () => ({
   browserClearData: mocks.browserClearData,
+  browserCapabilitiesNow: mocks.browserCapabilitiesNow,
 }))
 vi.mock("@/lib/platform", () => ({ isDesktop: () => true }))
 vi.mock("sonner", () => ({ toast: mocks.toast }))
@@ -34,9 +36,29 @@ function expandSection() {
   fireEvent.click(screen.getByRole("button", { name: "Built-in browser" }))
 }
 
+function capabilitiesWith(proxy: {
+  url: string | null
+  applies: "live" | "next-tab" | "restart" | "unsupported"
+  reason: string | null
+}) {
+  return {
+    available: true,
+    surface: "child",
+    platform: "macos",
+    channel: "native",
+    reasons: [],
+    isolatedStorage: true,
+    proxy,
+  }
+}
+
 beforeEach(() => {
   resetBrowserPrefsForTests()
   mocks.browserClearData.mockReset()
+  mocks.browserCapabilitiesNow.mockReset()
+  mocks.browserCapabilitiesNow.mockResolvedValue(
+    capabilitiesWith({ url: null, applies: "live", reason: null })
+  )
   mocks.toast.success.mockReset()
   mocks.toast.error.mockReset()
 })
@@ -100,6 +122,53 @@ describe("BrowserSettingsSection", () => {
     await waitFor(() =>
       expect(mocks.toast.success).toHaveBeenCalledWith("Browsing data cleared")
     )
+  })
+
+  it("shows the proxy browser tabs use, fetched when the section opens", async () => {
+    mocks.browserCapabilitiesNow.mockResolvedValue(
+      capabilitiesWith({
+        url: "http://127.0.0.1:7890",
+        applies: "live",
+        reason: null,
+      })
+    )
+    renderSection()
+    expect(mocks.browserCapabilitiesNow).not.toHaveBeenCalled()
+    expandSection()
+    expect(
+      await screen.findByText("Using http://127.0.0.1:7890")
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Restart codeg/)).not.toBeInTheDocument()
+  })
+
+  it("explains when the proxy needs a restart or is not usable", async () => {
+    mocks.browserCapabilitiesNow.mockResolvedValue(
+      capabilitiesWith({
+        url: "socks5://10.0.0.1:1080",
+        applies: "restart",
+        reason: "restart codeg for browser tabs to use the new proxy",
+      })
+    )
+    const { unmount } = renderSection()
+    expandSection()
+    expect(
+      await screen.findByText("Using socks5://10.0.0.1:1080")
+    ).toBeInTheDocument()
+    expect(screen.getByText(/Restart codeg/)).toBeInTheDocument()
+    unmount()
+
+    mocks.browserCapabilitiesNow.mockResolvedValue(
+      capabilitiesWith({
+        url: null,
+        applies: "live",
+        reason: "the built-in browser cannot use a https:// proxy",
+      })
+    )
+    renderSection()
+    expandSection()
+    expect(
+      await screen.findByText(/not one browser tabs can use/)
+    ).toBeInTheDocument()
   })
 
   it("keeps the dialog and reports the failure when clearing fails", async () => {

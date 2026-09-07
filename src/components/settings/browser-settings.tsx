@@ -12,9 +12,9 @@
  * link goes to the system browser and none of this exists.
  */
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
-import { AppWindow, Eraser, Globe, Link2, Wrench } from "lucide-react"
+import { AppWindow, Eraser, Globe, Link2, Network, Wrench } from "lucide-react"
 import { toast } from "sonner"
 
 import { SettingCard, SettingRow } from "@/components/shared/setting-card"
@@ -39,7 +39,10 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { toErrorMessage } from "@/lib/app-error"
-import { browserClearData } from "@/lib/browser/browser-api"
+import {
+  browserCapabilitiesNow,
+  browserClearData,
+} from "@/lib/browser/browser-api"
 import {
   LINK_SOURCES,
   setBrowserDevtools,
@@ -50,6 +53,7 @@ import {
   type LinkTarget,
   type SurfaceOverride,
 } from "@/lib/browser/browser-prefs"
+import type { BrowserProxyStatus } from "@/lib/browser/types"
 import { isDesktop } from "@/lib/platform"
 
 // Literal message keys per id — next-intl only resolves literal keys, so the
@@ -75,6 +79,27 @@ const SURFACE_LABEL_KEYS = {
   window: "surfaceWindow",
 } as const satisfies Record<SurfaceOverride, string>
 
+/**
+ * One line for the proxy row: what browser tabs use right now and, where the
+ * platform cannot switch live, what a change needs. Read-only — the proxy is
+ * set in System settings, not here.
+ */
+export function proxyStatusLines(
+  t: ReturnType<typeof useTranslations<"BrowserSettings">>,
+  status: BrowserProxyStatus | null
+): string[] {
+  if (!status) return []
+  if (status.applies === "unsupported") return [t("proxyUnsupported")]
+  const lines: string[] = []
+  if (status.url) lines.push(t("proxyOn", { url: status.url }))
+  else if (status.reason) lines.push(t("proxyUnusable"))
+  else lines.push(t("proxyOff"))
+  if (status.applies === "restart" && status.reason)
+    lines.push(t("proxyRestart"))
+  if (status.applies === "next-tab") lines.push(t("proxyNextTab"))
+  return lines
+}
+
 export function BrowserSettingsSection() {
   const t = useTranslations("BrowserSettings")
   const prefs = useBrowserPrefs()
@@ -83,6 +108,24 @@ export function BrowserSettingsSection() {
   const [expanded, setExpanded] = useState(false)
   const [confirmClear, setConfirmClear] = useState(false)
   const [clearing, setClearing] = useState(false)
+  const [proxy, setProxy] = useState<BrowserProxyStatus | null>(null)
+
+  // Fetched when the section opens (not once per app run): the answer follows
+  // the proxy setting, which lives on another settings page.
+  useEffect(() => {
+    if (!expanded) return
+    let cancelled = false
+    browserCapabilitiesNow()
+      .then((caps) => {
+        if (!cancelled) setProxy(caps.proxy)
+      })
+      .catch(() => {
+        if (!cancelled) setProxy(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [expanded])
 
   if (!isDesktop()) return null
 
@@ -195,6 +238,19 @@ export function BrowserSettingsSection() {
             </Select>
           }
         />
+        <SettingRow
+          icon={Network}
+          title={t("proxyTitle")}
+          description={t("proxyHint")}
+        >
+          <div className="space-y-0.5 text-xs text-muted-foreground">
+            {proxyStatusLines(t, proxy).map((line) => (
+              <p key={line} className="break-all">
+                {line}
+              </p>
+            ))}
+          </div>
+        </SettingRow>
         <SettingRow
           icon={Eraser}
           title={t("clearTitle")}

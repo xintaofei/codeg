@@ -4752,7 +4752,15 @@
     "clearConfirmAction": "清除",
     "cancel": "取消",
     "cleared": "浏览数据已清除",
-    "clearFailed": "无法清除浏览数据：{message}"
+    "clearFailed": "无法清除浏览数据：{message}",
+    "proxyTitle": "网络代理",
+    "proxyHint": "浏览器标签页使用「系统设置」里的代理。本机地址（localhost）永远不走代理。",
+    "proxyOn": "正在使用 {url}",
+    "proxyOff": "直接连接",
+    "proxyNextTab": "代理变更对此后打开的标签页生效。",
+    "proxyRestart": "代理已变更，重启 codeg 后浏览器标签页才会使用新代理。",
+    "proxyUnsupported": "当前 macOS 版本不支持（需要 macOS 14 或更高）。",
+    "proxyUnusable": "配置的代理不是浏览器标签页能使用的类型（仅支持 http 和 socks5）。"
   },
   "LogsSettings": {
     "loading": "加载中…",

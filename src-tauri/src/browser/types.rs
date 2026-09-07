@@ -98,6 +98,9 @@ pub struct BrowserCapabilities {
     pub channel: ChannelKind,
     /// Human-readable reasons behind a degraded answer (for diagnostics UI).
     pub reasons: Vec<String>,
+    /// Browsing data lives apart from the app's own web storage.
+    pub isolated_storage: bool,
+    pub proxy: crate::browser::profile::BrowserProxyStatus,
 }
 
 /// Caller's surface preference for `browser_open_tab`.
