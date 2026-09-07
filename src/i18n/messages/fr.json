@@ -1847,6 +1847,7 @@
       "noChats": "Aucune discussion",
       "noRecent": "Aucune conversation récente",
       "showMoreRecent": "Afficher plus ({count})",
+      "loadMoreFolderConversations": "Charger plus ({count})",
       "resetRecentLimit": "Revenir aux {count} premières",
       "noFolders": "Aucun dossier ouvert",
       "newChatAction": "Nouvelle discussion",

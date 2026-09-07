@@ -330,7 +330,8 @@ describe("buildRows", () => {
     byFolder: Map<number, DbConversationSummary[]>,
     folderExpanded: Record<number, boolean>,
     folderTotalCounts: Map<number, number>,
-    foldersExpanded = true
+    foldersExpanded = true,
+    folderConversationLimits: Readonly<Record<number, number>> = {}
   ): SidebarRow[] {
     const rows = buildRows({
       pinned: [],
@@ -342,12 +343,41 @@ describe("buildRows", () => {
       foldersExpanded,
       chatConversations: [],
       chatsExpanded: true,
+      folderConversationLimits,
     })
     const chatsIdx = rows.findIndex(
       (r) => r.kind === "section" && r.section === "chats"
     )
     return chatsIdx === -1 ? rows : rows.slice(0, chatsIdx)
   }
+
+  it("pages each folder independently in batches of six", () => {
+    const conversations = Array.from({ length: 13 }, (_, i) => conv(i + 1, 10))
+    const byFolder = new Map([[10, conversations]])
+    const counts = new Map([[10, conversations.length]])
+
+    const initial = folderRows([10], byFolder, { 10: true }, counts)
+    expect(initial.filter((row) => row.kind === "conversation")).toHaveLength(6)
+    expect(initial.at(-1)).toEqual({
+      kind: "folder-more",
+      folderId: 10,
+      depth: 0,
+      remaining: 7,
+    })
+
+    const nextPage = folderRows([10], byFolder, { 10: true }, counts, true, {
+      10: 12,
+    })
+    expect(nextPage.filter((row) => row.kind === "conversation")).toHaveLength(
+      12
+    )
+    expect(nextPage.at(-1)).toEqual({
+      kind: "folder-more",
+      folderId: 10,
+      depth: 0,
+      remaining: 1,
+    })
+  })
 
   it("emits a Folders section header above the folder rows", () => {
     const byFolder = new Map([[10, [conv(1, 10)]]])

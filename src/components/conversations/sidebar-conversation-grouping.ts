@@ -19,6 +19,9 @@ import {
 // (not in the list component) because `buildRows` needs it to tell an untouched
 // first page from an expanded one.
 export const RECENT_PAGE_SIZE = 15
+export const FOLDER_CONVERSATION_PAGE_SIZE = 6
+
+const EMPTY_FOLDER_CONVERSATION_LIMITS: Readonly<Record<number, number>> = {}
 
 export function parseTimestamp(value: string): number {
   const timestamp = Date.parse(value)
@@ -868,6 +871,13 @@ export interface FolderHeaderRow {
   folderId: number
 }
 
+export interface FolderMoreRow {
+  kind: "folder-more"
+  folderId: number
+  depth: number
+  remaining: number
+}
+
 /**
  * The "root" sub-group header shown (only under "Show worktrees") directly below
  * a repo CONTAINER header: it groups the repo's OWN (non-worktree) conversations
@@ -1040,6 +1050,7 @@ export type SidebarRow =
   | FolderGroupHeaderRow
   | GroupEmptyRow
   | FolderHeaderRow
+  | FolderMoreRow
   | RootGroupHeaderRow
   | ConversationRow
   | EmptyHintRow
@@ -1201,6 +1212,7 @@ export function buildRows(args: {
   byFolder: Map<number, DbConversationSummary[]>
   folderExpanded: Record<number, boolean>
   folderTotalCounts: Map<number, number>
+  folderConversationLimits?: Readonly<Record<number, number>>
   foldersExpanded: boolean
   chatConversations: readonly DbConversationSummary[]
   chatsExpanded: boolean
@@ -1271,6 +1283,7 @@ export function buildRows(args: {
     byFolder,
     folderExpanded,
     folderTotalCounts,
+    folderConversationLimits = EMPTY_FOLDER_CONVERSATION_LIMITS,
     foldersExpanded,
     chatConversations,
     chatsExpanded,
@@ -1329,7 +1342,12 @@ export function buildRows(args: {
       })
       return
     }
-    for (const conv of convs) {
+    const limit = Math.max(
+      0,
+      folderConversationLimits[folderId] ?? FOLDER_CONVERSATION_PAGE_SIZE
+    )
+    const shown = convs.slice(0, limit)
+    for (const conv of shown) {
       pushConversationRow(
         rows,
         conv,
@@ -1338,6 +1356,15 @@ export function buildRows(args: {
         childrenByParent,
         childrenLoading
       )
+    }
+    const remaining = convs.length - shown.length
+    if (remaining > 0) {
+      rows.push({
+        kind: "folder-more",
+        folderId,
+        depth: baseDepth,
+        remaining,
+      })
     }
   }
 

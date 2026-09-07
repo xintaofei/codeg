@@ -1847,6 +1847,7 @@
       "noChats": "Sem chats",
       "noRecent": "Sem conversas recentes",
       "showMoreRecent": "Mostrar mais ({count})",
+      "loadMoreFolderConversations": "Carregar mais ({count})",
       "resetRecentLimit": "Redefinir para as primeiras {count}",
       "noFolders": "Nenhuma pasta aberta",
       "newChatAction": "Novo chat",

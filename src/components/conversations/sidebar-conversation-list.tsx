@@ -115,6 +115,7 @@ import {
   reconcileLayout,
   computeStickyState,
   flatIndexOfConversation,
+  FOLDER_CONVERSATION_PAGE_SIZE,
   folderHeaderFlatIndices,
   formatRelative,
   groupByFolderWithReuse,
@@ -1019,6 +1020,25 @@ export function SidebarConversationList({
   // "show me more of this list right now" is a reading gesture, not a setting —
   // and a fresh sidebar should open short again.
   const [recentLimit, setRecentLimit] = useState(RECENT_PAGE_SIZE)
+  const [folderConversationLimits, setFolderConversationLimits] = useState<
+    Record<number, number>
+  >({})
+  const revealMoreFolderConversations = useCallback((folderId: number) => {
+    setFolderConversationLimits((prev) => ({
+      ...prev,
+      [folderId]:
+        (prev[folderId] ?? FOLDER_CONVERSATION_PAGE_SIZE) +
+        FOLDER_CONVERSATION_PAGE_SIZE,
+    }))
+  }, [])
+  const resetFolderConversationLimit = useCallback((folderId: number) => {
+    setFolderConversationLimits((prev) => {
+      if (prev[folderId] == null) return prev
+      const next = { ...prev }
+      delete next[folderId]
+      return next
+    })
+  }, [])
   const revealMoreRecent = useCallback(
     () => setRecentLimit((n) => n + RECENT_PAGE_SIZE),
     []
@@ -1513,6 +1533,7 @@ export function SidebarConversationList({
         byFolder,
         folderExpanded,
         folderTotalCounts,
+        folderConversationLimits,
         foldersExpanded,
         chatConversations,
         chatsExpanded,
@@ -1536,6 +1557,7 @@ export function SidebarConversationList({
       byFolder,
       folderExpanded,
       folderTotalCounts,
+      folderConversationLimits,
       foldersExpanded,
       chatConversations,
       chatsExpanded,
@@ -1607,6 +1629,7 @@ export function SidebarConversationList({
       setAllSectionsCollapsed(false)
     },
     collapseAll() {
+      setFolderConversationLimits({})
       setFolderExpanded((prev) => {
         const next: Record<number, boolean> = { ...prev }
         for (const id of reorderableFolderIds) next[id] = false
@@ -1757,24 +1780,32 @@ export function SidebarConversationList({
     chatsExpanded,
   ])
 
-  const toggleFolder = useCallback((folderId: number) => {
-    setFolderExpanded((prev) => {
-      const next = { ...prev, [folderId]: !(prev[folderId] ?? true) }
-      saveFolderExpanded(next)
-      return next
-    })
-  }, [])
+  const toggleFolder = useCallback(
+    (folderId: number) => {
+      resetFolderConversationLimit(folderId)
+      setFolderExpanded((prev) => {
+        const next = { ...prev, [folderId]: !(prev[folderId] ?? true) }
+        saveFolderExpanded(next)
+        return next
+      })
+    },
+    [resetFolderConversationLimit]
+  )
 
   // Toggle a container repo's "root" sub-group (its own sessions). Session-only,
   // so unlike `toggleFolder` there is no persistence write.
-  const toggleRootGroup = useCallback((repoId: number) => {
-    setRootGroupCollapsed((prev) => {
-      const next = new Set(prev)
-      if (next.has(repoId)) next.delete(repoId)
-      else next.add(repoId)
-      return next
-    })
-  }, [])
+  const toggleRootGroup = useCallback(
+    (repoId: number) => {
+      resetFolderConversationLimit(repoId)
+      setRootGroupCollapsed((prev) => {
+        const next = new Set(prev)
+        if (next.has(repoId)) next.delete(repoId)
+        else next.add(repoId)
+        return next
+      })
+    },
+    [resetFolderConversationLimit]
+  )
 
   // Lazily fetch a conversation's direct delegation children into the cache.
   // Deduped against both the cache and in-flight requests so a re-toggle or the
@@ -2894,6 +2925,32 @@ export function SidebarConversationList({
         </div>
       )
     }
+    if (row.kind === "folder-more") {
+      const railLeft = `calc(var(--conv-rail-axis, 0.875rem) + ${row.depth} * ${CONV_RAIL_DEPTH_STEP})`
+      return (
+        <div className="relative h-[2rem]">
+          <button
+            type="button"
+            onClick={() => revealMoreFolderConversations(row.folderId)}
+            className="relative flex h-[1.9375rem] w-full items-center rounded-full pr-[0.25rem] text-left text-[0.75rem] text-muted-foreground/80 outline-none transition-colors duration-[120ms] hover:bg-[color-mix(in_oklab,var(--sidebar-accent),var(--sidebar-foreground)_2%)] hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+            style={{
+              paddingLeft: `calc(var(--conv-rail-axis, 0.875rem) + ${row.depth} * ${CONV_RAIL_DEPTH_STEP} + 0.875rem)`,
+            }}
+          >
+            <span
+              aria-hidden
+              className="pointer-events-none absolute top-1/2 flex h-[0.875rem] w-[0.875rem] -translate-x-1/2 -translate-y-1/2 items-center justify-center"
+              style={{ left: railLeft }}
+            >
+              <ChevronDown className="h-[0.75rem] w-[0.75rem]" />
+            </span>
+            <span className="truncate">
+              {t("loadMoreFolderConversations", { count: row.remaining })}
+            </span>
+          </button>
+        </div>
+      )
+    }
     if (row.kind === "recent-more") {
       // Footer of the paged Recent section — a row, not a hint: each click
       // reveals another page. Its geometry is the conversation card's, so the
@@ -3037,6 +3094,7 @@ export function SidebarConversationList({
     if (row.kind === "folder-group") return `foldergroup-${row.groupId}`
     if (row.kind === "group-empty") return `groupempty-${row.groupId}`
     if (row.kind === "folder") return `folder-${row.folderId}`
+    if (row.kind === "folder-more") return `foldermore-${row.folderId}`
     if (row.kind === "root-group") return `rootgroup-${row.folderId}`
     if (row.kind === "empty") return `empty-${row.folderId}`
     if (row.kind === "chats-empty") return "chats-empty"

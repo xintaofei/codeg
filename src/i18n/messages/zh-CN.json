@@ -1847,6 +1847,7 @@
       "noChats": "没有聊天",
       "noRecent": "暂无最近会话",
       "showMoreRecent": "显示更多（{count}）",
+      "loadMoreFolderConversations": "加载更多（{count}）",
       "resetRecentLimit": "重置为前 {count} 条",
       "noFolders": "没有打开的文件夹",
       "newChatAction": "新建聊天",

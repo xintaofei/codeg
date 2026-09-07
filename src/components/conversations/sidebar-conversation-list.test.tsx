@@ -1170,11 +1170,12 @@ describe("SidebarConversationList — Recent section", () => {
     const PAGE = 15
     const TOTAL = PAGE + 4
 
-    // Recent duplicates every canonical row, so total cards = canonical + recent
-    // slice. Counting the Recent slice alone keeps the assertions readable.
+    // Folder conversations now render their own first page (six rows), so total
+    // cards = visible canonical rows + Recent slice. Counting the Recent slice
+    // alone keeps the assertions readable.
     const recentRowCount = () =>
       Array.from(document.querySelectorAll("[data-conversation-id]")).length -
-      TOTAL
+      Math.min(TOTAL, 6)
 
     const buttonWithText = (text: string) =>
       Array.from(document.querySelectorAll("button")).find((b) =>
@@ -1239,7 +1240,7 @@ describe("SidebarConversationList — Recent section", () => {
       })
       const recentRows = () =>
         Array.from(document.querySelectorAll("[data-conversation-id]")).length -
-        conversations.length
+        6
       expect(recentRows()).toBe(PAGE * 2)
       // Still more to reveal…
       expect(buttonWithText(showMoreLabel(PAGE))).toBeDefined()
@@ -1408,6 +1409,51 @@ describe("SidebarConversationList — expand / collapse all", () => {
 
     expect(localStorage.getItem(SECTION_COLLAPSED_KEY)).toBe(afterFirst)
     for (const label of ALL_SECTIONS) expect(expandedOf(label)).toBe("false")
+  })
+})
+
+describe("SidebarConversationList - folder conversation paging", () => {
+  const folderConversationCount = () =>
+    document.querySelectorAll("[data-conversation-id]").length
+  const loadMoreButton = () =>
+    Array.from(document.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Load more")
+    )
+  const folderToggle = () =>
+    document.querySelector<HTMLButtonElement>(
+      '[data-folder-id="1"][aria-expanded]'
+    )
+
+  beforeEach(() => {
+    localStorage.clear()
+    const folders = [folder(1, "Repo")]
+    useAppWorkspaceStore.setState({
+      folders,
+      allFolders: folders,
+      conversations: Array.from({ length: 13 }, (_, i) => conv(i + 1, 1)),
+    })
+  })
+
+  it("reveals six at a time and resets after the folder is collapsed", () => {
+    render(tree())
+
+    expect(folderConversationCount()).toBe(6)
+    expect(loadMoreButton()?.textContent).toContain("7")
+
+    act(() => fireEvent.click(loadMoreButton()!))
+    expect(folderConversationCount()).toBe(12)
+    expect(loadMoreButton()?.textContent).toContain("1")
+
+    act(() => fireEvent.click(loadMoreButton()!))
+    expect(folderConversationCount()).toBe(13)
+    expect(loadMoreButton()).toBeUndefined()
+
+    act(() => fireEvent.click(folderToggle()!))
+    expect(folderConversationCount()).toBe(0)
+
+    act(() => fireEvent.click(folderToggle()!))
+    expect(folderConversationCount()).toBe(6)
+    expect(loadMoreButton()?.textContent).toContain("7")
   })
 })
 

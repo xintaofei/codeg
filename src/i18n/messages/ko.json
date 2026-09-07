@@ -1847,6 +1847,7 @@
       "noChats": "채팅 없음",
       "noRecent": "최근 대화 없음",
       "showMoreRecent": "더 보기 ({count})",
+      "loadMoreFolderConversations": "더 불러오기 ({count})",
       "resetRecentLimit": "처음 {count}개로 되돌리기",
       "noFolders": "열린 폴더 없음",
       "newChatAction": "새 채팅",

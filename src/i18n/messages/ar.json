@@ -1847,6 +1847,7 @@
       "noChats": "لا توجد محادثات",
       "noRecent": "لا توجد محادثات حديثة",
       "showMoreRecent": "عرض المزيد ({count})",
+      "loadMoreFolderConversations": "تحميل المزيد ({count})",
       "resetRecentLimit": "إعادة التعيين إلى أول {count}",
       "noFolders": "لا توجد مجلدات مفتوحة",
       "newChatAction": "محادثة جديدة",
