@@ -1747,6 +1747,25 @@ export function SidebarConversationList({
           pendingScrollRef.current = true
           return
         }
+        const folderConversations = byFolder.get(displayFolderId) ?? []
+        const conversationIndex = folderConversations.findIndex(
+          (candidate) =>
+            candidate.id === targetId && candidate.agent_type === targetAgent
+        )
+        const requiredLimit = conversationIndex + 1
+        const currentLimit =
+          folderConversationLimits[displayFolderId] ??
+          FOLDER_CONVERSATION_PAGE_SIZE
+        if (requiredLimit > currentLimit) {
+          setFolderConversationLimits((prev) => {
+            const previousLimit =
+              prev[displayFolderId] ?? FOLDER_CONVERSATION_PAGE_SIZE
+            if (previousLimit >= requiredLimit) return prev
+            return { ...prev, [displayFolderId]: requiredLimit }
+          })
+          pendingScrollRef.current = true
+          return
+        }
       }
       // Off-screen virtualized rows are not in the DOM, so resolve the flat row
       // index and let virtua scroll to it.
@@ -1769,7 +1788,9 @@ export function SidebarConversationList({
   }, [
     selectedConversation,
     conversations,
+    byFolder,
     folderExpanded,
+    folderConversationLimits,
     displayChildToParent,
     showWorktrees,
     childToParent,

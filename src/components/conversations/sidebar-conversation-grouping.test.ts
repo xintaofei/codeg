@@ -379,6 +379,87 @@ describe("buildRows", () => {
     })
   })
 
+  it("keeps each folder's conversation limit independent", () => {
+    const first = Array.from({ length: 13 }, (_, i) => conv(i + 1, 10))
+    const second = Array.from({ length: 8 }, (_, i) => conv(i + 101, 20))
+    const rows = folderRows(
+      [10, 20],
+      new Map([
+        [10, first],
+        [20, second],
+      ]),
+      { 10: true, 20: true },
+      new Map([
+        [10, first.length],
+        [20, second.length],
+      ]),
+      true,
+      { 10: 12 }
+    )
+
+    expect(
+      rows.filter(
+        (row) =>
+          row.kind === "conversation" && row.conversation.folder_id === 10
+      )
+    ).toHaveLength(12)
+    expect(
+      rows.filter(
+        (row) =>
+          row.kind === "conversation" && row.conversation.folder_id === 20
+      )
+    ).toHaveLength(6)
+    expect(rows).toContainEqual({
+      kind: "folder-more",
+      folderId: 10,
+      depth: 0,
+      remaining: 1,
+    })
+    expect(rows).toContainEqual({
+      kind: "folder-more",
+      folderId: 20,
+      depth: 0,
+      remaining: 2,
+    })
+  })
+
+  it("keeps expanded delegation children attached without using a folder page slot", () => {
+    const parent = conv(1, 10, { child_count: 1 })
+    const child = conv(100, 10, { parent_id: 1 })
+    const roots = [
+      parent,
+      ...Array.from({ length: 6 }, (_, i) => conv(i + 2, 10)),
+    ]
+    const rows = buildRows({
+      pinned: [],
+      pinnedExpanded: true,
+      orderedFolderIds: [10],
+      byFolder: new Map([[10, roots]]),
+      folderExpanded: { 10: true },
+      folderTotalCounts: new Map([[10, roots.length]]),
+      foldersExpanded: true,
+      chatConversations: [],
+      chatsExpanded: true,
+      conversationExpanded: new Set([parent.id]),
+      childrenByParent: new Map([[parent.id, [child]]]),
+    })
+
+    expect(
+      rows.filter((row) => row.kind === "conversation" && row.depth === 0)
+    ).toHaveLength(6)
+    expect(rows).toContainEqual({
+      kind: "conversation",
+      conversation: child,
+      depth: 1,
+    })
+    expect(rows).toContainEqual({
+      kind: "folder-more",
+      folderId: 10,
+      depth: 0,
+      remaining: 1,
+    })
+  })
+
   it("emits a Folders section header above the folder rows", () => {
     const byFolder = new Map([[10, [conv(1, 10)]]])
     const rows = folderRows([10], byFolder, { 10: true }, new Map([[10, 1]]))

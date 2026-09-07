@@ -805,6 +805,48 @@ describe("SidebarConversationList — scrollToActive across a worktree merge", (
   })
 })
 
+describe("SidebarConversationList — scrollToActive folder pagination", () => {
+  beforeEach(() => {
+    localStorage.clear()
+    const folders = [folder(1, "Repo")]
+    useAppWorkspaceStore.setState({
+      folders,
+      allFolders: folders,
+      conversations: Array.from({ length: 13 }, (_, i) => conv(i + 1, 1)),
+    })
+    store.activeTabId = "tab-7"
+    store.tabSpec = [
+      {
+        id: "tab-7",
+        conversationId: 7,
+        agentType: "claude_code",
+        folderId: 1,
+        title: "conv-7",
+        isPinned: false,
+      },
+    ]
+  })
+
+  it("reveals a paged folder conversation before scrolling to it", () => {
+    const ref = createRef<SidebarConversationListHandle>()
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <SidebarConversationList showCompleted sortMode="created" ref={ref} />
+      </NextIntlClientProvider>
+    )
+
+    expect(document.querySelector('[data-conversation-id="7"]')).toBeNull()
+    expect(virtuaCtl.scrollToIndex).not.toHaveBeenCalled()
+
+    act(() => {
+      ref.current?.scrollToActive()
+    })
+
+    expect(document.querySelector('[data-conversation-id="7"]')).not.toBeNull()
+    expect(virtuaCtl.scrollToIndex).toHaveBeenCalled()
+  })
+})
+
 describe("SidebarConversationList — folder ⋯ opens the same menu as right-click", () => {
   beforeEach(() => {
     probes.card = 0
