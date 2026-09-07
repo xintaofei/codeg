@@ -9,6 +9,8 @@
 //! per-event `serde_json::from_value` reparse and lets us drop the
 //! `acp://event` channel from the global firehose entirely.
 
+mod continuation;
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::Ordering;
@@ -18,7 +20,6 @@ use std::time::Duration;
 use sea_orm::DatabaseConnection;
 use tokio::sync::{broadcast, mpsc};
 
-use crate::acp::delegation::continuation::CollaborationSessionState as codeg_types_CollabState;
 use crate::acp::delegation::broker::{CompleteCallResult, DelegationBroker, DelegationMatchKey};
 use crate::acp::delegation::types::{DelegationError, DelegationOutcome, DelegationSuccess};
 use crate::acp::internal_bus::InternalEventBus;
@@ -32,6 +33,10 @@ use crate::logging::throttle::{LagLogThrottle, LAG_LOG_WINDOW};
 use crate::models::AgentType;
 use crate::web::event_bridge::{emit_with_state, EventEmitter};
 use tokio::sync::RwLock;
+
+use continuation::{
+    forward_disconnect_to_continuation, forward_turn_complete_to_continuation,
+};
 
 /// Per-connection worker queue depth. Sized for the **filtered** event set
 /// only (see `is_lifecycle_relevant`) — high-frequency events (ContentDelta,
@@ -320,55 +325,16 @@ pub(crate) async fn handle_event(
                 .await;
             }
 
-            // Continuation routing FIRST: if this connection is the active
-            // execution owner of a collaboration turn, the terminal belongs
-            // to that round — settle it with the coordinator and do NOT let
-            // the one-shot broker complete the original task again.
-            if let Some(collab) = collaboration.as_ref() {
-                let owner = collab
-                    .execution_owner(&envelope.connection_id)
-                    .await;
-                if let Some((turn_id, execution_id)) = owner {
-                    let terminal = stop_reason_to_terminal(stop_reason.as_str(), last_text);
-                    match collab.settle(&turn_id, &execution_id, terminal).await {
-                        Ok(applied) => {
-                            if applied {
-                                tracing::info!(
-                                    "[continuation][lifecycle] turn {turn_id} settled from                                      execution {execution_id}"
-                                );
-                                return Ok(());
-                            }
-                            // A stale terminal for a superseded execution —
-                            // quarantine it (never let it fall through to the
-                            // one-shot broker: that would complete T0 again).
-                            tracing::info!(
-                                "[continuation][lifecycle] stale terminal for turn                                  {turn_id} (execution {execution_id}) quarantined"
-                            );
-                            return Ok(());
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "[continuation][lifecycle] settle failed for turn {turn_id}: {e}"
-                            );
-                            return Ok(());
-                        }
-                    }
-                }
-                // Reserved-but-not-ours: a child under an open collaboration
-                // session with NO matching execution is a stale/foreign
-                // event — ignore it entirely (it must not complete the old
-                // task either).
-                if let Some(session) = collab
-                    .session_summary_for_child(cid)
-                    .await
-                {
-                    if session.state != codeg_types_CollabState::Closed {
-                        tracing::info!(
-                            "[continuation][lifecycle] event for reserved child {cid} with no                              matching execution ignored"
-                        );
-                        return Ok(());
-                    }
-                }
+            if forward_turn_complete_to_continuation(
+                collaboration,
+                &envelope.connection_id,
+                cid,
+                stop_reason.as_str(),
+                last_text,
+            )
+            .await
+            {
+                return Ok(());
             }
             // (The delegation-terminal forward ran ABOVE the status write so
             // a superseded terminal can neither resolve the broker call nor
@@ -426,27 +392,6 @@ pub(crate) async fn handle_event(
 /// paths (`timeout` / `cancel_by_child_connection` / `cancel_by_parent`)
 /// also surface the event — see
 /// `.docs/issues/2026-05-24-delegation-termination-cascade.md`.
-/// Map a wire stop reason (plus the turn's last text) onto the collaboration
-/// turn terminal. Mirrors `forward_turn_complete_to_broker`'s outcome
-/// mapping so the two routes can never disagree about what a stop reason
-/// means.
-fn stop_reason_to_terminal(
-    stop_reason: &str,
-    last_text: Option<String>,
-) -> crate::acp::delegation::continuation::TurnTerminal {
-    use crate::acp::delegation::continuation::TurnTerminal;
-    match stop_reason {
-        "end_turn" => TurnTerminal::Completed {
-            text: last_text.unwrap_or_default(),
-        },
-        "cancelled" => TurnTerminal::Canceled,
-        other => TurnTerminal::Failed {
-            code: "child_failed".to_string(),
-            message: format!("the rework round ended with stop reason `{other}`"),
-        },
-    }
-}
-
 /// What [`forward_turn_complete_to_broker`] decided.
 enum TerminalForward {
     /// Accepted (or the conversation was never a delegation child) — the
@@ -624,36 +569,6 @@ async fn handle_terminal_event(
 /// caller arrived via `Error` rather than a bare `Disconnected`). It gets
 /// stitched into the broker's canceled reason so the parent's
 /// `delegate_to_agent` tool-call result surfaces the real failure cause.
-/// Route a child connection terminal (disconnect / error) to the
-/// collaboration coordinator when that connection owns an execution. The
-/// outcome is UNKNOWABLE in this case — the send may have happened — so the
-/// turn settles `outcome_unknown` and the session blocks. Returns `true`
-/// when handled (the one-shot broker must not also fire).
-async fn forward_disconnect_to_continuation(
-    collaboration: Option<&Arc<crate::acp::delegation::continuation::ContinuationCoordinator>>,
-    connection_id: &str,
-) -> bool {
-    let Some(collab) = collaboration else {
-        return false;
-    };
-    let Some((turn_id, execution_id)) = collab.execution_owner(connection_id).await else {
-        return false;
-    };
-    match collab.settle_unknown(&turn_id, &execution_id).await {
-        Ok(applied) => {
-            if !applied {
-                tracing::info!(
-                    "[continuation][lifecycle] disconnect arrived for already-settled turn                      {turn_id}; ignored"
-                );
-            }
-        }
-        Err(e) => {
-            tracing::warn!("[continuation][lifecycle] unknown-settle failed for {turn_id}: {e}");
-        }
-    }
-    true
-}
-
 async fn forward_disconnect_to_broker(
     broker: &DelegationBroker,
     connection_id: &str,
@@ -1900,6 +1815,8 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::{mpsc, RwLock};
 
+    mod continuation;
+
     fn fake_connection_with_state(
         id: &str,
         conv_id: Option<i32>,
@@ -2265,138 +2182,6 @@ mod tests {
             read_row_status(&db, conv.id).await,
             ConversationStatus::PendingReview
         );
-    }
-
-    /// Reacceptance R1: a TurnComplete on a strict-attached connection that
-    /// was BOUND to the reserved child conversation (what
-    /// `ConnectionManagerContinuationRuntime::bind_child_conversation` now
-    /// guarantees before any prompt flows) must settle the registered
-    /// collaboration round with the round's own result — while the original
-    /// task id on the child row stays a plain frozen source (no broker is
-    /// even involved). Before the binding, the unbound state made this arm
-    /// return early and the round stayed `running` forever.
-    #[tokio::test]
-    async fn turn_complete_on_bound_strict_connection_settles_the_collaboration_round() {
-        use crate::acp::delegation::broker::NoopOutcomeStore;
-        use crate::acp::delegation::continuation::{
-            ContinuationCoordinator, NoopRuntime as ContinuationNoopRuntime,
-        };
-        use crate::db::entities::conversation::{self as conv_entity, ConversationKind};
-        use crate::db::service::collaboration_service;
-        use sea_orm::{ActiveModelTrait, NotSet, Set};
-
-        let db = test_helpers::fresh_in_memory_db().await;
-        let folder_id = test_helpers::seed_folder(&db, "/tmp/r1-lifecycle").await;
-        let now = chrono::Utc::now();
-        let child = conv_entity::ActiveModel {
-            id: NotSet,
-            folder_id: Set(folder_id),
-            title: Set(Some("r1-child".into())),
-            title_locked: Set(false),
-            agent_type: Set("claude_code".into()),
-            status: Set(ConversationStatus::Completed),
-            kind: Set(ConversationKind::Delegate),
-            model: Set(None),
-            git_branch: Set(None),
-            external_id: Set(Some("ext-r1".into())),
-            parent_id: Set(Some(1)),
-            parent_tool_use_id: Set(Some("pt-r1".into())),
-            delegation_call_id: Set(Some("task-r1".into())),
-            message_count: Set(0),
-            created_at: Set(now),
-            updated_at: Set(now),
-            deleted_at: Set(None),
-            pinned_at: Set(None),
-            origin_cwd: Set(None),
-        };
-        let cid = child.insert(&db.conn).await.expect("child row").id;
-
-        let coordinator = Arc::new(ContinuationCoordinator::new(
-            Arc::new(crate::db::AppDatabase {
-                conn: db.conn.clone(),
-            }),
-            Arc::new(ContinuationNoopRuntime),
-            Arc::new(NoopOutcomeStore),
-        ));
-        let session = collaboration_service::upsert_session_once(
-            &db.conn,
-            collaboration_service::NewSession {
-                id: uuid::Uuid::new_v4().to_string(),
-                source_task_id: "task-r1".into(),
-                parent_conversation_id: 1,
-                child_conversation_id: cid,
-                resume_binding_json: "{}".into(),
-            },
-        )
-        .await
-        .unwrap();
-        let turn = collaboration_service::insert_turn(
-            &db.conn,
-            collaboration_service::NewTurn {
-                id: uuid::Uuid::new_v4().to_string(),
-                session_id: session.id.clone(),
-                ordinal: 1,
-                request_id: "k1".into(),
-                message: "fix the boundary".into(),
-                initiator_parent_conversation_id: 1,
-                initiator_tool_use_id: None,
-            },
-        )
-        .await
-        .unwrap();
-        collaboration_service::cas_turn_state(
-            &db.conn,
-            &turn.id,
-            None,
-            &["accepted"],
-            "running",
-            true,
-        )
-        .await
-        .unwrap();
-        coordinator
-            .register_execution_for_test(
-                "strict-conn",
-                &turn.id,
-                &turn.execution_id,
-                &session.id,
-                "parent-conn",
-            )
-            .await;
-
-        // The strict connection, BOUND to the child row (the R1 latch), with
-        // the round's last assistant text on its state.
-        let mgr = ConnectionManager::new();
-        {
-            let mut map = mgr.connections.lock().await;
-            let conn = fake_connection_with_state("strict-conn", Some(cid));
-            conn.state.write().await.last_assistant_text = Some("REWORK RESULT".into());
-            map.insert("strict-conn".to_string(), conn);
-        }
-        let env = EventEnvelope {
-            seq: 1,
-            connection_id: "strict-conn".to_string(),
-            payload: AcpEvent::TurnComplete {
-                session_id: "ext-r1".into(),
-                stop_reason: "end_turn".into(),
-                agent_type: "claude_code".into(),
-            },
-        };
-        handle_event(&db.conn, &mgr, &env, None, Some(&coordinator))
-            .await
-            .unwrap();
-
-        let settled = collaboration_service::find_turn(&db.conn, &turn.id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            settled.state, "completed",
-            "the bound connection's terminal must settle the round (R1)"
-        );
-        assert_eq!(settled.result_text.as_deref(), Some("REWORK RESULT"));
-        // The child row itself advanced to PendingReview like any turn.
-        assert_eq!(read_row_status(&db, cid).await, ConversationStatus::PendingReview);
     }
 
     #[tokio::test]
