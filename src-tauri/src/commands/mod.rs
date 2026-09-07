@@ -4,6 +4,8 @@ pub mod app_update;
 pub mod automation;
 pub mod background;
 pub mod backup;
+#[cfg(feature = "tauri-runtime")]
+pub mod browser;
 pub mod canvas;
 pub mod chat_authoring;
 pub mod chat_channel;

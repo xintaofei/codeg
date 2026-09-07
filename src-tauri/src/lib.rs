@@ -17,6 +17,8 @@ mod app_error;
 pub mod app_state;
 pub mod automation;
 pub mod backgrounds;
+#[cfg(feature = "tauri-runtime")]
+pub mod browser;
 pub mod chat_channel;
 pub mod commands;
 pub mod db;
@@ -64,6 +66,7 @@ mod tauri_app {
     use crate::commands::{
         acp as acp_commands, app_update as app_update_commands,
         automation as automation_commands, background as background_commands, backup,
+        browser as browser_commands,
         canvas as canvas_commands,
         chat_authoring as chat_authoring_commands, chat_channel as chat_channel_commands,
         conversations,
@@ -390,6 +393,7 @@ mod tauri_app {
                 None,
             ))
             .manage(ConnectionManager::new())
+            .manage(crate::browser::BrowserRegistry::default())
             .manage(TerminalManager::new())
             .manage(ChatChannelManager::new())
             .manage(windows::SettingsWindowState::new())
@@ -994,6 +998,15 @@ mod tauri_app {
                     }
                 }
 
+                #[cfg(all(
+                    feature = "browser-child",
+                    any(target_os = "macos", target_os = "windows")
+                ))]
+                crate::browser::surface_child::init_main_thread();
+
+                #[cfg(feature = "browser-smoke")]
+                crate::browser::smoke::spawn_if_enabled(app.handle().clone());
+
                 Ok(())
             })
             .on_menu_event(|app, event| {
@@ -1037,6 +1050,12 @@ mod tauri_app {
             })
             .on_window_event(|window, event| {
                 let label = window.label().to_string();
+
+                // A window's browser tabs die with it: child webviews are
+                // destroyed by the platform, owned windows are closed here.
+                if matches!(event, tauri::WindowEvent::Destroyed) {
+                    browser_commands::close_all_for_owner(window.app_handle(), &label);
+                }
 
                 if (label == "settings" || label.starts_with("remote-settings-"))
                     && matches!(
@@ -1174,6 +1193,15 @@ mod tauri_app {
                 }
             })
             .invoke_handler(tauri::generate_handler![
+                browser_commands::browser_capabilities,
+                browser_commands::browser_open_tab,
+                browser_commands::browser_close,
+                browser_commands::browser_set_bounds,
+                browser_commands::browser_set_visible,
+                browser_commands::browser_navigate,
+                browser_commands::browser_reload,
+                browser_commands::browser_get_state,
+                browser_commands::browser_list_tabs,
                 conversations::list_conversations,
                 conversations::get_conversation,
                 conversations::list_all_conversations,

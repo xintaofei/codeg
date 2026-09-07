@@ -16,7 +16,7 @@ name = "codeg_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-default = ["tauri-runtime"]
+default = ["tauri-runtime", "browser-child"]
 tauri-runtime = [
     "dep:tauri",
     "dep:tauri-plugin-opener",
@@ -36,6 +36,19 @@ tauri-runtime = [
 # `db::test_helpers` module) for integration tests in `tests/*.rs`. Without
 # this feature the items are physically uncompiled in release builds.
 test-utils = []
+# Built-in browser. `browser-child` compiles the embedded surface: a wry child
+# webview created directly through tauri-runtime-wry's re-exported `wry`
+# (`WebViewBuilder::build_as_child`), which is exactly how tauri-runtime-wry
+# builds its own child webviews. Going through wry instead of tauri's
+# `Window::add_child` keeps the workspace window a plain `WebviewWindow` in
+# tauri's eyes — with a tauri child attached, `is_webview_window()` turns
+# false, `get_webview_window("main")` returns None and every command taking a
+# `tauri::WebviewWindow` argument fails — and it needs no `unstable` feature.
+# Only macOS and Windows compile the child surface; Linux uses owned windows
+# (wry's child build is X11-only and cannot be positioned on Wayland).
+browser-child = ["dep:tauri-runtime-wry"]
+# Dev-only puppet driven by a JSON control file (see src/browser/smoke.rs).
+browser-smoke = []
 
 [[bin]]
 name = "codeg"
@@ -57,6 +70,8 @@ tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
 tauri = { version = "2.11", features = ["macos-private-api", "tray-icon"], optional = true }
+# Only for its `wry` re-export (version-locked to the runtime tauri uses).
+tauri-runtime-wry = { version = "2.11", optional = true, default-features = false }
 tauri-plugin-opener = { version = "2", optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
 async-trait = "0.1"
@@ -152,6 +167,12 @@ tauri-plugin-single-instance = { version = "2", optional = true }
 # "Launch at login" toggle. Desktop-only: registry Run key on Windows, a
 # LaunchAgent plist on macOS, an XDG autostart .desktop entry on Linux.
 tauri-plugin-autostart = { version = "2", optional = true }
+
+# Feature unification is per target: `devtools` (release-build web inspector
+# for browser tabs, via tauri-runtime-wry → wry) only where the embedded
+# browser surface exists.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tauri = { version = "2.11", features = ["devtools"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mac-notification-sys = "0.6"
