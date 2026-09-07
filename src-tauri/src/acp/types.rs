@@ -1510,6 +1510,11 @@ pub struct AgentSkillItem {
     pub scope: AgentSkillScope,
     pub layout: AgentSkillLayout,
     pub path: String,
+    /// Whether the skill currently lives in an agent-visible skills root.
+    pub enabled: bool,
+    /// Whether codeg may move the skill between its active root and disabled
+    /// vault. Built-in CLI skills are visible but cannot be toggled.
+    pub can_toggle: bool,
     /// Best-effort `description:` extracted from the SKILL.md YAML
     /// frontmatter. `None` when there is no frontmatter or no key.
     pub description: Option<String>,

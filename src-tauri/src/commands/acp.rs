@@ -8343,6 +8343,7 @@ fn build_skill_item(
     scope: AgentSkillScope,
     layout: AgentSkillLayout,
     path: PathBuf,
+    enabled: bool,
 ) -> AgentSkillItem {
     let description = read_skill_description(&skill_content_path(layout, &path));
     AgentSkillItem {
@@ -8351,6 +8352,8 @@ fn build_skill_item(
         scope,
         layout,
         path: path.to_string_lossy().to_string(),
+        enabled,
+        can_toggle: true,
         description,
         read_only: false,
     }
@@ -8375,6 +8378,13 @@ fn is_read_only_skill_path(agent_type: AgentType, skill_path: &Path) -> bool {
         _ => return false,
     };
     skill_path.starts_with(&ro_root)
+}
+
+fn apply_skill_capabilities(agent_type: AgentType, skill: &mut AgentSkillItem) {
+    if is_read_only_skill_path(agent_type, Path::new(&skill.path)) {
+        skill.read_only = true;
+        skill.can_toggle = false;
+    }
 }
 
 fn skill_content_path(layout: AgentSkillLayout, skill_path: &Path) -> PathBuf {
@@ -8439,6 +8449,15 @@ pub(crate) fn list_skills_from_dir(
     dir: &Path,
     kind: SkillStorageKind,
 ) -> Result<Vec<AgentSkillItem>, AcpError> {
+    list_skills_from_dir_with_state(scope, dir, kind, true)
+}
+
+fn list_skills_from_dir_with_state(
+    scope: AgentSkillScope,
+    dir: &Path,
+    kind: SkillStorageKind,
+    enabled: bool,
+) -> Result<Vec<AgentSkillItem>, AcpError> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -8469,7 +8488,13 @@ pub(crate) fn list_skills_from_dir(
             }
             by_id.insert(
                 id.clone(),
-                build_skill_item(id, scope, AgentSkillLayout::SkillDirectory, path),
+                build_skill_item(
+                    id,
+                    scope,
+                    AgentSkillLayout::SkillDirectory,
+                    path,
+                    enabled,
+                ),
             );
             continue;
         }
@@ -8488,8 +8513,39 @@ pub(crate) fn list_skills_from_dir(
             }
             by_id.insert(
                 stem.clone(),
-                build_skill_item(stem, scope, AgentSkillLayout::MarkdownFile, path),
+                build_skill_item(stem, scope, AgentSkillLayout::MarkdownFile, path, enabled),
             );
+        }
+    }
+
+    Ok(by_id.into_values().collect())
+}
+
+pub(crate) fn disabled_skill_root(active_root: &Path) -> PathBuf {
+    active_root
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(".skills.codeg-disabled")
+}
+
+pub(crate) fn list_skills_from_roots(
+    scope: AgentSkillScope,
+    roots: &[PathBuf],
+    kind: SkillStorageKind,
+) -> Result<Vec<AgentSkillItem>, AcpError> {
+    let mut by_id = BTreeMap::new();
+
+    // Scan every active root before considering any vault so an active copy
+    // wins even when its root follows the vault-owning root in precedence.
+    for root in roots {
+        for skill in list_skills_from_dir_with_state(scope, root, kind, true)? {
+            by_id.entry(skill.id.clone()).or_insert(skill);
+        }
+    }
+    for root in roots {
+        let vault = disabled_skill_root(root);
+        for skill in list_skills_from_dir_with_state(scope, &vault, kind, false)? {
+            by_id.entry(skill.id.clone()).or_insert(skill);
         }
     }
 
@@ -8501,6 +8557,7 @@ fn locate_existing_skill(
     kind: SkillStorageKind,
     skill_id: &str,
     scope: AgentSkillScope,
+    enabled: bool,
 ) -> Option<AgentSkillItem> {
     if matches!(
         kind,
@@ -8513,6 +8570,7 @@ fn locate_existing_skill(
                 scope,
                 AgentSkillLayout::SkillDirectory,
                 skill_dir,
+                enabled,
             ));
         }
     }
@@ -8525,6 +8583,7 @@ fn locate_existing_skill(
                 scope,
                 AgentSkillLayout::MarkdownFile,
                 file_path,
+                enabled,
             ));
         }
     }
@@ -8539,11 +8598,44 @@ pub(crate) fn locate_existing_skill_across_dirs(
     scope: AgentSkillScope,
 ) -> Option<AgentSkillItem> {
     for dir in dirs {
-        if let Some(found) = locate_existing_skill(dir, kind, skill_id, scope) {
+        if let Some(found) = locate_existing_skill(dir, kind, skill_id, scope, true) {
+            return Some(found);
+        }
+    }
+    for dir in dirs {
+        if let Some(found) =
+            locate_existing_skill(&disabled_skill_root(dir), kind, skill_id, scope, false)
+        {
             return Some(found);
         }
     }
     None
+}
+
+#[cfg(test)]
+fn set_private_skill_enabled(
+    _root: &Path,
+    _kind: SkillStorageKind,
+    _scope: AgentSkillScope,
+    _skill_id: &str,
+    _enabled: bool,
+) -> Result<AgentSkillItem, AcpError> {
+    Err(AcpError::protocol(
+        "private skill moves are not implemented in task 1A",
+    ))
+}
+
+#[cfg(test)]
+async fn acp_set_agent_skill_enabled(
+    _agent_type: AgentType,
+    _scope: AgentSkillScope,
+    _skill_id: String,
+    _workspace_path: Option<String>,
+    _enabled: bool,
+) -> Result<AgentSkillItem, AcpError> {
+    Err(AcpError::protocol(
+        "skill toggle command is not implemented in task 1A",
+    ))
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -12534,11 +12626,14 @@ pub async fn acp_list_agent_skills(
             path: dir.to_string_lossy().to_string(),
             exists: dir.exists(),
         });
-        let listed = list_skills_from_dir(AgentSkillScope::Global, dir, spec.kind)?;
-        for skill in listed {
-            let key = format!("global:{}", skill.id);
-            skills_by_key.entry(key).or_insert(skill);
-        }
+    }
+    for skill in list_skills_from_roots(
+        AgentSkillScope::Global,
+        &spec.global_dirs,
+        spec.kind,
+    )? {
+        let key = format!("global:{}", skill.id);
+        skills_by_key.entry(key).or_insert(skill);
     }
 
     if let Some(workspace) = workspace_path.as_deref().map(str::trim) {
@@ -12548,28 +12643,30 @@ pub async fn acp_list_agent_skills(
             // onto the workspace here instead would make a skill saved from a
             // nested workspace vanish from the list that is meant to show it.
             let base = project_skill_base(agent_type, workspace);
-            for relative in &spec.project_rel_dirs {
-                let project_dir = base.join(relative);
+            let project_dirs = spec
+                .project_rel_dirs
+                .iter()
+                .map(|relative| base.join(relative))
+                .collect::<Vec<_>>();
+            for project_dir in &project_dirs {
                 locations.push(AgentSkillLocation {
                     scope: AgentSkillScope::Project,
                     path: project_dir.to_string_lossy().to_string(),
                     exists: project_dir.exists(),
                 });
-                let listed =
-                    list_skills_from_dir(AgentSkillScope::Project, &project_dir, spec.kind)?;
-                for skill in listed {
-                    let key = format!("project:{}", skill.id);
-                    skills_by_key.entry(key).or_insert(skill);
-                }
+            }
+            for skill in
+                list_skills_from_roots(AgentSkillScope::Project, &project_dirs, spec.kind)?
+            {
+                let key = format!("project:{}", skill.id);
+                skills_by_key.entry(key).or_insert(skill);
             }
         }
     }
 
     let mut skills = skills_by_key.into_values().collect::<Vec<_>>();
     for skill in &mut skills {
-        if is_read_only_skill_path(agent_type, Path::new(&skill.path)) {
-            skill.read_only = true;
-        }
+        apply_skill_capabilities(agent_type, skill);
     }
     skills.sort_by(|a, b| {
         scope_rank(a.scope)
@@ -12602,9 +12699,7 @@ pub async fn acp_read_agent_skill(
 
     let mut skill = locate_existing_skill_across_dirs(&dirs, spec.kind, &id, scope)
         .ok_or_else(|| AcpError::protocol(format!("skill not found: {id}")))?;
-    if is_read_only_skill_path(agent_type, Path::new(&skill.path)) {
-        skill.read_only = true;
-    }
+    apply_skill_capabilities(agent_type, &mut skill);
     let content_path = skill_content_path(skill.layout, Path::new(&skill.path));
     let content = fs::read_to_string(&content_path)
         .map_err(|e| AcpError::protocol(format!("failed to read skill content: {e}")))?;
@@ -12653,7 +12748,7 @@ pub async fn acp_save_agent_skill(
             AgentSkillLayout::SkillDirectory => preferred_dir.join(&id),
             AgentSkillLayout::MarkdownFile => preferred_dir.join(format!("{id}.md")),
         };
-        build_skill_item(id.clone(), scope, new_layout, skill_path)
+        build_skill_item(id.clone(), scope, new_layout, skill_path, true)
     };
 
     let skill_path = PathBuf::from(&skill.path);
@@ -15222,6 +15317,469 @@ wire_api = "chat"
             "the listed project location must be the git root: {:?}",
             listed.locations
         );
+    }
+
+    #[test]
+    fn skill_state_active_entry_wins_over_disabled_entries_across_roots() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let first = tmp.path().join("first/skills");
+        let second = tmp.path().join("second/skills");
+        std::fs::create_dir_all(first.join("demo")).expect("create active skill");
+        std::fs::write(first.join("demo/SKILL.md"), "active\n").expect("write active skill");
+        std::fs::create_dir_all(disabled_skill_root(&second).join("demo"))
+            .expect("create disabled skill");
+        std::fs::write(
+            disabled_skill_root(&second).join("demo/SKILL.md"),
+            "disabled\n",
+        )
+        .expect("write disabled skill");
+
+        assert_eq!(
+            disabled_skill_root(&first),
+            tmp.path().join("first/.skills.codeg-disabled")
+        );
+
+        let roots = [second, first.clone()];
+        let listed = list_skills_from_roots(
+            AgentSkillScope::Global,
+            &roots,
+            SkillStorageKind::SkillDirectoryOnly,
+        )
+        .expect("list skills");
+        let located = locate_existing_skill_across_dirs(
+            &roots,
+            SkillStorageKind::SkillDirectoryOnly,
+            "demo",
+            AgentSkillScope::Global,
+        )
+        .expect("locate skill");
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].path, first.join("demo").to_string_lossy());
+        assert!(listed[0].enabled);
+        assert!(listed[0].can_toggle);
+        assert_eq!(located.path, first.join("demo").to_string_lossy());
+        assert!(located.enabled);
+    }
+
+    #[test]
+    fn skill_state_lists_and_locates_disabled_directory_layout() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        let disabled = disabled_skill_root(&root).join("demo");
+        std::fs::create_dir_all(&disabled).expect("create disabled skill");
+        std::fs::write(disabled.join("SKILL.md"), "disabled\n")
+            .expect("write disabled skill");
+
+        let listed = list_skills_from_roots(
+            AgentSkillScope::Project,
+            std::slice::from_ref(&root),
+            SkillStorageKind::SkillDirectoryOnly,
+        )
+        .expect("list skills");
+        let located = locate_existing_skill_across_dirs(
+            std::slice::from_ref(&root),
+            SkillStorageKind::SkillDirectoryOnly,
+            "demo",
+            AgentSkillScope::Project,
+        )
+        .expect("locate disabled skill");
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "demo");
+        assert_eq!(listed[0].layout, AgentSkillLayout::SkillDirectory);
+        assert_eq!(listed[0].path, disabled.to_string_lossy());
+        assert!(!listed[0].enabled);
+        assert!(listed[0].can_toggle);
+        assert_eq!(located.path, disabled.to_string_lossy());
+        assert!(!located.enabled);
+    }
+
+    #[test]
+    fn skill_state_lists_and_locates_disabled_markdown_layout() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        let disabled = disabled_skill_root(&root).join("flat.md");
+        std::fs::create_dir_all(disabled.parent().expect("disabled parent"))
+            .expect("create disabled vault");
+        std::fs::write(&disabled, "disabled\n").expect("write disabled skill");
+
+        let listed = list_skills_from_roots(
+            AgentSkillScope::Global,
+            std::slice::from_ref(&root),
+            SkillStorageKind::SkillDirectoryOrMarkdownFile,
+        )
+        .expect("list skills");
+        let located = locate_existing_skill_across_dirs(
+            std::slice::from_ref(&root),
+            SkillStorageKind::SkillDirectoryOrMarkdownFile,
+            "flat",
+            AgentSkillScope::Global,
+        )
+        .expect("locate disabled skill");
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "flat");
+        assert_eq!(listed[0].layout, AgentSkillLayout::MarkdownFile);
+        assert_eq!(listed[0].path, disabled.to_string_lossy());
+        assert!(!listed[0].enabled);
+        assert_eq!(located.layout, AgentSkillLayout::MarkdownFile);
+        assert!(!located.enabled);
+    }
+
+    #[test]
+    fn skill_state_read_only_builtin_cannot_toggle() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        temp_env::with_var("CODEX_HOME", Some(tmp.path()), || {
+            let system_skill = tmp.path().join("skills/.system/task1a-system-demo");
+            std::fs::create_dir_all(&system_skill).expect("create system skill");
+            std::fs::write(system_skill.join("SKILL.md"), "system\n")
+                .expect("write system skill");
+
+            let listed = tokio::runtime::Runtime::new()
+                .expect("runtime")
+                .block_on(acp_list_agent_skills(AgentType::Codex, None))
+                .expect("list skills");
+            let item = listed
+                .skills
+                .iter()
+                .find(|item| item.id == "task1a-system-demo")
+                .expect("listed system skill");
+
+            assert!(item.enabled);
+            assert!(item.read_only);
+            assert!(!item.can_toggle);
+        });
+    }
+
+    #[test]
+    fn skill_enabled_private_directory_round_trips_through_disabled_vault() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        let skill = root.join("demo");
+        std::fs::create_dir_all(&skill).expect("create skill");
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: demo\ndescription: private demo\n---\nbody\n",
+        )
+        .expect("write skill");
+        std::fs::write(skill.join("asset.txt"), "asset").expect("write asset");
+
+        let disabled = set_private_skill_enabled(
+            &root,
+            SkillStorageKind::SkillDirectoryOnly,
+            AgentSkillScope::Global,
+            "demo",
+            false,
+        )
+        .expect("disable skill");
+
+        assert!(!root.join("demo").exists());
+        assert!(
+            disabled_skill_root(&root)
+                .join("demo")
+                .join("SKILL.md")
+                .is_file()
+        );
+        assert_eq!(
+            std::fs::read_to_string(disabled_skill_root(&root).join("demo/asset.txt"))
+                .expect("read asset"),
+            "asset"
+        );
+        assert!(!disabled.enabled);
+
+        let listed = list_skills_from_roots(
+            AgentSkillScope::Global,
+            std::slice::from_ref(&root),
+            SkillStorageKind::SkillDirectoryOnly,
+        )
+        .expect("list disabled skill");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "demo");
+        assert!(!listed[0].enabled);
+
+        let enabled = set_private_skill_enabled(
+            &root,
+            SkillStorageKind::SkillDirectoryOnly,
+            AgentSkillScope::Global,
+            "demo",
+            true,
+        )
+        .expect("enable skill");
+
+        assert!(root.join("demo/SKILL.md").is_file());
+        assert!(!disabled_skill_root(&root).join("demo").exists());
+        assert!(enabled.enabled);
+    }
+
+    #[test]
+    fn skill_enabled_private_markdown_file_round_trips_without_renaming_id() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        std::fs::create_dir_all(&root).expect("create skills root");
+        std::fs::write(
+            root.join("flat.md"),
+            "---\nname: flat\ndescription: flat demo\n---\nbody\n",
+        )
+        .expect("write flat skill");
+
+        let disabled = set_private_skill_enabled(
+            &root,
+            SkillStorageKind::SkillDirectoryOrMarkdownFile,
+            AgentSkillScope::Project,
+            "flat",
+            false,
+        )
+        .expect("disable flat skill");
+
+        assert!(!root.join("flat.md").exists());
+        assert!(disabled_skill_root(&root).join("flat.md").is_file());
+        assert_eq!(disabled.layout, AgentSkillLayout::MarkdownFile);
+        assert_eq!(disabled.scope, AgentSkillScope::Project);
+        assert!(!disabled.enabled);
+
+        let enabled = set_private_skill_enabled(
+            &root,
+            SkillStorageKind::SkillDirectoryOrMarkdownFile,
+            AgentSkillScope::Project,
+            "flat",
+            true,
+        )
+        .expect("enable flat skill");
+
+        assert!(root.join("flat.md").is_file());
+        assert!(enabled.enabled);
+        assert_eq!(enabled.id, "flat");
+    }
+
+    #[test]
+    fn skill_enabled_private_listing_prefers_active_and_serializes_state() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let first = tmp.path().join("first/skills");
+        let second = tmp.path().join("second/skills");
+        std::fs::create_dir_all(first.join("demo")).expect("create active skill");
+        std::fs::write(first.join("demo/SKILL.md"), "active\n").expect("write active skill");
+        std::fs::create_dir_all(disabled_skill_root(&second).join("demo"))
+            .expect("create disabled skill");
+        std::fs::write(
+            disabled_skill_root(&second).join("demo/SKILL.md"),
+            "disabled\n",
+        )
+        .expect("write disabled skill");
+
+        assert_eq!(
+            disabled_skill_root(&first),
+            tmp.path().join("first/.skills.codeg-disabled")
+        );
+        let listed = list_skills_from_roots(
+            AgentSkillScope::Global,
+            &[second, first.clone()],
+            SkillStorageKind::SkillDirectoryOnly,
+        )
+        .expect("list skills");
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].path, first.join("demo").to_string_lossy());
+        assert!(listed[0].enabled);
+        assert!(listed[0].can_toggle);
+        let json = serde_json::to_value(&listed[0]).expect("serialize skill");
+        assert_eq!(json["enabled"], true);
+        assert_eq!(json["can_toggle"], true);
+    }
+
+    #[test]
+    fn skill_enabled_private_repeated_requests_are_idempotent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        std::fs::create_dir_all(root.join("demo")).expect("create skill");
+        std::fs::write(root.join("demo/SKILL.md"), "body\n").expect("write skill");
+
+        for _ in 0..2 {
+            let skill = set_private_skill_enabled(
+                &root,
+                SkillStorageKind::SkillDirectoryOnly,
+                AgentSkillScope::Global,
+                "demo",
+                false,
+            )
+            .expect("disable skill");
+            assert!(!skill.enabled);
+        }
+        for _ in 0..2 {
+            let skill = set_private_skill_enabled(
+                &root,
+                SkillStorageKind::SkillDirectoryOnly,
+                AgentSkillScope::Global,
+                "demo",
+                true,
+            )
+            .expect("enable skill");
+            assert!(skill.enabled);
+        }
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("demo/SKILL.md")).expect("read skill"),
+            "body\n"
+        );
+        assert!(!disabled_skill_root(&root).join("demo").exists());
+    }
+
+    #[test]
+    fn skill_enabled_private_collision_is_rejected_before_move() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        let disabled = disabled_skill_root(&root);
+        std::fs::create_dir_all(root.join("demo")).expect("create active skill");
+        std::fs::write(root.join("demo/SKILL.md"), "active\n").expect("write active skill");
+        std::fs::create_dir_all(disabled.join("demo")).expect("create disabled collision");
+        std::fs::write(disabled.join("demo/SKILL.md"), "disabled\n")
+            .expect("write disabled collision");
+
+        let error = set_private_skill_enabled(
+            &root,
+            SkillStorageKind::SkillDirectoryOnly,
+            AgentSkillScope::Global,
+            "demo",
+            false,
+        )
+        .expect_err("collision must fail");
+
+        assert!(error.to_string().contains("collision"));
+        assert_eq!(
+            std::fs::read_to_string(root.join("demo/SKILL.md")).expect("read active"),
+            "active\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(disabled.join("demo/SKILL.md")).expect("read disabled"),
+            "disabled\n"
+        );
+    }
+
+    #[test]
+    fn skill_enabled_private_disabled_skill_remains_readable_editable_and_deletable() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        temp_env::with_var("CODEX_HOME", Some(tmp.path()), || {
+            let root = tmp.path().join("skills");
+            std::fs::create_dir_all(root.join("task1-disabled-demo"))
+                .expect("create skill");
+            std::fs::write(
+                root.join("task1-disabled-demo/SKILL.md"),
+                "original\n",
+            )
+            .expect("write skill");
+            set_private_skill_enabled(
+                &root,
+                SkillStorageKind::SkillDirectoryOrMarkdownFile,
+                AgentSkillScope::Global,
+                "task1-disabled-demo",
+                false,
+            )
+            .expect("disable skill");
+
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            let read = runtime
+                .block_on(acp_read_agent_skill(
+                    AgentType::Codex,
+                    AgentSkillScope::Global,
+                    "task1-disabled-demo".to_string(),
+                    None,
+                ))
+                .expect("read disabled skill");
+            assert_eq!(read.content, "original\n");
+            assert!(!read.skill.enabled);
+
+            let saved = runtime
+                .block_on(acp_save_agent_skill(
+                    AgentType::Codex,
+                    AgentSkillScope::Global,
+                    "task1-disabled-demo".to_string(),
+                    "updated\n".to_string(),
+                    None,
+                    None,
+                ))
+                .expect("save disabled skill");
+            assert!(!saved.enabled);
+            assert!(!root.join("task1-disabled-demo").exists());
+            assert_eq!(
+                std::fs::read_to_string(
+                    disabled_skill_root(&root).join("task1-disabled-demo/SKILL.md")
+                )
+                .expect("read updated skill"),
+                "updated\n"
+            );
+
+            runtime
+                .block_on(acp_delete_agent_skill(
+                    AgentType::Codex,
+                    AgentSkillScope::Global,
+                    "task1-disabled-demo".to_string(),
+                    None,
+                ))
+                .expect("delete disabled skill");
+            assert!(!disabled_skill_root(&root)
+                .join("task1-disabled-demo")
+                .exists());
+        });
+    }
+
+    #[test]
+    fn skill_enabled_private_command_is_idempotent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        temp_env::with_var("CODEX_HOME", Some(tmp.path()), || {
+            let root = tmp.path().join("skills");
+            std::fs::create_dir_all(root.join("task1-command-demo")).expect("create skill");
+            std::fs::write(root.join("task1-command-demo/SKILL.md"), "body\n")
+                .expect("write skill");
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+
+            for enabled in [false, false, true, true] {
+                let item = runtime
+                    .block_on(acp_set_agent_skill_enabled(
+                        AgentType::Codex,
+                        AgentSkillScope::Global,
+                        "task1-command-demo".to_string(),
+                        None,
+                        enabled,
+                    ))
+                    .expect("toggle skill");
+                assert_eq!(item.enabled, enabled);
+            }
+        });
+    }
+
+    #[test]
+    fn skill_enabled_private_read_only_skill_cannot_be_toggled() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        temp_env::with_var("CODEX_HOME", Some(tmp.path()), || {
+            let system_skill = tmp.path().join("skills/.system/task1-system-demo");
+            std::fs::create_dir_all(&system_skill).expect("create system skill");
+            std::fs::write(system_skill.join("SKILL.md"), "system\n")
+                .expect("write system skill");
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+
+            let listed = runtime
+                .block_on(acp_list_agent_skills(AgentType::Codex, None))
+                .expect("list skills");
+            let item = listed
+                .skills
+                .iter()
+                .find(|item| item.id == "task1-system-demo")
+                .expect("listed system skill");
+            assert!(item.read_only);
+            assert!(!item.can_toggle);
+
+            let error = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Global,
+                    "task1-system-demo".to_string(),
+                    None,
+                    false,
+                ))
+                .expect_err("system skill toggle must fail");
+            assert!(error.to_string().contains("cannot be toggled"));
+            assert!(system_skill.join("SKILL.md").is_file());
+        });
     }
 
     #[test]
