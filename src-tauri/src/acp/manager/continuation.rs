@@ -158,8 +158,8 @@ impl crate::acp::delegation::continuation::ContinuationRuntime
         &self,
         target: &crate::acp::delegation::continuation::runtime::AttachTarget,
         parent_connection_id: &str,
-        _turn_id: &str,
-        _execution_id: &str,
+        turn_id: &str,
+        execution_id: &str,
         child_conversation_id: i32,
     ) -> Result<String, crate::acp::delegation::continuation::StrictAttachError> {
         use crate::acp::delegation::continuation::{StrictAttachError, StrictAttachErrorCode};
@@ -212,6 +212,8 @@ impl crate::acp::delegation::continuation::ContinuationRuntime
                 cwd,
                 target.config_fingerprint.clone(),
                 STRICT_ATTACH_TIMEOUT,
+                turn_id,
+                execution_id,
             )
             .await?;
         // Bind the attached connection to the reserved child conversation

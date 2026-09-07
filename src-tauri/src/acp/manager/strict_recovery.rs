@@ -100,6 +100,8 @@ impl ConnectionManager {
         expected_cwd: PathBuf,
         expected_config_fingerprint: String,
         timeout: Duration,
+        turn_id: &str,
+        execution_id: &str,
     ) -> Result<
         crate::acp::delegation::continuation::StrictReady,
         crate::acp::delegation::continuation::StrictAttachError,
@@ -155,9 +157,11 @@ impl ConnectionManager {
         let config_fingerprint = crate::commands::acp::fingerprint_config(agent_type, &runtime_env);
 
         let (gate, mut verdict_rx) =
-            crate::acp::delegation::continuation::StrictAttachGate::channel(
+            crate::acp::delegation::continuation::StrictAttachGate::channel_for_continuation(
                 expected_cwd,
                 expected_config_fingerprint,
+                turn_id.to_string(),
+                execution_id.to_string(),
             );
         if let Err(err) = gate.verify_launch(&launch_cwd, &config_fingerprint) {
             gate.fail(err.clone()).await;

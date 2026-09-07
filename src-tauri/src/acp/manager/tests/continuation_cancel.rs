@@ -39,6 +39,7 @@ async fn seed_running_owner(
         child_conversation_id,
         "running",
         true,
+        true,
     )
     .await
 }
@@ -51,6 +52,7 @@ async fn seed_owner(
     child_conversation_id: i32,
     target_state: &str,
     persist_connection: bool,
+    register_execution: bool,
 ) -> (String, String) {
     let session = collaboration_service::upsert_session_once(
         &db.conn,
@@ -107,15 +109,17 @@ async fn seed_owner(
         .await
         .expect("persist child connection");
     }
-    coordinator
-        .register_execution_for_test(
-            child_connection_id,
-            &turn.id,
-            &turn.execution_id,
-            &session.id,
-            parent_connection_id,
-        )
-        .await;
+    if register_execution {
+        coordinator
+            .register_execution_for_test(
+                child_connection_id,
+                &turn.id,
+                &turn.execution_id,
+                &session.id,
+                parent_connection_id,
+            )
+            .await;
+    }
     (turn.id, session.id)
 }
 
@@ -352,12 +356,33 @@ async fn spawn_test_connection(
     connection_id: &str,
     transport: InMemoryAgentTransport,
 ) {
+    spawn_test_connection_with_recovery(
+        manager,
+        emitter,
+        data_dir,
+        connection_id,
+        transport,
+        SessionRecovery::AllowNewFallback,
+    )
+    .await;
+}
+
+async fn spawn_test_connection_with_recovery(
+    manager: &ConnectionManager,
+    emitter: EventEmitter,
+    data_dir: &std::path::Path,
+    connection_id: &str,
+    transport: InMemoryAgentTransport,
+    recovery: SessionRecovery,
+) {
+    let external_session_id = matches!(&recovery, SessionRecovery::RequireExisting(_))
+        .then(|| "cancel-probe-session".to_string());
     spawn_agent_connection_with_transport(
         transport,
         connection_id.to_string(),
         AgentType::ClaudeCode,
         Some(data_dir.to_string_lossy().into_owned()),
-        None,
+        external_session_id,
         BTreeMap::new(),
         "test-window".to_string(),
         emitter,
@@ -368,7 +393,7 @@ async fn spawn_test_connection(
         manager.terminal_shell_config(),
         format!("{connection_id}-fingerprint"),
         Arc::new(crate::acp::stderr_tail::StderrTail::new()),
-        SessionRecovery::AllowNewFallback,
+        recovery,
     )
     .await
     .expect("spawn in-memory connection");
@@ -396,7 +421,7 @@ async fn run_cancel_probe_agent(ends: InMemoryAgentEnds) -> CancelProbe {
                     "id": id,
                     "result": {
                         "protocolVersion": 1,
-                        "agentCapabilities": {},
+                        "agentCapabilities": {"sessionCapabilities": {"resume": {}}},
                         "authMethods": []
                     }
                 })),
@@ -404,6 +429,11 @@ async fn run_cancel_probe_agent(ends: InMemoryAgentEnds) -> CancelProbe {
                     "jsonrpc": "2.0",
                     "id": id,
                     "result": {"sessionId": "cancel-probe-session"}
+                })),
+                "session/resume" => Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {}
                 })),
                 "session/prompt" => {
                     if let Some(tx) = prompt_tx.take() {
@@ -553,7 +583,7 @@ async fn owned_cancel_does_not_emit_local_terminal_while_prompt_reply_is_withhel
 }
 
 #[tokio::test]
-async fn owned_stop_before_prompt_cancels_and_disconnects_the_real_driver() {
+async fn preclaim_public_stop_cancels_before_prompt_crosses_the_real_driver() {
     let db = test_helpers::fresh_in_memory_db().await;
     let manager = ConnectionManager::new();
     let data_dir = tempfile::tempdir().expect("data dir");
@@ -562,19 +592,7 @@ async fn owned_stop_before_prompt_cancels_and_disconnects_the_real_driver() {
         db.conn.clone(),
         data_dir.path().to_path_buf(),
     );
-    let bus = Arc::new(InternalEventBus::new(Arc::new(EventBusMetrics::default())));
-    let emitter = EventEmitter::web_only(Arc::new(WebEventBroadcaster::new()), bus);
-    let (transport, ends) = in_memory_agent_pair(64 * 1024);
-    let probe = run_cancel_probe_agent(ends).await;
     let connection_id = "owned-pre-prompt";
-    spawn_test_connection(
-        &manager,
-        emitter,
-        data_dir.path(),
-        connection_id,
-        transport,
-    )
-    .await;
     let (turn_id, _) = seed_owner(
         &db,
         &coordinator,
@@ -583,8 +601,47 @@ async fn owned_stop_before_prompt_cancels_and_disconnects_the_real_driver() {
         2,
         "preparing",
         false,
+        false,
     )
     .await;
+    let turn = collaboration_service::find_turn(&db.conn, &turn_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let (gate, _verdict) =
+        crate::acp::delegation::continuation::StrictAttachGate::channel_for_continuation(
+            data_dir.path().to_path_buf(),
+            format!("{connection_id}-fingerprint"),
+            turn_id.clone(),
+            turn.execution_id.clone(),
+        );
+    let bus = Arc::new(InternalEventBus::new(Arc::new(EventBusMetrics::default())));
+    let mut events = bus.subscribe();
+    let emitter = EventEmitter::web_only(Arc::new(WebEventBroadcaster::new()), bus);
+    let (transport, ends) = in_memory_agent_pair(64 * 1024);
+    let probe = run_cancel_probe_agent(ends).await;
+    spawn_test_connection_with_recovery(
+        &manager,
+        emitter,
+        data_dir.path(),
+        connection_id,
+        transport,
+        SessionRecovery::RequireExisting(gate),
+    )
+    .await;
+    let state = manager.get_state(connection_id).await.expect("connection state");
+    let identity = state
+        .read()
+        .await
+        .continuation_identity
+        .clone()
+        .expect("strict connection is tagged atomically at registration");
+    assert_eq!(identity.turn_id, turn_id);
+    assert_eq!(identity.execution_id, turn.execution_id);
+    assert!(
+        coordinator.execution_owner(connection_id).await.is_none(),
+        "precondition: Stop lands before the execution-map claim"
+    );
 
     manager
         .cancel(&db.conn, connection_id)
@@ -618,6 +675,148 @@ async fn owned_stop_before_prompt_cancels_and_disconnects_the_real_driver() {
         ),
         "no prompt may cross the real driver boundary after pre-send Stop"
     );
+    let local_terminal = tokio::time::timeout(Duration::from_millis(100), async {
+        while let Ok(event) = events.recv().await {
+            if matches!(event.payload, AcpEvent::TurnComplete { .. }) {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert!(
+        !matches!(local_terminal, Ok(true)),
+        "preclaim continuation Stop must not emit a synthetic terminal"
+    );
+}
+
+#[tokio::test]
+async fn postclaim_public_stop_cancels_before_prompt_crosses_the_real_driver() {
+    let db = test_helpers::fresh_in_memory_db().await;
+    let manager = ConnectionManager::new();
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let (_, _, _, _, _, _, _, coordinator) = crate::app_state::build_delegation_stack(
+        &manager,
+        db.conn.clone(),
+        data_dir.path().to_path_buf(),
+    );
+    let bus = Arc::new(InternalEventBus::new(Arc::new(EventBusMetrics::default())));
+    let emitter = EventEmitter::web_only(Arc::new(WebEventBroadcaster::new()), bus);
+    let (transport, ends) = in_memory_agent_pair(64 * 1024);
+    let probe = run_cancel_probe_agent(ends).await;
+    let connection_id = "owned-postclaim-pre-prompt";
+    spawn_test_connection(
+        &manager,
+        emitter,
+        data_dir.path(),
+        connection_id,
+        transport,
+    )
+    .await;
+    let (turn_id, _) = seed_owner(
+        &db,
+        &coordinator,
+        connection_id,
+        "postclaim-parent",
+        2,
+        "preparing",
+        false,
+        true,
+    )
+    .await;
+    assert!(coordinator.execution_owner(connection_id).await.is_some());
+
+    manager
+        .cancel(&db.conn, connection_id)
+        .await
+        .expect("public Stop cancels the claimed pre-send turn");
+    assert_eq!(
+        collaboration_service::find_turn(&db.conn, &turn_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "canceled"
+    );
+    assert!(
+        manager
+            .send_prompt_for_continuation(
+                &db.conn,
+                connection_id,
+                vec![PromptInputBlock::Text {
+                    text: "must never be sent".to_string(),
+                }],
+            )
+            .await
+            .is_err(),
+        "the stopped postclaim owner must already be disconnected"
+    );
+    assert!(
+        !matches!(
+            tokio::time::timeout(Duration::from_millis(100), probe.prompt_seen).await,
+            Ok(Ok(()))
+        ),
+        "postclaim Stop must prevent a later Prompt at the driver boundary"
+    );
+}
+
+#[tokio::test]
+async fn stale_preclaim_identity_never_falls_back_to_ordinary_cancel() {
+    let db = test_helpers::fresh_in_memory_db().await;
+    let manager = ConnectionManager::new();
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let (_, _, _, _, _, _, _, coordinator) = crate::app_state::build_delegation_stack(
+        &manager,
+        db.conn.clone(),
+        data_dir.path().to_path_buf(),
+    );
+    let connection_id = "stale-preclaim-owner";
+    let mut commands = manager
+        .insert_test_connection_live(
+            connection_id,
+            AgentType::ClaudeCode,
+            None,
+            EventEmitter::Noop,
+        )
+        .await;
+    let (turn_id, _) = seed_owner(
+        &db,
+        &coordinator,
+        connection_id,
+        "stale-preclaim-parent",
+        2,
+        "preparing",
+        false,
+        false,
+    )
+    .await;
+    let state = manager.get_state(connection_id).await.unwrap();
+    state.write().await.continuation_identity = Some(
+        crate::acp::delegation::continuation::types::ContinuationConnectionIdentity {
+            turn_id: turn_id.clone(),
+            execution_id: "stale-execution".to_string(),
+        },
+    );
+
+    manager
+        .cancel(&db.conn, connection_id)
+        .await
+        .expect("stale trusted hint is handled as continuation-owned");
+    assert_eq!(
+        collaboration_service::find_turn(&db.conn, &turn_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "preparing"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), commands.recv())
+            .await
+            .is_err(),
+        "a stale continuation identity must not enqueue ordinary Cancel"
+    );
+    let _ = manager.disconnect(connection_id).await;
 }
 
 #[tokio::test]

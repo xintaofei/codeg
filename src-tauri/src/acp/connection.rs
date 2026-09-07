@@ -2051,6 +2051,7 @@ pub async fn spawn_agent_connection_with_transport<A: ConnectTo<Client> + PidObs
         owner_window_label.clone(),
         None, // folder_id 由后续 prompt handler 在首次 send 时绑定 (Phase 2)
     );
+    initial_state.continuation_identity = recovery.continuation_identity().cloned();
 
     // Install the SessionStarted dedup signal BEFORE wrapping into Arc so the
     // first event (StatusChanged{Connecting} below) doesn't race with the

@@ -42,6 +42,8 @@ use sea_orm::ConnectionTrait;
 #[derive(Default)]
 struct MockRuntime {
     send_results: tokio::sync::Mutex<VecDeque<Result<(), String>>>,
+    disconnect_results: tokio::sync::Mutex<VecDeque<Result<(), String>>>,
+    last_attached_connection_id: tokio::sync::Mutex<Option<String>>,
     /// Park the NEXT attach until released (deterministic interleavings).
     attach_gate: tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
     /// Announce and park the NEXT send after dispatching is durable.
@@ -101,6 +103,18 @@ impl MockRuntime {
             self.disconnect_count.load(Ordering::SeqCst),
         )
     }
+
+    async fn queue_disconnect_results(&self, results: Vec<Result<(), String>>) {
+        self.disconnect_results.lock().await.extend(results);
+    }
+
+    async fn last_attached_connection_id(&self) -> String {
+        self.last_attached_connection_id
+            .lock()
+            .await
+            .clone()
+            .expect("an attached connection id")
+    }
 }
 
 #[async_trait]
@@ -120,7 +134,9 @@ impl ContinuationRuntime for MockRuntime {
         if let Some(gate) = gate {
             let _ = gate.await;
         }
-        Ok(format!("conn-{}", uuid::Uuid::new_v4()))
+        let connection_id = format!("conn-{}", uuid::Uuid::new_v4());
+        *self.last_attached_connection_id.lock().await = Some(connection_id.clone());
+        Ok(connection_id)
     }
 
     async fn send_prompt(&self, _connection_id: &str, _message: &str) -> Result<(), String> {
@@ -147,6 +163,9 @@ impl ContinuationRuntime for MockRuntime {
 
     async fn disconnect(&self, _connection_id: &str) -> Result<(), String> {
         self.disconnect_count.fetch_add(1, Ordering::SeqCst);
+        if let Some(result) = self.disconnect_results.lock().await.pop_front() {
+            return result;
+        }
         if self.fail_disconnects.load(Ordering::SeqCst) {
             return Err("disconnect not confirmed".to_string());
         }
@@ -1060,6 +1079,72 @@ async fn parent_cancel_after_attach_before_claim_releases_without_send() {
     assert_eq!(h.runtime.counters().1, 0);
     assert!(h.runtime.counters().3 >= 1, "attached connection is released");
     assert!(h.coordinator.connection_of_turn(&ack.turn_id).await.is_none());
+}
+
+#[tokio::test]
+async fn public_stop_after_attach_invalidates_pending_claim_before_release() {
+    let h = harness().await;
+    h.runtime
+        .queue_disconnect_results(vec![Ok(()), Err("already released".to_string())])
+        .await;
+    let (entered, release) = h
+        .coordinator
+        .install_drive_gate_for_test("after_attach")
+        .await;
+    let ack = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
+        .await
+        .unwrap();
+    entered.await.expect("drive reached post-attach gate");
+    let connection_id = h.runtime.last_attached_connection_id().await;
+    let turn = collaboration_service::find_turn(&h.db.conn, &ack.turn_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(h.coordinator.connection_of_turn(&ack.turn_id).await.is_none());
+
+    assert!(
+        h.coordinator
+            .cancel_owned_connection(
+                &connection_id,
+                Some((&turn.id, &turn.execution_id)),
+            )
+            .await
+            .unwrap()
+    );
+    release.send(()).expect("release post-attach gate");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while h.runtime.counters().3 < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("drive finished the repeated release attempt");
+
+    assert_eq!(h.runtime.counters().1, 0, "no Prompt may be sent");
+    assert_eq!(
+        h.coordinator
+            .get_turn(h.parent, &ack.turn_id, 0)
+            .await
+            .unwrap()
+            .state,
+        TurnState::Canceled
+    );
+    assert!(
+        h.coordinator.connection_of_turn(&ack.turn_id).await.is_none(),
+        "the failed repeated disconnect must not retain a manufactured owner"
+    );
+    assert!(
+        !h.coordinator.has_pending_turn_for_test(&ack.turn_id).await,
+        "the stopped preclaim round must leave no stale pending claim"
+    );
+    let closed = h
+        .coordinator
+        .close_session(h.parent, &ack.session_id)
+        .await
+        .expect("a canceled preclaim round remains closable");
+    assert_eq!(closed.state, CollaborationSessionState::Closed);
 }
 
 #[tokio::test]

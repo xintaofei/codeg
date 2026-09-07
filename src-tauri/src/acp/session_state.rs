@@ -407,6 +407,13 @@ pub struct SessionState {
     /// keep round-tripping after the parent session ends.
     pub delegation_token: Option<String>,
 
+    /// Durable continuation owner for a strict connection while it is visible
+    /// in the manager but not yet claimed in the coordinator execution map.
+    /// Backend-only: never projected into a client snapshot.
+    pub(crate) continuation_identity: Option<
+        crate::acp::delegation::continuation::types::ContinuationConnectionIdentity,
+    >,
+
     /// Whether `delegate_to_agent` was exposed to THIS agent at launch (the
     /// `delegation` feature was on when its companion was injected). The sole
     /// gate on appending the `@agent` routing frame: an agent with no such tool
@@ -646,6 +653,7 @@ impl SessionState {
             event_stream: Arc::new(ConnectionEventStream::new()),
             recent_events: RecentEventsBuffer::new(),
             delegation_token: None,
+            continuation_identity: None,
             delegation_enabled: false,
             feedback_tool_available: false,
             native_steering_available: false,

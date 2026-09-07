@@ -44,6 +44,22 @@ impl SessionRecovery {
     pub fn allows_new_fallback(&self) -> bool {
         matches!(self, SessionRecovery::AllowNewFallback)
     }
+
+    pub(crate) fn continuation_identity(&self) -> Option<&ContinuationConnectionIdentity> {
+        match self {
+            SessionRecovery::AllowNewFallback => None,
+            SessionRecovery::RequireExisting(gate) => gate.continuation_identity.as_ref(),
+        }
+    }
+}
+
+/// Trusted, backend-only ownership copied into a strict connection at the
+/// same instant it becomes visible through the manager. This closes the gap
+/// before the coordinator can move the round into its execution registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContinuationConnectionIdentity {
+    pub turn_id: String,
+    pub execution_id: String,
 }
 
 /// Typed strict-recovery failures. Any of these means NO usable session was
@@ -111,6 +127,7 @@ pub struct StrictAttachGate {
     /// launch whose freshly computed fingerprint differs is refused — codeg
     /// must not silently move a continued session onto a changed environment.
     expected_config_fingerprint: String,
+    continuation_identity: Option<ContinuationConnectionIdentity>,
 }
 
 /// What the gate's receiver resolves to.
@@ -151,9 +168,24 @@ impl StrictAttachGate {
                 policy: SessionRecoveryPolicy::RequireExisting,
                 expected_cwd,
                 expected_config_fingerprint,
+                continuation_identity: None,
             },
             rx,
         )
+    }
+
+    pub(crate) fn channel_for_continuation(
+        expected_cwd: PathBuf,
+        expected_config_fingerprint: String,
+        turn_id: String,
+        execution_id: String,
+    ) -> (Self, oneshot::Receiver<StrictOutcome>) {
+        let (mut gate, rx) = Self::channel(expected_cwd, expected_config_fingerprint);
+        gate.continuation_identity = Some(ContinuationConnectionIdentity {
+            turn_id,
+            execution_id,
+        });
+        (gate, rx)
     }
 
     /// Verify the launch parameters against the recorded binding. Runs in

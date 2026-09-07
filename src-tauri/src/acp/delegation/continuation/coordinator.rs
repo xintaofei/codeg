@@ -190,6 +190,15 @@ impl ContinuationCoordinator {
         );
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn has_pending_turn_for_test(&self, turn_id: &str) -> bool {
+        self.parent_pending
+            .lock()
+            .await
+            .values()
+            .any(|rounds| rounds.iter().any(|(pending_turn_id, _)| pending_turn_id == turn_id))
+    }
+
     pub async fn set_enabled(&self, enabled: bool) {
         *self.enabled.write().await = enabled;
     }
@@ -240,12 +249,51 @@ impl ContinuationCoordinator {
     pub async fn cancel_owned_connection(
         &self,
         connection_id: &str,
+        preclaim_identity: Option<(&str, &str)>,
     ) -> Result<bool, ContinuationError> {
-        let owner = self.executions.lock().await.get(connection_id).cloned();
-        let Some(owner) = owner else {
+        let hinted = preclaim_identity.map(|(turn_id, execution_id)| {
+            (turn_id.to_string(), execution_id.to_string())
+        });
+        if let Some((turn_id, execution_id)) = hinted.as_ref() {
+            let turn = self.reread_for_cancel(turn_id).await?;
+            if turn.execution_id != *execution_id {
+                tracing::warn!(
+                    "[continuation] refusing public Stop for stale execution identity on {connection_id}"
+                );
+                return Ok(true);
+            }
+        }
+
+        // Match the drive's pending→execution lock order. If the strict
+        // connection is visible before claim, removing its exact pending turn
+        // makes the later claim fail, so it cannot manufacture an owner after
+        // this path has already canceled and released the connection.
+        let identity = {
+            let mut pending = self.parent_pending.lock().await;
+            let executions = self.executions.lock().await;
+            if let Some(owner) = executions.get(connection_id) {
+                Some((owner.turn_id.clone(), owner.execution_id.clone()))
+            } else if let Some((turn_id, execution_id)) = hinted {
+                for rounds in pending.values_mut() {
+                    rounds.retain(|(pending_turn_id, _)| pending_turn_id != &turn_id);
+                }
+                pending.retain(|_, rounds| !rounds.is_empty());
+                Some((turn_id, execution_id))
+            } else {
+                None
+            }
+        };
+        let Some((turn_id, execution_id)) = identity else {
             return Ok(false);
         };
-        self.cancel_fresh(&owner.turn_id, Some(connection_id)).await?;
+        let turn = self.reread_for_cancel(&turn_id).await?;
+        if turn.execution_id != execution_id {
+            tracing::warn!(
+                "[continuation] refusing public Stop for stale execution identity on {connection_id}"
+            );
+            return Ok(true);
+        }
+        self.cancel_fresh(&turn_id, Some(connection_id)).await?;
         Ok(true)
     }
 

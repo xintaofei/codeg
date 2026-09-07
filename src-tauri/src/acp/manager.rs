@@ -1656,8 +1656,18 @@ impl ConnectionManager {
             .delegation_snapshot()
             .and_then(|delegation| delegation.collaboration)
         {
+            let state = self.get_state(conn_id).await;
+            let preclaim_identity = match state {
+                Some(state) => state.read().await.continuation_identity.clone(),
+                None => None,
+            };
             if coordinator
-                .cancel_owned_connection(conn_id)
+                .cancel_owned_connection(
+                    conn_id,
+                    preclaim_identity
+                        .as_ref()
+                        .map(|identity| (identity.turn_id.as_str(), identity.execution_id.as_str())),
+                )
                 .await
                 .map_err(|e| AcpError::protocol(e.to_string()))?
             {
