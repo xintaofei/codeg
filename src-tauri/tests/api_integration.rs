@@ -202,6 +202,23 @@ async fn unknown_endpoint_returns_501_with_typed_error() {
     assert!(body["message"].is_string());
 }
 
+#[tokio::test]
+async fn agent_skill_toggle_route_rejects_snake_case_params() {
+    let (server, _data, _static) = build_test_server().await;
+    let resp = server
+        .post("/api/acp_set_agent_skill_enabled")
+        .add_header("authorization", format!("Bearer {TEST_TOKEN}"))
+        .json(&json!({
+            "agent_type": "codex",
+            "scope": "project",
+            "skill_id": "example",
+            "workspace_path": null,
+            "enabled": false
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 422);
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Live feedback settings + submit gate
 // ────────────────────────────────────────────────────────────────────────────

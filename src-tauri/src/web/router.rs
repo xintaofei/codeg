@@ -946,6 +946,10 @@ pub fn build_router(
             post(handlers::acp::acp_list_agent_skills),
         )
         .route(
+            "/acp_set_agent_skill_enabled",
+            post(handlers::acp::acp_set_agent_skill_enabled),
+        )
+        .route(
             "/acp_read_agent_skill",
             post(handlers::acp::acp_read_agent_skill),
         )

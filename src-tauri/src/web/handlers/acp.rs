@@ -8,8 +8,8 @@ use crate::acp::error::AcpError;
 use crate::acp::opencode_plugins::PluginCheckSummary;
 use crate::acp::preflight::PreflightResult;
 use crate::acp::types::{
-    AcpAgentInfo, AcpAgentStatus, AgentDiagnosticsReport, AgentSkillContent, AgentSkillLayout,
-    AgentSkillScope, AgentSkillsListResult, ConnectionInfo, ForkResultInfo,
+    AcpAgentInfo, AcpAgentStatus, AgentDiagnosticsReport, AgentSkillContent, AgentSkillItem,
+    AgentSkillLayout, AgentSkillScope, AgentSkillsListResult, ConnectionInfo, ForkResultInfo,
 };
 use crate::app_error::{AppCommandError, AppErrorCode};
 use crate::app_state::AppState;
@@ -229,6 +229,31 @@ pub async fn acp_list_agent_skills(
     let result = acp_commands::acp_list_agent_skills(params.agent_type, params.workspace_path)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpSetAgentSkillEnabledParams {
+    pub agent_type: AgentType,
+    pub scope: AgentSkillScope,
+    pub skill_id: String,
+    pub workspace_path: Option<String>,
+    pub enabled: bool,
+}
+
+pub async fn acp_set_agent_skill_enabled(
+    Json(params): Json<AcpSetAgentSkillEnabledParams>,
+) -> Result<Json<AgentSkillItem>, AppCommandError> {
+    let result = acp_commands::acp_set_agent_skill_enabled(
+        params.agent_type,
+        params.scope,
+        params.skill_id,
+        params.workspace_path,
+        params.enabled,
+    )
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))
 }
 
