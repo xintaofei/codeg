@@ -544,6 +544,13 @@
     "noSelectionHint": "왼쪽에서 Skill을 선택하거나 \"새 Skill\"을 클릭하여 만드세요.",
     "systemBadge": "시스템",
     "systemHint": "CLI 내장 Skill · 읽기 전용",
+    "availability": {
+      "enabled": "사용",
+      "disabled": "사용 안 함",
+      "toggleAria": "{agent}에서 {skill} 사용 여부 전환",
+      "readOnly": "내장 Skill은 항상 사용할 수 있습니다.",
+      "cannotIsolate": "이 공유 Skill은 개별적으로 전환할 수 없습니다."
+    },
     "scope": {
       "global": "전역",
       "folder": "폴더",
@@ -579,7 +586,10 @@
       "created": "Skill이 생성되었습니다",
       "saveFailed": "Skill 저장에 실패했습니다",
       "deleted": "Skill이 삭제되었습니다",
-      "deleteFailed": "Skill 삭제에 실패했습니다"
+      "deleteFailed": "Skill 삭제에 실패했습니다",
+      "enabled": "Skill이 활성화되었습니다",
+      "disabled": "Skill이 비활성화되었습니다",
+      "toggleFailed": "Skill 사용 여부를 업데이트하지 못했습니다"
     },
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",

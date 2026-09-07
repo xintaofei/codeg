@@ -62,6 +62,44 @@ const ALL_LOCALES = [
   ["zh-TW", zhTW],
 ] as const
 
+const SKILL_AVAILABILITY_MESSAGES = [
+  ["SkillsSettings.availability.enabled", []],
+  ["SkillsSettings.availability.disabled", []],
+  ["SkillsSettings.availability.toggleAria", ["agent", "skill"]],
+  ["SkillsSettings.availability.readOnly", []],
+  ["SkillsSettings.availability.cannotIsolate", []],
+  ["SkillsSettings.toasts.enabled", []],
+  ["SkillsSettings.toasts.disabled", []],
+  ["SkillsSettings.toasts.toggleFailed", []],
+] as const
+
+function getMessage(node: MessageNode, path: string): string | undefined {
+  let current: MessageNode | undefined = node
+  for (const segment of path.split(".")) {
+    if (typeof current === "string") return undefined
+    current = current?.[segment]
+  }
+  return typeof current === "string" ? current : undefined
+}
+
+describe("skill availability message contract", () => {
+  it.each(ALL_LOCALES)(
+    "%s includes the required keys and placeholders",
+    (_locale, messages) => {
+      for (const [key, expectedPlaceholders] of SKILL_AVAILABILITY_MESSAGES) {
+        const message = getMessage(messages as MessageNode, key)
+        expect(message, key).toBeTypeOf("string")
+        const placeholders = [
+          ...(message?.matchAll(/\{([a-zA-Z][\w]*)\}/g) ?? []),
+        ]
+          .map((match) => match[1])
+          .sort()
+        expect(placeholders, key).toEqual(expectedPlaceholders)
+      }
+    }
+  )
+})
+
 // Every message goes through ICU MessageFormat, which reserves `<tag>`, `{`,
 // `}` and `#`. A string like `<QODER_CONFIG_DIR>/settings.json` parses as an
 // unclosed tag and falls back to rendering the KEY — visible in the UI as

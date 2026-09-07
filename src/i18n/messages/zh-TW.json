@@ -544,6 +544,13 @@
     "noSelectionHint": "從左側選擇一個 Skill，或點擊「新建 Skill」建立。",
     "systemBadge": "系統",
     "systemHint": "CLI 內建 Skill · 唯讀",
+    "availability": {
+      "enabled": "已啟用",
+      "disabled": "已停用",
+      "toggleAria": "切換 {agent} 的 {skill} 啟用狀態",
+      "readOnly": "內建 Skill 始終可用。",
+      "cannotIsolate": "此共享 Skill 無法單獨切換。"
+    },
     "scope": {
       "global": "全域",
       "folder": "資料夾",
@@ -579,7 +586,10 @@
       "created": "Skill 已建立",
       "saveFailed": "儲存 Skill 失敗",
       "deleted": "Skill 已刪除",
-      "deleteFailed": "刪除 Skill 失敗"
+      "deleteFailed": "刪除 Skill 失敗",
+      "enabled": "Skill 已啟用",
+      "disabled": "Skill 已停用",
+      "toggleFailed": "更新 Skill 可用狀態失敗"
     },
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",

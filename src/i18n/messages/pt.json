@@ -544,6 +544,13 @@
     "noSelectionHint": "Selecione um Skill à esquerda ou clique em \"Novo Skill\" para criar um.",
     "systemBadge": "Sistema",
     "systemHint": "Skill integrado do CLI · somente leitura",
+    "availability": {
+      "enabled": "Ativada",
+      "disabled": "Desativada",
+      "toggleAria": "Alternar {skill} para {agent}",
+      "readOnly": "As Skills integradas estão sempre disponíveis.",
+      "cannotIsolate": "Esta Skill compartilhada não pode ser alternada de forma independente."
+    },
     "scope": {
       "global": "Global",
       "folder": "Pasta",
@@ -579,7 +586,10 @@
       "created": "Skill criada",
       "saveFailed": "Falha ao salvar Skill",
       "deleted": "Skill excluída",
-      "deleteFailed": "Falha ao excluir Skill"
+      "deleteFailed": "Falha ao excluir Skill",
+      "enabled": "Skill ativada",
+      "disabled": "Skill desativada",
+      "toggleFailed": "Falha ao atualizar a disponibilidade da Skill"
     },
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",

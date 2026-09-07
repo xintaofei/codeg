@@ -544,6 +544,13 @@
     "noSelectionHint": "Sélectionnez un Skill à gauche ou cliquez sur « Nouveau Skill » pour en créer un.",
     "systemBadge": "Système",
     "systemHint": "Skill intégré du CLI · lecture seule",
+    "availability": {
+      "enabled": "Activée",
+      "disabled": "Désactivée",
+      "toggleAria": "Activer ou désactiver {skill} pour {agent}",
+      "readOnly": "Les Skills intégrées sont toujours disponibles.",
+      "cannotIsolate": "Cette Skill partagée ne peut pas être activée ou désactivée indépendamment."
+    },
     "scope": {
       "global": "Global",
       "folder": "Dossier",
@@ -579,7 +586,10 @@
       "created": "Skill créée",
       "saveFailed": "Échec de l’enregistrement de la Skill",
       "deleted": "Skill supprimée",
-      "deleteFailed": "Échec de la suppression de la Skill"
+      "deleteFailed": "Échec de la suppression de la Skill",
+      "enabled": "Skill activée",
+      "disabled": "Skill désactivée",
+      "toggleFailed": "Échec de la mise à jour de la disponibilité de la Skill"
     },
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",

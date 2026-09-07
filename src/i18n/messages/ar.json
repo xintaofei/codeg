@@ -544,6 +544,13 @@
     "noSelectionHint": "اختر Skill من اليسار، أو انقر على \"Skill جديد\" لإنشاء واحد.",
     "systemBadge": "نظام",
     "systemHint": "Skill مدمج في CLI · للقراءة فقط",
+    "availability": {
+      "enabled": "مفعّلة",
+      "disabled": "معطّلة",
+      "toggleAria": "تبديل حالة {skill} للوكيل {agent}",
+      "readOnly": "المهارات المدمجة متاحة دائمًا.",
+      "cannotIsolate": "لا يمكن تبديل هذه المهارة المشتركة بشكل مستقل."
+    },
     "scope": {
       "global": "عام",
       "folder": "مجلد",
@@ -579,7 +586,10 @@
       "created": "تم إنشاء Skill",
       "saveFailed": "فشل حفظ Skill",
       "deleted": "تم حذف Skill",
-      "deleteFailed": "فشل حذف Skill"
+      "deleteFailed": "فشل حذف Skill",
+      "enabled": "تم تفعيل Skill",
+      "disabled": "تم تعطيل Skill",
+      "toggleFailed": "فشل تحديث حالة توفر Skill"
     },
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",
