@@ -9,8 +9,16 @@
 //! clamps (`TARGET_BACKSTOPS`) close known firehoses one at a time; this closes
 //! the class, including firehoses we haven't met yet.
 //!
+//! Crossing the ceiling **clears the slate** rather than silencing the file: the
+//! day's log is truncated to zero bytes and writing resumes immediately with a
+//! fresh budget. An earlier draft dropped every line until the next daily
+//! rotation instead, which kept the disk safe but went silent for the rest of
+//! the day — and the app user debugging a problem at the time lost exactly the
+//! logs they were looking at. Truncating keeps the same hard bound (the file
+//! never exceeds the ceiling by more than one line) while never going quiet.
+//!
 //! [`DayBudget`] is the pure accounting core — no clock, no I/O, no globals, so
-//! the rollover/exhaustion logic is unit-testable outright (same split as
+//! the rollover/clear logic is unit-testable outright (same split as
 //! [`crate::logging::throttle::LeadingEdgeThrottle`]). [`BudgetedWriter`] is the
 //! thin `io::Write` shell that wraps the rolling appender, reads the clock, and
 //! reports notices.
@@ -41,7 +49,7 @@
 //!   measures what is already there and [`DayBudget::resuming`] starts from it.
 
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Default ceiling for one day's log file. Generous enough that ordinary
@@ -134,19 +142,21 @@ pub fn configured_max_bytes_per_day() -> Option<u64> {
 /// Whether a line offered to the sink should reach the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
+    /// Append the line as usual.
     Write,
-    Drop,
+    /// The ceiling was just crossed: the day's file must be truncated *before*
+    /// the line is written, and the budget has already restarted from zero.
+    Clear,
 }
 
-/// A budget state change worth telling the operator about. Emitted at most once
-/// per transition, never per dropped line — the whole point is to not add a log
-/// storm of our own on top of the one we're suppressing.
+/// A budget state change worth telling the operator about. Emitted on each
+/// ceiling crossing — rare by construction (a full file's worth of bytes apart)
+/// — never per dropped line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Notice {
-    /// The ceiling was just crossed; file logging is off for the rest of the day.
+    /// The ceiling was just crossed; the day's file is about to be truncated
+    /// and logging resumes from a fresh budget.
     Exhausted { limit: u64, written: u64 },
-    /// A new day opened the budget again; reports what the closed day lost.
-    Reopened { dropped_lines: u64, dropped_bytes: u64 },
 }
 
 impl Notice {
@@ -156,31 +166,21 @@ impl Notice {
         match self {
             Notice::Exhausted { limit, written } => format!(
                 "[logging] file log budget reached ({written} bytes written, limit {limit}); \
-                 dropping further lines until the next daily rotation. \
+                 truncating the day's log and continuing with a fresh budget. \
                  Lower the log level, or set {MAX_BYTES_ENV}=0 to remove the ceiling."
-            ),
-            Notice::Reopened {
-                dropped_lines,
-                dropped_bytes,
-            } => format!(
-                "[logging] daily rotation reopened the file log; \
-                 the previous day dropped {dropped_lines} line(s) / {dropped_bytes} bytes \
-                 over the {MAX_BYTES_ENV} ceiling"
             ),
         }
     }
 }
 
 /// Pure per-day byte accounting. Feed it the current day and each offered line
-/// length; it answers write-or-drop and hands back a [`Notice`] only on a state
-/// transition.
+/// length; it answers write-or-clear and hands back a [`Notice`] on a ceiling
+/// crossing.
 ///
-/// Crossing the ceiling **latches** the day off rather than continuing to admit
-/// whatever still fits. Under a real storm the two are indistinguishable (once
-/// the total is within a line's length of the ceiling, nothing more fits), but
-/// latching is what the [`Notice::Exhausted`] text promises and it keeps the
-/// file honest: a reader sees a clean cut-off with a reason, not a file that
-/// silently kept some lines and dropped others with no visible pattern.
+/// Crossing the ceiling restarts the budget from zero **with** the crossing
+/// line charged to the fresh count, so the caller writes that line after
+/// truncating the file ([`Verdict::Clear`]). The file therefore never exceeds
+/// the ceiling by more than the one line that crossed it.
 #[derive(Debug)]
 pub struct DayBudget {
     /// `None` = unbounded; every line is admitted and nothing is tracked.
@@ -188,11 +188,10 @@ pub struct DayBudget {
     /// `None` until the first offered line establishes the current day.
     day: Option<i32>,
     written: u64,
-    dropped_lines: u64,
-    dropped_bytes: u64,
-    /// Latched once the ceiling is crossed, cleared on rollover. Doubles as the
-    /// announce-once flag: [`Notice::Exhausted`] is emitted on the transition.
-    exhausted: bool,
+    /// What `written` was just before the most recent ceiling crossing — what
+    /// [`Self::discard_clearing_line`] restores. Only meaningful between a
+    /// `Clear` verdict and its discard.
+    pre_clear_written: u64,
 }
 
 impl DayBudget {
@@ -203,9 +202,7 @@ impl DayBudget {
             limit,
             day: None,
             written: 0,
-            dropped_lines: 0,
-            dropped_bytes: 0,
-            exhausted: false,
+            pre_clear_written: 0,
         }
     }
 
@@ -213,19 +210,17 @@ impl DayBudget {
     /// what a restart into a same-day file needs (see the module docs).
     ///
     /// No special case for `already_written` past the ceiling: the first line
-    /// offered then fails the same check any other overrun does, and reports
-    /// [`Notice::Exhausted`] once. And if the first line arrives on a *different*
-    /// day (the process started seconds before midnight), the ordinary rollover
-    /// path resets it — which is why the day travels with the byte count instead
-    /// of being applied to whatever day shows up first.
+    /// offered then crosses the ceiling and clears the file like any other
+    /// overrun. And if the first line arrives on a *different* day (the process
+    /// started seconds before midnight), the ordinary rollover path resets it —
+    /// which is why the day travels with the byte count instead of being
+    /// applied to whatever day shows up first.
     pub fn resuming(limit: Option<u64>, day: i32, already_written: u64) -> Self {
         Self {
             limit,
             day: Some(day),
             written: already_written,
-            dropped_lines: 0,
-            dropped_bytes: 0,
-            exhausted: false,
+            pre_clear_written: already_written,
         }
     }
 
@@ -235,17 +230,21 @@ impl DayBudget {
         self.written
     }
 
+    /// Undo a [`Verdict::Clear`], for when the caller could not actually write
+    /// the crossing line (truncation failed). Restores the count the day had
+    /// before the crossing, so the next line re-crosses and retries the
+    /// truncation instead of the budget admitting into a still-full file.
+    pub fn discard_clearing_line(&mut self) {
+        self.written = self.pre_clear_written;
+    }
+
     /// Account for a `len`-byte line offered on calendar day `today`.
     ///
-    /// A day change always resets first, so the very next line after midnight is
-    /// admitted even if the previous day was exhausted.
+    /// A day change always resets first, so the very next line after midnight
+    /// starts a clean budget even if the previous day ended saturated.
     ///
-    /// Returns every notice the transition produced, in order. Usually zero;
-    /// two only when one line both opens a new day and blows its whole budget
-    /// (possible with a small configured ceiling), and neither may be dropped —
-    /// silently losing the previous day's tally is the failure mode this whole
-    /// module exists to prevent. `Vec::new()` doesn't allocate, so the common
-    /// path stays free.
+    /// Returns every notice the transition produced. Usually zero; the ceiling
+    /// crossing carries exactly one [`Notice::Exhausted`].
     pub fn admit(&mut self, today: i32, len: usize) -> (Verdict, Vec<Notice>) {
         let Some(limit) = self.limit else {
             return (Verdict::Write, Vec::new());
@@ -253,35 +252,27 @@ impl DayBudget {
 
         let mut notices = Vec::new();
         if self.day != Some(today) {
-            // Rollover (or the very first line). Report the closed day's losses
-            // only if it actually lost something — a quiet day stays quiet.
-            if self.day.is_some() && self.dropped_lines > 0 {
-                notices.push(Notice::Reopened {
-                    dropped_lines: self.dropped_lines,
-                    dropped_bytes: self.dropped_bytes,
-                });
-            }
+            // Rollover (or the very first line).
             self.day = Some(today);
             self.written = 0;
-            self.dropped_lines = 0;
-            self.dropped_bytes = 0;
-            self.exhausted = false;
         }
 
         let len = len as u64;
         // Compare against the total the line *would* reach, so a single huge
         // line can't jump the ceiling and land on disk anyway.
-        if self.exhausted || self.written.saturating_add(len) > limit {
-            self.dropped_lines = self.dropped_lines.saturating_add(1);
-            self.dropped_bytes = self.dropped_bytes.saturating_add(len);
-            if !self.exhausted {
-                self.exhausted = true;
-                notices.push(Notice::Exhausted {
-                    limit,
-                    written: self.written,
-                });
-            }
-            return (Verdict::Drop, notices);
+        if self.written.saturating_add(len) > limit {
+            // Clear the slate: the file is truncated (by the caller, via the
+            // clearer) and this line opens the fresh budget. If the caller
+            // then drops the line (truncation failed) it restores
+            // `pre_clear_written` via [`Self::discard_clearing_line`], so the
+            // next line re-crosses instead of writing into a full file.
+            self.pre_clear_written = self.written;
+            self.written = len;
+            notices.push(Notice::Exhausted {
+                limit,
+                written: self.pre_clear_written,
+            });
+            return (Verdict::Clear, notices);
         }
 
         self.written = self.written.saturating_add(len);
@@ -345,44 +336,100 @@ impl NoticeSink for StderrAndHubSink {
     }
 }
 
+/// How the writer empties the day's file when the budget is crossed. Kept
+/// behind a trait so tests can record the call instead of touching disk.
+pub trait BudgetClearer: Send + 'static {
+    /// Truncate the current day's file to zero bytes. A failure costs the
+    /// triggering line (the writer drops it — the file is still full); the
+    /// next crossing retries.
+    fn clear(&self) -> io::Result<()>;
+}
+
+/// Production clearer: re-derives the current day's filename the same way
+/// [`resume_point`] does and truncates it through a second handle.
+pub struct FileClearer {
+    dir: PathBuf,
+    prefix: String,
+    suffix: String,
+}
+
+impl FileClearer {
+    pub fn new(dir: &Path, prefix: &str, suffix: &str) -> Self {
+        Self {
+            dir: dir.to_path_buf(),
+            prefix: prefix.to_string(),
+            suffix: suffix.to_string(),
+        }
+    }
+}
+
+impl BudgetClearer for FileClearer {
+    fn clear(&self) -> io::Result<()> {
+        let now = chrono::Utc::now();
+        let name = format!("{}.{}.{}", self.prefix, now.format("%Y-%m-%d"), self.suffix);
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(self.dir.join(name))?;
+        // The appender holds its own handle in append mode with std's default
+        // Windows share mode (read|write|delete), so this second handle may
+        // open for writing. Append-on-write seeks to EOF before every write,
+        // so after set_len(0) the appender's next line lands at offset 0 on
+        // Windows and POSIX alike — no coordination needed.
+        file.set_len(0)
+    }
+}
+
 /// Rolling-appender wrapper enforcing a [`DayBudget`].
 ///
 /// Lives on the `tracing_appender` worker thread (it is the `W` handed to
 /// `non_blocking`), so it is single-owner: no locks, no atomics.
-pub struct BudgetedWriter<W, C = UtcDayClock, S = StderrAndHubSink> {
+pub struct BudgetedWriter<W, C = UtcDayClock, S = StderrAndHubSink, X = FileClearer> {
     inner: W,
     clock: C,
     sink: S,
+    clearer: X,
     budget: DayBudget,
+    /// Set after a failed truncation so the stderr warning fires once, not once
+    /// per dropped line. Cleared on the next successful clear.
+    warned_clear_failure: bool,
 }
 
 impl<W: Write> BudgetedWriter<W> {
-    /// Wrap `inner` with the configured ceiling, the UTC day clock, and the
-    /// stderr + hub notice sink, resuming `day`'s budget from
-    /// `already_written` bytes (see [`resume_point`]).
-    pub fn resuming(inner: W, limit: Option<u64>, day: i32, already_written: u64) -> Self {
+    /// Wrap `inner` with the configured ceiling, the UTC day clock, the stderr
+    /// and hub notice sink, and a clearer for `dir`'s day files, resuming
+    /// `day`'s budget from `already_written` bytes (see [`resume_point`]).
+    pub fn resuming(
+        inner: W,
+        clearer: FileClearer,
+        limit: Option<u64>,
+        day: i32,
+        already_written: u64,
+    ) -> Self {
         Self {
             inner,
             clock: UtcDayClock,
             sink: StderrAndHubSink,
+            clearer,
             budget: DayBudget::resuming(limit, day, already_written),
+            warned_clear_failure: false,
         }
     }
 }
 
-impl<W: Write, C: DayClock, S: NoticeSink> BudgetedWriter<W, C, S> {
-    pub fn with_parts(inner: W, clock: C, sink: S, budget: DayBudget) -> Self {
+impl<W: Write, C: DayClock, S: NoticeSink, X: BudgetClearer> BudgetedWriter<W, C, S, X> {
+    pub fn with_parts(inner: W, clock: C, sink: S, clearer: X, budget: DayBudget) -> Self {
         Self {
             inner,
             clock,
             sink,
+            clearer,
             budget,
+            warned_clear_failure: false,
         }
     }
-
 }
 
-impl<W: Write, C: DayClock, S: NoticeSink> Write for BudgetedWriter<W, C, S> {
+impl<W: Write, C: DayClock, S: NoticeSink, X: BudgetClearer> Write for BudgetedWriter<W, C, S, X> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         // Read per line, not amortized — see the module docs for the two bugs
         // amortizing caused. `unix_day()` is a clock read plus a division.
@@ -392,11 +439,30 @@ impl<W: Write, C: DayClock, S: NoticeSink> Write for BudgetedWriter<W, C, S> {
         }
         match verdict {
             Verdict::Write => self.inner.write(buf),
-            // Report the line as consumed. `tracing_appender`'s worker treats a
-            // short write / error as a failure to log and retries or complains;
-            // dropping *is* the intended outcome here, so it must look like a
-            // clean write.
-            Verdict::Drop => Ok(buf.len()),
+            Verdict::Clear => match self.clearer.clear() {
+                Ok(()) => {
+                    self.warned_clear_failure = false;
+                    self.inner.write(buf)
+                }
+                Err(e) => {
+                    // The line never landed, so undo its charge: the next line
+                    // will cross the ceiling again and retry the truncation,
+                    // instead of the budget admitting into a full file.
+                    self.budget.discard_clearing_line();
+                    if !self.warned_clear_failure {
+                        self.warned_clear_failure = true;
+                        eprintln!(
+                            "[logging] could not truncate the day's log file at the \
+                             budget ceiling, dropping lines until it succeeds: {e}"
+                        );
+                    }
+                    // Report the line as consumed. `tracing_appender`'s worker
+                    // treats a short write / error as a failure to log and
+                    // retries or complains; dropping IS the intended outcome
+                    // here (the file is still full), so it must look clean.
+                    Ok(buf.len())
+                }
+            },
         }
     }
 
@@ -423,83 +489,73 @@ mod tests {
     }
 
     #[test]
-    fn admits_up_to_the_ceiling_then_drops() {
+    fn admits_up_to_the_ceiling_then_clears() {
         let mut b = DayBudget::new(Some(100));
         assert_eq!(b.admit(DAY, 60), (Verdict::Write, vec![]));
         assert_eq!(b.admit(DAY, 40), (Verdict::Write, vec![]));
         assert_eq!(b.written_today(), 100);
-        // Exactly at the ceiling: the next line would exceed it.
+        // Exactly at the ceiling: the next line would exceed it, so it clears
+        // the slate and opens the fresh budget with itself charged.
         assert_eq!(
             b.admit(DAY, 1),
             (
-                Verdict::Drop,
+                Verdict::Clear,
                 vec![Notice::Exhausted {
                     limit: 100,
                     written: 100,
                 }]
             )
         );
+        assert_eq!(b.written_today(), 1, "the crossing line starts the new budget");
+        // And the budget fills up again from there.
+        assert_eq!(b.admit(DAY, 99), (Verdict::Write, vec![]));
+        assert_eq!(b.admit(DAY, 1).0, Verdict::Clear, "clears again at 100");
     }
 
     #[test]
-    fn exhaustion_is_announced_once_and_latches_the_day_off() {
+    fn clearing_repeats_on_every_crossing() {
         let mut b = DayBudget::new(Some(10));
-        assert_eq!(
-            b.admit(DAY, 20).0,
-            Verdict::Drop,
-            "oversized first line"
-        );
-        // Only the first drop carries the notice, and the latch keeps dropping
-        // lines that would otherwise still fit under the ceiling.
-        for _ in 0..50 {
-            assert_eq!(b.admit(DAY, 5), (Verdict::Drop, vec![]));
+        assert_eq!(b.admit(DAY, 10), (Verdict::Write, vec![]));
+        // Each crossing announces itself and reopens the budget; there is no
+        // latch, so logging never goes quiet.
+        for _ in 0..5 {
+            assert_eq!(b.admit(DAY, 20).0, Verdict::Clear);
+            assert_eq!(b.written_today(), 20, "crossing line charged to the fresh budget");
         }
-        assert_eq!(b.written_today(), 0);
     }
 
     #[test]
     fn oversized_line_cannot_jump_the_ceiling() {
         let mut b = DayBudget::new(Some(100));
         assert_eq!(b.admit(DAY, 99), (Verdict::Write, vec![]));
-        // 500 bytes would land the total at 599 — dropped, not written.
-        assert_eq!(b.admit(DAY, 500).0, Verdict::Drop);
-        assert_eq!(b.written_today(), 99, "the file never exceeds the ceiling");
+        // 500 bytes would land the total at 599 — clear instead of write.
+        assert_eq!(b.admit(DAY, 500).0, Verdict::Clear);
+        assert_eq!(b.written_today(), 500, "the crossing line opens the fresh budget");
     }
 
     #[test]
-    fn rollover_reopens_the_budget_and_reports_the_loss() {
+    fn rollover_resets_the_budget_quietly() {
         let mut b = DayBudget::new(Some(10));
         assert_eq!(b.admit(DAY, 10), (Verdict::Write, vec![]));
         assert!(matches!(
             b.admit(DAY, 4).1.as_slice(),
             [Notice::Exhausted { .. }]
         ));
-        assert_eq!(b.admit(DAY, 6), (Verdict::Drop, vec![]));
-        // Next day: admitted again, and the closed day's losses are reported.
-        assert_eq!(
-            b.admit(DAY + 1, 3),
-            (
-                Verdict::Write,
-                vec![Notice::Reopened {
-                    dropped_lines: 2,
-                    dropped_bytes: 10,
-                }]
-            )
-        );
+        // Next day: a clean budget, nothing dropped, nothing to report.
+        assert_eq!(b.admit(DAY + 1, 3), (Verdict::Write, vec![]));
         assert_eq!(b.written_today(), 3, "counters reset on the new day");
-        // And the new day can be exhausted independently.
+        // And the new day can be cleared independently.
         assert!(matches!(
             b.admit(DAY + 1, 100).1.as_slice(),
             [Notice::Exhausted { .. }]
         ));
     }
 
-    /// One line can both open a new day and blow its entire budget (small
-    /// configured ceiling). Both notices are then due, and dropping the rollover
-    /// one would silently lose the closed day's tally — the exact
-    /// "logs disappeared and nothing said why" failure this module prevents.
+    /// A line can both open a new day and blow its entire budget (small
+    /// configured ceiling). The rollover reset applies first, then the
+    /// crossing — the notice reports the freshly reset total.
     #[test]
-    fn rollover_and_exhaustion_in_one_line_report_both() {
+    fn rollover_and_exhaustion_in_one_line() {
         let mut b = DayBudget::new(Some(10));
         assert_eq!(b.admit(DAY, 10), (Verdict::Write, vec![]));
         assert!(matches!(
@@ -508,19 +564,13 @@ mod tests {
         ));
         // First line of the new day is itself over the whole ceiling.
         let (verdict, notices) = b.admit(DAY + 1, 99);
-        assert_eq!(verdict, Verdict::Drop);
+        assert_eq!(verdict, Verdict::Clear);
         assert!(
             matches!(
                 notices.as_slice(),
-                [
-                    Notice::Reopened {
-                        dropped_lines: 1,
-                        dropped_bytes: 7,
-                    },
-                    Notice::Exhausted { limit: 10, written: 0 },
-                ]
+                [Notice::Exhausted { limit: 10, written: 0 }]
             ),
-            "rollover first, then exhaustion: {notices:?}"
+            "the fresh day's zero is what crossed: {notices:?}"
         );
     }
 
@@ -542,12 +592,13 @@ mod tests {
     }
 
     #[test]
-    fn resuming_past_the_ceiling_drops_from_the_first_line() {
-        // A restart into a file that is already over budget must not write at
-        // all — no special case needed, the ordinary overrun check covers it.
+    fn resuming_past_the_ceiling_clears_from_the_first_line() {
+        // A restart into a file that is already over budget clears it on the
+        // first line — no special case needed, the ordinary overrun check
+        // covers it.
         let mut b = DayBudget::resuming(Some(100), DAY, 5_000);
         let (verdict, notices) = b.admit(DAY, 1);
-        assert_eq!(verdict, Verdict::Drop);
+        assert_eq!(verdict, Verdict::Clear);
         assert!(matches!(notices.as_slice(), [Notice::Exhausted { .. }]));
     }
 
@@ -576,8 +627,8 @@ mod tests {
         // treated like any other change: reset, don't wedge.
         let mut b = DayBudget::new(Some(10));
         assert_eq!(b.admit(DAY, 10), (Verdict::Write, vec![]));
-        assert_eq!(b.admit(DAY, 1).0, Verdict::Drop);
-        assert_eq!(b.admit(DAY - 1, 5).0, Verdict::Write);
+        assert_eq!(b.admit(DAY, 1).0, Verdict::Clear);
+        assert_eq!(b.admit(DAY - 1, 5), (Verdict::Write, vec![]));
     }
 
     // ---- BudgetedWriter ----
@@ -610,67 +661,141 @@ mod tests {
         }
     }
 
+    /// Records every clear; `fail_times` makes the first N clears error, to
+    /// exercise the drop-and-warn-once path. On success it empties the
+    /// "file", mirroring what a real truncation does to the appender.
+    #[derive(Clone, Default)]
+    struct RecordingClearer {
+        calls: Arc<Mutex<usize>>,
+        fail_times: Arc<Mutex<usize>>,
+        file: Arc<Mutex<Vec<u8>>>,
+    }
+    impl BudgetClearer for RecordingClearer {
+        fn clear(&self) -> io::Result<()> {
+            let mut fails = self.fail_times.lock().unwrap();
+            if *fails > 0 {
+                *fails -= 1;
+                return Err(io::Error::other("permission denied"));
+            }
+            drop(fails);
+            *self.calls.lock().unwrap() += 1;
+            self.file.lock().unwrap().clear();
+            Ok(())
+        }
+    }
+
     #[test]
-    fn writer_stops_writing_past_the_ceiling_but_reports_success() {
+    fn writer_clears_the_file_at_the_ceiling_and_keeps_writing() {
         let file = CountingWriter::default();
         let notices = RecordingSink::default();
+        let clearer = RecordingClearer {
+            file: Arc::clone(&file.0),
+            ..RecordingClearer::default()
+        };
         let clock = FixedClock(Arc::new(Mutex::new(DAY)));
         let mut w = BudgetedWriter::with_parts(
             file.clone(),
             clock.clone(),
             notices.clone(),
+            clearer.clone(),
             DayBudget::new(Some(16)),
         );
 
         assert_eq!(w.write(b"12345678").unwrap(), 8);
         assert_eq!(w.write(b"12345678").unwrap(), 8);
-        // Over the ceiling: still reported as fully written so the appender
-        // worker doesn't treat it as an I/O failure, but nothing reaches disk.
-        assert_eq!(w.write(b"dropped").unwrap(), 7);
-        assert_eq!(file.0.lock().unwrap().len(), 16);
+        // Over the ceiling: the file is truncated, then the line lands in the
+        // fresh (now empty) file.
+        assert_eq!(w.write(b"next").unwrap(), 4);
+        assert_eq!(*clearer.calls.lock().unwrap(), 1);
+        assert_eq!(file.0.lock().unwrap().as_slice(), b"next");
         assert!(matches!(
             notices.0.lock().unwrap().as_slice(),
             [Notice::Exhausted { limit: 16, .. }]
         ));
+        // Writing continues normally afterwards.
+        assert_eq!(w.write(b"more!").unwrap(), 5);
+        assert_eq!(file.0.lock().unwrap().as_slice(), b"nextmore!");
+    }
+
+    /// When the truncation itself fails the line is dropped (the file is still
+    /// full) but must look consumed to the appender worker, and the stderr
+    /// warning fires once — not once per dropped line. A later successful
+    /// clear re-arms the warning.
+    #[test]
+    fn failed_clear_drops_lines_and_warns_once() {
+        let file = CountingWriter::default();
+        let notices = RecordingSink::default();
+        let clearer = RecordingClearer {
+            fail_times: Arc::new(Mutex::new(2)),
+            file: Arc::clone(&file.0),
+            ..RecordingClearer::default()
+        };
+        let mut w = BudgetedWriter::with_parts(
+            file.clone(),
+            FixedClock(Arc::new(Mutex::new(DAY))),
+            notices,
+            clearer.clone(),
+            DayBudget::new(Some(16)),
+        );
+
+        w.write_all(b"12345678").unwrap();
+        w.write_all(b"12345678").unwrap();
+        // Two crossings, both failing: dropped lines, no file growth, and the
+        // stderr warning is latched (asserted indirectly — only one eprintln
+        // for three dropped lines is unobservable here, but the budget must
+        // keep retrying the truncation on every subsequent line).
+        w.write_all(b"a").unwrap();
+        w.write_all(b"b").unwrap();
+        assert_eq!(
+            file.0.lock().unwrap().as_slice(),
+            b"1234567812345678",
+            "failed clears drop their lines"
+        );
+        assert_eq!(*clearer.calls.lock().unwrap(), 0);
+        // The third crossing retries the clear, succeeds, and logging resumes
+        // from the empty file with the crossing line itself.
+        w.write_all(b"c").unwrap();
+        assert_eq!(*clearer.calls.lock().unwrap(), 1);
+        assert_eq!(file.0.lock().unwrap().as_slice(), b"c");
+        // Back to ordinary writes.
+        w.write_all(b"d").unwrap();
+        assert_eq!(file.0.lock().unwrap().as_slice(), b"cd");
     }
 
     /// The day is read on EVERY line, so the very first line after midnight
-    /// reopens the budget. An earlier draft amortized the clock read over 64 KiB
-    /// of offered bytes, which meant a sparse-traffic app could stay latched for
-    /// hours — or days — of wall time past the rollover, silently dropping a
-    /// whole day of diagnostics.
+    /// starts a clean budget — even if the previous day ended saturated.
     #[test]
     fn writer_reopens_on_the_first_line_of_the_new_day() {
         let file = CountingWriter::default();
         let notices = RecordingSink::default();
         let day = Arc::new(Mutex::new(DAY));
+        let clearer = RecordingClearer {
+            file: Arc::clone(&file.0),
+            ..RecordingClearer::default()
+        };
         let mut w = BudgetedWriter::with_parts(
             file.clone(),
             FixedClock(Arc::clone(&day)),
             notices.clone(),
+            clearer.clone(),
             DayBudget::new(Some(4)),
         );
 
         w.write_all(b"aaaa").unwrap();
         w.write_all(b"bbbb").unwrap();
-        assert_eq!(file.0.lock().unwrap().len(), 4, "second line dropped");
+        assert_eq!(
+            *clearer.calls.lock().unwrap(),
+            1,
+            "the second line crosses the ceiling"
+        );
 
-        // One tick past midnight, with no intervening traffic at all.
+        // One tick past midnight, with no intervening traffic at all: no clear,
+        // the line just lands in the fresh day.
         *day.lock().unwrap() = DAY + 1;
         w.write_all(b"cccc").unwrap();
-        assert_eq!(
-            file.0.lock().unwrap().len(),
-            8,
-            "the first line of the new day must be admitted"
-        );
+        assert_eq!(*clearer.calls.lock().unwrap(), 1);
         let seen = notices.0.lock().unwrap().clone();
-        assert!(
-            matches!(
-                seen.as_slice(),
-                [Notice::Exhausted { .. }, Notice::Reopened { .. }]
-            ),
-            "{seen:?}"
-        );
+        assert_eq!(seen.len(), 1, "only the ceiling crossing reported: {seen:?}");
     }
 
     #[test]
@@ -678,18 +803,25 @@ mod tests {
         // Restart into a file that already holds 3 of its 4 allowed bytes.
         let file = CountingWriter::default();
         let notices = RecordingSink::default();
+        let clearer = RecordingClearer {
+            file: Arc::clone(&file.0),
+            ..RecordingClearer::default()
+        };
         let mut w = BudgetedWriter::with_parts(
             file.clone(),
             FixedClock(Arc::new(Mutex::new(DAY))),
-            notices.clone(),
+            notices,
+            clearer,
             DayBudget::resuming(Some(4), DAY, 3),
         );
+        // The resumed 90+10 fill the ceiling exactly; the next line crosses it.
         w.write_all(b"a").unwrap();
+        assert_eq!(file.0.lock().unwrap().as_slice(), b"a");
         w.write_all(b"b").unwrap();
         assert_eq!(
-            file.0.lock().unwrap().len(),
-            1,
-            "only the byte that fits under the resumed total is written"
+            file.0.lock().unwrap().as_slice(),
+            b"b",
+            "the crossing line opens the cleared file"
         );
     }
 
@@ -701,6 +833,7 @@ mod tests {
             file.clone(),
             FixedClock(Arc::new(Mutex::new(DAY))),
             notices.clone(),
+            RecordingClearer::default(),
             DayBudget::new(None),
         );
         for _ in 0..100 {
@@ -752,22 +885,20 @@ mod tests {
 
     #[test]
     fn notice_messages_name_the_env_var() {
-        for notice in [
-            Notice::Exhausted {
-                limit: 1,
-                written: 1,
-            },
-            Notice::Reopened {
-                dropped_lines: 1,
-                dropped_bytes: 1,
-            },
-        ] {
-            assert!(
-                notice.message().contains(MAX_BYTES_ENV),
-                "the notice must tell the operator how to lift the ceiling: {}",
-                notice.message()
-            );
-        }
+        let notice = Notice::Exhausted {
+            limit: 1,
+            written: 1,
+        };
+        assert!(
+            notice.message().contains(MAX_BYTES_ENV),
+            "the notice must tell the operator how to lift the ceiling: {}",
+            notice.message()
+        );
+        assert!(
+            notice.message().contains("truncating"),
+            "the notice must say the file is cleared, not dropped: {}",
+            notice.message()
+        );
     }
 
     #[test]

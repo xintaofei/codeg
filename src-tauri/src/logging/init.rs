@@ -438,7 +438,9 @@ pub fn env_level_is_set() -> bool {
 /// The appender is wrapped in a [`BudgetedWriter`] so one day's file can't grow
 /// without bound: `Rotation::DAILY` decides *when* a new file starts, never how
 /// large the current one may get, and a per-message log on a hot path can
-/// otherwise write tens of GB before midnight. The budget **resumes** the day it
+/// otherwise write tens of GB before midnight. Crossing the ceiling truncates
+/// the day's file and logging resumes with a fresh budget — the disk stays
+/// bounded and the log never goes quiet. The budget **resumes** the day it
 /// starts in rather than beginning at zero — the appender re-opens an existing
 /// dated file in append mode, so a fresh count would hand out a whole new
 /// ceiling on every relaunch.
@@ -466,10 +468,13 @@ fn init_file_writer(dir: &Path, prefix: &str) -> Option<(NonBlocking, WorkerGuar
         }
     };
     // Measured with the SAME prefix/suffix the appender was just built with, so
-    // the file the budget accounts for is the file being written.
+    // the file the budget accounts for is the file being written — and the
+    // clearer truncates.
     let (day, already_written) = budget::resume_point(dir, prefix, LOG_FILE_SUFFIX);
+    let clearer = budget::FileClearer::new(dir, prefix, LOG_FILE_SUFFIX);
     let budgeted = BudgetedWriter::resuming(
         appender,
+        clearer,
         budget::configured_max_bytes_per_day(),
         day,
         already_written,
