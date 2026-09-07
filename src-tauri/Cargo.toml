@@ -56,7 +56,7 @@ required-features = []
 tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api", "tray-icon"], optional = true }
+tauri = { version = "2.11", features = ["macos-private-api", "tray-icon"], optional = true }
 tauri-plugin-opener = { version = "2", optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
 async-trait = "0.1"
