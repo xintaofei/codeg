@@ -53,6 +53,11 @@ pub trait ContinuationRuntime: Send + Sync {
     /// Strictly attach the recorded external session for a new turn.
     /// `parent_connection_id` is the initiating parent ACP connection — the
     /// child inherits its emitter / owner window like any delegation spawn.
+    /// `child_conversation_id` is the persistent child conversation the
+    /// session row reserves: the runtime MUST bind the attached connection
+    /// to that row before any prompt flows (reacceptance R1) — without the
+    /// binding, a completing turn carries no conversation id and the
+    /// lifecycle's settlement routing never fires.
     /// The returned connection id is bound to `(turn_id, execution_id)`; any
     /// failure is a typed strict error and NOTHING has been sent.
     async fn attach_strict(
@@ -61,6 +66,7 @@ pub trait ContinuationRuntime: Send + Sync {
         parent_connection_id: &str,
         turn_id: &str,
         execution_id: &str,
+        child_conversation_id: i32,
     ) -> Result<String, StrictAttachError>;
 
     /// Send exactly ONE prompt (the rework message) on the attached
@@ -91,6 +97,7 @@ impl ContinuationRuntime for NoopRuntime {
         _parent_connection_id: &str,
         _turn_id: &str,
         _execution_id: &str,
+        _child_conversation_id: i32,
     ) -> Result<String, StrictAttachError> {
         Err(StrictAttachError::new(
             crate::acp::delegation::continuation::StrictAttachErrorCode::ResumeFailed,

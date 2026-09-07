@@ -45,6 +45,9 @@ const eslintConfig = defineConfig([
     // `.gitignore` — but flat config has no such default, so without this
     // `pnpm eslint .` fails the repo on files that are not in the repo.
     ".docs/**",
+    // Same category: gitignored design/acceptance material (`.zcode/` holds
+    // the local-only review harnesses whose compact style is deliberate).
+    ".zcode/**",
   ]),
   eslintConfigPrettier,
   eslintPluginPrettierRecommended,

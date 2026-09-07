@@ -171,6 +171,88 @@ pub async fn next_ordinal<C: ConnectionTrait>(conn: &C, session_id: &str) -> Res
     Ok(rows.iter().map(|t| t.ordinal).max().unwrap_or(0) + 1)
 }
 
+/// Why [`admit_turn`] refused the insert. Domain-shaped so the coordinator
+/// can surface the exact error instead of guessing from a raw DbErr.
+#[derive(Debug)]
+pub enum AdmitTurnError {
+    /// A required read or the commit failed — the store is untrustworthy.
+    Storage(DbError),
+    /// The session is `blocked` (an unknown outcome is unresolved).
+    SessionBlocked,
+    /// The session is `closed`.
+    SessionClosed,
+    /// Another turn is already active (or a uniqueness constraint fired).
+    SessionBusy,
+}
+
+/// Insert the accepted turn with the admission preconditions re-validated
+/// INSIDE the same transaction (reacceptance R5): the session must still be
+/// `open` and hold no active turn at insert time. This closes the
+/// interleaving where `continue_turn` reads the session as `open`, a racing
+/// `settle_unknown_and_block` commit lands (turn terminal + session
+/// blocked), and the admission then inserts a fresh round under the stale
+/// open snapshot — the partial single-active index cannot catch it because
+/// the previous turn is already terminal by then.
+pub async fn admit_turn<C: ConnectionTrait + TransactionTrait>(
+    conn: &C,
+    new: NewTurn,
+) -> Result<TurnRow, AdmitTurnError> {
+    let txn = conn
+        .begin()
+        .await
+        .map_err(|e| AdmitTurnError::Storage(DbError::from(e)))?;
+    // Re-validate the session state INSIDE the transaction.
+    let session = collaboration_session::Entity::find_by_id(&new.session_id)
+        .one(&txn)
+        .await
+        .map_err(|e| AdmitTurnError::Storage(DbError::from(e)))?
+        .ok_or_else(|| {
+            AdmitTurnError::Storage(DbError::Conflict(
+                "collaboration_session vanished before admission".into(),
+            ))
+        })?;
+    match session.state.as_str() {
+        "open" => {}
+        "blocked" => return Err(AdmitTurnError::SessionBlocked),
+        "closed" => return Err(AdmitTurnError::SessionClosed),
+        other => {
+            return Err(AdmitTurnError::Storage(DbError::Conflict(format!(
+                "unknown collaboration session state {other}"
+            ))))
+        }
+    }
+    // Re-check the single-active invariant inside the same transaction; the
+    // partial unique index remains the storage backstop for anything that
+    // still slips past.
+    let active = collaboration_turn::Entity::find()
+        .filter(collaboration_turn::Column::SessionId.eq(&new.session_id))
+        .filter(collaboration_turn::Column::State.is_in(ACTIVE_TURN_STATES))
+        .one(&txn)
+        .await
+        .map_err(|e| AdmitTurnError::Storage(DbError::from(e)))?;
+    if active.is_some() {
+        return Err(AdmitTurnError::SessionBusy);
+    }
+    let ordinal = next_ordinal(&txn, &new.session_id)
+        .await
+        .map_err(AdmitTurnError::Storage)?;
+    let mut admitted = new;
+    admitted.ordinal = ordinal;
+    let turn = insert_turn(&txn, admitted)
+        .await
+        .map_err(|e| {
+            // A uniqueness violation means another admission won the race;
+            // map every insert failure to the busy domain error (the
+            // pre-checks above already surfaced genuine store failures).
+            tracing::info!("[continuation] admission insert failed: {e}");
+            AdmitTurnError::SessionBusy
+        })?;
+    txn.commit()
+        .await
+        .map_err(|e| AdmitTurnError::Storage(DbError::from(e)))?;
+    Ok(turn)
+}
+
 /// Insert the accepted turn. Unique violations (same request_id or ordinal —
 /// i.e. a concurrent admission that won the race) surface as a raw DbErr for
 /// the coordinator to translate into domain errors.

@@ -62,6 +62,18 @@ fn is_reserved_turn_id(id: &str) -> bool {
         if !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// The backend rejection ordinary prompt entries return for a conversation
+/// reserved by an open/blocked collaboration session (v2 design §4.2: the
+/// coordinator owns the child's writes until close; a disabled button is
+/// not the contract).
+fn reserved_for_delegation_error(conversation_id: i32) -> AcpError {
+    AcpError::protocol(format!(
+        "conversation {conversation_id} is reserved for delegation rework; send your \
+         feedback through the active rework turn instead \
+         (session_reserved_for_delegation)"
+    ))
+}
+
 /// Build the bounded preview string for a `user_prompt_sent` notification from
 /// the `Text` blocks of a user prompt. Joins the (trimmed, non-empty) text
 /// blocks with a space and caps the kept text at `USER_PROMPT_PREVIEW_MAX_CHARS`
@@ -836,9 +848,78 @@ impl ConnectionManager {
         conn_id: &str,
         blocks: Vec<PromptInputBlock>,
     ) -> Result<(), AcpError> {
+        // Collaboration write reservation (reacceptance R8): judged by the
+        // connection's ACTUAL bound conversation, not a caller-supplied id —
+        // an already-linked reserved child must refuse a prompt that omits
+        // the conversation id exactly like one that names it. The
+        // coordinator's controlled send goes through
+        // [`Self::send_prompt_for_continuation`] instead, which is the one
+        // deliberately exempt internal path.
+        if let Some(state_arc) = self.get_state(conn_id).await {
+            let bound = state_arc.read().await.conversation_id;
+            if let Some(cid) = bound {
+                if self.collaboration_reserved(cid).await {
+                    return Err(reserved_for_delegation_error(cid));
+                }
+            }
+        }
         let prompt_lock = self.clone_prompt_lock(conn_id).await?;
         let _guard = prompt_lock.lock_owned().await;
         self.send_prompt_inner(conn_id, blocks, None).await
+    }
+
+    /// The continuation coordinator's privileged prompt send. Identical to
+    /// [`Self::send_prompt`] except it does NOT consult the collaboration
+    /// write reservation: the coordinator IS the reservation's owner,
+    /// driving the reserved child through its controlled rounds. Every
+    /// ordinary entry (`send_prompt`, `send_prompt_linked*`) keeps the check,
+    /// so the coordinator↔ordinary boundary stays explicit (reacceptance
+    /// R8).
+    pub async fn send_prompt_for_continuation(
+        &self,
+        db: &DatabaseConnection,
+        conn_id: &str,
+        blocks: Vec<PromptInputBlock>,
+    ) -> Result<(), AcpError> {
+        let prompt_lock = self.clone_prompt_lock(conn_id).await?;
+        let _guard = prompt_lock.lock_owned().await;
+        // Mirror `send_prompt_linked`'s status transition: every prompt flips
+        // the bound conversation row to InProgress (DB write before the emit
+        // so subscribers observe a consistent row).
+        let (state_arc, emitter) = self
+            .get_state_and_emitter(conn_id)
+            .await
+            .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.into()))?;
+        let conversation_id_for_status = state_arc.read().await.conversation_id;
+        if let Some(cid) = conversation_id_for_status {
+            conversation_service::update_status(db, cid, ConversationStatus::InProgress)
+                .await
+                .map_err(|e| AcpError::protocol(e.to_string()))?;
+            emit_with_state(
+                &state_arc,
+                &emitter,
+                AcpEvent::ConversationStatusChanged {
+                    conversation_id: cid,
+                    status: ConversationStatus::InProgress,
+                },
+            )
+            .await;
+        }
+        self.send_prompt_inner(conn_id, blocks, None).await
+    }
+
+    /// Whether the conversation is currently reserved by an open/blocked
+    /// collaboration session (the continuation coordinator's exclusive write
+    /// scope). Ordinary prompt entries refuse reserved conversations with a
+    /// backend error — a disabled button is not the contract.
+    async fn collaboration_reserved(&self, conversation_id: i32) -> bool {
+        match self
+            .delegation_snapshot()
+            .and_then(|d| d.collaboration)
+        {
+            Some(collab) => collab.child_is_reserved(conversation_id).await,
+            None => false,
+        }
     }
 
     /// Send a prompt while ensuring a `Conversation` DB row is bound to this
@@ -972,15 +1053,29 @@ impl ConnectionManager {
         // caller-supplied row) targeted at a RESERVED conversation is refused
         // here — a backend rejection, not a disabled button. Unreserved
         // conversations behave exactly as before.
-        if let Some(conversation_id) = conversation_id {
-            if let Some(collab) = self.delegation_snapshot().and_then(|d| d.collaboration) {
-                if collab.child_is_reserved(conversation_id).await {
-                    return Err(AcpError::protocol(
-                        format!(
-                            "conversation {conversation_id} is reserved for delegation                              rework; send your feedback through the active rework turn                              instead (session_reserved_for_delegation)"
-                        ),
-                    ));
-                }
+        //
+        // The check must cover the connection's ACTUAL binding as well
+        // (reacceptance R8): an already-linked reserved child must refuse a
+        // prompt that omits the conversation id (it would otherwise ride the
+        // already-linked fast path into the reserved child). And a
+        // caller-supplied target that disagrees with that binding is a
+        // routing error, refused before any side effect.
+        let bound_conversation_id = if already_linked {
+            state_arc.read().await.conversation_id
+        } else {
+            None
+        };
+        if let (Some(caller_id), Some(bound_id)) = (conversation_id, bound_conversation_id) {
+            if caller_id != bound_id {
+                return Err(AcpError::protocol(format!(
+                    "connection {conn_id} is already linked to conversation {bound_id}; \
+                     refusing the mismatched target {caller_id}"
+                )));
+            }
+        }
+        for target in [conversation_id, bound_conversation_id].into_iter().flatten() {
+            if self.collaboration_reserved(target).await {
+                return Err(reserved_for_delegation_error(target));
             }
         }
 
@@ -2144,6 +2239,64 @@ impl ConnectionManager {
         }
     }
 
+    /// Forcibly reclaim one stuck connection (reacceptance R7): the graceful
+    /// `Disconnect` command is only consumed by the connection's conversation
+    /// loop, so a driver still parked in the resume/load handshake
+    /// (`block_task().await`) never reads it — plain [`Self::disconnect`]
+    /// would deregister the connection and leave the agent process (and its
+    /// tree) running with nothing owning it. This mirrors
+    /// [`Self::disconnect_all`]'s ladder for a single connection: fire the
+    /// graceful Disconnect, give the driver a short grace window, then
+    /// hard-kill the agent process tree via its pid cell and confirm the
+    /// exit through the `on_exit` zeroing. The confirmed exit is what makes
+    /// the release a fact rather than an assertion.
+    pub async fn disconnect_and_reclaim(&self, conn_id: &str) -> Result<(), AcpError> {
+        const RECLAIM_GRACE: Duration = Duration::from_millis(500);
+        const RECLAIM_EXIT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
+        let reclaimed = {
+            let mut connections = self.connections.lock().await;
+            connections
+                .remove(conn_id)
+                .map(|conn| (conn.cmd_tx, conn.child_pid))
+        };
+        let Some((cmd_tx, child_pid)) = reclaimed else {
+            return Err(AcpError::ConnectionNotFound(conn_id.into()));
+        };
+        tracing::info!("[ACP] disconnect_and_reclaim connection={}", conn_id);
+        // try_send: a wedged command queue (32 deep) must not park the
+        // reclaim — the backstop kill below is exactly for that connection.
+        let _ = cmd_tx.try_send(ConnectionCommand::Disconnect);
+        tokio::time::sleep(RECLAIM_GRACE).await;
+        let pid = child_pid.load(std::sync::atomic::Ordering::SeqCst);
+        if pid != 0 {
+            // Blocking kill_tree off the async runtime, same as
+            // disconnect_all's backstop.
+            let _ = tokio::task::spawn_blocking(move || {
+                kill_tree::blocking::kill_tree(pid)
+            })
+            .await;
+            // Confirm the exit via the on_exit zeroing of the pid cell
+            // (bounded): a confirmed death is the only honest "released".
+            let deadline = std::time::Instant::now() + RECLAIM_EXIT_CONFIRM_TIMEOUT;
+            while std::time::Instant::now() < deadline {
+                if child_pid.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                    tracing::info!(
+                        "[ACP] disconnect_and_reclaim confirmed exit for connection={}",
+                        conn_id
+                    );
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            return Err(AcpError::protocol(format!(
+                "connection {conn_id}: process tree kill issued but exit was not \
+                 confirmed within {}ms",
+                RECLAIM_EXIT_CONFIRM_TIMEOUT.as_millis()
+            )));
+        }
+        Ok(())
+    }
+
     /// Probe an agent for the modes / config_options it advertises on a fresh
     /// session, then immediately disconnect. The probe runs with
     /// `EventEmitter::Noop` so no event reaches the desktop webview, the
@@ -2686,22 +2839,31 @@ impl ConnectionManager {
                 "the connection ended before reporting strict readiness",
             )),
             Err(_elapsed) => {
-                // Timed out waiting for the handshake. The connection may
-                // STILL complete its resume a moment later — but the caller
-                // has already given up and the coordinator never learned the
-                // connection id, so leaving it alive would strand a resource
-                // nothing owns and could block future strict resumes of the
-                // same session ("a live connection already hosts this
-                // session"). Reclaim it; a late Ready lands on a dead
-                // connection and is harmless (acceptance F9).
-                let _ = self.disconnect(&connection_id).await;
+                // Timed out waiting for the handshake. The driver is parked
+                // in `block_task()` and NEVER reads the queued Disconnect,
+                // so the reclaim must go through the forced ladder —
+                // graceful command, grace window, hard `kill_tree`, confirmed
+                // exit — or the agent process would outlive its registration
+                // and block every future strict resume of the same session
+                // (acceptance F9, reacceptance R7). A late Ready lands on a
+                // dead connection and is harmless.
+                let reclaim = self.disconnect_and_reclaim(&connection_id).await;
                 Err(StrictAttachError::new(
                     StrictAttachErrorCode::ResumeTimeout,
-                    format!(
-                        "strict attach did not become ready within {}ms; the launched \
-                         connection was reclaimed and no prompt was sent",
-                        timeout.as_millis()
-                    ),
+                    match reclaim {
+                        Ok(()) => format!(
+                            "strict attach did not become ready within {}ms; the launched \
+                             connection's process tree was killed and its exit confirmed; \
+                             no prompt was sent",
+                            timeout.as_millis()
+                        ),
+                        Err(reclaim_err) => format!(
+                            "strict attach did not become ready within {}ms and the \
+                             launched connection could not be fully reclaimed ({reclaim_err}); \
+                             no prompt was sent",
+                            timeout.as_millis()
+                        ),
+                    },
                 ))
             }
         }
@@ -3942,6 +4104,54 @@ pub struct ConnectionManagerContinuationRuntime {
 /// typed failure and the turn stays queryable).
 pub const STRICT_ATTACH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 
+impl ConnectionManagerContinuationRuntime {
+    /// Bind a strict-attached connection to the child conversation row its
+    /// collaboration session reserves (reacceptance R1). Emits the same
+    /// `ConversationLinked` event `send_prompt_linked`'s adopt-a-row branch
+    /// does, which latches `state.conversation_id`/`folder_id` (what the
+    /// lifecycle's TurnComplete settlement routing reads) and registers the
+    /// connection in the lifecycle's terminal-event cache. The row must still
+    /// hold the external session that was strictly resumed — a drifted
+    /// binding fails loudly instead of silently rebinding to another row.
+    async fn bind_child_conversation(
+        &self,
+        connection_id: &str,
+        child_conversation_id: i32,
+        target: &crate::acp::delegation::continuation::runtime::AttachTarget,
+    ) -> Result<(), String> {
+        let row = crate::db::service::conversation_service::get_by_id(
+            &self.db.conn,
+            child_conversation_id,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        if row.external_id.as_deref() != Some(target.external_session_id.as_str()) {
+            return Err(format!(
+                "child conversation {child_conversation_id} no longer holds the recorded \
+                 external session {:?} (now {:?})",
+                target.external_session_id, row.external_id
+            ));
+        }
+        let (state_arc, emitter) = self
+            .manager
+            .get_state_and_emitter(connection_id)
+            .await
+            .ok_or_else(|| "the connection vanished after the strict attach".to_string())?;
+        emit_with_state(
+            &state_arc,
+            &emitter,
+            AcpEvent::ConversationLinked {
+                conversation_id: child_conversation_id,
+                folder_id: row.folder_id,
+                parent_conversation_id: row.parent_id,
+                parent_tool_use_id: row.parent_tool_use_id.clone(),
+            },
+        )
+        .await;
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::acp::delegation::continuation::ContinuationRuntime
     for ConnectionManagerContinuationRuntime
@@ -3952,17 +4162,21 @@ impl crate::acp::delegation::continuation::ContinuationRuntime
         parent_connection_id: &str,
         _turn_id: &str,
         _execution_id: &str,
+        child_conversation_id: i32,
     ) -> Result<
         String,
         crate::acp::delegation::continuation::StrictAttachError,
     > {
+        use crate::acp::delegation::continuation::{
+            StrictAttachError, StrictAttachErrorCode,
+        };
         // Same parent inheritance as `spawn_for_resume`: the child emits on
         // the parent's stream so the browser keeps seeing the sub-thread.
         let (emitter, owner_window) = {
             let conns = self.manager.connections.lock().await;
             let parent = conns.get(parent_connection_id).ok_or_else(|| {
-                crate::acp::delegation::continuation::StrictAttachError::new(
-                    crate::acp::delegation::continuation::StrictAttachErrorCode::ResumeFailed,
+                StrictAttachError::new(
+                    StrictAttachErrorCode::ResumeFailed,
                     format!("parent connection {parent_connection_id} not found"),
                 )
             })?;
@@ -3976,15 +4190,15 @@ impl crate::acp::delegation::continuation::ContinuationRuntime
         )
         .await
         .map_err(|e| {
-            crate::acp::delegation::continuation::StrictAttachError::new(
-                crate::acp::delegation::continuation::StrictAttachErrorCode::ResumeFailed,
+            StrictAttachError::new(
+                StrictAttachErrorCode::ResumeFailed,
                 format!("runtime env: {e}"),
             )
         })?;
         let cwd = std::path::PathBuf::from(&target.cwd);
         if !cwd.is_dir() {
-            return Err(crate::acp::delegation::continuation::StrictAttachError::new(
-                crate::acp::delegation::continuation::StrictAttachErrorCode::BindingMismatch,
+            return Err(StrictAttachError::new(
+                StrictAttachErrorCode::BindingMismatch,
                 format!(
                     "the recorded working directory {} no longer exists",
                     cwd.display()
@@ -4007,15 +4221,36 @@ impl crate::acp::delegation::continuation::ContinuationRuntime
                 STRICT_ATTACH_TIMEOUT,
             )
             .await?;
+        // Bind the attached connection to the reserved child conversation
+        // row BEFORE any prompt flows (reacceptance R1): a strict-attached
+        // connection starts with no conversation identity, and the
+        // lifecycle's TurnComplete routing bails on that — the round would
+        // stay `running` forever even though the agent finished. A failed
+        // binding fails the attach honestly (nothing was sent).
+        if let Err(detail) = self
+            .bind_child_conversation(&ready.connection_id, child_conversation_id, target)
+            .await
+        {
+            let _ = self.manager.disconnect(&ready.connection_id).await;
+            return Err(StrictAttachError::new(
+                StrictAttachErrorCode::ResumeFailed,
+                format!(
+                    "the resumed connection could not be bound to child \
+                     conversation {child_conversation_id}: {detail}"
+                ),
+            ));
+        }
         Ok(ready.connection_id)
     }
 
     async fn send_prompt(&self, connection_id: &str, message: &str) -> Result<(), String> {
         // The coordinator is the ONLY writer for a reserved child session:
         // this internal path deliberately bypasses the session write
-        // reservation (the reservation exists to stop everyone ELSE).
+        // reservation via the manager's explicit continuation entry (the
+        // reservation exists to stop everyone ELSE — reacceptance R8).
         self.manager
-            .send_prompt(
+            .send_prompt_for_continuation(
+                &self.db.conn,
                 connection_id,
                 vec![crate::acp::types::PromptInputBlock::Text {
                     text: message.to_string(),
@@ -4380,6 +4615,241 @@ mod tests {
 
         let _ = kill_tree::blocking::kill_tree(child.id());
         let _ = child.wait();
+    }
+
+    /// Reacceptance R7: reclaiming a stuck connection must kill the whole
+    /// agent process tree even when the graceful command path is unavailable
+    /// (the receiver here is dropped — the stand-in for a driver parked in
+    /// the resume/load handshake that never reads `cmd_rx`), and must
+    /// CONFIRM the exit via the pid cell before reporting success.
+    /// Unix-only (relies on `sh` / `kill(2)`).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn disconnect_and_reclaim_kills_a_stuck_process_tree_and_confirms_exit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut child, gpid) = spawn_process_tree(&dir.path().join("g.pid")).await;
+
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection("conn-stuck", None);
+        conn.child_pid
+            .store(child.id(), std::sync::atomic::Ordering::SeqCst);
+        let cell = Arc::clone(&conn.child_pid);
+        mgr.connections
+            .lock()
+            .await
+            .insert("conn-stuck".to_string(), conn);
+        // Stand-in for the real driver's `on_exit` zeroing: fires once the
+        // process tree is dead. Watching the GRANDCHILD avoids the zombie
+        // subtlety — the unreaped `sh` answers `kill(pid,0)` as alive, while
+        // the reparented `sleep` disappears once the tree is truly killed.
+        let tree_dead_pid = gpid;
+        tokio::spawn(async move {
+            for _ in 0..300 {
+                if !is_alive(tree_dead_pid) {
+                    cell.store(0, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        });
+        mgr.disconnect_and_reclaim("conn-stuck")
+            .await
+            .expect("reclaim with a confirmed exit succeeds");
+        assert!(
+            wait_until_dead(gpid).await,
+            "grandchild {gpid} survived — the reclaim did not kill the tree"
+        );
+        let _ = child.wait();
+        assert!(
+            mgr.get_state("conn-stuck").await.is_none(),
+            "the reclaimed connection must be deregistered"
+        );
+    }
+
+    /// Reacceptance R8 + R1: once a child conversation is reserved by an
+    /// open collaboration session, EVERY ordinary prompt entry refuses it —
+    /// including the already-linked path with the conversation id OMITTED
+    /// (previously the bypass) — while the continuation runtime's explicit
+    /// privileged send still flows, after binding the strict connection to
+    /// the child row (the R1 latch the lifecycle's settlement routing reads)
+    /// and flipping the row to InProgress.
+    #[tokio::test]
+    async fn reserved_child_refuses_ordinary_entries_but_continuation_send_flows() {
+        use crate::acp::delegation::continuation::runtime::AttachTarget;
+        use crate::acp::delegation::continuation::ContinuationRuntime as _;
+        use crate::db::service::collaboration_service;
+        use crate::db::test_helpers;
+        use sea_orm::{ActiveModelTrait, NotSet, Set};
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/r8-res").await;
+        let mgr = ConnectionManager::new();
+        let stack_dir = tempfile::tempdir().expect("stack dir");
+        let (_b, _t, _s, _f, _a, _si, _c, coordinator) = crate::app_state::build_delegation_stack(
+            &mgr,
+            db.conn.clone(),
+            stack_dir.path().to_path_buf(),
+        );
+        coordinator.set_enabled(true).await;
+
+        // The child conversation row holding the external session.
+        let now = chrono::Utc::now();
+        let child = conversation::ActiveModel {
+            id: NotSet,
+            folder_id: Set(folder_id),
+            title: Set(Some("reserved-child".into())),
+            title_locked: Set(false),
+            agent_type: Set("claude_code".into()),
+            status: Set(ConversationStatus::Completed),
+            kind: Set(ConversationKind::Delegate),
+            model: Set(None),
+            git_branch: Set(None),
+            external_id: Set(Some("ext-r8".into())),
+            parent_id: Set(Some(1)),
+            parent_tool_use_id: Set(Some("pt-r8".into())),
+            delegation_call_id: Set(Some("task-r8".into())),
+            message_count: Set(0),
+            created_at: Set(now),
+            updated_at: Set(now),
+            deleted_at: Set(None),
+            pinned_at: Set(None),
+            origin_cwd: Set(None),
+        };
+        let cid = child.insert(&db.conn).await.expect("child row").id;
+
+        // The open collaboration session that reserves the child.
+        collaboration_service::upsert_session_once(
+            &db.conn,
+            collaboration_service::NewSession {
+                id: uuid::Uuid::new_v4().to_string(),
+                source_task_id: "task-r8".into(),
+                parent_conversation_id: 1,
+                child_conversation_id: cid,
+                resume_binding_json: "{}".into(),
+            },
+        )
+        .await
+        .expect("session");
+
+        // An ALREADY-LINKED idle connection to the reserved child (the
+        // original user connection from before the admission).
+        let mut ordinary_rx =
+            insert_live_connection(&mgr, "ordinary-conn", AgentType::ClaudeCode, None).await;
+        {
+            let state = mgr.get_state("ordinary-conn").await.unwrap();
+            state.write().await.conversation_id = Some(cid);
+        }
+
+        let blocks = || {
+            vec![PromptInputBlock::Text {
+                text: "ordinary write".into(),
+            }]
+        };
+        // Plain entry with the id omitted: previously the bypass (R8).
+        let err = mgr.send_prompt("ordinary-conn", blocks()).await.expect_err("plain send");
+        assert!(
+            err.to_string().contains("session_reserved_for_delegation"),
+            "plain entry: {err}"
+        );
+        // Linked entry with the id omitted on an already-linked connection.
+        let err = mgr
+            .send_prompt_linked(&db, "ordinary-conn", blocks(), None, None, None)
+            .await
+            .expect_err("linked send, omitted id");
+        assert!(
+            err.to_string().contains("session_reserved_for_delegation"),
+            "linked omitted-id entry: {err}"
+        );
+        // Linked entry naming the reserved row explicitly.
+        let err = mgr
+            .send_prompt_linked(&db, "ordinary-conn", blocks(), Some(folder_id), Some(cid), None)
+            .await
+            .expect_err("linked send, explicit id");
+        assert!(
+            err.to_string().contains("session_reserved_for_delegation"),
+            "linked explicit-id entry: {err}"
+        );
+        // A caller-supplied target that disagrees with the binding.
+        let err = mgr
+            .send_prompt_linked(
+                &db,
+                "ordinary-conn",
+                blocks(),
+                Some(folder_id),
+                Some(cid + 999),
+                None,
+            )
+            .await
+            .expect_err("mismatched target");
+        assert!(
+            err.to_string().contains("already linked to conversation"),
+            "mismatched target: {err}"
+        );
+        // Nothing was enqueued on the ordinary connection.
+        assert!(ordinary_rx.try_recv().is_err());
+
+        // The continuation runtime: bind a fresh strict connection to the
+        // child row (R1), then the privileged send flows.
+        let mgr_arc = Arc::new(mgr);
+        let runtime = ConnectionManagerContinuationRuntime {
+            manager: mgr_arc.clone(),
+            db: Arc::new(crate::db::AppDatabase {
+                conn: db.conn.clone(),
+            }),
+            data_dir: Arc::new(stack_dir.path().to_path_buf()),
+        };
+        let mut strict_rx =
+            insert_live_connection(&mgr_arc, "strict-conn", AgentType::ClaudeCode, None).await;
+        let target = AttachTarget {
+            agent_type: AgentType::ClaudeCode,
+            external_session_id: "ext-r8".into(),
+            cwd: "/tmp/r8-res".into(),
+            config_fingerprint: "fp".into(),
+        };
+        runtime
+            .bind_child_conversation("strict-conn", cid, &target)
+            .await
+            .expect("bind");
+        {
+            let state = mgr_arc.get_state("strict-conn").await.unwrap();
+            assert_eq!(
+                state.read().await.conversation_id,
+                Some(cid),
+                "the bind latched the conversation identity (R1)"
+            );
+        }
+        // A drifted row (wrong external session) must refuse the bind.
+        let drifted = AttachTarget {
+            external_session_id: "ext-OTHER".into(),
+            ..target.clone()
+        };
+        assert!(
+            runtime
+                .bind_child_conversation("strict-conn", cid, &drifted)
+                .await
+                .is_err(),
+            "a drifted external id must not rebind"
+        );
+
+        runtime
+            .send_prompt("strict-conn", "the rework instruction")
+            .await
+            .expect("privileged continuation send flows");
+        match strict_rx.recv().await {
+            Some(crate::acp::connection::ConnectionCommand::Prompt { .. }) => {}
+            Some(_) => panic!("expected the rework prompt on the wire"),
+            None => panic!("the strict connection's command channel closed"),
+        }
+        let row = conversation::Entity::find_by_id(cid)
+            .one(&db.conn)
+            .await
+            .expect("row")
+            .expect("row exists");
+        assert_eq!(
+            row.status,
+            ConversationStatus::InProgress,
+            "the privileged send flipped the child row to InProgress"
+        );
     }
 
     /// Build a broadcaster + subscribed receiver. Subscribing here (not lazily

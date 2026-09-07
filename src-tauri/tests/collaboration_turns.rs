@@ -44,6 +44,10 @@ struct MockRuntime {
     send_results: tokio::sync::Mutex<VecDeque<Result<(), String>>>,
     /// Park the NEXT attach until released (deterministic interleavings).
     attach_gate: tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    /// Park the NEXT blocked_on probe until released (deterministic
+    /// interleavings for the cancel re-decide path).
+    blocked_gate:
+        tokio::sync::Mutex<Option<(tokio::sync::oneshot::Sender<()>, tokio::sync::oneshot::Receiver<()>)>>,
     attach_count: AtomicUsize,
     send_count: AtomicUsize,
     cancel_count: AtomicUsize,
@@ -51,6 +55,8 @@ struct MockRuntime {
     blocked: tokio::sync::Mutex<Option<String>>,
     /// When set, every cancel reports failure (injects an undeliverable stop).
     pub fail_cancels: std::sync::atomic::AtomicBool,
+    /// When set, every disconnect reports failure (an unreleasable owner).
+    pub fail_disconnects: std::sync::atomic::AtomicBool,
 }
 
 impl MockRuntime {
@@ -86,6 +92,7 @@ impl ContinuationRuntime for MockRuntime {
         _parent_connection_id: &str,
         _turn_id: &str,
         _execution_id: &str,
+        _child_conversation_id: i32,
     ) -> Result<String, StrictAttachError> {
         self.attach_count.fetch_add(1, Ordering::SeqCst);
         // Honor the gate AFTER counting: a test can pin the drive inside the
@@ -116,10 +123,18 @@ impl ContinuationRuntime for MockRuntime {
 
     async fn disconnect(&self, _connection_id: &str) -> Result<(), String> {
         self.disconnect_count.fetch_add(1, Ordering::SeqCst);
+        if self.fail_disconnects.load(Ordering::SeqCst) {
+            return Err("disconnect not confirmed".to_string());
+        }
         Ok(())
     }
 
     async fn blocked_on(&self, _connection_id: &str) -> Option<String> {
+        let gate = self.blocked_gate.lock().await.take();
+        if let Some((entered, release)) = gate {
+            let _ = entered.send(());
+            let _ = release.await;
+        }
         (*self.blocked.lock().await).as_deref().map(str::to_string)
     }
 }
@@ -1137,4 +1152,222 @@ async fn snapshot_keeps_history_cursor_when_active_is_appended() {
     }
     assert!(ordinals.contains(&25), "the active round must stay visible");
     let _ = active;
+}
+
+// ---------------------------------------------------------------------------
+// Reacceptance regressions (R3/R4/R5/R6): boundary state and transport
+// failure injection mirroring the independent re-review's probes.
+// ---------------------------------------------------------------------------
+
+/// R3: a cancel whose first report snapshot was taken while the round was
+/// `preparing` must re-decide on the LATEST persisted state — the concurrent
+/// drive advancing preparing → dispatching → running before the CAS must
+/// land the round in `cancel_requested` (and ask the agent to stop), not
+/// spin three pre-send CAS attempts and drop the request.
+#[tokio::test]
+async fn review_cancel_must_redecide_after_preparing_snapshot_advances() {
+    let h = harness().await;
+    let session = collaboration_service::upsert_session_once(
+        &h.db.conn,
+        collaboration_service::NewSession {
+            id: uuid::Uuid::new_v4().to_string(),
+            source_task_id: SOURCE_TASK.into(),
+            parent_conversation_id: PARENT,
+            child_conversation_id: h.child_conversation_id,
+            resume_binding_json: "{}".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let turn = collaboration_service::insert_turn(
+        &h.db.conn,
+        collaboration_service::NewTurn {
+            id: uuid::Uuid::new_v4().to_string(),
+            session_id: session.id,
+            ordinal: 1,
+            request_id: "k1".into(),
+            message: "m1".into(),
+            initiator_parent_conversation_id: PARENT,
+            initiator_tool_use_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    collaboration_service::cas_turn_state(
+        &h.db.conn,
+        &turn.id,
+        None,
+        &["accepted"],
+        "preparing",
+        false,
+    )
+    .await
+    .unwrap();
+    collaboration_service::set_turn_connection(
+        &h.db.conn,
+        &turn.id,
+        &turn.execution_id,
+        "boundary-connection",
+    )
+    .await
+    .unwrap();
+    // Park the cancel's blocked probe: the initial report snapshot captures
+    // Preparing, then the concurrent drive advances the persisted states
+    // BEFORE the probe releases and the CAS runs.
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    *h.runtime.blocked_gate.lock().await = Some((entered_tx, release_rx));
+    let c = h.coordinator.clone();
+    let tid = turn.id.clone();
+    let parent = h.parent;
+    let cancel = tokio::spawn(async move { c.cancel_turn(parent, &tid).await });
+    entered_rx.await.unwrap();
+    collaboration_service::cas_turn_state(
+        &h.db.conn,
+        &turn.id,
+        None,
+        &["preparing"],
+        "dispatching",
+        true,
+    )
+    .await
+    .unwrap();
+    collaboration_service::cas_turn_state(
+        &h.db.conn,
+        &turn.id,
+        None,
+        &["dispatching"],
+        "running",
+        false,
+    )
+    .await
+    .unwrap();
+    release_tx.send(()).unwrap();
+    let report = cancel.await.unwrap().unwrap();
+    assert_eq!(
+        report.state,
+        TurnState::CancelRequested,
+        "a stale preparing snapshot must not drop the cancellation"
+    );
+    assert_eq!(
+        h.runtime.counters().2,
+        1,
+        "the running round's agent must have been asked to stop"
+    );
+}
+
+/// R4: a parent cleanup whose cancel ENQUEUED successfully (transport Ok)
+/// but was never confirmed by any agent stop event must not report the round
+/// as cleanly canceled — enqueue is not a terminal. With the disconnect also
+/// failing (the execution demonstrably still owned), the round must sit at
+/// `cancel_requested` (or settle unknown), never a fabricated `canceled`.
+#[tokio::test]
+async fn review_parent_cancel_enqueue_is_not_stop_confirmation() {
+    let h = harness().await;
+    h.runtime.fail_disconnects.store(true, Ordering::SeqCst);
+    let ack = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
+        .await
+        .unwrap();
+    wait_for_state(&h.coordinator, h.parent, &ack.turn_id, &[TurnState::Running]).await;
+    // cancel enqueues fine but no stop confirmation ever arrives; the
+    // disconnect also fails, so the execution is still registered.
+    h.coordinator.cancel_by_parent_connection("parent-conn").await;
+    assert!(
+        h.coordinator.connection_of_turn(&ack.turn_id).await.is_some(),
+        "the unconfirmed execution must still be owned"
+    );
+    let report = h
+        .coordinator
+        .get_turn(h.parent, &ack.turn_id, 0)
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            report.state,
+            TurnState::CancelRequested | TurnState::OutcomeUnknown
+        ),
+        "an unconfirmed live execution reported {:?}",
+        report.state
+    );
+}
+
+/// R6: a close whose held-connection release FAILS must not have written
+/// `closed` first — the write reservation (open/blocked session) has to
+/// survive the failed release so ordinary writers stay out while the
+/// platform still holds the connection.
+#[tokio::test]
+async fn review_failed_close_must_keep_child_write_reservation() {
+    let h = harness().await;
+    h.runtime.fail_disconnects.store(true, Ordering::SeqCst);
+    let ack = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
+        .await
+        .unwrap();
+    wait_for_state(&h.coordinator, h.parent, &ack.turn_id, &[TurnState::Running]).await;
+    let (tid, eid) = h
+        .coordinator
+        .execution_owner_by_turn(&ack.turn_id)
+        .await
+        .unwrap();
+    h.coordinator
+        .settle(&tid, &eid, TurnTerminal::Completed { text: "done".into() })
+        .await
+        .unwrap();
+    assert!(
+        h.coordinator.close_session(h.parent, &ack.session_id).await.is_err(),
+        "the failed release must surface as an error"
+    );
+    assert!(
+        h.coordinator.connection_of_turn(&ack.turn_id).await.is_some(),
+        "the unreleased connection must still be owned"
+    );
+    let session = collaboration_service::find_session_by_id(&h.db.conn, &ack.session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        session.state, "closed",
+        "a failed release must not lift the write reservation while the owner is live"
+    );
+}
+
+/// R5: admission re-validates the session state inside the inserting
+/// transaction. After an interleaving `settle_unknown_and_block` commit
+/// (turn terminal + session blocked), a `continue` that already read the
+/// session as open must be refused — never insert a fresh round under the
+/// stale open snapshot.
+#[tokio::test]
+async fn review_admission_after_unknown_settle_must_not_insert_under_stale_open() {
+    let h = harness().await;
+    let ack = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
+        .await
+        .unwrap();
+    wait_for_state(&h.coordinator, h.parent, &ack.turn_id, &[TurnState::Running]).await;
+    let (tid, eid) = h
+        .coordinator
+        .execution_owner_by_turn(&ack.turn_id)
+        .await
+        .unwrap();
+
+    // The unknown settle commits (cancel deadline / hard disconnect path).
+    h.coordinator.settle_unknown(&tid, &eid).await.unwrap();
+
+    // A racing admission that had read the session as open BEFORE that
+    // commit now reaches its insert: the transactional re-validation must
+    // refuse it with the blocked domain error and admit nothing.
+    let err = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k2", "m2", None)
+        .await
+        .expect_err("an unknown-settled session admits no new round");
+    assert_eq!(err_code(&err), ContinuationErrorCode::SessionBlocked);
+    let turns = collaboration_service::list_turns(&h.db.conn, &ack.session_id, 0, 100)
+        .await
+        .unwrap();
+    assert_eq!(turns.len(), 1, "no second turn row may exist");
 }

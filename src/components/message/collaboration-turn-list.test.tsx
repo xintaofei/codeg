@@ -346,17 +346,38 @@ describe("CollaborationTurnList", () => {
 it("initial completed v2 rejects the first stale v1 poll", async () => {
   mockGetCollaborationSession.mockResolvedValue({
     schema_version: 1,
-    session: { schema_version: 1, session_id: "s", source_task_id: "task-0", child_conversation_id: 42, state: "open" },
-    turns: [turn({ state: "completed", version: 2, result_text: "final text", finished_at: "2026-09-05T08:00:05Z" })],
+    session: {
+      schema_version: 1,
+      session_id: "s",
+      source_task_id: "task-0",
+      child_conversation_id: 42,
+      state: "open",
+    },
+    turns: [
+      turn({
+        state: "completed",
+        version: 2,
+        result_text: "final text",
+        finished_at: "2026-09-05T08:00:05Z",
+      }),
+    ],
     next_after_ordinal: null,
   })
   render(withIntl(<CollaborationTurnList {...baseProps} />))
-  await vi.waitFor(() => expect(screen.getByText("Completed")).toBeInTheDocument())
+  await vi.waitFor(() =>
+    expect(screen.getByText("Completed")).toBeInTheDocument()
+  )
 
   // The very next poll returns a STALE running v1 for the same turn.
   mockGetCollaborationSession.mockResolvedValue({
     schema_version: 1,
-    session: { schema_version: 1, session_id: "s", source_task_id: "task-0", child_conversation_id: 42, state: "open" },
+    session: {
+      schema_version: 1,
+      session_id: "s",
+      source_task_id: "task-0",
+      child_conversation_id: 42,
+      state: "open",
+    },
     turns: [turn({ state: "running", version: 1 })],
     next_after_ordinal: null,
   })
@@ -369,33 +390,62 @@ it("initial completed v2 rejects the first stale v1 poll", async () => {
 /** Acceptance F12 regression: a loaded history page must survive the next
  *  1 Hz poll (the poll re-reads only the first page). */
 it("a loaded history page survives the next poll", async () => {
-  const mkTurn = (ordinal: number, extra: Partial<TurnReport> = {}): TurnReport =>
-    turn({ turn_id: `turn-${ordinal}`, ordinal, message: `m${ordinal}`, ...extra })
+  const mkTurn = (
+    ordinal: number,
+    extra: Partial<TurnReport> = {}
+  ): TurnReport =>
+    turn({
+      turn_id: `turn-${ordinal}`,
+      ordinal,
+      message: `m${ordinal}`,
+      ...extra,
+    })
   // First snapshot: rounds 1-20 (page 1) with more history behind.
   mockGetCollaborationSession.mockResolvedValueOnce({
     schema_version: 1,
-    session: { schema_version: 1, session_id: "s", source_task_id: "task-0", child_conversation_id: 42, state: "open" },
+    session: {
+      schema_version: 1,
+      session_id: "s",
+      source_task_id: "task-0",
+      child_conversation_id: 42,
+      state: "open",
+    },
     turns: Array.from({ length: 20 }, (_, i) => mkTurn(i + 1)),
     next_after_ordinal: 20,
   })
   // "Load earlier" response: rounds 21-24.
-  mockGetCollaborationSession.mockImplementation(async (params: { afterOrdinal?: number }) =>
-    params.afterOrdinal
-      ? {
-          schema_version: 1,
-          session: { schema_version: 1, session_id: "s", source_task_id: "task-0", child_conversation_id: 42, state: "open" },
-          turns: [mkTurn(21), mkTurn(22), mkTurn(23), mkTurn(24)],
-          next_after_ordinal: null,
-        }
-      : {
-          schema_version: 1,
-          session: { schema_version: 1, session_id: "s", source_task_id: "task-0", child_conversation_id: 42, state: "open" },
-          turns: Array.from({ length: 20 }, (_, i) => mkTurn(i + 1)),
-          next_after_ordinal: 20,
-        },
+  mockGetCollaborationSession.mockImplementation(
+    async (params: { afterOrdinal?: number }) =>
+      params.afterOrdinal
+        ? {
+            schema_version: 1,
+            session: {
+              schema_version: 1,
+              session_id: "s",
+              source_task_id: "task-0",
+              child_conversation_id: 42,
+              state: "open",
+            },
+            turns: [mkTurn(21), mkTurn(22), mkTurn(23), mkTurn(24)],
+            next_after_ordinal: null,
+          }
+        : {
+            schema_version: 1,
+            session: {
+              schema_version: 1,
+              session_id: "s",
+              source_task_id: "task-0",
+              child_conversation_id: 42,
+              state: "open",
+            },
+            turns: Array.from({ length: 20 }, (_, i) => mkTurn(i + 1)),
+            next_after_ordinal: 20,
+          }
   )
   render(withIntl(<CollaborationTurnList {...baseProps} />))
-  await vi.waitFor(() => expect(screen.getByText("Load earlier rounds")).toBeInTheDocument())
+  await vi.waitFor(() =>
+    expect(screen.getByText("Load earlier rounds")).toBeInTheDocument()
+  )
   fireEvent.click(screen.getByText("Load earlier rounds"))
   await vi.waitFor(() => expect(screen.getByText("m24")).toBeInTheDocument())
 
@@ -404,5 +454,90 @@ it("a loaded history page survives the next poll", async () => {
     for (const o of [21, 22, 23, 24]) {
       expect(screen.getByText(`m${o}`)).toBeInTheDocument()
     }
+  })
+})
+
+// Reacceptance R9/R10: a projected active round that reaches its terminal
+// beyond the first page's window, and a history page that also carries the
+// projected active round.
+describe("CollaborationTurnList reacceptance repairs", () => {
+  function snapshotFor(turns: TurnReport[], cursor: number | null = null) {
+    return {
+      schema_version: 1 as const,
+      session: {
+        schema_version: 1 as const,
+        session_id: "session-1",
+        source_task_id: "task-0",
+        child_conversation_id: 42,
+        state: "open" as const,
+      },
+      turns,
+      next_after_ordinal: cursor,
+    }
+  }
+  const mkTurn = (
+    ordinal: number,
+    extra: Partial<TurnReport> = {}
+  ): TurnReport =>
+    turn({
+      turn_id: `turn-${ordinal}`,
+      ordinal,
+      message: `m${ordinal}`,
+      ...extra,
+    })
+
+  it("settles a previously projected active round that finished beyond page one (R9)", async () => {
+    // Page 1 (1-20) plus the projected active round 25; once 25 completes it
+    // is no longer appended to page 1, so only a follow-up fetch that covers
+    // it can settle the rendered state.
+    const page = Array.from({ length: 20 }, (_, i) =>
+      mkTurn(i + 1, { state: "completed" as const })
+    )
+    const active = mkTurn(25, { state: "running" as const })
+    const done = mkTurn(25, {
+      state: "completed" as const,
+      version: 2,
+      result_text: "round 25 done",
+    })
+    mockGetCollaborationSession
+      .mockResolvedValueOnce(snapshotFor([...page, active], 20))
+      .mockImplementation(async (args: { afterOrdinal?: number }) =>
+        args.afterOrdinal ? snapshotFor([done]) : snapshotFor(page, 20)
+      )
+    render(withIntl(<CollaborationTurnList {...baseProps} />))
+    await screen.findByText("m25")
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1150))
+    })
+    expect(screen.queryByText("Running")).not.toBeInTheDocument()
+    // 20 page rounds + round 25 itself are all completed now.
+    expect(screen.queryAllByText("Completed")).toHaveLength(21)
+  })
+
+  it("does not duplicate a projected active turn when its page is loaded (R10)", async () => {
+    const page = Array.from({ length: 20 }, (_, i) =>
+      mkTurn(i + 1, { state: "completed" as const })
+    )
+    const active = mkTurn(25, { state: "running" as const })
+    mockGetCollaborationSession.mockImplementation(
+      async (args: { afterOrdinal?: number }) =>
+        args.afterOrdinal
+          ? snapshotFor([active])
+          : snapshotFor([...page, active], 20)
+    )
+    render(withIntl(<CollaborationTurnList {...baseProps} />))
+    await screen.findByText("m25")
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: enMessages.Folder.chat.delegation.collabLoadOlder,
+      })
+    )
+    await waitFor(() =>
+      expect(mockGetCollaborationSession).toHaveBeenCalledTimes(2)
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(screen.queryAllByText("m25")).toHaveLength(1)
   })
 })

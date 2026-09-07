@@ -92,6 +92,41 @@ export function CollaborationTurnList({
   // Per-turn version high-water marks: apply a response only when EVERY
   // turn it carries is at least as new as what we already rendered.
   const versionWatermarkRef = useRef<Map<string, number>>(new Map())
+  // The turns currently rendered (mirrored from every snapshot write). React
+  // defers `setSnapshot` updaters, so any decision that must be made in the
+  // same tick as the response (the R9 follow-up below) reads this instead of
+  // waiting for the updater to run.
+  const turnsRef = useRef<TurnReport[]>([])
+
+  // The ONE merge used by every response kind (poll, follow-up, pagination):
+  // version-ratcheted per turn ID. An incoming turn older than the rendered
+  // watermark keeps the rendered one; an incoming turn the caller has never
+  // seen replaces/inserts; turns the response omits are kept. Sorting by
+  // ordinal keeps the list stable. Sharing this is what stops a history page
+  // that ALSO carries the projected active round from duplicating it
+  // (reacceptance R10) and keeps pagination responses version-checked.
+  const applyTurns = useCallback(
+    (incoming: TurnReport[], prev: TurnReport[] | undefined): TurnReport[] => {
+      const watermark = versionWatermarkRef.current
+      const accept = (turn: TurnReport): TurnReport => {
+        const known = watermark.get(turn.turn_id)
+        if (known !== undefined && turn.version < known) {
+          const older = prev?.find((t) => t.turn_id === turn.turn_id)
+          return older ?? turn
+        }
+        watermark.set(turn.turn_id, turn.version)
+        return turn
+      }
+      const accepted = incoming.map(accept)
+      if (!prev) {
+        return [...accepted].sort((a, b) => a.ordinal - b.ordinal)
+      }
+      const incomingIds = new Set(accepted.map((t) => t.turn_id))
+      const kept = prev.filter((t) => !incomingIds.has(t.turn_id)).map(accept)
+      return [...accepted, ...kept].sort((a, b) => a.ordinal - b.ordinal)
+    },
+    []
+  )
 
   const load = useCallback(
     async (initial: boolean) => {
@@ -105,6 +140,20 @@ export function CollaborationTurnList({
           sourceTaskId,
         })
         if (seq !== seqRef.current) return // a newer load superseded this one
+        // Known NON-TERMINAL turns the fresh page did NOT include (reacceptance
+        // R9): a projected active round that reached a terminal beyond the
+        // first page's window disappears from every later first-page response,
+        // so without a follow-up fetch it would render as running forever.
+        // Computed from the turns ALREADY rendered (the ref) — the snapshot
+        // updater below runs later and cannot feed this decision.
+        const freshIds = new Set(fresh.turns.map((t) => t.turn_id))
+        const unsettledOrdinals = turnsRef.current
+          .filter(
+            (turn) =>
+              ACTIVE_TURN_STATES.includes(turn.state) &&
+              !freshIds.has(turn.turn_id)
+          )
+          .map((turn) => turn.ordinal)
         setSnapshot((prev) => {
           // Version ratchet per turn — maintained on EVERY load including the
           // first (acceptance F11: an uninitialized watermark let the first
@@ -112,42 +161,42 @@ export function CollaborationTurnList({
           // turn-ID merge that PRESERVES loaded history pages (acceptance
           // F12: the poll only re-reads the first page; a page 2 the user
           // loaded must not vanish on the next tick).
-          const watermark = versionWatermarkRef.current
-          const accept = (turn: TurnReport): TurnReport => {
-            const known = watermark.get(turn.turn_id)
-            if (known !== undefined && turn.version < known) {
-              const older = prev?.turns.find((t) => t.turn_id === turn.turn_id)
-              return older ?? turn
-            }
-            watermark.set(turn.turn_id, turn.version)
-            return turn
-          }
-          const freshTurns = fresh.turns.map(accept)
-          if (!prev) {
-            return { ...fresh, turns: freshTurns }
-          }
-          const freshIds = new Set(freshTurns.map((t) => t.turn_id))
-          const keptHistory = prev.turns
-            .filter((t) => !freshIds.has(t.turn_id))
-            .map(accept)
-          const merged = [...freshTurns, ...keptHistory].sort(
-            (a, b) => a.ordinal - b.ordinal,
-          )
+          const merged = applyTurns(fresh.turns, prev?.turns)
+          turnsRef.current = merged
           // The deepest cursor wins: pagination may have walked further back
           // than the poll's first page.
           const nextAfter =
-            prev.next_after_ordinal === null
+            !prev || prev.next_after_ordinal === null
               ? fresh.next_after_ordinal
               : fresh.next_after_ordinal === null
                 ? prev.next_after_ordinal
                 : Math.max(prev.next_after_ordinal, fresh.next_after_ordinal)
           return {
             ...fresh,
-            session: fresh.session ?? prev.session,
+            session: fresh.session ?? prev?.session ?? null,
             turns: merged,
             next_after_ordinal: nextAfter,
           }
         })
+        // Follow-up fetch for the missing active rounds: query from just
+        // below the lowest unsettled ordinal so the response covers it (the
+        // backend also appends any still-active round to the page).
+        if (unsettledOrdinals.length > 0) {
+          const afterOrdinal = Math.max(0, Math.min(...unsettledOrdinals) - 1)
+          const followUp = await getCollaborationSession({
+            parentConversationId,
+            sourceTaskId,
+            afterOrdinal,
+            limit: COLLAB_SNAPSHOT_DEFAULT_LIMIT,
+          })
+          if (seq !== seqRef.current) return
+          setSnapshot((prev) => {
+            if (!prev) return prev
+            const merged = applyTurns(followUp.turns, prev.turns)
+            turnsRef.current = merged
+            return { ...prev, turns: merged }
+          })
+        }
       } catch {
         // Read-only surface: a failed poll keeps the last snapshot. The next
         // tick retries; the drawer never blocks on this.
@@ -155,7 +204,7 @@ export function CollaborationTurnList({
         if (seq === seqRef.current) inFlightRef.current = false
       }
     },
-    [open, parentConversationId, sourceTaskId]
+    [open, parentConversationId, sourceTaskId, applyTurns]
   )
 
   // Initial load on open, 1 Hz polling while open, teardown on close.
@@ -164,6 +213,7 @@ export function CollaborationTurnList({
       // Closing stops polling AND drops the snapshot so reopening rebuilds
       // from the DB (the freshness source) instead of stale memory.
       setSnapshot(null)
+      turnsRef.current = []
       versionWatermarkRef.current.clear()
       return
     }
@@ -182,15 +232,20 @@ export function CollaborationTurnList({
         afterOrdinal: snapshot.next_after_ordinal,
         limit: COLLAB_SNAPSHOT_DEFAULT_LIMIT,
       })
-      setSnapshot((prev) =>
-        prev
-          ? {
-              ...prev,
-              turns: [...prev.turns, ...older.turns],
-              next_after_ordinal: older.next_after_ordinal,
-            }
-          : prev
-      )
+      setSnapshot((prev) => {
+        if (!prev) return prev
+        // Merge through the SAME version-ratcheted turn-ID merge as the poll
+        // (reacceptance R10): a history page that also carries the projected
+        // active round must not render it twice (and must not let an older
+        // version roll a rendered turn back).
+        const merged = applyTurns(older.turns, prev.turns)
+        turnsRef.current = merged
+        return {
+          ...prev,
+          turns: merged,
+          next_after_ordinal: older.next_after_ordinal,
+        }
+      })
     } catch {
       // Same read-only contract as the poll: keep what we have.
     } finally {

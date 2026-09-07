@@ -592,19 +592,42 @@ impl PendingInner {
     /// cancel. No-op when the `call_id` isn't reserved (already resolved by
     /// another terminal path), so the buffer only ever holds genuine
     /// pre-registration races.
+    ///
+    /// The buffer entry additionally validates the terminal's CONNECTION
+    /// identity against the setup's reserved child (reacceptance R2): a late
+    /// completion from a superseded connection (canceled C1 racing a resumed
+    /// C2 that reuses the task id) must neither enter the buffer NOR evict a
+    /// valid buffered result from the current connection — otherwise the
+    /// park's origin check would drop the stale event AND the real result
+    /// with it. Returns whether the terminal was actually buffered.
     fn buffer_early_complete(
         &mut self,
         call_id: &str,
         origin_child_connection: &str,
         outcome: DelegationOutcome,
-    ) {
-        if self.setups.contains_key(call_id) {
-            let stamp = self.tick();
-            self.early_completes.insert(
-                call_id.to_string(),
-                (stamp, outcome, origin_child_connection.to_string()),
+    ) -> bool {
+        // `"*"` is the tests-only unattributed sentinel (see `complete_call`);
+        // production terminals always carry their real connection.
+        let setup_matches = origin_child_connection == "*"
+            || self
+                .setups
+                .get(call_id)
+                .map(String::as_str)
+                == Some(origin_child_connection);
+        if !setup_matches {
+            tracing::warn!(
+                "[delegation] dropping pre-park terminal for {call_id} from superseded \
+                 connection {origin_child_connection} (current setup reserves a different \
+                 child); any buffered current-connection result is kept"
             );
+            return false;
         }
+        let stamp = self.tick();
+        self.early_completes.insert(
+            call_id.to_string(),
+            (stamp, outcome, origin_child_connection.to_string()),
+        );
+        true
     }
 
     /// Buffer a child failure for a still-reserved delegation, stamped with the
@@ -1557,6 +1580,11 @@ pub enum CompleteCallResult {
     /// The running task belongs to a DIFFERENT (current) execution; the
     /// terminal came from a superseded one and was dropped.
     RejectedStale,
+    /// No running task and no compatible buffer: the terminal arrived
+    /// mid-setup from a connection the setup does NOT reserve — a superseded
+    /// execution's late result, dropped at the buffer entry (reacceptance
+    /// R2). Like `RejectedStale`, it must not flip the child row's status.
+    DroppedStale,
 }
 
 #[derive(Clone)]
@@ -3266,12 +3294,24 @@ impl DelegationBroker {
                     // reserved (mid-setup); a no-op otherwise. The buffer carries
                     // the originating connection so the park can reject a stale
                     // terminal against the connection it actually spawned.
-                    inner.buffer_early_complete(
+                    if !inner.setups.contains_key(call_id) {
+                        // No reservation: the id was already resolved by
+                        // another terminal path — nothing to buffer and
+                        // nothing to reject.
+                        None
+                    } else if inner.buffer_early_complete(
                         call_id,
                         terminal_child_connection_id,
                         outcome.clone(),
-                    );
-                    None
+                    ) {
+                        None
+                    } else {
+                        // A setup exists for this id but reserves a DIFFERENT
+                        // child connection: a superseded execution's late
+                        // terminal, dropped at the buffer entry (R2). It
+                        // resolved nothing here either.
+                        return CompleteCallResult::DroppedStale;
+                    }
                 }
             }
         };
@@ -10525,5 +10565,97 @@ mod tests {
             .lock()
             .await
             .contains(&"child-conn-2".to_string()));
+    }
+
+    /// Reacceptance R2 regression: while a resumed delegation is still in its
+    /// SETUP phase (prompt sent, park parked at the metadata write — the
+    /// setup reservation is live), the CURRENT connection's early completion
+    /// is buffered, and a LATE terminal from the OLD (superseded) connection
+    /// must NOT evict it. The old event is dropped at the buffer entry, the
+    /// park resolves the resume with the CURRENT execution's result, and the
+    /// frozen outcome carries that result.
+    #[tokio::test]
+    async fn late_old_early_terminal_must_not_replace_current_completion() {
+        struct ParkGate {
+            gate: tokio::sync::Mutex<
+                Option<(
+                    tokio::sync::oneshot::Sender<()>,
+                    tokio::sync::oneshot::Receiver<()>,
+                )>,
+            >,
+        }
+        #[async_trait::async_trait]
+        impl DelegationMetaWriter for ParkGate {
+            async fn write_meta(&self, _parent: &str, _tool: &str, _meta: serde_json::Value) {
+                let gate = self.gate.lock().await.take();
+                if let Some((entered, release)) = gate {
+                    let _ = entered.send(());
+                    let _ = release.await;
+                }
+            }
+        }
+
+        let mock = Arc::new(MockSpawner::new());
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let broker = DelegationBroker::with_meta_writer(
+            mock.clone() as Arc<dyn ConnectionSpawner>,
+            shallow_lookup(),
+            Arc::new(ParkGate {
+                gate: tokio::sync::Mutex::new(Some((entered_tx, release_rx))),
+            }),
+        )
+        .with_status_lookup(Arc::new(MockResumeLookup {
+            ctx: tokio::sync::Mutex::new(Some(resume_ctx(TaskStatus::Canceled))),
+        }));
+        enable_delegation(&broker).await;
+        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("new-C2"))).await;
+        mock.queue_resume_send(Ok(())).await;
+
+        let driver = {
+            let broker = broker.clone();
+            tokio::spawn(async move { broker.resume_delegation(resume_request("task-1")).await })
+        };
+        tokio::time::timeout(Duration::from_secs(2), entered_rx)
+            .await
+            .expect("the resume reached its metadata write")
+            .unwrap();
+
+        let ok = |text: &str| {
+            DelegationOutcome::Ok(DelegationSuccess {
+                text: text.into(),
+                child_conversation_id: 42,
+                child_agent_type: AgentType::ClaudeCode,
+                turn_count: 1,
+                duration_ms: 1,
+                token_usage: None,
+            })
+        };
+        // The CURRENT connection's completion lands first (buffered)…
+        let current = broker
+            .complete_call_for_connection("new-C2", "task-1", ok("NEW C2 RESULT"))
+            .await;
+        assert_eq!(current, CompleteCallResult::Buffered);
+        // …then the OLD connection's late terminal tries to replace it.
+        let stale = broker
+            .complete_call_for_connection("old-C1", "task-1", ok("OLD C1 RESULT"))
+            .await;
+        assert_eq!(
+            stale,
+            CompleteCallResult::DroppedStale,
+            "the superseded connection's terminal must be dropped at the buffer entry"
+        );
+
+        release_tx.send(()).unwrap();
+        let report = driver.await.unwrap();
+        assert_eq!(
+            report.status,
+            TaskStatus::Completed,
+            "the current execution's buffered completion must win the park"
+        );
+        let status = broker
+            .get_task_status("parent-conn", Some(1), "task-1", StatusWait::Immediate)
+            .await;
+        assert_eq!(status.text.as_deref(), Some("NEW C2 RESULT"));
     }
 }
