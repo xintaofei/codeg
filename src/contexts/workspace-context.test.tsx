@@ -3285,6 +3285,18 @@ describe("browser tabs", () => {
           onClick={() => {
             const opener = fileTabs.find((t) => t.kind === "browser")
             if (!opener) return
+            openBrowserTab("https://example.com/next", {
+              activate: false,
+              openerTabId: opener.id,
+            })
+          }}
+        >
+          open-next
+        </button>
+        <button
+          onClick={() => {
+            const opener = fileTabs.find((t) => t.kind === "browser")
+            if (!opener) return
             const parts = opener.id.slice("browser:".length)
             adoptBrowserTab({
               backendTabId: `${parts}-p1`,
@@ -3379,6 +3391,26 @@ describe("browser tabs", () => {
     expect(tabs[1].id).toBe(`${tabs[0].id}-p1`)
     expect(tabs[1].opener).toBe(tabs[0].id)
     expect(screen.getByTestId("active").textContent).toBe(tabs[1].id)
+  })
+
+  it("inserts a modifier-click tab right after its opener without activating it", () => {
+    render(
+      <WorkspaceProvider>
+        <BrowserProbe />
+      </WorkspaceProvider>
+    )
+    act(() => screen.getByText("open").click())
+    act(() => screen.getByText("open-bg").click())
+    act(() => screen.getByText("open-next").click())
+    const tabs = readTabs()
+    expect(tabs.map((t) => t.url)).toEqual([
+      "https://example.com/docs#top",
+      "https://example.com/next",
+      "http://localhost:3000/",
+    ])
+    expect(tabs[1].opener).toBe(tabs[0].id)
+    // Like a browser: the page the user is reading stays in front.
+    expect(screen.getByTestId("active").textContent).toBe(tabs[0].id)
   })
 
   it("closes a browser tab without a dirty prompt and moves activation to a neighbour", () => {

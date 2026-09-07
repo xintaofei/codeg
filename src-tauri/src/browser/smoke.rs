@@ -371,6 +371,7 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                     source: "smoke".to_string(),
                     activate: cmd.get("activate").and_then(Value::as_bool).unwrap_or(true),
                     owner_window: cmd.get("owner").and_then(Value::as_str).map(str::to_string),
+                    opener_tab_id: cmd.get("opener").and_then(Value::as_str).map(str::to_string),
                 },
             );
             Ok(Value::Null)

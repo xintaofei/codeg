@@ -411,6 +411,7 @@ fn build_child(
                             source: "modifier-click".to_string(),
                             activate: false,
                             owner_window: Some(nav_owner.clone()),
+                            opener_tab_id: Some(nav_id.clone()),
                         },
                     );
                     return false;

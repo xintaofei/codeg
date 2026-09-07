@@ -233,9 +233,11 @@ interface WorkspaceActionsValue {
   // per URL (fragment ignored): a second open activates the existing tab.
   // Returns the tab id, or null when the URL does not parse. The native
   // surface is created by the tab's view when it mounts, not here.
+  // `openerTabId` (a workspace tab id) places the new tab right after that
+  // tab, the way a ⌘/Ctrl-click lands next to the page it came from.
   openBrowserTab: (
     url: string,
-    options?: { folderId?: number; activate?: boolean }
+    options?: { folderId?: number; activate?: boolean; openerTabId?: string }
   ) => string | null
   // Register a tab for a webview the BACKEND already created — a popup the
   // page opened that the host adopted. `backendTabId` is the backend's id
@@ -692,7 +694,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   )
 
   const openBrowserTab = useCallback(
-    (url: string, options?: { folderId?: number; activate?: boolean }) => {
+    (
+      url: string,
+      options?: { folderId?: number; activate?: boolean; openerTabId?: string }
+    ) => {
       const normalized = normalizeUrlForDedupe(url)
       if (!normalized) return null
       const existing = fileTabsRef.current.find(
@@ -704,22 +709,38 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         if (options?.activate !== false) activateTab(existing.id)
         return existing.id
       }
+      const opener = options?.openerTabId
+        ? fileTabsRef.current.find((tab) => tab.id === options.openerTabId)
+        : undefined
       const record = browserTabRecord(
         crypto.randomUUID(),
         url,
-        options?.folderId ?? activeFolderRef.current?.id ?? null,
-        null
+        options?.folderId ??
+          opener?.folderId ??
+          activeFolderRef.current?.id ??
+          null,
+        opener?.id ?? null
       )
+      const insert = (prev: FileWorkspaceTab[]) => {
+        if (prev.some((tab) => tab.id === record.id)) return prev
+        const idx = opener ? prev.findIndex((tab) => tab.id === opener.id) : -1
+        if (idx < 0) return [...prev, record]
+        const next = [...prev]
+        next.splice(idx + 1, 0, record)
+        return next
+      }
       if (options?.activate === false) {
-        setFileTabs((prev) =>
-          prev.some((tab) => tab.id === record.id) ? prev : [...prev, record]
-        )
+        setFileTabs(insert)
+      } else if (opener) {
+        setFileTabs(insert)
+        setActiveFileTabId(record.id)
+        activateFilePane()
       } else {
         seedLoadingTab(record)
       }
       return record.id
     },
-    [activateTab, browserTabRecord, seedLoadingTab]
+    [activateFilePane, activateTab, browserTabRecord, seedLoadingTab]
   )
 
   const adoptBrowserTab = useCallback(

@@ -112,6 +112,20 @@ describe("BrowserEventsBridge", () => {
       ownerWindow: "remote-workspace-3",
     })
     expect(mocks.openBrowserTab).toHaveBeenCalledTimes(1)
+    // A modifier-click names its opener; the workspace id is derived here so
+    // the context can place the new tab right after it.
+    mocks.handlers.get("browser://open-request")!({
+      url: "https://example.com/next-to-opener",
+      source: "modifier-click",
+      activate: false,
+      ownerWindow: "main",
+      openerTabId: "abc",
+    })
+    expect(mocks.openBrowserTab).toHaveBeenCalledTimes(2)
+    expect(mocks.openBrowserTab).toHaveBeenLastCalledWith(
+      "https://example.com/next-to-opener",
+      { activate: false, openerTabId: "browser:abc" }
+    )
 
     mocks.handlers.get("browser://state")!({
       tabId: "abc",

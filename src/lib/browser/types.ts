@@ -93,6 +93,8 @@ export interface BrowserOpenRequestPayload {
   source: string
   activate: boolean
   ownerWindow: string | null
+  /** Backend id of the tab the request came from (modifier-click), if any. */
+  openerTabId: string | null
 }
 
 export const BROWSER_OPEN_REQUEST_EVENT = "browser://open-request"

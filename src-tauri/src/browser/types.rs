@@ -127,6 +127,9 @@ pub struct BrowserOpenRequestPayload {
     pub activate: bool,
     /// Window whose workspace should open it (`main` when absent).
     pub owner_window: Option<String>,
+    /// Tab the request originated in (a modifier-click inside it). The
+    /// frontend inserts the new tab right after it, like a browser does.
+    pub opener_tab_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

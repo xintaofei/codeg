@@ -102,7 +102,13 @@ export function BrowserEventsBridge() {
             // Every window hears every event; only the addressed one acts.
             const target = request.ownerWindow ?? "main"
             if (target !== getCurrentWindowLabel()) return
-            openBrowserTab(request.url, { activate: request.activate })
+            const openerTabId = request.openerTabId
+              ? browserWorkspaceTabId(request.openerTabId)
+              : undefined
+            openBrowserTab(request.url, {
+              activate: request.activate,
+              openerTabId,
+            })
           }
         ),
       ])
