@@ -570,6 +570,12 @@ impl ConnectionManager {
                     &existing,
                 )
                 .await
+                    && !existing.cmd_tx.is_closed()
+                    && !existing.lifetime.release_confirmed()
+                    && !matches!(
+                        existing.state.read().await.status,
+                        ConnectionStatus::Disconnected | ConnectionStatus::Error
+                    )
                 {
                     tracing::info!(
                         "[ACP] reusing pre-handshake connection id={} for session_id={}",
@@ -805,7 +811,7 @@ impl ConnectionManager {
             if matches!(
                 state.status,
                 ConnectionStatus::Disconnected | ConnectionStatus::Error
-            ) {
+            ) || conn.cmd_tx.is_closed() {
                 continue;
             }
             return Some(id.clone());
@@ -6339,6 +6345,8 @@ mod tests {
             EventEmitter::test_web_only(broadcaster.clone()),
         )
         .await;
+        let (cmd_tx, _cmd_rx) = mpsc::channel(1);
+        mgr.connections.lock().await.get_mut(existing_id).unwrap().cmd_tx = cmd_tx;
         {
             let state = mgr.get_state(existing_id).await.unwrap();
             let mut s = state.write().await;

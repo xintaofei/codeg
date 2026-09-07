@@ -125,6 +125,94 @@ async fn requested_external_id_blocks_manager_resume_admission_until_release_pro
 }
 
 #[tokio::test]
+async fn terminal_requested_id_entries_fence_ordinary_resume_until_release_proof() {
+    use crate::acp::connection::lifetime::{
+        ConnectionProcessLifetime, ConnectionResource,
+    };
+
+    for terminal in [ConnectionStatus::Error, ConnectionStatus::Disconnected] {
+        let mgr = ConnectionManager::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path().to_path_buf();
+        let cwd_text = cwd.to_string_lossy().into_owned();
+        let connection_id = format!("terminal-{terminal:?}");
+        let external_id = format!("requested-{terminal:?}");
+        let agent_type = AgentType::Custom("task6b-terminal-missing-agent");
+        let _cmd_rx = insert_live_connection(
+            &mgr,
+            &connection_id,
+            agent_type,
+            Some(cwd.clone()),
+        )
+        .await;
+        let (cmd_tx, state) = {
+            let active = mgr.connections.lock().await;
+            let connection = active.get(&connection_id).expect("active terminal entry");
+            (connection.cmd_tx.clone(), Arc::clone(&connection.state))
+        };
+        {
+            let mut state = state.write().await;
+            state.status = terminal.clone();
+            assert!(state.external_id.is_none());
+        }
+        let lifetime = ConnectionProcessLifetime::new();
+        lifetime.mark_driver_running();
+        let resource = ConnectionResource::new(
+            connection_id.clone(),
+            cmd_tx,
+            Arc::clone(&lifetime),
+            state,
+            agent_type,
+            cwd,
+            Some(external_id.clone()),
+            None,
+            true,
+        );
+        mgr.resources.insert(Arc::clone(&resource)).await;
+        mgr.resources.retire_when_confirmed(Arc::clone(&resource));
+
+        let fenced = mgr
+            .spawn_agent(
+                agent_type,
+                Some(cwd_text.clone()),
+                Some(external_id.clone()),
+                BTreeMap::new(),
+                "test-window".into(),
+                EventEmitter::Noop,
+                None,
+                BTreeMap::new(),
+            )
+            .await
+            .expect_err("terminal entry with a live driver must fence a new launch");
+        assert!(
+            fenced.to_string().contains("being reclaimed"),
+            "{terminal:?} returned the stale connection or bypassed the fence: {fenced}"
+        );
+
+        lifetime.mark_driver_exited();
+        let after_release = mgr
+            .spawn_agent(
+                agent_type,
+                Some(cwd_text),
+                Some(external_id),
+                BTreeMap::new(),
+                "test-window".into(),
+                EventEmitter::Noop,
+                None,
+                BTreeMap::new(),
+            )
+            .await
+            .expect_err("missing custom agent is reached after release admission");
+        assert!(
+            !after_release.to_string().contains("being reclaimed"),
+            "{terminal:?} release proof did not reopen admission: {after_release}"
+        );
+        assert!(mgr.resources.get(&connection_id).await.is_none());
+        assert!(mgr.get_state(&connection_id).await.is_none());
+    }
+}
+
+#[tokio::test]
 async fn pid_zero_while_driver_can_spawn_times_out_retains_and_retries() {
     use crate::acp::connection::lifetime::{
         ConnectionProcessLifetime, ConnectionResource,

@@ -1082,6 +1082,7 @@ fn tag_mcp_suspect(
 struct ConnectionCleanupGuard {
     connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
     resource: Arc<lifetime::ConnectionResource>,
+    runtime: tokio::runtime::Handle,
 }
 
 impl Drop for ConnectionCleanupGuard {
@@ -1099,7 +1100,7 @@ impl Drop for ConnectionCleanupGuard {
         }
         let connections = self.connections.clone();
         let resource = Arc::clone(&self.resource);
-        tokio::spawn(async move {
+        self.runtime.spawn(async move {
             let mut active = connections.lock().await;
             if active
                 .get(&connection_id)
@@ -2252,6 +2253,7 @@ pub(crate) async fn spawn_agent_connection_with_transport_managed<
     let cleanup_guard = ConnectionCleanupGuard {
         connections: cleanup_connections,
         resource: Arc::clone(&resource),
+        runtime: connection_rt.clone(),
     };
     let connection_thread = std::thread::Builder::new()
         .name(format!("acp-conn-{conn_id}"))
@@ -13795,6 +13797,75 @@ async fn emit_conversation_update(
 mod tests {
     use super::*;
     use sacp::schema::{Diff, SessionConfigId};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cleanup_guard_contended_on_driver_thread_does_not_panic_and_removes_exact_entry() {
+        let connections = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let connection_id = "cleanup-contended";
+        let state = Arc::new(RwLock::new(SessionState::new(
+            connection_id.to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "test-window".to_string(),
+            None,
+        )));
+        let lifetime = lifetime::ConnectionProcessLifetime::new();
+        lifetime.mark_driver_running();
+        let (cmd_tx, _cmd_rx) = mpsc::channel(1);
+        let resource = lifetime::ConnectionResource::new(
+            connection_id.to_string(),
+            cmd_tx.clone(),
+            Arc::clone(&lifetime),
+            Arc::clone(&state),
+            AgentType::ClaudeCode,
+            PathBuf::new(),
+            None,
+            None,
+            true,
+        );
+        connections.lock().await.insert(
+            connection_id.to_string(),
+            AgentConnection {
+                id: connection_id.to_string(),
+                agent_type: AgentType::ClaudeCode,
+                status: ConnectionStatus::Connected,
+                owner_window_label: "test-window".to_string(),
+                cmd_tx,
+                state,
+                emitter: EventEmitter::Noop,
+                prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
+                config_fingerprint: String::new(),
+                last_observed_fingerprint: String::new(),
+                working_dir: None,
+                child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            },
+        );
+        let cleanup = ConnectionCleanupGuard {
+            connections: Arc::clone(&connections),
+            resource,
+            runtime: tokio::runtime::Handle::current(),
+        };
+
+        // Hold the async mutex across Drop so the dedicated driver thread must
+        // take the deferred-cleanup branch.
+        let held = connections.lock().await;
+        let driver = std::thread::spawn(move || drop(cleanup));
+        let joined = driver.join();
+        drop(held);
+        assert!(joined.is_ok(), "cleanup Drop panicked outside a Tokio context");
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if connections.lock().await.get(connection_id).is_none() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("deferred exact cleanup did not remove the entry");
+        assert!(lifetime.release_confirmed());
+    }
 
     /// Unwrap a select selector. The Grok synthesizers below only ever build
     /// selects, so any other kind is a test failure rather than a branch to
