@@ -274,3 +274,94 @@ Expected: each command exits 0 with no failing tests.
 Run `git diff --check`, inspect `git diff --stat` and `git status --short`, then
 commit only the task files on `task/1` without merging, rebasing, or pushing
 `main`.
+
+### Task 6: Review Fixes For Incoming Links And Cursor Vaults
+
+**Files:**
+- Modify: `src-tauri/src/commands/acp.rs`
+
+**Interfaces:**
+- Produces: a preflight that enumerates every supported entry in peer active
+  roots and disabled vaults, then rejects a canonical move if an alias or
+  same-name entry directly links to that canonical Skill
+- Produces: a distinct deterministic vault only for Cursor's exact builtin
+  `~/.cursor/skills-cursor` root, while preserving the legacy vault for
+  `~/.cursor/skills` and custom roots that happen to use the same basename
+- Preserves: `AgentSkillItem.can_toggle` and toggle execution report the same
+  feasibility
+
+- [x] **Step 1: Write three failing filesystem regressions**
+
+Add tests for a shared canonical Skill with an incoming link from a peer that
+does not scan the shared root, a private canonical Skill with an incoming peer
+link, and Cursor's global writable Skill root:
+
+```rust
+assert!(result.is_err(), "the canonical move must be refused");
+assert!(canonical.join("SKILL.md").is_file());
+assert!(!listed.can_toggle);
+
+assert_eq!(
+    disabled_skill_root(&home.join(".cursor/skills")),
+    home.join(".cursor/.skills.codeg-disabled")
+);
+assert_ne!(
+    disabled_skill_root(&home.join(".cursor/skills")),
+    disabled_skill_root(&home.join(".cursor/skills-cursor"))
+);
+```
+
+- [x] **Step 2: Run focused tests and verify RED**
+
+Run:
+
+```bash
+cd src-tauri
+cargo test --features test-utils incoming_peer_link -- --nocapture
+cargo test --features test-utils cursor_global_skill_round_trip -- --nocapture
+```
+
+Expected: the incoming-link toggles mutate the canonical entry instead of
+refusing, and Cursor advertises a toggle that execution rejects because the two
+sibling roots resolve to one vault.
+
+- [x] **Step 3: Implement the minimal preflight and vault compatibility fix**
+
+Add an entry-level preflight that scans every peer's supported entries in both
+active roots and disabled vaults, then uses `skill_link_targets` to identify
+direct incoming links. Allow only the exact same-name active links that the
+shared restore plan will remove itself; reject aliases, case variants, and
+links in a peer's other roots before moving the canonical entry. Invoke the
+same preflight from capability calculation and command execution.
+
+Keep `.cursor/skills` and all unrelated custom roots on their existing
+`.skills.codeg-disabled` vaults so disabled entries remain discoverable. Map
+only the read-only `.cursor/skills-cursor` root to
+`.cursor/.skills-cursor.codeg-disabled` so it no longer claims the writable
+root's vault.
+
+- [x] **Step 4: Run focused tests and verify GREEN**
+
+Run:
+
+```bash
+cd src-tauri
+cargo test --features test-utils incoming_peer_link -- --nocapture
+cargo test --features test-utils cursor_global_skill_round_trip -- --nocapture
+cargo test --features test-utils skill_capability -- --nocapture
+cargo test --features test-utils shared_skill -- --nocapture
+```
+
+Expected: all focused regressions and existing Skill isolation tests pass.
+
+- [x] **Step 5: Run the complete repository verification matrix and review**
+
+Run the frontend checks and every desktop, server, and `codeg-mcp` Rust command
+listed in `AGENTS.md`, followed by `git diff --check`. Request an independent
+read-only review of the final commit range, resolve all Critical or Important
+findings, and commit the fixes on `task/1`.
+
+The first review found alias/case-variant links outside the exact Skill ID and
+custom roots named `skills-cursor` were still unsafe. Those cases now have
+RED/GREEN regressions, and the follow-up review reported no remaining Critical
+or Important findings.

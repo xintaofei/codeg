@@ -8397,6 +8397,24 @@ fn skill_content_path(layout: AgentSkillLayout, skill_path: &Path) -> PathBuf {
     }
 }
 
+fn skill_entry_layout(path: &Path, kind: SkillStorageKind) -> Option<AgentSkillLayout> {
+    if matches!(
+        kind,
+        SkillStorageKind::SkillDirectoryOnly | SkillStorageKind::SkillDirectoryOrMarkdownFile
+    ) && path.is_dir()
+        && path.join("SKILL.md").is_file()
+    {
+        return Some(AgentSkillLayout::SkillDirectory);
+    }
+    if kind == SkillStorageKind::SkillDirectoryOrMarkdownFile
+        && path.is_file()
+        && is_markdown_file(path)
+    {
+        return Some(AgentSkillLayout::MarkdownFile);
+    }
+    None
+}
+
 /// Symlink-safe removal: if `path` is a symlink (to a file or directory),
 /// only the link itself is removed. Otherwise directories are removed
 /// recursively and files are unlinked. This prevents `remove_dir_all` from
@@ -8478,46 +8496,40 @@ fn list_skills_from_dir_with_state(
         let file_name = entry.file_name();
         let id = file_name.to_string_lossy().to_string();
 
-        if path.is_dir()
-            && matches!(
-                kind,
-                SkillStorageKind::SkillDirectoryOnly
-                    | SkillStorageKind::SkillDirectoryOrMarkdownFile
-            )
-        {
-            let skill_doc = path.join("SKILL.md");
-            if !skill_doc.is_file() {
-                continue;
+        match skill_entry_layout(&path, kind) {
+            Some(AgentSkillLayout::SkillDirectory) => {
+                by_id.insert(
+                    id.clone(),
+                    build_skill_item(
+                        id,
+                        scope,
+                        AgentSkillLayout::SkillDirectory,
+                        path,
+                        enabled,
+                    ),
+                );
             }
-            by_id.insert(
-                id.clone(),
-                build_skill_item(
-                    id,
-                    scope,
-                    AgentSkillLayout::SkillDirectory,
-                    path,
-                    enabled,
-                ),
-            );
-            continue;
-        }
-
-        if path.is_file()
-            && matches!(kind, SkillStorageKind::SkillDirectoryOrMarkdownFile)
-            && is_markdown_file(&path)
-        {
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| id.clone());
-            if by_id.contains_key(&stem) {
-                continue;
+            Some(AgentSkillLayout::MarkdownFile) => {
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| id.clone());
+                if by_id.contains_key(&stem) {
+                    continue;
+                }
+                by_id.insert(
+                    stem.clone(),
+                    build_skill_item(
+                        stem,
+                        scope,
+                        AgentSkillLayout::MarkdownFile,
+                        path,
+                        enabled,
+                    ),
+                );
             }
-            by_id.insert(
-                stem.clone(),
-                build_skill_item(stem, scope, AgentSkillLayout::MarkdownFile, path, enabled),
-            );
+            None => {}
         }
     }
 
@@ -8525,10 +8537,17 @@ fn list_skills_from_dir_with_state(
 }
 
 pub(crate) fn disabled_skill_root(active_root: &Path) -> PathBuf {
+    let cursor_builtin_root = home_dir_or_default().join(".cursor").join("skills-cursor");
+    let vault_name = if active_root == cursor_builtin_root {
+        ".skills-cursor.codeg-disabled"
+    } else {
+        // Keep the original location for existing disabled entries.
+        ".skills.codeg-disabled"
+    };
     active_root
         .parent()
         .unwrap_or_else(|| Path::new(""))
-        .join(".skills.codeg-disabled")
+        .join(vault_name)
 }
 
 pub(crate) fn list_skills_from_roots(
@@ -9042,6 +9061,74 @@ fn shared_skill_affected_peers<'a>(
     Ok(affected)
 }
 
+fn preflight_unplanned_incoming_skill_links(
+    selected: &SkillPeer,
+    peers: &[SkillPeer],
+    root: &Path,
+    skill_id: &str,
+    layout: AgentSkillLayout,
+    canonical: &Path,
+) -> Result<(), AcpError> {
+    let resolved_root = resolved_skill_root(root)?;
+    let expected_name = match layout {
+        AgentSkillLayout::SkillDirectory => skill_id.to_string(),
+        AgentSkillLayout::MarkdownFile => format!("{skill_id}.md"),
+    };
+    for peer in peers {
+        let is_selected = peer.agent == selected.agent && peer.scope == selected.scope;
+        let shares_canonical_root =
+            peer.roots.iter().try_fold(false, |shares, peer_root| {
+                Ok::<_, AcpError>(
+                    shares || resolved_root == resolved_skill_root(peer_root)?,
+                )
+            })?;
+        for peer_root in &peer.roots {
+            let vault = disabled_skill_root(peer_root);
+            for (scan, active) in [(peer_root.as_path(), true), (vault.as_path(), false)] {
+                let entries = match fs::read_dir(scan) {
+                    Ok(entries) => entries,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => {
+                        return Err(AcpError::protocol(format!(
+                            "failed to inspect peer skill root '{}': {error}",
+                            scan.display()
+                        )))
+                    }
+                };
+                for entry in entries {
+                    let entry = entry
+                        .map_err(|error| {
+                            AcpError::protocol(format!(
+                                "failed to inspect peer skill entry in '{}': {error}",
+                                scan.display()
+                            ))
+                        })?
+                        .path();
+                    if !skill_link_targets(&entry, canonical)
+                        || skill_entry_layout(&entry, peer.kind).is_none()
+                    {
+                        continue;
+                    }
+                    let planned_restore_link = !is_selected
+                        && shares_canonical_root
+                        && active
+                        && entry.file_name().and_then(|name| name.to_str())
+                            == Some(expected_name.as_str());
+                    if planned_restore_link {
+                        continue;
+                    }
+                    return Err(AcpError::protocol(format!(
+                        "skill '{skill_id}' has an incoming peer link '{}' from {}; moving its canonical entry is unsupported",
+                        entry.display(),
+                        peer.agent
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn shared_skill_restore_links(
     affected: &[&SkillPeer],
     id: &str,
@@ -9077,6 +9164,14 @@ fn plan_shared_skill_fanout<'a>(
     root: &Path,
     skill: &AgentSkillItem,
 ) -> Result<Vec<(&'a SkillPeer, PathBuf)>, AcpError> {
+    preflight_unplanned_incoming_skill_links(
+        selected,
+        peers,
+        root,
+        &skill.id,
+        skill.layout,
+        Path::new(&skill.path),
+    )?;
     let vault = disabled_skill_root(root);
     preflight_skill_destination(&vault, &skill.id)?;
     for scan in &selected.roots {
@@ -9124,6 +9219,15 @@ fn listed_skill_can_toggle(
         })
         .ok_or_else(|| AcpError::protocol("listed skill has no owning native root"))?;
     if !skill_root_is_shared_with_peers(selected.agent, selected.scope, root, peers)? {
+        preflight_unplanned_incoming_skill_links(
+            selected,
+            peers,
+            root,
+            &skill.id,
+            skill.layout,
+            Path::new(&skill.path),
+        )?;
+        preflight_disabled_skill_root_with_peers(root, peers)?;
         return Ok(true);
     }
     preflight_shared_skill_owner(root, peers)?;
@@ -9144,6 +9248,14 @@ fn listed_skill_can_toggle(
     }
     preflight_skill_destination(root, &skill.id)?;
     preflight_skill_symlink_move(Path::new(&skill.path), root)?;
+    preflight_unplanned_incoming_skill_links(
+        selected,
+        peers,
+        root,
+        &skill.id,
+        skill.layout,
+        Path::new(&skill.path),
+    )?;
     let affected = shared_skill_affected_peers(selected, peers, root, skill.layout)?;
     shared_skill_restore_links(&affected, &skill.id, Path::new(&skill.path))?;
     Ok(true)
@@ -9347,6 +9459,14 @@ fn set_shared_skill_enabled(
             None => {
                 preflight_skill_destination(root, &id)?;
                 preflight_skill_symlink_move(&canonical, root)?;
+                preflight_unplanned_incoming_skill_links(
+                    selected,
+                    peers,
+                    root,
+                    &id,
+                    canonical_item.layout,
+                    &canonical,
+                )?;
                 affected =
                     shared_skill_affected_peers(selected, peers, root, canonical_item.layout)?;
                 redundant_links = shared_skill_restore_links(&affected, &id, &canonical)?;
@@ -13694,8 +13814,15 @@ pub async fn acp_set_agent_skill_enabled(
         )));
     }
     reject_multiple_active_skills(&dirs, spec.kind, &id)?;
+    let peers = skill_peers(workspace_path.as_deref());
+    let selected = SkillPeer {
+        agent: agent_type,
+        scope,
+        kind: spec.kind,
+        roots: dirs.clone(),
+    };
     for candidate in &dirs {
-        if !skill_root_is_shared(agent_type, scope, workspace_path.as_deref(), candidate)? {
+        if !skill_root_is_shared_with_peers(agent_type, scope, candidate, &peers)? {
             continue;
         }
         let canonical = locate_existing_skill(
@@ -13710,13 +13837,6 @@ pub async fn acp_set_agent_skill_enabled(
                 skill_link_targets(Path::new(&skill.path), Path::new(&item.path))
             })
         {
-            let peers = skill_peers(workspace_path.as_deref());
-            let selected = SkillPeer {
-                agent: agent_type,
-                scope,
-                kind: spec.kind,
-                roots: dirs.clone(),
-            };
             return set_shared_skill_enabled(
                 &selected,
                 &peers,
@@ -13728,6 +13848,14 @@ pub async fn acp_set_agent_skill_enabled(
         }
     }
     if skill.enabled != enabled {
+        preflight_unplanned_incoming_skill_links(
+            &selected,
+            &peers,
+            root,
+            &id,
+            skill.layout,
+            Path::new(&skill.path),
+        )?;
         preflight_disabled_skill_root(root, workspace_path.as_deref())?;
     }
     let moved = set_private_skill_enabled(root, spec.kind, scope, &id, enabled)?;
@@ -17019,6 +17147,360 @@ wire_api = "chat"
             })
             .collect();
         (shared, peers)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_skill_incoming_peer_link_is_rejected_before_canonical_move() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (shared, mut peers) = shared_skill_fixture(tmp.path());
+        let incoming_root = tmp.path().join("incoming/skills");
+        fs::create_dir_all(&incoming_root).unwrap();
+        std::os::unix::fs::symlink(shared.join("demo"), incoming_root.join("demo")).unwrap();
+        peers.push(SkillPeer {
+            agent: AgentType::OpenCode,
+            scope: AgentSkillScope::Project,
+            kind: SkillStorageKind::SkillDirectoryOnly,
+            roots: vec![incoming_root.clone()],
+        });
+        let listed = locate_existing_skill_across_dirs(
+            &peers[1].roots,
+            peers[1].kind,
+            "demo",
+            peers[1].scope,
+        )
+        .unwrap();
+
+        let can_toggle = listed_skill_can_toggle(&peers[1], &peers, &listed).unwrap_or(false);
+        let result = set_shared_skill_enabled(
+            &peers[1],
+            &peers,
+            &shared,
+            "demo",
+            false,
+            create_skill_link,
+        );
+
+        assert!(!can_toggle, "capability must match the move preflight");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("incoming peer link"),
+            "the canonical move must be refused"
+        );
+        assert_eq!(
+            fs::read_to_string(shared.join("demo/SKILL.md")).unwrap(),
+            "shared"
+        );
+        assert_eq!(
+            fs::read_to_string(incoming_root.join("demo/SKILL.md")).unwrap(),
+            "shared"
+        );
+        assert!(!disabled_skill_root(&shared).exists());
+        assert!(fs::symlink_metadata(peers[0].roots[0].join("demo")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_skill_alias_incoming_peer_link_is_rejected_before_canonical_move() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (shared, mut peers) = shared_skill_fixture(tmp.path());
+        let incoming_root = tmp.path().join("incoming/skills");
+        fs::create_dir_all(&incoming_root).unwrap();
+        std::os::unix::fs::symlink(shared.join("demo"), incoming_root.join("alias")).unwrap();
+        peers.push(SkillPeer {
+            agent: AgentType::OpenCode,
+            scope: AgentSkillScope::Project,
+            kind: SkillStorageKind::SkillDirectoryOnly,
+            roots: vec![incoming_root.clone()],
+        });
+        let listed = locate_existing_skill_across_dirs(
+            &peers[1].roots,
+            peers[1].kind,
+            "demo",
+            peers[1].scope,
+        )
+        .unwrap();
+
+        let can_toggle = listed_skill_can_toggle(&peers[1], &peers, &listed).unwrap_or(false);
+        let result = set_shared_skill_enabled(
+            &peers[1],
+            &peers,
+            &shared,
+            "demo",
+            false,
+            create_skill_link,
+        );
+
+        assert!(!can_toggle, "aliases must be included in the move preflight");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("incoming peer link"));
+        assert_eq!(
+            fs::read_to_string(shared.join("demo/SKILL.md")).unwrap(),
+            "shared"
+        );
+        assert_eq!(
+            fs::read_to_string(incoming_root.join("alias/SKILL.md")).unwrap(),
+            "shared"
+        );
+        assert!(!disabled_skill_root(&shared).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_markdown_skill_alias_case_variant_incoming_link_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shared = tmp.path().join("shared/skills");
+        let incoming_root = tmp.path().join("incoming/skills");
+        fs::create_dir_all(&shared).unwrap();
+        fs::create_dir_all(&incoming_root).unwrap();
+        fs::write(shared.join("demo.md"), "shared markdown").unwrap();
+        std::os::unix::fs::symlink(shared.join("demo.md"), incoming_root.join("alias.MD"))
+            .unwrap();
+        let peers = vec![
+            SkillPeer {
+                agent: AgentType::Codex,
+                scope: AgentSkillScope::Project,
+                kind: SkillStorageKind::SkillDirectoryOrMarkdownFile,
+                roots: vec![tmp.path().join("owner/skills"), shared.clone()],
+            },
+            SkillPeer {
+                agent: AgentType::OpenCode,
+                scope: AgentSkillScope::Project,
+                kind: SkillStorageKind::SkillDirectoryOrMarkdownFile,
+                roots: vec![incoming_root.clone()],
+            },
+        ];
+        let listed = locate_existing_skill_across_dirs(
+            &peers[0].roots,
+            peers[0].kind,
+            "demo",
+            peers[0].scope,
+        )
+        .unwrap();
+
+        let can_toggle = listed_skill_can_toggle(&peers[0], &peers, &listed).unwrap_or(false);
+        let result = set_shared_skill_enabled(
+            &peers[0],
+            &peers,
+            &shared,
+            "demo",
+            false,
+            create_skill_link,
+        );
+
+        assert!(!can_toggle, "case variants must be included in the preflight");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("incoming peer link"));
+        assert_eq!(fs::read_to_string(shared.join("demo.md")).unwrap(), "shared markdown");
+        assert_eq!(
+            fs::read_to_string(incoming_root.join("alias.MD")).unwrap(),
+            "shared markdown"
+        );
+        assert!(!disabled_skill_root(&shared).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_peer_secondary_root_incoming_alias_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (shared, peers) = shared_skill_fixture(tmp.path());
+        fs::create_dir_all(&peers[0].roots[0]).unwrap();
+        std::os::unix::fs::symlink(
+            shared.join("demo"),
+            peers[0].roots[0].join("alias"),
+        )
+        .unwrap();
+        let listed = locate_existing_skill_across_dirs(
+            &peers[1].roots,
+            peers[1].kind,
+            "demo",
+            peers[1].scope,
+        )
+        .unwrap();
+
+        let can_toggle = listed_skill_can_toggle(&peers[1], &peers, &listed).unwrap_or(false);
+        let result = set_shared_skill_enabled(
+            &peers[1],
+            &peers,
+            &shared,
+            "demo",
+            false,
+            create_skill_link,
+        );
+
+        assert!(
+            !can_toggle,
+            "only the peer's shared root may be skipped by the preflight"
+        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("incoming peer link"));
+        assert_eq!(
+            fs::read_to_string(shared.join("demo/SKILL.md")).unwrap(),
+            "shared"
+        );
+        assert_eq!(
+            fs::read_to_string(peers[0].roots[0].join("alias/SKILL.md")).unwrap(),
+            "shared"
+        );
+        assert!(!disabled_skill_root(&shared).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_skill_incoming_peer_link_is_rejected_before_canonical_move() {
+        use crate::acp::custom_registry::{hydrate, hydrate_test_guard};
+        let _registry_guard = hydrate_test_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical_root = tmp.path().join("owner/skills");
+        let incoming_root = tmp.path().join("peer/skills");
+        fs::create_dir_all(canonical_root.join("demo")).unwrap();
+        fs::write(canonical_root.join("demo/SKILL.md"), "private").unwrap();
+        fs::create_dir_all(&incoming_root).unwrap();
+        std::os::unix::fs::symlink(
+            canonical_root.join("demo"),
+            incoming_root.join("demo"),
+        )
+        .unwrap();
+        assert!(hydrate(&[
+            shared_skill_custom_def("task6-private-owner", &canonical_root),
+            shared_skill_custom_def("task6-private-peer", &incoming_root),
+        ])
+        .is_empty());
+        let owner = AgentType::custom("task6-private-owner").unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let listed = runtime
+            .block_on(acp_list_agent_skills(owner, None))
+            .unwrap()
+            .skills
+            .into_iter()
+            .find(|item| item.id == "demo")
+            .unwrap();
+        let result = runtime.block_on(acp_set_agent_skill_enabled(
+            owner,
+            AgentSkillScope::Global,
+            "demo".into(),
+            None,
+            false,
+        ));
+        hydrate(&[]);
+
+        assert!(!listed.can_toggle, "capability must match command execution");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("incoming peer link"));
+        assert_eq!(
+            fs::read_to_string(canonical_root.join("demo/SKILL.md")).unwrap(),
+            "private"
+        );
+        assert_eq!(
+            fs::read_to_string(incoming_root.join("demo/SKILL.md")).unwrap(),
+            "private"
+        );
+        assert!(!disabled_skill_root(&canonical_root).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cursor_global_skill_round_trip_keeps_legacy_vault_compatible() {
+        let tmp = tempfile::tempdir().unwrap();
+        temp_env::with_vars(
+            [
+                ("HOME", Some(tmp.path())),
+                ("CODEX_HOME", None::<&Path>),
+                ("GEMINI_HOME", None),
+                ("HERMES_HOME", None),
+                ("KIMI_CODE_HOME", None),
+                ("PI_CODING_AGENT_DIR", None),
+                ("DSH_HOME", None),
+                ("DSH_AGENTS_HOME", None),
+                ("QODER_CONFIG_DIR", None),
+                ("QODER_CLI_HOME", None),
+            ],
+            || {
+                let home = home_dir_or_default();
+                let writable_root = home.join(".cursor/skills");
+                let builtin_root = home.join(".cursor/skills-cursor");
+                let legacy_vault = home.join(".cursor/.skills.codeg-disabled");
+                fs::create_dir_all(writable_root.join("demo")).unwrap();
+                fs::write(writable_root.join("demo/SKILL.md"), "cursor").unwrap();
+                let runtime = tokio::runtime::Runtime::new().unwrap();
+                let listed = runtime
+                    .block_on(acp_list_agent_skills(AgentType::Cursor, None))
+                    .unwrap()
+                    .skills
+                    .into_iter()
+                    .find(|item| item.id == "demo")
+                    .unwrap();
+                let disabled = runtime.block_on(acp_set_agent_skill_enabled(
+                    AgentType::Cursor,
+                    AgentSkillScope::Global,
+                    "demo".into(),
+                    None,
+                    false,
+                ));
+
+                assert!(listed.can_toggle);
+                assert_eq!(disabled_skill_root(&writable_root), legacy_vault);
+                assert_ne!(
+                    disabled_skill_root(&writable_root),
+                    disabled_skill_root(&builtin_root)
+                );
+                let disabled = disabled.expect("Cursor global skill must disable");
+                assert!(!disabled.enabled);
+                assert!(legacy_vault.join("demo/SKILL.md").is_file());
+                let enabled = runtime
+                    .block_on(acp_set_agent_skill_enabled(
+                        AgentType::Cursor,
+                        AgentSkillScope::Global,
+                        "demo".into(),
+                        None,
+                        true,
+                    ))
+                    .expect("Cursor global skill must re-enable");
+                assert!(enabled.enabled);
+                assert!(writable_root.join("demo/SKILL.md").is_file());
+                assert!(!legacy_vault.join("demo").exists());
+            },
+        );
+    }
+
+    #[test]
+    fn custom_skill_root_named_skills_cursor_keeps_legacy_disabled_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("custom/skills-cursor");
+        let legacy_vault = root.parent().unwrap().join(".skills.codeg-disabled");
+        fs::create_dir_all(legacy_vault.join("demo")).unwrap();
+        fs::write(legacy_vault.join("demo/SKILL.md"), "legacy").unwrap();
+
+        let listed = list_skills_from_roots(
+            AgentSkillScope::Global,
+            std::slice::from_ref(&root),
+            SkillStorageKind::SkillDirectoryOnly,
+        )
+        .unwrap();
+
+        assert_eq!(disabled_skill_root(&root), legacy_vault);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "demo");
+        assert!(!listed[0].enabled);
+    }
+
+    #[test]
+    fn cursor_builtin_skill_root_uses_distinct_vault() {
+        let root = home_dir_or_default().join(".cursor/skills-cursor");
+        assert_eq!(
+            disabled_skill_root(&root),
+            home_dir_or_default().join(".cursor/.skills-cursor.codeg-disabled")
+        );
     }
 
     fn skill_capability_project_fixture(base: &Path) -> PathBuf {
