@@ -8375,6 +8375,9 @@ fn is_read_only_skill_path(agent_type: AgentType, skill_path: &Path) -> bool {
         AgentType::DeepSeek => crate::parsers::deepseek::resolve_dsh_home_dir()
             .join("skills")
             .join(".system"),
+        AgentType::Antigravity => {
+            crate::parsers::antigravity::resolve_antigravity_cli_dir().join("skills")
+        }
         _ => return false,
     };
     skill_path.starts_with(&ro_root)
@@ -15445,6 +15448,33 @@ wire_api = "chat"
                 .iter()
                 .find(|item| item.id == "task1a-system-demo")
                 .expect("listed system skill");
+
+            assert!(item.enabled);
+            assert!(item.read_only);
+            assert!(!item.can_toggle);
+        });
+    }
+
+    #[test]
+    fn skill_state_antigravity_cli_skill_cannot_toggle() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        temp_env::with_var("GEMINI_HOME", Some(tmp.path()), || {
+            let cli_skill = tmp
+                .path()
+                .join("antigravity-cli/skills/task1a-antigravity-cli-demo");
+            std::fs::create_dir_all(&cli_skill).expect("create CLI skill");
+            std::fs::write(cli_skill.join("SKILL.md"), "CLI-owned\n")
+                .expect("write CLI skill");
+
+            let listed = tokio::runtime::Runtime::new()
+                .expect("runtime")
+                .block_on(acp_list_agent_skills(AgentType::Antigravity, None))
+                .expect("list skills");
+            let item = listed
+                .skills
+                .iter()
+                .find(|item| item.id == "task1a-antigravity-cli-demo")
+                .expect("listed Antigravity CLI skill");
 
             assert!(item.enabled);
             assert!(item.read_only);
