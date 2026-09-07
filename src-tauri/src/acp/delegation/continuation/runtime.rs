@@ -50,12 +50,15 @@ impl AttachTarget {
 /// What the coordinator needs from the live world for one turn.
 #[async_trait]
 pub trait ContinuationRuntime: Send + Sync {
-    /// Strictly attach the recorded external session for a new turn. The
-    /// returned connection id is bound to `(turn_id, execution_id)`; any
+    /// Strictly attach the recorded external session for a new turn.
+    /// `parent_connection_id` is the initiating parent ACP connection — the
+    /// child inherits its emitter / owner window like any delegation spawn.
+    /// The returned connection id is bound to `(turn_id, execution_id)`; any
     /// failure is a typed strict error and NOTHING has been sent.
     async fn attach_strict(
         &self,
         target: &AttachTarget,
+        parent_connection_id: &str,
         turn_id: &str,
         execution_id: &str,
     ) -> Result<String, StrictAttachError>;
@@ -85,6 +88,7 @@ impl ContinuationRuntime for NoopRuntime {
     async fn attach_strict(
         &self,
         _target: &AttachTarget,
+        _parent_connection_id: &str,
         _turn_id: &str,
         _execution_id: &str,
     ) -> Result<String, StrictAttachError> {

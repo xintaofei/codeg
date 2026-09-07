@@ -19,7 +19,7 @@ use sea_orm::DatabaseConnection;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::acp::delegation::continuation::CollaborationSessionState as codeg_types_CollabState;
-use crate::acp::delegation::broker::{DelegationBroker, DelegationMatchKey};
+use crate::acp::delegation::broker::{CompleteCallResult, DelegationBroker, DelegationMatchKey};
 use crate::acp::delegation::types::{DelegationError, DelegationOutcome, DelegationSuccess};
 use crate::acp::internal_bus::InternalEventBus;
 use crate::acp::manager::ConnectionManager;
@@ -286,6 +286,24 @@ pub(crate) async fn handle_event(
             let Some(cid) = conversation_id else {
                 return Ok(());
             };
+            // Continuation routing FIRST: a superseded delegation terminal
+            // (canceled → resumed under the same id) must resolve NOTHING and
+            // must not flip the resumed run's row status either.
+            if let Some(b) = broker {
+                let forward = forward_turn_complete_to_broker(
+                    db_conn,
+                    b.as_ref(),
+                    &envelope.connection_id,
+                    cid,
+                    stop_reason.as_str(),
+                    last_text.clone(),
+                )
+                .await;
+                if matches!(forward, TerminalForward::StaleIgnored) {
+                    return Ok(());
+                }
+            }
+
             if let Some(ts) = target_status.clone() {
                 // DB write before emit so any downstream subscriber that observes
                 // the ConversationStatusChanged event can assume the row is
@@ -352,19 +370,9 @@ pub(crate) async fn handle_event(
                     }
                 }
             }
-            // If this conversation was spawned by a delegation, resolve the
-            // pending broker call. The broker maps the outcome onto the
-            // parent's `tool_use_id` via the registered `call_id`.
-            if let Some(b) = broker {
-                forward_turn_complete_to_broker(
-                    db_conn,
-                    b.as_ref(),
-                    cid,
-                    stop_reason.as_str(),
-                    last_text,
-                )
-                .await;
-            }
+            // (The delegation-terminal forward ran ABOVE the status write so
+            // a superseded terminal can neither resolve the broker call nor
+            // flip the resumed run's row status.)
             Ok(())
         }
         AcpEvent::NativeSessionTitle { title } => {
@@ -439,13 +447,24 @@ fn stop_reason_to_terminal(
     }
 }
 
+/// What [`forward_turn_complete_to_broker`] decided.
+enum TerminalForward {
+    /// Accepted (or the conversation was never a delegation child) — the
+    /// ordinary status write may proceed.
+    Proceed,
+    /// The conversation IS a delegation child but this terminal came from a
+    /// SUPERSEDED execution — the row's status must not be touched either.
+    StaleIgnored,
+}
+
 async fn forward_turn_complete_to_broker(
     db_conn: &DatabaseConnection,
     broker: &DelegationBroker,
+    terminal_connection_id: &str,
     conversation_id: i32,
     stop_reason: &str,
     last_text: Option<String>,
-) {
+) -> TerminalForward {
     let row = match conversation_service::get_by_id(db_conn, conversation_id).await {
         Ok(r) => r,
         Err(e) => {
@@ -453,19 +472,20 @@ async fn forward_turn_complete_to_broker(
                 "[delegation][lifecycle] couldn't fetch child conversation \
                  {conversation_id} for outcome routing: {e}"
             );
-            return;
+            return TerminalForward::Proceed;
         }
     };
     let call_id = match row.delegation_call_id.clone() {
         Some(id) => id,
-        None => return, // not a delegation child; nothing to do.
+        // Not a delegation child; nothing to do.
+        None => return TerminalForward::Proceed,
     };
     if row.parent_tool_use_id.is_none() {
         tracing::info!(
             "[delegation][lifecycle] conversation {conversation_id} has \
              delegation_call_id but no parent_tool_use_id; dropping"
         );
-        return;
+        return TerminalForward::Proceed;
     }
     let agent_type = row.agent_type;
     let outcome = match stop_reason {
@@ -506,12 +526,19 @@ async fn forward_turn_complete_to_broker(
             Some(conversation_id),
         ),
     };
-    broker.complete_call(&call_id, outcome).await;
+    // The pending lock validates the terminal's connection against the
+    // CURRENT execution; a superseded terminal (canceled → resumed under the
+    // same id on a new connection) is rejected here and must not flip the
+    // resumed run's row status either.
+    match broker
+        .complete_call_for_connection(terminal_connection_id, &call_id, outcome)
+        .await
+    {
+        CompleteCallResult::Resolved | CompleteCallResult::Buffered => TerminalForward::Proceed,
+        CompleteCallResult::RejectedStale => TerminalForward::StaleIgnored,
+    }
 }
 
-/// Snapshot the connection's `(state, emitter)` into the lifecycle cache when
-/// `ConversationLinked` arrives. Idempotent on repeat calls (re-link on the
-/// already-bound path is a no-op so we don't churn the cached refs).
 async fn try_cache_link(
     cache: &mut HashMap<String, CachedConn>,
     manager: &ConnectionManager,

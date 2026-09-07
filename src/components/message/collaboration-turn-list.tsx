@@ -106,19 +106,47 @@ export function CollaborationTurnList({
         })
         if (seq !== seqRef.current) return // a newer load superseded this one
         setSnapshot((prev) => {
-          if (!prev) return fresh
-          // Version ratchet per turn: keep the newer view of each turn.
+          // Version ratchet per turn — maintained on EVERY load including the
+          // first (acceptance F11: an uninitialized watermark let the first
+          // poll roll a completed v2 back to a stale running v1) — and a
+          // turn-ID merge that PRESERVES loaded history pages (acceptance
+          // F12: the poll only re-reads the first page; a page 2 the user
+          // loaded must not vanish on the next tick).
           const watermark = versionWatermarkRef.current
-          const merged = fresh.turns.map((turn) => {
+          const accept = (turn: TurnReport): TurnReport => {
             const known = watermark.get(turn.turn_id)
             if (known !== undefined && turn.version < known) {
-              const older = prev.turns.find((t) => t.turn_id === turn.turn_id)
+              const older = prev?.turns.find((t) => t.turn_id === turn.turn_id)
               return older ?? turn
             }
             watermark.set(turn.turn_id, turn.version)
             return turn
-          })
-          return { ...fresh, turns: merged }
+          }
+          const freshTurns = fresh.turns.map(accept)
+          if (!prev) {
+            return { ...fresh, turns: freshTurns }
+          }
+          const freshIds = new Set(freshTurns.map((t) => t.turn_id))
+          const keptHistory = prev.turns
+            .filter((t) => !freshIds.has(t.turn_id))
+            .map(accept)
+          const merged = [...freshTurns, ...keptHistory].sort(
+            (a, b) => a.ordinal - b.ordinal,
+          )
+          // The deepest cursor wins: pagination may have walked further back
+          // than the poll's first page.
+          const nextAfter =
+            prev.next_after_ordinal === null
+              ? fresh.next_after_ordinal
+              : fresh.next_after_ordinal === null
+                ? prev.next_after_ordinal
+                : Math.max(prev.next_after_ordinal, fresh.next_after_ordinal)
+          return {
+            ...fresh,
+            session: fresh.session ?? prev.session,
+            turns: merged,
+            next_after_ordinal: nextAfter,
+          }
         })
       } catch {
         // Read-only surface: a failed poll keeps the last snapshot. The next

@@ -339,3 +339,70 @@ describe("CollaborationTurnList", () => {
     expect(screen.queryByText("very long output…")).not.toBeInTheDocument()
   })
 })
+
+/** Acceptance F11 regression: the FIRST load must register the version
+ *  watermark, so a stale running-v1 poll can never roll a completed-v2 view
+ *  back (was `initial completed version 2 must reject the first stale…`). */
+it("initial completed v2 rejects the first stale v1 poll", async () => {
+  mockGetCollaborationSession.mockResolvedValue({
+    schema_version: 1,
+    session: { schema_version: 1, session_id: "s", source_task_id: "task-0", child_conversation_id: 42, state: "open" },
+    turns: [turn({ state: "completed", version: 2, result_text: "final text", finished_at: "2026-09-05T08:00:05Z" })],
+    next_after_ordinal: null,
+  })
+  render(withIntl(<CollaborationTurnList {...baseProps} />))
+  await vi.waitFor(() => expect(screen.getByText("Completed")).toBeInTheDocument())
+
+  // The very next poll returns a STALE running v1 for the same turn.
+  mockGetCollaborationSession.mockResolvedValue({
+    schema_version: 1,
+    session: { schema_version: 1, session_id: "s", source_task_id: "task-0", child_conversation_id: 42, state: "open" },
+    turns: [turn({ state: "running", version: 1 })],
+    next_after_ordinal: null,
+  })
+  await vi.waitFor(() => {
+    expect(screen.getByText("Completed")).toBeInTheDocument()
+    expect(screen.queryByText("Running")).not.toBeInTheDocument()
+  })
+})
+
+/** Acceptance F12 regression: a loaded history page must survive the next
+ *  1 Hz poll (the poll re-reads only the first page). */
+it("a loaded history page survives the next poll", async () => {
+  const mkTurn = (ordinal: number, extra: Partial<TurnReport> = {}): TurnReport =>
+    turn({ turn_id: `turn-${ordinal}`, ordinal, message: `m${ordinal}`, ...extra })
+  // First snapshot: rounds 1-20 (page 1) with more history behind.
+  mockGetCollaborationSession.mockResolvedValueOnce({
+    schema_version: 1,
+    session: { schema_version: 1, session_id: "s", source_task_id: "task-0", child_conversation_id: 42, state: "open" },
+    turns: Array.from({ length: 20 }, (_, i) => mkTurn(i + 1)),
+    next_after_ordinal: 20,
+  })
+  // "Load earlier" response: rounds 21-24.
+  mockGetCollaborationSession.mockImplementation(async (params: { afterOrdinal?: number }) =>
+    params.afterOrdinal
+      ? {
+          schema_version: 1,
+          session: { schema_version: 1, session_id: "s", source_task_id: "task-0", child_conversation_id: 42, state: "open" },
+          turns: [mkTurn(21), mkTurn(22), mkTurn(23), mkTurn(24)],
+          next_after_ordinal: null,
+        }
+      : {
+          schema_version: 1,
+          session: { schema_version: 1, session_id: "s", source_task_id: "task-0", child_conversation_id: 42, state: "open" },
+          turns: Array.from({ length: 20 }, (_, i) => mkTurn(i + 1)),
+          next_after_ordinal: 20,
+        },
+  )
+  render(withIntl(<CollaborationTurnList {...baseProps} />))
+  await vi.waitFor(() => expect(screen.getByText("Load earlier rounds")).toBeInTheDocument())
+  fireEvent.click(screen.getByText("Load earlier rounds"))
+  await vi.waitFor(() => expect(screen.getByText("m24")).toBeInTheDocument())
+
+  // The next poll (first page only) must NOT evict the history rows.
+  await vi.waitFor(() => {
+    for (const o of [21, 22, 23, 24]) {
+      expect(screen.getByText(`m${o}`)).toBeInTheDocument()
+    }
+  })
+})

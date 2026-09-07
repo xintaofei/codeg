@@ -730,3 +730,57 @@ async fn oversized_chinese_result_is_frozen_truncated_and_valid_utf8() {
     assert!(!row.text_truncated);
     assert_eq!(row.text, "short 结果");
 }
+
+/// Acceptance F2 regression (was `review_frozen_result_must_use_persistent_…`):
+/// the same parent CONVERSATION reconnects on a NEW parent connection while a
+/// stale cache entry from the OLD connection still sits in the completed map.
+/// The persistent-scope resolution must win — the frozen result stays readable
+/// and a foreign parent still sees nothing.
+#[tokio::test]
+async fn frozen_result_readable_after_reconnect_despite_stale_cache_entry() {
+    let db = fresh_in_memory_db().await;
+    let store = RecordingStore::new(&db);
+    let (mock, broker) = harness(&db, store.clone()).await;
+
+    // T0 completes on the OLD parent connection.
+    mock.queue_spawn(Ok("child-conn-1".into())).await;
+    mock.queue_send(Ok(42)).await;
+    let ack = broker.start_delegation(delegation_request(1)).await;
+    let task_id = ack.task_id.expect("task id");
+    broker.complete_call(&task_id, success("frozen text", 42)).await;
+    assert!(
+        delegation_outcome_service::find_owned(&db.conn, 1, &task_id)
+            .await
+            .expect("lookup")
+            .is_some()
+    );
+
+    // Rebuild the broker but poison the cache with a STALE entry attributed
+    // to the OLD parent connection while the caller presents the NEW one
+    // (same parent conversation, reconnect window before teardown cleanup).
+    let (_mock2, broker2) = harness(&db, store.clone()).await;
+    broker2
+        .seed_completed_for_test("OLD-PARENT-CONN", &task_id)
+        .await;
+    let report = broker2
+        .get_task_status(
+            "NEW-PARENT-CONN",
+            Some(1),
+            &task_id,
+            StatusWait::Immediate,
+        )
+        .await;
+    assert_eq!(report.status, TaskStatus::Completed);
+    assert_eq!(report.text.as_deref(), Some("frozen text"));
+
+    // A genuinely foreign parent still sees nothing (no existence leak).
+    let foreign = broker2
+        .get_task_status(
+            "NEW-PARENT-CONN",
+            Some(999),
+            &task_id,
+            StatusWait::Immediate,
+        )
+        .await;
+    assert_eq!(foreign.status, TaskStatus::Unknown);
+}

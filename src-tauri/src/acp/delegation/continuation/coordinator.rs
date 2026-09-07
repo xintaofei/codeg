@@ -26,6 +26,13 @@ use crate::db::entities::collaboration_session;
 use crate::db::service::collaboration_service::{self, SettlePayload};
 use crate::db::AppDatabase;
 
+/// How long a `cancel_requested` round may wait for the agent's stop
+/// confirmation before the host declares the outcome UNKNOWABLE (settles
+/// `outcome_unknown` and blocks the session). Without this deadline a lost
+/// confirmation would wedge the session forever: a `cancel_requested` turn
+/// is active, and close refuses active sessions (acceptance F7).
+pub const CANCEL_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// A parent identity resolved from a TRUSTED context (the MCP listener's
 /// token registry), never from LLM-supplied parameters. Every coordinator
 /// entry is scoped by it.
@@ -37,10 +44,16 @@ pub struct VerifiedParent {
 /// Which live connection currently owns which turn execution. Keyed by
 /// connection id so lifecycle events can find their settle target without
 /// trusting any LLM-supplied identifier.
+/// A round registered against its parent before attach: (turn, session).
+type PendingRound = (String, String);
+
 #[derive(Debug, Clone)]
 struct ExecutionOwner {
     turn_id: String,
     execution_id: String,
+    /// The collaboration session this round belongs to — lets close_session
+    /// find (and refuse to lie about) connections it still holds.
+    session_id: String,
     /// The parent ACP connection that initiated the round — used to cascade
     /// cancel when the parent goes away (never trusted from the wire).
     parent_connection_id: String,
@@ -58,8 +71,15 @@ pub struct ContinuationCoordinator {
     /// connection_id → current execution owner. Registered on attach,
     /// removed on settle/close.
     executions: Arc<Mutex<HashMap<String, ExecutionOwner>>>,
+    /// parent_connection_id → rounds accepted but NOT yet attached
+    /// (accepted/preparing). The parent cleanup path cancels these so a
+    /// parent disconnecting mid-prepare can never let the drive attach +
+    /// send afterwards (acceptance F4).
+    parent_pending: Arc<Mutex<HashMap<String, Vec<PendingRound>>>>,
     /// Per-source-task admission locks: two concurrent continue_turn calls
-    /// for the same source serialize here before touching the DB.
+    /// for the same source serialize here before touching the DB. `close`
+    /// takes the SAME lock so admission and closing cannot interleave
+    /// (acceptance F6).
     admission_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     /// Woken on every settle so bounded `get_turn` waits re-check promptly.
     settle_notify: Arc<Notify>,
@@ -77,6 +97,7 @@ impl ContinuationCoordinator {
             outcome_store,
             enabled: Arc::new(RwLock::new(false)),
             executions: Arc::new(Mutex::new(HashMap::new())),
+            parent_pending: Arc::new(Mutex::new(HashMap::new())),
             admission_locks: Arc::new(Mutex::new(HashMap::new())),
             settle_notify: Arc::new(Notify::new()),
         }
@@ -345,6 +366,18 @@ impl ContinuationCoordinator {
         let turn_id = turn.id.clone();
         let execution_id = turn.execution_id.clone();
         let message_owned = message.to_string();
+        {
+            // Register the parent ownership BEFORE the drive can attach: a
+            // parent disconnect landing anywhere from here on finds this
+            // round either here (not yet attached → CAS-canceled, no send)
+            // or in `executions` (attached → cancel + settle).
+            let mut pending = self.parent_pending.lock().await;
+            pending
+                .entry(parent_connection_id.to_string())
+                .or_default()
+                .push((turn.id.clone(), session.id.clone()));
+        }
+
         let session_id_owned = session.id.clone();
         let parent_conn_owned = parent_connection_id.to_string();
         tokio::spawn(async move {
@@ -389,12 +422,23 @@ impl ContinuationCoordinator {
         .await
         {
             Ok(true) => {}
-            Ok(false) => return, // canceled/lost — nothing to do
+            Ok(false) => {
+                // Canceled/lost while parked — drop the parent registration.
+                let mut pending = self.parent_pending.lock().await;
+                if let Some(list) = pending.get_mut(&parent_connection_id) {
+                    list.retain(|(tid, _)| tid != &turn_id);
+                }
+                return;
+            }
             Err(e) => {
                 // A CAS that ERRORS (not just loses) means the store is
                 // untrustworthy: no send may happen and the session must be
                 // isolated.
                 tracing::warn!("[continuation] preparing CAS failed for {turn_id}: {e}");
+                let mut pending = self.parent_pending.lock().await;
+                if let Some(list) = pending.get_mut(&parent_connection_id) {
+                    list.retain(|(tid, _)| tid != &turn_id);
+                }
                 self.isolate_on_storage_failure(&turn_id, &session_id, None)
                     .await;
                 return;
@@ -402,15 +446,20 @@ impl ContinuationCoordinator {
         }
 
         // Strict attach — the ONLY path into the child session.
+        let parent_conn_id = parent_connection_id.clone();
         let connection_id = match self
             .runtime
-            .attach_strict(&binding, &turn_id, &execution_id)
+            .attach_strict(&binding, &parent_connection_id, &turn_id, &execution_id)
             .await
         {
             Ok(conn_id) => conn_id,
             Err(err) => {
                 let mapped = ContinuationError::from(err);
                 self.settle_failure(&turn_id, &execution_id, &mapped).await;
+                let mut pending = self.parent_pending.lock().await;
+                if let Some(list) = pending.get_mut(&parent_connection_id) {
+                    list.retain(|(tid, _)| tid != &turn_id);
+                }
                 return;
             }
         };
@@ -422,9 +471,18 @@ impl ContinuationCoordinator {
             ExecutionOwner {
                 turn_id: turn_id.clone(),
                 execution_id: execution_id.clone(),
+                session_id: session_id.clone(),
                 parent_connection_id,
             },
         );
+        // The round has left the parent-pending registry: from here the
+        // execution registry owns it.
+        {
+            let mut pending = self.parent_pending.lock().await;
+            if let Some(list) = pending.get_mut(&parent_conn_id) {
+                list.retain(|(tid, _)| tid != &turn_id);
+            }
+        }
         // Persist the diagnostic connection id (also what cancel uses to
         // reach the agent).
         if let Err(e) = collaboration_service::set_turn_connection(
@@ -575,47 +633,28 @@ impl ContinuationCoordinator {
     }
 
     /// A cancel-without-confirmation timeout / hard disconnect: the outcome
-    /// is UNKNOWABLE — settle `outcome_unknown` and block the session.
-    pub async fn settle_unknown(&self, turn_id: &str, execution_id: &str) -> Result<bool, ContinuationError> {
-        let applied = collaboration_service::settle_turn(
+    /// is UNKNOWABLE — settle `outcome_unknown` and block the session IN ONE
+    /// TRANSACTION (acceptance F5), so no admission can slip between and a
+    /// crash cannot leave unknown+open.
+    pub async fn settle_unknown(
+        &self,
+        turn_id: &str,
+        execution_id: &str,
+    ) -> Result<bool, ContinuationError> {
+        let applied = collaboration_service::settle_unknown_and_block(
             &self.db.conn,
             turn_id,
             execution_id,
-            SettlePayload {
-                to_state: "outcome_unknown",
-                result_text: None,
-                text_truncated: false,
-                error_code: Some("outcome_unknown".to_string()),
-                error_message: Some(
-                    "the host cannot prove whether the agent received or acted on the \
-                     rework prompt; inspect the actual artifacts"
-                        .to_string(),
-                ),
-            },
+            "outcome_unknown",
+            "the host cannot prove whether the agent received or acted on the \
+             rework prompt; inspect the actual artifacts",
         )
         .await
-        .map_err(|e| { tracing::warn!("[continuation] storage op failed: {e}"); storage_unavailable() })?;
+        .map_err(|e| {
+            tracing::warn!("[continuation] unknown-settle failed: {e}");
+            storage_unavailable()
+        })?;
         if applied {
-            // Block the session: no new rounds until a human closes it.
-            if let Some(turn) = collaboration_service::find_turn(&self.db.conn, turn_id)
-                .await
-                .map_err(|e| { tracing::warn!("[continuation] storage op failed: {e}"); storage_unavailable() })?
-            {
-                if let Some(session) =
-                    collaboration_service::find_session_by_id(&self.db.conn, &turn.session_id)
-                        .await
-                        .map_err(|e| { tracing::warn!("[continuation] storage op failed: {e}"); storage_unavailable() })?
-                {
-                    if session.state != "closed" {
-                        let _ = collaboration_service::set_session_state(
-                            &self.db.conn,
-                            &session.id,
-                            "blocked",
-                        )
-                        .await;
-                    }
-                }
-            }
             if let Some(connection_id) = self.connection_of_turn(turn_id).await {
                 self.release_connection(turn_id, &connection_id).await;
             }
@@ -677,9 +716,22 @@ impl ContinuationCoordinator {
         self.settle_notify.notify_waiters();
     }
 
+    /// Release a round's connection at terminal/close. The ownership record
+    /// is removed ONLY after the disconnect actually succeeded (acceptance
+    /// F8): a failed disconnect leaves the owner entry in place with a
+    /// warning, so `close_session` can still see — and report — the resource
+    /// instead of claiming a release that never happened.
     async fn release_connection(&self, turn_id: &str, connection_id: &str) {
-        self.executions.lock().await.remove(connection_id);
-        let _ = self.runtime.disconnect(connection_id).await;
+        match self.runtime.disconnect(connection_id).await {
+            Ok(()) => {
+                self.executions.lock().await.remove(connection_id);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "[continuation] disconnect FAILED for turn {turn_id} (connection                      {connection_id}): {e}; the ownership record is KEPT so close can                      retry and must not report this resource as released"
+                );
+            }
+        }
         let _ = turn_id;
     }
 
@@ -789,53 +841,126 @@ impl ContinuationCoordinator {
     ) -> Result<TurnReport, ContinuationError> {
         // Ownership first: the same opaque error for unknown and foreign.
         let report = self.load_report(parent, turn_id).await?;
-        let turn = collaboration_service::find_turn(&self.db.conn, turn_id)
+        let mut turn = collaboration_service::find_turn(&self.db.conn, turn_id)
             .await
-            .map_err(|e| { tracing::warn!("[continuation] storage op failed: {e}"); storage_unavailable() })?
-            .ok_or_else(|| ContinuationError::new(
-                ContinuationErrorCode::NotFoundOrForbidden,
-                "no such turn",
-            ))?;
+            .map_err(|e| {
+                tracing::warn!("[continuation] cancel lookup failed: {e}");
+                storage_unavailable()
+            })?
+            .ok_or_else(|| {
+                ContinuationError::new(
+                    ContinuationErrorCode::NotFoundOrForbidden,
+                    "no such turn",
+                )
+            })?;
 
-        match report.state {
-            TurnState::Accepted | TurnState::Preparing => {
-                // Not sent yet — CAS straight to canceled; the drive observes
-                // the loss of its CAS and never attaches/sends.
-                let _ = collaboration_service::cas_turn_state(
-                    &self.db.conn,
-                    turn_id,
-                    Some(&turn.execution_id),
-                    &["accepted", "preparing"],
-                    "canceled",
-                    false,
-                )
-                .await;
-                self.settle_notify.notify_waiters();
-            }
-            TurnState::Dispatching | TurnState::Running | TurnState::CancelRequested => {
-                // Sent (or about to be): request cancellation and wait for
-                // the confirmation (or its timeout) to settle.
-                let applied = collaboration_service::cas_turn_state(
-                    &self.db.conn,
-                    turn_id,
-                    Some(&turn.execution_id),
-                    &["dispatching", "running"],
-                    "cancel_requested",
-                    false,
-                )
-                .await
-                .unwrap_or(false);
-                if applied || report.state == TurnState::CancelRequested {
-                    if let Some(connection_id) = turn.connection_id.clone() {
-                        let _ = self.runtime.cancel(&connection_id).await;
+        // The drive advances states concurrently; a CAS can lose or even read
+        // a stale row. Re-read and re-decide (bounded) instead of swallowing
+        // the mismatch (acceptance F7).
+        for _ in 0..3 {
+            match report.state {
+                TurnState::Accepted | TurnState::Preparing => {
+                    // Not sent yet — CAS straight to canceled; the drive
+                    // observes the loss of its own CAS and never sends.
+                    let applied = collaboration_service::cas_turn_state(
+                        &self.db.conn,
+                        turn_id,
+                        Some(&turn.execution_id),
+                        &["accepted", "preparing"],
+                        "canceled",
+                        false,
+                    )
+                    .await
+                    .unwrap_or(false);
+                    if applied {
+                        break;
                     }
+                    // Lost: re-read and re-decide — the drive may have moved
+                    // the turn to dispatching/running in the meantime.
+                    let fresh = collaboration_service::find_turn(&self.db.conn, turn_id)
+                        .await
+                        .map_err(|e| {
+                            tracing::warn!("[continuation] cancel re-read failed: {e}");
+                            storage_unavailable()
+                        })?
+                        .ok_or_else(|| {
+                            ContinuationError::new(
+                                ContinuationErrorCode::NotFoundOrForbidden,
+                                "no such turn",
+                            )
+                        })?;
+                    if fresh.state == turn.state {
+                        // No progress and the CAS lost repeatedly — the
+                        // execution may have advanced past re-read visibility
+                        // only transiently; one more loop would just spin.
+                        // Fall through to the running-cancel path with the
+                        // fresh execution id, which is correct for any active
+                        // state and a no-op for terminals.
+                        turn = fresh;
+                        continue;
+                    }
+                    turn = fresh;
+                    continue;
                 }
-            }
-            _ => {
-                // Terminal already — nothing to cancel; return the report.
+                TurnState::Dispatching | TurnState::Running | TurnState::CancelRequested => {
+                    // Sent (or about to be): request cancellation and wait
+                    // for the confirmation (or its deadline) to settle.
+                    let applied = collaboration_service::cas_turn_state(
+                        &self.db.conn,
+                        turn_id,
+                        Some(&turn.execution_id),
+                        &["dispatching", "running"],
+                        "cancel_requested",
+                        false,
+                    )
+                    .await
+                    .unwrap_or(false);
+                    if applied || turn.state == "cancel_requested" {
+                        if let Some(connection_id) = turn.connection_id.clone() {
+                            let _ = self.runtime.cancel(&connection_id).await;
+                        }
+                        // Arm the confirmation deadline ONCE per transition:
+                        // a lost confirmation must not wedge the session.
+                        self.arm_cancel_deadline(&turn.id, &turn.execution_id);
+                    }
+                    break;
+                }
+                _ => {
+                    // Terminal already — nothing to cancel.
+                    break;
+                }
             }
         }
         self.load_report(parent, turn_id).await
+    }
+
+    /// Arm the one-shot deadline that settles an unconfirmed
+    /// `cancel_requested` round as `outcome_unknown` + blocked. Production
+    /// wires this where the agent's stop confirmation (or disconnect)
+    /// settles the turn; without the deadline a lost confirmation would
+    /// wedge the session in an active state forever.
+    fn arm_cancel_deadline(&self, turn_id: &str, execution_id: &str) {
+        let coordinator = self.clone();
+        let turn_id = turn_id.to_string();
+        let execution_id = execution_id.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(CANCEL_CONFIRMATION_TIMEOUT).await;
+            // settle_unknown is CAS-guarded by execution id AND active state:
+            // if the confirmation already settled the turn, this is a no-op.
+            match coordinator.settle_unknown(&turn_id, &execution_id).await {
+                Ok(applied) => {
+                    if applied {
+                        tracing::warn!(
+                            "[continuation] cancel confirmation for {turn_id} timed out; \
+                             settled outcome_unknown and blocked the session"
+                        );
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    "[continuation] cancel-deadline settle failed for {turn_id}: {e}"
+                ),
+            }
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -849,11 +974,16 @@ impl ContinuationCoordinator {
     ) -> Result<SessionSummary, ContinuationError> {
         let session = collaboration_service::find_session_by_id(&self.db.conn, session_id)
             .await
-            .map_err(|e| { tracing::warn!("[continuation] storage op failed: {e}"); storage_unavailable() })?
-            .ok_or_else(|| ContinuationError::new(
-                ContinuationErrorCode::NotFoundOrForbidden,
-                "no such session",
-            ))?;
+            .map_err(|e| {
+                tracing::warn!("[continuation] close lookup failed: {e}");
+                storage_unavailable()
+            })?
+            .ok_or_else(|| {
+                ContinuationError::new(
+                    ContinuationErrorCode::NotFoundOrForbidden,
+                    "no such session",
+                )
+            })?;
         if session.parent_conversation_id != parent.conversation_id {
             return Err(ContinuationError::new(
                 ContinuationErrorCode::NotFoundOrForbidden,
@@ -861,34 +991,94 @@ impl ContinuationCoordinator {
             ));
         }
         if session.state != "closed" {
-            // A session with an active turn cannot close — cancel and settle
-            // first.
-            if collaboration_service::active_turn(&self.db.conn, session_id)
+            // Take the SAME per-source admission lock `continue_turn` uses
+            // (acceptance F6): a continue admitted between close's active
+            // check and its write would otherwise produce a CLOSED session
+            // with a LIVE turn — the one interleaving the write reservation
+            // must never allow.
+            let admission = self
+                .admission_locks
+                .lock()
                 .await
-                .map_err(|e| { tracing::warn!("[continuation] storage op failed: {e}"); storage_unavailable() })?
-                .is_some()
-            {
-                return Err(ContinuationError::new(
-                    ContinuationErrorCode::SessionBusy,
-                    "a turn is still active; cancel it and query its terminal \
-                     before closing"
-                        .to_string(),
-                )
-                .with_ids(Some(session_id), None));
+                .entry(session.source_task_id.clone())
+                .or_default()
+                .clone();
+            let _guard = admission.lock().await;
+
+            // Re-read BOTH facts under the lock: the session may have been
+            // closed concurrently, and a continue may have inserted a turn.
+            let session = collaboration_service::find_session_by_id(&self.db.conn, session_id)
+                .await
+                .map_err(|e| {
+                    tracing::warn!("[continuation] close re-read failed: {e}");
+                    storage_unavailable()
+                })?
+                .ok_or_else(|| {
+                    ContinuationError::new(
+                        ContinuationErrorCode::NotFoundOrForbidden,
+                        "no such session",
+                    )
+                })?;
+            if session.state != "closed" {
+                if collaboration_service::active_turn(&self.db.conn, session_id)
+                    .await
+                    .map_err(|e| {
+                        tracing::warn!("[continuation] close active-check failed: {e}");
+                        storage_unavailable()
+                    })?
+                    .is_some()
+                {
+                    return Err(ContinuationError::new(
+                        ContinuationErrorCode::SessionBusy,
+                        "a turn is still active; cancel it and query its terminal \
+                         before closing"
+                            .to_string(),
+                    )
+                    .with_ids(Some(session_id), None));
+                }
+                collaboration_service::set_session_state(&self.db.conn, session_id, "closed")
+                    .await
+                    .map_err(|e| {
+                        tracing::warn!("[continuation] close write failed: {e}");
+                        storage_unavailable()
+                    })?;
             }
-            // Release any connection the platform still holds for this
-            // session (e.g. left over from a canceled round). A release
-            // failure must NOT be reported as a successful release.
-            // (Connections are registered per execution; by the time no turn
-            // is active, the drive has released its own — nothing to do here
-            // beyond marking the session closed.)
-            collaboration_service::set_session_state(&self.db.conn, session_id, "closed")
-                .await
-                .map_err(|e| { tracing::warn!("[continuation] storage op failed: {e}"); storage_unavailable() })?;
+        }
+        // Honest resource accounting (acceptance F8): the session owns no
+        // active turn, but a FAILED disconnect may have left a connection
+        // registered. Try to release it; if it still refuses, report the
+        // failure instead of claiming the resource is gone.
+        let held: Vec<String> = {
+            let executions = self.executions.lock().await;
+            executions
+                .values()
+                .filter(|o| o.session_id == session_id)
+                .map(|o| o.turn_id.clone())
+                .collect()
+        };
+        for turn_id in held {
+            if let Some(connection_id) = self.connection_of_turn(&turn_id).await {
+                self.release_connection(&turn_id, &connection_id)
+                    .await;
+                if self.connection_of_turn(&turn_id).await.is_some() {
+                    // Still registered → the disconnect failed again.
+                    return Err(ContinuationError::new(
+                        ContinuationErrorCode::SessionBusy,
+                        "a connection from a finished round could not be released; \
+                         the session is closed but the platform still holds the \
+                         connection — retry close"
+                            .to_string(),
+                    )
+                    .with_ids(Some(session_id), Some(&turn_id)));
+                }
+            }
         }
         let session = collaboration_service::find_session_by_id(&self.db.conn, session_id)
             .await
-            .map_err(|e| { tracing::warn!("[continuation] storage op failed: {e}"); storage_unavailable() })?
+            .map_err(|e| {
+                tracing::warn!("[continuation] close final-read failed: {e}");
+                storage_unavailable()
+            })?
             .ok_or_else(storage_unavailable)?;
         Ok(SessionSummary {
             schema_version: SchemaVersion1,
@@ -986,37 +1176,100 @@ impl ContinuationCoordinator {
     }
 
     /// Parent connection went away (disconnect / teardown): cancel every
-    /// turn it owns and settle them canceled. The relationship survives in a
-    /// safe terminal state; nothing escapes the parent cleanup boundary.
+    /// round it owns and settle each to a safe terminal. Covers BOTH phases:
+    /// * accepted/preparing (registered in `parent_pending`, nothing sent —
+    ///   CAS straight to `canceled`; the drive observes the lost CAS and
+    ///   never attaches/sends), and
+    /// * attached rounds (`executions`): best-effort agent cancel, then
+    ///   settle `canceled` — but if the agent cancel FAILED we cannot prove
+    ///   the turn stopped, so the round settles `outcome_unknown` and the
+    ///   session blocks (never a fabricated clean stop).
     pub async fn cancel_by_parent_connection(&self, parent_connection_id: &str) {
-        let owned: Vec<(String, String, String)> = {
+        // Phase 1: accepted/preparing rounds — nothing sent, plain cancel.
+        let pending_rounds: Vec<(String, String)> = {
+            let mut pending = self.parent_pending.lock().await;
+            pending.remove(parent_connection_id).unwrap_or_default()
+        };
+        for (turn_id, session_id) in pending_rounds {
+            let applied = collaboration_service::cas_turn_state(
+                &self.db.conn,
+                &turn_id,
+                None,
+                &collaboration_service::ACTIVE_TURN_STATES,
+                "canceled",
+                false,
+            )
+            .await
+            .unwrap_or(false);
+            if !applied {
+                // The drive won a race (already dispatched or attached): it is
+                // in `executions` now — nothing to do here, the phase-2 sweep
+                // below (running after phase 1) can't see it this call. Mark
+                // it by leaving a tombstone? Simplest honest path: re-add so
+                // the sweep below re-examines it.
+                let mut pending = self.parent_pending.lock().await;
+                pending
+                    .entry(parent_connection_id.to_string())
+                    .or_default()
+                    .push((turn_id.clone(), session_id.clone()));
+            }
+        }
+
+        // Phase 2: attached rounds.
+        let owned: Vec<(String, String)> = {
             let executions = self.executions.lock().await;
             executions
                 .values()
                 .filter(|o| o.parent_connection_id == parent_connection_id)
-                .map(|o| (o.turn_id.clone(), o.execution_id.clone(), o.turn_id.clone()))
+                .map(|o| (o.turn_id.clone(), o.execution_id.clone()))
                 .collect()
         };
-        for (turn_id, execution_id, _) in owned {
-            // Best-effort cancel of the in-flight agent turn, then settle:
-            // the parent is gone, so the round is over from the platform's
-            // point of view.
-            if let Some(connection_id) = self.connection_of_turn(&turn_id).await {
-                let _ = self.runtime.cancel(&connection_id).await;
+        for (turn_id, execution_id) in owned {
+            let cancel_ok = match self.connection_of_turn(&turn_id).await {
+                Some(connection_id) => self.runtime.cancel(&connection_id).await.is_ok(),
+                None => false,
+            };
+            if cancel_ok {
+                // The agent acknowledged the stop; a canceled terminal is a
+                // fact the platform observed.
+                let _ = collaboration_service::cas_turn_state(
+                    &self.db.conn,
+                    &turn_id,
+                    Some(&execution_id),
+                    &collaboration_service::ACTIVE_TURN_STATES,
+                    "canceled",
+                    false,
+                )
+                .await;
+                if let Some(connection_id) = self.connection_of_turn(&turn_id).await {
+                    self.release_connection(&turn_id, &connection_id).await;
+                }
+            } else {
+                // The stop could not be delivered: the outcome is unknowable.
+                let _ = self.settle_unknown(&turn_id, &execution_id).await;
             }
+            self.settle_notify.notify_waiters();
+        }
+
+        // Phase 3: re-sweep the phase-1 re-adds now that the executions sweep
+        // has run (they either appear in `executions` — handled above — or
+        // were genuinely lost races that are now terminal via the drive's own
+        // CAS-failure release; a final CAS attempt is idempotent).
+        let leftover: Vec<(String, String)> = {
+            let mut pending = self.parent_pending.lock().await;
+            pending.remove(parent_connection_id).unwrap_or_default()
+        };
+        for (turn_id, session_id) in leftover {
             let _ = collaboration_service::cas_turn_state(
                 &self.db.conn,
                 &turn_id,
-                Some(&execution_id),
+                None,
                 &collaboration_service::ACTIVE_TURN_STATES,
                 "canceled",
                 false,
             )
             .await;
-            if let Some(connection_id) = self.connection_of_turn(&turn_id).await {
-                self.release_connection(&turn_id, &connection_id).await;
-            }
-            self.settle_notify.notify_waiters();
+            let _ = session_id;
         }
     }
 
@@ -1038,18 +1291,18 @@ impl ContinuationCoordinator {
         let state = TurnState::parse(&active.state).unwrap_or(TurnState::OutcomeUnknown);
         Ok(Some(TurnReport {
             schema_version: SchemaVersion1,
-            session_id: active.session_id,
-            turn_id: active.id,
+            session_id: active.session_id.clone(),
+            turn_id: active.id.clone(),
             source_task_id: String::new(), // caller joins via the session summary
             ordinal: active.ordinal,
             state,
-            message: active.message,
-            initiator_kind: active.initiator_kind,
+            message: active.message.clone(),
+            initiator_kind: active.initiator_kind.clone(),
             initiator_parent_conversation_id: active.initiator_parent_conversation_id,
-            result_text: active.result_text,
+            result_text: active.result_text.clone(),
             text_truncated: active.text_truncated,
-            error_code: active.error_code,
-            error_message: active.error_message,
+            error_code: active.error_code.clone(),
+            error_message: active.error_message.clone(),
             blocked_on: None,
             created_at: active.created_at,
             started_at: active.started_at,

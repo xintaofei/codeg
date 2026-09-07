@@ -126,6 +126,7 @@ pub fn build_delegation_stack(
     db_conn: sea_orm::DatabaseConnection,
     data_dir: PathBuf,
 ) -> DelegationStack {
+    let data_dir = std::sync::Arc::new(data_dir);
     use crate::acp::connection::DelegationInjection;
     use crate::acp::delegation::broker::{
         ChildStatusLookup, ConversationDepthLookup, DbChildStatusLookup, DbDelegationOutcomeStore,
@@ -149,7 +150,7 @@ pub fn build_delegation_stack(
     let spawner = Arc::new(ConnectionManagerSpawner {
         manager: cm_arc.clone(),
         db: db_arc.clone(),
-        data_dir: Arc::new(data_dir),
+        data_dir: data_dir.clone(),
     }) as Arc<dyn ConnectionSpawner>;
     let depth_lookup =
         Arc::new(DbDepthLookup { db: db_arc.clone() }) as Arc<dyn ConversationDepthLookup>;
@@ -167,20 +168,32 @@ pub fn build_delegation_stack(
     let live_reply_lookup = Arc::new(ConnectionManagerLiveReplyLookup {
         manager: cm_arc.clone(),
     }) as Arc<dyn ChildLiveReplyLookup>;
-    let event_emitter = Arc::new(ConnectionManagerEventEmitter { manager: cm_arc })
-        as Arc<dyn DelegationEventEmitter>;
+    let event_emitter = Arc::new(ConnectionManagerEventEmitter {
+        manager: cm_arc.clone(),
+    }) as Arc<dyn DelegationEventEmitter>;
     let broker = Arc::new(
         DelegationBroker::with_writers(spawner, depth_lookup, meta_writer, event_emitter)
             .with_status_lookup(status_lookup)
             .with_live_reply_lookup(live_reply_lookup)
             .with_outcome_store(outcome_store.clone()),
     );
+    // Production runtime: the coordinator drives REAL connections through the
+    // manager's strict-attach entry. This is the rework loop's live wire.
+    let continuation_runtime = Arc::new(
+        crate::acp::manager::ConnectionManagerContinuationRuntime {
+            manager: cm_arc.clone(),
+            db: Arc::new(AppDatabase {
+                conn: db_conn.clone(),
+            }),
+            data_dir: data_dir.clone(),
+        },
+    ) as Arc<dyn crate::acp::delegation::continuation::runtime::ContinuationRuntime>;
     let continuation_coordinator = Arc::new(
         crate::acp::delegation::continuation::ContinuationCoordinator::new(
             Arc::new(AppDatabase {
                 conn: db_conn.clone(),
             }),
-            Arc::new(crate::acp::delegation::continuation::NoopRuntime),
+            continuation_runtime,
             outcome_store,
         ),
     );

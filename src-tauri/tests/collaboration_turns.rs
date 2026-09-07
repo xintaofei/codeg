@@ -49,6 +49,8 @@ struct MockRuntime {
     cancel_count: AtomicUsize,
     disconnect_count: AtomicUsize,
     blocked: tokio::sync::Mutex<Option<String>>,
+    /// When set, every cancel reports failure (injects an undeliverable stop).
+    pub fail_cancels: std::sync::atomic::AtomicBool,
 }
 
 impl MockRuntime {
@@ -81,6 +83,7 @@ impl ContinuationRuntime for MockRuntime {
     async fn attach_strict(
         &self,
         _target: &AttachTarget,
+        _parent_connection_id: &str,
         _turn_id: &str,
         _execution_id: &str,
     ) -> Result<String, StrictAttachError> {
@@ -105,6 +108,9 @@ impl ContinuationRuntime for MockRuntime {
 
     async fn cancel(&self, _connection_id: &str) -> Result<(), String> {
         self.cancel_count.fetch_add(1, Ordering::SeqCst);
+        if self.fail_cancels.load(Ordering::SeqCst) {
+            return Err("injected cancel failure".to_string());
+        }
         Ok(())
     }
 
@@ -817,4 +823,318 @@ async fn cross_parent_access_is_opaque() {
         .await
         .unwrap();
     assert_eq!(ack.state, TurnState::Accepted);
+}
+
+/// Acceptance F4 regression (was `review_parent_cancel_during_prepare_…`):
+/// the parent connection goes away while the round is parked inside the
+/// strict attach (preparing). `cancel_by_parent_connection` must cancel the
+/// pending round so the drive NEVER sends; and for an already-running round
+/// whose agent cancel fails, the round settles unknown + blocked instead of
+/// a fabricated clean stop.
+#[tokio::test]
+async fn parent_cancel_during_prepare_prevents_dispatch() {
+    let h = harness().await;
+    // Park the drive INSIDE attach (accepted → preparing done, attach pending).
+    let gate = h.runtime.install_attach_gate().await;
+    let ack = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
+        .await
+        .unwrap();
+    // Wait until the drive is parked in attach.
+    for _ in 0..200 {
+        if h.runtime.attach_count() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(h.runtime.attach_count(), 1);
+
+    // The parent disconnects.
+    h.coordinator.cancel_by_parent_connection("parent-conn").await;
+    // Release the attach; the drive must observe the canceled state and
+    // release WITHOUT sending.
+    drop(gate);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    assert_eq!(h.runtime.counters().1, 0, "a parent-canceled preparing round must never send");
+    let report = h
+        .coordinator
+        .get_turn(h.parent, &ack.turn_id, 0)
+        .await
+        .unwrap();
+    assert_eq!(report.state, TurnState::Canceled);
+}
+
+/// The attached-round half of F4: cancel delivery FAILURE means the outcome
+/// is unknowable — outcome_unknown + session blocked, never a fabricated
+/// canceled.
+#[tokio::test]
+async fn parent_cancel_with_failing_delivery_settles_unknown() {
+    let h = harness().await;
+    // Make every cancel fail AFTER the round is running.
+    h.runtime.fail_cancels.store(true, Ordering::SeqCst);
+    let ack = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
+        .await
+        .unwrap();
+    for _ in 0..200 {
+        if h.runtime.counters().1 == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(h.runtime.counters().1, 1, "precondition: the round was sent");
+
+    h.coordinator.cancel_by_parent_connection("parent-conn").await;
+    let report = h
+        .coordinator
+        .get_turn(h.parent, &ack.turn_id, 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        report.state,
+        TurnState::OutcomeUnknown,
+        "an undeliverable stop must settle unknown, not canceled"
+    );
+    let session = collaboration_service::find_session_by_id(&h.db.conn, &ack.session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.state, "blocked");
+}
+
+/// Acceptance F5 regression (was `review_restart_must_block_already_…`):
+/// a crash between the two pre-atomic writes could leave `outcome_unknown`
+/// under an `open` session; startup recovery must repair exactly that.
+#[tokio::test]
+async fn restart_must_block_already_unknown_open_session() {
+    let h = harness().await;
+    let session = collaboration_service::upsert_session_once(
+        &h.db.conn,
+        collaboration_service::NewSession {
+            id: uuid::Uuid::new_v4().to_string(),
+            source_task_id: SOURCE_TASK.into(),
+            parent_conversation_id: PARENT,
+            child_conversation_id: h.child_conversation_id,
+            resume_binding_json: "{\"schema_version\":1,\"agent_type\":\"claude_code\",\"external_session_id\":\"ext-session-1\",\"cwd\":\"/work\",\"config_fingerprint\":\"fp-1\"}".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let turn = collaboration_service::insert_turn(
+        &h.db.conn,
+        collaboration_service::NewTurn {
+            id: uuid::Uuid::new_v4().to_string(),
+            session_id: session.id.clone(),
+            ordinal: 1,
+            request_id: "k1".into(),
+            message: "m1".into(),
+            initiator_parent_conversation_id: PARENT,
+            initiator_tool_use_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    // The crash artifact: turn already outcome_unknown, session still open.
+    assert!(collaboration_service::cas_turn_state(
+        &h.db.conn,
+        &turn.id,
+        None,
+        &["accepted"],
+        "outcome_unknown",
+        false
+    )
+    .await
+    .unwrap());
+
+    let runtime = MockRuntime::new();
+    let store: Arc<dyn DelegationOutcomeStore> = Arc::new(DbDelegationOutcomeStore {
+        db: Arc::new(AppDatabase {
+            conn: h.db.conn.clone(),
+        }),
+    });
+    let recovered = ContinuationCoordinator::new(
+        Arc::new(AppDatabase {
+            conn: h.db.conn.clone(),
+        }),
+        runtime.clone(),
+        store,
+    )
+    .recover_on_startup()
+    .await
+    .expect("recovery");
+    assert!(
+        recovered.blocked_sessions.contains(&session.id),
+        "recovery must block a session holding an unknown outcome: {:?}",
+        recovered
+    );
+    let session_after = collaboration_service::find_session_by_id(&h.db.conn, &session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(session_after.state, "blocked");
+}
+
+/// Acceptance F6: close and continue share the per-source admission lock, so
+/// a close that passes its active-check cannot race a continue inserting a
+/// turn into a session that ends up closed. The observable serialization:
+/// closing twice concurrently is idempotent and a continue after close is
+/// rejected with the session id attached.
+#[tokio::test]
+async fn close_and_continue_do_not_interleave() {
+    let h = harness().await;
+    let ack = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k1", "m1", None)
+        .await
+        .unwrap();
+    for _ in 0..200 {
+        if h.runtime.counters().1 == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let (turn, execution) = h
+        .coordinator
+        .execution_owner_by_turn(&ack.turn_id)
+        .await
+        .unwrap();
+    h.coordinator
+        .settle(&turn, &execution, TurnTerminal::Completed { text: "done".into() })
+        .await
+        .unwrap();
+
+    // Concurrent close + continue for a NEW round: either close wins (continue
+    // → session_closed) or continue wins (close → SessionBusy). Never a
+    // closed session with an active turn.
+    let c = h.coordinator.clone();
+    let session_id_for_close = ack.session_id.clone();
+    let close_task = tokio::spawn(async move {
+        c.close_session(h.parent, &session_id_for_close).await
+    });
+    let continue_result = h
+        .coordinator
+        .continue_turn(h.parent, "parent-conn", SOURCE_TASK, "k2", "m2", None)
+        .await;
+    let close_result = close_task.await.unwrap();
+
+    match (&continue_result, &close_result) {
+        (Ok(_), Err(e)) => {
+            assert_eq!(e.error_code, ContinuationErrorCode::SessionBusy);
+        }
+        (Err(e), Ok(_)) => {
+            assert_eq!(e.error_code, ContinuationErrorCode::SessionClosed);
+        }
+        other => panic!("unexpected combination: {other:?}"),
+    }
+    // No closed session may hold an active turn.
+    let turns = collaboration_service::list_turns(&h.db.conn, &ack.session_id, 0, 100)
+        .await
+        .unwrap();
+    let active = turns
+        .iter()
+        .any(|t| ["accepted", "preparing", "dispatching", "running", "cancel_requested"].contains(&t.state.as_str()));
+    if close_result.is_ok() {
+        assert!(!active, "a closed session must never hold an active turn");
+    }
+}
+
+/// Acceptance F10 regression (was `review_snapshot_must_keep_history_cursor…`):
+/// with 24 terminal rounds + 1 active round (25 total) and a 20-row page, the
+/// snapshot must report a cursor that still reaches rounds 21–24 — appending
+/// the active round to the page must NOT flip `next_after_ordinal` to None.
+#[tokio::test]
+async fn snapshot_keeps_history_cursor_when_active_is_appended() {
+    let h = harness().await;
+    let session = collaboration_service::upsert_session_once(
+        &h.db.conn,
+        collaboration_service::NewSession {
+            id: uuid::Uuid::new_v4().to_string(),
+            source_task_id: SOURCE_TASK.into(),
+            parent_conversation_id: PARENT,
+            child_conversation_id: h.child_conversation_id,
+            resume_binding_json: "{\"schema_version\":1,\"agent_type\":\"claude_code\",\"external_session_id\":\"ext-session-1\",\"cwd\":\"/work\",\"config_fingerprint\":\"fp-1\"}".into(),
+        },
+    )
+    .await
+    .unwrap();
+
+    // Rounds 1..=24 terminal (the single-active index forbids more than one
+    // accepted row per session), round 25 accepted (active).
+    for i in 1..=24 {
+        let turn = collaboration_service::insert_turn(
+            &h.db.conn,
+            collaboration_service::NewTurn {
+                id: uuid::Uuid::new_v4().to_string(),
+                session_id: session.id.clone(),
+                ordinal: i,
+                request_id: format!("k{i}"),
+                message: format!("m{i}"),
+                initiator_parent_conversation_id: PARENT,
+                initiator_tool_use_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(collaboration_service::cas_turn_state(
+            &h.db.conn,
+            &turn.id,
+            None,
+            &["accepted"],
+            "completed",
+            false
+        )
+        .await
+        .unwrap());
+    }
+    let active = collaboration_service::insert_turn(
+        &h.db.conn,
+        collaboration_service::NewTurn {
+            id: uuid::Uuid::new_v4().to_string(),
+            session_id: session.id.clone(),
+            ordinal: 25,
+            request_id: "k25".into(),
+            message: "m25".into(),
+            initiator_parent_conversation_id: PARENT,
+            initiator_tool_use_id: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let snapshot = codeg_lib::commands::collaboration::get_collaboration_session_core(
+        &h.coordinator,
+        PARENT,
+        SOURCE_TASK,
+        0,
+        Some(20),
+    )
+    .await
+    .expect("snapshot");
+
+    assert_eq!(snapshot.turns.len(), 21, "page + appended active round");
+    assert_eq!(
+        snapshot.next_after_ordinal,
+        Some(20),
+        "rounds 21-24 must remain reachable"
+    );
+
+    // The second page reaches them, and still carries the active round.
+    let page2 = codeg_lib::commands::collaboration::get_collaboration_session_core(
+        &h.coordinator,
+        PARENT,
+        SOURCE_TASK,
+        snapshot.next_after_ordinal.unwrap(),
+        Some(20),
+    )
+    .await
+    .expect("page 2");
+    let ordinals: Vec<i32> = page2.turns.iter().map(|t| t.ordinal).collect();
+    for o in 21..=24 {
+        assert!(ordinals.contains(&o), "page 2 missing round {o}: {ordinals:?}");
+    }
+    assert!(ordinals.contains(&25), "the active round must stay visible");
+    let _ = active;
 }

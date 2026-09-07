@@ -59,33 +59,38 @@ pub async fn get_collaboration_session_core(
     };
 
     // Load one page after `after_ordinal`.
-    let mut turns = coordinator
+        let turns_page = coordinator
         .list_turns_for_session(parent, &session.session_id, after_ordinal, limit as u64)
         .await
         .map_err(app_error)?
         .unwrap_or_default();
 
+    // The history cursor is derived from the HISTORICAL page ALONE
+    // (acceptance F10): appending the active round below must not change
+    // whether more history exists, or pages 21..N become unreachable.
+    let next_after_ordinal = if turns_page.len() as u64 == limit as u64 {
+        turns_page.last().map(|t| t.ordinal)
+    } else {
+        None
+    };
+
+    let mut turns = turns_page;
     // The active turn must never be paginated away: if it exists and falls
-    // outside this page, fetch it separately and append.
+    // outside this page, fetch it separately and append (it does not affect
+    // the cursor).
     let active_missing = coordinator
         .active_turn_of_session(&session.session_id)
         .await
         .map_err(app_error)?
-        .filter(|active| {
-            !turns
-                .iter()
-                .any(|t| t.turn_id == active.turn_id)
-        });
+        .filter(|active| !turns.iter().any(|t| t.turn_id == active.turn_id));
     if let Some(active) = active_missing {
+        // The projection carries an empty source id (the caller joins via the
+        // session summary); keep the page rows' value for consistency.
+        let mut active = active;
+        active.source_task_id = session.source_task_id.clone();
         turns.push(active);
         turns.sort_by_key(|t| t.ordinal);
     }
-
-    let next_after_ordinal = if turns.len() as u64 == limit as u64 {
-        turns.last().map(|t| t.ordinal)
-    } else {
-        None
-    };
 
     Ok(CollaborationSnapshot {
         schema_version: SchemaVersion1,

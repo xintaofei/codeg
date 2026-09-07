@@ -2671,21 +2671,39 @@ impl ConnectionManager {
         // --- Await the typed verdict (bounded) --------------------------------
         match tokio::time::timeout(timeout, &mut verdict_rx).await {
             Ok(Ok(StrictOutcome::Ready(ready))) => Ok(ready),
-            Ok(Ok(StrictOutcome::Failed(e))) => Err(e),
+            Ok(Ok(StrictOutcome::Failed(e))) => {
+                // The strict path rejected itself before or after launch; the
+                // driver thread tears the connection down on its own error
+                // unwind, but a typed failure delivered while the connection
+                // is still alive needs an explicit reclaim here.
+                let _ = self.disconnect(&connection_id).await;
+                Err(e)
+            }
             // The connection ended without ever reporting readiness — treat it
             // as a failed recovery, never as success.
             Ok(Err(_receiver_dropped)) => Err(StrictAttachError::new(
                 StrictAttachErrorCode::ResumeFailed,
                 "the connection ended before reporting strict readiness",
             )),
-            Err(_elapsed) => Err(StrictAttachError::new(
-                StrictAttachErrorCode::ResumeTimeout,
-                format!(
-                    "strict attach did not become ready within {}ms; the agent \
-                     may still be recovering — no prompt was sent",
-                    timeout.as_millis()
-                ),
-            )),
+            Err(_elapsed) => {
+                // Timed out waiting for the handshake. The connection may
+                // STILL complete its resume a moment later — but the caller
+                // has already given up and the coordinator never learned the
+                // connection id, so leaving it alive would strand a resource
+                // nothing owns and could block future strict resumes of the
+                // same session ("a live connection already hosts this
+                // session"). Reclaim it; a late Ready lands on a dead
+                // connection and is harmless (acceptance F9).
+                let _ = self.disconnect(&connection_id).await;
+                Err(StrictAttachError::new(
+                    StrictAttachErrorCode::ResumeTimeout,
+                    format!(
+                        "strict attach did not become ready within {}ms; the launched \
+                         connection was reclaimed and no prompt was sent",
+                        timeout.as_millis()
+                    ),
+                ))
+            }
         }
     }
 
@@ -3904,6 +3922,137 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
         conn_id: &str,
     ) -> Option<crate::acp::delegation::spawner::ResumeBindingFacts> {
         self.manager.resume_binding_facts(conn_id).await
+    }
+}
+
+/// Production [`ContinuationRuntime`]: bridges the collaboration coordinator
+/// to the REAL connection world — the manager's strict-attach entry, the
+/// child connection's prompt channel, and the manager's cancel/disconnect.
+/// This is the piece that turns the coordinator from a tested state machine
+/// into the actual rework loop (acceptance F3).
+pub struct ConnectionManagerContinuationRuntime {
+    pub manager: Arc<ConnectionManager>,
+    pub db: Arc<crate::db::AppDatabase>,
+    pub data_dir: Arc<std::path::PathBuf>,
+}
+
+/// Bounded wait for the strict attach verdict. Long enough for a cold agent
+/// process + session/resume handshake; short enough that a stuck attach is
+/// reported instead of hanging the turn forever (the drive settles it as a
+/// typed failure and the turn stays queryable).
+pub const STRICT_ATTACH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+#[async_trait::async_trait]
+impl crate::acp::delegation::continuation::ContinuationRuntime
+    for ConnectionManagerContinuationRuntime
+{
+    async fn attach_strict(
+        &self,
+        target: &crate::acp::delegation::continuation::runtime::AttachTarget,
+        parent_connection_id: &str,
+        _turn_id: &str,
+        _execution_id: &str,
+    ) -> Result<
+        String,
+        crate::acp::delegation::continuation::StrictAttachError,
+    > {
+        // Same parent inheritance as `spawn_for_resume`: the child emits on
+        // the parent's stream so the browser keeps seeing the sub-thread.
+        let (emitter, owner_window) = {
+            let conns = self.manager.connections.lock().await;
+            let parent = conns.get(parent_connection_id).ok_or_else(|| {
+                crate::acp::delegation::continuation::StrictAttachError::new(
+                    crate::acp::delegation::continuation::StrictAttachErrorCode::ResumeFailed,
+                    format!("parent connection {parent_connection_id} not found"),
+                )
+            })?;
+            (parent.emitter.clone(), parent.owner_window_label.clone())
+        };
+        let runtime_env = crate::commands::acp::build_session_runtime_env(
+            &self.db,
+            target.agent_type,
+            None,
+            self.data_dir.as_path(),
+        )
+        .await
+        .map_err(|e| {
+            crate::acp::delegation::continuation::StrictAttachError::new(
+                crate::acp::delegation::continuation::StrictAttachErrorCode::ResumeFailed,
+                format!("runtime env: {e}"),
+            )
+        })?;
+        let cwd = std::path::PathBuf::from(&target.cwd);
+        if !cwd.is_dir() {
+            return Err(crate::acp::delegation::continuation::StrictAttachError::new(
+                crate::acp::delegation::continuation::StrictAttachErrorCode::BindingMismatch,
+                format!(
+                    "the recorded working directory {} no longer exists",
+                    cwd.display()
+                ),
+            ));
+        }
+        let ready = self
+            .manager
+            .attach_existing_session_strict(
+                target.agent_type,
+                target.cwd.clone(),
+                target.external_session_id.clone(),
+                runtime_env,
+                owner_window,
+                emitter,
+                None,
+                Default::default(),
+                cwd,
+                target.config_fingerprint.clone(),
+                STRICT_ATTACH_TIMEOUT,
+            )
+            .await?;
+        Ok(ready.connection_id)
+    }
+
+    async fn send_prompt(&self, connection_id: &str, message: &str) -> Result<(), String> {
+        // The coordinator is the ONLY writer for a reserved child session:
+        // this internal path deliberately bypasses the session write
+        // reservation (the reservation exists to stop everyone ELSE).
+        self.manager
+            .send_prompt(
+                connection_id,
+                vec![crate::acp::types::PromptInputBlock::Text {
+                    text: message.to_string(),
+                }],
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    async fn cancel(&self, connection_id: &str) -> Result<(), String> {
+        self.manager
+            .cancel(&self.db.conn, connection_id)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    async fn disconnect(&self, connection_id: &str) -> Result<(), String> {
+        self.manager
+            .disconnect(connection_id)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    async fn blocked_on(&self, connection_id: &str) -> Option<String> {
+        let state = self.manager.get_state(connection_id).await?;
+        let guard = state.read().await;
+        guard
+            .blocking_prompt(1024)
+            .map(|b| {
+                serde_json::json!(b.kind)
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            })
     }
 }
 

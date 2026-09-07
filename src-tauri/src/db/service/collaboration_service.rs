@@ -252,6 +252,72 @@ pub async fn active_turn<C: ConnectionTrait>(
         .map_err(DbError::from)
 }
 
+/// The outcome-unknown settle, ATOMICALLY with the session blocking
+/// (acceptance F5): writing the turn terminal and the session `blocked`
+/// state in ONE transaction closes the window where a crash (or a failed
+/// second write) leaves an `outcome_unknown` turn under an `open` session —
+/// a state startup recovery would never repair, because recovery only scans
+/// ACTIVE turn states. Returns `false` when another (winning) settle already
+/// fixed the turn.
+pub async fn settle_unknown_and_block<C: ConnectionTrait + TransactionTrait>(
+    conn: &C,
+    turn_id: &str,
+    execution_id: &str,
+    error_code: &str,
+    error_message: &str,
+) -> Result<bool, DbError> {
+    let txn = conn.begin().await.map_err(DbError::from)?;
+    let update = collaboration_turn::Entity::update_many()
+        .col_expr(
+            collaboration_turn::Column::State,
+            Expr::value("outcome_unknown"),
+        )
+        .col_expr(
+            collaboration_turn::Column::ErrorCode,
+            Expr::value(error_code),
+        )
+        .col_expr(
+            collaboration_turn::Column::ErrorMessage,
+            Expr::value(error_message),
+        )
+        .col_expr(
+            collaboration_turn::Column::FinishedAt,
+            Expr::value(now()),
+        )
+        .col_expr(
+            collaboration_turn::Column::Version,
+            Expr::col(collaboration_turn::Column::Version).add(1),
+        )
+        .filter(collaboration_turn::Column::Id.eq(turn_id))
+        .filter(collaboration_turn::Column::ExecutionId.eq(execution_id))
+        .filter(collaboration_turn::Column::State.is_in(ACTIVE_TURN_STATES.to_vec()))
+        .exec(&txn)
+        .await
+        .map_err(DbError::from)?;
+    if update.rows_affected == 0 {
+        txn.commit().await.map_err(DbError::from)?;
+        return Ok(false);
+    }
+    // The turn that settled IS in a session — find it and block the session
+    // unless already closed. Same transaction: no admission can slip between.
+    let turn = collaboration_turn::Entity::find_by_id(turn_id)
+        .one(&txn)
+        .await
+        .map_err(DbError::from)?
+        .ok_or_else(|| DbError::NotFound("settled turn vanished".into()))?;
+    if let Some(session) =
+        collaboration_session::Entity::find_by_id(&turn.session_id).one(&txn).await.map_err(DbError::from)?
+    {
+        if session.state != "closed" {
+            let mut active: collaboration_session::ActiveModel = session.into();
+            active.state = Set("blocked".to_string());
+            active.update(&txn).await.map_err(DbError::from)?;
+        }
+    }
+    txn.commit().await.map_err(DbError::from)?;
+    Ok(true)
+}
+
 /// Record the diagnostic connection id on the turn (set after a successful
 /// strict attach). Guarded by the execution id like every other write.
 pub async fn set_turn_connection<C: ConnectionTrait>(
@@ -446,6 +512,27 @@ pub async fn recover_on_startup<C: ConnectionTrait + TransactionTrait>(
         {
             if session.state != "closed" {
                 set_session_state(&txn, session_id, "blocked").await?;
+            }
+        }
+    }
+
+    // Repair legacy gaps (acceptance F5): a turn already `outcome_unknown`
+    // whose session is still `open` — the pre-atomic window — must block the
+    // session too, or it would accept new rounds forever despite the unknown.
+    let unknown_turns = collaboration_turn::Entity::find()
+        .filter(collaboration_turn::Column::State.eq("outcome_unknown"))
+        .all(&txn)
+        .await
+        .map_err(DbError::from)?;
+    for turn in unknown_turns {
+        if !summary.blocked_sessions.contains(&turn.session_id) {
+            summary.blocked_sessions.push(turn.session_id.clone());
+            if let Some(session) =
+                collaboration_session::Entity::find_by_id(&turn.session_id).one(&txn).await.map_err(DbError::from)?
+            {
+                if session.state == "open" {
+                    set_session_state(&txn, &turn.session_id, "blocked").await?;
+                }
             }
         }
     }

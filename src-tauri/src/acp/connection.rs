@@ -2228,6 +2228,13 @@ pub async fn spawn_agent_connection_with_transport<A: ConnectTo<Client> + PidObs
             if let Some(tok) = token {
                 inj.tokens.revoke(&tok).await;
             }
+            // Collaboration rounds owned by THIS parent end with it: cancel
+            // their active/preparing turns and settle them (acceptedance F4).
+            // Runs BEFORE the one-shot cascade so preparing rounds are
+            // canceled before they can attach+send.
+            if let Some(collab) = inj.collaboration.as_ref() {
+                collab.cancel_by_parent_connection(&conn_id).await;
+            }
             inj.broker.cancel_by_parent(&conn_id).await;
             // Reclaim a parked `ask_user_question` instead of waiting for the
             // companion's ask socket to close (which a reparented/hard-killed

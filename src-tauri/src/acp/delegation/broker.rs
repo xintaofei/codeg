@@ -500,7 +500,12 @@ struct PendingInner {
     /// (gated by `setups`), keyed by `call_id`. Each carries the `seq` arrival
     /// stamp taken when it buffered, so the park can order it against a racing
     /// parent cancel (first-terminal-wins). Drained at park.
-    early_completes: HashMap<String, (u64, DelegationOutcome)>,
+    /// Each buffered completion records the child connection id the
+    /// terminal arrived on, so the park can reject a terminal from a
+    /// SUPERSEDED execution (the late-old-completion race: C1's terminal
+    /// landing after T0 was canceled and resumed as C2 on a new
+    /// connection must never resolve C2 or freeze C1's text).
+    early_completes: HashMap<String, (u64, DelegationOutcome, String)>,
     /// Cancel reasons captured by a child failure that beat registration (gated
     /// by `setups`), keyed by `child_connection_id`. The value pairs the `seq`
     /// arrival stamp (for the park's first-terminal-wins ordering against a
@@ -587,11 +592,18 @@ impl PendingInner {
     /// cancel. No-op when the `call_id` isn't reserved (already resolved by
     /// another terminal path), so the buffer only ever holds genuine
     /// pre-registration races.
-    fn buffer_early_complete(&mut self, call_id: &str, outcome: DelegationOutcome) {
+    fn buffer_early_complete(
+        &mut self,
+        call_id: &str,
+        origin_child_connection: &str,
+        outcome: DelegationOutcome,
+    ) {
         if self.setups.contains_key(call_id) {
             let stamp = self.tick();
-            self.early_completes
-                .insert(call_id.to_string(), (stamp, outcome));
+            self.early_completes.insert(
+                call_id.to_string(),
+                (stamp, outcome, origin_child_connection.to_string()),
+            );
         }
     }
 
@@ -612,7 +624,7 @@ impl PendingInner {
 
     /// Drain a buffered completion with its arrival stamp (by `call_id`) — used
     /// by `handle_request` at park.
-    fn take_early_complete(&mut self, call_id: &str) -> Option<(u64, DelegationOutcome)> {
+    fn take_early_complete(&mut self, call_id: &str) -> Option<(u64, DelegationOutcome, String)> {
         self.early_completes.remove(call_id)
     }
 
@@ -1272,7 +1284,15 @@ fn classify_locked(inner: &PendingInner, parent_connection_id: &str, task_id: &s
         if c.parent_connection_id == parent_connection_id {
             return StatusClass::Settled(completed_report(task_id, c));
         }
-        return StatusClass::Settled(unknown_report(task_id));
+        // The cached entry belongs to ANOTHER parent CONNECTION. That is not
+        // proof of a foreign PARENT CONVERSATION: the same persistent parent
+        // conversation may have reconnected on a new connection while the old
+        // connection's cache entry has not been torn down yet. Fall through to
+        // the persistent-scope resolution (frozen outcome → DB) instead of
+        // answering `unknown` and hiding a durable result the caller owns;
+        // those lookups re-scope by parent CONVERSATION id, so a genuinely
+        // foreign parent still stays opaque.
+        return StatusClass::NotInMemory;
     }
     match inner.running.get(task_id) {
         Some(r) if r.parent_connection_id == parent_connection_id => StatusClass::Running {
@@ -1526,6 +1546,19 @@ const IDENTITYLESS_RENAME_POLL_ATTEMPTS: usize = 30;
 /// The broker is intentionally `Clone` (cheap — only `Arc`s inside) so
 /// listener/handler code can hand copies to spawned tasks without lifetime
 /// gymnastics.
+/// What [`DelegationBroker::complete_call_for_connection`] did with the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompleteCallResult {
+    /// The running task matched and was resolved to `outcome`.
+    Resolved,
+    /// No running task yet — the terminal was buffered for a racing
+    /// registration to drain.
+    Buffered,
+    /// The running task belongs to a DIFFERENT (current) execution; the
+    /// terminal came from a superseded one and was dropped.
+    RejectedStale,
+}
+
 #[derive(Clone)]
 pub struct DelegationBroker {
     spawner: Arc<dyn ConnectionSpawner>,
@@ -2890,23 +2923,45 @@ impl DelegationBroker {
         let setup_duration_ms = started_at.elapsed().as_millis() as u64;
         let disposition = {
             let mut inner = self.pending.inner.lock().await;
-            // Each buffered child terminal carries (arrival_stamp, outcome).
+            // Each buffered child terminal carries (arrival_stamp, outcome,
+            // originating child connection). A terminal that arrived on a
+            // DIFFERENT connection than ours is from a superseded execution
+            // (the late-old-completion race) — drop it instead of resolving
+            // this run with stale text.
             let child_terminal: Option<(u64, DelegationOutcome)> =
-                if let Some((stamp, outcome)) = inner.take_early_complete(&call_id) {
-                    Some((stamp, outcome))
-                } else {
-                    inner
-                        .take_early_cancel(&child_connection_id)
-                        .map(|(stamp, reason)| {
-                            (
-                                stamp,
-                                DelegationOutcome::from_err(
-                                    DelegationError::Canceled { reason },
-                                    Some(child_conversation_id),
-                                ),
-                            )
-                        })
+                match inner.take_early_complete(&call_id) {
+                    Some((stamp, outcome, origin))
+                        if origin == child_connection_id.as_str() || origin == "*" =>
+                    {
+                        // `"*"` is the tests-only unattributed sentinel (see
+                        // `complete_call`); production terminals always carry
+                        // their real connection.
+                        Some((stamp, outcome))
+                    }
+                    Some((_, _, origin)) => {
+                        tracing::warn!(
+                            "[delegation] dropping early terminal for {call_id} from                              superseded connection {origin} (current: {child_connection_id})"
+                        );
+                        // A stale terminal must not shadow a genuine early
+                        // cancel on OUR connection — fall through to that
+                        // check below.
+                        None
+                    }
+                    None => None,
                 };
+            let child_terminal = child_terminal.or_else(|| {
+                inner
+                    .take_early_cancel(&child_connection_id)
+                    .map(|(stamp, reason)| {
+                        (
+                            stamp,
+                            DelegationOutcome::from_err(
+                                DelegationError::Canceled { reason },
+                                Some(child_conversation_id),
+                            ),
+                        )
+                    })
+            });
             let parent_canceled_at = inner.inflight_canceled_at(inflight_id);
             inner.unreserve(&call_id, &child_connection_id);
             // For both terminal dispositions we record the completed result
@@ -3160,11 +3215,37 @@ impl DelegationBroker {
     /// loop emits `TurnComplete` independently, so a completion CAN beat it. When
     /// the `call_id` is no longer reserved the call was already resolved by
     /// another terminal path, so the buffer is skipped (silent no-op).
-    pub async fn complete_call(&self, call_id: &str, outcome: DelegationOutcome) {
+    /// Resolve a delegation's terminal, attributing it to the child
+    /// connection the terminal arrived on (`terminal_child_connection_id` —
+    /// for the lifecycle this is the connection whose `TurnComplete` fired).
+    ///
+    /// The pending lock validates that the running task BELONGS to that
+    /// connection before resolving: a terminal from a SUPERSEDED execution
+    /// (task canceled → resumed under the same id on a NEW connection, the
+    /// old connection's completion arriving late) is rejected — the task
+    /// stays running, nothing is frozen, and no teardown fires. Without this
+    /// check the late caller would consume the NEW execution and permanently
+    /// freeze the OLD result text.
+    pub async fn complete_call_for_connection(
+        &self,
+        terminal_child_connection_id: &str,
+        call_id: &str,
+        outcome: DelegationOutcome,
+    ) -> CompleteCallResult {
         let task = {
             let mut inner = self.pending.inner.lock().await;
             match inner.running.remove(call_id) {
                 Some(task) => {
+                    if task.child_connection_id != terminal_child_connection_id {
+                        // Superseded terminal: put the CURRENT execution back
+                        // and drop the stale outcome.
+                        tracing::warn!(
+                            "[delegation] rejecting terminal for {call_id} from superseded                              connection {terminal_child_connection_id} (current execution                              runs on {})",
+                            task.child_connection_id
+                        );
+                        inner.running.insert(call_id.to_string(), task);
+                        return CompleteCallResult::RejectedStale;
+                    }
                     // Atomic running → completed so a concurrent status query
                     // never sees the task as neither running nor completed.
                     let duration_ms = task.started_at.elapsed().as_millis() as u64;
@@ -3182,9 +3263,14 @@ impl DelegationBroker {
                 }
                 None => {
                     // Buffer for the racing `start_delegation` to drain iff still
-                    // reserved (mid-setup); a no-op otherwise, so the clone only
-                    // materializes on the genuine pre-registration race.
-                    inner.buffer_early_complete(call_id, outcome.clone());
+                    // reserved (mid-setup); a no-op otherwise. The buffer carries
+                    // the originating connection so the park can reject a stale
+                    // terminal against the connection it actually spawned.
+                    inner.buffer_early_complete(
+                        call_id,
+                        terminal_child_connection_id,
+                        outcome.clone(),
+                    );
                     None
                 }
             }
@@ -3217,6 +3303,38 @@ impl DelegationBroker {
             )
             .await;
             self.result_notify.notify_waiters();
+            return CompleteCallResult::Resolved;
+        }
+        // Buffered for a racing registration — the park will own it (or
+        // reject it as stale).
+        CompleteCallResult::Buffered
+    }
+
+    /// Back-compat wrapper that attributes the terminal to NO connection and
+    /// therefore accepts whatever is currently running under `call_id`.
+    /// TESTS-ONLY: production callers (the lifecycle) must go through
+    /// [`Self::complete_call_for_connection`] so a superseded execution can
+    /// never be consumed.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn complete_call(&self, call_id: &str, outcome: DelegationOutcome) {
+        let inner = self.pending.inner.lock().await;
+        // Resolve the CURRENT child connection for this id so the attributed
+        // check inside the attributed path passes for direct test calls.
+        let current = inner.running.get(call_id).map(|t| t.child_connection_id.clone());
+        drop(inner);
+        match current {
+            Some(conn) => {
+                self.complete_call_for_connection(&conn, call_id, outcome)
+                    .await;
+            }
+            None => {
+                // Not running: buffer unattributed (tests exercise the
+                // early-complete race this way; the park accepts an
+                // unattributed buffer only when its own connection matches
+                // the reserved setup).
+                let mut inner = self.pending.inner.lock().await;
+                inner.buffer_early_complete(call_id, "*", outcome);
+            }
         }
     }
 
@@ -3944,7 +4062,13 @@ impl DelegationBroker {
                 if c.parent_connection_id == parent_connection_id {
                     return completed_report(task_id, c);
                 }
-                return unknown_report(task_id);
+                // Another parent CONNECTION's cache entry — same reasoning as
+                // `classify_locked`: fall through to the persistent-scope
+                // resolution instead of answering `unknown` for a result the
+                // caller's parent CONVERSATION may durably own.
+                return self
+                    .frozen_then_db_report(parent_conversation_id, task_id)
+                    .await;
             }
             match inner.running.get(task_id) {
                 Some(r) if r.parent_connection_id == parent_connection_id => {
@@ -4537,22 +4661,38 @@ impl DelegationBroker {
         let disposition = {
             let mut inner = self.pending.inner.lock().await;
             inner.remove_completed(&call_id);
+            // Same superseded-connection rejection as `start_delegation`.
             let child_terminal: Option<(u64, DelegationOutcome)> =
-                if let Some((stamp, outcome)) = inner.take_early_complete(&call_id) {
-                    Some((stamp, outcome))
-                } else {
-                    inner
-                        .take_early_cancel(&child_connection_id)
-                        .map(|(stamp, reason)| {
-                            (
-                                stamp,
-                                DelegationOutcome::from_err(
-                                    DelegationError::Canceled { reason },
-                                    Some(ctx.child_conversation_id),
-                                ),
-                            )
-                        })
+                match inner.take_early_complete(&call_id) {
+                    Some((stamp, outcome, origin))
+                        if origin == child_connection_id.as_str() || origin == "*" =>
+                    {
+                        // `"*"` is the tests-only unattributed sentinel (see
+                        // `complete_call`); production terminals always carry
+                        // their real connection.
+                        Some((stamp, outcome))
+                    }
+                    Some((_, _, origin)) => {
+                        tracing::warn!(
+                            "[delegation] dropping early terminal for resumed {call_id} from                              superseded connection {origin} (current: {child_connection_id})"
+                        );
+                        None
+                    }
+                    None => None,
                 };
+            let child_terminal = child_terminal.or_else(|| {
+                inner
+                    .take_early_cancel(&child_connection_id)
+                    .map(|(stamp, reason)| {
+                        (
+                            stamp,
+                            DelegationOutcome::from_err(
+                                DelegationError::Canceled { reason },
+                                Some(ctx.child_conversation_id),
+                            ),
+                        )
+                    })
+            });
             let parent_canceled_at = inner.inflight_canceled_at(inflight_id);
             inner.unreserve(&call_id, &child_connection_id);
             let record = |inner: &mut PendingInner, outcome: &DelegationOutcome| {
@@ -4816,6 +4956,28 @@ impl DelegationBroker {
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn pending_count(&self) -> usize {
         self.pending.inner.lock().await.running.len()
+    }
+
+    /// Seed the completed cache with an entry attributed to an ARBITRARY
+    /// parent connection. Test-only: reproduces the stale-cache window where
+    /// an old connection's entry outlives a reconnect, so the integration
+    /// suite can assert the persistent-scope resolution wins over it.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn seed_completed_for_test(&self, parent_connection_id: &str, task_id: &str) {
+        let mut inner = self.pending.inner.lock().await;
+        inner.insert_completed(
+            task_id,
+            CompletedTask {
+                parent_connection_id: parent_connection_id.to_string(),
+                child_conversation_id: 42,
+                agent_type: crate::models::AgentType::ClaudeCode,
+                status: TaskStatus::Completed,
+                text: Some("stale cache".to_string()),
+                error_code: None,
+                message: None,
+                duration_ms: 1,
+            },
+        );
     }
 
     /// Count of cached completed results across all parents.
@@ -10262,6 +10424,81 @@ mod tests {
         assert_eq!(broker.inflight_count().await, 0);
         assert_eq!(broker.reserved_call_count().await, 0);
         assert!(broker.pending.inner.lock().await.resuming.is_empty());
+    }
+
+    /// Acceptance F1 regression (was `review_late_old_completion_…`): a
+    /// canceled task resumed under the SAME id on a NEW connection must not
+    /// be consumed by the OLD connection's late completion. The late
+    /// terminal is rejected at the pending lock; the resumed execution keeps
+    /// running, completes with ITS text, and no teardown fires on the new
+    /// connection.
+    #[tokio::test]
+    async fn late_old_completion_must_not_freeze_resumed_execution() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.queue_spawn(Ok("child-conn-1".into())).await;
+        mock.queue_send(Ok(42)).await;
+        let ack = broker.start_delegation(request(1, "pt-orig")).await;
+        let task_id = ack.task_id.unwrap();
+        assert_eq!(ack.status, TaskStatus::Running);
+
+        // Cancel + resume under the same id on a new connection.
+        broker
+            .cancel_task_by_id("parent-conn", Some(1), &task_id)
+            .await;
+        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("child-conn-2")))
+            .await;
+        mock.queue_resume_send(Ok(())).await;
+        let ack = broker.resume_delegation(resume_request(&task_id)).await;
+        assert_eq!(ack.status, TaskStatus::Running);
+
+        // The OLD connection's terminal arrives LATE. It must be rejected.
+        let accepted = broker
+            .complete_call_for_connection(
+                "child-conn-1",
+                &task_id,
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "OLD C1 RESULT".into(),
+                    child_conversation_id: 42,
+                    child_agent_type: AgentType::ClaudeCode,
+                    turn_count: 1,
+                    duration_ms: 1,
+                    token_usage: None,
+                }),
+            )
+            .await;
+        assert_eq!(accepted, CompleteCallResult::RejectedStale);
+        // The stale terminal must not have torn down the NEW connection
+        // (the canceled OLD connection was disconnected by the cancel itself).
+        assert!(!mock
+            .disconnects
+            .lock()
+            .await
+            .contains(&"child-conn-2".to_string()));
+
+        // The resumed execution is STILL running and finishes with ITS text.
+        let status = broker
+            .get_task_status("parent-conn", Some(1), &task_id, StatusWait::Immediate)
+            .await;
+        assert_eq!(status.status, TaskStatus::Running);
+        broker
+            .complete_call_for_connection(
+                "child-conn-2",
+                &task_id,
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "NEW C2 RESULT".into(),
+                    child_conversation_id: 42,
+                    child_agent_type: AgentType::ClaudeCode,
+                    turn_count: 1,
+                    duration_ms: 2,
+                    token_usage: None,
+                }),
+            )
+            .await;
+        let status = broker
+            .get_task_status("parent-conn", Some(1), &task_id, StatusWait::Immediate)
+            .await;
+        assert_eq!(status.status, TaskStatus::Completed);
+        assert_eq!(status.text.as_deref(), Some("NEW C2 RESULT"));
     }
 
     /// A resumed task is cancelable again through the ordinary path — the
