@@ -219,6 +219,16 @@ impl ConnectionResourceRegistry {
             .insert(resource.connection_id.clone(), resource);
     }
 
+    pub(crate) async fn unreleased_agent_names(&self) -> Vec<String> {
+        self.resources
+            .lock()
+            .await
+            .values()
+            .filter(|resource| !resource.lifetime.release_confirmed())
+            .map(|resource| resource.agent_type.to_string())
+            .collect()
+    }
+
     pub(crate) async fn get(&self, connection_id: &str) -> Option<Arc<ConnectionResource>> {
         self.resources.lock().await.get(connection_id).cloned()
     }

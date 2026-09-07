@@ -196,7 +196,33 @@
       "panelOpacityHint": "사이드바, 패널, 탭 바의 불투명도입니다. 낮을수록 이미지가 더 많이 비쳐 보입니다.",
       "errorTooLarge": "이미지가 너무 큽니다(최대 16 MB).",
       "errorUnsupportedFormat": "지원하지 않는 이미지 형식입니다. PNG, JPEG, WebP, GIF 중에서 선택하세요.",
-      "errorUploadFailed": "배경 이미지 설정에 실패했습니다."
+      "errorUploadFailed": "배경 이미지 설정에 실패했습니다.",
+      "market": {
+        "open": "배경화면 마켓",
+        "title": "배경화면 마켓",
+        "description": "Wallhaven 공개 갤러리를 탐색하고 클릭해서 다운로드 후 적용하세요.",
+        "searchPlaceholder": "배경화면 검색…",
+        "categories": {
+          "all": "전체",
+          "general": "풍경",
+          "anime": "애니메이션",
+          "people": "인물"
+        },
+        "pageInfo": "{page} / {lastPage} 페이지",
+        "prevPage": "이전",
+        "nextPage": "다음",
+        "refresh": "새로고침",
+        "empty": "일치하는 배경화면이 없습니다.",
+        "error": "배경화면 마켓을 불러오지 못했습니다.",
+        "retry": "재시도",
+        "cardLabel": "배경화면 {id} 적용",
+        "applied": "사용 중",
+        "unavailable": "사용 불가",
+        "tooLarge": "배경으로 쓰기에 너무 큽니다: {actual} (제한 {limit})",
+        "downloadFailed": "다운로드에 실패했습니다. 다시 시도해 주세요.",
+        "appliedToast": "배경화면이 적용되었습니다",
+        "credit": "이미지 제공 wallhaven.cc · SFW만 표시"
+      }
     }
   },
   "SystemSettings": {
@@ -304,6 +330,10 @@
     "gitlabDescription": "인증용 GitLab 계정을 관리합니다. 토큰은 로컬에 저장됩니다.",
     "gitlabTokenHint": "GitLab → Preferences → Access tokens에서 api 범위를 가진 개인 액세스 토큰을 만드세요.",
     "gitlabNoAccounts": "아직 GitLab 계정이 없습니다",
+    "giteaTitle": "Gitea 계정",
+    "giteaDescription": "인증용 Gitea(및 Forgejo) 계정을 관리합니다. 토큰은 로컬에 저장됩니다.",
+    "giteaTokenHint": "Gitea → Settings → Applications에서 write:repository, write:issue, read:user 범위를 가진 액세스 토큰을 만드세요.",
+    "giteaNoAccounts": "아직 Gitea 계정이 없습니다",
     "noAccounts": "설정된 GitHub 계정이 없습니다.",
     "addAccount": "계정 추가",
     "serverUrl": "서버 URL",
@@ -336,7 +366,7 @@
     "loadFailed": "설정 로드 실패: {message}",
     "gitAccount": {
       "sectionTitle": "Git 서버 계정",
-      "sectionDescription": "GitHub 이외의 Git 서버 자격 증명을 관리합니다 (GitLab, Bitbucket, 자체 호스팅 등).",
+      "sectionDescription": "전용 섹션이 없는 Git 서버의 자격 증명을 관리합니다(Bitbucket, 자체 호스팅 등).",
       "noAccounts": "설정된 Git 서버 계정이 없습니다.",
       "addAccount": "계정 추가",
       "addTitle": "Git 계정 추가",
@@ -1557,7 +1587,7 @@
   "GeneralSettings": {
     "loading": "로딩 중...",
     "sectionTitle": "일반",
-    "sectionDescription": "기본 터미널, 렌더링 가속, 알림음, 다중 에이전트 위임 등 공용 환경설정을 한곳에서 관리합니다.",
+    "sectionDescription": "기본 터미널, 렌더링 가속, 알림과 알림음, 다중 에이전트 위임 등 공용 환경설정을 한곳에서 관리합니다.",
     "terminalTitle": "기본 터미널",
     "terminalDescription": "터미널 바나 파일 트리에서 새 터미널 탭을 열 때 사용할 셸을 선택합니다. 에이전트가 codeg에 전체 명령줄 실행을 요청할 때도 사용됩니다.",
     "terminalSystemDefault": "시스템 기본값",
@@ -1573,6 +1603,9 @@
     "terminalShellNotInstalled": "설치되지 않음",
     "terminalShellNotFoundWarning": "이 경로는 현재 호스트에 존재하지 않습니다.",
     "terminalCurrentShell": "현재 사용 중: {path}",
+    "colorizeCommandOutput": "명령 출력에 색 입히기",
+    "colorizeCommandOutputDescription": "에이전트가 실행하는 명령에 ANSI 색상을 강제해, 그 출력이 대화 기록에서 일반 텍스트가 아닌 컬러로 표시되게 합니다. 새 세션부터 적용됩니다.",
+    "colorizeCommandOutputWarning": "이 설정은 에이전트에 CLICOLOR_FORCE=1 을 지정합니다. 대부분의 도구는 이를 NO_COLOR보다 우선하며, 읽게 될 명령뿐 아니라 에이전트가 실행하는 모든 명령에 적용됩니다. 켜져 있는 동안에는 `gh --json` 을 `jq` 로 파이프하는 것처럼 파싱을 전제로 한 출력이 깨질 수 있습니다.",
     "renderingDescription": "앱이 검은 화면이 되거나 렌더링 문제가 발생하면(Windows에서는 일부 AMD GPU 또는 Intel 내장 GPU, Linux에서는 NVIDIA 독점 드라이버에서 보고됨) 하드웨어 가속을 끄세요. Windows 및 Linux 데스크톱에서만 적용됩니다.",
     "disableHardwareAcceleration": "하드웨어 가속 비활성화",
     "renderingSaveFailed": "렌더링 설정 저장 실패: {message}",
@@ -1637,6 +1670,9 @@
     "searchPlaceholder": "제목 또는 경로 검색…",
     "allAgents": "모든 에이전트",
     "onlyImportable": "가져오기 가능만",
+    "includeDeleted": "삭제된 항목 포함",
+    "includeDeletedWithCount": "삭제된 항목 포함({count})",
+    "includeDeletedHint": "codeg에서 세션을 삭제해도 숨겨질 뿐 대화와 기록은 그대로 남아 있습니다. 켜면 삭제된 세션을 선택해 원래 자리로 복원할 수 있습니다.",
     "selectAll": "모두 선택",
     "clearSelection": "지우기",
     "expandAll": "모두 펼치기",
@@ -1649,6 +1685,7 @@
     "toggleSessionAria": "세션 {title} 선택",
     "statusImported": "가져옴",
     "statusDeleted": "삭제됨",
+    "statusDeletedRestorable": "삭제됨 — 가져오면 원래 대화가 복원됩니다",
     "untitled": "제목 없는 세션",
     "messageCount": "메시지 {count}개",
     "selectedCount": "{count}개 선택됨",
@@ -1657,6 +1694,7 @@
     "close": "닫기",
     "doneTitle": "가져오기 완료",
     "doneImported": "가져옴",
+    "doneRestored": "복원됨",
     "doneUpdated": "갱신됨",
     "doneSkipped": "건너뜀",
     "doneCreatedFolders": "생성된 폴더",
@@ -2008,6 +2046,49 @@
           "more": "기타"
         },
         "showPet": "펫 표시"
+      },
+      "mcp": {
+        "title": "codeg-mcp 서비스",
+        "state": {
+          "running": "실행 중",
+          "stopped": "실행되지 않음",
+          "disabled": "도구 비활성화됨",
+          "unavailable": "컴패니언 없음",
+          "unknown": "알 수 없음"
+        },
+        "hint": {
+          "running": "여기서 시작한 에이전트는 codeg 도구를 쓸 수 있습니다.",
+          "stopped": "브로커 소켓이 응답하지 않습니다.",
+          "disabled": "모든 도구 그룹이 꺼져 있습니다.",
+          "unavailable": "codeg-mcp 실행 파일을 찾을 수 없습니다.",
+          "unknown": "상태를 읽을 수 없습니다."
+        },
+        "socketPath": "주소",
+        "binary": "컴패니언",
+        "binaryMissing": "찾을 수 없음",
+        "sessions": "세션",
+        "activeDelegations": "위임",
+        "depthLimit": "깊이 제한",
+        "tools": "도구",
+        "groupDelegation": "위임",
+        "descDelegation": "다른 에이전트에게 작업을 맡깁니다.",
+        "groupFeedback": "실시간 피드백",
+        "descFeedback": "실행을 끊지 않고 메모를 덧붙입니다.",
+        "groupAsk": "사용자에게 질문",
+        "descAsk": "판단이 애매하면 먼저 물어보게 합니다.",
+        "groupSessions": "세션 조회",
+        "descSessions": "지난 세션과 결과를 조회합니다.",
+        "groupAutomations": "자동화 생성",
+        "descAutomations": "예약 자동화를 만들고 관리합니다.",
+        "groupTaskboard": "작업 생성",
+        "descTaskboard": "작업 태스크를 만들고 관리합니다.",
+        "start": "서비스 시작",
+        "starting": "시작 중…",
+        "actionFailed": "작업 실패: {message}",
+        "lastError": "마지막 오류: {message}",
+        "loadFailed": "상태를 읽을 수 없습니다: {message}",
+        "openSettings": "전체 설정 열기",
+        "refresh": "새로 고침"
       }
     },
     "auxPanel": {
@@ -2830,6 +2911,8 @@
         "eventErrorTitle": "에이전트 오류",
         "notificationTurnComplete": "{agent} 응답이 완료되었습니다",
         "notificationError": "{agent} 오류: {message}",
+        "notificationQuestion": "{agent}이(가) 답변을 기다리고 있습니다",
+        "notificationErrorRedacted": "{agent}에서 오류가 발생했습니다",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",
           "retryingWithMax": "재시도 중 {attempt}/{max}",
@@ -2883,6 +2966,9 @@
         "cut": "잘라내기",
         "copy": "복사",
         "selectAll": "모두 선택",
+        "openLink": "링크 열기",
+        "openFile": "파일 열기",
+        "sendEmail": "메일 보내기",
         "pasteUnavailable": "클립보드를 읽을 수 없습니다. Ctrl/⌘V로 붙여넣으세요.",
         "clipboardWriteFailed": "클립보드에 쓸 수 없습니다. 키보드 단축키를 사용하세요.",
         "quickMessageUntitled": "제목 없음",
@@ -3622,7 +3708,9 @@
         "compacting": "컨텍스트 압축 중…",
         "compacted": "컨텍스트 압축 완료",
         "compactedTokens": "컨텍스트 압축 완료 · {before} → {after} 토큰",
-        "failed": "컨텍스트 압축 실패"
+        "failed": "컨텍스트 압축 실패",
+        "triggerManual": "수동 실행",
+        "triggerAutomatic": "자동 실행"
       },
       "sessionFailure": {
         "category": {
@@ -3646,6 +3734,8 @@
       },
       "backgroundTasks": {
         "settledFallback": "백그라운드 작업이 종료되었습니다 ({status})",
+        "notifySettledOne": "{agent}: 백그라운드 작업이 끝났습니다",
+        "notifySettledMany": "{agent}: 백그라운드 작업 {count}개가 끝났습니다",
         "cardRunning": "백그라운드에서 실행 중",
         "cardLaunchedPending": "백그라운드 작업 시작됨",
         "cardCompleted": "백그라운드 작업 완료",
@@ -3678,6 +3768,16 @@
       "viewMode": {
         "split": "나란히 보기로 전환",
         "unified": "인라인 보기로 전환"
+      },
+      "binaryFile": "바이너리 파일 — 내용을 표시하지 않음",
+      "image": {
+        "sideBySide": "나란히 보기로 전환",
+        "swipe": "슬라이드 비교 보기로 전환",
+        "swipeHandle": "이미지 비교 슬라이더",
+        "noImage": "이 리비전에는 이미지가 없습니다",
+        "unavailable": "이쪽을 불러오지 못했습니다",
+        "tooLarge": "이미지가 너무 커서 미리 볼 수 없습니다({size})",
+        "loading": "이미지 로드 중..."
       }
     },
     "conversationContextBar": {
@@ -4456,7 +4556,15 @@
       "button": "백업 내보내기",
       "inProgress": "백업 만드는 중…",
       "success": "백업을 만들었습니다.",
-      "started": "백업 다운로드를 시작했습니다."
+      "started": "백업 다운로드를 시작했습니다.",
+      "degradedTitle": "일부 에이전트 세션 데이터베이스는 특별한 처리가 필요했습니다",
+      "degradedHint": "이 에이전트들은 세션을 SQLite에 저장합니다. 아래에 별도 표시가 없으면 백업에 포함되어 있습니다.",
+      "degradedMore": "…외 {count}건.",
+      "degradedLevel": {
+        "recoveredOnCopy": "전용 사본에서 복구됨 — 완전함",
+        "bareFileOnly": "선행 기록 로그 없이 보관됨 — 최신 메시지가 빠졌을 수 있음",
+        "notArchived": "백업하지 않음 — 복사하는 동안 계속 변경됨"
+      }
     },
     "restore": {
       "selectFile": "백업 파일 선택",
@@ -4494,11 +4602,37 @@
         "scanning": "충돌 확인 중…",
         "noConflicts": "덮어쓸 기존 파일이 없습니다.",
         "conflictCount": "기존 파일 {count}개가 영향을 받습니다.",
-        "conflictSkipNote": "덮어쓰기를 켜지 않으면 기존 파일은 유지(건너뜀)됩니다."
+        "conflictSkipNote": "덮어쓰기를 켜지 않으면 기존 파일은 유지(건너뜀)됩니다.",
+        "agentsRunning": "에이전트 {count}개가 실행 중입니다({agents}). 먼저 종료하세요. 그렇지 않으면 기록이 원래 위치에 기록되지 않고 별도 폴더에 보관됩니다."
       },
-      "restartFailed": "복원이 준비되었지만 서버를 다시 시작하지 못했습니다. 수동으로 다시 시작해 복원을 적용하세요."
+      "restartFailed": "복원이 준비되었지만 서버를 다시 시작하지 못했습니다. 수동으로 다시 시작해 복원을 적용하세요.",
+      "discardPending": "대기 중인 복원 취소",
+      "discarded": "대기 중이던 복원을 취소했습니다.",
+      "pendingBlockedHint": "재시작을 기다리는 복원이 이미 있습니다. 다른 것을 준비하려면 먼저 취소하세요.",
+      "result": {
+        "title": "복원이 준비되었습니다",
+        "needsRestart": "다음 시작 시 적용됩니다. 현재 데이터는 먼저 스냅샷으로 보관됩니다.",
+        "downgraded": "{agents}이(가) 실행 중이어서 대화 기록을 원래 위치에 기록하지 않고 {path}에 보관했습니다.",
+        "skipped": "기존 파일 {count}개를 그대로 두었습니다",
+        "refused": "세션 데이터베이스 {count}개를 기록하지 않았습니다",
+        "refusedHint": "데이터베이스와 선행 기록 로그를 따로 저장하던 이전 백업에서 온 것으로, 둘이 서로 맞는지 증명할 수 없습니다. 기존 데이터베이스는 그대로 두었습니다 — 별도 폴더로 복원하면 원본 파일을 받을 수 있습니다.",
+        "restartNow": "지금 재시작",
+        "later": "나중에"
+      }
     },
-    "remoteUnsupported": "백업 및 복원은 codeg를 실행 중인 컴퓨터의 데이터를 대상으로 합니다. 현재 원격 작업 공간에 연결되어 있습니다. 해당 서버에서 직접 백업을 관리하세요."
+    "remoteUnsupported": "백업 및 복원은 codeg를 실행 중인 컴퓨터의 데이터를 대상으로 합니다. 현재 원격 작업 공간에 연결되어 있습니다. 해당 서버에서 직접 백업을 관리하세요.",
+    "progress": {
+      "cancel": "취소"
+    },
+    "snapshots": {
+      "title": "복원 전 스냅샷",
+      "hint": "복원할 때마다 현재 데이터를 먼저 스냅샷으로 남기고, 최신 두 개를 보관합니다.",
+      "empty": "아직 스냅샷이 없습니다.",
+      "rollback": "이 시점으로 되돌리기",
+      "unsupported": "보기 전용",
+      "rollbackConfirmTitle": "이 스냅샷으로 되돌릴까요?",
+      "rollbackConfirmBody": "현재 데이터를 이 스냅샷으로 바꾸고 재시작합니다. 교체되는 데이터는 먼저 스냅샷으로 보관됩니다."
+    }
   },
   "backup": {
     "restore": {
@@ -4560,6 +4694,45 @@
     "saved": "도구 설정을 저장했습니다",
     "saveFailed": "도구 설정 저장에 실패했습니다",
     "loadFailed": "불러오기 실패: {detail}"
+  },
+  "DesktopNotificationSettings": {
+    "title": "데스크톱 알림",
+    "description": "에이전트가 응답을 기다릴 때 OS 알림을 표시합니다. 설정은 기기별로 적용되며 다른 브라우저나 컴퓨터와는 별개입니다.",
+    "permissionTitle": "알림 권한",
+    "permissionGranted": "허용됨",
+    "permissionDenied": "차단됨",
+    "permissionDefault": "요청하지 않음",
+    "permissionUnsupported": "사용할 수 없음",
+    "permissionManagedByOs": "시스템이 관리",
+    "permissionGrantedHint": "이 브라우저는 Codeg 알림을 표시합니다.",
+    "permissionDeniedHint": "이 브라우저가 Codeg 알림을 차단하고 있습니다. 브라우저의 사이트 설정에서만 해제할 수 있으며, 페이지에서 다시 요청할 수는 없습니다.",
+    "permissionDefaultHint": "아직 이 브라우저에 요청하지 않았습니다. 허용하기 전까지는 알림이 오지 않습니다.",
+    "permissionUnsupportedHint": "알림에는 보안 컨텍스트가 필요합니다. HTTPS 또는 localhost로 접속하세요.",
+    "permissionManagedByOsHint": "데스크톱 앱은 시스템 알림 센터를 통해 보내며, OS는 Codeg가 허용되었는지 알려주지 않습니다. 테스트를 보내 확인하세요.",
+    "identityTitle": "전송 주체",
+    "identityHint": "시스템은 이 알림을 이 앱의 것으로 처리합니다. 실제로 적용되는 것은 그 앱의 알림 스위치입니다.",
+    "identityDegradedHint": "Codeg 자체 식별자를 사용할 수 없어 시스템이 {bundleId} 이름으로 알림을 보내며, 해당 앱의 알림 스위치가 적용됩니다. Codeg을 응용 프로그램 폴더에 설치하면 원래 신원으로 돌아갑니다.",
+    "requestPermission": "알림 허용",
+    "permissionGrantedToast": "알림이 허용되었습니다.",
+    "permissionDeniedToast": "알림이 차단되었습니다. 브라우저의 사이트 설정에서 다시 허용하세요.",
+    "openSystemSettings": "시스템 설정 열기",
+    "openSystemSettingsFailed": "시스템 알림 설정을 열 수 없습니다.",
+    "sendTest": "테스트 보내기",
+    "testTitle": "Codeg",
+    "testBody": "데스크톱 알림이 정상 작동합니다.",
+    "testSent": "테스트 알림을 보냈습니다.",
+    "testFailed": "테스트 알림을 보낼 수 없습니다.",
+    "whenTitle": "알림 시점",
+    "whenHint": "보조 모니터의 창은 보이지만 포거스되지는 않습니다. 알림이 오지 않는다면 “창이 포거스되지 않았을 때”를 선택하세요.",
+    "whenAlways": "항상",
+    "whenUnfocused": "창이 포거스되지 않았을 때",
+    "whenHidden": "창이 보이지 않을 때",
+    "hideBody": "알림 내용 숨기기",
+    "hideBodyHint": "에이전트 출력 대신 일반적인 문구를 표시합니다. 알림 센터는 내용을 앱 밖에 보관하며 대화를 닫은 뒤에도 남습니다. 어느 창으로 돌아갈지 알 수 있도록 제목에는 폴더 이름이 그대로 남습니다.",
+    "eventsTitle": "이벤트",
+    "eventsHint": "방해받고 싶지 않은 이벤트를 끕니다. 몇 초 이내의 동일 이벤트는 하나로 합쳐집니다.",
+    "eventBackgroundTask": "백그라운드 작업",
+    "eventWorkTask": "작업 항목"
   },
   "NotificationSoundSettings": {
     "title": "알림음",
@@ -4872,6 +5045,8 @@
     "errorView": "보기",
     "notifyReview": "검수 대기: {title}",
     "notifyFailed": "작업 실패: {title}",
+    "notifyReviewRedacted": "검토를 기다리는 작업이 있습니다",
+    "notifyFailedRedacted": "작업이 실패했습니다",
     "createFromMessage": "이 메시지로 작업 만들기",
     "detailTokens": "총 토큰",
     "editorTitleNew": "새 작업",
@@ -5347,7 +5522,7 @@
     "noRemote": "이 폴더에는 인식 가능한 원격 저장소(origin)가 없습니다",
     "errors": {
       "noAccount": "{host}에 대한 {provider} 계정이 설정되지 않았습니다. 설정 → 버전 관리에서 추가하면 이 저장소를 불러올 수 있습니다.",
-      "unsupportedHost": "리포지토리 패널은 GitHub와 GitLab만 지원하며, {host}는 둘 중 어느 쪽으로도 인식되지 않습니다. 자체 호스팅 GitHub Enterprise 또는 GitLab 인스턴스라면 설정 → 버전 관리에서 계정을 추가하세요.",
+      "unsupportedHost": "리포지토리 패널은 GitHub, GitLab, Gitea만 지원하며, {host}는 그중 어느 쪽으로도 인식되지 않습니다. 자체 호스팅 GitHub Enterprise, GitLab, Gitea 또는 Forgejo 인스턴스라면 설정 → 버전 관리에서 계정을 추가하세요.",
       "wrongForge": "{host}은(는) {provider}입니다. 다른 포지로 잘못 인식되었으나 감지 결과를 수정했습니다. 다시 불러오세요."
     },
     "addAccount": "계정 추가",

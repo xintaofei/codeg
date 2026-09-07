@@ -197,6 +197,24 @@ function getAllowedExternalProtocol(rawUrl: string): string | null {
 }
 
 /**
+ * Whether {@link useOpenLinkOrFile} has anywhere to send `rawUrl`: a local
+ * file, or an external url whose protocol is on the allow-list. Mirrors that
+ * hook's own branch order, so a caller offering an "open" affordance can leave
+ * it out rather than show one that can only end in the unsupported-protocol
+ * toast (`ftp://`, `vscode://`, a bare relative path with no folder to
+ * anchor it).
+ *
+ * A `true` answer is not a promise the open succeeds — a folder-relative path
+ * still needs an active folder, which only the hook can see.
+ */
+export function canOpenLinkOrFile(rawUrl: string): boolean {
+  return (
+    parseLocalFileTarget(rawUrl) !== null ||
+    getAllowedExternalProtocol(rawUrl) !== null
+  )
+}
+
+/**
  * True when `window.open` actually opens something — i.e. a real browser.
  *
  * NOT the same question as `isWebOpenerEnvironment` below. A Tauri window bound

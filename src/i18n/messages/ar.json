@@ -196,7 +196,33 @@
       "panelOpacityHint": "مدى عتامة الشريط الجانبي واللوحات وأشرطة التبويب. الأقل يُظهر المزيد من الصورة.",
       "errorTooLarge": "الصورة كبيرة جدًا (16 ميجابايت كحد أقصى).",
       "errorUnsupportedFormat": "صيغة صورة غير مدعومة. اختر ملف PNG أو JPEG أو WebP أو GIF.",
-      "errorUploadFailed": "فشل تعيين صورة الخلفية."
+      "errorUploadFailed": "فشل تعيين صورة الخلفية.",
+      "market": {
+        "open": "سوق الخلفيات",
+        "title": "سوق الخلفيات",
+        "description": "تصفح معرض Wallhaven العام؛ انقر للتنزيل والتطبيق.",
+        "searchPlaceholder": "ابحث عن خلفيات…",
+        "categories": {
+          "all": "الكل",
+          "general": "مناظر",
+          "anime": "أنمي",
+          "people": "أشخاص"
+        },
+        "pageInfo": "صفحة {page} من {lastPage}",
+        "prevPage": "السابق",
+        "nextPage": "التالي",
+        "refresh": "تحديث",
+        "empty": "لا توجد خلفيات مطابقة.",
+        "error": "فشل تحميل سوق الخلفيات.",
+        "retry": "إعادة المحاولة",
+        "cardLabel": "تطبيق الخلفية {id}",
+        "applied": "قيد الاستخدام",
+        "unavailable": "غير متاح",
+        "tooLarge": "أكبر من أن تُستخدم كخلفية: {actual} (الحد {limit})",
+        "downloadFailed": "فشل التنزيل، حاول مجددًا.",
+        "appliedToast": "تم تطبيق الخلفية",
+        "credit": "الصور من wallhaven.cc · محتوى آمن فقط"
+      }
     }
   },
   "SystemSettings": {
@@ -304,6 +330,10 @@
     "gitlabDescription": "إدارة حسابات GitLab للمصادقة. يتم تخزين الرموز محليًا.",
     "gitlabTokenHint": "أنشئ رمز وصول شخصيًا بنطاق api من GitLab → Preferences → Access tokens.",
     "gitlabNoAccounts": "لا يوجد حساب GitLab بعد",
+    "giteaTitle": "حسابات Gitea",
+    "giteaDescription": "إدارة حسابات Gitea (و Forgejo) للمصادقة. يتم تخزين الرموز محليًا.",
+    "giteaTokenHint": "أنشئ رمز وصول بنطاقات write:repository و write:issue و read:user من Gitea → Settings → Applications.",
+    "giteaNoAccounts": "لا يوجد حساب Gitea بعد",
     "noAccounts": "لا توجد حسابات GitHub مكوّنة.",
     "addAccount": "إضافة حساب",
     "serverUrl": "عنوان الخادم",
@@ -336,7 +366,7 @@
     "loadFailed": "فشل تحميل الإعدادات: {message}",
     "gitAccount": {
       "sectionTitle": "حسابات خادم Git",
-      "sectionDescription": "إدارة بيانات الاعتماد لخوادم Git غير GitHub (GitLab، Bitbucket، الخوادم الذاتية، إلخ).",
+      "sectionDescription": "إدارة بيانات اعتماد خوادم Git التي ليس لها قسم خاص (Bitbucket، الاستضافة الذاتية، إلخ).",
       "noAccounts": "لا توجد حسابات خادم Git مكوّنة.",
       "addAccount": "إضافة حساب",
       "addTitle": "إضافة حساب Git",
@@ -1557,7 +1587,7 @@
   "GeneralSettings": {
     "loading": "جارٍ التحميل...",
     "sectionTitle": "عام",
-    "sectionDescription": "تفضيلات موحّدة للطرفية الافتراضية وتسريع العرض وأصوات الإشعارات وتفويض الوكلاء المتعدّدين.",
+    "sectionDescription": "تفضيلات موحّدة للطرفية الافتراضية وتسريع العرض والإشعارات وتفويض الوكلاء المتعدّدين.",
     "terminalTitle": "الطرفية الافتراضية",
     "terminalDescription": "اختر الصدفة المستخدمة عند فتح علامات تبويب طرفية جديدة من شريط الطرفية أو شجرة الملفات. تستخدمها الوكلاء أيضًا عندما تطلب من codeg تنفيذ سطر أوامر كامل نيابةً عنها.",
     "terminalSystemDefault": "افتراضي النظام",
@@ -1573,6 +1603,9 @@
     "terminalShellNotInstalled": "غير مثبّت",
     "terminalShellNotFoundWarning": "هذا المسار غير موجود على هذا المضيف.",
     "terminalCurrentShell": "قيد الاستخدام: {path}",
+    "colorizeCommandOutput": "تلوين مُخرجات الأوامر",
+    "colorizeCommandOutputDescription": "فرض ألوان ANSI على الأوامر التي تنفّذها الوكلاء، بحيث تظهر مخرجاتها ملوّنة في السجل بدلاً من نص عادي. يسري على الجلسات الجديدة.",
+    "colorizeCommandOutputWarning": "يضبط هذا الخيار CLICOLOR_FORCE=1 للوكيل، ومعظم الأدوات تُقدّمه على NO_COLOR، وهو يسري على كل أمر ينفّذه الوكيل لا على ما تقرأه أنت فقط. وأثناء تفعيله قد تفشل المخرجات المُعدّة للتحليل الآلي، مثل تمرير `gh --json` إلى `jq`.",
     "renderingDescription": "أوقف تشغيل تسريع الأجهزة إذا ظهرت شاشة سوداء أو أخطاء في العرض (شائع على بعض كروت AMD أو كروت Intel المدمجة على ويندوز، وعلى تعريف NVIDIA المغلق على لينكس). يسري على إصدارات سطح المكتب لويندوز ولينكس فقط.",
     "disableHardwareAcceleration": "تعطيل تسريع الأجهزة",
     "renderingSaveFailed": "فشل حفظ إعدادات العرض: {message}",
@@ -1637,6 +1670,9 @@
     "searchPlaceholder": "ابحث في العنوان أو المسار…",
     "allAgents": "جميع الوكلاء",
     "onlyImportable": "القابلة للاستيراد فقط",
+    "includeDeleted": "تضمين المحذوفة",
+    "includeDeletedWithCount": "تضمين المحذوفة ({count})",
+    "includeDeletedHint": "حذف الجلسة في codeg يخفيها فقط — المحادثة وسجلها ما زالا موجودين. فعّل هذا الخيار لتحديد الجلسات المحذوفة واستعادتها في مكانها.",
     "selectAll": "تحديد الكل",
     "clearSelection": "مسح",
     "expandAll": "توسيع الكل",
@@ -1649,6 +1685,7 @@
     "toggleSessionAria": "تحديد الجلسة {title}",
     "statusImported": "مستوردة",
     "statusDeleted": "محذوفة",
+    "statusDeletedRestorable": "محذوفة — استيرادها يستعيد المحادثة الأصلية",
     "untitled": "جلسة بلا عنوان",
     "messageCount": "{count} رسالة",
     "selectedCount": "{count} محددة",
@@ -1657,6 +1694,7 @@
     "close": "إغلاق",
     "doneTitle": "اكتمل الاستيراد",
     "doneImported": "مستوردة",
+    "doneRestored": "مستعادة",
     "doneUpdated": "محدّثة",
     "doneSkipped": "متخطاة",
     "doneCreatedFolders": "مجلدات منشأة",
@@ -2008,6 +2046,49 @@
           "more": "المزيد"
         },
         "showPet": "إظهار الحيوان الأليف"
+      },
+      "mcp": {
+        "title": "خدمة codeg-mcp",
+        "state": {
+          "running": "قيد التشغيل",
+          "stopped": "متوقفة",
+          "disabled": "لا أدوات مفعّلة",
+          "unavailable": "المرافق مفقود",
+          "unknown": "غير معروف"
+        },
+        "hint": {
+          "running": "الوكلاء المشغّلون من هنا يمكنهم استخدام أدوات codeg.",
+          "stopped": "مقبس الوسيط لا يستجيب.",
+          "disabled": "جميع مجموعات الأدوات معطّلة.",
+          "unavailable": "ملف codeg-mcp التنفيذي غير موجود على القرص.",
+          "unknown": "تعذّرت قراءة الحالة."
+        },
+        "socketPath": "العنوان",
+        "binary": "المرافق",
+        "binaryMissing": "غير موجود",
+        "sessions": "الجلسات",
+        "activeDelegations": "التفويضات",
+        "depthLimit": "حد العمق",
+        "tools": "الأدوات",
+        "groupDelegation": "التفويض",
+        "descDelegation": "يسلّم مهمة إلى وكيل آخر.",
+        "groupFeedback": "الملاحظات الحية",
+        "descFeedback": "يضيف ملاحظات دون مقاطعة الدور.",
+        "groupAsk": "سؤال المستخدم",
+        "descAsk": "يدع الوكيل يسألك قبل أن يقرر.",
+        "groupSessions": "الاطلاع على الجلسات",
+        "descSessions": "يبحث في الجلسات السابقة ونتائجها.",
+        "groupAutomations": "إنشاء أتمتة",
+        "descAutomations": "ينشئ الأتمتة المجدولة ويديرها.",
+        "groupTaskboard": "إنشاء مهمة",
+        "descTaskboard": "ينشئ مهام العمل ويديرها.",
+        "start": "بدء الخدمة",
+        "starting": "جارٍ البدء…",
+        "actionFailed": "فشلت العملية: {message}",
+        "lastError": "آخر خطأ: {message}",
+        "loadFailed": "تعذّرت قراءة الحالة: {message}",
+        "openSettings": "فتح الإعدادات الكاملة",
+        "refresh": "تحديث"
       }
     },
     "auxPanel": {
@@ -2830,6 +2911,8 @@
         "eventErrorTitle": "خطأ الوكيل",
         "notificationTurnComplete": "{agent} أنهى الاستجابة",
         "notificationError": "{agent} خطأ: {message}",
+        "notificationQuestion": "{agent} ينتظر إجابتك",
+        "notificationErrorRedacted": "واجه {agent} خطأً",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",
           "retryingWithMax": "إعادة المحاولة {attempt}/{max}",
@@ -2883,6 +2966,9 @@
         "cut": "قص",
         "copy": "نسخ",
         "selectAll": "تحديد الكل",
+        "openLink": "فتح الرابط",
+        "openFile": "فتح الملف",
+        "sendEmail": "إرسال بريد",
         "pasteUnavailable": "تعذّر قراءة الحافظة. استخدم Ctrl/⌘V للصق.",
         "clipboardWriteFailed": "تعذّرت الكتابة إلى الحافظة. استخدم اختصار لوحة المفاتيح.",
         "quickMessageUntitled": "بدون عنوان",
@@ -3622,7 +3708,9 @@
         "compacting": "جارٍ ضغط السياق…",
         "compacted": "تم ضغط السياق",
         "compactedTokens": "تم ضغط السياق · {before} → {after} رمز",
-        "failed": "فشل ضغط السياق"
+        "failed": "فشل ضغط السياق",
+        "triggerManual": "تم التشغيل يدويًا",
+        "triggerAutomatic": "تم التشغيل تلقائيًا"
       },
       "sessionFailure": {
         "category": {
@@ -3646,6 +3734,8 @@
       },
       "backgroundTasks": {
         "settledFallback": "انتهت مهمة الخلفية ({status})",
+        "notifySettledOne": "{agent}: انتهت مهمة في الخلفية",
+        "notifySettledMany": "{agent}: انتهت {count} مهمات في الخلفية",
         "cardRunning": "قيد التشغيل في الخلفية",
         "cardLaunchedPending": "بدأت مهمة الخلفية",
         "cardCompleted": "اكتملت مهمة الخلفية",
@@ -3678,6 +3768,16 @@
       "viewMode": {
         "split": "التبديل إلى العرض جنباً إلى جنب",
         "unified": "التبديل إلى العرض المضمّن"
+      },
+      "binaryFile": "ملف ثنائي — لا يتم عرض المحتوى",
+      "image": {
+        "sideBySide": "التبديل إلى العرض جنباً إلى جنب",
+        "swipe": "التبديل إلى عرض التمرير",
+        "swipeHandle": "شريط تمرير مقارنة الصور",
+        "noImage": "لا توجد صورة في هذه المراجعة",
+        "unavailable": "تعذر تحميل هذا الجانب",
+        "tooLarge": "الصورة كبيرة جدًا للمعاينة ({size})",
+        "loading": "جارٍ تحميل الصور..."
       }
     },
     "conversationContextBar": {
@@ -4456,7 +4556,15 @@
       "button": "تصدير النسخة الاحتياطية",
       "inProgress": "جارٍ إنشاء النسخة الاحتياطية…",
       "success": "تم إنشاء النسخة الاحتياطية.",
-      "started": "بدأ تنزيل النسخة الاحتياطية."
+      "started": "بدأ تنزيل النسخة الاحتياطية.",
+      "degradedTitle": "احتاجت بعض قواعد بيانات جلسات الوكلاء إلى معالجة خاصة",
+      "degradedHint": "تحفظ هذه الوكلاء جلساتها في SQLite. ما لم يُذكر خلاف ذلك أدناه، فهي مضمَّنة في النسخة الاحتياطية.",
+      "degradedMore": "…و{count} غيرها.",
+      "degradedLevel": {
+        "recoveredOnCopy": "استُعيدت من نسخة خاصة — كاملة",
+        "bareFileOnly": "أُرشفت بدون سجل الكتابة المسبقة — قد تنقص أحدث الرسائل",
+        "notArchived": "لم تُؤرشف — ظلت تتغير أثناء النسخ"
+      }
     },
     "restore": {
       "selectFile": "اختر ملف النسخة الاحتياطية",
@@ -4494,11 +4602,37 @@
         "scanning": "جارٍ التحقق من التعارضات…",
         "noConflicts": "لن تتم الكتابة فوق أي ملف موجود.",
         "conflictCount": "سيتأثر {count} من الملفات الموجودة.",
-        "conflictSkipNote": "تُحفظ الملفات الموجودة (تُتخطى) ما لم تفعّل الكتابة فوقها."
+        "conflictSkipNote": "تُحفظ الملفات الموجودة (تُتخطى) ما لم تفعّل الكتابة فوقها.",
+        "agentsRunning": "يعمل {count} من الوكلاء ({agents}). أغلقها أولًا، وإلا فستُحفظ سجلات المحادثات في مجلد جانبي بدل إعادتها إلى مواضعها الأصلية."
       },
-      "restartFailed": "تم تجهيز الاستعادة، لكن تعذّر إعادة تشغيل الخادم. أعد تشغيله يدويًا لتطبيقها."
+      "restartFailed": "تم تجهيز الاستعادة، لكن تعذّر إعادة تشغيل الخادم. أعد تشغيله يدويًا لتطبيقها.",
+      "discardPending": "تجاهل الاستعادة المُجهَّزة",
+      "discarded": "تم تجاهل الاستعادة المُجهَّزة.",
+      "pendingBlockedHint": "توجد بالفعل استعادة مُجهَّزة تنتظر إعادة التشغيل. تجاهلها لتجهيز أخرى.",
+      "result": {
+        "title": "تم تجهيز الاستعادة",
+        "needsRestart": "ستُطبَّق عند التشغيل التالي. تُؤخذ لقطة من بياناتك الحالية أولًا.",
+        "downgraded": "كان {agents} قيد التشغيل، لذلك لم تُكتب سجلات المحادثات في مواضعها الأصلية، بل حُفظت في {path}.",
+        "skipped": "أُبقي على {count} من الملفات الموجودة",
+        "refused": "لم تُكتب {count} من قواعد بيانات الجلسات",
+        "refusedHint": "هي من نسخة احتياطية أقدم كانت تحفظ قاعدة البيانات وسجل الكتابة المسبقة منفصلين، ولا يمكن إثبات تطابقهما. لم تُمسّ قواعد بياناتك الحالية — استعِد إلى مجلد جانبي للحصول على الملفات الأصلية.",
+        "restartNow": "إعادة التشغيل الآن",
+        "later": "لاحقًا"
+      }
     },
-    "remoteUnsupported": "يعمل النسخ الاحتياطي والاستعادة على بيانات الجهاز الذي يشغّل codeg. أنت متصل بمساحة عمل بعيدة — أدِر نسخها الاحتياطية من ذلك الخادم مباشرة."
+    "remoteUnsupported": "يعمل النسخ الاحتياطي والاستعادة على بيانات الجهاز الذي يشغّل codeg. أنت متصل بمساحة عمل بعيدة — أدِر نسخها الاحتياطية من ذلك الخادم مباشرة.",
+    "progress": {
+      "cancel": "إلغاء"
+    },
+    "snapshots": {
+      "title": "لقطات ما قبل الاستعادة",
+      "hint": "تأخذ كل استعادة لقطة من بياناتك الحالية أولًا، ويُحتفظ بأحدث لقطتين.",
+      "empty": "لا توجد لقطات بعد.",
+      "rollback": "العودة إلى هذه",
+      "unsupported": "للاطلاع فقط",
+      "rollbackConfirmTitle": "العودة إلى هذه اللقطة؟",
+      "rollbackConfirmBody": "سيستبدل هذا بياناتك الحالية باللقطة ثم يعيد التشغيل. تُؤخذ لقطة من البيانات المستبدَلة أولًا."
+    }
   },
   "backup": {
     "restore": {
@@ -4560,6 +4694,45 @@
     "saved": "تم حفظ إعدادات الأدوات",
     "saveFailed": "تعذّر حفظ إعدادات الأدوات",
     "loadFailed": "فشل التحميل: {detail}"
+  },
+  "DesktopNotificationSettings": {
+    "title": "إشعارات سطح المكتب",
+    "description": "إظهار إشعار من النظام عندما يحتاجك أحد الوكلاء. الإعداد خاص بكل جهاز — وهو مستقل في أي متصفح أو جهاز آخر.",
+    "permissionTitle": "الإذن",
+    "permissionGranted": "مسموح",
+    "permissionDenied": "محظور",
+    "permissionDefault": "لم يُطلب بعد",
+    "permissionUnsupported": "غير متاح",
+    "permissionManagedByOs": "يديره النظام",
+    "permissionGrantedHint": "سيعرض هذا المتصفح إشعارات Codeg.",
+    "permissionDeniedHint": "يحجب هذا المتصفح إشعارات Codeg. لا يمكن التراجع إلا من إعدادات الموقع في المتصفح — لا تستطيع الصفحة أن تسأل مرة أخرى.",
+    "permissionDefaultHint": "لم يُسأل هذا المتصفح بعد. لن تصل أي إشعارات حتى تسمح بها.",
+    "permissionUnsupportedHint": "تحتاج الإشعارات إلى سياق آمن. افتح هذا الخادم عبر HTTPS أو على localhost.",
+    "permissionManagedByOsHint": "يرسل تطبيق سطح المكتب عبر مركز إشعارات النظام، والنظام لا يخبرنا إن كان Codeg مسموحًا له. أرسل اختبارًا لتعرف.",
+    "identityTitle": "يُرسل باسم",
+    "identityHint": "يسجّل النظام هذه الإشعارات باسم هذا التطبيق، والمفاتيح السارية هي مفاتيحه هو.",
+    "identityDegradedHint": "تعذّر استخدام معرّف Codeg الخاص، لذا يرسلها النظام باسم {bundleId} وتسري مفاتيح ذلك التطبيق. ثبّت Codeg في مجلد التطبيقات لاستعادة هويته.",
+    "requestPermission": "السماح بالإشعارات",
+    "permissionGrantedToast": "تم السماح بالإشعارات.",
+    "permissionDeniedToast": "تم حجب الإشعارات. أعد تفعيلها من إعدادات الموقع في متصفحك.",
+    "openSystemSettings": "فتح إعدادات النظام",
+    "openSystemSettingsFailed": "تعذر فتح إعدادات إشعارات النظام.",
+    "sendTest": "إرسال اختبار",
+    "testTitle": "Codeg",
+    "testBody": "إشعارات سطح المكتب تعمل.",
+    "testSent": "تم إرسال إشعار الاختبار.",
+    "testFailed": "تعذر إرسال إشعار الاختبار.",
+    "whenTitle": "وقت الإشعار",
+    "whenHint": "النافذة على شاشة ثانية مرئية لكنها غير نشطة — اختر «النافذة غير نشطة» إن كانت الإشعارات لا تصل أبدًا.",
+    "whenAlways": "دائمًا",
+    "whenUnfocused": "النافذة غير نشطة",
+    "whenHidden": "النافذة غير مرئية",
+    "hideBody": "إخفاء محتوى الإشعار",
+    "hideBodyHint": "إظهار سطر عام بدل مخرجات الوكيل. يحتفظ مركز الإشعارات بالمحتوى خارج التطبيق، حتى بعد إغلاق المحادثة. يظل العنوان يذكر اسم المجلد لتعرف إلى أي نافذة تعود.",
+    "eventsTitle": "الأحداث",
+    "eventsHint": "أوقف أي حدث لا تريده أن يقاطعك. تُدمج تكرارات الحدث نفسه خلال ثوانٍ في إشعار واحد.",
+    "eventBackgroundTask": "مهمة في الخلفية",
+    "eventWorkTask": "مهمة عمل"
   },
   "NotificationSoundSettings": {
     "title": "أصوات التنبيه",
@@ -4872,6 +5045,8 @@
     "errorView": "عرض",
     "notifyReview": "جاهزة للمراجعة: {title}",
     "notifyFailed": "فشلت المهمة: {title}",
+    "notifyReviewRedacted": "هناك مهمة جاهزة للمراجعة",
+    "notifyFailedRedacted": "فشلت إحدى المهمات",
     "createFromMessage": "إنشاء مهمة من الرسالة",
     "detailTokens": "إجمالي الرموز",
     "editorTitleNew": "مهمة جديدة",
@@ -5347,7 +5522,7 @@
     "noRemote": "لا يحتوي هذا المجلد على remote معروف (origin)",
     "errors": {
       "noAccount": "لا يوجد حساب {provider} مُهيّأ للمضيف {host}. أضف حسابًا من الإعدادات ← التحكم بالإصدارات لتحميل هذا المستودع.",
-      "unsupportedHost": "لوحة المستودع تدعم GitHub و GitLab فقط، و{host} لا يُعرَف كأي منهما. إذا كان مثيلًا مستضافًا ذاتيًا من GitHub Enterprise أو GitLab، فأضف له حسابًا من الإعدادات ← التحكم بالإصدارات.",
+      "unsupportedHost": "لوحة المستودع تدعم GitHub و GitLab و Gitea فقط، و{host} لا يُعرَف كأي منها. إذا كان مثيلًا مستضافًا ذاتيًا من GitHub Enterprise أو GitLab أو Gitea أو Forgejo، فأضف له حسابًا من الإعدادات ← التحكم بالإصدارات.",
       "wrongForge": "{host} هو {provider}، وليس المنصة التي كان مصنّفًا ضمنها. تم تصحيح الاكتشاف — أعد التحميل للمحاولة مجددًا."
     },
     "addAccount": "إضافة حساب",

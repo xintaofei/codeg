@@ -19,10 +19,18 @@ use crate::models::message::{ContentBlock, MessageTurn, TurnRole};
 ///
 /// They resolve it differently, which is why all three halves exist:
 ///
-/// * **claude-agent-acp 0.73.0** matches `message_id` against its own
-///   `messageIdForGrouping` (the API message id, else the record uuid) and
-///   ignores the fingerprint entirely. `crate::parsers::claude` derives exactly
-///   that id into [`crate::models::MessageTurn::agent_message_id`].
+/// * **claude-agent-acp 0.75.1** resolves in three levels: `message_id` against
+///   the live id map, then against `messageIdForGrouping` (the API message id,
+///   else the record uuid) along the ACTIVE parentUuid chain, then — new in
+///   0.75.1 — against the full persisted transcript INCLUDING abandoned
+///   branches, where a failed id finally falls through to the fingerprint. Up
+///   to 0.74.0 it ignored the fingerprint entirely, so codeg sent the id alone;
+///   from 0.75.1 both halves are sent, which is what turns a fork point on an
+///   abandoned branch from a silent tail-fork into an exact hit.
+///   `crate::parsers::claude` derives the id into
+///   [`crate::models::MessageTurn::agent_message_id`], and the hash side is
+///   byte-compatible with what `fingerprint_agent_message` computes (a single
+///   fingerprint match even wins regardless of occurrence).
 /// * **codex-acp 1.8.0** first matches `message_id` against `items[].id`, then
 ///   falls back to hashing each agent message and taking the
 ///   `message_occurrence`-th match. Codex rollout files record NO item ids, so
@@ -102,12 +110,6 @@ pub fn resolve_fork_point(
     let turn = &turns[idx];
 
     match agent_type {
-        // Claude names its own messages and matches on nothing else.
-        AgentType::ClaudeCode => turn.agent_message_id.clone().map(|message_id| ForkPoint {
-            message_id,
-            message_fingerprint: None,
-            message_occurrence: None,
-        }),
         // Codex rollouts carry no item ids, so the id can never match and the
         // fingerprint is the only thing that resolves. `message_id` is still
         // required by the wire contract, so it carries codeg's own turn id —
@@ -126,13 +128,23 @@ pub fn resolve_fork_point(
                 message_occurrence: u32::try_from(occurrence).ok(),
             })
         }
-        // DeepSeek reads both halves, so send both. The id resolves on its own
-        // whenever the log named the message, and the fingerprint is what still
-        // resolves when it did not (a log written without an `id`, or a parse
-        // that began mid-log). Sending the fingerprint alongside an id costs
-        // nothing: the adapter stops at the first id that matches and never
-        // looks at it.
-        AgentType::DeepSeek => {
+        // DeepSeek and Claude 0.75.1 both read the two halves in the same
+        // order, so both are sent. The id resolves on its own whenever the
+        // transcript named the message, and the fingerprint is what still
+        // resolves when it did not — a DeepSeek log written without an `id` or
+        // a parse that began mid-log; on Claude, a fork point that has drifted
+        // off the active parentUuid chain onto an abandoned branch. Sending the
+        // fingerprint alongside an id costs nothing: both adapters stop at the
+        // first id that matches and never look at it.
+        //
+        // The `text.trim().is_empty()` guard below is load-bearing on Claude,
+        // not just tidiness. Every turn `parsers::claude` leaves unnamed is one
+        // codeg SYNTHESIZED with no text of its own (a `/goal` marker, a bare
+        // top-level `tool_use`, a bare `tool_result`); `fingerprint("")` would
+        // match every text-free grouping on the agent's side at once and then
+        // pick between them by occurrence, forking somewhere arbitrary. A tail
+        // fork is the honest answer for those.
+        AgentType::ClaudeCode | AgentType::DeepSeek => {
             let text = turn_text(turn);
             let fingerprint = (!text.trim().is_empty()).then(|| fingerprint_agent_message(&text));
             // Neither half can name this turn — an assistant bubble opened by a
@@ -144,9 +156,10 @@ pub fn resolve_fork_point(
                 .as_ref()
                 .map(|fp| fingerprint_occurrence(turns, idx, fp));
             Some(ForkPoint {
-                // Same reasoning as codex when the log named nothing: the field
-                // is required, and codeg's own turn id is deliberately
-                // something DeepSeek will not find, which is what makes it fall
+                // Same reasoning as codex when the transcript named nothing:
+                // the field is required, and codeg's own turn id (`turn-<n>`,
+                // a position, never a record uuid) is deliberately something
+                // neither adapter will find, which is what makes it fall
                 // through to the fingerprint.
                 message_id: turn
                     .agent_message_id
@@ -261,9 +274,9 @@ mod tests {
         );
     }
 
-    /// Claude's optional halves stay absent rather than null — it validates the
-    /// fingerprint's shape when present, so sending `null` would be worse than
-    /// sending nothing.
+    /// The optional halves stay absent rather than null — every adapter
+    /// validates the fingerprint's shape when present, so sending `null` would
+    /// be worse than sending nothing.
     #[test]
     fn meta_omits_absent_fingerprint_and_occurrence() {
         let meta = ForkPoint {
@@ -277,24 +290,66 @@ mod tests {
         assert!(fork.get("messageOccurrence").is_none());
     }
 
+    /// The id the parser derived leads, and 0.75.1 also reads the fingerprint,
+    /// so both go out: the id resolves on the active chain, the fingerprint is
+    /// what still resolves once the point has drifted onto an abandoned branch.
     #[test]
-    fn claude_forks_by_the_id_the_parser_derived() {
+    fn claude_sends_the_derived_id_and_the_fingerprint_together() {
         let turns = vec![
             turn("turn-0", TurnRole::User, "hi", None),
             turn("turn-1", TurnRole::Assistant, "hello", Some("msg_01")),
         ];
         let point = resolve_fork_point(&turns, "turn-1", AgentType::ClaudeCode).unwrap();
         assert_eq!(point.message_id, "msg_01");
-        // Claude ignores the fingerprint, so sending one would be noise.
-        assert!(point.message_fingerprint.is_none());
+        assert_eq!(
+            point.message_fingerprint.as_deref(),
+            Some(fingerprint_agent_message("hello").as_str())
+        );
+        // Claude needs BOTH halves to use the fingerprint at all, so an
+        // occurrence must ride along with it.
+        assert_eq!(point.message_occurrence, Some(1));
     }
 
-    /// A turn Claude never named cannot be forked at; the caller degrades to a
-    /// tail fork rather than sending an id the agent would reject.
+    /// A turn Claude never named still forks by content — 0.75.1 falls through
+    /// to the fingerprint when the id misses, and `turn-<n>` is a position that
+    /// can never collide with a record uuid.
     #[test]
-    fn claude_declines_a_turn_with_no_agent_id() {
+    fn claude_falls_back_to_the_fingerprint_with_no_agent_id() {
         let turns = vec![turn("turn-1", TurnRole::Assistant, "hello", None)];
-        assert!(resolve_fork_point(&turns, "turn-1", AgentType::ClaudeCode).is_none());
+        let point = resolve_fork_point(&turns, "turn-1", AgentType::ClaudeCode).unwrap();
+        assert_eq!(point.message_id, "turn-1");
+        assert_eq!(
+            point.message_fingerprint.as_deref(),
+            Some(fingerprint_agent_message("hello").as_str())
+        );
+    }
+
+    /// The one case that must stay a tail fork: a turn codeg synthesized with
+    /// no text and no id. `fingerprint("")` would match every text-free
+    /// grouping on Claude's side, so guessing between them by occurrence is
+    /// strictly worse than not naming a point at all.
+    #[test]
+    fn claude_declines_a_synthesized_turn_with_neither_id_nor_text() {
+        let mut t = turn("turn-1", TurnRole::Assistant, "", None);
+        t.blocks = vec![ContentBlock::ToolUse {
+            tool_use_id: Some("tl-tool-0".into()),
+            tool_name: "Bash".into(),
+            input_preview: None,
+            status: None,
+            meta: None,
+        }];
+        assert!(resolve_fork_point(&[t], "turn-1", AgentType::ClaudeCode).is_none());
+    }
+
+    /// A textless turn Claude DID name is still a fork point by id alone.
+    #[test]
+    fn claude_forks_a_textless_named_turn_by_its_id_alone() {
+        let mut t = turn("turn-1", TurnRole::Assistant, "", Some("msg_01"));
+        t.blocks = Vec::new();
+        let point = resolve_fork_point(&[t], "turn-1", AgentType::ClaudeCode).unwrap();
+        assert_eq!(point.message_id, "msg_01");
+        assert!(point.message_fingerprint.is_none());
+        assert!(point.message_occurrence.is_none());
     }
 
     #[test]
@@ -359,8 +414,8 @@ mod tests {
         assert!(resolve_fork_point(&[t], "turn-1", AgentType::Codex).is_none());
     }
 
-    /// DeepSeek is the one adapter that reads BOTH halves, so both are sent —
-    /// unlike Claude, whose arm must leave the fingerprint out.
+    /// DeepSeek reads BOTH halves, so both are sent — unlike codex, whose id
+    /// half can never resolve.
     #[test]
     fn deepseek_sends_the_log_id_and_the_fingerprint_together() {
         let turns = vec![

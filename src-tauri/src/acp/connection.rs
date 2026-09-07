@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use sacp::schema::{
@@ -74,9 +75,74 @@ pub use in_memory_transport::{
     in_memory_agent_pair, InMemoryAgentEnds, InMemoryAgentTransport,
 };
 
+/// Injected into the agent process only when the user has opted in — see
+/// [`force_command_color_enabled`] for why it is not a default.
 const DEFAULT_COMMAND_COLOR_ENV: [(&str, &str); 1] = [("CLICOLOR_FORCE", "1")];
 
+/// Whether launches force color out of agent-run commands. Mirrors
+/// `SystemTerminalSettings.colorize_command_output`, applied at startup and on
+/// every save.
+///
+/// A process global rather than a handle threaded through the launch path
+/// because [`merge_agent_env`] is a sync function with a dozen callers (down to
+/// `antigravity_launch_env`, which the settings panel calls with no connection
+/// in hand), and it already reads two other ambient sources the same way —
+/// `proxy::current_proxy_env_vars` and `prepend_officecli_path`.
+static FORCE_COMMAND_COLOR: AtomicBool = AtomicBool::new(false);
+
+/// Whether a launch should put `CLICOLOR_FORCE=1` in the agent's environment.
+///
+/// **Off by default**, which is a behavior change: launches used to force it
+/// unconditionally. The feature it buys is real — codeg preserves ANSI through
+/// tool-call output streaming ([`trim_partial_ansi_tail`]) so the transcript's
+/// `<Terminal>` card renders command output in color — but the cost was paid by
+/// everything else in the process tree.
+///
+/// codeg cannot scope the force to the output it renders. Agents like Claude
+/// Code run their bash tool IN-PROCESS, so the commands whose color shows up in
+/// the card are not spawned by codeg at all; the only reachable lever is the
+/// agent's own environment, which every descendant inherits. So the same
+/// variable that colors the terminal card also colors the output the agent
+/// pipes into `jq` — and `CLICOLOR_FORCE` is, by ecosystem convention, the one
+/// color variable `NO_COLOR` cannot override (`gh`, via go-gh, computes
+/// `forced || (!disabled && isTTY)`), so no downstream command can opt back
+/// out. `gh pr list --json number` emits ANSI *inside* the JSON, and the parse
+/// fails.
+///
+/// The quieter cost is that the agent captures those escapes into its OWN
+/// context: every command it runs spends tokens on escape sequences and risks
+/// the model misreading output it needs to parse. That is charged on every turn
+/// whether or not anyone looks at the colored card, which is why the default is
+/// off rather than on-with-an-escape-hatch.
+///
+/// Users who want the colored transcript turn it on in General Settings. A
+/// per-agent `CLICOLOR_FORCE` in the agent's env row still wins either way —
+/// `runtime_env` outranks this default in [`merge_agent_env`].
+pub fn force_command_color_enabled() -> bool {
+    FORCE_COMMAND_COLOR.load(Ordering::Relaxed)
+}
+
+/// Point live launches at the current setting. Called once at startup from the
+/// persisted row and again on every save, so an already-running app picks the
+/// change up on its next connection without a restart.
+pub fn set_force_command_color(enabled: bool) {
+    FORCE_COMMAND_COLOR.store(enabled, Ordering::Relaxed);
+}
+
 fn merge_agent_env(
+    env: &[(&'static str, &'static str)],
+    runtime_env: &BTreeMap<String, String>,
+) -> Vec<(String, String)> {
+    merge_agent_env_with_color(force_command_color_enabled(), env, runtime_env)
+}
+
+/// [`merge_agent_env`] with the color decision handed in.
+///
+/// Split out for the same reason as [`antigravity_acp_dir_with_inherited`]: the
+/// setting lives in a process global, and a test that wrote it would silently
+/// race every other test in this module that merges an env.
+fn merge_agent_env_with_color(
+    force_color: bool,
     env: &[(&'static str, &'static str)],
     runtime_env: &BTreeMap<String, String>,
 ) -> Vec<(String, String)> {
@@ -84,8 +150,10 @@ fn merge_agent_env(
     // to keep precedence while avoiding repeated O(n) scans.
     let mut merged = BTreeMap::<String, String>::new();
 
-    for (key, value) in DEFAULT_COMMAND_COLOR_ENV {
-        merged.insert(key.to_string(), value.to_string());
+    if force_color {
+        for (key, value) in DEFAULT_COMMAND_COLOR_ENV {
+            merged.insert(key.to_string(), value.to_string());
+        }
     }
 
     for (key, value) in env {
@@ -4502,7 +4570,7 @@ async fn cancel_parent_turn_work(injection: &DelegationInjection, connection_id:
 /// injection — never paper over with a phantom path, because that fails
 /// inside the agent's MCP spawn loop and may take the entire ACP session
 /// down on stricter agents.
-fn locate_codeg_mcp_binary() -> Option<PathBuf> {
+pub fn locate_codeg_mcp_binary() -> Option<PathBuf> {
     let filename = if cfg!(windows) {
         "codeg-mcp.exe"
     } else {
@@ -12728,8 +12796,9 @@ fn grok_ext_notification_is_alert(dispatch: &Dispatch, agent_type: AgentType) ->
     }
 }
 
-/// codex-acp 1.9.0's `_auth/status_update` — the agent reporting which identity
-/// IT is logged in with.
+/// `_auth/status_update` — the agent reporting which identity IT is logged in
+/// with. Introduced by codex-acp 1.9.0; claude-agent-acp 0.75.0 adopted the
+/// same method with its own vocabulary.
 ///
 /// Connection-level: unlike every other agent push codeg reads, the params carry
 /// NO `sessionId`, which is exactly why it needs a handler of its own (see
@@ -12745,11 +12814,22 @@ struct AuthStatusUpdateNotification {
 
 /// Claim `_auth/status_update` and drop it, loudly enough to be greppable.
 ///
-/// codex-acp pushes this unconditionally — once right after the `initialize`
-/// response, then on every authenticate / logout / session create, and whenever
-/// the app-server reports `account/updated`. It is not gated on anything codeg
-/// advertises; the agent merely ANNOUNCES the channel with
-/// `agentCapabilities._meta.authStatus = {}`.
+/// Two agents push it, both unconditionally. codex-acp 1.9.0: once right after
+/// the `initialize` response, then on every authenticate / logout / session
+/// create, and whenever the app-server reports `account/updated`.
+/// claude-agent-acp 0.75.0: the same points PLUS one codex does not have — the
+/// start of every user prompt, which fires an async `claude auth status --json`
+/// probe (5s timeout), so a push can land MID-TURN and a consumer must not
+/// assume the channel is quiet while a turn is open. Neither is gated on
+/// anything codeg advertises; the agent merely ANNOUNCES the channel with
+/// `agentCapabilities._meta.authStatus = {}`, and codeg registers this handler
+/// for every agent rather than per type, so a third adopter is already claimed.
+///
+/// Both push only when the payload DIFFERS from the last one sent, so the
+/// absence of a push means "unchanged", never "not signed in". Claude draws one
+/// more distinction worth keeping: it stays SILENT when it cannot determine the
+/// identity at all (probe failed, timed out, unparseable), and reserves
+/// `kind: "none"` for a known signed-OUT state.
 ///
 /// A handler is registered rather than letting it fall through because falling
 /// through is not free. sacp walks the handler chain, finds no claimant (the
@@ -12762,11 +12842,12 @@ struct AuthStatusUpdateNotification {
 /// the bump from introducing that.
 ///
 /// Nothing consumes the payload yet, and that is a deliberate stop: the status
-/// describes the AGENT-owned login only (routing codeg itself configured through
-/// `providers/set` is explicitly excluded upstream), and every failure it could
-/// warn about already arrives as an AIR `sessionFailure` carrying an actionable
-/// `login`. The shape is recorded here so a future consumer does not have to
-/// re-derive it:
+/// describes the AGENT-owned login only (on codex, routing codeg itself
+/// configured through `providers/set` is explicitly excluded upstream), and on
+/// both agents every failure it could warn about already arrives as an AIR
+/// `sessionFailure` carrying an actionable `login` — claude 0.74.0 additionally
+/// rejects the prompt with `authRequired`. The shape is recorded here so a
+/// future consumer does not have to re-derive it:
 ///
 ///   {"authStatus": {"kind": "account" | "api_key" | "external" | "gateway"
 ///                           | "none",
@@ -12778,13 +12859,16 @@ struct AuthStatusUpdateNotification {
 ///
 /// Observed against a live 1.10.0 whose `~/.codex/config.toml` selects a custom
 /// provider: `{"kind":"gateway","label":"Custom model gateway","detail":"codeg"}`.
+/// Against a live claude-agent-acp 0.75.1 with no credential:
+/// `{"kind":"none","label":"Not logged in"}`.
 /// The payload is NOT logged whole: `account.email` and `account.organization`
 /// are the signed-in person's identity, and codeg's log file is user-visible
 /// (and shipped in diagnostics). `kind` and `label` are the two fields that
 /// answer "which identity is this connection using", and neither identifies a
-/// person — `label` is one of a fixed vocabulary ("ChatGPT Pro", "OpenAI API
-/// key", "Custom model gateway", "Not logged in") plus, for a gateway, the
-/// provider id the user configured locally.
+/// person — `label` is one of a fixed per-agent vocabulary ("ChatGPT Pro",
+/// "OpenAI API key", "Custom model gateway", "Not logged in" on codex; "Claude
+/// Max", "Anthropic API key", "AWS Bedrock", "Not logged in" on claude) plus,
+/// for a gateway, the provider id the user configured locally.
 fn handle_auth_status_update(agent_type: AgentType, notif: AuthStatusUpdateNotification) {
     let field = |key: &str| {
         notif
@@ -20851,6 +20935,51 @@ mod tests {
         let (p2, append) = cache.consume("t1", "fresh+more").expect("emit");
         assert!(append, "should detect extension of freshly seeded entry");
         assert_eq!(p2, "+more");
+    }
+
+    // ─── merge_agent_env_with_color ─────────────────────────────────────
+
+    fn merged_value<'a>(merged: &'a [(String, String)], key: &str) -> Option<&'a str> {
+        merged
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// The default launch must NOT force color. `CLICOLOR_FORCE` outranks
+    /// `NO_COLOR` by convention, so injecting it leaves no way for an
+    /// agent-run `gh … --json` to get parseable output back.
+    #[test]
+    fn merge_agent_env_omits_clicolor_force_by_default() {
+        let merged = merge_agent_env_with_color(false, &[], &BTreeMap::new());
+        assert_eq!(merged_value(&merged, "CLICOLOR_FORCE"), None);
+    }
+
+    #[test]
+    fn merge_agent_env_injects_clicolor_force_when_opted_in() {
+        let merged = merge_agent_env_with_color(true, &[], &BTreeMap::new());
+        assert_eq!(merged_value(&merged, "CLICOLOR_FORCE"), Some("1"));
+    }
+
+    /// The opt-in is a DEFAULT, not an override: a per-agent env row still
+    /// wins, so a user who turned the toggle on globally can still exempt one
+    /// agent (and the machine-parsing escape hatch keeps working).
+    #[test]
+    fn runtime_env_still_outranks_the_color_default() {
+        let runtime_env = BTreeMap::from([("CLICOLOR_FORCE".to_string(), "0".to_string())]);
+        let merged = merge_agent_env_with_color(true, &[], &runtime_env);
+        assert_eq!(merged_value(&merged, "CLICOLOR_FORCE"), Some("0"));
+    }
+
+    /// Turning the toggle off must not disturb anything else the merge does —
+    /// the registry env and the per-agent row still land.
+    #[test]
+    fn merge_agent_env_without_color_keeps_other_layers() {
+        let runtime_env = BTreeMap::from([("FROM_ROW".to_string(), "row".to_string())]);
+        let merged =
+            merge_agent_env_with_color(false, &[("FROM_REGISTRY", "registry")], &runtime_env);
+        assert_eq!(merged_value(&merged, "FROM_REGISTRY"), Some("registry"));
+        assert_eq!(merged_value(&merged, "FROM_ROW"), Some("row"));
     }
 
     // ─── trim_partial_ansi_tail ─────────────────────────────────────────

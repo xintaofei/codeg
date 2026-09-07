@@ -235,7 +235,7 @@ pub struct MessageTurn {
     ///
     /// Set only where a turn can be a fork point: `session/fork` takes an AIR
     /// fork point (`_meta.jetbrains.air.fork.messageId`) and claude-agent-acp
-    /// 0.73.0, codex-acp 1.8.0 and deepseek-acp 0.8.0 all resolve it against
+    /// 0.75.1, codex-acp 1.8.0 and deepseek-acp 0.8.0 all resolve it against
     /// their own message identity, so a fork "up to here" needs the agent's
     /// spelling of "here". Claude's is `assistant.message.id ?? uuid` and
     /// DeepSeek's is the session log's `message.id` — both pure functions of

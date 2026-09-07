@@ -196,7 +196,33 @@
       "panelOpacityHint": "Opacité de la barre latérale, des panneaux et des barres d'onglets. Plus c'est bas, plus l'image transparaît.",
       "errorTooLarge": "L'image est trop volumineuse (16 Mo maximum).",
       "errorUnsupportedFormat": "Format d'image non pris en charge. Choisissez un PNG, JPEG, WebP ou GIF.",
-      "errorUploadFailed": "Échec de la définition de l'image d'arrière-plan."
+      "errorUploadFailed": "Échec de la définition de l'image d'arrière-plan.",
+      "market": {
+        "open": "Marché des fonds d'écran",
+        "title": "Marché des fonds d'écran",
+        "description": "Parcourez la galerie publique Wallhaven ; cliquez pour télécharger et appliquer.",
+        "searchPlaceholder": "Rechercher des fonds d'écran…",
+        "categories": {
+          "all": "Tout",
+          "general": "Paysages",
+          "anime": "Anime",
+          "people": "Personnes"
+        },
+        "pageInfo": "Page {page} sur {lastPage}",
+        "prevPage": "Précédent",
+        "nextPage": "Suivant",
+        "refresh": "Actualiser",
+        "empty": "Aucun fond d'écran correspondant.",
+        "error": "Échec du chargement du marché des fonds d'écran.",
+        "retry": "Réessayer",
+        "cardLabel": "Appliquer le fond d’écran {id}",
+        "applied": "Utilisé",
+        "unavailable": "Indisponible",
+        "tooLarge": "Trop volumineux pour un fond d’écran : {actual} (limite {limit})",
+        "downloadFailed": "Échec du téléchargement. Veuillez réessayer.",
+        "appliedToast": "Fond d'écran appliqué",
+        "credit": "Images de wallhaven.cc · SFW uniquement"
+      }
     }
   },
   "SystemSettings": {
@@ -304,6 +330,10 @@
     "gitlabDescription": "Gérez les comptes GitLab pour l'authentification. Les jetons sont stockés localement.",
     "gitlabTokenHint": "Créez un jeton d'accès personnel avec la portée api dans GitLab → Preferences → Access tokens.",
     "gitlabNoAccounts": "Aucun compte GitLab pour l'instant",
+    "giteaTitle": "Comptes Gitea",
+    "giteaDescription": "Gérez les comptes Gitea (et Forgejo) pour l'authentification. Les jetons sont stockés localement.",
+    "giteaTokenHint": "Créez un jeton d'accès avec les portées write:repository, write:issue et read:user dans Gitea → Settings → Applications.",
+    "giteaNoAccounts": "Aucun compte Gitea pour l'instant",
     "noAccounts": "Aucun compte GitHub configuré.",
     "addAccount": "Ajouter un compte",
     "serverUrl": "URL du serveur",
@@ -336,7 +366,7 @@
     "loadFailed": "Échec du chargement des paramètres : {message}",
     "gitAccount": {
       "sectionTitle": "Comptes serveur Git",
-      "sectionDescription": "Gérez les identifiants pour les serveurs Git non GitHub (GitLab, Bitbucket, auto-hébergé, etc.).",
+      "sectionDescription": "Gérez les identifiants des serveurs Git qui n'ont pas leur propre section (Bitbucket, auto-hébergés, etc.).",
       "noAccounts": "Aucun compte de serveur Git configuré.",
       "addAccount": "Ajouter un compte",
       "addTitle": "Ajouter un compte Git",
@@ -1557,7 +1587,7 @@
   "GeneralSettings": {
     "loading": "Chargement...",
     "sectionTitle": "Général",
-    "sectionDescription": "Préférences centralisées pour le terminal par défaut, l’accélération du rendu, les sons de notification et la délégation multi-agents.",
+    "sectionDescription": "Préférences centralisées pour le terminal par défaut, l’accélération du rendu, les notifications et la délégation multi-agents.",
     "terminalTitle": "Terminal par défaut",
     "terminalDescription": "Choisissez le shell utilisé à l'ouverture de nouveaux onglets de terminal depuis la barre de terminal ou l'arborescence des fichiers. Les agents l'utilisent aussi lorsqu'ils demandent à codeg d'exécuter une ligne de commande complète.",
     "terminalSystemDefault": "Par défaut système",
@@ -1573,6 +1603,9 @@
     "terminalShellNotInstalled": "non installé",
     "terminalShellNotFoundWarning": "Ce chemin n’existe pas sur cet hôte.",
     "terminalCurrentShell": "Actuellement utilisé : {path}",
+    "colorizeCommandOutput": "Coloriser la sortie des commandes",
+    "colorizeCommandOutputDescription": "Force la couleur ANSI dans les commandes exécutées par les agents, afin que leur sortie s'affiche en couleur dans la transcription plutôt qu'en texte brut. S'applique aux nouvelles sessions.",
+    "colorizeCommandOutputWarning": "Cette option définit CLICOLOR_FORCE=1 pour l'agent. La plupart des outils lui donnent la priorité sur NO_COLOR, et elle s'applique à toutes les commandes exécutées par l'agent, pas seulement à celles que vous lisez. Les sorties destinées à être analysées, comme `gh --json` redirigé vers `jq`, peuvent échouer tant qu'elle est activée.",
     "renderingDescription": "Désactivez l’accélération matérielle si l’application affiche un écran noir ou des défauts de rendu (fréquent sur certaines GPU AMD ou GPU Intel intégrées sous Windows, et avec le pilote propriétaire NVIDIA sous Linux). N’a d’effet que sur les versions de bureau Windows et Linux.",
     "disableHardwareAcceleration": "Désactiver l’accélération matérielle",
     "renderingSaveFailed": "Échec de l’enregistrement des paramètres de rendu : {message}",
@@ -1637,6 +1670,9 @@
     "searchPlaceholder": "Rechercher un titre ou un chemin…",
     "allAgents": "Tous les agents",
     "onlyImportable": "Importables uniquement",
+    "includeDeleted": "Inclure les supprimées",
+    "includeDeletedWithCount": "Inclure les supprimées ({count})",
+    "includeDeletedHint": "Supprimer une session dans codeg ne fait que la masquer : la conversation et son historique sont toujours là. Activez cette option pour sélectionner des sessions supprimées et les restaurer sur place.",
     "selectAll": "Tout sélectionner",
     "clearSelection": "Effacer",
     "expandAll": "Tout développer",
@@ -1649,6 +1685,7 @@
     "toggleSessionAria": "Sélectionner la session {title}",
     "statusImported": "Importée",
     "statusDeleted": "Supprimée",
+    "statusDeletedRestorable": "Supprimée — l'importer restaure la conversation d'origine",
     "untitled": "Session sans titre",
     "messageCount": "{count} messages",
     "selectedCount": "{count} sélectionnées",
@@ -1657,6 +1694,7 @@
     "close": "Fermer",
     "doneTitle": "Importation terminée",
     "doneImported": "Importées",
+    "doneRestored": "Restaurées",
     "doneUpdated": "Actualisées",
     "doneSkipped": "Ignorées",
     "doneCreatedFolders": "Dossiers créés",
@@ -2008,6 +2046,49 @@
           "more": "Plus"
         },
         "showPet": "Afficher la mascotte"
+      },
+      "mcp": {
+        "title": "Service codeg-mcp",
+        "state": {
+          "running": "En cours",
+          "stopped": "Arrêté",
+          "disabled": "Aucun outil activé",
+          "unavailable": "Compagnon introuvable",
+          "unknown": "Inconnu"
+        },
+        "hint": {
+          "running": "Les agents lancés ici peuvent utiliser les outils de codeg.",
+          "stopped": "Le socket du broker ne répond pas.",
+          "disabled": "Tous les groupes d'outils sont désactivés.",
+          "unavailable": "Le binaire codeg-mcp est introuvable.",
+          "unknown": "Impossible de lire l'état."
+        },
+        "socketPath": "Adresse",
+        "binary": "Compagnon",
+        "binaryMissing": "Introuvable",
+        "sessions": "Sessions",
+        "activeDelegations": "Délégations",
+        "depthLimit": "Profondeur",
+        "tools": "Outils",
+        "groupDelegation": "Délégation",
+        "descDelegation": "Confie une tâche à un autre agent.",
+        "groupFeedback": "Retour en direct",
+        "descFeedback": "Ajoute des notes sans interrompre le tour.",
+        "groupAsk": "Question à l'utilisateur",
+        "descAsk": "Laisse l'agent vous consulter avant de décider.",
+        "groupSessions": "Consultation de session",
+        "descSessions": "Consulte les sessions passées et leurs résultats.",
+        "groupAutomations": "Créer une automatisation",
+        "descAutomations": "Crée et gère des automatisations planifiées.",
+        "groupTaskboard": "Créer une tâche",
+        "descTaskboard": "Crée et gère des tâches de travail.",
+        "start": "Démarrer le service",
+        "starting": "Démarrage…",
+        "actionFailed": "Échec : {message}",
+        "lastError": "Dernière erreur : {message}",
+        "loadFailed": "Impossible de lire l'état : {message}",
+        "openSettings": "Ouvrir les paramètres",
+        "refresh": "Actualiser"
       }
     },
     "auxPanel": {
@@ -2830,6 +2911,8 @@
         "eventErrorTitle": "Erreur de l'agent",
         "notificationTurnComplete": "{agent} a terminé de répondre",
         "notificationError": "{agent} erreur : {message}",
+        "notificationQuestion": "{agent} attend votre réponse",
+        "notificationErrorRedacted": "{agent} a rencontré une erreur",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",
           "retryingWithMax": "nouvelle tentative {attempt}/{max}",
@@ -2883,6 +2966,9 @@
         "cut": "Couper",
         "copy": "Copier",
         "selectAll": "Tout sélectionner",
+        "openLink": "Ouvrir le lien",
+        "openFile": "Ouvrir le fichier",
+        "sendEmail": "Envoyer un e-mail",
         "pasteUnavailable": "Impossible de lire le presse-papiers. Utilisez Ctrl/⌘V pour coller.",
         "clipboardWriteFailed": "Impossible d'écrire dans le presse-papiers. Utilisez le raccourci clavier.",
         "quickMessageUntitled": "Sans titre",
@@ -3622,7 +3708,9 @@
         "compacting": "Compactage du contexte…",
         "compacted": "Contexte compacté",
         "compactedTokens": "Contexte compacté · {before} → {after} tokens",
-        "failed": "Échec de la compaction du contexte"
+        "failed": "Échec de la compaction du contexte",
+        "triggerManual": "Déclenchée manuellement",
+        "triggerAutomatic": "Déclenchée automatiquement"
       },
       "sessionFailure": {
         "category": {
@@ -3646,6 +3734,8 @@
       },
       "backgroundTasks": {
         "settledFallback": "Tâche en arrière-plan terminée ({status})",
+        "notifySettledOne": "{agent} : une tâche en arrière-plan est terminée",
+        "notifySettledMany": "{agent} : {count} tâches en arrière-plan sont terminées",
         "cardRunning": "En cours d'exécution en arrière-plan",
         "cardLaunchedPending": "Tâche lancée en arrière-plan",
         "cardCompleted": "Tâche en arrière-plan terminée",
@@ -3678,6 +3768,16 @@
       "viewMode": {
         "split": "Passer à la vue côte à côte",
         "unified": "Passer à la vue en ligne"
+      },
+      "binaryFile": "Fichier binaire — contenu non affiché",
+      "image": {
+        "sideBySide": "Passer à la vue côte à côte",
+        "swipe": "Passer à la vue par balayage",
+        "swipeHandle": "Curseur de comparaison d'images",
+        "noImage": "Aucune image dans cette révision",
+        "unavailable": "Impossible de charger ce côté",
+        "tooLarge": "Image trop grande pour l'aperçu ({size})",
+        "loading": "Chargement des images..."
       }
     },
     "conversationContextBar": {
@@ -4456,7 +4556,15 @@
       "button": "Exporter la sauvegarde",
       "inProgress": "Création de la sauvegarde…",
       "success": "Sauvegarde créée.",
-      "started": "Téléchargement de la sauvegarde lancé."
+      "started": "Téléchargement de la sauvegarde lancé.",
+      "degradedTitle": "Certaines bases de sessions d'agents ont demandé un traitement particulier",
+      "degradedHint": "Ces agents stockent leurs sessions dans SQLite. Sauf mention contraire ci-dessous, la sauvegarde les contient bien.",
+      "degradedMore": "…et {count} de plus.",
+      "degradedLevel": {
+        "recoveredOnCopy": "restaurée depuis une copie privée — complète",
+        "bareFileOnly": "archivée sans son journal d'écriture anticipée — les messages les plus récents peuvent manquer",
+        "notArchived": "non archivée — elle changeait pendant la copie"
+      }
     },
     "restore": {
       "selectFile": "Sélectionner le fichier de sauvegarde",
@@ -4494,11 +4602,37 @@
         "scanning": "Vérification des conflits…",
         "noConflicts": "Aucun fichier existant ne sera écrasé.",
         "conflictCount": "{count} fichier(s) existant(s) seraient concerné(s).",
-        "conflictSkipNote": "Les fichiers existants sont conservés (ignorés) sauf si vous activez l'écrasement."
+        "conflictSkipNote": "Les fichiers existants sont conservés (ignorés) sauf si vous activez l'écrasement.",
+        "agentsRunning": "{count} agent(s) en cours d'exécution ({agents}). Ferme-les d'abord, sinon les transcriptions seront placées dans un dossier annexe au lieu d'être réécrites à leur emplacement d'origine."
       },
-      "restartFailed": "Restauration préparée, mais le serveur n'a pas pu redémarrer. Redémarrez-le manuellement pour l'appliquer."
+      "restartFailed": "Restauration préparée, mais le serveur n'a pas pu redémarrer. Redémarrez-le manuellement pour l'appliquer.",
+      "discardPending": "Abandonner la restauration préparée",
+      "discarded": "La restauration préparée a été abandonnée.",
+      "pendingBlockedHint": "Une restauration est déjà préparée et attend un redémarrage. Abandonne-la pour en préparer une autre.",
+      "result": {
+        "title": "Restauration préparée",
+        "needsRestart": "Elle sera appliquée au prochain démarrage. Un instantané de tes données actuelles est pris avant.",
+        "downgraded": "{agents} étai(en)t en cours d'exécution : les transcriptions n'ont pas été réécrites à leur emplacement d'origine, elles ont été placées dans {path}.",
+        "skipped": "{count} fichier(s) existant(s) ont été conservés",
+        "refused": "{count} base(s) de sessions n'ont pas été réécrites",
+        "refusedHint": "Elles proviennent d'une sauvegarde ancienne qui stockait la base et son journal d'écriture anticipée séparément, et rien ne prouve qu'ils se correspondent. Tes bases existantes n'ont pas été touchées — restaure vers un dossier annexe pour récupérer les fichiers bruts.",
+        "restartNow": "Redémarrer maintenant",
+        "later": "Plus tard"
+      }
     },
-    "remoteUnsupported": "La sauvegarde et la restauration agissent sur les données de la machine qui exécute codeg. Vous êtes connecté à un espace de travail distant : gérez ses sauvegardes directement depuis ce serveur."
+    "remoteUnsupported": "La sauvegarde et la restauration agissent sur les données de la machine qui exécute codeg. Vous êtes connecté à un espace de travail distant : gérez ses sauvegardes directement depuis ce serveur.",
+    "progress": {
+      "cancel": "Annuler"
+    },
+    "snapshots": {
+      "title": "Instantanés d'avant restauration",
+      "hint": "Chaque restauration prend d'abord un instantané de tes données actuelles. Les deux plus récents sont conservés.",
+      "empty": "Aucun instantané pour le moment.",
+      "rollback": "Revenir à celui-ci",
+      "unsupported": "Consultation seule",
+      "rollbackConfirmTitle": "Revenir à cet instantané ?",
+      "rollbackConfirmBody": "Cela remplace tes données actuelles par l'instantané puis redémarre. Un instantané des données remplacées est pris avant."
+    }
   },
   "backup": {
     "restore": {
@@ -4560,6 +4694,45 @@
     "saved": "Paramètres des outils enregistrés",
     "saveFailed": "Échec de l'enregistrement des paramètres des outils",
     "loadFailed": "Échec du chargement : {detail}"
+  },
+  "DesktopNotificationSettings": {
+    "title": "Notifications du bureau",
+    "description": "Affiche une notification système quand un agent a besoin de vous. Le réglage vaut par appareil — il est indépendant sur un autre navigateur ou une autre machine.",
+    "permissionTitle": "Autorisation",
+    "permissionGranted": "Autorisées",
+    "permissionDenied": "Bloquées",
+    "permissionDefault": "Non demandée",
+    "permissionUnsupported": "Indisponible",
+    "permissionManagedByOs": "Gérée par le système",
+    "permissionGrantedHint": "Ce navigateur affichera les notifications de Codeg.",
+    "permissionDeniedHint": "Ce navigateur bloque les notifications de Codeg. Seuls les paramètres de site du navigateur permettent de revenir en arrière — une page ne peut pas redemander.",
+    "permissionDefaultHint": "Ce navigateur n'a pas encore été sollicité. Aucune notification tant que vous ne les autorisez pas.",
+    "permissionUnsupportedHint": "Les notifications exigent un contexte sécurisé. Accédez à ce serveur en HTTPS ou via localhost.",
+    "permissionManagedByOsHint": "L'application de bureau passe par le centre de notifications du système, qui n'indique pas si Codeg est autorisé. Envoyez un test pour le savoir.",
+    "identityTitle": "Envoyé en tant que",
+    "identityHint": "Le système rattache ces notifications à cette app ; ce sont ses propres interrupteurs qui s'appliquent.",
+    "identityDegradedHint": "L'identifiant propre à Codeg n'a pas pu être revendiqué, le système les envoie donc en tant que {bundleId} et ce sont les réglages de cette app qui s'appliquent. Installez Codeg dans le dossier Applications pour rétablir son identité.",
+    "requestPermission": "Autoriser les notifications",
+    "permissionGrantedToast": "Notifications autorisées.",
+    "permissionDeniedToast": "Les notifications ont été bloquées. Réactivez-les dans les paramètres de site de votre navigateur.",
+    "openSystemSettings": "Ouvrir les réglages système",
+    "openSystemSettingsFailed": "Impossible d'ouvrir les réglages de notifications du système.",
+    "sendTest": "Envoyer un test",
+    "testTitle": "Codeg",
+    "testBody": "Les notifications du bureau fonctionnent.",
+    "testSent": "Notification de test envoyée.",
+    "testFailed": "La notification de test n'a pas pu être envoyée.",
+    "whenTitle": "Notifier quand",
+    "whenHint": "Une fenêtre sur un second écran est visible mais pas active — choisissez « La fenêtre n'est pas active » si vous ne recevez jamais rien.",
+    "whenAlways": "Toujours",
+    "whenUnfocused": "La fenêtre n'est pas active",
+    "whenHidden": "La fenêtre n'est pas visible",
+    "hideBody": "Masquer le contenu",
+    "hideBodyHint": "Affiche une ligne générique au lieu de la sortie de l'agent. Le centre de notifications conserve le contenu hors de l'application, même après la fermeture de la conversation. Le titre nomme toujours le dossier, pour que vous sachiez à quelle fenêtre revenir.",
+    "eventsTitle": "Événements",
+    "eventsHint": "Désactivez les événements qui ne doivent pas vous interrompre. Les répétitions d'un même événement en quelques secondes sont regroupées en une seule notification.",
+    "eventBackgroundTask": "Tâche en arrière-plan",
+    "eventWorkTask": "Tâche de travail"
   },
   "NotificationSoundSettings": {
     "title": "Sons de notification",
@@ -4872,6 +5045,8 @@
     "errorView": "Voir",
     "notifyReview": "Prêt pour révision : {title}",
     "notifyFailed": "La tâche a échoué : {title}",
+    "notifyReviewRedacted": "Une tâche attend d'être relue",
+    "notifyFailedRedacted": "Une tâche a échoué",
     "createFromMessage": "Créer une tâche depuis le message",
     "detailTokens": "Total de tokens",
     "editorTitleNew": "Nouvelle tâche",
@@ -5347,7 +5522,7 @@
     "noRemote": "Ce dossier n'a pas de remote reconnaissable (origin)",
     "errors": {
       "noAccount": "Aucun compte {provider} n'est configuré pour {host}. Ajoutez-en un dans Paramètres → Contrôle de version pour charger ce dépôt.",
-      "unsupportedHost": "Le panneau du dépôt ne prend en charge que GitHub et GitLab, et {host} n'est reconnu comme ni l'un ni l'autre. S'il s'agit d'une instance auto-hébergée de GitHub Enterprise ou de GitLab, ajoutez-y un compte dans Paramètres → Contrôle de version.",
+      "unsupportedHost": "Le panneau du dépôt ne prend en charge que GitHub, GitLab et Gitea, et {host} n'est reconnu comme aucun d'entre eux. S'il s'agit d'une instance auto-hébergée de GitHub Enterprise, GitLab, Gitea ou Forgejo, ajoutez-y un compte dans Paramètres → Contrôle de version.",
       "wrongForge": "{host} est un {provider}, et non la forge sous laquelle il était classé. La détection a été corrigée — rechargez pour réessayer."
     },
     "addAccount": "Ajouter un compte",

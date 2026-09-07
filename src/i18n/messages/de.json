@@ -196,7 +196,33 @@
       "panelOpacityHint": "Wie deckend Seitenleiste, Panels und Tab-Leisten sind. Niedriger lässt mehr vom Bild durchscheinen.",
       "errorTooLarge": "Bild ist zu groß (max. 16 MB).",
       "errorUnsupportedFormat": "Nicht unterstütztes Bildformat. Wähle ein PNG, JPEG, WebP oder GIF.",
-      "errorUploadFailed": "Hintergrundbild konnte nicht festgelegt werden."
+      "errorUploadFailed": "Hintergrundbild konnte nicht festgelegt werden.",
+      "market": {
+        "open": "Hintergrund-Markt",
+        "title": "Hintergrund-Markt",
+        "description": "Durchsuche die öffentliche Wallhaven-Galerie; per Klick herunterladen und anwenden.",
+        "searchPlaceholder": "Hintergründe suchen…",
+        "categories": {
+          "all": "Alle",
+          "general": "Landschaften",
+          "anime": "Anime",
+          "people": "Personen"
+        },
+        "pageInfo": "Seite {page} von {lastPage}",
+        "prevPage": "Zurück",
+        "nextPage": "Weiter",
+        "refresh": "Aktualisieren",
+        "empty": "Keine passenden Hintergründe gefunden.",
+        "error": "Der Hintergrund-Markt konnte nicht geladen werden.",
+        "retry": "Erneut versuchen",
+        "cardLabel": "Hintergrund {id} anwenden",
+        "applied": "In Verwendung",
+        "unavailable": "Nicht verfügbar",
+        "tooLarge": "Zu groß für einen Hintergrund: {actual} (Grenze {limit})",
+        "downloadFailed": "Download fehlgeschlagen. Bitte erneut versuchen.",
+        "appliedToast": "Hintergrund angewendet",
+        "credit": "Bilder von wallhaven.cc · nur SFW"
+      }
     }
   },
   "SystemSettings": {
@@ -304,6 +330,10 @@
     "gitlabDescription": "GitLab-Konten für die Authentifizierung verwalten. Token werden lokal gespeichert.",
     "gitlabTokenHint": "Erstellen Sie unter GitLab → Preferences → Access tokens einen Personal Access Token mit dem Scope api.",
     "gitlabNoAccounts": "Noch kein GitLab-Konto",
+    "giteaTitle": "Gitea-Konten",
+    "giteaDescription": "Gitea- (und Forgejo-)Konten für die Authentifizierung verwalten. Token werden lokal gespeichert.",
+    "giteaTokenHint": "Erstellen Sie unter Gitea → Settings → Applications einen Access Token mit den Scopes write:repository, write:issue und read:user.",
+    "giteaNoAccounts": "Noch kein Gitea-Konto",
     "noAccounts": "Keine GitHub-Konten konfiguriert.",
     "addAccount": "Konto hinzufügen",
     "serverUrl": "Server-URL",
@@ -336,7 +366,7 @@
     "loadFailed": "Einstellungen konnten nicht geladen werden: {message}",
     "gitAccount": {
       "sectionTitle": "Git-Server-Konten",
-      "sectionDescription": "Verwalten Sie Anmeldedaten für Nicht-GitHub-Git-Server (GitLab, Bitbucket, selbst gehostet usw.).",
+      "sectionDescription": "Zugangsdaten für Git-Server ohne eigenen Abschnitt verwalten (Bitbucket, selbst gehostet usw.).",
       "noAccounts": "Keine Git-Server-Konten konfiguriert.",
       "addAccount": "Konto hinzufügen",
       "addTitle": "Git-Konto hinzufügen",
@@ -1557,7 +1587,7 @@
   "GeneralSettings": {
     "loading": "Wird geladen...",
     "sectionTitle": "Allgemein",
-    "sectionDescription": "Zentrale Einstellungen für das Standardterminal, die Rendering-Beschleunigung, Benachrichtigungstöne und die Multi-Agent-Delegation.",
+    "sectionDescription": "Zentrale Einstellungen für das Standardterminal, die Rendering-Beschleunigung, Benachrichtigungen und die Multi-Agent-Delegation.",
     "terminalTitle": "Standardterminal",
     "terminalDescription": "Wählen Sie die Shell, die beim Öffnen neuer Terminal-Tabs über die Terminalleiste oder den Dateibaum verwendet wird. Agenten nutzen sie ebenfalls, wenn sie codeg um die Ausführung einer vollständigen Befehlszeile bitten.",
     "terminalSystemDefault": "Systemstandard",
@@ -1573,6 +1603,9 @@
     "terminalShellNotInstalled": "nicht installiert",
     "terminalShellNotFoundWarning": "Dieser Pfad existiert auf diesem Host nicht.",
     "terminalCurrentShell": "Aktuell verwendet: {path}",
+    "colorizeCommandOutput": "Befehlsausgabe einfärben",
+    "colorizeCommandOutputDescription": "Erzwingt ANSI-Farben in den Befehlen, die Agenten ausführen, sodass deren Ausgabe im Verlauf farbig statt als reiner Text erscheint. Gilt ab neuen Sitzungen.",
+    "colorizeCommandOutputWarning": "Dies setzt CLICOLOR_FORCE=1 für den Agenten. Die meisten Werkzeuge stellen das über NO_COLOR, und es gilt für jeden Befehl, den der Agent ausführt – nicht nur für die, die Sie lesen. Ausgaben, die maschinell ausgewertet werden sollen, etwa `gh --json` per Pipe an `jq`, können dabei fehlschlagen.",
     "renderingDescription": "Deaktivieren Sie die Hardwarebeschleunigung, wenn die App einen schwarzen Bildschirm oder Render-Fehler zeigt (häufig bei bestimmten AMD-GPUs oder integrierten Intel-GPUs unter Windows sowie beim proprietären NVIDIA-Treiber unter Linux). Wirkt sich nur auf die Windows- und Linux-Desktop-Versionen aus.",
     "disableHardwareAcceleration": "Hardwarebeschleunigung deaktivieren",
     "renderingSaveFailed": "Render-Einstellungen konnten nicht gespeichert werden: {message}",
@@ -1637,6 +1670,9 @@
     "searchPlaceholder": "Titel oder Pfad suchen…",
     "allAgents": "Alle Agenten",
     "onlyImportable": "Nur importierbare",
+    "includeDeleted": "Gelöschte einbeziehen",
+    "includeDeletedWithCount": "Gelöschte einbeziehen ({count})",
+    "includeDeletedHint": "Das Löschen einer Sitzung in codeg blendet sie nur aus – Unterhaltung und Verlauf bleiben erhalten. Aktiviere dies, um gelöschte Sitzungen auszuwählen und an Ort und Stelle wiederherzustellen.",
     "selectAll": "Alle auswählen",
     "clearSelection": "Leeren",
     "expandAll": "Alle ausklappen",
@@ -1649,6 +1685,7 @@
     "toggleSessionAria": "Sitzung {title} auswählen",
     "statusImported": "Importiert",
     "statusDeleted": "Gelöscht",
+    "statusDeletedRestorable": "Gelöscht – beim Importieren wird die ursprüngliche Unterhaltung wiederhergestellt",
     "untitled": "Unbenannte Sitzung",
     "messageCount": "{count} Nachrichten",
     "selectedCount": "{count} ausgewählt",
@@ -1657,6 +1694,7 @@
     "close": "Schließen",
     "doneTitle": "Import abgeschlossen",
     "doneImported": "Importiert",
+    "doneRestored": "Wiederhergestellt",
     "doneUpdated": "Aktualisiert",
     "doneSkipped": "Übersprungen",
     "doneCreatedFolders": "Ordner erstellt",
@@ -2008,6 +2046,49 @@
           "more": "Mehr"
         },
         "showPet": "Pet anzeigen"
+      },
+      "mcp": {
+        "title": "codeg-mcp-Dienst",
+        "state": {
+          "running": "Läuft",
+          "stopped": "Läuft nicht",
+          "disabled": "Keine Tools aktiv",
+          "unavailable": "Companion fehlt",
+          "unknown": "Unbekannt"
+        },
+        "hint": {
+          "running": "Hier gestartete Agenten können codegs Tools nutzen.",
+          "stopped": "Der Broker-Socket antwortet nicht.",
+          "disabled": "Alle Tool-Gruppen sind ausgeschaltet.",
+          "unavailable": "Die codeg-mcp-Binärdatei fehlt auf der Festplatte.",
+          "unknown": "Der Status konnte nicht gelesen werden."
+        },
+        "socketPath": "Adresse",
+        "binary": "Companion",
+        "binaryMissing": "Nicht gefunden",
+        "sessions": "Sitzungen",
+        "activeDelegations": "Delegationen",
+        "depthLimit": "Max. Tiefe",
+        "tools": "Tools",
+        "groupDelegation": "Delegation",
+        "descDelegation": "Gibt eine Aufgabe an einen anderen Agenten ab.",
+        "groupFeedback": "Live-Feedback",
+        "descFeedback": "Ergänzt Hinweise, ohne den Zug zu unterbrechen.",
+        "groupAsk": "Rückfrage stellen",
+        "descAsk": "Lässt den Agenten vor einer Entscheidung nachfragen.",
+        "groupSessions": "Sitzungsabfrage",
+        "descSessions": "Schlägt frühere Sitzungen und Ergebnisse nach.",
+        "groupAutomations": "Automatisierung erstellen",
+        "descAutomations": "Erstellt und verwaltet geplante Automationen.",
+        "groupTaskboard": "Aufgabe erstellen",
+        "descTaskboard": "Erstellt und verwaltet Arbeitsaufgaben.",
+        "start": "Dienst starten",
+        "starting": "Wird gestartet…",
+        "actionFailed": "Fehlgeschlagen: {message}",
+        "lastError": "Letzter Fehler: {message}",
+        "loadFailed": "Status konnte nicht gelesen werden: {message}",
+        "openSettings": "Alle Einstellungen öffnen",
+        "refresh": "Aktualisieren"
       }
     },
     "auxPanel": {
@@ -2830,6 +2911,8 @@
         "eventErrorTitle": "Agentenfehler",
         "notificationTurnComplete": "{agent} hat die Antwort abgeschlossen",
         "notificationError": "{agent} Fehler: {message}",
+        "notificationQuestion": "{agent} wartet auf deine Antwort",
+        "notificationErrorRedacted": "{agent} ist auf einen Fehler gestoßen",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",
           "retryingWithMax": "erneuter Versuch {attempt}/{max}",
@@ -2883,6 +2966,9 @@
         "cut": "Ausschneiden",
         "copy": "Kopieren",
         "selectAll": "Alles auswählen",
+        "openLink": "Link öffnen",
+        "openFile": "Datei öffnen",
+        "sendEmail": "E-Mail senden",
         "pasteUnavailable": "Zwischenablage konnte nicht gelesen werden. Mit Strg/⌘V einfügen.",
         "clipboardWriteFailed": "Schreiben in die Zwischenablage fehlgeschlagen. Bitte das Tastenkürzel verwenden.",
         "quickMessageUntitled": "Ohne Titel",
@@ -3622,7 +3708,9 @@
         "compacting": "Kontext wird komprimiert…",
         "compacted": "Kontext komprimiert",
         "compactedTokens": "Kontext komprimiert · {before} → {after} Tokens",
-        "failed": "Kontextkomprimierung fehlgeschlagen"
+        "failed": "Kontextkomprimierung fehlgeschlagen",
+        "triggerManual": "Manuell ausgelöst",
+        "triggerAutomatic": "Automatisch ausgelöst"
       },
       "sessionFailure": {
         "category": {
@@ -3646,6 +3734,8 @@
       },
       "backgroundTasks": {
         "settledFallback": "Hintergrundaufgabe beendet ({status})",
+        "notifySettledOne": "{agent}: Eine Hintergrundaufgabe ist fertig",
+        "notifySettledMany": "{agent}: {count} Hintergrundaufgaben sind fertig",
         "cardRunning": "Läuft im Hintergrund",
         "cardLaunchedPending": "Hintergrundaufgabe gestartet",
         "cardCompleted": "Hintergrundaufgabe abgeschlossen",
@@ -3678,6 +3768,16 @@
       "viewMode": {
         "split": "Zur Zwei-Spalten-Ansicht wechseln",
         "unified": "Zur Inline-Ansicht wechseln"
+      },
+      "binaryFile": "Binärdatei — Inhalt wird nicht angezeigt",
+      "image": {
+        "sideBySide": "Zur Zwei-Spalten-Ansicht wechseln",
+        "swipe": "Zur Wisch-Ansicht wechseln",
+        "swipeHandle": "Schieberegler für Bildvergleich",
+        "noImage": "Kein Bild in dieser Revision",
+        "unavailable": "Diese Seite konnte nicht geladen werden",
+        "tooLarge": "Bild zu groß für die Vorschau ({size})",
+        "loading": "Bilder werden geladen..."
       }
     },
     "conversationContextBar": {
@@ -4456,7 +4556,15 @@
       "button": "Sicherung exportieren",
       "inProgress": "Sicherung wird erstellt…",
       "success": "Sicherung erstellt.",
-      "started": "Download der Sicherung gestartet."
+      "started": "Download der Sicherung gestartet.",
+      "degradedTitle": "Einige Sitzungsdatenbanken von Agenten brauchten eine Sonderbehandlung",
+      "degradedHint": "Diese Agenten speichern ihre Sitzungen in SQLite. Sofern unten nichts anderes steht, sind sie in der Sicherung enthalten.",
+      "degradedMore": "…und {count} weitere.",
+      "degradedLevel": {
+        "recoveredOnCopy": "aus einer eigenen Kopie wiederhergestellt – vollständig",
+        "bareFileOnly": "ohne Write-Ahead-Log gesichert – die neuesten Nachrichten fehlen womöglich",
+        "notArchived": "nicht gesichert – sie veränderte sich während des Kopierens laufend"
+      }
     },
     "restore": {
       "selectFile": "Sicherungsdatei auswählen",
@@ -4494,11 +4602,37 @@
         "scanning": "Konflikte werden geprüft…",
         "noConflicts": "Es werden keine vorhandenen Dateien überschrieben.",
         "conflictCount": "{count} vorhandene Datei(en) wären betroffen.",
-        "conflictSkipNote": "Vorhandene Dateien bleiben erhalten (übersprungen), sofern du das Überschreiben nicht aktivierst."
+        "conflictSkipNote": "Vorhandene Dateien bleiben erhalten (übersprungen), sofern du das Überschreiben nicht aktivierst.",
+        "agentsRunning": "{count} Agent(en) laufen ({agents}). Schließe sie zuerst, sonst landen die Verläufe in einem Nebenordner statt an ihrem ursprünglichen Ort."
       },
-      "restartFailed": "Wiederherstellung vorbereitet, aber der Server konnte nicht neu starten. Starte ihn manuell neu, um sie anzuwenden."
+      "restartFailed": "Wiederherstellung vorbereitet, aber der Server konnte nicht neu starten. Starte ihn manuell neu, um sie anzuwenden.",
+      "discardPending": "Vorbereitete Wiederherstellung verwerfen",
+      "discarded": "Die vorbereitete Wiederherstellung wurde verworfen.",
+      "pendingBlockedHint": "Es wartet bereits eine vorbereitete Wiederherstellung auf einen Neustart. Verwirf sie, um eine andere vorzubereiten.",
+      "result": {
+        "title": "Wiederherstellung vorbereitet",
+        "needsRestart": "Sie wird beim nächsten Start angewendet. Von deinen aktuellen Daten wird vorher eine Momentaufnahme angelegt.",
+        "downgraded": "{agents} liefen, daher wurden die Gesprächsverläufe nicht an ihren ursprünglichen Ort zurückgeschrieben, sondern unter {path} abgelegt.",
+        "skipped": "{count} vorhandene Datei(en) wurden beibehalten",
+        "refused": "{count} Sitzungsdatenbank(en) wurden nicht zurückgeschrieben",
+        "refusedHint": "Sie stammen aus einer älteren Sicherung, die Datenbank und Write-Ahead-Log getrennt ablegte; dass beide zusammengehören, lässt sich nicht belegen. Deine vorhandenen Datenbanken blieben unangetastet – stelle in einen Nebenordner wieder her, um die Rohdateien zu erhalten.",
+        "restartNow": "Jetzt neu starten",
+        "later": "Später"
+      }
     },
-    "remoteUnsupported": "Sicherung & Wiederherstellung wirken auf die Daten des Rechners, auf dem codeg läuft. Du bist mit einem entfernten Arbeitsbereich verbunden – verwalte dessen Sicherungen direkt auf jenem Server."
+    "remoteUnsupported": "Sicherung & Wiederherstellung wirken auf die Daten des Rechners, auf dem codeg läuft. Du bist mit einem entfernten Arbeitsbereich verbunden – verwalte dessen Sicherungen direkt auf jenem Server.",
+    "progress": {
+      "cancel": "Abbrechen"
+    },
+    "snapshots": {
+      "title": "Momentaufnahmen vor der Wiederherstellung",
+      "hint": "Jede Wiederherstellung legt zuerst eine Momentaufnahme deiner aktuellen Daten an. Die beiden neuesten werden aufbewahrt.",
+      "empty": "Noch keine Momentaufnahmen.",
+      "rollback": "Hierauf zurücksetzen",
+      "unsupported": "Nur ansehen",
+      "rollbackConfirmTitle": "Auf diese Momentaufnahme zurücksetzen?",
+      "rollbackConfirmBody": "Damit werden deine aktuellen Daten durch die Momentaufnahme ersetzt und die App startet neu. Von den ersetzten Daten wird vorher eine Momentaufnahme angelegt."
+    }
   },
   "backup": {
     "restore": {
@@ -4560,6 +4694,45 @@
     "saved": "Tool-Einstellungen gespeichert",
     "saveFailed": "Tool-Einstellungen konnten nicht gespeichert werden",
     "loadFailed": "Laden fehlgeschlagen: {detail}"
+  },
+  "DesktopNotificationSettings": {
+    "title": "Desktop-Benachrichtigungen",
+    "description": "Zeigt eine Systembenachrichtigung, wenn ein Agent dich braucht. Die Einstellung gilt pro Gerät — in einem anderen Browser oder auf einem anderen Rechner ist sie unabhängig.",
+    "permissionTitle": "Berechtigung",
+    "permissionGranted": "Erlaubt",
+    "permissionDenied": "Blockiert",
+    "permissionDefault": "Nicht angefragt",
+    "permissionUnsupported": "Nicht verfügbar",
+    "permissionManagedByOs": "Vom System verwaltet",
+    "permissionGrantedHint": "Dieser Browser zeigt Benachrichtigungen von Codeg an.",
+    "permissionDeniedHint": "Dieser Browser blockiert Benachrichtigungen von Codeg. Nur die Website-Einstellungen des Browsers können das aufheben — eine Seite kann nicht erneut fragen.",
+    "permissionDefaultHint": "Dieser Browser wurde noch nicht gefragt. Bis du zustimmst, bleiben Benachrichtigungen aus.",
+    "permissionUnsupportedHint": "Benachrichtigungen brauchen einen sicheren Kontext. Rufe diesen Server über HTTPS oder auf localhost auf.",
+    "permissionManagedByOsHint": "Die Desktop-App sendet über die Mitteilungszentrale des Systems, die nicht zurückmeldet, ob Codeg erlaubt ist. Sende einen Test, um es herauszufinden.",
+    "identityTitle": "Zugestellt als",
+    "identityHint": "Das System ordnet diese Mitteilungen dieser App zu – es gelten deren eigene Schalter.",
+    "identityDegradedHint": "Codegs eigene Kennung konnte nicht belegt werden, daher stellt das System sie als {bundleId} zu, und die Schalter jener App gelten. Installiere Codeg in den Programme-Ordner, um die eigene Identität wiederherzustellen.",
+    "requestPermission": "Benachrichtigungen erlauben",
+    "permissionGrantedToast": "Benachrichtigungen erlaubt.",
+    "permissionDeniedToast": "Benachrichtigungen wurden blockiert. Aktiviere sie in den Website-Einstellungen deines Browsers erneut.",
+    "openSystemSettings": "Systemeinstellungen öffnen",
+    "openSystemSettingsFailed": "Die Benachrichtigungseinstellungen des Systems konnten nicht geöffnet werden.",
+    "sendTest": "Test senden",
+    "testTitle": "Codeg",
+    "testBody": "Desktop-Benachrichtigungen funktionieren.",
+    "testSent": "Testbenachrichtigung gesendet.",
+    "testFailed": "Die Testbenachrichtigung konnte nicht gesendet werden.",
+    "whenTitle": "Benachrichtigen wenn",
+    "whenHint": "Ein Fenster auf dem zweiten Monitor ist sichtbar, aber nicht fokussiert — wähle „Fenster ist nicht fokussiert“, wenn nie etwas ankommt.",
+    "whenAlways": "Immer",
+    "whenUnfocused": "Fenster ist nicht fokussiert",
+    "whenHidden": "Fenster ist nicht sichtbar",
+    "hideBody": "Inhalt ausblenden",
+    "hideBodyHint": "Zeigt eine allgemeine Zeile statt der Agentenausgabe. Die Mitteilungszentrale behält den Inhalt außerhalb der App, auch nachdem die Unterhaltung geschlossen wurde. Der Titel nennt weiterhin den Ordner, damit du weißt, zu welchem Fenster du zurückmusst.",
+    "eventsTitle": "Ereignisse",
+    "eventsHint": "Schalte Ereignisse ab, die dich nicht unterbrechen sollen. Wiederholungen desselben Ereignisses innerhalb weniger Sekunden werden zu einer Benachrichtigung zusammengefasst.",
+    "eventBackgroundTask": "Hintergrundaufgabe",
+    "eventWorkTask": "Arbeitsaufgabe"
   },
   "NotificationSoundSettings": {
     "title": "Benachrichtigungstöne",
@@ -4872,6 +5045,8 @@
     "errorView": "Ansehen",
     "notifyReview": "Bereit zur Abnahme: {title}",
     "notifyFailed": "Aufgabe fehlgeschlagen: {title}",
+    "notifyReviewRedacted": "Eine Aufgabe wartet auf die Abnahme",
+    "notifyFailedRedacted": "Eine Aufgabe ist fehlgeschlagen",
     "createFromMessage": "Aufgabe aus Nachricht erstellen",
     "detailTokens": "Token insgesamt",
     "editorTitleNew": "Neue Aufgabe",
@@ -5347,7 +5522,7 @@
     "noRemote": "Dieser Ordner hat kein erkennbares Forge-Remote (origin)",
     "errors": {
       "noAccount": "Für {host} ist kein {provider}-Konto konfiguriert. Füge unter Einstellungen → Versionskontrolle eines hinzu, um dieses Repository zu laden.",
-      "unsupportedHost": "Das Repository-Panel unterstützt nur GitHub und GitLab, und {host} wird als keines von beiden erkannt. Falls es sich um eine selbst gehostete GitHub-Enterprise- oder GitLab-Instanz handelt, füge unter Einstellungen → Versionskontrolle ein Konto dafür hinzu.",
+      "unsupportedHost": "Das Repository-Panel unterstützt nur GitHub, GitLab und Gitea, und {host} wird als keines davon erkannt. Falls es sich um eine selbst gehostete GitHub-Enterprise-, GitLab-, Gitea- oder Forgejo-Instanz handelt, füge unter Einstellungen → Versionskontrolle ein Konto dafür hinzu.",
       "wrongForge": "{host} ist ein {provider} und nicht die Forge, als die es eingestuft war. Die Erkennung wurde korrigiert — neu laden, um es erneut zu versuchen."
     },
     "addAccount": "Konto hinzufügen",

@@ -166,6 +166,9 @@ impl ConnectionManager {
             SessionRecovery, StrictAttachError, StrictAttachErrorCode, StrictOutcome,
         };
 
+        // Share ordinary spawn's exclusion against restoring agent transcripts.
+        let _restore_guard = self.external_restore_lock.read().await;
+
         // --- Binding sanity (cheap, pre-spawn) --------------------------------
         if external_session_id.trim().is_empty() {
             return Err(StrictAttachError::new(

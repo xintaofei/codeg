@@ -41,6 +41,23 @@ pub struct SystemLanguageSettings {
 #[serde(default)]
 pub struct SystemTerminalSettings {
     pub default_shell: Option<String>,
+    /// Force ANSI color out of the commands an agent runs, so its output
+    /// renders colored in the transcript's terminal card rather than as plain
+    /// text.
+    ///
+    /// Off by default, and deliberately so: the only lever codeg has is
+    /// `CLICOLOR_FORCE=1` on the AGENT process (the agent runs its own bash
+    /// tool in-process — codeg never spawns those commands), which every
+    /// descendant inherits. That colors the output codeg renders AND the output
+    /// the agent pipes into `jq`, and by convention `CLICOLOR_FORCE` outranks
+    /// `NO_COLOR`, so nothing downstream can opt back out. See
+    /// [`crate::acp::connection::force_command_color_enabled`].
+    ///
+    /// Carried in the terminal settings row rather than a key of its own
+    /// because it is read on the same startup load and written by the same save
+    /// path; `#[serde(default)]` on the struct means rows stored before this
+    /// field existed parse as `false` with no migration.
+    pub colorize_command_output: bool,
 }
 
 /// One row in the "default shell" picker. Backend owns the option list so the
@@ -130,9 +147,10 @@ pub struct GitHubAccount {
     pub avatar_url: Option<String>,
     pub is_default: bool,
     pub created_at: String,
-    /// Which forge this account signs in to: `"github"` | `"gitlab"`, or
-    /// absent. Absent is what every account stored before GitLab support
-    /// existed looks like, and it keeps meaning what it always meant — a
+    /// Which forge this account signs in to: `"github"` | `"gitlab"` |
+    /// `"gitea"` (which covers Forgejo), or absent. Absent is what every
+    /// account stored before GitLab support existed looks like, and it keeps
+    /// meaning what it always meant — a
     /// credential for this HOST, whichever forge lives there. Set, it also
     /// says which API the token is for, which is the only reliable signal for
     /// a self-hosted instance whose hostname gives nothing away.

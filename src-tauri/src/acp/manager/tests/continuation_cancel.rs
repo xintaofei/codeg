@@ -44,6 +44,8 @@ async fn seed_running_owner(
     .await
 }
 
+// Tests vary each persisted identity and lifecycle flag independently.
+#[allow(clippy::too_many_arguments)]
 async fn seed_owner(
     db: &crate::db::AppDatabase,
     coordinator: &crate::acp::delegation::continuation::ContinuationCoordinator,

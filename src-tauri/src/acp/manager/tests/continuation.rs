@@ -88,6 +88,10 @@ async fn requested_external_id_blocks_manager_resume_admission_until_release_pro
     // Once the active entry disappears, the retained resource remains the
     // admission fence until both driver exit and no-spawn/reap are proven.
     mgr.connections.lock().await.remove(connection_id);
+    assert_eq!(
+        mgr.live_or_draining_agent_names().await,
+        vec![agent_type.to_string()]
+    );
     let draining_err = mgr
         .spawn_agent(
             agent_type,
@@ -104,6 +108,7 @@ async fn requested_external_id_blocks_manager_resume_admission_until_release_pro
     assert!(draining_err.to_string().contains("being reclaimed"));
 
     lifetime.mark_driver_exited();
+    assert!(mgr.live_or_draining_agent_names().await.is_empty());
     let after_release = mgr
         .spawn_agent(
             agent_type,
@@ -545,5 +550,39 @@ async fn reserved_child_refuses_ordinary_entries_but_continuation_send_flows() {
         row.status,
         ConversationStatus::InProgress,
         "the privileged send flipped the child row to InProgress"
+    );
+}
+
+#[tokio::test]
+async fn backup_restore_blocks_strict_continuation_establishment() {
+    let mgr = ConnectionManager::new();
+    let dir = tempfile::tempdir().unwrap();
+    let lockout = mgr.lock_out_new_connections().await;
+    // An invalid binding should fail immediately once the restore lock is free;
+    // while held, even the strict entry must wait without spawning anything.
+    let attach = mgr.attach_existing_session_strict(
+        AgentType::Codex,
+        dir.path().to_string_lossy().into_owned(),
+        String::new(),
+        BTreeMap::new(),
+        "test-window".into(),
+        EventEmitter::Noop,
+        None,
+        BTreeMap::new(),
+        dir.path().to_path_buf(),
+        String::new(),
+        Duration::from_millis(20),
+        "restore-turn",
+        "restore-execution",
+    );
+    tokio::pin!(attach);
+    assert!(tokio::time::timeout(Duration::from_millis(20), &mut attach)
+        .await
+        .is_err());
+    drop(lockout);
+    let error = attach.await.unwrap_err();
+    assert_eq!(
+        error.code,
+        crate::acp::delegation::continuation::StrictAttachErrorCode::BindingMismatch
     );
 }

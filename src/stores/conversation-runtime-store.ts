@@ -3136,8 +3136,16 @@ function computeTimelinePrefix(
         ? rawPersistedTurns.findIndex((t) => t.role === "assistant")
         : lastUserIdx + 1
   }
+  // System turns survive the strip. What the strip removes is the persisted
+  // copy of the reply being streamed — content the live stream re-shows. A
+  // `system` turn is not part of any reply and has no live counterpart: Claude
+  // writes the post-compaction continuation summary as one, and an AUTOMATIC
+  // compaction lands it mid-turn, so stripping it hid the summary for the whole
+  // rest of the turn and then made it appear out of nowhere on reopen.
   const persistedTurns =
-    stripFrom !== -1 ? rawPersistedTurns.slice(0, stripFrom) : rawPersistedTurns
+    stripFrom !== -1
+      ? rawPersistedTurns.filter((t, i) => i < stripFrom || t.role === "system")
+      : rawPersistedTurns
 
   // Suppress the persisted PARTIAL in-flight reply for a non-delegation
   // cross-client viewer. While a reply is streaming, some agents (OpenCode,

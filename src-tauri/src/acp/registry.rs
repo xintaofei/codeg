@@ -705,9 +705,65 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // the containment of a per-session failure during
             // `providers/set`/`providers/disable` — codeg calls neither method
             // on claude.
+            //
+            // 0.75.0 + 0.75.1 (four feature commits) are additive: an
+            // `initialize` handshake replayed against both 0.74.0 and 0.75.1
+            // with codeg's own `clientCapabilities` differs by exactly two
+            // things — the version string and a new
+            // `agentCapabilities._meta.authStatus: {}`. `sessionCapabilities`,
+            // the AIR capability array, `steering`, `goal` and
+            // `promptCapabilities` are byte-identical, so every decision above
+            // still holds.
+            //
+            // (h) Context compaction became an ACP tool-call lifecycle
+            // (upstream #991) instead of untyped "Compacting…" prose. The frames
+            // are provider-neutral — the SAME `_meta.contextCompaction` key
+            // codex-acp 1.3.0 introduced: a `tool_call` (title "Compact
+            // conversation", kind `think`, `status: in_progress`) followed by a
+            // `tool_call_update` carrying `{version: 1, trigger, preTokens,
+            // postTokens, durationMs, error?}`. `isContextCompactionMeta`
+            // matches on the `_meta` key and is not agent-gated, so
+            // `<ContextCompactionCard>` lights up for claude with no wiring —
+            // and claude is the FIRST agent to actually populate the token/
+            // duration fields (codex sends a bare `{version: 1}`). The SDK's
+            // `compact_boundary` also drives a fresh `usage_update {used:
+            // post_tokens, size: contextWindowSize}`, so the occupancy bar
+            // snaps to the compacted value instead of staying stale. The
+            // matching HISTORY card is synthesized in `parsers::claude` from the
+            // transcript's own `compact_boundary` record; see the
+            // `"compact_boundary"` arm there for the field mapping (the
+            // transcript is camelCase where the wire is snake_case, and
+            // `trigger: "auto"` maps to `"automatic"` exactly as the adapter's
+            // `contextCompactionMetadataFromBoundary` does).
+            //
+            // (i) `fork-session.js` grew a third resolution level (upstream
+            // #1089), which retires the note in (c) that claude "ignores
+            // `messageFingerprint`". Resolution is now: live `messageId` map →
+            // `getSessionMessages` (the ACTIVE parentUuid chain only) →
+            // `resolveFromFullHistory`, which imports the full persisted
+            // transcript INCLUDING abandoned branches, retries the id there, and
+            // only then falls back to `messageFingerprint` + `messageOccurrence`
+            // (both required, or it bails; a single fingerprint match wins
+            // regardless of occurrence). The hash semantics are the ones
+            // `acp::fork` already computes: `sha256:<hex>` over the concatenated
+            // text blocks, occurrence counted along the parentUuid chain
+            // including the target. So `acp::fork` now sends all three for
+            // claude, which turns a fork point sitting on an abandoned branch
+            // from a silent tail-fork into an exact hit. Same release also cuts
+            // `session/load` on a forked session from ~20–29s to ~1.9s.
+            //
+            // (j) `authStatus` (upstream #1080) — the agent pushes its own
+            // sign-in identity over `_auth/status_update`, the connection-level
+            // notification codex-acp 1.9.0 introduced. codeg registers that
+            // handler unconditionally (not per agent), so claude's pushes are
+            // already claimed and nothing changes; see `handle_auth_status_update`
+            // for what claude adds over codex (a per-prompt probe, so a push can
+            // land mid-turn). 0.75.1 additionally drops the automatic
+            // `getContextUsage` control requests, and `/usage` output now comes
+            // back as Markdown, which the transcript renderer already handles.
             distribution: AgentDistribution::Npx {
-                version: "0.74.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.74.0",
+                version: "0.75.1",
+                package: "@agentclientprotocol/claude-agent-acp@0.75.1",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -1021,8 +1077,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Gemini CLI",
             description: "Google's official CLI for Gemini",
             distribution: AgentDistribution::Npx {
-                version: "0.57.0",
-                package: "@google/gemini-cli@0.57.0",
+                version: "0.58.0",
+                package: "@google/gemini-cli@0.58.0",
                 cmd: "gemini",
                 args: &["--acp", "--skip-trust"],
                 env: &[],
@@ -1037,8 +1093,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "OpenClaw",
             description: "OpenClaw is a personal AI assistant you run on your own devices.",
             distribution: AgentDistribution::Npx {
-                version: "2026.8.1",
-                package: "openclaw@2026.8.1",
+                version: "2026.9.2",
+                package: "openclaw@2026.9.2",
                 cmd: "openclaw",
                 args: &["acp"],
                 env: &[],
@@ -1158,8 +1214,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "CodeBuddy",
             description: "Tencent Cloud's official AI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "2.144.0",
-                package: "@tencent-ai/codebuddy-code@2.144.0",
+                version: "2.146.0",
+                package: "@tencent-ai/codebuddy-code@2.146.0",
                 cmd: "codebuddy",
                 args: &["--acp"],
                 env: &[],
@@ -1538,8 +1594,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // own copy AES-GCM-encrypted under the machine key, so it is not
             // the source). `engines.node: ">=20"`.
             distribution: AgentDistribution::Npx {
-                version: "1.1.44",
-                package: "@qoder-ai/qodercli@1.1.44",
+                version: "1.1.45",
+                package: "@qoder-ai/qodercli@1.1.45",
                 cmd: "qoder",
                 args: &["--acp"],
                 env: &[],
@@ -1946,20 +2002,20 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.74.0",
-            "@agentclientprotocol/claude-agent-acp@0.74.0",
+            "0.75.1",
+            "@agentclientprotocol/claude-agent-acp@0.75.1",
             Some("22.0.0"),
         );
         assert_npx_version(
             AgentType::Gemini,
-            "0.57.0",
-            "@google/gemini-cli@0.57.0",
+            "0.58.0",
+            "@google/gemini-cli@0.58.0",
             Some("20.0.0"),
         );
         assert_npx_version(
             AgentType::OpenClaw,
-            "2026.8.1",
-            "openclaw@2026.8.1",
+            "2026.9.2",
+            "openclaw@2026.9.2",
             Some("22.22.3"),
         );
         assert_npx_version(
@@ -1970,8 +2026,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::CodeBuddy,
-            "2.144.0",
-            "@tencent-ai/codebuddy-code@2.144.0",
+            "2.146.0",
+            "@tencent-ai/codebuddy-code@2.146.0",
             Some("22.0.0"),
         );
         // Kimi Code must never land on 0.37.0–0.38.0: every session in that
@@ -2003,8 +2059,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Qoder,
-            "1.1.44",
-            "@qoder-ai/qodercli@1.1.44",
+            "1.1.45",
+            "@qoder-ai/qodercli@1.1.45",
             Some("20.0.0"),
         );
         assert_binary_version(AgentType::OpenCode, "1.18.29", "/releases/download/v1.18.29/");

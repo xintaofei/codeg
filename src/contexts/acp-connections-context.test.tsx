@@ -52,7 +52,7 @@ const h = vi.hoisted(() => {
     // Stable across renders so tests can assert on what the error handler
     // routes to the status-bar alert vs. to the OS notification.
     pushAlert: vi.fn(),
-    sendSystemNotification: vi.fn(async () => undefined),
+    notifyDesktop: vi.fn(async () => true),
     toastWarning: vi.fn(),
     // Every `t(key, values)` this render made. The mock below still returns
     // the bare key (what most assertions compare against), so interpolated
@@ -86,8 +86,11 @@ vi.mock("@/contexts/active-folder-context", () => ({
   useActiveFolder: () => ({ activeFolder: { path: "/tmp/x", name: "x" } }),
 }))
 
-vi.mock("@/lib/notification", () => ({
-  sendSystemNotification: h.sendSystemNotification,
+vi.mock("@/lib/desktop-notification", () => ({
+  notifyDesktop: h.notifyDesktop,
+  // Snapshot replay wraps its dispatch in this; the real one only sets a
+  // depth counter, so running the body straight through is faithful.
+  withDesktopNotificationsSuppressed: (fn: () => unknown) => fn(),
 }))
 
 vi.mock("sonner", () => ({
@@ -2023,8 +2026,8 @@ describe("out-of-turn wire guard + background activity", () => {
   it("background_activity mirrors outstanding, applies overlay turns, and notifies settled tasks", async () => {
     const { useConversationRuntimeStore, resetConversationRuntimeStore } =
       await import("@/stores/conversation-runtime-store")
-    const { sendSystemNotification } = await import("@/lib/notification")
-    const notify = vi.mocked(sendSystemNotification)
+    const { notifyDesktop } = await import("@/lib/desktop-notification")
+    const notify = vi.mocked(notifyDesktop)
     notify.mockClear()
     const { getFolderConversation } = await import("@/lib/api")
     vi.mocked(getFolderConversation).mockClear()
@@ -2085,9 +2088,16 @@ describe("out-of-turn wire guard + background activity", () => {
       turn: { id: "bg-100-0" },
     })
 
-    // 3. one OS notification per settled task, carrying its summary.
+    // 3. ONE OS notification for the batch. A single settled task still
+    //    carries its summary; the redacted variant never does.
     expect(notify).toHaveBeenCalledTimes(1)
-    expect(notify.mock.calls[0][1]).toContain('Agent "Run pnpm build" finished')
+    expect(notify.mock.calls[0][0]).toBe("background_task")
+    expect(notify.mock.calls[0][1].body).toContain(
+      'Agent "Run pnpm build" finished'
+    )
+    expect(notify.mock.calls[0][1].redactedBody).not.toContain(
+      'Agent "Run pnpm build" finished'
+    )
 
     // 4. the settlement flips the launch card IN-MEMORY (no detail refetch):
     //    with no promoted card yet (it's mid-stream), it's queued under the
@@ -2419,7 +2429,7 @@ describe("empty-turn error diagnostics", () => {
   it("routes details to the alert's evidence slot, keeping them out of detail, conn.error and the OS notification", async () => {
     const handlers = await connectOwner()
     h.pushAlert.mockClear()
-    h.sendSystemNotification.mockClear()
+    h.notifyDesktop.mockClear()
 
     const details =
       "dropped 1 update(s) (0 decode, 1 dispatch)\nstderr (this turn, last 1 lines):\n  Error: 401 Unauthorized"
@@ -2449,7 +2459,7 @@ describe("empty-turn error diagnostics", () => {
     )
 
     // Notification centers persist their payload outside the app.
-    const notifyCalls = h.sendSystemNotification.mock.calls
+    const notifyCalls = h.notifyDesktop.mock.calls
     const notificationArgs = notifyCalls[notifyCalls.length - 1]!
     expect(JSON.stringify(notificationArgs)).not.toContain("401 Unauthorized")
   })
@@ -2748,7 +2758,7 @@ describe("HYDRATE_FROM_SNAPSHOT last_error recovery", () => {
   it("raises an alert for snapshot-carried details without touching conn.error or notifications", async () => {
     const handlers = await connectOwner()
     h.pushAlert.mockClear()
-    h.sendSystemNotification.mockClear()
+    h.notifyDesktop.mockClear()
 
     const details =
       "stderr (this turn, last 1 lines):\n  Error: 401 Unauthorized"
@@ -2774,7 +2784,7 @@ describe("HYDRATE_FROM_SNAPSHOT last_error recovery", () => {
     expect(h.store!.getConnection(TAB)!.error).toBe(
       "agent ended the turn without producing any response."
     )
-    expect(h.sendSystemNotification).not.toHaveBeenCalled()
+    expect(h.notifyDesktop).not.toHaveBeenCalled()
   })
 
   it("does not re-alert the same details on every re-attach", async () => {
@@ -3364,7 +3374,7 @@ describe("routing survives every surface watching one connection", () => {
         agentType: "claude_code",
       })
     })
-    h.sendSystemNotification.mockClear()
+    h.notifyDesktop.mockClear()
 
     act(() => {
       firehose()({
@@ -3378,7 +3388,7 @@ describe("routing survives every surface watching one connection", () => {
     // Two surfaces are streaming the same turn; the user must still get ONE
     // "finished responding" notification. The store effect, by contrast, is
     // per surface — both leave `prompting`.
-    expect(h.sendSystemNotification).toHaveBeenCalledTimes(1)
+    expect(h.notifyDesktop).toHaveBeenCalledTimes(1)
     expect(h.store!.getConnection(TAB)!.status).toBe("connected")
     expect(h.store!.getConnection(CHILD_VIEW)!.status).toBe("connected")
   })

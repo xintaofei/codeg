@@ -339,10 +339,11 @@ async fn async_main() -> ExitCode {
         &chat_authoring_config,
     )
     .await;
-    // Keep ACP model terminal fallbacks aligned with the same default-shell
-    // preference used by the built-in terminal before accepting connections.
+    // Before accepting connections: keep ACP model terminal fallbacks aligned
+    // with the same default-shell preference the built-in terminal uses, and
+    // seed the command-color opt-in that every launch env is built from.
     let terminal_shell_config = state.connection_manager.terminal_shell_config();
-    codeg_lib::commands::system_settings::apply_persisted_terminal_shell_config(
+    codeg_lib::commands::system_settings::apply_persisted_terminal_settings(
         &state.db.conn,
         &terminal_shell_config,
     )
@@ -386,10 +387,18 @@ async fn async_main() -> ExitCode {
         if let Err(e) = continuation_coordinator.recover_on_startup().await {
             tracing::warn!("[continuation] startup recovery failed: {e}");
         }
-        let socket = delegation_socket_path.clone();
+        // Bind through the service handle rather than a bare `listener.run`
+        // spawn: it keeps the bind error and the accept-loop handle around, so
+        // the workspace status indicator can report why the broker socket is
+        // down and rebind it without restarting the server.
+        let service = codeg_lib::acp::delegation::service::DelegationService::new(
+            listener,
+            delegation_socket_path.clone(),
+        );
+        codeg_lib::acp::delegation::service::install(service.clone());
         tokio::spawn(async move {
-            if let Err(e) = listener.run(socket).await {
-                tracing::info!("[delegation] listener exited: {e}");
+            if let Err(e) = service.start().await {
+                tracing::error!("[delegation] listener failed to start: {e}");
             }
         });
     }

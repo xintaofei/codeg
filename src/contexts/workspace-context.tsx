@@ -36,8 +36,13 @@ import {
   splitAbsPath,
 } from "@/lib/file-open-target"
 import { isAbsoluteFilePath } from "@/lib/file-path-display"
-import { pushClosedTab, snapshotFileTab } from "@/lib/closed-tab-stack"
 import {
+  batchCloseSlots,
+  pushClosedTab,
+  snapshotFileTab,
+} from "@/lib/closed-tab-stack"
+import {
+  isBinaryImageFile,
   isHiddenPath,
   isHtmlPreviewable,
   isImageFile,
@@ -45,6 +50,11 @@ import {
   isOfficePreviewable,
   languageFromPath,
 } from "@/lib/language-detect"
+import {
+  loadImageDiffSides,
+  type ImageDiffSides,
+  type ImageDiffSource,
+} from "@/lib/image-diff"
 import { toErrorMessage } from "@/lib/app-error"
 import {
   HIDDEN_TAB_CONTENT_BUDGET_CHARS,
@@ -84,6 +94,11 @@ export interface FileWorkspaceTab {
   modifiedContent?: string
   gitBaseContent?: string
   savedContent?: string
+  /** Both sides of an image diff, on a `rich-diff` tab whose file is a binary
+   *  image. Set INSTEAD of originalContent/modifiedContent, which are
+   *  text-shaped; `language === "image"` is what tells the panel which of the
+   *  two the tab carries. */
+  imageDiff?: ImageDiffSides
   isDirty?: boolean
   etag?: string | null
   mtimeMs?: number | null
@@ -124,9 +139,18 @@ interface WorkspaceActionsValue {
   // no folder to resolve against). Callers that only want the side effect
   // ignore it; a caller that must then FIND the tab (the file viewer drawer)
   // has no other way to reproduce this resolution.
+  //
+  // `index` is the strip slot for a tab that is not open yet, clamped to the
+  // strip; omitted = append. Reopening a closed tab passes the slot it was
+  // closed from. A tab that is already open is activated where it is.
   openFilePreview: (
     path: string,
-    options?: { line?: number; reload?: boolean; folderId?: number }
+    options?: {
+      line?: number
+      reload?: boolean
+      folderId?: number
+      index?: number
+    }
   ) => Promise<string | null>
   // Refetch the open tab matching the absolute `path` without changing
   // activeFileTabId. No-op when no tab matches or when the tab has unsaved
@@ -580,13 +604,18 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     [activateFilePane]
   )
 
-  // Insert a freshly created (loading, empty) tab. Caller has verified no tab
-  // with this id exists. If a race introduced one, leave it alone.
+  // Insert a freshly created (loading, empty) tab at `index` (clamped), or at
+  // the end. Caller has verified no tab with this id exists. If a race
+  // introduced one, leave it alone.
   const seedLoadingTab = useCallback(
-    (nextTab: FileWorkspaceTab) => {
+    (nextTab: FileWorkspaceTab, index?: number) => {
       setFileTabs((prev) => {
         if (prev.some((tab) => tab.id === nextTab.id)) return prev
-        return [...prev, nextTab]
+        const at =
+          index == null
+            ? prev.length
+            : Math.max(0, Math.min(index, prev.length))
+        return [...prev.slice(0, at), nextTab, ...prev.slice(at)]
       })
       setActiveFileTabId(nextTab.id)
       activateFilePane()
@@ -685,7 +714,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   }, [])
 
   const decideLoad = useCallback(
-    (seed: FileWorkspaceTab, reload: boolean): LoadDecision => {
+    (seed: FileWorkspaceTab, reload: boolean, index?: number): LoadDecision => {
       // Dedup synchronously. inFlightLoadsRef is updated immediately on
       // generation start, so rapid re-clicks within a single event loop
       // turn collapse here — unlike fileTabsRef.current, which only
@@ -701,7 +730,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         // e.g. the user closed it while a watcher-driven reload was in
         // flight — do not resurrect it as a phantom tab.
         if (reload) return { kind: "skip" }
-        seedLoadingTab(seed)
+        seedLoadingTab(seed, index)
         return { kind: "fetch", gen: beginFetchGeneration(seed.id) }
       }
 
@@ -829,6 +858,19 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         prev.map((tab) =>
           tab.id === tabId
             ? { ...tab, originalContent, modifiedContent, content: "", loading }
+            : tab
+        )
+      )
+    },
+    []
+  )
+
+  const resolveImageDiffTab = useCallback(
+    (tabId: string, imageDiff: ImageDiffSides) => {
+      setFileTabs((prev) =>
+        prev.map((tab) =>
+          tab.id === tabId
+            ? { ...tab, imageDiff, content: "", loading: false }
             : tab
         )
       )
@@ -1125,7 +1167,12 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   const openFilePreview = useCallback(
     async (
       rawPath: string,
-      options?: { line?: number; reload?: boolean; folderId?: number }
+      options?: {
+        line?: number
+        reload?: boolean
+        folderId?: number
+        index?: number
+      }
     ) => {
       const absPath = await resolveOpenAbsolutePath(rawPath, options?.folderId)
       if (!absPath) return null
@@ -1164,7 +1211,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           image ? "image" : office ? "office" : languageFromPath(absPath)
         )
 
-        const decision = decideLoad(seed, options?.reload ?? false)
+        const decision = decideLoad(
+          seed,
+          options?.reload ?? false,
+          options?.index
+        )
         if (decision.kind === "skip") return
         const { gen } = decision
 
@@ -1344,6 +1395,42 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     openFilePreview,
   ])
 
+  // The image counterpart of the three rich-diff loaders below: a binary image
+  // has no text sides to fetch (`git show` refuses it outright), so both sides
+  // come back as bytes and land on the tab as an `imageDiff` instead.
+  const loadImageRichDiff = useCallback(
+    async (args: {
+      tabId: string
+      gen: number
+      folderPath: string
+      file: string
+      original: ImageDiffSource
+      modified: ImageDiffSource
+      timeoutMessage: string
+    }) => {
+      try {
+        const sides = await withTimeout(
+          loadImageDiffSides(
+            args.folderPath,
+            args.file,
+            args.original,
+            args.modified
+          ),
+          20_000,
+          args.timeoutMessage
+        )
+        if (settleFetch(args.tabId, args.gen)) {
+          resolveImageDiffTab(args.tabId, sides)
+        }
+      } catch (error) {
+        if (settleFetch(args.tabId, args.gen)) {
+          rejectTab(args.tabId, toErrorMessage(error))
+        }
+      }
+    },
+    [rejectTab, resolveImageDiffTab, settleFetch]
+  )
+
   const openWorkingTreeDiff = useCallback(
     async (
       rawPath?: string,
@@ -1471,7 +1558,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       })
       const title = t("diffTitleFile", { name: fileName(path) })
       const description = path
-      const lang = languageFromPath(path)
+      const isImageDiff = isBinaryImageFile(path)
+      const lang = isImageDiff ? "image" : languageFromPath(path)
 
       const seed = loadingTab(
         tabId,
@@ -1485,6 +1573,20 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       const decision = beginDiffLoad(seed)
       if (decision.skip) return
       const { gen } = decision
+      if (isImageDiff) {
+        await loadImageRichDiff({
+          tabId,
+          gen,
+          folderPath,
+          file: path,
+          // A fresh repo has an unborn HEAD: nothing came before, which is
+          // an absent side rather than a failed read.
+          original: { kind: "ref", ref: "HEAD", missingRefIsAbsent: true },
+          modified: { kind: "worktree" },
+          timeoutMessage: t("diffRequestTimedOut"),
+        })
+        return
+      }
       try {
         const [originalContent, modifiedResult] = await withTimeout(
           Promise.all([
@@ -1505,6 +1607,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     },
     [
       beginDiffLoad,
+      loadImageRichDiff,
       rejectTab,
       resolveTab,
       resolveRichDiffTab,
@@ -1550,7 +1653,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         : t("compareDescriptionBranch", { branch: targetBranch })
 
       if (mode !== "overview" && path) {
-        const lang = languageFromPath(path)
+        const isImageDiff = isBinaryImageFile(path)
+        const lang = isImageDiff ? "image" : languageFromPath(path)
         const seed = loadingTab(
           tabId,
           target.id,
@@ -1563,6 +1667,18 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const decision = beginDiffLoad(seed)
         if (decision.skip) return
         const { gen } = decision
+        if (isImageDiff) {
+          await loadImageRichDiff({
+            tabId,
+            gen,
+            folderPath,
+            file: path,
+            original: { kind: "ref", ref: targetBranch },
+            modified: { kind: "worktree" },
+            timeoutMessage: t("branchCompareRequestTimedOut"),
+          })
+          return
+        }
         try {
           const [originalContent, modifiedResult] = await withTimeout(
             Promise.all([
@@ -1609,6 +1725,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     },
     [
       beginDiffLoad,
+      loadImageRichDiff,
       rejectTab,
       resolveRichDiffTab,
       resolveTab,
@@ -1646,7 +1763,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         : message || t("diffDescriptionCommit", { commit })
 
       if (path) {
-        const lang = languageFromPath(path)
+        const isImageDiff = isBinaryImageFile(path)
+        const lang = isImageDiff ? "image" : languageFromPath(path)
         const seed = loadingTab(
           tabId,
           target.id,
@@ -1659,6 +1777,27 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const decision = beginDiffLoad(seed)
         if (decision.skip) return
         const { gen } = decision
+        if (isImageDiff) {
+          await loadImageRichDiff({
+            tabId,
+            gen,
+            folderPath,
+            file: path,
+            // A commit's parent fails to resolve for two reasons: it is a
+            // root commit, or this is a shallow clone's boundary. Both read
+            // as "nothing came before" — which is what git itself reports
+            // (`git show` at a shallow boundary lists every file as added),
+            // and what the text diff beside this one already assumes.
+            original: {
+              kind: "ref",
+              ref: `${commit}~1`,
+              missingRefIsAbsent: true,
+            },
+            modified: { kind: "ref", ref: commit },
+            timeoutMessage: t("commitDiffRequestTimedOut"),
+          })
+          return
+        }
         try {
           const [originalContent, modifiedContent] = await withTimeout(
             Promise.all([
@@ -1701,6 +1840,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     },
     [
       beginDiffLoad,
+      loadImageRichDiff,
       rejectTab,
       resolveTab,
       resolveRichDiffTab,
@@ -2178,7 +2318,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         // `pushClosedTab` keys on the tab id and moves an existing entry to the
         // top, so recording from inside this updater survives React invoking it
         // more than once (StrictMode, or a discarded render replayed).
-        const closed = snapshotFileTab(tab)
+        const closed = snapshotFileTab(tab, idx)
         if (closed) pushClosedTab(closed)
 
         const next = prev.filter((candidate) => candidate.id !== tabId)
@@ -2227,10 +2367,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           if (!confirmed) return prev
         }
 
-        for (const closing of closingTabs) {
-          // `pushClosedTab` is idempotent per tab id, which is what makes this
-          // safe inside an updater React may invoke more than once.
-          const closed = snapshotFileTab(closing)
+        // `pushClosedTab` is idempotent per tab id, which is what makes this
+        // safe inside an updater React may invoke more than once.
+        const slots = batchCloseSlots(prev, (tab) => tab.id !== tabId)
+        for (const [closing, slot] of slots) {
+          const closed = snapshotFileTab(closing, slot)
           if (closed) pushClosedTab(closed)
           inFlightLoadsRef.current.delete(closing.id)
         }
@@ -2250,8 +2391,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         if (!confirmed) return prev
       }
 
-      for (const tab of prev) {
-        const closed = snapshotFileTab(tab)
+      for (const [tab, slot] of batchCloseSlots(prev)) {
+        const closed = snapshotFileTab(tab, slot)
         if (closed) pushClosedTab(closed)
       }
 

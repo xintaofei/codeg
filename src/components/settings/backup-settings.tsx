@@ -4,9 +4,11 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import {
   DatabaseBackup,
   Download,
+  History,
   Loader2,
   ShieldAlert,
   Upload,
+  X,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
@@ -42,25 +44,41 @@ import {
   type AppErrorTranslator,
 } from "@/lib/app-error"
 import {
+  backupActiveAgents,
+  cancelBackup,
+  discardPendingRestore,
   exportBackupDesktop,
   exportBackupWeb,
-  inspectBackupDesktop,
-  inspectBackupWeb,
+  listSafetySnapshots,
   listenBackupProgress,
-  scanExternalConflictsDesktop,
-  scanExternalConflictsWeb,
+  prepareBackupSourceDesktop,
+  prepareBackupSourceWeb,
+  releaseBackupSource,
+  rollbackToSnapshot,
+  scanExternalConflicts,
   stageRestoreDesktop,
   stageRestoreWeb,
   uploadBackupWeb,
   type BackupPreview,
   type BackupProgress,
+  type DegradedSqlite,
   type ExternalConflict,
   type ExternalRestoreMode,
+  type SafetySnapshot,
+  type StagedRestore,
 } from "@/lib/api"
 
-type RestoreSource =
-  | { kind: "desktop"; path: string; name: string }
-  | { kind: "web"; uploadId: string; name: string }
+/** Where the archive came from, kept so a passphrase retry can re-prepare it. */
+type RestoreOrigin =
+  | { kind: "desktop"; path: string }
+  | { kind: "web"; uploadId: string }
+
+type RestoreSource = {
+  origin: RestoreOrigin
+  name: string
+  /** Set once the archive has been decrypted and handed a reusable handle. */
+  sourceId: string | null
+}
 
 type ExternalChoice = "skip" | "side" | "original"
 
@@ -74,8 +92,19 @@ const ACTIVE_PHASES: BackupProgress["phase"][] = [
   "swapping",
 ]
 
+/** The backend's i18n key for "a restore is already staged". */
+const ALREADY_PENDING_KEY = "backup.restore.error.alreadyPending"
+
 function formatMb(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function isAlreadyPending(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { i18nKey?: string }).i18nKey === ALREADY_PENDING_KEY
+  )
 }
 
 export function BackupSettings() {
@@ -103,6 +132,7 @@ export function BackupSettings() {
   const [passphrase, setPassphrase] = useState("")
   const [passphraseConfirm, setPassphraseConfirm] = useState("")
   const [exporting, setExporting] = useState(false)
+  const [degraded, setDegraded] = useState<DegradedSqlite[]>([])
 
   // ── Restore ──
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -113,12 +143,21 @@ export function BackupSettings() {
   const [uploading, setUploading] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [restoring, setRestoring] = useState(false)
+  const [staged, setStaged] = useState<StagedRestore | null>(null)
+  const [pendingBlocked, setPendingBlocked] = useState(false)
 
   // ── External transcripts (opt-in restore) ──
   const [externalChoice, setExternalChoice] = useState<ExternalChoice>("skip")
   const [forceOverwrite, setForceOverwrite] = useState(false)
   const [conflicts, setConflicts] = useState<ExternalConflict[] | null>(null)
   const [scanningConflicts, setScanningConflicts] = useState(false)
+  const [runningAgents, setRunningAgents] = useState<string[]>([])
+
+  // ── Safety snapshots ──
+  const [snapshots, setSnapshots] = useState<SafetySnapshot[]>([])
+  const [rollbackTarget, setRollbackTarget] = useState<SafetySnapshot | null>(
+    null
+  )
 
   // ── Shared progress feed ──
   const [progress, setProgress] = useState<BackupProgress | null>(null)
@@ -135,6 +174,20 @@ export function BackupSettings() {
     }
   }, [])
 
+  // Wrapped rather than `.catch()`-ed: the snapshot list is a nicety, and a
+  // transport that throws synchronously must not take the settings page down
+  // with it.
+  const refreshSnapshots = useCallback(() => {
+    void (async () => {
+      try {
+        setSnapshots(await listSafetySnapshots())
+      } catch {
+        setSnapshots([])
+      }
+    })()
+  }, [])
+  useEffect(refreshSnapshots, [refreshSnapshots])
+
   const passphraseMismatch =
     passphrase.length > 0 && passphrase !== passphraseConfirm
   const busy = exporting || restoring
@@ -143,6 +196,16 @@ export function BackupSettings() {
     setExternalChoice("skip")
     setForceOverwrite(false)
     setConflicts(null)
+    setRunningAgents([])
+  }, [])
+
+  /**
+   * Drop a prepared source's decrypted archive as soon as it is superseded.
+   * Skipping this is safe (idle reaping and the startup sweep both cover it),
+   * but leaving a plaintext copy around longer than necessary is not the goal.
+   */
+  const releasePrepared = useCallback((id: string | null | undefined) => {
+    if (id) void releaseBackupSource(id).catch(() => {})
   }, [])
 
   const handleExport = useCallback(async () => {
@@ -152,6 +215,7 @@ export function BackupSettings() {
     }
     setExporting(true)
     setProgress(null)
+    setDegraded([])
     try {
       const opts = {
         includeExternalTranscripts: includeExternal,
@@ -159,9 +223,13 @@ export function BackupSettings() {
       }
       if (desktop) {
         const manifest = await exportBackupDesktop(opts)
-        if (manifest) toast.success(t("export.success"))
+        if (manifest) {
+          setDegraded(manifest.degradedSqlite ?? [])
+          toast.success(t("export.success"))
+        }
       } else {
-        await exportBackupWeb(opts)
+        const result = await exportBackupWeb(opts)
+        setDegraded(result.degradedSqlite ?? [])
         toast.success(t("export.started"))
       }
     } catch (err) {
@@ -172,23 +240,27 @@ export function BackupSettings() {
     }
   }, [desktop, includeExternal, passphrase, passphraseMismatch, t, localize])
 
-  const runInspect = useCallback(
+  /** Decrypt once and keep the handle for the conflict scan and for staging. */
+  const runPrepare = useCallback(
     async (source: RestoreSource, pass: string | null) => {
       setInspecting(true)
+      releasePrepared(source.sourceId)
       try {
-        const pv =
-          source.kind === "desktop"
-            ? await inspectBackupDesktop(source.path, pass)
-            : await inspectBackupWeb(source.uploadId, pass)
-        setPreview(pv)
+        const prepared =
+          source.origin.kind === "desktop"
+            ? await prepareBackupSourceDesktop(source.origin.path, pass)
+            : await prepareBackupSourceWeb(source.origin.uploadId, pass)
+        setPreview(prepared.preview)
+        setRestoreSource({ ...source, sourceId: prepared.sourceId ?? null })
       } catch (err) {
         toast.error(localize(err))
         setPreview(null)
+        setRestoreSource({ ...source, sourceId: null })
       } finally {
         setInspecting(false)
       }
     },
-    [localize]
+    [localize, releasePrepared]
   )
 
   const handlePickDesktop = useCallback(async () => {
@@ -198,46 +270,62 @@ export function BackupSettings() {
       filters: [{ name: "Codeg backup", extensions: ["codegbak", "zip"] }],
     })
     if (typeof picked !== "string") return
+    releasePrepared(restoreSource?.sourceId)
     const name = picked.split(/[\\/]/).pop() ?? picked
-    const source: RestoreSource = { kind: "desktop", path: picked, name }
+    const source: RestoreSource = {
+      origin: { kind: "desktop", path: picked },
+      name,
+      sourceId: null,
+    }
     setRestoreSource(source)
     setPreview(null)
+    setStaged(null)
     setRestorePassphrase("")
     resetExternalState()
-    await runInspect(source, null)
-  }, [runInspect, resetExternalState])
+    await runPrepare(source, null)
+  }, [runPrepare, resetExternalState, releasePrepared, restoreSource])
 
   const handlePickWeb = useCallback(
     async (file: File) => {
+      releasePrepared(restoreSource?.sourceId)
       setRestoreSource(null)
       setPreview(null)
+      setStaged(null)
       setRestorePassphrase("")
       resetExternalState()
       setUploading(true)
       try {
         const uploadId = await uploadBackupWeb(file)
         const source: RestoreSource = {
-          kind: "web",
-          uploadId,
+          origin: { kind: "web", uploadId },
           name: file.name,
+          sourceId: null,
         }
         setRestoreSource(source)
-        await runInspect(source, null)
+        await runPrepare(source, null)
       } catch (err) {
         toast.error(localize(err))
       } finally {
         setUploading(false)
       }
     },
-    [runInspect, resetExternalState, localize]
+    [runPrepare, resetExternalState, localize, releasePrepared, restoreSource]
   )
 
   const handleUnlock = useCallback(async () => {
     if (!restoreSource) return
-    await runInspect(restoreSource, restorePassphrase || null)
-  }, [restoreSource, restorePassphrase, runInspect])
+    await runPrepare(restoreSource, restorePassphrase || null)
+  }, [restoreSource, restorePassphrase, runPrepare])
 
   const hasExternal = !!preview?.manifest?.includesExternalTranscripts
+
+  // `SideLocation` is the safe default once an archive turns out to carry
+  // transcripts: it hands the files over without touching any agent's
+  // directory. (The API's own default stays `Skip` — changing that would alter
+  // what an omitted `externalMode` means for existing callers.)
+  useEffect(() => {
+    if (hasExternal) setExternalChoice("side")
+  }, [hasExternal])
 
   const buildExternalMode = useCallback((): ExternalRestoreMode | null => {
     if (!hasExternal) return null
@@ -253,86 +341,122 @@ export function BackupSettings() {
     async (choice: ExternalChoice) => {
       setExternalChoice(choice)
       setConflicts(null)
-      if (choice !== "original" || !restoreSource) return
+      setRunningAgents([])
+      if (choice !== "original" || !restoreSource?.sourceId) return
       setScanningConflicts(true)
       try {
-        const found =
-          restoreSource.kind === "desktop"
-            ? await scanExternalConflictsDesktop(
-                restoreSource.path,
-                restorePassphrase || null
-              )
-            : await scanExternalConflictsWeb(
-                restoreSource.uploadId,
-                restorePassphrase || null
-              )
+        const [found, agents] = await Promise.all([
+          scanExternalConflicts(restoreSource.sourceId),
+          // Advisory only: the backend takes a lock before it writes and
+          // downgrades to the side location if anything is running. This just
+          // means the user rarely gets there by surprise.
+          backupActiveAgents().catch(() => [] as string[]),
+        ])
         setConflicts(found)
+        setRunningAgents(agents)
       } catch (err) {
         toast.error(localize(err))
       } finally {
         setScanningConflicts(false)
       }
     },
-    [restoreSource, restorePassphrase, localize]
+    [restoreSource, localize]
   )
 
+  const handleDiscardPending = useCallback(async () => {
+    try {
+      await discardPendingRestore()
+      setPendingBlocked(false)
+      toast.success(t("restore.discarded"))
+    } catch (err) {
+      toast.error(localize(err))
+    }
+  }, [t, localize])
+
+  /** Restart after the user has read the result panel. */
+  const finishRestore = useCallback(async () => {
+    setStaged(null)
+    if (desktop) {
+      await relaunchApp()
+      return
+    }
+    // The restore is staged but only APPLIED on the next server start. If the
+    // restart request fails (e.g. unsupported platform, busy), do NOT poll
+    // health + reload — that would land back on the still-running old process
+    // and look like success while the restore never applied. Tell the user to
+    // restart manually instead.
+    try {
+      await restartApp()
+    } catch {
+      toast.error(t("restore.restartFailed"))
+      setRestoring(false)
+      return
+    }
+    toast.success(t("restore.restarting"))
+    const healthy = await waitForServerHealthy({
+      timeoutMs: 120_000,
+      initialDelayMs: 1500,
+    })
+    if (healthy) window.location.reload()
+    else {
+      toast.error(t("restore.restartTimeout"))
+      setRestoring(false)
+    }
+  }, [desktop, t])
+
   const performRestore = useCallback(async () => {
-    if (!restoreSource) return
+    if (!restoreSource?.sourceId) return
     setConfirmOpen(false)
     setRestoring(true)
     setProgress(null)
     try {
-      const pass = restorePassphrase || null
       const externalMode = buildExternalMode()
-      if (restoreSource.kind === "desktop") {
-        await stageRestoreDesktop({
-          srcPath: restoreSource.path,
-          passphrase: pass,
-          externalMode,
-        })
-        toast.success(t("restore.staged"))
-        await relaunchApp()
-      } else {
-        const res = await stageRestoreWeb({
-          uploadId: restoreSource.uploadId,
-          passphrase: pass,
-          externalMode,
-        })
-        if (res.staged.restoredExternalPath) {
-          toast.message(
-            t("restore.externalSideLocation", {
-              path: res.staged.restoredExternalPath,
+      const result =
+        restoreSource.origin.kind === "desktop"
+          ? await stageRestoreDesktop({
+              sourceId: restoreSource.sourceId,
+              externalMode,
             })
-          )
-        }
-        // The restore is staged but only APPLIED on the next server start. If
-        // the restart request fails (e.g. unsupported platform, busy), do NOT
-        // poll health + reload — that would land back on the still-running old
-        // process and look like success while the restore never applied. Tell
-        // the user to restart manually instead.
-        try {
-          await restartApp()
-        } catch {
-          toast.error(t("restore.restartFailed"))
-          setRestoring(false)
-          return
-        }
-        toast.success(t("restore.restarting"))
-        const healthy = await waitForServerHealthy({
-          timeoutMs: 120_000,
-          initialDelayMs: 1500,
-        })
-        if (healthy) window.location.reload()
-        else {
-          toast.error(t("restore.restartTimeout"))
-          setRestoring(false)
-        }
-      }
+          : (
+              await stageRestoreWeb({
+                sourceId: restoreSource.sourceId,
+                externalMode,
+              })
+            ).staged
+      // Both runtimes now show what actually happened before restarting; the
+      // desktop path used to relaunch immediately and drop the whole report.
+      setStaged(result)
+      setRestoreSource({ ...restoreSource, sourceId: null })
+      toast.success(t("restore.staged"))
     } catch (err) {
+      if (isAlreadyPending(err)) setPendingBlocked(true)
       toast.error(localize(err))
       setRestoring(false)
     }
-  }, [restoreSource, restorePassphrase, buildExternalMode, t, localize])
+  }, [restoreSource, buildExternalMode, t, localize])
+
+  const handleRollback = useCallback(async () => {
+    const target = rollbackTarget
+    setRollbackTarget(null)
+    if (!target) return
+    try {
+      await rollbackToSnapshot(target.id)
+      toast.success(t("restore.staged"))
+      await finishRestore()
+    } catch (err) {
+      if (isAlreadyPending(err)) setPendingBlocked(true)
+      toast.error(localize(err))
+    }
+  }, [rollbackTarget, finishRestore, t, localize])
+
+  const handleCancelOp = useCallback(async () => {
+    if (!progress?.opId) return
+    try {
+      await cancelBackup(progress.opId)
+    } catch (err) {
+      toast.error(localize(err))
+    }
+  }, [progress, localize])
 
   const showProgress = progress && ACTIVE_PHASES.includes(progress.phase)
 
@@ -445,7 +569,28 @@ export function BackupSettings() {
               <ProgressLine
                 progress={progress}
                 label={t("export.inProgress")}
+                cancelLabel={t("progress.cancel")}
+                onCancel={handleCancelOp}
               />
+            )}
+
+            {degraded.length > 0 && (
+              <div className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-2xs text-amber-500">
+                <p className="font-medium">{t("export.degradedTitle")}</p>
+                <p>{t("export.degradedHint")}</p>
+                <ul className="space-y-0.5 pt-1">
+                  {degraded.slice(0, 8).map((d) => (
+                    <li key={d.archivePath} className="truncate">
+                      {d.agent} — {t(`export.degradedLevel.${d.level}`)}
+                    </li>
+                  ))}
+                </ul>
+                {degraded.length > 8 && (
+                  <p>
+                    {t("export.degradedMore", { count: degraded.length - 8 })}
+                  </p>
+                )}
+              </div>
             )}
           </TabsContent>
 
@@ -486,6 +631,20 @@ export function BackupSettings() {
                 />
               )}
             </div>
+
+            {pendingBlocked && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-2xs text-amber-500">
+                <span>{t("restore.pendingBlockedHint")}</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={handleDiscardPending}
+                >
+                  {t("restore.discardPending")}
+                </Button>
+              </div>
+            )}
 
             {preview?.needsPassphrase && (
               <div className="space-y-2">
@@ -606,6 +765,14 @@ export function BackupSettings() {
                         </p>
                       </div>
                     ) : null}
+                    {runningAgents.length > 0 && (
+                      <p className="text-2xs text-amber-500">
+                        {t("restore.external.agentsRunning", {
+                          count: runningAgents.length,
+                          agents: runningAgents.join(", "),
+                        })}
+                      </p>
+                    )}
                     <div className="flex items-center justify-between gap-3">
                       <div className="space-y-0.5">
                         <Label className="text-xs font-medium">
@@ -646,7 +813,11 @@ export function BackupSettings() {
               size="sm"
               variant="destructive"
               disabled={
-                busy || !preview?.manifest || !preview.compatible || inspecting
+                busy ||
+                !preview?.manifest ||
+                !preview.compatible ||
+                !restoreSource?.sourceId ||
+                inspecting
               }
               onClick={() => setConfirmOpen(true)}
             >
@@ -655,10 +826,64 @@ export function BackupSettings() {
             </Button>
 
             {restoring && showProgress && (
-              <ProgressLine progress={progress} label={t("restore.staging")} />
+              <ProgressLine
+                progress={progress}
+                label={t("restore.staging")}
+                cancelLabel={t("progress.cancel")}
+                onCancel={handleCancelOp}
+              />
             )}
           </TabsContent>
         </Tabs>
+      </section>
+
+      {/* ── Safety snapshots ── */}
+      <section className="rounded-xl border bg-card p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <History className="h-4 w-4" />
+          <h2 className="text-sm font-semibold">{t("snapshots.title")}</h2>
+        </div>
+        <p className="text-xs text-muted-foreground">{t("snapshots.hint")}</p>
+        {snapshots.length === 0 ? (
+          <p className="text-2xs text-muted-foreground">
+            {t("snapshots.empty")}
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {snapshots.map((snap) => (
+              <li
+                key={snap.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/20 px-3 py-2"
+              >
+                <div className="min-w-0 space-y-0.5">
+                  <div className="text-xs">
+                    {snap.createdAt
+                      ? new Date(snap.createdAt).toLocaleString()
+                      : snap.id}
+                  </div>
+                  <div className="text-2xs text-muted-foreground truncate">
+                    {formatMb(snap.sizeBytes)} · {snap.path}
+                  </div>
+                </div>
+                {snap.rollbackSupported ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => setRollbackTarget(snap)}
+                  >
+                    {t("snapshots.rollback")}
+                  </Button>
+                ) : (
+                  <span className="text-2xs text-muted-foreground">
+                    {t("snapshots.unsupported")}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
@@ -677,6 +902,113 @@ export function BackupSettings() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <AlertDialog
+        open={!!rollbackTarget}
+        onOpenChange={(open) => !open && setRollbackTarget(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("snapshots.rollbackConfirmTitle")}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("snapshots.rollbackConfirmBody")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("restore.cancel")}</AlertDialogCancel>
+            <AlertDialogAction onClick={handleRollback}>
+              {t("snapshots.rollback")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* What the stage actually did — shown on BOTH runtimes before the
+          restart. The desktop path used to relaunch immediately, so the side
+          location, the skipped conflicts and any downgrade were never seen. */}
+      <AlertDialog
+        open={!!staged}
+        onOpenChange={(open) => {
+          if (open) return
+          // Escape or an outside click dismisses without going through
+          // "Later", so `restoring` has to be cleared here too — otherwise
+          // every control stays disabled until the page is reloaded.
+          setStaged(null)
+          setRestoring(false)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("restore.result.title")}</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-left text-xs">
+                <p>{t("restore.result.needsRestart")}</p>
+                {staged?.externalDowngraded && (
+                  <p className="text-amber-500">
+                    {t("restore.result.downgraded", {
+                      agents: staged.externalDowngraded.agents.join(", "),
+                      path: staged.externalDowngraded.path,
+                    })}
+                  </p>
+                )}
+                {!staged?.externalDowngraded &&
+                  staged?.restoredExternalPath && (
+                    <p>
+                      {t("restore.externalSideLocation", {
+                        path: staged.restoredExternalPath,
+                      })}
+                    </p>
+                  )}
+                {!!staged?.skippedConflicts.length && (
+                  <details>
+                    <summary className="cursor-pointer">
+                      {t("restore.result.skipped", {
+                        count: staged.skippedConflicts.length,
+                      })}
+                    </summary>
+                    <ul className="pt-1 space-y-0.5 text-muted-foreground">
+                      {staged.skippedConflicts.slice(0, 20).map((p) => (
+                        <li key={p} className="truncate">
+                          {p}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+                {!!staged?.refusedExternal?.length && (
+                  <details>
+                    <summary className="cursor-pointer text-amber-500">
+                      {t("restore.result.refused", {
+                        count: staged.refusedExternal.length,
+                      })}
+                    </summary>
+                    <p className="pt-1 text-muted-foreground">
+                      {t("restore.result.refusedHint")}
+                    </p>
+                    <ul className="pt-1 space-y-0.5 text-muted-foreground">
+                      {staged.refusedExternal.slice(0, 20).map((r) => (
+                        <li key={r.archivePath} className="truncate">
+                          {r.targetPath}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setRestoring(false)}>
+              {t("restore.result.later")}
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={finishRestore}>
+              {t("restore.result.restartNow")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   )
 }
@@ -684,9 +1016,13 @@ export function BackupSettings() {
 function ProgressLine({
   progress,
   label,
+  cancelLabel,
+  onCancel,
 }: {
   progress: BackupProgress
   label: string
+  cancelLabel: string
+  onCancel: () => void
 }) {
   const pct =
     progress.totalBytes && progress.totalBytes > 0
@@ -694,9 +1030,25 @@ function ProgressLine({
       : null
   return (
     <div className="space-y-1">
-      <div className="flex items-center justify-between text-2xs text-muted-foreground">
+      <div className="flex items-center justify-between gap-2 text-2xs text-muted-foreground">
         <span>{label}</span>
-        <span>{formatMb(progress.processedBytes)}</span>
+        <div className="flex items-center gap-2">
+          <span>
+            {progress.totalBytes
+              ? `${formatMb(progress.processedBytes)} / ${formatMb(progress.totalBytes)}`
+              : formatMb(progress.processedBytes)}
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-5 px-1.5"
+            onClick={onCancel}
+            title={cancelLabel}
+          >
+            <X className="h-3 w-3" />
+          </Button>
+        </div>
       </div>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
         <div

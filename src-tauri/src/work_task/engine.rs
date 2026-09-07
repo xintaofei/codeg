@@ -4276,19 +4276,30 @@ impl TaskEngine {
                 .push_branch(&ctx, wt_path, &push_repo, work_branch, remote_branch)
                 .await
                 .map_err(|e| {
-                    if crate::forge::same_repo(&push_repo, &meta.owner_repo) {
-                        format!("could not push back to '{remote_branch}': {e}")
+                    let own_repo = crate::forge::same_repo(&push_repo, &meta.owner_repo);
+                    let where_ = if own_repo {
+                        format!("could not push back to '{remote_branch}'")
                     } else {
-                        // The push went to the FORK. The by-far most common
-                        // refusal there is permission: forges only let this
-                        // account push when the author allowed maintainer
-                        // edits on the pull request.
-                        format!(
-                            "could not push back to '{remote_branch}' on {push_repo}: {e} — \
-                             pushing to a fork needs its author to allow edits from \
-                             maintainers on the {}",
+                        format!("could not push back to '{remote_branch}' on {push_repo}")
+                    };
+                    // A hint is only added when git actually said something we
+                    // recognise. The fork case used to carry the permission
+                    // hint unconditionally, which reads as a finding rather
+                    // than the guess it was: a push refused for being out of
+                    // date came back advising the reader to go change a
+                    // setting on the pull request that was already correct.
+                    match classify_push_refusal(&e) {
+                        PushRefusal::Permission if !own_repo => format!(
+                            "{where_}: {e} — pushing to a fork needs its author to allow edits \
+                             from maintainers on the {}",
                             meta.provider.change_noun()
-                        )
+                        ),
+                        PushRefusal::BranchMoved => format!(
+                            "{where_}: {e} — that branch has commits this task does not have, so \
+                             the push is not a fast-forward. Bring them into the task's branch, \
+                             then deliver again"
+                        ),
+                        _ => format!("{where_}: {e}"),
                     }
                 })?;
 
@@ -5889,6 +5900,67 @@ fn is_queued_merge_superseded(error: &str) -> bool {
     error.contains("changed or withdrawn")
 }
 
+/// What a refused push-back most likely means, read off git's own words.
+///
+/// Deliberately narrow. Whatever this returns is printed to a human as advice,
+/// so the only two shapes recognised are the ones git states plainly, and
+/// everything else is `Unknown` — which prints no advice at all. An unhelpful
+/// message costs a reader a moment; a confident wrong one sends them to change
+/// a setting that was never the problem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PushRefusal {
+    /// The remote refused the account: no write access, or a fork whose author
+    /// did not allow maintainer edits.
+    Permission,
+    /// The branch has commits the task's branch does not, so a fast-forward
+    /// push cannot apply. Routine on a long-lived pull request: the author
+    /// pushed, or merged the base branch in, after this task was triggered.
+    BranchMoved,
+    Unknown,
+}
+
+/// Match on git's stderr, which reaches here inside the delivery error string.
+/// Permission is tested first: a forge that refuses the push outright can also
+/// mention "rejected", and being told the wrong one of these two is precisely
+/// the failure this classification exists to stop.
+fn classify_push_refusal(error: &str) -> PushRefusal {
+    let lower = error.to_lowercase();
+    // The status codes are matched in the phrasing git and curl actually
+    // print, not as bare digits: "403" on its own also matches a branch called
+    // `fix/403-page` or a repository named after an issue number, and the whole
+    // point of this function is to stop it handing out confident wrong advice.
+    let permission = [
+        "permission to",
+        "denied to",
+        "error: 403",
+        "error: 401",
+        "http 403",
+        "http 401",
+        "status code 403",
+        "status code 401",
+        "authentication failed",
+        "write access",
+        "read-only",
+        "protected branch",
+        "pre-receive hook declined",
+    ];
+    if permission.iter().any(|needle| lower.contains(needle)) {
+        return PushRefusal::Permission;
+    }
+    let moved = [
+        "non-fast-forward",
+        "fetch first",
+        "updates were rejected",
+        "[rejected]",
+        "behind its remote",
+        "stale info",
+    ];
+    if moved.iter().any(|needle| lower.contains(needle)) {
+        return PushRefusal::BranchMoved;
+    }
+    PushRefusal::Unknown
+}
+
 /// The repository a pull-request task's push-back lands in: the HEAD
 /// repository recorded at trigger time — the fork, when the pull request comes
 /// from one. A row that recorded none falls back to the source repository:
@@ -6878,6 +6950,73 @@ mod tests {
     const ABS_PREFIX: &str = "C:";
     #[cfg(not(windows))]
     const ABS_PREFIX: &str = "";
+
+    /// The stderr shapes below are what git and the forges actually print. A
+    /// push-back refused for being out of date used to come back advising the
+    /// reader to turn on maintainer edits — a setting that, in the report that
+    /// prompted this, was already on. So the two must never be confused.
+    #[test]
+    fn a_stale_push_back_is_not_read_as_a_permission_problem() {
+        let out_of_date = "git push failed: ! [rejected]        task/57 -> feat/x \
+             (fetch first)\nerror: failed to push some refs to \
+             'https://github.com/owner/repo.git'\nhint: Updates were rejected because the \
+             remote contains work that you do not have locally.";
+        assert_eq!(classify_push_refusal(out_of_date), PushRefusal::BranchMoved);
+        assert_eq!(
+            classify_push_refusal("git push failed: ! [rejected] a -> b (non-fast-forward)"),
+            PushRefusal::BranchMoved
+        );
+    }
+
+    #[test]
+    fn a_refused_fork_push_is_read_as_a_permission_problem() {
+        let denied = "git push: authentication failed. Configure a GitHub account in \
+             Settings → Version Control.: remote: Permission to author/repo.git denied to \
+             maintainer.\nfatal: unable to access \
+             'https://github.com/author/repo.git/': The requested URL returned error: 403";
+        assert_eq!(classify_push_refusal(denied), PushRefusal::Permission);
+        assert_eq!(
+            classify_push_refusal(
+                "remote: GitLab: You are not allowed to push code to \
+                 protected branches on this project."
+            ),
+            PushRefusal::Permission
+        );
+        // A forge that refuses outright can also say "rejected"; permission
+        // has to win, or the advice sends the reader to rebase for nothing.
+        assert_eq!(
+            classify_push_refusal(
+                "! [remote rejected] a -> b (pre-receive hook declined)\nerror: failed to push"
+            ),
+            PushRefusal::Permission
+        );
+    }
+
+    /// Anything unrecognised must stay `Unknown`, because `Unknown` is what
+    /// prints no advice — the whole point of the split.
+    #[test]
+    fn an_unrecognised_push_failure_gets_no_advice() {
+        assert_eq!(
+            classify_push_refusal("git push failed: fatal: the remote end hung up unexpectedly"),
+            PushRefusal::Unknown
+        );
+        assert_eq!(classify_push_refusal(""), PushRefusal::Unknown);
+    }
+
+    /// A status code has to be matched in the phrasing that carries it. Branch
+    /// and repository names are part of every push error, and plenty of them
+    /// are named after an issue number.
+    #[test]
+    fn a_number_in_a_branch_name_is_not_a_status_code() {
+        let stale_on_an_issue_branch = "git push failed: ! [rejected] fix/403-page -> \
+             fix/401-redirect (fetch first)\nerror: failed to push some refs to \
+             'https://github.com/owner/repo-403.git'";
+        assert_eq!(
+            classify_push_refusal(stale_on_an_issue_branch),
+            PushRefusal::BranchMoved,
+            "a 403 in a ref name must not be read as a permission refusal"
+        );
+    }
 
     #[test]
     fn worktree_names_carry_ids() {

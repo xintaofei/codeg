@@ -22,6 +22,7 @@ pub mod folders;
 pub mod forge;
 pub mod logging;
 pub mod mcp;
+pub mod mcp_service;
 pub mod model_provider;
 pub mod office_tools;
 pub mod open_in;

@@ -12,7 +12,10 @@ import { CompletedTurnContent } from "./completed-turn-content"
 import { ContextCompactionCard } from "./context-compaction-card"
 import { CollapsibleUserMessage } from "./collapsible-user-message"
 import { CollapsibleSystemMessage } from "./collapsible-system-message"
-import { isContextCompactionMeta } from "@/lib/context-compaction"
+import {
+  contextCompactionPayload,
+  isContextCompactionMeta,
+} from "@/lib/context-compaction"
 import {
   createMessageTurnAdapter,
   groupGoalRuns,
@@ -526,6 +529,62 @@ function compactionOnlyMeta(
     return null
   }
   return only.meta ?? null
+}
+
+/**
+ * Identity of a compaction EVENT, or `null` when the payload cannot name one.
+ *
+ * All three counters are required, and that is the point rather than
+ * strictness for its own sake: codex-acp sends a bare `{version: 1}` for every
+ * compaction it performs, so a looser key would fold a session's separate
+ * compactions into one. Together, the token counts either side of the boundary
+ * plus a duration measured in milliseconds identify a single event — two real
+ * compactions agreeing on all three does not happen.
+ */
+function compactionEventKey(
+  meta: Record<string, unknown> | null
+): string | null {
+  const payload = contextCompactionPayload(meta)
+  if (!payload) return null
+  const nums = ["preTokens", "postTokens", "durationMs"].map((k) => {
+    const v = payload[k]
+    return typeof v === "number" && Number.isFinite(v) ? v : null
+  })
+  return nums.some((n) => n === null) ? null : `compaction:${nums.join(":")}`
+}
+
+/**
+ * Drop repeat renderings of one compaction, keeping the first.
+ *
+ * A compaction reaches the timeline through two independent channels that no
+ * id-keyed dedup can join: the live ACP `tool_call` (a `live-…` turn) and the
+ * agent's own transcript, which `parsers::claude` turns into a divider under a
+ * parser id. Mid-turn both are in hand at once — and unlike an ordinary
+ * partial reply, the usual suppressor cannot help here, because the `/compact`
+ * prompt is not persisted until AFTER the boundary, so the backend has no
+ * in-flight user turn to anchor on (`apply_in_flight_message_id`).
+ *
+ * Content is therefore the only usable identity; see [`compactionEventKey`]
+ * for why it is safe. Returns the input array when nothing is dropped, so the
+ * common path allocates nothing.
+ */
+export function dedupeCompactionItems(
+  items: ThreadRenderItem[]
+): ThreadRenderItem[] {
+  const seen = new Set<string>()
+  let dropped = false
+  const kept = items.filter((item) => {
+    if (item.kind !== "compaction") return true
+    const key = compactionEventKey(item.meta)
+    if (key === null) return true
+    if (seen.has(key)) {
+      dropped = true
+      return false
+    }
+    seen.add(key)
+    return true
+  })
+  return dropped ? kept : items
 }
 
 /**
@@ -1127,7 +1186,13 @@ export function MessageListView({
 
     // Collapse consecutive assistant turn render items into a single rendered
     // turn, so tool-groups straddling a turn boundary fold into one collapsible.
-    const items = mergeConsecutiveAssistantTurns(rawItems, mergedRunCache)
+    // Compaction dividers are deduped FIRST: the live and persisted copies of
+    // one compaction arrive under different ids, and only one of them should
+    // reach the merge.
+    const items = mergeConsecutiveAssistantTurns(
+      dedupeCompactionItems(rawItems),
+      mergedRunCache
+    )
 
     // Compute showStats, isRoleTransition, and previousUserIndex for each turn.
     // previousUserIndex points at the closest preceding user turn (used by the

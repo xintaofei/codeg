@@ -331,6 +331,10 @@ impl Default for CommitWindowState {
 
 fn resolve_settings_route(section: Option<&str>) -> &'static str {
     match section {
+        // Explicit, even though `settings/general` is where an *unspecified*
+        // section lands on the web transport: the desktop fallback below is
+        // Appearance, so a caller that wants General has to name it.
+        Some("general") => "settings/general",
         Some("appearance") => "settings/appearance",
         Some("agents") => "settings/agents",
         Some("mcp") => "settings/mcp",
@@ -2262,5 +2266,40 @@ mod pet_panel_geometry_tests {
             380.0,
         );
         assert_eq!(y, short_mon.1, "clamped to the monitor top, not above it");
+    }
+}
+
+#[cfg(test)]
+mod settings_route_tests {
+    use super::resolve_settings_route;
+
+    /// Every section the frontend's `SettingsSection` union can send must map
+    /// to a real route. `general` is the one that looks redundant and is not:
+    /// the fallback below it is Appearance, so a caller wanting the General
+    /// page — where the codeg-mcp tool switches live in full — must be able to
+    /// name it and land there.
+    #[test]
+    fn every_named_settings_section_resolves_to_its_own_route() {
+        for section in [
+            "general",
+            "appearance",
+            "agents",
+            "mcp",
+            "skills",
+            "experts",
+            "science",
+            "office-tools",
+            "version-control",
+            "shortcuts",
+            "system",
+        ] {
+            assert_eq!(
+                resolve_settings_route(Some(section)),
+                format!("settings/{section}"),
+                "section {section} must route to its own page"
+            );
+        }
+        // An unnamed section keeps its long-standing desktop landing spot.
+        assert_eq!(resolve_settings_route(None), "settings/appearance");
     }
 }

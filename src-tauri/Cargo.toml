@@ -1,6 +1,6 @@
 [package]
 name = "codeg"
-version = "0.30.3"
+version = "0.30.4"
 description = "Agent Code Generation App"
 authors = ["feitao"]
 edition = "2021"
@@ -102,7 +102,10 @@ sea-orm-migration = { version = "1.1", features = ["sqlx-sqlite", "runtime-tokio
 # trait, where sqlx's async pool doesn't fit). Pinned to the rusqlite line
 # whose libsqlite3-sys (0.30) matches sqlx-sqlite's, so both link the same
 # bundled SQLite.
-rusqlite = "0.32"
+# `backup` = the online page-copy API, used to snapshot a third-party agent's
+# session store into a self-contained single file. Pure Rust-side feature; it
+# does not move libsqlite3-sys off the version sqlx-sqlite links.
+rusqlite = { version = "0.32", features = ["backup"] }
 toml = "0.8"
 # Format-preserving TOML editing for surgical scalar merges into user config
 # files (e.g. the Grok settings panel writing [ui]/[models] keys without

@@ -125,6 +125,12 @@ import {
   skillToReference,
 } from "@/components/chat/composer/invocation-reference"
 import { cutSelectionToClipboard } from "@/components/chat/composer/clipboard-actions"
+import {
+  ComposerTokenAction,
+  composerTokenOpenTarget,
+} from "@/components/chat/composer/composer-token-action"
+import { selectTokenForContextMenu } from "@/components/chat/composer/token-selection"
+import type { TextToken } from "@/lib/text-token-at"
 import { sessionToSuggestion } from "@/components/chat/composer/suggestion/adapters"
 import { editorHasReference } from "@/components/chat/composer/attachment-files"
 import type { ReferenceAttrs } from "@/components/chat/composer/types"
@@ -422,6 +428,10 @@ export function MessageInput({
   // ProseMirror state (not the DOM Selection) so it stays correct after the radix
   // menu takes focus.
   const [contextSelectionActive, setContextSelectionActive] = useState(false)
+  // The token the last right click landed on, selected before the menu opened
+  // so every item below acts on it. Null when the pointer found nothing to act
+  // on (whitespace, the chrome around the text); cleared when the menu closes.
+  const [contextToken, setContextToken] = useState<TextToken | null>(null)
   const isPromptingRef = useRef(isPrompting)
   const hydratedRef = useRef(false)
   // Tracks the last queue-item id hydrated, so a re-edit of the *same* item
@@ -982,13 +992,45 @@ export function MessageInput({
     editor.chain().focus().selectAll().run()
   }, [disabled])
 
+  // A right click over the text picks up the token under the pointer first — an
+  // address, a link, a path, a word — and selects it, so Cut/Copy and the
+  // token's own row act on it without the user highlighting anything by hand. A
+  // click inside a live selection leaves that selection alone, as a native text
+  // field does. Capture phase because both menus read the selection as they
+  // open: radix's on the way back up, and the native one (which takes over
+  // wherever the custom menu is disabled) right after. Clicks on the chrome
+  // around the editor — the action bar, the padding — are left alone; there is
+  // no text under those to mean anything.
+  const handleComposerContextMenu = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      const editor = editorRef.current?.getEditor()
+      const target = event.target
+      const overText =
+        editor && target instanceof Node && editor.view.dom.contains(target)
+      if (!editor || !overText) {
+        setContextToken(null)
+        return
+      }
+      setContextToken(
+        selectTokenForContextMenu(editor, event.clientX, event.clientY)
+      )
+    },
+    []
+  )
+
   // Opening the custom right-click menu: snapshot whether there's a selection
-  // (gates Cut/Copy) and refresh the quick-messages list. The editor keeps its
-  // selection while the menu is open, so Paste / a quick message lands back at
-  // the same caret.
+  // (gates Cut/Copy — the token selection above has usually just made one) and
+  // refresh the quick-messages list. The editor keeps its selection while the
+  // menu is open (`InactiveSelectionHighlight` keeps it painted too), so an
+  // insert lands back where the right click was. Note the token selection makes
+  // that an insert OVER the token: Paste and a quick message replace the
+  // highlighted run, the way typing over any selection does.
   const handleContextMenuOpenChange = useCallback(
     (open: boolean) => {
-      if (!open) return
+      if (!open) {
+        setContextToken(null)
+        return
+      }
       const editor = editorRef.current?.getEditor()
       setContextSelectionActive(editor ? !editor.state.selection.empty : false)
       menuShortcuts.refreshQuickMessages()
@@ -1841,6 +1883,7 @@ export function MessageInput({
           <ContextMenuTrigger asChild disabled={!clipboardReadSupported}>
             <div
               onMouseDown={handleChromeMouseDown}
+              onContextMenuCapture={handleComposerContextMenu}
               className={cn(
                 // `codeg-composer-chrome` paints the text I-beam across the box's
                 // blank areas (padding, the dead space below a short message, the
@@ -2007,6 +2050,12 @@ export function MessageInput({
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent>
+            {contextToken && composerTokenOpenTarget(contextToken) !== null && (
+              <>
+                <ComposerTokenAction token={contextToken} />
+                <ContextMenuSeparator />
+              </>
+            )}
             <ContextMenuItem
               disabled={disabled || !contextSelectionActive}
               onSelect={() => void handleContextCut()}

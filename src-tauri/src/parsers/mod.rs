@@ -31,6 +31,17 @@ pub struct ExternalSource {
     /// Live source path (a directory, or a single file when `is_file`).
     pub root: PathBuf,
     pub is_file: bool,
+    /// This source's `.db` files are SQLite databases owned by the agent CLI.
+    ///
+    /// Backup then snapshots each one with a read-only page copy — never
+    /// `VACUUM` (it renumbers implicit rowids, and we cannot audit a
+    /// third-party schema for tables that treat rowid as a key) and never a
+    /// read-write open (that runs WAL recovery inside someone else's live
+    /// store). Exactly one self-contained file per database enters the
+    /// archive, never a `-wal`/`-shm`; restore deletes the live sidecars
+    /// before the rename so a stale WAL can never be replayed onto a database
+    /// it does not belong to. See `commands::backup::external`.
+    pub sqlite: bool,
     /// When `Some`, only entries whose first path component (relative to
     /// `root`) is in this allowlist are archived. Used to keep the backup to
     /// transcript/session data and exclude sibling credential/config/cache
@@ -63,12 +74,14 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             agent: "claude",
             root: claude::resolve_claude_config_dir().join("projects"),
             is_file: false,
+            sqlite: false,
             include_top: None,
         },
         ExternalSource {
             agent: "codex",
             root: codex::resolve_codex_home_dir().join("sessions"),
             is_file: false,
+            sqlite: false,
             include_top: None,
         },
         ExternalSource {
@@ -77,30 +90,33 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             agent: "gemini",
             root: gemini::resolve_gemini_base_dir(),
             is_file: false,
+            sqlite: false,
             include_top: Some(&["tmp", "history", "projects.json"]),
         },
         ExternalSource {
             agent: "cline",
             root: cline::cline_data_dir(),
             is_file: false,
+            sqlite: false,
             include_top: None,
         },
         ExternalSource {
             agent: "opencode",
             root: opencode::resolve_opencode_base_dir().join("opencode.db"),
             is_file: true,
+            sqlite: true,
             include_top: None,
         },
         ExternalSource {
             // Hermes self-manages its session store at `~/.hermes/state.db`.
-            // WAL caveat: `is_file` archives only the main DB file, not the
-            // `-wal`/`-shm` sidecars, so a cold backup taken mid-write can miss
-            // the newest un-checkpointed frames (same known limitation as
-            // OpenCode). This does NOT affect live reads — the parser's `mode=ro`
-            // connection sees committed WAL frames.
+            // `sqlite: true` is what makes the backup carry the frames that
+            // only exist in the WAL: the store is page-copied through a
+            // read-only connection into one self-contained archive entry,
+            // rather than the raw main file being copied and its WAL dropped.
             agent: "hermes",
             root: hermes::resolve_hermes_home_dir().join("state.db"),
             is_file: true,
+            sqlite: true,
             include_top: None,
         },
         ExternalSource {
@@ -110,6 +126,7 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             agent: "codebuddy",
             root: codebuddy::resolve_codebuddy_config_dir().join("projects"),
             is_file: false,
+            sqlite: false,
             include_top: None,
         },
         ExternalSource {
@@ -121,6 +138,7 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             agent: "kimi-code",
             root: kimi_code::resolve_kimi_code_home_dir(),
             is_file: false,
+            sqlite: false,
             include_top: Some(&["sessions", "session_index.jsonl"]),
         },
         ExternalSource {
@@ -132,6 +150,7 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             agent: "grok",
             root: grok::resolve_grok_home_dir().join("sessions"),
             is_file: false,
+            sqlite: false,
             include_top: None,
         },
         ExternalSource {
@@ -144,6 +163,7 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             agent: "cursor",
             root: cursor::resolve_cursor_config_dir(),
             is_file: false,
+            sqlite: true,
             include_top: Some(&["chats", "acp-sessions"]),
         },
         ExternalSource {
@@ -155,6 +175,7 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             agent: "pi",
             root: pi::resolve_pi_sessions_dir(),
             is_file: false,
+            sqlite: false,
             include_top: None,
         },
         ExternalSource {
@@ -166,6 +187,7 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             agent: "deepseek",
             root: deepseek::resolve_deepseek_sessions_root(),
             is_file: false,
+            sqlite: false,
             include_top: None,
         },
         ExternalSource {
@@ -192,6 +214,7 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             agent: "deepseek-attachments",
             root: deepseek::resolve_deepseek_attachments_root(),
             is_file: false,
+            sqlite: false,
             include_top: Some(&["objects"]),
         },
         ExternalSource {
@@ -203,6 +226,7 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             agent: "qoder",
             root: qoder::resolve_qoder_config_dir().join("projects"),
             is_file: false,
+            sqlite: false,
             include_top: None,
         },
         ExternalSource {
@@ -215,6 +239,7 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             agent: "antigravity",
             root: antigravity::resolve_antigravity_sessions_dir(),
             is_file: false,
+            sqlite: true,
             include_top: None,
         },
     ];
@@ -223,6 +248,7 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             agent: "openclaw",
             root: home.join(".openclaw").join("agents"),
             is_file: false,
+            sqlite: false,
             include_top: None,
         });
     }
@@ -875,7 +901,13 @@ pub fn infer_context_window_max_tokens(model: Option<&str>) -> Option<u64> {
         "gpt-4" => Some(8_192),
         "o3" | "o3-mini" | "o1" => Some(200_000),
         _ => {
-            if normalized.starts_with("gpt-5") {
+            // 258K is the *effective* window OpenAI's own catalog advertises for
+            // this whole generation: `context_window: 272000` with
+            // `effective_context_window_percent: 95`. gpt-6 shares that profile
+            // byte for byte (see `resources/codex/bundled-catalog.json`), so it
+            // rides the same lane rather than falling through to `None` and
+            // leaving those sessions with no context meter at all.
+            if normalized.starts_with("gpt-5") || normalized.starts_with("gpt-6") {
                 Some(258_000)
             } else if normalized.starts_with("gpt-4o")
                 || normalized.starts_with("gpt-4.1")
@@ -2096,6 +2128,16 @@ mod tests {
         assert_eq!(
             infer_context_window_max_tokens(Some("grok-7-experimental")),
             Some(256_000)
+        );
+        // gpt-6 shares gpt-5's 272K/95% profile, so it takes the same effective
+        // window instead of falling through to `None`.
+        assert_eq!(
+            infer_context_window_max_tokens(Some("gpt-6-astra")),
+            Some(258_000)
+        );
+        assert_eq!(
+            infer_context_window_max_tokens(Some("gpt-5.6-sol")),
+            Some(258_000)
         );
         assert_eq!(infer_context_window_max_tokens(Some("unknown-model")), None);
     }

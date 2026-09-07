@@ -93,7 +93,10 @@ import {
   CONNECTION_KEEPALIVE_INTERVAL_MS,
   IDLE_SWEEP_INTERVAL_MS,
 } from "@/lib/constants"
-import { sendSystemNotification } from "@/lib/notification"
+import {
+  notifyDesktop,
+  withDesktopNotificationsSuppressed,
+} from "@/lib/desktop-notification"
 import {
   playEventSound,
   primeNotificationSoundOutput,
@@ -3789,6 +3792,24 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               created_at: new Date().toISOString(),
             },
           })
+          // A blocked agent is exactly what a notification is for, and this
+          // was the one such state that never raised one — the sound path had
+          // covered it since it shipped. Body names the agent only: the
+          // question text is the agent's own prose.
+          {
+            const nc = echo
+              ? null
+              : storeRef.current.connections.get(contextKey)
+            if (nc) {
+              const fn = folderNameRef.current
+              void notifyDesktop("question_request", {
+                title: fn ? `${fn} - Codeg` : "Codeg",
+                body: t("notificationQuestion", {
+                  agent: getAgentLabel(nc.agentType),
+                }),
+              })
+            }
+          }
           break
         case "question_resolved":
           // The question was answered (this or another window) or canceled.
@@ -3875,25 +3896,47 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               }
             }
           }
-          // 3. one OS notification per settled task (matches the permission
-          //    notification's shape; `document.hidden` gating lives inside
-          //    sendSystemNotification).
+          // 3. ONE OS notification for the whole batch (matches the permission
+          //    notification's shape; the window-state gate and the user's
+          //    per-event switch live inside `notifyDesktop`).
+          //
+          //    Deliberately not one per task: a fan-out of sub-agents settles
+          //    together, and the loop this replaced turned that into N banners
+          //    the user had to dismiss one by one. Only the single-task case
+          //    still carries the agent's own summary — a count says everything
+          //    a batch notification usefully can.
           if (e.settled && e.settled.length > 0) {
             if (!echo) {
               const nc = storeRef.current.connections.get(contextKey)
               const agentLabel = nc ? getAgentLabel(nc.agentType) : "Agent"
               const fn = folderNameRef.current
               const title = fn ? `${fn} - Codeg` : "Codeg"
-              for (const settled of e.settled) {
-                const body =
-                  settled.summary ??
-                  tChat("backgroundTasks.settledFallback", {
-                    status: settled.status,
-                  })
-                sendSystemNotification(title, `${agentLabel}: ${body}`).catch(
-                  () => {}
-                )
-              }
+              const count = e.settled.length
+              const many = tChat("backgroundTasks.notifySettledMany", {
+                agent: agentLabel,
+                count,
+              })
+              const single = e.settled[0]
+              void notifyDesktop("background_task", {
+                body:
+                  count === 1
+                    ? `${agentLabel}: ${
+                        single.summary ??
+                        tChat("backgroundTasks.settledFallback", {
+                          status: single.status,
+                        })
+                      }`
+                    : many,
+                // A summary is the sub-agent's own prose; the count form names
+                // nothing and is safe to reuse as the redacted body.
+                redactedBody:
+                  count === 1
+                    ? tChat("backgroundTasks.notifySettledOne", {
+                        agent: agentLabel,
+                      })
+                    : many,
+                title,
+              })
             }
             // 4. flip each async sub-agent's launch card to its terminal
             //    (completed + result) state IN-MEMORY, by rewriting the
@@ -3948,10 +3991,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               const agentLabel = getAgentLabel(nc.agentType)
               const fn = folderNameRef.current
               const title = fn ? `${fn} - Codeg` : "Codeg"
-              sendSystemNotification(
+              // No redacted variant: the body is a fixed localized string
+              // plus the agent's name, and names nothing of the user's.
+              void notifyDesktop("permission_request", {
                 title,
-                `${agentLabel}: ${tChat("permissionDialog.subtitle")}`
-              ).catch(() => {})
+                body: `${agentLabel}: ${tChat("permissionDialog.subtitle")}`,
+              })
             }
           }
           break
@@ -4218,7 +4263,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               }
             }
           }
-          // Send OS notification when window is not focused
+          // Send OS notification when the window state allows it
           {
             const nc = echo
               ? null
@@ -4227,10 +4272,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               const agentLabel = getAgentLabel(nc.agentType)
               const fn = folderNameRef.current
               const title = fn ? `${fn} - Codeg` : "Codeg"
-              sendSystemNotification(
+              void notifyDesktop("turn_complete", {
                 title,
-                t("notificationTurnComplete", { agent: agentLabel })
-              ).catch(() => {})
+                body: t("notificationTurnComplete", { agent: agentLabel }),
+              })
             }
           }
           break
@@ -4361,17 +4406,22 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           }
           // Send OS notification for agent errors. Deliberately message-only:
           // notification centers persist their payload outside the app, so
-          // agent output must not be forwarded there.
+          // agent output must not be forwarded there. The message can still
+          // quote agent stderr for codes we don't recognize, which is what the
+          // redacted variant drops.
           if (nc && !echo) {
             const fn = folderNameRef.current
             const title = fn ? `${fn} - Codeg` : "Codeg"
-            sendSystemNotification(
+            void notifyDesktop("error", {
               title,
-              t("notificationError", {
+              body: t("notificationError", {
                 agent: agentLabel,
                 message: localizedMessage,
-              })
-            ).catch(() => {})
+              }),
+              redactedBody: t("notificationErrorRedacted", {
+                agent: agentLabel,
+              }),
+            })
           }
           break
         }
@@ -4644,13 +4694,16 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         onReplay: (events) => {
           // Catching up on a gap (reconnect / lagged detach) re-delivers events
           // that already happened. They belong in the UI, but replaying them
-          // must not fire a burst of notification sounds for turns that
-          // finished minutes ago.
-          withEventSoundsSuppressed(() => {
-            for (const envelope of events) {
-              applyMappedEnvelope(contextKey, envelope)
-            }
-          })
+          // must not fire a burst of cues for turns that finished minutes ago.
+          // Doubly true of OS notifications, which unlike a tone stay in the
+          // notification centre until the user clears them by hand.
+          withEventSoundsSuppressed(() =>
+            withDesktopNotificationsSuppressed(() => {
+              for (const envelope of events) {
+                applyMappedEnvelope(contextKey, envelope)
+              }
+            })
+          )
         },
         onEvent: (envelope) => {
           applyMappedEnvelope(contextKey, envelope)

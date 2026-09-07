@@ -788,6 +788,7 @@ pub(crate) async fn import_selected_from_summaries(
         imported: 0,
         updated: 0,
         skipped: 0,
+        restored: 0,
         not_found,
         failed: 0,
         created_folders: 0,
@@ -827,11 +828,23 @@ pub(crate) async fn import_selected_from_summaries(
         {
             Ok(entry) => {
                 let folder_id = entry.id;
+                // `DeletedPolicy::Restore`: every item here is a session the
+                // user explicitly checked in the picker, which badges a
+                // soft-deleted row as such — so a deleted one in this list is a
+                // deliberate "bring it back", not a sweep. (The whole-folder
+                // import and the scan's drive-by refresh both stay on `Skip`.)
                 let (tally, _updated_ids, failed_in_group) =
-                    import_service::import_summaries_resilient(conn, folder_id, &items).await;
+                    import_service::import_summaries_resilient(
+                        conn,
+                        folder_id,
+                        &items,
+                        import_service::DeletedPolicy::Restore,
+                    )
+                    .await;
                 result.imported += tally.imported;
                 result.updated += tally.updated;
                 result.skipped += tally.skipped;
+                result.restored += tally.restored;
                 result.failed += failed_in_group;
                 if created {
                     result.created_folders += 1;
@@ -844,6 +857,7 @@ pub(crate) async fn import_selected_from_summaries(
                     imported: tally.imported,
                     updated: tally.updated,
                     skipped: tally.skipped,
+                    restored: tally.restored,
                 });
                 if failed_in_group > 0 && result.errors.len() < MAX_ERRORS {
                     result
@@ -870,8 +884,12 @@ pub(crate) async fn import_selected_from_summaries(
     }
 
     // One nudge instead of per-row upserts: clients answer with a single full
-    // refetch, which also covers refreshed titles (see the event's doc).
-    if result.imported > 0 || result.updated > 0 {
+    // refetch, which also covers refreshed titles (see the event's doc) and the
+    // rows this run brought back from a soft delete — a restore adds a row to
+    // every open sidebar just like a fresh import does, so it must fire the
+    // event too. (The counts stay faithful to their own tallies; subscribers
+    // read only the channel and answer with a full refetch.)
+    if result.imported > 0 || result.updated > 0 || result.restored > 0 {
         emit_event(
             emitter,
             CONVERSATIONS_BULK_CHANGED_EVENT,
@@ -5403,7 +5421,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn batch_import_never_resurrects_a_deleted_conversation() {
+    async fn batch_import_restores_a_deleted_conversation_in_place() {
         use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter,
             Set};
         let db = fresh_in_memory_db().await;
@@ -5431,10 +5449,15 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        let original_id = row.id;
         let mut active = row.into_active_model();
         active.deleted_at = Set(Some(chrono::Utc::now()));
         active.update(&db.conn).await.unwrap();
 
+        // Deleting a conversation is a soft delete, so re-picking the session
+        // in the import window brings the ORIGINAL row back rather than
+        // inserting a second one — every selection here is a session the user
+        // checked while it was badged "deleted".
         let again = import_selected_from_summaries(
             &db.conn,
             &EventEmitter::Noop,
@@ -5443,15 +5466,64 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(again.imported, 0);
-        assert_eq!(again.skipped, 1);
+        assert_eq!(again.imported, 0, "restored, not re-imported");
+        assert_eq!(again.restored, 1);
+        assert_eq!(again.skipped, 0);
+        assert_eq!(again.folders[0].restored, 1);
 
         let rows = conversation::Entity::find().all(&db.conn).await.unwrap();
+        assert_eq!(rows.len(), 1, "no duplicate row");
+        assert_eq!(rows[0].id, original_id);
+        assert!(rows[0].deleted_at.is_none(), "back in the sidebar");
+    }
+
+    #[tokio::test]
+    async fn whole_folder_import_still_never_resurrects_a_deleted_conversation() {
+        use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter,
+            Set};
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/proj-sweep").await;
+        let items = vec![scan_summary(
+            "s1",
+            AgentType::ClaudeCode,
+            Some("/tmp/proj-sweep"),
+            at(0),
+        )];
+
+        import_service::import_summaries(
+            &db.conn,
+            folder_id,
+            &items,
+            import_service::DeletedPolicy::Skip,
+        )
+        .await
+        .unwrap();
+        let row = conversation::Entity::find()
+            .filter(conversation::Column::ExternalId.eq("s1"))
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut active = row.into_active_model();
+        active.deleted_at = Set(Some(chrono::Utc::now()));
+        active.update(&db.conn).await.unwrap();
+
+        // The legacy sweep imports a whole FOLDER, not sessions the user picked
+        // one by one, so it must not bring back everything they ever deleted
+        // under it.
+        let (tally, _ids) = import_service::import_summaries(
+            &db.conn,
+            folder_id,
+            &items,
+            import_service::DeletedPolicy::Skip,
+        )
+        .await
+        .unwrap();
+        assert_eq!(tally.restored, 0);
+        assert_eq!(tally.skipped, 1);
+        let rows = conversation::Entity::find().all(&db.conn).await.unwrap();
         assert_eq!(rows.len(), 1);
-        assert!(
-            rows[0].deleted_at.is_some(),
-            "a deleted conversation stays deleted"
-        );
+        assert!(rows[0].deleted_at.is_some(), "stays deleted");
     }
 
     #[tokio::test]
@@ -5589,7 +5661,13 @@ mod tests {
         ];
 
         let (tally, updated_ids, failed) =
-            import_service::import_summaries_resilient(&db.conn, 999_999, &items).await;
+            import_service::import_summaries_resilient(
+                &db.conn,
+                999_999,
+                &items,
+                import_service::DeletedPolicy::Skip,
+            )
+            .await;
         assert_eq!(failed, 2, "both rows fail the folder FK and are counted");
         assert_eq!(tally.imported, 0);
         assert_eq!(tally.updated, 0);
@@ -5599,7 +5677,13 @@ mod tests {
         // not corrupt state or leave a half-open transaction.
         let folder_id = seed_folder(&db, "/tmp/x").await;
         let (tally2, _ids, failed2) =
-            import_service::import_summaries_resilient(&db.conn, folder_id, &items).await;
+            import_service::import_summaries_resilient(
+                &db.conn,
+                folder_id,
+                &items,
+                import_service::DeletedPolicy::Skip,
+            )
+            .await;
         assert_eq!(failed2, 0);
         assert_eq!(tally2.imported, 2);
     }
@@ -5618,9 +5702,14 @@ mod tests {
             at(0),
         )];
         assert!(
-            import_service::import_summaries(&db.conn, 999_999, &items)
-                .await
-                .is_err(),
+            import_service::import_summaries(
+                &db.conn,
+                999_999,
+                &items,
+                import_service::DeletedPolicy::Skip
+            )
+            .await
+            .is_err(),
             "a row FK violation must propagate through the strict importer"
         );
     }

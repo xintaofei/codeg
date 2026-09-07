@@ -68,8 +68,9 @@ struct EnumSpec {
 
 // Authoritative value sets + nullability, extracted from the codex binary itself
 // by feeding it candidate catalogs and reading the full `unknown variant …,
-// expected …` / `invalid type: null, expected …` errors (verified on 0.147 —
-// treat these as version-specific and re-probe when codex moves).
+// expected …` / `invalid type: null, expected …` errors (re-probed on 0.153.4,
+// unchanged since 0.147 — treat these as version-specific and re-probe when
+// codex moves).
 fn enum_spec_for(key: &str) -> Option<EnumSpec> {
     let spec = |allowed, nullable| Some(EnumSpec { allowed, nullable });
     match key {
@@ -93,6 +94,10 @@ fn enum_spec_for(key: &str) -> Option<EnumSpec> {
 
 /// `ModelInfo` fields codex parses as a plain `bool`. A string here ("true",
 /// "yes", …) rejects the whole catalog, so the type is checked, not assumed.
+///
+/// `supports_parallel_tool_calls` is kept although 0.153.4 dropped the field
+/// (it now parses as an ignored unknown key): guarding it still costs nothing
+/// and keeps a stored override honest for anyone pinned to an older codex.
 const BOOL_FIELDS: &[&str] = &[
     "use_responses_lite",
     "supported_in_api",
@@ -617,7 +622,12 @@ mod tests {
     #[test]
     fn bundled_snapshot_matches_launched_codex_shape() {
         let models = snap();
-        assert_eq!(models.len(), 8, "snapshot should carry codex 0.147's catalog");
+        assert_eq!(
+            models.len(),
+            11,
+            "snapshot should carry codex 0.153.4's catalog"
+        );
+        assert!(models.iter().any(|m| slug_of(m) == Some("gpt-6-astra")));
         assert!(models.iter().any(|m| slug_of(m) == Some("gpt-5.6-sol")));
         assert!(models.iter().any(|m| slug_of(m) == Some("gpt-5.5")));
         // codex-auto-review ships hidden.
@@ -626,10 +636,7 @@ mod tests {
             .find(|m| slug_of(m) == Some("codex-auto-review"))
             .expect("present");
         assert_eq!(review.get("visibility").unwrap(), "hide");
-        // Every codex required ModelInfo field present on entry 0. Note
-        // `supports_reasoning_summaries` is NOT here: 0.147 renamed it to
-        // `supports_reasoning_summary_parameter`, which is skipped while it
-        // holds its `true` default and so never appears in the snapshot.
+        // Every codex required ModelInfo field present on entry 0.
         let required = [
             "slug",
             "display_name",
@@ -638,7 +645,6 @@ mod tests {
             "priority",
             "supported_reasoning_levels",
             "support_verbosity",
-            "supports_parallel_tool_calls",
             "shell_type",
             "web_search_tool_type",
             "experimental_supported_tools",
@@ -648,13 +654,21 @@ mod tests {
         for f in required {
             assert!(models[0].get(f).is_some(), "missing required field {f}");
         }
-        assert!(
-            models
-                .iter()
-                .all(|m| m.get("supports_reasoning_summaries").is_none()),
-            "0.147 dropped supports_reasoning_summaries — regenerate the snapshot"
-        );
-        assert_eq!(fallback_base_slug(&models).as_deref(), Some("gpt-5.6-sol"));
+        // Fields codex retired: 0.147 renamed `supports_reasoning_summaries` to
+        // `supports_reasoning_summary_parameter` and 0.153 dropped
+        // `supports_parallel_tool_calls`. Both are now unknown keys codex simply
+        // ignores, and neither is serialized, so seeing one back means the
+        // snapshot went stale rather than being regenerated.
+        for gone in [
+            "supports_reasoning_summaries",
+            "supports_parallel_tool_calls",
+        ] {
+            assert!(
+                models.iter().all(|m| m.get(gone).is_none()),
+                "codex dropped {gone} — regenerate the snapshot"
+            );
+        }
+        assert_eq!(fallback_base_slug(&models).as_deref(), Some("gpt-6-astra"));
     }
 
     #[test]
@@ -671,8 +685,8 @@ mod tests {
             default: None,
         };
         let cat = expand_to_catalog(&config, &snap());
-        // All 8 officials auto-included + 1 custom = 9.
-        assert_eq!(slugs(&cat).len(), 9);
+        // All 11 officials auto-included + 1 custom = 12.
+        assert_eq!(slugs(&cat).len(), 12);
         // Custom is first (top of picker) and forced list + api.
         let c = find(&cat, "gw/opus").expect("custom present");
         assert_eq!(c.get("visibility").unwrap(), "list");
@@ -928,7 +942,7 @@ mod tests {
         assert_eq!(default_slug(&cfg2, &s).as_deref(), Some("mine"));
         // No custom, no default → first listable official (not hidden).
         let cfg3 = CodexModelConfig::default();
-        assert_eq!(default_slug(&cfg3, &s).as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(default_slug(&cfg3, &s).as_deref(), Some("gpt-6-astra"));
     }
 
     #[test]
@@ -973,12 +987,17 @@ mod tests {
     fn import_splits_officials_customs_and_infers_exclusions() {
         let s = snap();
         // A foreign catalog that kept only gpt-5.5 + one custom gateway model.
-        let sol = s
+        // The gateway model clones the *clone base* import will assign it, so
+        // its description is the only field that genuinely differs — and the
+        // test keeps that meaning across catalog refreshes, which move which
+        // model is highest-priority.
+        let base_slug = fallback_base_slug(&s).expect("snapshot has a clone base");
+        let base_model = s
             .iter()
-            .find(|m| slug_of(m) == Some("gpt-5.6-sol"))
+            .find(|m| slug_of(m) == Some(base_slug.as_str()))
             .cloned()
             .unwrap();
-        let mut gw = sol.as_object().unwrap().clone();
+        let mut gw = base_model.as_object().unwrap().clone();
         gw.insert("slug".into(), Value::String("gw/opus".into()));
         // A field that genuinely differs from the clone base (its own description),
         // so import must capture it as an override.
@@ -994,7 +1013,7 @@ mod tests {
         // The gateway model became a custom.
         assert_eq!(cfg.customs.len(), 1);
         assert_eq!(cfg.customs[0].slug, "gw/opus");
-        assert_eq!(cfg.customs[0].base, "gpt-5.6-sol");
+        assert_eq!(cfg.customs[0].base, base_slug);
         assert_eq!(
             cfg.customs[0].overrides.get("description").unwrap(),
             "My private gateway"
