@@ -31,6 +31,27 @@ async fn seed_running_owner(
     parent_connection_id: &str,
     child_conversation_id: i32,
 ) -> (String, String) {
+    seed_owner(
+        db,
+        coordinator,
+        child_connection_id,
+        parent_connection_id,
+        child_conversation_id,
+        "running",
+        true,
+    )
+    .await
+}
+
+async fn seed_owner(
+    db: &crate::db::AppDatabase,
+    coordinator: &crate::acp::delegation::continuation::ContinuationCoordinator,
+    child_connection_id: &str,
+    parent_connection_id: &str,
+    child_conversation_id: i32,
+    target_state: &str,
+    persist_connection: bool,
+) -> (String, String) {
     let session = collaboration_service::upsert_session_once(
         &db.conn,
         collaboration_service::NewSession {
@@ -72,15 +93,20 @@ async fn seed_running_owner(
         )
         .await
         .expect("advance seeded turn"));
+        if to == target_state {
+            break;
+        }
     }
-    collaboration_service::set_turn_connection(
-        &db.conn,
-        &turn.id,
-        &turn.execution_id,
-        child_connection_id,
-    )
-    .await
-    .expect("persist child connection");
+    if persist_connection {
+        collaboration_service::set_turn_connection(
+            &db.conn,
+            &turn.id,
+            &turn.execution_id,
+            child_connection_id,
+        )
+        .await
+        .expect("persist child connection");
+    }
     coordinator
         .register_execution_for_test(
             child_connection_id,
@@ -422,6 +448,7 @@ async fn owned_cancel_does_not_emit_local_terminal_while_prompt_reply_is_withhel
         db.conn.clone(),
         data_dir.path().to_path_buf(),
     );
+    coordinator.set_cancel_confirmation_timeout_for_test(Duration::from_millis(80));
 
     let metrics = Arc::new(EventBusMetrics::default());
     let bus = Arc::new(InternalEventBus::new(metrics));
@@ -451,15 +478,8 @@ async fn owned_cancel_does_not_emit_local_terminal_while_prompt_reply_is_withhel
     .await
     .expect("spawn in-memory connection");
 
-    coordinator
-        .register_execution_for_test(
-            &connection_id,
-            "turn-owned-cancel",
-            "execution-owned-cancel",
-            "session-owned-cancel",
-            "parent-owned-cancel",
-        )
-        .await;
+    let (turn_id, session_id) =
+        seed_running_owner(&db, &coordinator, &connection_id, "parent-owned-cancel", 2).await;
     manager
         .send_prompt(
             &connection_id,
@@ -482,8 +502,17 @@ async fn owned_cancel_does_not_emit_local_terminal_while_prompt_reply_is_withhel
         .await
         .expect("agent observed cancel")
         .expect("cancel signal");
+    assert_eq!(
+        collaboration_service::find_turn(&db.conn, &turn_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "cancel_requested",
+        "public Stop must enter the coordinator's durable cancellation state"
+    );
 
-    let local_terminal = tokio::time::timeout(Duration::from_millis(150), async {
+    let local_terminal = tokio::time::timeout(Duration::from_millis(40), async {
         loop {
             let event = events.recv().await.expect("event bus remains live");
             if matches!(event.payload, AcpEvent::TurnComplete { .. }) {
@@ -497,7 +526,98 @@ async fn owned_cancel_does_not_emit_local_terminal_while_prompt_reply_is_withhel
         "an owned continuation cancel must keep observing the real prompt reply"
     );
 
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let turn = collaboration_service::find_turn(&db.conn, &turn_id)
+                .await
+                .unwrap()
+                .unwrap();
+            if turn.state == "outcome_unknown" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("unconfirmed public Stop reaches the watchdog terminal");
+    assert_eq!(
+        collaboration_service::find_session_by_id(&db.conn, &session_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "blocked"
+    );
+
     let _ = manager.disconnect(&connection_id).await;
+}
+
+#[tokio::test]
+async fn owned_stop_before_prompt_cancels_and_disconnects_the_real_driver() {
+    let db = test_helpers::fresh_in_memory_db().await;
+    let manager = ConnectionManager::new();
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let (_, _, _, _, _, _, _, coordinator) = crate::app_state::build_delegation_stack(
+        &manager,
+        db.conn.clone(),
+        data_dir.path().to_path_buf(),
+    );
+    let bus = Arc::new(InternalEventBus::new(Arc::new(EventBusMetrics::default())));
+    let emitter = EventEmitter::web_only(Arc::new(WebEventBroadcaster::new()), bus);
+    let (transport, ends) = in_memory_agent_pair(64 * 1024);
+    let probe = run_cancel_probe_agent(ends).await;
+    let connection_id = "owned-pre-prompt";
+    spawn_test_connection(
+        &manager,
+        emitter,
+        data_dir.path(),
+        connection_id,
+        transport,
+    )
+    .await;
+    let (turn_id, _) = seed_owner(
+        &db,
+        &coordinator,
+        connection_id,
+        "pre-prompt-parent",
+        2,
+        "preparing",
+        false,
+    )
+    .await;
+
+    manager
+        .cancel(&db.conn, connection_id)
+        .await
+        .expect("public Stop cancels the owned pre-send turn");
+    assert_eq!(
+        collaboration_service::find_turn(&db.conn, &turn_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "canceled"
+    );
+    assert!(
+        manager
+            .send_prompt_for_continuation(
+                &db.conn,
+                connection_id,
+                vec![PromptInputBlock::Text {
+                    text: "must never be sent".to_string(),
+                }],
+            )
+            .await
+            .is_err(),
+        "the canceled pre-send owner must already be disconnected"
+    );
+    assert!(
+        !matches!(
+            tokio::time::timeout(Duration::from_millis(100), probe.prompt_seen).await,
+            Ok(Ok(()))
+        ),
+        "no prompt may cross the real driver boundary after pre-send Stop"
+    );
 }
 
 #[tokio::test]

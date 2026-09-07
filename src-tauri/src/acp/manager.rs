@@ -1652,13 +1652,18 @@ impl ConnectionManager {
     }
 
     pub async fn cancel(&self, db: &DatabaseConnection, conn_id: &str) -> Result<(), AcpError> {
-        let continuation_owned = match self
+        if let Some(coordinator) = self
             .delegation_snapshot()
             .and_then(|delegation| delegation.collaboration)
         {
-            Some(coordinator) => coordinator.execution_owner(conn_id).await.is_some(),
-            None => false,
-        };
+            if coordinator
+                .cancel_owned_connection(conn_id)
+                .await
+                .map_err(|e| AcpError::protocol(e.to_string()))?
+            {
+                return Ok(());
+            }
+        }
         let (cmd_tx, state_arc, emitter) = {
             let connections = self.connections.lock().await;
             let conn = connections
@@ -1671,17 +1676,9 @@ impl ConnectionManager {
             )
         };
         cmd_tx
-            .send(if continuation_owned {
-                ConnectionCommand::CancelContinuation
-            } else {
-                ConnectionCommand::Cancel
-            })
+            .send(ConnectionCommand::Cancel)
             .await
             .map_err(|_| AcpError::ProcessExited)?;
-
-        if continuation_owned {
-            return Ok(());
-        }
 
         // Eagerly flip the row to `Cancelled` so the sidebar/tabs leave the
         // "running" state immediately. The agent typically replies with

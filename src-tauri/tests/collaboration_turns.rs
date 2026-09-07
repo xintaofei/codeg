@@ -671,7 +671,7 @@ async fn cancel_running_goes_cancel_requested_then_unknown_blocks() {
 
 #[tokio::test]
 async fn unconfirmed_cancel_deadline_settles_unknown_and_blocks() {
-    let mut h = harness().await;
+    let h = harness().await;
     h.coordinator
         .set_cancel_confirmation_timeout_for_test(Duration::from_millis(40));
     let ack = h

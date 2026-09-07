@@ -8,6 +8,7 @@
 //! the DB.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -89,7 +90,7 @@ pub struct ContinuationCoordinator {
     admission_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     /// Woken on every settle so bounded `get_turn` waits re-check promptly.
     settle_notify: Arc<Notify>,
-    cancel_confirmation_timeout: Duration,
+    cancel_confirmation_timeout_ms: Arc<AtomicU64>,
     #[cfg(any(test, feature = "test-utils"))]
     test_drive_gates: Arc<Mutex<HashMap<&'static str, TestDriveGate>>>,
 }
@@ -109,7 +110,9 @@ impl ContinuationCoordinator {
             parent_pending: Arc::new(Mutex::new(HashMap::new())),
             admission_locks: Arc::new(Mutex::new(HashMap::new())),
             settle_notify: Arc::new(Notify::new()),
-            cancel_confirmation_timeout: CANCEL_CONFIRMATION_TIMEOUT,
+            cancel_confirmation_timeout_ms: Arc::new(AtomicU64::new(
+                CANCEL_CONFIRMATION_TIMEOUT.as_millis() as u64,
+            )),
             #[cfg(any(test, feature = "test-utils"))]
             test_drive_gates: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -122,8 +125,11 @@ impl ContinuationCoordinator {
     }
 
     #[cfg(any(test, feature = "test-utils"))]
-    pub fn set_cancel_confirmation_timeout_for_test(&mut self, timeout: Duration) {
-        self.cancel_confirmation_timeout = timeout;
+    pub fn set_cancel_confirmation_timeout_for_test(&self, timeout: Duration) {
+        self.cancel_confirmation_timeout_ms.store(
+            timeout.as_millis().try_into().unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
     }
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -225,6 +231,22 @@ impl ContinuationCoordinator {
             .iter()
             .find(|(_, o)| o.turn_id == turn_id)
             .map(|(conn, _)| conn.clone())
+    }
+
+    /// Enter durable cancellation for the execution currently owned by a
+    /// public Stop target. Returns false when this connection is not a live
+    /// continuation owner, allowing the manager to preserve ordinary chat
+    /// cancellation behavior.
+    pub async fn cancel_owned_connection(
+        &self,
+        connection_id: &str,
+    ) -> Result<bool, ContinuationError> {
+        let owner = self.executions.lock().await.get(connection_id).cloned();
+        let Some(owner) = owner else {
+            return Ok(false);
+        };
+        self.cancel_fresh(&owner.turn_id, Some(connection_id)).await?;
+        Ok(true)
     }
 
     // -----------------------------------------------------------------------
@@ -1116,10 +1138,12 @@ impl ContinuationCoordinator {
                         let _ = self.settle_unknown(turn_id, &turn.execution_id).await;
                         return Ok(());
                     };
+                    // The confirmation bound begins at the durable state
+                    // transition. Enqueueing into a stalled connection driver
+                    // must not postpone it indefinitely.
+                    self.arm_cancel_deadline(turn_id, &turn.execution_id);
                     if self.runtime.cancel(connection_id).await.is_err() {
                         let _ = self.settle_unknown(turn_id, &turn.execution_id).await;
-                    } else {
-                        self.arm_cancel_deadline(turn_id, &turn.execution_id);
                     }
                     self.settle_notify.notify_waiters();
                     return Ok(());
@@ -1131,10 +1155,9 @@ impl ContinuationCoordinator {
                     };
                     // Idempotent repeat delivery matters when the first cancel
                     // was consumed by an idle driver before Prompt was queued.
+                    self.arm_cancel_deadline(turn_id, &turn.execution_id);
                     if self.runtime.cancel(connection_id).await.is_err() {
                         let _ = self.settle_unknown(turn_id, &turn.execution_id).await;
-                    } else {
-                        self.arm_cancel_deadline(turn_id, &turn.execution_id);
                     }
                     self.settle_notify.notify_waiters();
                     return Ok(());
@@ -1171,7 +1194,9 @@ impl ContinuationCoordinator {
         let coordinator = self.clone();
         let turn_id = turn_id.to_string();
         let execution_id = execution_id.to_string();
-        let timeout = self.cancel_confirmation_timeout;
+        let timeout = Duration::from_millis(
+            self.cancel_confirmation_timeout_ms.load(Ordering::Relaxed),
+        );
         tokio::spawn(async move {
             tokio::time::sleep(timeout).await;
             // settle_unknown is CAS-guarded by execution id AND active state:

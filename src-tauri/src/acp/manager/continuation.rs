@@ -11,6 +11,28 @@ use crate::web::event_bridge::emit_with_state;
 use super::ConnectionManager;
 
 impl ConnectionManager {
+    /// Enqueue the coordinator-controlled cancel command without re-entering
+    /// the public Stop path. The coordinator has already performed the durable
+    /// state transition and armed its confirmation deadline before calling the
+    /// runtime boundary.
+    pub(crate) async fn enqueue_continuation_cancel(
+        &self,
+        connection_id: &str,
+    ) -> Result<(), AcpError> {
+        let cmd_tx = {
+            let connections = self.connections.lock().await;
+            connections
+                .get(connection_id)
+                .ok_or_else(|| AcpError::ConnectionNotFound(connection_id.to_string()))?
+                .cmd_tx
+                .clone()
+        };
+        cmd_tx
+            .send(crate::acp::connection::ConnectionCommand::CancelContinuation)
+            .await
+            .map_err(|_| AcpError::ProcessExited)
+    }
+
     /// The continuation coordinator's privileged prompt send. Identical to
     /// [`Self::send_prompt`] except it does NOT consult the collaboration
     /// write reservation: the coordinator IS the reservation's owner,
@@ -234,7 +256,7 @@ impl crate::acp::delegation::continuation::ContinuationRuntime
 
     async fn cancel(&self, connection_id: &str) -> Result<(), String> {
         self.manager
-            .cancel(&self.db.conn, connection_id)
+            .enqueue_continuation_cancel(connection_id)
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())
