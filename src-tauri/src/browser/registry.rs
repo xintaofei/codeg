@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, MutexGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -150,6 +150,30 @@ impl BrowserRegistry {
         });
     }
 
+    /// Consume a recent (`within`) modifier-click on a plain anchor whose
+    /// resolved href is `url`: the page let the engine navigate in place, and
+    /// the host turns that into a background tab instead. Only a `click`
+    /// with button 0, the platform's primary modifier (⌘ on macOS, Ctrl
+    /// elsewhere), no `target`, and no `download` qualifies; the record is
+    /// removed so a single gesture cannot spawn two tabs.
+    pub fn take_modifier_click(&self, tab_id: &str, url: &str, within: Duration) -> bool {
+        let wanted = normalize_for_match(url);
+        let mut tabs = self.lock();
+        let Some(tab) = tabs.get_mut(tab_id) else {
+            return false;
+        };
+        let idx = tab.gestures.iter().rposition(|g| {
+            g.received.elapsed() <= within && gesture_is_modifier_click(&g.payload, &wanted)
+        });
+        match idx {
+            Some(i) => {
+                tab.gestures.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Newest first.
     pub fn recent_gestures(&self, tab_id: &str) -> Vec<GestureRecord> {
         self.lock()
@@ -164,5 +188,96 @@ impl BrowserRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.lock().is_empty()
+    }
+}
+
+fn normalize_for_match(url: &str) -> String {
+    // Compare without the fragment: an anchor's `href` and the navigation it
+    // produces agree up to the fragment, which the engine may drop.
+    match tauri::Url::parse(url) {
+        Ok(mut u) => {
+            u.set_fragment(None);
+            u.to_string()
+        }
+        Err(_) => url.to_string(),
+    }
+}
+
+fn gesture_is_modifier_click(payload: &Value, wanted: &str) -> bool {
+    if payload.get("type").and_then(Value::as_str) != Some("click") {
+        return false;
+    }
+    if payload.get("button").and_then(Value::as_i64) != Some(0) {
+        return false;
+    }
+    let modifiers = payload.get("modifiers");
+    let flag = |k: &str| {
+        modifiers
+            .and_then(|m| m.get(k))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    };
+    let primary = if cfg!(target_os = "macos") { flag("meta") } else { flag("ctrl") };
+    if !primary {
+        return false;
+    }
+    let Some(anchor) = payload.get("anchor").filter(|a| !a.is_null()) else {
+        return false;
+    };
+    if anchor.get("download").and_then(Value::as_bool).unwrap_or(false) {
+        return false;
+    }
+    let target = anchor.get("target").and_then(Value::as_str).unwrap_or("");
+    if !(target.is_empty() || target.eq_ignore_ascii_case("_self")) {
+        return false;
+    }
+    anchor
+        .get("href")
+        .and_then(Value::as_str)
+        .map(|h| normalize_for_match(h) == wanted)
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn click(href: &str, meta: bool, ctrl: bool, extra: Value) -> Value {
+        let mut v = json!({
+            "type": "click", "button": 0,
+            "modifiers": { "meta": meta, "ctrl": ctrl, "shift": false, "alt": false },
+            "anchor": { "href": href, "target": "", "download": false }
+        });
+        if let (Some(obj), Some(more)) = (v.as_object_mut(), extra.as_object()) {
+            for (k, val) in more {
+                if k == "anchor" {
+                    if let Some(a) = obj.get_mut("anchor").and_then(Value::as_object_mut) {
+                        for (ak, av) in val.as_object().unwrap() {
+                            a.insert(ak.clone(), av.clone());
+                        }
+                    }
+                } else {
+                    obj.insert(k.clone(), val.clone());
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn modifier_click_matching_rules() {
+        let primary = cfg!(target_os = "macos");
+        let (meta, ctrl) = (primary, !primary);
+        let wanted = normalize_for_match("https://example.com/a?b=1#frag");
+        assert!(gesture_is_modifier_click(&click("https://example.com/a?b=1", meta, ctrl, json!({})), &wanted));
+        // Wrong modifier, plain click, middle click, _blank, download, other href: no match.
+        assert!(!gesture_is_modifier_click(&click("https://example.com/a?b=1", !meta, !ctrl, json!({})), &wanted));
+        assert!(!gesture_is_modifier_click(&click("https://example.com/a?b=1", false, false, json!({})), &wanted));
+        assert!(!gesture_is_modifier_click(&click("https://example.com/a?b=1", meta, ctrl, json!({"button": 1})), &wanted));
+        assert!(!gesture_is_modifier_click(&click("https://example.com/a?b=1", meta, ctrl, json!({"anchor": {"target": "_blank"}})), &wanted));
+        assert!(!gesture_is_modifier_click(&click("https://example.com/a?b=1", meta, ctrl, json!({"anchor": {"download": true}})), &wanted));
+        assert!(!gesture_is_modifier_click(&click("https://example.com/other", meta, ctrl, json!({})), &wanted));
+        assert!(!gesture_is_modifier_click(&json!({"type": "keydown"}), &wanted));
     }
 }

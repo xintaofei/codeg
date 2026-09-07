@@ -38,7 +38,8 @@ use super::policy;
 use super::registry::{BrowserRegistry, BrowserTab};
 use super::surface::BrowserSurface;
 use super::types::{
-    Bounds, BrowserPopupPayload, BrowserTabState, ChannelKind, PopupPresentation, SurfaceKind,
+    Bounds, BrowserOpenRequestPayload, BrowserPopupPayload, BrowserTabState, ChannelKind,
+    PopupPresentation, SurfaceKind,
 };
 #[cfg(target_os = "macos")]
 use super::shim::macos as shim;
@@ -377,6 +378,8 @@ fn build_child(
     configuration: Option<OpenerConfiguration>,
 ) -> Result<wry::WebView, String> {
     let nav_id = tab_id.to_string();
+    let nav_app = app.clone();
+    let nav_owner = owner.label().to_string();
     #[allow(unused_mut)]
     let mut builder = WebViewBuilder::new()
         .with_id(label)
@@ -391,8 +394,29 @@ fn build_child(
                 .unwrap_or(false);
             if !allowed {
                 tracing::info!("[browser] tab {nav_id} blocked navigation to {url}");
+                return false;
             }
-            allowed
+            // ⌘/Ctrl-click on a plain anchor: the page did not prevent the
+            // default, so the engine is about to navigate this tab. Browsers
+            // open a background tab instead; so do we — the host cancels the
+            // in-place navigation and asks the frontend for a new tab. (No
+            // JS involved: a page can always add a later listener, so only
+            // the navigation itself is a reliable signal.)
+            if let Some(registry) = nav_app.try_state::<BrowserRegistry>() {
+                if registry.take_modifier_click(&nav_id, &url, POPUP_GESTURE_WINDOW) {
+                    events::emit_open_request(
+                        &nav_app,
+                        &BrowserOpenRequestPayload {
+                            url: url.clone(),
+                            source: "modifier-click".to_string(),
+                            activate: false,
+                            owner_window: Some(nav_owner.clone()),
+                        },
+                    );
+                    return false;
+                }
+            }
+            true
         })
         .with_on_page_load_handler({
             let app = app.clone();

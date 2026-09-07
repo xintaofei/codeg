@@ -51,3 +51,44 @@ pub const TAB_LABEL_PREFIX: &str = "browser-";
 pub fn tab_label(tab_id: &str) -> String {
     format!("{TAB_LABEL_PREFIX}{tab_id}")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::TAB_LABEL_PREFIX;
+
+    /// A browser tab must have NO Tauri IPC: its label (and the popup and
+    /// document-guest prefixes) may never appear in a capability's window
+    /// list, and no capability may use a bare wildcard that would cover it.
+    #[test]
+    fn browser_labels_are_absent_from_every_capability() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).expect("capabilities dir") {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let raw = std::fs::read_to_string(&path).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            let windows = json["windows"].as_array().cloned().unwrap_or_default();
+            for pattern in windows.iter().filter_map(|w| w.as_str()) {
+                assert_ne!(pattern, "*", "{}: a bare wildcard covers browser tabs", path.display());
+                assert_ne!(pattern, "**", "{}: a bare wildcard covers browser tabs", path.display());
+                for forbidden in [TAB_LABEL_PREFIX, "browser-popup-", "codeg-doc-"] {
+                    assert!(
+                        !pattern.starts_with(forbidden),
+                        "{}: capability window pattern {pattern:?} grants IPC to browser surfaces",
+                        path.display()
+                    );
+                }
+            }
+            checked += 1;
+        }
+        assert!(checked >= 1, "no capability files found");
+    }
+
+    #[test]
+    fn tab_labels_carry_the_prefix() {
+        assert_eq!(super::tab_label("abc"), "browser-abc");
+    }
+}
