@@ -8615,30 +8615,185 @@ pub(crate) fn locate_existing_skill_across_dirs(
     None
 }
 
-#[cfg(test)]
+// All settings mutations share this lock so lookup, preflight and mutation
+// observe one state. No guard is held across an await.
+static SKILL_MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn preflight_skill_symlink_move(source: &Path, destination_root: &Path) -> Result<(), AcpError> {
+    let metadata = fs::symlink_metadata(source)
+        .map_err(|e| AcpError::protocol(format!("failed to inspect skill entry: {e}")))?;
+    if !metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    let target = fs::read_link(source)
+        .map_err(|e| AcpError::protocol(format!("failed to read skill symlink: {e}")))?;
+    if target.is_absolute() {
+        return Ok(());
+    }
+    let original_target = fs::canonicalize(source)
+        .map_err(|e| AcpError::protocol(format!("failed to resolve skill symlink: {e}")))?;
+    let moved_target = if destination_root.exists() {
+        fs::canonicalize(destination_root.join(&target))
+    } else {
+        let parent = destination_root
+            .parent()
+            .ok_or_else(|| AcpError::protocol("skill destination has no parent"))?;
+        let name = destination_root
+            .file_name()
+            .ok_or_else(|| AcpError::protocol("skill destination has no directory name"))?;
+        let mut future_root = fs::canonicalize(parent)
+            .map_err(|e| AcpError::protocol(format!("failed to resolve skill destination: {e}")))?
+            .join(name);
+        // The future root is a new directory, so leading parent components
+        // can be evaluated without creating it. Keep subsequent components
+        // intact so canonicalize still follows any symlinks in the target.
+        let mut remaining = target.components();
+        loop {
+            match remaining.clone().next() {
+                Some(std::path::Component::CurDir) => {
+                    remaining.next();
+                }
+                Some(std::path::Component::ParentDir) => {
+                    future_root.pop();
+                    remaining.next();
+                }
+                _ => break,
+            }
+        }
+        fs::canonicalize(future_root.join(remaining.as_path()))
+    };
+    if moved_target.ok().as_ref() != Some(&original_target) {
+        return Err(AcpError::protocol(format!(
+            "relative symlink '{}' would resolve to a different or missing target after moving",
+            source.display()
+        )));
+    }
+    Ok(())
+}
+
+/// The caller must hold SKILL_MUTATION_LOCK when serving a backend command.
 fn set_private_skill_enabled(
-    _root: &Path,
-    _kind: SkillStorageKind,
-    _scope: AgentSkillScope,
-    _skill_id: &str,
-    _enabled: bool,
+    root: &Path,
+    kind: SkillStorageKind,
+    scope: AgentSkillScope,
+    skill_id: &str,
+    enabled: bool,
 ) -> Result<AgentSkillItem, AcpError> {
-    Err(AcpError::protocol(
-        "private skill moves are not implemented in task 1A",
+    let id = validate_skill_id(skill_id)?;
+    let roots = [root.to_path_buf()];
+    let skill = locate_existing_skill_across_dirs(&roots, kind, &id, scope)
+        .ok_or_else(|| AcpError::protocol(format!("skill not found: {id}")))?;
+    if skill.enabled == enabled {
+        return Ok(skill);
+    }
+
+    let vault = disabled_skill_root(root);
+    let destination_root = if enabled { root } else { &vault };
+    let source = Path::new(&skill.path);
+    let file_name = source
+        .file_name()
+        .ok_or_else(|| AcpError::protocol("skill entry has no file name"))?;
+    let destination = destination_root.join(file_name);
+    let mut candidates = vec![destination.clone(), destination_root.join(&id)];
+    if matches!(kind, SkillStorageKind::SkillDirectoryOrMarkdownFile) {
+        candidates.push(destination_root.join(format!("{id}.md")));
+    }
+    for candidate in candidates {
+        match fs::symlink_metadata(&candidate) {
+            Ok(_) => {
+                return Err(AcpError::protocol(format!(
+                    "skill destination collision: '{}' already exists",
+                    candidate.display()
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(AcpError::protocol(format!(
+                    "failed to inspect skill destination '{}': {error}",
+                    candidate.display()
+                )));
+            }
+        }
+    }
+
+    preflight_skill_symlink_move(source, destination_root)?;
+    fs::create_dir_all(destination_root)
+        .map_err(|e| AcpError::protocol(format!("failed to create skills directory: {e}")))?;
+    // Rename the entry itself, including symlinks; never copy/dereference a
+    // bundle whose supporting files may belong to a separate central store.
+    fs::rename(source, &destination)
+        .map_err(|e| AcpError::protocol(format!("failed to move skill '{id}': {e}")))?;
+    Ok(build_skill_item(
+        id,
+        scope,
+        skill.layout,
+        destination,
+        enabled,
     ))
 }
 
-#[cfg(test)]
-async fn acp_set_agent_skill_enabled(
-    _agent_type: AgentType,
-    _scope: AgentSkillScope,
-    _skill_id: String,
-    _workspace_path: Option<String>,
-    _enabled: bool,
-) -> Result<AgentSkillItem, AcpError> {
-    Err(AcpError::protocol(
-        "skill toggle command is not implemented in task 1A",
-    ))
+fn skill_root_is_shared(
+    agent_type: AgentType,
+    scope: AgentSkillScope,
+    workspace_path: Option<&str>,
+    root: &Path,
+) -> bool {
+    let resolved_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    registry::all_acp_agents().into_iter().any(|peer| {
+        peer != agent_type
+            && scoped_skill_dirs(peer, scope, workspace_path)
+                .unwrap_or_default()
+                .iter()
+                .any(|peer_root| {
+                    *peer_root == root
+                        || fs::canonicalize(peer_root)
+                            .map(|path| path == resolved_root)
+                            .unwrap_or(false)
+                })
+    })
+}
+
+fn reject_multiple_active_skills(
+    roots: &[PathBuf],
+    kind: SkillStorageKind,
+    skill_id: &str,
+) -> Result<(), AcpError> {
+    let mut matches = 0;
+    for root in roots {
+        let entries = match fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(AcpError::protocol(format!(
+                    "failed to inspect active skills directory '{}': {error}",
+                    root.display()
+                )));
+            }
+        };
+        // Listing intentionally deduplicates IDs; preflight must count both
+        // layouts so disabling a bundle cannot reveal its same-ID flat file.
+        for entry in entries {
+            let path = entry
+                .map_err(|e| AcpError::protocol(format!("failed to inspect active skill: {e}")))?
+                .path();
+            let directory_match = path.file_name().and_then(|name| name.to_str()) == Some(skill_id)
+                && path.is_dir()
+                && path.join("SKILL.md").is_file();
+            let markdown_match = matches!(kind, SkillStorageKind::SkillDirectoryOrMarkdownFile)
+                && path.file_stem().and_then(|name| name.to_str()) == Some(skill_id)
+                && is_markdown_file(&path)
+                && path.is_file();
+            if directory_match || markdown_match {
+                matches += 1;
+                if matches > 1 {
+                    return Err(AcpError::protocol(format!(
+                        "multiple active skills share id '{skill_id}'; resolve duplicates before toggling"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -12686,12 +12841,67 @@ pub async fn acp_list_agent_skills(
 }
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_set_agent_skill_enabled(
+    agent_type: AgentType,
+    scope: AgentSkillScope,
+    skill_id: String,
+    workspace_path: Option<String>,
+    enabled: bool,
+) -> Result<AgentSkillItem, AcpError> {
+    let _guard = SKILL_MUTATION_LOCK
+        .lock()
+        .map_err(|_| AcpError::protocol("skill mutation lock poisoned"))?;
+    let spec = skill_storage_spec(agent_type).ok_or_else(|| {
+        AcpError::protocol(format!(
+            "{agent_type} skills are not supported in Settings yet"
+        ))
+    })?;
+    let id = validate_skill_id(&skill_id)?;
+    let dirs = scoped_skill_dirs(agent_type, scope, workspace_path.as_deref())?;
+    let mut skill = locate_existing_skill_across_dirs(&dirs, spec.kind, &id, scope)
+        .ok_or_else(|| AcpError::protocol(format!("skill not found: {id}")))?;
+    apply_skill_capabilities(agent_type, &mut skill);
+    let parent = Path::new(&skill.path).parent();
+    let root = dirs
+        .iter()
+        .find(|root| {
+            if skill.enabled {
+                parent == Some(root.as_path())
+            } else {
+                parent == Some(disabled_skill_root(root).as_path())
+            }
+        })
+        .ok_or_else(|| AcpError::protocol("skill has no owning native root"))?;
+    if !skill.can_toggle || is_read_only_skill_path(agent_type, root) {
+        return Err(AcpError::protocol(format!(
+            "skill '{id}' is a built-in system skill and cannot be toggled"
+        )));
+    }
+    if skill_root_is_shared(agent_type, scope, workspace_path.as_deref(), root) {
+        // Task 2 owns peer fan-out and per-agent isolation for shared roots.
+        return Err(AcpError::protocol(format!(
+            "shared skill root '{}' requires shared-root toggle support",
+            root.display()
+        )));
+    }
+    reject_multiple_active_skills(&dirs, spec.kind, &id)?;
+    set_private_skill_enabled(root, spec.kind, scope, &id, enabled)?;
+    let mut authoritative = locate_existing_skill_across_dirs(&dirs, spec.kind, &id, scope)
+        .ok_or_else(|| AcpError::protocol(format!("skill not found after toggle: {id}")))?;
+    apply_skill_capabilities(agent_type, &mut authoritative);
+    Ok(authoritative)
+}
+
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn acp_read_agent_skill(
     agent_type: AgentType,
     scope: AgentSkillScope,
     skill_id: String,
     workspace_path: Option<String>,
 ) -> Result<AgentSkillContent, AcpError> {
+    let _guard = SKILL_MUTATION_LOCK
+        .lock()
+        .map_err(|_| AcpError::protocol("skill mutation lock poisoned"))?;
     let Some(spec) = skill_storage_spec(agent_type) else {
         return Err(AcpError::protocol(format!(
             "{agent_type} skills are not supported in Settings yet"
@@ -12718,6 +12928,9 @@ pub async fn acp_save_agent_skill(
     workspace_path: Option<String>,
     layout: Option<AgentSkillLayout>,
 ) -> Result<AgentSkillItem, AcpError> {
+    let _guard = SKILL_MUTATION_LOCK
+        .lock()
+        .map_err(|_| AcpError::protocol("skill mutation lock poisoned"))?;
     let Some(spec) = skill_storage_spec(agent_type) else {
         return Err(AcpError::protocol(format!(
             "{agent_type} skills are not supported in Settings yet"
@@ -12726,9 +12939,6 @@ pub async fn acp_save_agent_skill(
     let id = validate_skill_id(&skill_id)?;
     let dirs = scoped_skill_dirs(agent_type, scope, workspace_path.as_deref())?;
     let preferred_dir = preferred_scope_skill_dir(agent_type, scope, workspace_path.as_deref())?;
-
-    fs::create_dir_all(&preferred_dir)
-        .map_err(|e| AcpError::protocol(format!("failed to create skills directory: {e}")))?;
 
     let existing = locate_existing_skill_across_dirs(&dirs, spec.kind, &id, scope);
     if let Some(ref item) = existing {
@@ -12785,6 +12995,9 @@ pub async fn acp_delete_agent_skill(
     skill_id: String,
     workspace_path: Option<String>,
 ) -> Result<(), AcpError> {
+    let _guard = SKILL_MUTATION_LOCK
+        .lock()
+        .map_err(|_| AcpError::protocol("skill mutation lock poisoned"))?;
     let Some(spec) = skill_storage_spec(agent_type) else {
         return Err(AcpError::protocol(format!(
             "{agent_type} skills are not supported in Settings yet"
@@ -15775,6 +15988,327 @@ wire_api = "chat"
                 assert_eq!(item.enabled, enabled);
             }
         });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_enabled_private_symlink_round_trip_preserves_link_and_target() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        let target = tmp.path().join("target");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("SKILL.md"), "linked body").unwrap();
+        std::os::unix::fs::symlink("../target", root.join("linked")).unwrap();
+
+        for enabled in [false, true] {
+            let item = set_private_skill_enabled(
+                &root,
+                SkillStorageKind::SkillDirectoryOnly,
+                AgentSkillScope::Global,
+                "linked",
+                enabled,
+            )
+            .unwrap();
+            assert_eq!(fs::read_link(&item.path).unwrap(), Path::new("../target"));
+            assert_eq!(
+                fs::read_to_string(target.join("SKILL.md")).unwrap(),
+                "linked body"
+            );
+            assert_eq!(item.enabled, enabled);
+        }
+    }
+
+    #[test]
+    fn skill_enabled_private_collision_checks_other_layout_before_mutation() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        let vault = disabled_skill_root(&root);
+        fs::create_dir_all(root.join("demo")).unwrap();
+        fs::write(root.join("demo/SKILL.md"), "active").unwrap();
+        fs::create_dir_all(&vault).unwrap();
+        fs::write(vault.join("demo.md"), "disabled").unwrap();
+
+        let error = set_private_skill_enabled(
+            &root,
+            SkillStorageKind::SkillDirectoryOrMarkdownFile,
+            AgentSkillScope::Global,
+            "demo",
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("collision"));
+        assert_eq!(
+            fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+            "active"
+        );
+        assert_eq!(
+            fs::read_to_string(vault.join("demo.md")).unwrap(),
+            "disabled"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_enabled_private_relative_symlink_target_change_is_rejected_before_move() {
+        for vault_exists in [false, true] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let root = tmp.path().join("skills");
+            let vault = disabled_skill_root(&root);
+            fs::create_dir_all(root.join("target")).unwrap();
+            fs::write(root.join("target/SKILL.md"), "original target").unwrap();
+            std::os::unix::fs::symlink("target", root.join("demo")).unwrap();
+            if vault_exists {
+                fs::create_dir_all(vault.join("target")).unwrap();
+                fs::write(vault.join("target/SKILL.md"), "different target").unwrap();
+            }
+            let error = set_private_skill_enabled(
+                &root,
+                SkillStorageKind::SkillDirectoryOnly,
+                AgentSkillScope::Global,
+                "demo",
+                false,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("relative symlink"));
+            assert_eq!(
+                fs::read_link(root.join("demo")).unwrap(),
+                Path::new("target")
+            );
+            assert_eq!(
+                fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+                "original target"
+            );
+            assert!(!vault.join("demo").exists());
+            assert_eq!(vault.exists(), vault_exists);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_enabled_private_absolute_symlink_round_trip_preserves_link() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        let target = tmp.path().join("target.md");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&target, "absolute target").unwrap();
+        std::os::unix::fs::symlink(&target, root.join("demo.md")).unwrap();
+        for enabled in [false, true] {
+            let item = set_private_skill_enabled(
+                &root,
+                SkillStorageKind::SkillDirectoryOrMarkdownFile,
+                AgentSkillScope::Global,
+                "demo",
+                enabled,
+            )
+            .unwrap();
+            assert_eq!(fs::read_link(&item.path).unwrap(), target);
+            assert_eq!(fs::read_to_string(item.path).unwrap(), "absolute target");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_enabled_private_enable_rejects_dangling_destination_link() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        let vault = disabled_skill_root(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&vault).unwrap();
+        fs::write(vault.join("demo.md"), "disabled").unwrap();
+        std::os::unix::fs::symlink("missing", root.join("demo.md")).unwrap();
+
+        let error = set_private_skill_enabled(
+            &root,
+            SkillStorageKind::SkillDirectoryOrMarkdownFile,
+            AgentSkillScope::Global,
+            "demo",
+            true,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("collision"));
+        assert_eq!(
+            fs::read_link(root.join("demo.md")).unwrap(),
+            Path::new("missing")
+        );
+        assert_eq!(
+            fs::read_to_string(vault.join("demo.md")).unwrap(),
+            "disabled"
+        );
+    }
+
+    #[test]
+    fn skill_enabled_private_command_leaves_shared_roots_for_task_two() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        for (agent, relative) in [
+            (AgentType::Codex, ".agents/skills"),
+            (AgentType::ClaudeCode, ".claude/skills"),
+            (AgentType::Gemini, ".gemini/skills"),
+        ] {
+            let root = tmp.path().join(relative);
+            fs::create_dir_all(root.join("demo")).unwrap();
+            fs::write(root.join("demo/SKILL.md"), "shared").unwrap();
+            let error = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    agent,
+                    AgentSkillScope::Project,
+                    "demo".to_string(),
+                    Some(tmp.path().to_string_lossy().into_owned()),
+                    false,
+                ))
+                .unwrap_err();
+            assert!(error.to_string().contains("shared skill root"));
+            assert!(root.join("demo/SKILL.md").is_file());
+            assert!(!disabled_skill_root(&root).exists());
+        }
+    }
+
+    #[test]
+    fn skill_enabled_private_concurrent_commands_return_requested_state() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join(".codex/skills");
+        fs::create_dir_all(root.join("demo")).unwrap();
+        fs::write(root.join("demo/SKILL.md"), "body").unwrap();
+        let workspace = tmp.path().to_string_lossy().into_owned();
+        std::thread::scope(|threads| {
+            let handles = (0..8)
+                .map(|_| {
+                    let workspace = &workspace;
+                    threads.spawn(move || {
+                        let runtime = tokio::runtime::Runtime::new().unwrap();
+                        for enabled in [false, false, true, true] {
+                            let item = runtime
+                                .block_on(acp_set_agent_skill_enabled(
+                                    AgentType::Codex,
+                                    AgentSkillScope::Project,
+                                    "demo".to_string(),
+                                    Some(workspace.clone()),
+                                    enabled,
+                                ))
+                                .unwrap();
+                            assert_eq!(item.enabled, enabled);
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        });
+        assert_eq!(
+            fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+            "body"
+        );
+        assert!(!disabled_skill_root(&root).join("demo").exists());
+    }
+
+    #[test]
+    fn skill_enabled_private_duplicate_active_roots_are_rejected_before_move() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let roots = [
+            tmp.path().join(".codex/skills"),
+            tmp.path().join(".agents/skills"),
+        ];
+        for root in &roots {
+            fs::create_dir_all(root.join("demo")).unwrap();
+            fs::write(root.join("demo/SKILL.md"), "original").unwrap();
+        }
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let error = runtime
+            .block_on(acp_set_agent_skill_enabled(
+                AgentType::Codex,
+                AgentSkillScope::Project,
+                "demo".into(),
+                Some(tmp.path().to_string_lossy().into_owned()),
+                false,
+            ))
+            .unwrap_err();
+        assert!(error.to_string().contains("multiple active"));
+        for root in &roots {
+            assert_eq!(
+                fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+                "original"
+            );
+            assert!(!disabled_skill_root(root).exists());
+        }
+    }
+
+    #[test]
+    fn skill_enabled_private_duplicate_active_layouts_are_rejected_before_move() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join(".codex/skills");
+        fs::create_dir_all(root.join("demo")).unwrap();
+        fs::write(root.join("demo/SKILL.md"), "directory").unwrap();
+        fs::write(root.join("demo.md"), "flat").unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let error = runtime
+            .block_on(acp_set_agent_skill_enabled(
+                AgentType::Codex,
+                AgentSkillScope::Project,
+                "demo".into(),
+                Some(tmp.path().to_string_lossy().into_owned()),
+                false,
+            ))
+            .unwrap_err();
+        assert!(error.to_string().contains("multiple active"));
+        assert_eq!(
+            fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+            "directory"
+        );
+        assert_eq!(fs::read_to_string(root.join("demo.md")).unwrap(), "flat");
+        assert!(!disabled_skill_root(&root).exists());
+    }
+
+    #[test]
+    fn skill_enabled_private_save_new_then_edit_disabled_and_reenable() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = Some(tmp.path().to_string_lossy().into_owned());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let saved = runtime
+            .block_on(acp_save_agent_skill(
+                AgentType::Codex,
+                AgentSkillScope::Project,
+                "demo".into(),
+                "original".into(),
+                workspace.clone(),
+                None,
+            ))
+            .unwrap();
+        assert!(saved.enabled);
+        assert_eq!(saved.layout, AgentSkillLayout::MarkdownFile);
+        runtime
+            .block_on(acp_set_agent_skill_enabled(
+                AgentType::Codex,
+                AgentSkillScope::Project,
+                "demo".into(),
+                workspace.clone(),
+                false,
+            ))
+            .unwrap();
+        let saved = runtime
+            .block_on(acp_save_agent_skill(
+                AgentType::Codex,
+                AgentSkillScope::Project,
+                "demo".into(),
+                "updated".into(),
+                workspace.clone(),
+                Some(AgentSkillLayout::SkillDirectory),
+            ))
+            .unwrap();
+        assert!(!saved.enabled);
+        assert_eq!(saved.layout, AgentSkillLayout::MarkdownFile);
+        let enabled = runtime
+            .block_on(acp_set_agent_skill_enabled(
+                AgentType::Codex,
+                AgentSkillScope::Project,
+                "demo".into(),
+                workspace,
+                true,
+            ))
+            .unwrap();
+        assert!(enabled.enabled);
+        assert_eq!(fs::read_to_string(enabled.path).unwrap(), "updated");
     }
 
     #[test]
