@@ -4,6 +4,7 @@ import { ExternalLink, RotateCw, ShieldAlert, X } from "lucide-react"
 import { useTranslations } from "next-intl"
 
 import type { BrowserWorkspaceTab } from "@/contexts/workspace-context"
+import { useOptionalWorkspaceActions } from "@/contexts/workspace-context"
 import { browserReload } from "@/lib/browser/browser-api"
 import {
   setBrowserTabNotice,
@@ -25,6 +26,9 @@ export function BrowserNoticeBar({
 }) {
   const t = useTranslations("Browser.status")
   const notice = useBrowserTabNotice(tab.id)
+  // Null outside the workspace providers (the viewer drawer on a full-screen
+  // route); the bar then only reports the block.
+  const actions = useOptionalWorkspaceActions()
   if (!notice && !state?.remoteHost) return null
   return (
     <div className="flex flex-col">
@@ -46,6 +50,21 @@ export function BrowserNoticeBar({
                 ? ` · ${t("popupDeniedBlockedScheme")}`
                 : ""}
           </span>
+          {/* Opens the blocked address as a plain tab: the page's own
+              `window.open` is gone, so there is no opener to preserve — the
+              same trade a browser's "show blocked pop-up" makes. */}
+          {actions ? (
+            <button
+              type="button"
+              className="shrink-0 rounded px-1.5 py-0.5 text-xs font-medium text-primary hover:bg-primary/8"
+              onClick={() => {
+                actions.openBrowserTab(notice.url, { openerTabId: tab.id })
+                setBrowserTabNotice(tab.id, null)
+              }}
+            >
+              {t("popupOpenAnyway")}
+            </button>
+          ) : null}
           <button
             type="button"
             className="flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-primary/8"

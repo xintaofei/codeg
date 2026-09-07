@@ -189,4 +189,12 @@ impl BrowserSurface {
     pub fn set_zoom(&self, factor: f64) -> Result<(), SurfaceError> {
         per_surface!(self, child: |c| Ok(c.zoom(factor)?), window: |w| Ok(w.set_zoom(factor)?))
     }
+
+    /// Wipe cookies, caches and storage. Every tab shares one data store, so
+    /// clearing through any surface clears them all.
+    pub fn clear_browsing_data(&self) -> Result<(), SurfaceError> {
+        per_surface!(self,
+            child: |c| Ok(c.clear_all_browsing_data()?),
+            window: |w| Ok(w.clear_all_browsing_data()?))
+    }
 }

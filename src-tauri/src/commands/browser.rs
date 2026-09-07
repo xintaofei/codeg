@@ -118,6 +118,8 @@ pub struct OpenTabParams {
     pub bounds: Bounds,
     pub background: bool,
     pub surface: SurfaceChoice,
+    /// Build the surface with the web inspector available (user preference).
+    pub devtools: bool,
 }
 
 pub fn open_tab_core(
@@ -149,6 +151,7 @@ pub fn open_tab_core(
                 &label,
                 params.bounds,
                 params.background,
+                params.devtools,
             )
             .map_err(|e| window_err("Failed to create browser webview", e))?,
         ),
@@ -160,6 +163,7 @@ pub fn open_tab_core(
                 &label,
                 &origin_title(&url),
                 params.background,
+                params.devtools,
             )
             .map_err(|e| window_err("Failed to create browser window", e))?,
         )),
@@ -188,6 +192,7 @@ pub fn open_tab_core(
         surface.clone(),
         params.bounds,
         !params.background,
+        params.devtools,
     )) {
         let _ = surface.close();
         return Err(err);
@@ -225,6 +230,54 @@ pub fn open_tab_core(
     }
     events::emit_state(app, &state);
     Ok(state)
+}
+
+/// Wipe cookies, caches and every other kind of stored site data. All tabs
+/// share one persistent store, so this is app-wide; open pages keep running
+/// (nothing is reloaded, as in a browser).
+pub async fn clear_data_core(app: &AppHandle, registry: &BrowserRegistry) -> Result<(), AppCommandError> {
+    #[cfg(target_os = "macos")]
+    {
+        // Straight at the shared default store: works with no tab open and
+        // reports completion, which a surface's `clear_all_browsing_data`
+        // cannot.
+        let _ = registry;
+        let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+        let finish = move |result: Result<(), String>| {
+            if let Some(tx) = tx.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                let _ = tx.send(result);
+            }
+        };
+        app.run_on_main_thread(move || {
+            let on_done = finish.clone();
+            if let Err(err) = crate::browser::shim::macos::clear_default_data_store(move || on_done(Ok(()))) {
+                finish(Err(err));
+            }
+        })
+        .map_err(|e| window_err("Failed to clear browsing data", e))?;
+        match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(err))) => Err(window_err("Failed to clear browsing data", err)),
+            Ok(Err(_)) => Err(window_err("Failed to clear browsing data", "the request was dropped")),
+            Err(_) => Err(window_err("Failed to clear browsing data", "timed out waiting for WebKit")),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Until the Windows / Linux shims land, clearing goes through a live
+        // surface (they all share the store); with none open there is nothing
+        // to call into.
+        let _ = app;
+        let Some(state) = registry.list().into_iter().next() else {
+            return Err(AppCommandError::invalid_input(
+                "open a page in the built-in browser first, then clear its data",
+            ));
+        };
+        surface_of(registry, &state.tab_id)?
+            .clear_browsing_data()
+            .map_err(|e| window_err("Failed to clear browsing data", e))
+    }
 }
 
 fn surface_of(registry: &BrowserRegistry, tab_id: &str) -> Result<BrowserSurface, AppCommandError> {
@@ -383,6 +436,7 @@ pub async fn browser_open_tab(
     background: Option<bool>,
     surface: Option<SurfaceChoice>,
     folder_id: Option<i64>,
+    devtools: Option<bool>,
 ) -> Result<BrowserTabState, AppCommandError> {
     // Folder scoping is a frontend concern (tab strip grouping); the backend
     // only needs the owner window.
@@ -397,8 +451,17 @@ pub async fn browser_open_tab(
             bounds,
             background: background.unwrap_or(false),
             surface: surface.unwrap_or_default(),
+            devtools: devtools.unwrap_or(false),
         },
     )
+}
+
+#[tauri::command]
+pub async fn browser_clear_data(
+    app: AppHandle,
+    registry: State<'_, BrowserRegistry>,
+) -> Result<(), AppCommandError> {
+    clear_data_core(&app, &registry).await
 }
 
 #[tauri::command]

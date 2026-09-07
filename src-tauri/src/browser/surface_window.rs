@@ -17,6 +17,7 @@ pub fn create(
     label: &str,
     title: &str,
     background: bool,
+    devtools: bool,
 ) -> tauri::Result<WebviewWindow> {
     let blank = Url::parse("about:blank").expect("static url");
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(blank))
@@ -24,6 +25,7 @@ pub fn create(
         .inner_size(1100.0, 760.0)
         .min_inner_size(480.0, 320.0)
         .focused(!background)
+        .devtools(devtools)
         .on_navigation(policy::navigation_allowed)
         .on_page_load({
             let app = app.clone();

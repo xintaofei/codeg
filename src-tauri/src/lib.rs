@@ -1205,6 +1205,7 @@ mod tauri_app {
                 browser_commands::browser_stop,
                 browser_commands::browser_get_state,
                 browser_commands::browser_list_tabs,
+                browser_commands::browser_clear_data,
                 conversations::list_conversations,
                 conversations::get_conversation,
                 conversations::list_all_conversations,

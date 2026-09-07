@@ -45,6 +45,7 @@ import { DesktopNotificationSettingsSection } from "@/components/settings/deskto
 import { NotificationSoundSettingsSection } from "@/components/settings/notification-sound-settings"
 import { DelegationSettingsSection } from "@/components/settings/delegation-settings"
 import { AgentToolsSettingsSection } from "@/components/settings/agent-tools-settings"
+import { BrowserSettingsSection } from "@/components/settings/browser-settings"
 
 const TERMINAL_SHELL_OPTION_SYSTEM = "system"
 const TERMINAL_SHELL_OPTION_CUSTOM = "custom"
@@ -420,6 +421,8 @@ export function GeneralSettings() {
         <DelegationSettingsSection />
 
         <AgentToolsSettingsSection />
+
+        <BrowserSettingsSection />
       </div>
     </ScrollArea>
   )

@@ -1,0 +1,121 @@
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { NextIntlClientProvider } from "next-intl"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+
+const mocks = vi.hoisted(() => ({
+  browserClearData: vi.fn(),
+  toast: { success: vi.fn(), error: vi.fn() },
+}))
+
+vi.mock("@/lib/browser/browser-api", () => ({
+  browserClearData: mocks.browserClearData,
+}))
+vi.mock("@/lib/platform", () => ({ isDesktop: () => true }))
+vi.mock("sonner", () => ({ toast: mocks.toast }))
+
+import { BrowserSettingsSection } from "./browser-settings"
+import enMessages from "@/i18n/messages/en.json"
+import {
+  getBrowserPrefs,
+  resetBrowserPrefsForTests,
+  setDefaultLinkTarget,
+} from "@/lib/browser/browser-prefs"
+
+function renderSection() {
+  return render(
+    <NextIntlClientProvider locale="en" messages={enMessages}>
+      <BrowserSettingsSection />
+    </NextIntlClientProvider>
+  )
+}
+
+/** The section arrives folded; every knob lives under the heading. */
+function expandSection() {
+  fireEvent.click(screen.getByRole("button", { name: "Built-in browser" }))
+}
+
+beforeEach(() => {
+  resetBrowserPrefsForTests()
+  mocks.browserClearData.mockReset()
+  mocks.toast.success.mockReset()
+  mocks.toast.error.mockReset()
+})
+
+describe("BrowserSettingsSection", () => {
+  it("arrives folded and shows one picker per link source once open", () => {
+    renderSection()
+    expect(
+      screen.queryByRole("combobox", { name: "Conversation messages" })
+    ).not.toBeInTheDocument()
+
+    expandSection()
+    for (const source of [
+      "Conversation messages",
+      "Tool results",
+      "Terminal",
+      "Editor",
+      "Notifications",
+    ]) {
+      expect(screen.getByRole("combobox", { name: source })).toHaveTextContent(
+        "Built-in browser"
+      )
+    }
+    expect(screen.getByLabelText("Web inspector")).not.toBeChecked()
+    expect(
+      screen.getByRole("combobox", { name: "Tab surface" })
+    ).toHaveTextContent("Automatic")
+  })
+
+  it("persists the inspector switch and follows a change made elsewhere", () => {
+    renderSection()
+    expandSection()
+
+    fireEvent.click(screen.getByLabelText("Web inspector"))
+    expect(getBrowserPrefs().devtools).toBe(true)
+    expect(screen.getByLabelText("Web inspector")).toBeChecked()
+
+    // The workspace window (the first-open toast) writes the same keys.
+    act(() => setDefaultLinkTarget("terminal", "system"))
+    expect(
+      screen.getByRole("combobox", { name: "Terminal" })
+    ).toHaveTextContent("System browser")
+    expect(
+      screen.getByRole("combobox", { name: "Conversation messages" })
+    ).toHaveTextContent("Built-in browser")
+  })
+
+  it("clears browsing data only after confirmation", async () => {
+    mocks.browserClearData.mockResolvedValue(undefined)
+    renderSection()
+    expandSection()
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear…" }))
+    expect(mocks.browserClearData).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole("heading", { name: "Clear browsing data?" })
+    ).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }))
+    await waitFor(() => expect(mocks.browserClearData).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(mocks.toast.success).toHaveBeenCalledWith("Browsing data cleared")
+    )
+  })
+
+  it("keeps the dialog and reports the failure when clearing fails", async () => {
+    mocks.browserClearData.mockRejectedValue(new Error("WebKit said no"))
+    renderSection()
+    expandSection()
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear…" }))
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }))
+    await waitFor(() =>
+      expect(mocks.toast.error).toHaveBeenCalledWith(
+        "Could not clear browsing data: WebKit said no"
+      )
+    )
+    expect(
+      screen.getByRole("heading", { name: "Clear browsing data?" })
+    ).toBeInTheDocument()
+  })
+})

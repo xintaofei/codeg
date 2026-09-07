@@ -77,6 +77,8 @@ export interface OpenBrowserTabParams {
   background?: boolean
   surface?: SurfaceChoice
   folderId?: number | null
+  /** Build the surface with the web inspector available. */
+  devtools?: boolean
 }
 
 export function browserOpenTab(
@@ -89,6 +91,7 @@ export function browserOpenTab(
     background: params.background ?? false,
     surface: params.surface ?? "auto",
     folderId: params.folderId ?? null,
+    devtools: params.devtools ?? false,
   })
 }
 
@@ -144,4 +147,9 @@ export function browserGetState(tabId: string): Promise<BrowserTabState> {
 
 export function browserListTabs(): Promise<BrowserTabState[]> {
   return getTransport().call<BrowserTabState[]>("browser_list_tabs", {})
+}
+
+/** Wipe cookies, caches and storage shared by every built-in browser tab. */
+export function browserClearData(): Promise<void> {
+  return getTransport().call<void>("browser_clear_data", {})
 }

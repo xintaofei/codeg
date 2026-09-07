@@ -133,6 +133,7 @@ describe("GeneralSettings", () => {
       "Notification sounds",
       "Multi-Agent Collaboration",
       "In-conversation tools",
+      "Built-in browser",
     ]) {
       expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument()
     }

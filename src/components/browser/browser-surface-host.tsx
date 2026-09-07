@@ -11,6 +11,7 @@ import {
   browserSetBounds,
   browserSetVisible,
 } from "@/lib/browser/browser-api"
+import { getBrowserPrefs } from "@/lib/browser/browser-prefs"
 import {
   getBrowserTabState,
   setBrowserTabState,
@@ -124,11 +125,16 @@ export function BrowserSurfaceHost({
     const bounds = measure(el)
     lastBoundsRef.current = bounds
     lastVisibleRef.current = true
+    // Preferences are read once, here: a surface cannot change its inspector
+    // or its kind after it exists, so a settings change applies to new tabs.
+    const prefs = getBrowserPrefs()
     browserOpenTab({
       tabId: backendId,
       url: tab.browser.initialUrl,
       bounds,
       folderId: tab.folderId,
+      surface: prefs.surfaceOverride,
+      devtools: prefs.devtools,
     })
       .then((next) => {
         setBrowserTabState(next)

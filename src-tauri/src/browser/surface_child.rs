@@ -368,6 +368,7 @@ type OpenerConfiguration = ();
 /// Main thread only. Builds the child webview at `bounds` with every hook
 /// attached and **no URL**: a regular tab is navigated by the caller once the
 /// page channel is installed, a popup is navigated by the engine itself.
+#[allow(clippy::too_many_arguments)]
 fn build_child(
     app: &AppHandle,
     owner: &WebviewWindow,
@@ -375,6 +376,7 @@ fn build_child(
     label: &str,
     bounds: Bounds,
     visible: bool,
+    devtools: bool,
     configuration: Option<OpenerConfiguration>,
 ) -> Result<wry::WebView, String> {
     let nav_id = tab_id.to_string();
@@ -386,7 +388,7 @@ fn build_child(
         .with_bounds(rect(bounds))
         .with_visible(visible)
         .with_focused(false)
-        .with_devtools(true)
+        .with_devtools(devtools)
         .with_hotkeys_zoom(true)
         .with_navigation_handler(move |url| {
             let allowed = Url::parse(&url)
@@ -455,6 +457,7 @@ pub fn create(
     label: &str,
     bounds: Bounds,
     background: bool,
+    devtools: bool,
 ) -> Result<ChildHandle, ChildError> {
     let handle = ChildHandle {
         tab_id: tab_id.to_string(),
@@ -466,7 +469,7 @@ pub fn create(
     let id = tab_id.to_string();
     let label = label.to_string();
     run_on_main(&app.clone(), move || -> Result<(), String> {
-        let webview = build_child(&app, &owner, &id, &label, bounds, !background, None)?;
+        let webview = build_child(&app, &owner, &id, &label, bounds, !background, devtools, None)?;
         SURFACES.with(|s| s.borrow_mut().insert(id, webview));
         Ok(())
     })?
@@ -523,11 +526,11 @@ fn new_window_handler(
             let seq = POPUP_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
             let tab_id = format!("{opener_tab_id}-p{seq}");
             let label = super::tab_label(&tab_id);
-            let bounds = registry
-                .update(&opener_tab_id, |tab| tab.last_bounds)
+            let (bounds, devtools) = registry
+                .update(&opener_tab_id, |tab| (tab.last_bounds, tab.devtools))
                 .unwrap_or_default();
             let configuration = features.opener.target_configuration.clone();
-            let webview = match build_child(&app, &owner, &tab_id, &label, bounds, true, Some(configuration)) {
+            let webview = match build_child(&app, &owner, &tab_id, &label, bounds, true, devtools, Some(configuration)) {
                 Ok(webview) => webview,
                 Err(err) => {
                     tracing::warn!("[browser] popup webview creation failed: {err}");
@@ -578,6 +581,7 @@ fn new_window_handler(
                 BrowserSurface::Child(handle),
                 bounds,
                 true,
+                devtools,
             )) {
                 tracing::warn!("[browser] popup registry insert failed: {err}");
                 SURFACES.with(|s| s.borrow_mut().remove(&tab_id));

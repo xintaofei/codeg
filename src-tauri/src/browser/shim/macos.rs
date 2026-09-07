@@ -14,10 +14,10 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DeclaredClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
-use objc2_foundation::{ns_string, NSDictionary, NSError, NSString};
+use objc2_foundation::{ns_string, NSDate, NSDictionary, NSError, NSString};
 use objc2_web_kit::{
     WKContentWorld, WKScriptMessage, WKScriptMessageHandler, WKSnapshotConfiguration,
-    WKUserContentController, WKUserScript, WKUserScriptInjectionTime,
+    WKUserContentController, WKUserScript, WKUserScriptInjectionTime, WKWebsiteDataStore,
 };
 use tauri_runtime_wry::wry::{self, WebViewExtMacOS};
 
@@ -259,6 +259,23 @@ pub fn stop_loading(webview: &wry::WebView) {
 
 /// Identity of the platform webview behind a wry `WebView`, matching the
 /// `source` a message sink receives.
+/// Remove every kind of website data (cookies, caches, storage, …) from the
+/// default data store — the one all browser tabs share, whether or not any
+/// tab is open right now. `done` runs on the main thread once WebKit has
+/// finished.
+pub fn clear_default_data_store(done: impl Fn() + 'static) -> Result<(), String> {
+    let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
+    // SAFETY: main thread; WebKit owns every object handed back.
+    unsafe {
+        let store = WKWebsiteDataStore::defaultDataStore(mtm);
+        let types = WKWebsiteDataStore::allWebsiteDataTypes(mtm);
+        let since = NSDate::dateWithTimeIntervalSince1970(0.0);
+        let handler = RcBlock::new(done);
+        store.removeDataOfTypes_modifiedSince_completionHandler(&types, &since, &handler);
+    }
+    Ok(())
+}
+
 pub fn webview_pointer(webview: &wry::WebView) -> usize {
     Retained::as_ptr(&webview.webview()) as usize
 }

@@ -232,6 +232,7 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
                     surface,
+                    devtools: cmd.get("devtools").and_then(Value::as_bool).unwrap_or(false),
                 },
             )
             .map_err(err_string)?;
@@ -360,6 +361,12 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                 .map(|g| json!({ "age_ms": g.received.elapsed().as_millis() as u64, "payload": g.payload }))
                 .collect();
             Ok(Value::Array(gestures))
+        }
+        "browser_clear_data" => {
+            browser_commands::clear_data_core(app, &registry)
+                .await
+                .map_err(err_string)?;
+            Ok(Value::Null)
         }
         // Ask the frontend to open a URL as a browser tab (exercises the real
         // tab record → surface host → browser_open_tab path).

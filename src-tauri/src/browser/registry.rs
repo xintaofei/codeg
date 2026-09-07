@@ -33,16 +33,26 @@ pub struct BrowserTab {
     /// shown again after being hidden.
     pub last_bounds: Bounds,
     pub visible: bool,
+    /// Whether the surface was built with the inspector enabled (a user
+    /// preference read at open time). Popups inherit their opener's value.
+    pub devtools: bool,
     pub gestures: VecDeque<GestureRecord>,
 }
 
 impl BrowserTab {
-    pub fn new(state: BrowserTabState, surface: BrowserSurface, bounds: Bounds, visible: bool) -> Self {
+    pub fn new(
+        state: BrowserTabState,
+        surface: BrowserSurface,
+        bounds: Bounds,
+        visible: bool,
+        devtools: bool,
+    ) -> Self {
         Self {
             state,
             surface,
             last_bounds: bounds,
             visible,
+            devtools,
             gestures: VecDeque::with_capacity(GESTURE_RING_CAPACITY),
         }
     }
