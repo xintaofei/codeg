@@ -361,6 +361,36 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                 .collect();
             Ok(Value::Array(gestures))
         }
+        // Ask the frontend to open a URL as a browser tab (exercises the real
+        // tab record → surface host → browser_open_tab path).
+        "frontend_open" => {
+            crate::browser::events::emit_open_request(
+                app,
+                &crate::browser::types::BrowserOpenRequestPayload {
+                    url: str_arg(cmd, "url")?,
+                    source: "smoke".to_string(),
+                    activate: cmd.get("activate").and_then(Value::as_bool).unwrap_or(true),
+                    owner_window: cmd.get("owner").and_then(Value::as_str).map(str::to_string),
+                },
+            );
+            Ok(Value::Null)
+        }
+        // Evaluate in the MAIN (workspace) webview — drives the frontend.
+        "main_eval" => {
+            let main = main_window()?;
+            let js = str_arg(cmd, "js")?;
+            let (tx, rx) = std::sync::mpsc::channel::<String>();
+            main.eval_with_callback(&js, move |value| {
+                let _ = tx.send(value);
+            })
+            .map_err(err_string)?;
+            let timeout = Duration::from_millis(cmd.get("timeout_ms").and_then(Value::as_u64).unwrap_or(8000));
+            let value = tokio::task::spawn_blocking(move || rx.recv_timeout(timeout))
+                .await
+                .map_err(err_string)?
+                .map_err(|_| "main eval timed out".to_string())?;
+            Ok(serde_json::from_str(&value).unwrap_or(Value::String(value)))
+        }
         "browser_focus" => {
             let surface = registry
                 .surface(&str_arg(cmd, "tab_id")?)

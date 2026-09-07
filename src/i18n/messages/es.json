@@ -5759,5 +5759,43 @@
     "confirmDeleteConfirm": "Eliminar",
     "canvasActions": "Acciones del lienzo",
     "mergeIntoNewRegion": "Nueva región"
+  },
+  "Browser": {
+    "toolbar": {
+      "back": "Atrás",
+      "forward": "Adelante",
+      "reload": "Recargar",
+      "stop": "Detener",
+      "openInSystem": "Abrir en el navegador del sistema",
+      "copyUrl": "Copiar enlace",
+      "copied": "Enlace copiado",
+      "addressPlaceholder": "Escribe una dirección",
+      "invalidUrl": "No es una dirección válida"
+    },
+    "status": {
+      "popupDenied": "Ventana emergente bloqueada: {host}",
+      "popupDeniedNoGesture": "no se abrió con un clic",
+      "popupDeniedBlockedScheme": "tipo de dirección no permitido",
+      "dismiss": "Cerrar",
+      "errorDns": "No se encuentra este sitio",
+      "errorTls": "Esta conexión no es segura",
+      "errorBlocked": "Esta dirección está bloqueada en el navegador integrado",
+      "errorPopupDenied": "Ventana emergente bloqueada",
+      "errorFailed": "No se puede cargar esta página",
+      "retry": "Reintentar",
+      "openInSystem": "Abrir en el navegador del sistema",
+      "ownedWindow": "Esta página se muestra en su propia ventana.",
+      "ownedWindowShow": "Mostrar ventana",
+      "remoteBanner": "Abierto a través de {host}"
+    },
+    "tab": {
+      "untitled": "Nueva pestaña"
+    },
+    "drawer": {
+      "title": "Navegador integrado",
+      "description": "Una página web abierta desde la conversación",
+      "openInWorkspace": "Abrir en el espacio de trabajo",
+      "cannotOpen": "Esta dirección no se puede abrir aquí."
+    }
   }
 }

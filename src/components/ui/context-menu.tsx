@@ -4,6 +4,7 @@ import * as React from "react"
 import { ContextMenu as ContextMenuPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { useNativeSurfaceOcclusion } from "@/lib/browser/native-surface-occlusion"
 
 function ContextMenu({
   ...props
@@ -23,6 +24,8 @@ function ContextMenuContent({
   className,
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.Content>) {
+  // A native browser surface would paint over this overlay; hide it while open.
+  useNativeSurfaceOcclusion("context-menu")
   return (
     <ContextMenuPrimitive.Portal>
       <ContextMenuPrimitive.Content

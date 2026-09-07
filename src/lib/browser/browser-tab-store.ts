@@ -43,7 +43,8 @@ export function setBrowserTabState(state: BrowserTabState): void {
 }
 
 export function removeBrowserTabState(workspaceTabId: string): void {
-  if (states.delete(workspaceTabId)) notify()
+  const hadNotice = notices.delete(workspaceTabId)
+  if (states.delete(workspaceTabId) || hadNotice) notify()
 }
 
 export function subscribeBrowserTabs(listener: Listener): () => void {
@@ -84,8 +85,37 @@ export function releaseBrowserTab(workspaceTabId: string): void {
   }
 }
 
+/** A transient, dismissible message shown between the toolbar and the page. */
+export interface BrowserTabNotice {
+  kind: "popup-denied"
+  url: string
+  reason: string | null
+}
+
+const notices = new Map<string, BrowserTabNotice>()
+
+export function setBrowserTabNotice(
+  workspaceTabId: string,
+  notice: BrowserTabNotice | null
+): void {
+  if (notice) notices.set(workspaceTabId, notice)
+  else if (!notices.delete(workspaceTabId)) return
+  notify()
+}
+
+export function useBrowserTabNotice(
+  workspaceTabId: string | null
+): BrowserTabNotice | null {
+  return useSyncExternalStore(
+    subscribeBrowserTabs,
+    () => (workspaceTabId ? (notices.get(workspaceTabId) ?? null) : null),
+    getServerSnapshot
+  )
+}
+
 export function resetBrowserTabStoreForTests(): void {
   states.clear()
+  notices.clear()
   listeners.clear()
 }
 

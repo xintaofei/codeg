@@ -5759,5 +5759,43 @@
     "confirmDeleteConfirm": "刪除",
     "canvasActions": "畫布操作",
     "mergeIntoNewRegion": "新增區域"
+  },
+  "Browser": {
+    "toolbar": {
+      "back": "上一頁",
+      "forward": "下一頁",
+      "reload": "重新整理",
+      "stop": "停止",
+      "openInSystem": "在系統瀏覽器中開啟",
+      "copyUrl": "複製連結",
+      "copied": "已複製連結",
+      "addressPlaceholder": "輸入網址",
+      "invalidUrl": "不是有效的網址"
+    },
+    "status": {
+      "popupDenied": "已攔截彈出視窗：{host}",
+      "popupDeniedNoGesture": "並非由點擊觸發",
+      "popupDeniedBlockedScheme": "不允許的網址類型",
+      "dismiss": "關閉",
+      "errorDns": "找不到此網站",
+      "errorTls": "連線不安全",
+      "errorBlocked": "內建瀏覽器不允許開啟此網址",
+      "errorPopupDenied": "彈出視窗已攔截",
+      "errorFailed": "無法載入頁面",
+      "retry": "重試",
+      "openInSystem": "在系統瀏覽器中開啟",
+      "ownedWindow": "此頁面顯示在獨立視窗中。",
+      "ownedWindowShow": "顯示視窗",
+      "remoteBanner": "經由 {host} 開啟"
+    },
+    "tab": {
+      "untitled": "新分頁"
+    },
+    "drawer": {
+      "title": "內建瀏覽器",
+      "description": "從對話中開啟的網頁",
+      "openInWorkspace": "在工作區中開啟",
+      "cannotOpen": "無法在此開啟此網址。"
+    }
   }
 }

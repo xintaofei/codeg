@@ -5759,5 +5759,43 @@
     "confirmDeleteConfirm": "Excluir",
     "canvasActions": "Ações do quadro",
     "mergeIntoNewRegion": "Nova região"
+  },
+  "Browser": {
+    "toolbar": {
+      "back": "Voltar",
+      "forward": "Avançar",
+      "reload": "Recarregar",
+      "stop": "Parar",
+      "openInSystem": "Abrir no navegador do sistema",
+      "copyUrl": "Copiar link",
+      "copied": "Link copiado",
+      "addressPlaceholder": "Digite um endereço",
+      "invalidUrl": "Endereço inválido"
+    },
+    "status": {
+      "popupDenied": "Pop-up bloqueado: {host}",
+      "popupDeniedNoGesture": "não foi aberto por um clique",
+      "popupDeniedBlockedScheme": "tipo de endereço não permitido",
+      "dismiss": "Fechar",
+      "errorDns": "Este site não foi encontrado",
+      "errorTls": "Esta conexão não é segura",
+      "errorBlocked": "Este endereço está bloqueado no navegador integrado",
+      "errorPopupDenied": "Pop-up bloqueado",
+      "errorFailed": "Não foi possível carregar esta página",
+      "retry": "Tentar novamente",
+      "openInSystem": "Abrir no navegador do sistema",
+      "ownedWindow": "Esta página é exibida em uma janela própria.",
+      "ownedWindowShow": "Mostrar janela",
+      "remoteBanner": "Aberto via {host}"
+    },
+    "tab": {
+      "untitled": "Nova aba"
+    },
+    "drawer": {
+      "title": "Navegador integrado",
+      "description": "Uma página da web aberta a partir da conversa",
+      "openInWorkspace": "Abrir no espaço de trabalho",
+      "cannotOpen": "Este endereço não pode ser aberto aqui."
+    }
   }
 }

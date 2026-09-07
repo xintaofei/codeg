@@ -5759,5 +5759,43 @@
     "confirmDeleteConfirm": "删除",
     "canvasActions": "画布操作",
     "mergeIntoNewRegion": "新建区域"
+  },
+  "Browser": {
+    "toolbar": {
+      "back": "后退",
+      "forward": "前进",
+      "reload": "刷新",
+      "stop": "停止",
+      "openInSystem": "在系统浏览器中打开",
+      "copyUrl": "复制链接",
+      "copied": "链接已复制",
+      "addressPlaceholder": "输入地址",
+      "invalidUrl": "不是有效的地址"
+    },
+    "status": {
+      "popupDenied": "已拦截弹窗：{host}",
+      "popupDeniedNoGesture": "不是由点击触发",
+      "popupDeniedBlockedScheme": "不允许的地址类型",
+      "dismiss": "关闭",
+      "errorDns": "找不到该网站",
+      "errorTls": "连接不安全",
+      "errorBlocked": "内置浏览器不允许打开该地址",
+      "errorPopupDenied": "弹窗已拦截",
+      "errorFailed": "页面无法加载",
+      "retry": "重试",
+      "openInSystem": "在系统浏览器中打开",
+      "ownedWindow": "该页面显示在独立窗口中。",
+      "ownedWindowShow": "显示窗口",
+      "remoteBanner": "经由 {host} 打开"
+    },
+    "tab": {
+      "untitled": "新标签页"
+    },
+    "drawer": {
+      "title": "内置浏览器",
+      "description": "从会话中打开的网页",
+      "openInWorkspace": "在工作区中打开",
+      "cannotOpen": "无法在此打开该地址。"
+    }
   }
 }

@@ -5759,5 +5759,43 @@
     "confirmDeleteConfirm": "حذف",
     "canvasActions": "إجراءات اللوحة",
     "mergeIntoNewRegion": "منطقة جديدة"
+  },
+  "Browser": {
+    "toolbar": {
+      "back": "رجوع",
+      "forward": "تقدّم",
+      "reload": "إعادة تحميل",
+      "stop": "إيقاف",
+      "openInSystem": "فتح في متصفح النظام",
+      "copyUrl": "نسخ الرابط",
+      "copied": "تم نسخ الرابط",
+      "addressPlaceholder": "أدخل عنوانًا",
+      "invalidUrl": "عنوان غير صالح"
+    },
+    "status": {
+      "popupDenied": "تم حظر نافذة منبثقة: {host}",
+      "popupDeniedNoGesture": "لم تُفتح بنقرة",
+      "popupDeniedBlockedScheme": "نوع العنوان غير مسموح به",
+      "dismiss": "إغلاق",
+      "errorDns": "تعذّر العثور على هذا الموقع",
+      "errorTls": "هذا الاتصال غير آمن",
+      "errorBlocked": "هذا العنوان محظور في المتصفح المدمج",
+      "errorPopupDenied": "تم حظر النافذة المنبثقة",
+      "errorFailed": "تعذّر تحميل هذه الصفحة",
+      "retry": "إعادة المحاولة",
+      "openInSystem": "فتح في متصفح النظام",
+      "ownedWindow": "تُعرض هذه الصفحة في نافذة مستقلة.",
+      "ownedWindowShow": "إظهار النافذة",
+      "remoteBanner": "فُتح عبر {host}"
+    },
+    "tab": {
+      "untitled": "علامة تبويب جديدة"
+    },
+    "drawer": {
+      "title": "المتصفح المدمج",
+      "description": "صفحة ويب فُتحت من المحادثة",
+      "openInWorkspace": "فتح في مساحة العمل",
+      "cannotOpen": "لا يمكن فتح هذا العنوان هنا."
+    }
   }
 }

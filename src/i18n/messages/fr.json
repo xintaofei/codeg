@@ -5759,5 +5759,43 @@
     "confirmDeleteConfirm": "Supprimer",
     "canvasActions": "Actions du canevas",
     "mergeIntoNewRegion": "Nouvelle région"
+  },
+  "Browser": {
+    "toolbar": {
+      "back": "Précédent",
+      "forward": "Suivant",
+      "reload": "Recharger",
+      "stop": "Arrêter",
+      "openInSystem": "Ouvrir dans le navigateur système",
+      "copyUrl": "Copier le lien",
+      "copied": "Lien copié",
+      "addressPlaceholder": "Saisir une adresse",
+      "invalidUrl": "Adresse non valide"
+    },
+    "status": {
+      "popupDenied": "Fenêtre contextuelle bloquée : {host}",
+      "popupDeniedNoGesture": "ouverte sans clic",
+      "popupDeniedBlockedScheme": "type d'adresse non autorisé",
+      "dismiss": "Fermer",
+      "errorDns": "Ce site est introuvable",
+      "errorTls": "Cette connexion n'est pas sécurisée",
+      "errorBlocked": "Cette adresse est bloquée dans le navigateur intégré",
+      "errorPopupDenied": "Fenêtre contextuelle bloquée",
+      "errorFailed": "Impossible de charger cette page",
+      "retry": "Réessayer",
+      "openInSystem": "Ouvrir dans le navigateur système",
+      "ownedWindow": "Cette page s'affiche dans sa propre fenêtre.",
+      "ownedWindowShow": "Afficher la fenêtre",
+      "remoteBanner": "Ouvert via {host}"
+    },
+    "tab": {
+      "untitled": "Nouvel onglet"
+    },
+    "drawer": {
+      "title": "Navigateur intégré",
+      "description": "Une page web ouverte depuis la conversation",
+      "openInWorkspace": "Ouvrir dans l'espace de travail",
+      "cannotOpen": "Cette adresse ne peut pas être ouverte ici."
+    }
   }
 }

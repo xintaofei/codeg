@@ -2,13 +2,21 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Reorder } from "motion/react"
-import { FileText, GitCompare, Maximize2, Minimize2, X } from "lucide-react"
+import {
+  FileText,
+  GitCompare,
+  Maximize2,
+  Minimize2,
+  X,
+  Globe,
+} from "lucide-react"
 import { useTranslations } from "next-intl"
 import {
   useWorkspaceActions,
   useWorkspaceFileTabs,
   useWorkspaceView,
 } from "@/contexts/workspace-context"
+import { useBrowserTabState } from "@/lib/browser/browser-tab-store"
 import type { FileWorkspaceTab } from "@/contexts/workspace-context"
 import { useIsCoarsePointer } from "@/hooks/use-is-coarse-pointer"
 import { useLongPressDrag } from "@/hooks/use-long-press-drag"
@@ -219,7 +227,15 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
   onTouchSortingEnd,
 }: FileWorkspaceTabItemProps) {
   const isDiff = tab.kind === "diff" || tab.kind === "rich-diff"
+  const isBrowser = tab.kind === "browser"
   const isDirty = tab.kind === "file" && Boolean(tab.isDirty)
+  // A browser tab's title follows the page (document.title); the record only
+  // knows the host it was opened with.
+  const browserState = useBrowserTabState(isBrowser ? tab.id : null)
+  const displayTitle = isBrowser ? browserState?.title || tab.title : tab.title
+  const displayHint = isBrowser
+    ? browserState?.url || tab.browser.initialUrl
+    : (tab.description ?? tab.title)
 
   const handleLongPressStart = useCallback(
     () => onTouchSortingStart(tab.id),
@@ -317,9 +333,11 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
                       : "text-muted-foreground",
                   ]
             )}
-            title={tab.description ?? tab.title}
+            title={displayHint}
           >
-            {isDiff ? (
+            {isBrowser ? (
+              <Globe className="h-3.5 w-3.5" />
+            ) : isDiff ? (
               <GitCompare className="h-3.5 w-3.5" />
             ) : (
               <FileText className="h-3.5 w-3.5" />
@@ -335,7 +353,7 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
                   : "truncate max-w-[11.25rem]"
               )}
             >
-              {tab.title}
+              {displayTitle}
               {isDirty ? " *" : ""}
             </span>
             <button

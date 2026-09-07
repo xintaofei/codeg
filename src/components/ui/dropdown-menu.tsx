@@ -5,6 +5,7 @@ import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 import { CheckIcon, ChevronRightIcon } from "lucide-react"
+import { useNativeSurfaceOcclusion } from "@/lib/browser/native-surface-occlusion"
 
 function DropdownMenu({
   ...props
@@ -37,6 +38,8 @@ function DropdownMenuContent({
   sideOffset = 4,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
+  // A native browser surface would paint over this overlay; hide it while open.
+  useNativeSurfaceOcclusion("dropdown-menu")
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content

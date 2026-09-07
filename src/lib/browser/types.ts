@@ -86,6 +86,16 @@ export interface BrowserTelemetryPayload {
   payload: unknown
 }
 
+/** Backend → frontend: open this URL as a browser tab (agent tools, deep
+ *  links, the dev puppet). The frontend owns the tab records. */
+export interface BrowserOpenRequestPayload {
+  url: string
+  source: string
+  activate: boolean
+  ownerWindow: string | null
+}
+
+export const BROWSER_OPEN_REQUEST_EVENT = "browser://open-request"
 export const BROWSER_STATE_EVENT = "browser://state"
 export const BROWSER_CLOSED_EVENT = "browser://closed"
 export const BROWSER_POPUP_EVENT = "browser://popup"

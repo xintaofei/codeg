@@ -5759,5 +5759,43 @@
     "confirmDeleteConfirm": "削除",
     "canvasActions": "キャンバス操作",
     "mergeIntoNewRegion": "新しい領域"
+  },
+  "Browser": {
+    "toolbar": {
+      "back": "戻る",
+      "forward": "進む",
+      "reload": "再読み込み",
+      "stop": "停止",
+      "openInSystem": "システムのブラウザで開く",
+      "copyUrl": "リンクをコピー",
+      "copied": "リンクをコピーしました",
+      "addressPlaceholder": "アドレスを入力",
+      "invalidUrl": "有効なアドレスではありません"
+    },
+    "status": {
+      "popupDenied": "ポップアップをブロックしました: {host}",
+      "popupDeniedNoGesture": "クリックによる操作ではありません",
+      "popupDeniedBlockedScheme": "許可されていないアドレス形式です",
+      "dismiss": "閉じる",
+      "errorDns": "このサイトは見つかりません",
+      "errorTls": "この接続は安全ではありません",
+      "errorBlocked": "内蔵ブラウザではこのアドレスを開けません",
+      "errorPopupDenied": "ポップアップがブロックされました",
+      "errorFailed": "ページを読み込めません",
+      "retry": "再試行",
+      "openInSystem": "システムのブラウザで開く",
+      "ownedWindow": "このページは別ウィンドウに表示されています。",
+      "ownedWindowShow": "ウィンドウを表示",
+      "remoteBanner": "{host} 経由で開いています"
+    },
+    "tab": {
+      "untitled": "新しいタブ"
+    },
+    "drawer": {
+      "title": "内蔵ブラウザ",
+      "description": "会話から開いたウェブページ",
+      "openInWorkspace": "ワークスペースで開く",
+      "cannotOpen": "このアドレスはここでは開けません。"
+    }
   }
 }

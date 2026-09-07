@@ -5,6 +5,7 @@ import { AlertDialog as AlertDialogPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { useNativeSurfaceOcclusion } from "@/lib/browser/native-surface-occlusion"
 
 function AlertDialog({
   ...props
@@ -51,6 +52,8 @@ function AlertDialogContent({
 }: React.ComponentProps<typeof AlertDialogPrimitive.Content> & {
   size?: "default" | "sm"
 }) {
+  // A native browser surface would paint over this overlay; hide it while open.
+  useNativeSurfaceOcclusion("alert-dialog")
   return (
     <AlertDialogPortal>
       <AlertDialogOverlay />

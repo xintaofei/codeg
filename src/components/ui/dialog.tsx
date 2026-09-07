@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { OverlayPortalContainerProvider } from "@/components/ui/overlay-portal-container"
 import { useNestedLayerDismissGuard } from "@/hooks/use-nested-layer-dismiss-guard"
 import { cn } from "@/lib/utils"
+import { useNativeSurfaceOcclusion } from "@/lib/browser/native-surface-occlusion"
 
 function Dialog({
   ...props
@@ -61,6 +62,8 @@ function DialogContent({
   closeButtonClassName?: string
   showCloseButton?: boolean
 }) {
+  // A native browser surface would paint over this overlay; hide it while open.
+  useNativeSurfaceOcclusion("dialog")
   // Without this, closing a nested Select/DropdownMenu by clicking elsewhere in
   // the dialog closes the dialog too.
   const {

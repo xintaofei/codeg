@@ -9,6 +9,7 @@ import { attachRef } from "@/lib/attach-ref"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { XIcon } from "lucide-react"
+import { useNativeSurfaceOcclusion } from "@/lib/browser/native-surface-occlusion"
 
 type DrawerContextProps = {
   hasSnapPoints: boolean
@@ -264,12 +265,18 @@ function DrawerContent({
   children,
   closeButtonClassName,
   showCloseButton = true,
+  nativeSurfaceHost = false,
   ref,
   ...props
 }: DrawerPrimitive.Popup.Props & {
   closeButtonClassName?: string
   showCloseButton?: boolean
+  /** This drawer CONTAINS a built-in browser surface (the transcript's
+   *  browser viewer): it must not take the lease that would hide it. */
+  nativeSurfaceHost?: boolean
 }) {
+  // A native browser surface would paint over this overlay; hide it while open.
+  useNativeSurfaceOcclusion("drawer", !nativeSurfaceHost)
   const { hasSnapPoints, modal, showSwipeHandle, swipeDirection } = useDrawer()
   const swipeAxis =
     swipeDirection === "down" || swipeDirection === "up" ? "y" : "x"

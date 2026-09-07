@@ -5759,5 +5759,43 @@
     "confirmDeleteConfirm": "Löschen",
     "canvasActions": "Leinwand-Aktionen",
     "mergeIntoNewRegion": "Neuer Bereich"
+  },
+  "Browser": {
+    "toolbar": {
+      "back": "Zurück",
+      "forward": "Vor",
+      "reload": "Neu laden",
+      "stop": "Stopp",
+      "openInSystem": "Im Systembrowser öffnen",
+      "copyUrl": "Link kopieren",
+      "copied": "Link kopiert",
+      "addressPlaceholder": "Adresse eingeben",
+      "invalidUrl": "Keine gültige Adresse"
+    },
+    "status": {
+      "popupDenied": "Pop-up blockiert: {host}",
+      "popupDeniedNoGesture": "nicht durch einen Klick geöffnet",
+      "popupDeniedBlockedScheme": "Adresstyp nicht erlaubt",
+      "dismiss": "Schließen",
+      "errorDns": "Diese Website wurde nicht gefunden",
+      "errorTls": "Diese Verbindung ist nicht sicher",
+      "errorBlocked": "Diese Adresse ist im integrierten Browser gesperrt",
+      "errorPopupDenied": "Pop-up blockiert",
+      "errorFailed": "Diese Seite kann nicht geladen werden",
+      "retry": "Erneut versuchen",
+      "openInSystem": "Im Systembrowser öffnen",
+      "ownedWindow": "Diese Seite wird in einem eigenen Fenster angezeigt.",
+      "ownedWindowShow": "Fenster anzeigen",
+      "remoteBanner": "Geöffnet über {host}"
+    },
+    "tab": {
+      "untitled": "Neuer Tab"
+    },
+    "drawer": {
+      "title": "Integrierter Browser",
+      "description": "Eine aus der Unterhaltung geöffnete Webseite",
+      "openInWorkspace": "Im Arbeitsbereich öffnen",
+      "cannotOpen": "Diese Adresse kann hier nicht geöffnet werden."
+    }
   }
 }

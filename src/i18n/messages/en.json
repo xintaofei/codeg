@@ -5759,5 +5759,43 @@
     "confirmDeleteConfirm": "Delete",
     "canvasActions": "Canvas actions",
     "mergeIntoNewRegion": "New region"
+  },
+  "Browser": {
+    "toolbar": {
+      "back": "Back",
+      "forward": "Forward",
+      "reload": "Reload",
+      "stop": "Stop",
+      "openInSystem": "Open in system browser",
+      "copyUrl": "Copy link",
+      "copied": "Link copied",
+      "addressPlaceholder": "Enter an address",
+      "invalidUrl": "Not a valid address"
+    },
+    "status": {
+      "popupDenied": "Pop-up blocked: {host}",
+      "popupDeniedNoGesture": "opened without a click",
+      "popupDeniedBlockedScheme": "address type not allowed",
+      "dismiss": "Dismiss",
+      "errorDns": "This site can't be found",
+      "errorTls": "This connection is not secure",
+      "errorBlocked": "This address is blocked in the built-in browser",
+      "errorPopupDenied": "Pop-up blocked",
+      "errorFailed": "This page can't be loaded",
+      "retry": "Retry",
+      "openInSystem": "Open in system browser",
+      "ownedWindow": "This page is shown in its own window.",
+      "ownedWindowShow": "Show window",
+      "remoteBanner": "Opened through {host}"
+    },
+    "tab": {
+      "untitled": "New tab"
+    },
+    "drawer": {
+      "title": "Built-in browser",
+      "description": "A web page opened from the conversation",
+      "openInWorkspace": "Open in workspace",
+      "cannotOpen": "This address can't be opened here."
+    }
   }
 }

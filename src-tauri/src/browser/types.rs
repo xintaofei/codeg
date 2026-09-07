@@ -113,6 +113,21 @@ pub enum SurfaceChoice {
 pub const STATE_EVENT: &str = "browser://state";
 pub const CLOSED_EVENT: &str = "browser://closed";
 pub const POPUP_EVENT: &str = "browser://popup";
+/// Backend → frontend: please open this URL in a browser tab (agent tools,
+/// deep links, the dev puppet). The frontend owns tab records, so a backend
+/// side cannot create one directly.
+pub const OPEN_REQUEST_EVENT: &str = "browser://open-request";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserOpenRequestPayload {
+    pub url: String,
+    /// Who asked: `agent`, `deeplink`, `smoke`, …
+    pub source: String,
+    pub activate: bool,
+    /// Window whose workspace should open it (`main` when absent).
+    pub owner_window: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

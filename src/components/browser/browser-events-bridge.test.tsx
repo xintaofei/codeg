@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => {
     }),
     adoptBrowserTab: vi.fn(() => "browser:opener-p1"),
     closeFileTab: vi.fn(),
+    openBrowserTab: vi.fn(() => "browser:new"),
   }
 })
 
@@ -45,6 +46,7 @@ vi.mock("@/contexts/workspace-context", () => ({
   useWorkspaceActions: () => ({
     adoptBrowserTab: mocks.adoptBrowserTab,
     closeFileTab: mocks.closeFileTab,
+    openBrowserTab: mocks.openBrowserTab,
   }),
 }))
 
@@ -69,6 +71,7 @@ describe("BrowserEventsBridge", () => {
     mocks.subscribe.mockClear()
     mocks.adoptBrowserTab.mockClear()
     mocks.closeFileTab.mockClear()
+    mocks.openBrowserTab.mockClear()
     resetBrowserTabStoreForTests()
   })
   afterEach(() => resetBrowserTabStoreForTests())
@@ -78,9 +81,28 @@ describe("BrowserEventsBridge", () => {
     await flush()
     expect([...mocks.handlers.keys()].sort()).toEqual([
       "browser://closed",
+      "browser://open-request",
       "browser://popup",
       "browser://state",
     ])
+
+    mocks.handlers.get("browser://open-request")!({
+      url: "https://example.com/from-agent",
+      source: "agent",
+      activate: false,
+      ownerWindow: null,
+    })
+    expect(mocks.openBrowserTab).toHaveBeenCalledWith(
+      "https://example.com/from-agent",
+      { activate: false }
+    )
+    mocks.handlers.get("browser://open-request")!({
+      url: "https://example.com/other-window",
+      source: "agent",
+      activate: true,
+      ownerWindow: "remote-workspace-3",
+    })
+    expect(mocks.openBrowserTab).toHaveBeenCalledTimes(1)
 
     mocks.handlers.get("browser://state")!({
       tabId: "abc",
@@ -153,6 +175,7 @@ describe("BrowserEventsBridge", () => {
     unmount()
     expect(mocks.unsubscribed.sort()).toEqual([
       "browser://closed",
+      "browser://open-request",
       "browser://popup",
       "browser://state",
     ])
