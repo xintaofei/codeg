@@ -64,16 +64,20 @@ use crate::acp::delegation::live_reply::{ChildLiveReplyLookup, NoopChildLiveRepl
 use crate::acp::delegation::meta_writer::{
     build_delegation_meta, is_synthetic_parent_tool_use_id, DelegationMetaWriter, NoopMetaWriter,
 };
-use crate::acp::delegation::spawner::{ConnectionSpawner, DelegationLink, ResumeBindingFacts};
+use crate::acp::delegation::spawner::{ConnectionSpawner, DelegationLink};
+#[cfg(test)]
+use crate::acp::delegation::spawner::ResumeBindingFacts;
 use crate::acp::delegation::types::{
     AgentDelegationDefaults, BlockedKind, BlockedOn, DelegationError, DelegationOutcome,
     DelegationRequest, DelegationTaskReport, ResumeDelegationRequest, TaskStatus,
 };
 use crate::acp::types::DelegationResultSummary;
-use crate::db::service::delegation_outcome_service::{
-    DelegationOutcomeInsert, DelegationOutcomeRow, OutcomeWriteResult,
-};
 use crate::models::AgentType;
+
+mod outcomes;
+pub use outcomes::{DbDelegationOutcomeStore, DelegationOutcomeStore, NoopOutcomeStore};
+#[cfg(test)]
+use outcomes::{build_resume_binding_json, frozen_report};
 
 /// Default per-parent byte budget for cached completed-task result text. The
 /// completed-cache lets `get_delegation_status` / `cancel_delegation` return a
@@ -187,134 +191,6 @@ pub struct NoopChildStatusLookup;
 impl ChildStatusLookup for NoopChildStatusLookup {
     async fn find_by_call_id(&self, _call_id: &str) -> Option<ChildStatusRecord> {
         None
-    }
-}
-
-/// Immutable store of COMPLETED delegation results (v2 design §4.1). One row
-/// per `task_id`, written when the task's current execution wins the terminal
-/// race with a SUCCESSFUL outcome. Canceled/failed terminals are deliberately
-/// never written: a canceled task keeps the upstream `resume_delegation` path
-/// under the same id, and freezing one would block that resume forever.
-///
-/// Abstracted like [`ChildStatusLookup`] so broker tests run without SeaORM;
-/// production wires [`DbDelegationOutcomeStore`] via
-/// [`DelegationBroker::with_outcome_store`]. The default [`NoopOutcomeStore`]
-/// keeps tests that don't exercise durability unchanged.
-#[async_trait]
-pub trait DelegationOutcomeStore: Send + Sync {
-    /// First-writer-wins insert. `Conflict` means a different success result
-    /// was already frozen for this task; the original always stands.
-    async fn insert_once(
-        &self,
-        record: DelegationOutcomeInsert,
-    ) -> Result<OutcomeWriteResult, String>;
-
-    /// The frozen result for `task_id` IF it belongs to `parent_conversation_id`.
-    /// Query errors and "no row" are distinct: an error must never be read as
-    /// "the task has no frozen result".
-    async fn find_owned(
-        &self,
-        parent_conversation_id: i32,
-        task_id: &str,
-    ) -> Result<Option<DelegationOutcomeRow>, String>;
-}
-
-/// Default store — writes report success (so tests don't need to care), reads
-/// find nothing. Production replaces it via [`DelegationBroker::with_outcome_store`].
-#[derive(Default, Clone)]
-pub struct NoopOutcomeStore;
-
-#[async_trait]
-impl DelegationOutcomeStore for NoopOutcomeStore {
-    async fn insert_once(
-        &self,
-        _record: DelegationOutcomeInsert,
-    ) -> Result<OutcomeWriteResult, String> {
-        Ok(OutcomeWriteResult::Inserted)
-    }
-
-    async fn find_owned(
-        &self,
-        _parent_conversation_id: i32,
-        _task_id: &str,
-    ) -> Result<Option<DelegationOutcomeRow>, String> {
-        Ok(None)
-    }
-}
-
-/// Production store backed by the SeaORM `delegation_outcome` table.
-pub struct DbDelegationOutcomeStore {
-    pub db: Arc<crate::db::AppDatabase>,
-}
-
-#[async_trait]
-impl DelegationOutcomeStore for DbDelegationOutcomeStore {
-    async fn insert_once(
-        &self,
-        record: DelegationOutcomeInsert,
-    ) -> Result<OutcomeWriteResult, String> {
-        crate::db::service::delegation_outcome_service::insert_once(&self.db.conn, record)
-            .await
-            .map_err(|e| e.to_string())
-    }
-
-    async fn find_owned(
-        &self,
-        parent_conversation_id: i32,
-        task_id: &str,
-    ) -> Result<Option<DelegationOutcomeRow>, String> {
-        crate::db::service::delegation_outcome_service::find_owned(
-            &self.db.conn,
-            parent_conversation_id,
-            task_id,
-        )
-        .await
-        .map_err(|e| e.to_string())
-    }
-}
-
-/// Serialize the non-sensitive resume-binding facts for the outcome row:
-/// external session id, canonical cwd, agent type, execution-config
-/// fingerprint. Deliberately `None` (store null, don't guess) unless BOTH the
-/// external session id and the execution-config identity were captured — a
-/// binding that can't be verified later must not pose as one that can. Never
-/// contains tokens, API keys, or environment variables.
-fn build_resume_binding_json(
-    agent_type: AgentType,
-    facts: &ResumeBindingFacts,
-) -> Option<String> {
-    let external_session_id = facts.external_session_id.as_ref()?;
-    let config_fingerprint = facts.config_fingerprint.as_ref()?;
-    Some(
-        serde_json::json!({
-            "schema_version": 1,
-            "agent_type": agent_type,
-            "external_session_id": external_session_id,
-            "cwd": facts.cwd,
-            "config_fingerprint": config_fingerprint,
-        })
-        .to_string(),
-    )
-}
-
-/// Status report projected from the frozen completed outcome. Unlike the DB
-/// fallback ([`db_report`]), this restores the ORIGINAL bounded result text —
-/// even after the in-memory cache was evicted, the broker rebuilt, or the
-/// child row's mutable status moved on.
-fn frozen_report(task_id: &str, row: &DelegationOutcomeRow) -> DelegationTaskReport {
-    DelegationTaskReport {
-        task_id: Some(task_id.to_string()),
-        status: TaskStatus::Completed,
-        child_conversation_id: row.child_conversation_id,
-        agent_type: serde_json::from_value(serde_json::Value::String(row.agent_type.clone()))
-            .ok(),
-        text: Some(row.text.clone()),
-        error_code: None,
-        message: Some(
-            "Completed result restored from the durable delegation outcome store.".to_string(),
-        ),
-        duration_ms: Some(row.duration_ms.max(0) as u64),
-        blocked_on: None,
     }
 }
 
@@ -1709,97 +1585,6 @@ impl DelegationBroker {
     ) -> Self {
         self.live_reply_lookup = live_reply_lookup;
         self
-    }
-
-    /// Replace the immutable completed-outcome store used to freeze success
-    /// results and answer frozen-first status queries. Builder-style, layered
-    /// onto `with_writers` by the production wiring; tests opt in with a
-    /// recording mock.
-    pub fn with_outcome_store(mut self, outcome_store: Arc<dyn DelegationOutcomeStore>) -> Self {
-        self.outcome_store = outcome_store;
-        self
-    }
-
-    /// Freeze a SUCCESSFUL outcome into the immutable store. Called ONLY for
-    /// the outcome the current execution won the terminal race with, AFTER the
-    /// pending lock was released and BEFORE teardown disconnects the child
-    /// (so the resume binding can still be captured from the live connection).
-    ///
-    /// Canceled / failed outcomes return without writing: a canceled task must
-    /// keep the upstream `resume_delegation` path under the same id, and no
-    /// failed attempt may masquerade as a permanent frozen result. Best-effort
-    /// by design — a storage failure logs a diagnostic and leaves the task
-    /// without a frozen result (which also disqualifies it from later
-    /// continuation); the one-shot teardown proceeds either way.
-    #[allow(clippy::too_many_arguments)]
-    async fn persist_completed_outcome(
-        &self,
-        task_id: &str,
-        parent_conversation_id: i32,
-        parent_tool_use_id: Option<&str>,
-        child_connection_id: Option<&str>,
-        child_conversation_id: Option<i32>,
-        agent_type: AgentType,
-        duration_ms: u64,
-        outcome: &DelegationOutcome,
-    ) {
-        let DelegationOutcome::Ok(ok) = outcome else {
-            return;
-        };
-        // Persist under the SAME bounded-text policy as the in-memory cache —
-        // the frozen row is an honest copy, never an unlimited transcript.
-        let text = cap_completed_text(&ok.text);
-        let text_truncated = text.len() != ok.text.len();
-        let resume_binding_json = match child_connection_id {
-            Some(conn_id) => match self.spawner.capture_resume_binding(conn_id).await {
-                Some(facts) => build_resume_binding_json(agent_type, &facts),
-                None => {
-                    tracing::debug!(
-                        "[delegation-outcome] no resume binding captured for task {task_id}; \
-                         storing a null binding"
-                    );
-                    None
-                }
-            },
-            None => None,
-        };
-        // A synthetic parent tool_use id is not a real identity — store null
-        // rather than the fabricated value.
-        let parent_tool_use_id = parent_tool_use_id
-            .filter(|id| !is_synthetic_parent_tool_use_id(id))
-            .map(|id| id.to_string());
-        let record = DelegationOutcomeInsert {
-            task_id: task_id.to_string(),
-            parent_conversation_id,
-            parent_tool_use_id,
-            child_conversation_id,
-            agent_type: serde_json::to_value(agent_type)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default(),
-            text,
-            duration_ms: duration_ms.min(i64::MAX as u64) as i64,
-            text_truncated,
-            completed_at: chrono::Utc::now(),
-            resume_binding_json,
-        };
-        match self.outcome_store.insert_once(record).await {
-            Ok(OutcomeWriteResult::Inserted) => {}
-            Ok(OutcomeWriteResult::AlreadyIdentical) => {}
-            Ok(OutcomeWriteResult::Conflict) => {
-                tracing::warn!(
-                    "[delegation-outcome] conflicting second success result for task {task_id}; \
-                     first-writer-wins kept the original frozen result"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "[delegation-outcome] FAILED to persist completed result for task \
-                     {task_id}: {e}; this source is not continuable and falls back to the \
-                     legacy status path"
-                );
-            }
-        }
     }
 
     /// Shrink [`BLOCK_RESURFACE_INTERVAL`] so a test can observe the
@@ -4141,37 +3926,6 @@ impl DelegationBroker {
         }
     }
 
-    /// Resolve a not-in-memory task id: the frozen completed outcome (scoped to
-    /// the caller's parent conversation) FIRST, then the legacy DB status
-    /// fallback. A frozen hit restores the original result text even after the
-    /// in-memory cache was evicted, the broker rebuilt, or the child row's
-    /// mutable status drifted (a frozen result must never be shadowed by
-    /// `conversation.status`). The fallback answers canceled/failed tasks and
-    /// never-frozen ids exactly as before; a frozen lookup that ERRORS also
-    /// falls through (logged) rather than fabricating a report.
-    async fn frozen_then_db_report(
-        &self,
-        parent_conversation_id: Option<i32>,
-        task_id: &str,
-    ) -> DelegationTaskReport {
-        if let Some(parent_conversation_id) = parent_conversation_id {
-            match self
-                .outcome_store
-                .find_owned(parent_conversation_id, task_id)
-                .await
-            {
-                Ok(Some(row)) => return frozen_report(task_id, &row),
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        "[delegation-outcome] frozen lookup failed for task {task_id}: {e}"
-                    );
-                }
-            }
-        }
-        self.status_from_db(parent_conversation_id, task_id).await
-    }
-
     /// DB status fallback for a task evicted from / never in the in-memory maps.
     /// Scopes to the caller's conversation: a child whose `parent_id` doesn't
     /// match (or when the caller has no active conversation) reports `Unknown`.
@@ -5164,6 +4918,8 @@ mod tests {
     use crate::acp::delegation::spawner::{mock::MockSpawner, ResumedSpawn, SpawnerError};
     use crate::acp::delegation::types::DelegationSuccess;
     use crate::models::AgentType;
+
+    mod outcomes;
 
     /// Test-only `ConversationDepthLookup` that resolves against a flat
     /// (id, parent_id) table. Unknown ids return `Ok(None)` to keep test
@@ -9997,83 +9753,6 @@ mod tests {
         assert!(capped.len() < bare.len() + RESUME_REASON_CAP + 128);
     }
 
-    // -- Frozen outcome helpers (PR1) ---------------------------------------
-
-    #[test]
-    fn resume_binding_json_holds_identities_only_and_requires_verifiable_facts() {
-        // Missing the external session id or the config identity → null
-        // binding (never a guess).
-        assert_eq!(
-            build_resume_binding_json(
-                AgentType::ClaudeCode,
-                &ResumeBindingFacts {
-                    external_session_id: None,
-                    cwd: Some("/work".into()),
-                    config_fingerprint: Some("fp".into()),
-                }
-            ),
-            None
-        );
-        assert_eq!(
-            build_resume_binding_json(
-                AgentType::ClaudeCode,
-                &ResumeBindingFacts {
-                    external_session_id: Some("ext-1".into()),
-                    cwd: Some("/work".into()),
-                    config_fingerprint: None,
-                }
-            ),
-            None
-        );
-
-        let json = build_resume_binding_json(
-            AgentType::ClaudeCode,
-            &ResumeBindingFacts {
-                external_session_id: Some("ext-1".into()),
-                cwd: Some("/work".into()),
-                config_fingerprint: Some("fp".into()),
-            },
-        )
-        .expect("binding");
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["schema_version"], 1);
-        assert_eq!(value["agent_type"], "claude_code");
-        assert_eq!(value["external_session_id"], "ext-1");
-        assert_eq!(value["cwd"], "/work");
-        assert_eq!(value["config_fingerprint"], "fp");
-        // Identities only — the key set is closed.
-        let keys: Vec<&str> = value.as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(
-            keys,
-            vec!["agent_type", "config_fingerprint", "cwd", "external_session_id", "schema_version"]
-        );
-    }
-
-    #[test]
-    fn frozen_report_projects_the_original_bounded_text() {
-        let row = crate::db::service::delegation_outcome_service::DelegationOutcomeRow {
-            task_id: "task-1".into(),
-            parent_conversation_id: 1,
-            parent_tool_use_id: Some("pt-1".into()),
-            child_conversation_id: Some(42),
-            agent_type: "claude_code".into(),
-            text: "原始成功结果".into(),
-            duration_ms: 55,
-            text_truncated: false,
-            completed_at: chrono::Utc::now(),
-            schema_version: 1,
-            resume_binding_json: None,
-        };
-        let report = frozen_report("task-1", &row);
-        assert_eq!(report.status, TaskStatus::Completed);
-        assert_eq!(report.text.as_deref(), Some("原始成功结果"));
-        assert_eq!(report.child_conversation_id, Some(42));
-        assert_eq!(report.agent_type, Some(AgentType::ClaudeCode));
-        assert_eq!(report.duration_ms, Some(55));
-        assert_eq!(report.error_code, None);
-        assert_eq!(report.blocked_on, None);
-    }
-
     /// A crash-interrupted task (nothing in memory, DB row `cancelled`) resumes:
     /// Running ack under the SAME id, the child re-spawned by loading the
     /// recorded agent session in the recorded working dir, the continuation
@@ -10466,81 +10145,6 @@ mod tests {
         assert!(broker.pending.inner.lock().await.resuming.is_empty());
     }
 
-    /// Acceptance F1 regression (was `review_late_old_completion_…`): a
-    /// canceled task resumed under the SAME id on a NEW connection must not
-    /// be consumed by the OLD connection's late completion. The late
-    /// terminal is rejected at the pending lock; the resumed execution keeps
-    /// running, completes with ITS text, and no teardown fires on the new
-    /// connection.
-    #[tokio::test]
-    async fn late_old_completion_must_not_freeze_resumed_execution() {
-        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
-        mock.queue_spawn(Ok("child-conn-1".into())).await;
-        mock.queue_send(Ok(42)).await;
-        let ack = broker.start_delegation(request(1, "pt-orig")).await;
-        let task_id = ack.task_id.unwrap();
-        assert_eq!(ack.status, TaskStatus::Running);
-
-        // Cancel + resume under the same id on a new connection.
-        broker
-            .cancel_task_by_id("parent-conn", Some(1), &task_id)
-            .await;
-        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("child-conn-2")))
-            .await;
-        mock.queue_resume_send(Ok(())).await;
-        let ack = broker.resume_delegation(resume_request(&task_id)).await;
-        assert_eq!(ack.status, TaskStatus::Running);
-
-        // The OLD connection's terminal arrives LATE. It must be rejected.
-        let accepted = broker
-            .complete_call_for_connection(
-                "child-conn-1",
-                &task_id,
-                DelegationOutcome::Ok(DelegationSuccess {
-                    text: "OLD C1 RESULT".into(),
-                    child_conversation_id: 42,
-                    child_agent_type: AgentType::ClaudeCode,
-                    turn_count: 1,
-                    duration_ms: 1,
-                    token_usage: None,
-                }),
-            )
-            .await;
-        assert_eq!(accepted, CompleteCallResult::RejectedStale);
-        // The stale terminal must not have torn down the NEW connection
-        // (the canceled OLD connection was disconnected by the cancel itself).
-        assert!(!mock
-            .disconnects
-            .lock()
-            .await
-            .contains(&"child-conn-2".to_string()));
-
-        // The resumed execution is STILL running and finishes with ITS text.
-        let status = broker
-            .get_task_status("parent-conn", Some(1), &task_id, StatusWait::Immediate)
-            .await;
-        assert_eq!(status.status, TaskStatus::Running);
-        broker
-            .complete_call_for_connection(
-                "child-conn-2",
-                &task_id,
-                DelegationOutcome::Ok(DelegationSuccess {
-                    text: "NEW C2 RESULT".into(),
-                    child_conversation_id: 42,
-                    child_agent_type: AgentType::ClaudeCode,
-                    turn_count: 1,
-                    duration_ms: 2,
-                    token_usage: None,
-                }),
-            )
-            .await;
-        let status = broker
-            .get_task_status("parent-conn", Some(1), &task_id, StatusWait::Immediate)
-            .await;
-        assert_eq!(status.status, TaskStatus::Completed);
-        assert_eq!(status.text.as_deref(), Some("NEW C2 RESULT"));
-    }
-
     /// A resumed task is cancelable again through the ordinary path — the
     /// running entry belongs to the CALLING parent connection.
     #[tokio::test]
@@ -10567,95 +10171,4 @@ mod tests {
             .contains(&"child-conn-2".to_string()));
     }
 
-    /// Reacceptance R2 regression: while a resumed delegation is still in its
-    /// SETUP phase (prompt sent, park parked at the metadata write — the
-    /// setup reservation is live), the CURRENT connection's early completion
-    /// is buffered, and a LATE terminal from the OLD (superseded) connection
-    /// must NOT evict it. The old event is dropped at the buffer entry, the
-    /// park resolves the resume with the CURRENT execution's result, and the
-    /// frozen outcome carries that result.
-    #[tokio::test]
-    async fn late_old_early_terminal_must_not_replace_current_completion() {
-        struct ParkGate {
-            gate: tokio::sync::Mutex<
-                Option<(
-                    tokio::sync::oneshot::Sender<()>,
-                    tokio::sync::oneshot::Receiver<()>,
-                )>,
-            >,
-        }
-        #[async_trait::async_trait]
-        impl DelegationMetaWriter for ParkGate {
-            async fn write_meta(&self, _parent: &str, _tool: &str, _meta: serde_json::Value) {
-                let gate = self.gate.lock().await.take();
-                if let Some((entered, release)) = gate {
-                    let _ = entered.send(());
-                    let _ = release.await;
-                }
-            }
-        }
-
-        let mock = Arc::new(MockSpawner::new());
-        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        let broker = DelegationBroker::with_meta_writer(
-            mock.clone() as Arc<dyn ConnectionSpawner>,
-            shallow_lookup(),
-            Arc::new(ParkGate {
-                gate: tokio::sync::Mutex::new(Some((entered_tx, release_rx))),
-            }),
-        )
-        .with_status_lookup(Arc::new(MockResumeLookup {
-            ctx: tokio::sync::Mutex::new(Some(resume_ctx(TaskStatus::Canceled))),
-        }));
-        enable_delegation(&broker).await;
-        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("new-C2"))).await;
-        mock.queue_resume_send(Ok(())).await;
-
-        let driver = {
-            let broker = broker.clone();
-            tokio::spawn(async move { broker.resume_delegation(resume_request("task-1")).await })
-        };
-        tokio::time::timeout(Duration::from_secs(2), entered_rx)
-            .await
-            .expect("the resume reached its metadata write")
-            .unwrap();
-
-        let ok = |text: &str| {
-            DelegationOutcome::Ok(DelegationSuccess {
-                text: text.into(),
-                child_conversation_id: 42,
-                child_agent_type: AgentType::ClaudeCode,
-                turn_count: 1,
-                duration_ms: 1,
-                token_usage: None,
-            })
-        };
-        // The CURRENT connection's completion lands first (buffered)…
-        let current = broker
-            .complete_call_for_connection("new-C2", "task-1", ok("NEW C2 RESULT"))
-            .await;
-        assert_eq!(current, CompleteCallResult::Buffered);
-        // …then the OLD connection's late terminal tries to replace it.
-        let stale = broker
-            .complete_call_for_connection("old-C1", "task-1", ok("OLD C1 RESULT"))
-            .await;
-        assert_eq!(
-            stale,
-            CompleteCallResult::DroppedStale,
-            "the superseded connection's terminal must be dropped at the buffer entry"
-        );
-
-        release_tx.send(()).unwrap();
-        let report = driver.await.unwrap();
-        assert_eq!(
-            report.status,
-            TaskStatus::Completed,
-            "the current execution's buffered completion must win the park"
-        );
-        let status = broker
-            .get_task_status("parent-conn", Some(1), "task-1", StatusWait::Immediate)
-            .await;
-        assert_eq!(status.text.as_deref(), Some("NEW C2 RESULT"));
-    }
 }
