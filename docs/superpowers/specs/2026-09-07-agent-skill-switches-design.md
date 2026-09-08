@@ -22,8 +22,8 @@ disabled state.
 - Every skill row has an availability switch for the currently selected agent.
 - An enabled skill remains discoverable by that agent. A disabled skill remains
   visible in Settings so it can be previewed, edited, deleted, or re-enabled,
-  but it is omitted from Codeg skill autocomplete and from the agent's native
-  scan roots.
+  but it is omitted from Codeg skill autocomplete and from the agent's
+  effective native discovery result.
 - A switch shows an in-progress state while the filesystem operation runs.
 - On failure, the authoritative list is reloaded, the switch returns to its
   prior state, and a localized error toast is shown.
@@ -91,11 +91,11 @@ Example:
 
 ```text
 before:
-  ~/.agents/skills/pdf                  # Codex and Gemini can both see it
+  ~/.agents/skills/pdf                  # Cursor and Gemini can both see it
 
 after disabling only Gemini:
   ~/.agents/.skills.codeg-disabled/pdf  # canonical content, not scanned
-  ~/.codex/skills/pdf -> canonical      # Codex still sees it
+  ~/.cursor/skills/pdf -> canonical     # Cursor still sees it
   ~/.gemini/skills/pdf                  # absent, so Gemini does not see it
 ```
 
