@@ -753,7 +753,7 @@
       "agentDefaultHint": "エージェント既定: {value}",
       "defaultOptionLabel": "既定（{value}）",
       "continuationEnable": "修正ラウンド（実験的）",
-      "continuationEnableHint": "完了した委譲のサブセッションへメインエージェントが修正依頼を送れるようにします。既定はオフ。"
+      "continuationEnableHint": "完了した委譲のサブセッションへメインエージェントが修正依頼を送れるようにします。既定はオフ。変更は、新しく開いた、または再接続したエージェントセッションに適用されます。"
     },
     "actions": {
       "dragSort": "ドラッグして並べ替え",

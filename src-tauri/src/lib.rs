@@ -791,6 +791,7 @@ mod tauri_app {
                     let question_for_init = question_config.clone();
                     let session_info_for_init = session_info_config.clone();
                     let chat_authoring_for_init = chat_authoring_config.clone();
+                    let continuation_for_init = continuation_coordinator.clone();
                     tauri::async_runtime::block_on(async move {
                         delegation_commands::apply_persisted_config(
                             &db_for_init,
@@ -815,6 +816,11 @@ mod tauri_app {
                         crate::commands::chat_authoring::apply_persisted_chat_authoring_config(
                             &db_for_init,
                             &chat_authoring_for_init,
+                        )
+                        .await;
+                        delegation_commands::apply_persisted_continuation_config(
+                            &db_for_init,
+                            &continuation_for_init,
                         )
                         .await;
                     });

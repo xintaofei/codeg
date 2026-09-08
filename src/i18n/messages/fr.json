@@ -753,7 +753,7 @@
       "agentDefaultHint": "Valeur par défaut de l’agent : {value}",
       "defaultOptionLabel": "Par défaut ({value})",
       "continuationEnable": "Tours de retravail (expérimental)",
-      "continuationEnableHint": "Permet à l'agent principal d'envoyer des retravails à la sous-session d'une délégation terminée. Désactivé par défaut."
+      "continuationEnableHint": "Permet à l'agent principal d'envoyer des retravails à la sous-session d'une délégation terminée. Désactivé par défaut. Les changements s'appliquent aux sessions d'agent nouvellement ouvertes ou reconnectées."
     },
     "actions": {
       "dragSort": "Glisser pour réordonner",

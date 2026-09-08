@@ -753,7 +753,7 @@
       "agentDefaultHint": "Agent default: {value}",
       "defaultOptionLabel": "Default ({value})",
       "continuationEnable": "Rework rounds (experimental)",
-      "continuationEnableHint": "Let the main agent send rework rounds back to a completed delegation's sub-session. Default off."
+      "continuationEnableHint": "Let the main agent send rework rounds back to a completed delegation's sub-session. Default off. Changes apply to newly opened or reconnected agent sessions."
     },
     "actions": {
       "dragSort": "Drag to reorder",

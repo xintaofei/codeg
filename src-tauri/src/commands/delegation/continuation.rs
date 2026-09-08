@@ -27,6 +27,18 @@ pub async fn load_continuation_enabled(conn: &DatabaseConnection) -> bool {
     }
 }
 
+/// Restore the persisted experiment flag into the live coordinator at startup.
+/// The coordinator deliberately starts disabled, so both runtime entry points
+/// must call this before accepting agent work.
+pub async fn apply_persisted_continuation_config(
+    conn: &DatabaseConnection,
+    coordinator: &ContinuationCoordinator,
+) {
+    coordinator
+        .set_enabled(load_continuation_enabled(conn).await)
+        .await;
+}
+
 /// Persist the continuable-delegation experiment flag AND apply it to the
 /// live coordinator. Shared by the desktop command and the web handler.
 pub async fn set_continuation_enabled_core(
@@ -83,5 +95,59 @@ pub async fn set_continuation_settings(
     {
         let _ = settings;
         Err(AppCommandError::configuration_invalid("tauri-only command"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::acp::delegation::broker::NoopOutcomeStore;
+    use crate::acp::delegation::continuation::NoopRuntime;
+    use crate::db::{test_helpers::fresh_in_memory_db, AppDatabase};
+
+    fn coordinator(db: &AppDatabase) -> ContinuationCoordinator {
+        ContinuationCoordinator::new(
+            Arc::new(AppDatabase {
+                conn: db.conn.clone(),
+            }),
+            Arc::new(NoopRuntime),
+            Arc::new(NoopOutcomeStore),
+        )
+    }
+
+    #[tokio::test]
+    async fn persisted_true_enables_continuation_at_startup() {
+        let db = fresh_in_memory_db().await;
+        app_metadata_service::upsert_value(&db.conn, KEY_CONTINUATION_ENABLED, "true")
+            .await
+            .unwrap();
+        let coordinator = coordinator(&db);
+
+        apply_persisted_continuation_config(&db.conn, &coordinator).await;
+
+        assert!(coordinator.is_enabled().await);
+    }
+
+    #[tokio::test]
+    async fn false_missing_and_corrupt_values_disable_continuation_at_startup() {
+        for stored in [Some("false"), None, Some("not-a-boolean")] {
+            let db = fresh_in_memory_db().await;
+            if let Some(value) = stored {
+                app_metadata_service::upsert_value(&db.conn, KEY_CONTINUATION_ENABLED, value)
+                    .await
+                    .unwrap();
+            }
+            let coordinator = coordinator(&db);
+            coordinator.set_enabled(true).await;
+
+            apply_persisted_continuation_config(&db.conn, &coordinator).await;
+
+            assert!(
+                !coordinator.is_enabled().await,
+                "stored value {stored:?} must restore as disabled"
+            );
+        }
     }
 }

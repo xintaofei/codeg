@@ -753,7 +753,7 @@
       "agentDefaultHint": "Padrão do agente: {value}",
       "defaultOptionLabel": "Padrão ({value})",
       "continuationEnable": "Rodadas de retrabalho (experimental)",
-      "continuationEnableHint": "Permite que o agente principal envie retrabalhos à sub-sessão de uma delegação concluída. Desativado por padrão."
+      "continuationEnableHint": "Permite que o agente principal envie retrabalhos à sub-sessão de uma delegação concluída. Desativado por padrão. As alterações se aplicam a sessões de agente recém-abertas ou reconectadas."
     },
     "actions": {
       "dragSort": "Arraste para reordenar",

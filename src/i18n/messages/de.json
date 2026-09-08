@@ -753,7 +753,7 @@
       "agentDefaultHint": "Agent-Standard: {value}",
       "defaultOptionLabel": "Standard ({value})",
       "continuationEnable": "Überarbeitungsrunden (experimentell)",
-      "continuationEnableHint": "Erlaubt dem Haupt-Agent, Überarbeitungen an die Sub-Sitzung einer abgeschlossenen Delegation zu senden. Standardmäßig aus."
+      "continuationEnableHint": "Erlaubt dem Haupt-Agent, Überarbeitungen an die Sub-Sitzung einer abgeschlossenen Delegation zu senden. Standardmäßig aus. Änderungen gelten für neu geöffnete oder erneut verbundene Agent-Sitzungen."
     },
     "actions": {
       "dragSort": "Zum Neuordnen ziehen",

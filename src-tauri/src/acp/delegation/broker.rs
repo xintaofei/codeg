@@ -918,6 +918,16 @@ const RESUME_REASON_CAP: usize = 2 * 1024;
 /// completed" (status) from "and that is why it was not resumed" (code).
 pub const NOT_RESUMABLE_CODE: &str = "not_resumable";
 
+const COMPLETED_RESUME_GUIDANCE: &str =
+    "the task already completed — resume only applies to a canceled or interrupted task. If \
+     continue_with_session is available and this completed source is eligible, use it for \
+     same-session follow-up; otherwise start a new delegate_to_agent call.";
+
+const FAILED_RESUME_GUIDANCE: &str =
+    "the task ended in failure rather than being interrupted — resume only applies to a canceled \
+     or interrupted task. Inspect and diagnose the reported failure before deciding whether and \
+     how to start a new delegate_to_agent call.";
+
 /// Build the fixed continuation prompt a resumed child receives. Deliberately
 /// NOT caller-controlled beyond the bounded `reason`: `resume_delegation`
 /// continues the ORIGINAL task and must not be usable as a second
@@ -4078,19 +4088,14 @@ impl DelegationBroker {
                             status,
                             Some(child_conversation_id),
                             Some(agent_type),
-                            "the task already completed — resume only applies to a \
-                             canceled or interrupted task. Start a new \
-                             delegate_to_agent call for follow-up work.",
+                            COMPLETED_RESUME_GUIDANCE,
                         ))),
                         _ => MemGate::Refuse(Box::new(not_resumable_report(
                             &req.task_id,
                             status,
                             Some(child_conversation_id),
                             Some(agent_type),
-                            "the task ended in failure rather than being \
-                             interrupted — resume only applies to a canceled or \
-                             interrupted task. Start a new delegate_to_agent call \
-                             to retry it.",
+                            FAILED_RESUME_GUIDANCE,
                         ))),
                     }
                 }
@@ -4196,9 +4201,7 @@ impl DelegationBroker {
                     TaskStatus::Completed,
                     Some(ctx.child_conversation_id),
                     Some(ctx.agent_type),
-                    "the task already completed — resume only applies to a \
-                     canceled or interrupted task. Start a new \
-                     delegate_to_agent call for follow-up work.",
+                    COMPLETED_RESUME_GUIDANCE,
                 );
             }
             Ok(None) => {}
@@ -4242,9 +4245,7 @@ impl DelegationBroker {
                     TaskStatus::Completed,
                     Some(ctx.child_conversation_id),
                     Some(ctx.agent_type),
-                    "the task already completed — resume only applies to a \
-                     canceled or interrupted task. Start a new delegate_to_agent \
-                     call for follow-up work.",
+                    COMPLETED_RESUME_GUIDANCE,
                 );
             }
             TaskStatus::Failed | TaskStatus::Unknown => {

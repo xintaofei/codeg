@@ -753,7 +753,7 @@
       "agentDefaultHint": "智能体默认：{value}",
       "defaultOptionLabel": "默认（{value}）",
       "continuationEnable": "返工轮次（实验）",
-      "continuationEnableHint": "允许主 Agent 把返工要求交回已完成委托的子会话。默认关闭。"
+      "continuationEnableHint": "允许主 Agent 把返工要求交回已完成委托的子会话。默认关闭。更改会在新打开或重新连接的 Agent 会话中生效。"
     },
     "actions": {
       "dragSort": "拖拽排序",

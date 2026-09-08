@@ -753,7 +753,7 @@
       "agentDefaultHint": "智慧體預設：{value}",
       "defaultOptionLabel": "預設（{value}）",
       "continuationEnable": "返工輪次（實驗）",
-      "continuationEnableHint": "允許主 Agent 把返工要求交回已完成委託的子會話。預設關閉。"
+      "continuationEnableHint": "允許主 Agent 把返工要求交回已完成委託的子會話。預設關閉。變更會在新開啟或重新連線的 Agent 會話中生效。"
     },
     "actions": {
       "dragSort": "拖拽排序",

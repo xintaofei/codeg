@@ -21966,6 +21966,50 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn enabled_coordinator_injects_the_continuation_feature() {
+        use crate::acp::delegation::broker::NoopOutcomeStore;
+        use crate::acp::delegation::continuation::{ContinuationCoordinator, NoopRuntime};
+        use crate::db::{test_helpers::fresh_in_memory_db, AppDatabase};
+
+        let db = fresh_in_memory_db().await;
+        let coordinator = Arc::new(ContinuationCoordinator::new(
+            Arc::new(AppDatabase {
+                conn: db.conn.clone(),
+            }),
+            Arc::new(NoopRuntime),
+            Arc::new(NoopOutcomeStore),
+        ));
+        coordinator.set_enabled(true).await;
+        let mut injection = test_delegation_injection(
+            Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
+        );
+        injection.collaboration = Some(coordinator);
+        let mut servers = Vec::new();
+
+        let result = inject_codeg_mcp_with_binary_locator(
+            &mut servers,
+            &injection,
+            "parent-conn",
+            std::path::Path::new("/tmp"),
+            false,
+            HostToolsPolicy::Default,
+            || Some(std::path::PathBuf::from("/fake/codeg-mcp")),
+        )
+        .await;
+
+        assert!(result.is_some());
+        let McpServer::Stdio(server) = &servers[0] else {
+            panic!("expected stdio companion")
+        };
+        let feature_index = server
+            .args
+            .iter()
+            .position(|arg| arg == "--features")
+            .expect("companion must receive --features");
+        assert_eq!(server.args[feature_index + 1], "continuation");
+    }
+
     // ─── delegate_target_args: enable-toggle filtering ──────────
     //
     // The companion's delegate enum must only advertise launchable targets:

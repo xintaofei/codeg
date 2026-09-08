@@ -753,7 +753,7 @@
       "agentDefaultHint": "Predeterminado del agente: {value}",
       "defaultOptionLabel": "Predeterminado ({value})",
       "continuationEnable": "Rondas de retrabajo (experimental)",
-      "continuationEnableHint": "Permite que el agente principal envíe retrabajos a la subsesión de una delegación completada. Desactivado por defecto."
+      "continuationEnableHint": "Permite que el agente principal envíe retrabajos a la subsesión de una delegación completada. Desactivado por defecto. Los cambios se aplican a las sesiones de agente nuevas o reconectadas."
     },
     "actions": {
       "dragSort": "Arrastrar para reordenar",

@@ -2299,6 +2299,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tools_list_exposes_exactly_the_continuation_group_when_enabled() {
+        let names = list_tool_names(
+            dispatch_with_features(
+                CompanionFeatures::parse(Some("continuation")),
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            )
+            .await,
+        );
+
+        assert_eq!(
+            names,
+            vec![
+                "continue_with_session",
+                "get_session_turn_status",
+                "cancel_session_turn",
+                "close_session",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn tools_list_omits_continuation_group_when_disabled() {
+        let names = list_tool_names(
+            dispatch_with_features(
+                FEEDBACK_ONLY,
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            )
+            .await,
+        );
+
+        for continuation_tool in [
+            "continue_with_session",
+            "get_session_turn_status",
+            "cancel_session_turn",
+            "close_session",
+        ] {
+            assert!(!names.iter().any(|name| name == continuation_tool));
+        }
+    }
+
+    #[tokio::test]
     async fn check_user_feedback_spawns_when_enabled() {
         let line = json!({
             "jsonrpc": "2.0", "id": 30, "method": "tools/call",

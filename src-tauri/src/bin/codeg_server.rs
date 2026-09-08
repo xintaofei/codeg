@@ -339,6 +339,13 @@ async fn async_main() -> ExitCode {
         &chat_authoring_config,
     )
     .await;
+    // Restore the continuation experiment before recovery and listener accept,
+    // so the first new MCP launch sees the saved tool-group state.
+    codeg_lib::commands::delegation::apply_persisted_continuation_config(
+        &state.db.conn,
+        &continuation_coordinator,
+    )
+    .await;
     // Before accepting connections: keep ACP model terminal fallbacks aligned
     // with the same default-shell preference the built-in terminal uses, and
     // seed the command-color opt-in that every launch env is built from.
