@@ -1,4 +1,4 @@
-import { act, render } from "@testing-library/react"
+import { act, render, renderHook } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { BrowserCapabilities } from "@/lib/browser/types"
@@ -75,12 +75,21 @@ import {
   getBrowserTabState,
   resetBrowserTabStoreForTests,
   setBrowserTabState,
+  useBrowserFindRequest,
 } from "@/lib/browser/browser-tab-store"
 import {
   getBrowserDownloads,
   resetBrowserDownloadsForTests,
 } from "@/lib/browser/browser-downloads-store"
 import { BrowserEventsBridge } from "./browser-events-bridge"
+
+/** The store's find counter, read the way a component would. */
+function findRequestOf(workspaceTabId: string): number {
+  const view = renderHook(() => useBrowserFindRequest(workspaceTabId))
+  const seen = view.result.current
+  view.unmount()
+  return seen
+}
 
 async function flush() {
   await act(async () => {
@@ -118,6 +127,7 @@ describe("BrowserEventsBridge", () => {
       "browser://download",
       "browser://open-request",
       "browser://popup",
+      "browser://shortcut",
       "browser://state",
     ])
     // Downloads already running when this document mounted are shown again.
@@ -131,6 +141,20 @@ describe("BrowserEventsBridge", () => {
       state: "started",
     })
     expect(getBrowserDownloads().map((d) => d.id)).toEqual(["dl-2", "dl-1"])
+
+    // ⌘F inside the page reaches the tab's find bar; anything else the page
+    // claims is dropped by the host, and an unknown name changes nothing.
+    expect(findRequestOf("browser:abc")).toBe(0)
+    mocks.handlers.get("browser://shortcut")!({
+      tabId: "abc",
+      shortcut: "find",
+    })
+    expect(findRequestOf("browser:abc")).toBe(1)
+    mocks.handlers.get("browser://shortcut")!({
+      tabId: "abc",
+      shortcut: "quit",
+    })
+    expect(findRequestOf("browser:abc")).toBe(1)
 
     mocks.handlers.get("browser://open-request")!({
       url: "https://example.com/from-agent",
@@ -238,6 +262,7 @@ describe("BrowserEventsBridge", () => {
       "browser://download",
       "browser://open-request",
       "browser://popup",
+      "browser://shortcut",
       "browser://state",
     ])
   })

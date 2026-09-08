@@ -5847,6 +5847,13 @@
       "reveal": "Afficher dans le dossier",
       "dismiss": "Masquer"
     },
+    "find": {
+      "placeholder": "Rechercher dans la page",
+      "next": "Suivant",
+      "previous": "Précédent",
+      "noMatches": "Aucun résultat",
+      "close": "Fermer"
+    },
     "toast": {
       "firstOpen": "Ouvert dans le navigateur intégré",
       "firstOpenHint": "⌘/Ctrl+clic sur un lien pour l'ouvrir dans le navigateur système. Le choix par défaut se modifie dans les Réglages.",

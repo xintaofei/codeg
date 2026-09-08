@@ -5847,6 +5847,13 @@
       "reveal": "在資料夾中顯示",
       "dismiss": "忽略"
     },
+    "find": {
+      "placeholder": "在頁面中尋找",
+      "next": "下一個",
+      "previous": "上一個",
+      "noMatches": "無相符項",
+      "close": "關閉"
+    },
     "toast": {
       "firstOpen": "已在內建瀏覽器中開啟",
       "firstOpenHint": "按住 ⌘/Ctrl 點擊連結可改用系統瀏覽器。預設方式可在設定中修改。",

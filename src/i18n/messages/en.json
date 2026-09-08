@@ -5847,6 +5847,13 @@
       "reveal": "Show in folder",
       "dismiss": "Dismiss"
     },
+    "find": {
+      "placeholder": "Find in page",
+      "next": "Next match",
+      "previous": "Previous match",
+      "noMatches": "No matches",
+      "close": "Close"
+    },
     "toast": {
       "firstOpen": "Opened in the built-in browser",
       "firstOpenHint": "⌘/Ctrl-click a link to open it in your system browser instead. Change the default in Settings.",

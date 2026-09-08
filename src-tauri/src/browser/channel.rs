@@ -111,6 +111,18 @@ pub fn handle_message(app: &AppHandle, tab_id: &str, raw: String, main_frame: bo
                 events::emit_state(app, &state);
             }
         }
+        // A browser shortcut the page had focus for. The set is closed here,
+        // not in the page: whatever the helper claims, only a name from this
+        // list reaches the frontend, and it carries nothing else.
+        "shortcut" => {
+            if !(main_frame && envelope.top) {
+                return;
+            }
+            let name = envelope.payload.get("name").and_then(Value::as_str);
+            if name == Some("find") {
+                events::emit_shortcut(app, tab_id, "find");
+            }
+        }
         "gesture" => {
             registry.push_gesture(tab_id, envelope.payload.clone());
             emit_event(

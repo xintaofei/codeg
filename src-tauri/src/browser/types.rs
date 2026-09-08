@@ -122,6 +122,18 @@ pub const POPUP_EVENT: &str = "browser://popup";
 /// deep links, the dev puppet). The frontend owns tab records, so a backend
 /// side cannot create one directly.
 pub const OPEN_REQUEST_EVENT: &str = "browser://open-request";
+/// A browser shortcut the PAGE swallowed first (the page has keyboard focus,
+/// so the app's own DOM never sees the keystroke). Only the fixed set below
+/// is forwarded; the payload carries no page data.
+pub const SHORTCUT_EVENT: &str = "browser://shortcut";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserShortcutPayload {
+    pub tab_id: String,
+    /// One of a closed set the host recognises (`find` today).
+    pub shortcut: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

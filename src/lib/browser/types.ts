@@ -137,3 +137,11 @@ export const BROWSER_CLOSED_EVENT = "browser://closed"
 export const BROWSER_POPUP_EVENT = "browser://popup"
 export const BROWSER_TELEMETRY_EVENT = "browser://telemetry"
 export const BROWSER_DOWNLOAD_EVENT = "browser://download"
+export const BROWSER_SHORTCUT_EVENT = "browser://shortcut"
+
+/** A browser shortcut the page had keyboard focus for. */
+export interface BrowserShortcutPayload {
+  tabId: string
+  /** A name from the host's closed set; `find` today. */
+  shortcut: string
+}

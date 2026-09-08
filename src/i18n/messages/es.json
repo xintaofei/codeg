@@ -5847,6 +5847,13 @@
       "reveal": "Mostrar en la carpeta",
       "dismiss": "Descartar"
     },
+    "find": {
+      "placeholder": "Buscar en la página",
+      "next": "Siguiente",
+      "previous": "Anterior",
+      "noMatches": "Sin coincidencias",
+      "close": "Cerrar"
+    },
     "toast": {
       "firstOpen": "Abierto en el navegador integrado",
       "firstOpenHint": "Haz ⌘/Ctrl+clic en un enlace para abrirlo en el navegador del sistema. Cambia el valor predeterminado en Ajustes.",

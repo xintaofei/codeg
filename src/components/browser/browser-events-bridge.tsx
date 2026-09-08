@@ -16,6 +16,7 @@ import {
 import {
   browserWorkspaceTabId,
   removeBrowserTabState,
+  requestBrowserFind,
   setBrowserTabNotice,
   setBrowserTabState,
 } from "@/lib/browser/browser-tab-store"
@@ -24,11 +25,13 @@ import {
   BROWSER_DOWNLOAD_EVENT,
   BROWSER_OPEN_REQUEST_EVENT,
   BROWSER_POPUP_EVENT,
+  BROWSER_SHORTCUT_EVENT,
   BROWSER_STATE_EVENT,
   type BrowserClosedPayload,
   type BrowserDownload,
   type BrowserOpenRequestPayload,
   type BrowserPopupPayload,
+  type BrowserShortcutPayload,
   type BrowserTabState,
 } from "@/lib/browser/types"
 import { getTransport } from "@/lib/transport"
@@ -46,6 +49,7 @@ import { getCurrentWindowLabel } from "@/lib/browser/window-label"
  * - `browser://open-request` → the backend (an agent tool, a deep link, the
  *   dev puppet) asks this window's workspace to open a URL
  * - `browser://download` → the download bar of the tab that started it
+ * - `browser://shortcut` → a browser shortcut the page had focus for (⌘F)
  *
  * Only subscribes where a built-in browser exists; in web mode there is
  * nothing to hear.
@@ -109,6 +113,14 @@ export function BrowserEventsBridge() {
             const tabId = browserWorkspaceTabId(closed.tabId)
             removeBrowserTabState(tabId)
             closeFileTab(tabId)
+          }
+        ),
+        transport.subscribe<BrowserShortcutPayload>(
+          BROWSER_SHORTCUT_EVENT,
+          (payload) => {
+            if (payload.shortcut === "find") {
+              requestBrowserFind(browserWorkspaceTabId(payload.tabId))
+            }
           }
         ),
         transport.subscribe<BrowserDownload>(

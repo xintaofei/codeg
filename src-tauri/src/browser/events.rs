@@ -7,8 +7,8 @@ use crate::web::event_bridge::{emit_event, EventEmitter};
 
 use super::downloads::{BrowserDownload, DOWNLOAD_EVENT};
 use super::types::{
-    BrowserClosedPayload, BrowserOpenRequestPayload, BrowserPopupPayload, BrowserTabState,
-    CLOSED_EVENT, OPEN_REQUEST_EVENT, POPUP_EVENT, STATE_EVENT,
+    BrowserClosedPayload, BrowserOpenRequestPayload, BrowserPopupPayload, BrowserShortcutPayload,
+    BrowserTabState, CLOSED_EVENT, OPEN_REQUEST_EVENT, POPUP_EVENT, SHORTCUT_EVENT, STATE_EVENT,
 };
 
 pub fn emit_state(app: &AppHandle, state: &BrowserTabState) {
@@ -32,6 +32,17 @@ pub fn emit_popup(app: &AppHandle, payload: &BrowserPopupPayload) {
 
 pub fn emit_open_request(app: &AppHandle, payload: &BrowserOpenRequestPayload) {
     emit_event(&EventEmitter::Tauri(app.clone()), OPEN_REQUEST_EVENT, payload);
+}
+
+pub fn emit_shortcut(app: &AppHandle, tab_id: &str, shortcut: &str) {
+    emit_event(
+        &EventEmitter::Tauri(app.clone()),
+        SHORTCUT_EVENT,
+        BrowserShortcutPayload {
+            tab_id: tab_id.to_string(),
+            shortcut: shortcut.to_string(),
+        },
+    );
 }
 
 pub fn emit_download(app: &AppHandle, download: &BrowserDownload) {

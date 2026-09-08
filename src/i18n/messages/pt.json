@@ -5847,6 +5847,13 @@
       "reveal": "Mostrar na pasta",
       "dismiss": "Dispensar"
     },
+    "find": {
+      "placeholder": "Localizar na página",
+      "next": "Próxima",
+      "previous": "Anterior",
+      "noMatches": "Nenhum resultado",
+      "close": "Fechar"
+    },
     "toast": {
       "firstOpen": "Aberto no navegador integrado",
       "firstOpenHint": "⌘/Ctrl+clique em um link para abri-lo no navegador do sistema. Altere o padrão em Configurações.",

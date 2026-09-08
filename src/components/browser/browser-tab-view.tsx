@@ -1,10 +1,16 @@
 "use client"
 
+import { useState, type KeyboardEvent } from "react"
+
 import type { BrowserWorkspaceTab } from "@/contexts/workspace-context"
 import { browserSetVisible } from "@/lib/browser/browser-api"
-import { useBrowserTabState } from "@/lib/browser/browser-tab-store"
+import {
+  useBrowserFindRequest,
+  useBrowserTabState,
+} from "@/lib/browser/browser-tab-store"
 import { browserTabBackendId } from "@/lib/file-tab-id"
 
+import { BrowserFindBar } from "./browser-find-bar"
 import {
   BrowserDownloadBar,
   BrowserErrorPage,
@@ -21,13 +27,40 @@ import { BrowserToolbar } from "./browser-toolbar"
 export function BrowserTabView({ tab }: { tab: BrowserWorkspaceTab }) {
   const state = useBrowserTabState(tab.id)
   const backendId = browserTabBackendId(tab.id)
+  const [findOpen, setFindOpen] = useState(false)
+  // ⌘F pressed while the PAGE had keyboard focus: the app's DOM never sees
+  // that keystroke, so the host relays it and the store counts it. Read as a
+  // counter, not a flag, so pressing it again on an open bar still counts —
+  // and applied during render (not in an effect) so the bar is there in the
+  // same paint.
+  const findRequest = useBrowserFindRequest(tab.id)
+  const [seenFindRequest, setSeenFindRequest] = useState(findRequest)
+  if (seenFindRequest !== findRequest) {
+    setSeenFindRequest(findRequest)
+    setFindOpen(true)
+  }
+
+  // ⌘F pressed while the focus is in this view's own DOM (address bar, find
+  // bar). Bound to the container rather than the window so the shortcut only
+  // belongs to the browser when the browser is what the user is in.
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.altKey || event.key.toLowerCase() !== "f") return
+    if (!event.metaKey && !event.ctrlKey) return
+    event.preventDefault()
+    setFindOpen(true)
+  }
   const url = state?.url || state?.requestedUrl || tab.browser.initialUrl
   const error = state?.error ?? null
   const ownedWindow = state?.surface === "window"
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col" onKeyDown={onKeyDown}>
       <BrowserToolbar tab={tab} state={state} />
+      <BrowserFindBar
+        tab={tab}
+        open={findOpen && !ownedWindow}
+        onClose={() => setFindOpen(false)}
+      />
       <BrowserNoticeBar tab={tab} state={state} />
       <BrowserDownloadBar tab={tab} />
       <div className="relative min-h-0 flex-1">

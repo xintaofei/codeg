@@ -8,6 +8,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::ptr::NonNull;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -16,9 +17,9 @@ use objc2::{define_class, msg_send, sel, DeclaredClass, MainThreadMarker, MainTh
 use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
 use objc2_foundation::{ns_string, NSArray, NSDate, NSDictionary, NSError, NSProcessInfo, NSString, NSUUID};
 use objc2_web_kit::{
-    WKContentWorld, WKScriptMessage, WKScriptMessageHandler, WKSnapshotConfiguration,
-    WKUserContentController, WKUserScript, WKUserScriptInjectionTime, WKWebViewConfiguration,
-    WKWebsiteDataRecord, WKWebsiteDataStore,
+    WKContentWorld, WKFindConfiguration, WKFindResult, WKScriptMessage, WKScriptMessageHandler,
+    WKSnapshotConfiguration, WKUserContentController, WKUserScript, WKUserScriptInjectionTime,
+    WKWebViewConfiguration, WKWebsiteDataRecord, WKWebsiteDataStore,
 };
 use tauri_runtime_wry::wry::{self, WebViewExtMacOS};
 
@@ -228,6 +229,48 @@ pub fn snapshot_png(
         wk.takeSnapshotWithConfiguration_completionHandler(Some(&config), &block);
     }
     Ok(())
+}
+
+/// Highlight the next (or previous) occurrence of `query` in the page, the
+/// way ⌘F does in Safari: WebKit owns the search and the selection, so this
+/// never touches the DOM and cannot be observed or broken by the page.
+/// Wraps around, case-insensitive — the defaults a find bar is expected to
+/// have. `callback` gets whether anything matched.
+pub fn find_string(
+    webview: &wry::WebView,
+    query: &str,
+    forward: bool,
+    callback: impl Fn(bool) + Send + 'static,
+) -> Result<(), String> {
+    let mtm = mtm()?;
+    let wk = webview.webview();
+    let block = RcBlock::<dyn Fn(NonNull<WKFindResult>)>::new(move |result: NonNull<WKFindResult>| {
+        // SAFETY: WebKit hands us a live result for the duration of the call.
+        callback(unsafe { result.as_ref().matchFound() });
+    });
+    // SAFETY: main thread, live webview.
+    unsafe {
+        let configuration = WKFindConfiguration::new(mtm);
+        configuration.setBackwards(!forward);
+        configuration.setCaseSensitive(false);
+        configuration.setWraps(true);
+        wk.findString_withConfiguration_completionHandler(
+            &NSString::from_str(query),
+            Some(&configuration),
+            &block,
+        );
+    }
+    Ok(())
+}
+
+/// Drop the find highlight. WebKit has no "stop finding" call; clearing the
+/// selection (in the isolated world, on the shared DOM) is what removes it.
+pub fn clear_find(webview: &wry::WebView) -> Result<(), String> {
+    eval_in_world(
+        webview,
+        "(function(){try{getSelection().removeAllRanges()}catch(e){}return true})()",
+        |_| {},
+    )
 }
 
 pub fn go_back(webview: &wry::WebView) {

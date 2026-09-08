@@ -398,6 +398,17 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
             .map_err(err_string)?;
             Ok(Value::Null)
         }
+        "browser_find" => {
+            let found = browser_commands::find_core(
+                &registry,
+                &str_arg(cmd, "tab_id")?,
+                &str_arg(cmd, "query").unwrap_or_default(),
+                cmd.get("forward").and_then(Value::as_bool).unwrap_or(true),
+            )
+            .await
+            .map_err(err_string)?;
+            Ok(json!(found))
+        }
         // Download records this run produced, oldest first.
         "browser_downloads" => Ok(serde_json::to_value(
             app.state::<crate::browser::BrowserDownloads>().list(),

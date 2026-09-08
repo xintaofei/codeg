@@ -167,6 +167,22 @@ export function browserClearData(): Promise<void> {
   return getTransport().call<void>("browser_clear_data", {})
 }
 
+/**
+ * Highlight the next (or previous) match of `query` in the page and answer
+ * whether anything matched. An empty query clears the highlight.
+ */
+export function browserFind(
+  tabId: string,
+  query: string,
+  forward = true
+): Promise<boolean> {
+  return getTransport().call<boolean>("browser_find", {
+    tabId,
+    query,
+    forward,
+  })
+}
+
 /** Downloads this run started, oldest first. */
 export function browserListDownloads(): Promise<BrowserDownload[]> {
   return getTransport().call<BrowserDownload[]>("browser_list_downloads", {})

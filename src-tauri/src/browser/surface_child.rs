@@ -293,6 +293,42 @@ impl ChildHandle {
         }
     }
 
+    /// Highlight the next / previous match of `query`; the callback gets
+    /// whether anything matched.
+    pub fn find(
+        &self,
+        query: &str,
+        forward: bool,
+        callback: impl Fn(bool) + Send + 'static,
+    ) -> Result<(), ChildError> {
+        #[cfg(target_os = "macos")]
+        {
+            let query = query.to_string();
+            self.with(move |wv| shim::find_string(wv, &query, forward, callback))?
+                .map_err(ChildError::Op)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (query, forward, callback);
+            Err(ChildError::Op(
+                "find in page is not implemented on this platform yet".into(),
+            ))
+        }
+    }
+
+    pub fn clear_find(&self) -> Result<(), ChildError> {
+        #[cfg(target_os = "macos")]
+        {
+            self.with(shim::clear_find)?.map_err(ChildError::Op)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Err(ChildError::Op(
+                "find in page is not implemented on this platform yet".into(),
+            ))
+        }
+    }
+
     pub fn go_back(&self) -> Result<(), ChildError> {
         #[cfg(target_os = "macos")]
         {

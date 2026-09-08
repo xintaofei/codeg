@@ -86,6 +86,7 @@ export function setBrowserTabState(state: BrowserTabState): void {
 export function removeBrowserTabState(workspaceTabId: string): void {
   const hadNotice = notices.delete(workspaceTabId)
   hiddenAt.delete(workspaceTabId)
+  findRequests.delete(workspaceTabId)
   if (states.delete(workspaceTabId) || hadNotice) notify()
 }
 
@@ -159,12 +160,37 @@ export function useBrowserTabNotice(
   )
 }
 
+// Per-tab counter of "open the find bar" requests. The page owns ⌘F while it
+// has keyboard focus (the app's DOM never sees that keystroke), so the host
+// forwards it as `browser://shortcut` and it arrives here; the tab view
+// watches the counter rather than a boolean, so a second ⌘F on an already
+// open bar still re-focuses it.
+const findRequests = new Map<string, number>()
+
+export function requestBrowserFind(workspaceTabId: string): void {
+  findRequests.set(workspaceTabId, (findRequests.get(workspaceTabId) ?? 0) + 1)
+  notify()
+}
+
+export function useBrowserFindRequest(workspaceTabId: string | null): number {
+  return useSyncExternalStore(
+    subscribeBrowserTabs,
+    () => (workspaceTabId ? (findRequests.get(workspaceTabId) ?? 0) : 0),
+    getServerZero
+  )
+}
+
+function getServerZero(): number {
+  return 0
+}
+
 export function resetBrowserTabStoreForTests(): void {
   states.clear()
   notices.clear()
   listeners.clear()
   createdSurfaces.clear()
   hiddenAt.clear()
+  findRequests.clear()
 }
 
 function shallowEqualState(a: BrowserTabState, b: BrowserTabState): boolean {

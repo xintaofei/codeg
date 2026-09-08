@@ -229,6 +229,30 @@
     true
   )
 
+  // ---- browser shortcuts -------------------------------------------------
+  // ⌘F / Ctrl-F belongs to the browser, not to the page: while the webview
+  // has keyboard focus the app's own DOM never sees the keystroke, so the
+  // find bar could not be opened at all. This is the ONE place the helper
+  // cancels an event — matching what every browser does with its own
+  // shortcut. Propagation is left alone, so a page listener that wants to
+  // know still hears it.
+  window.addEventListener(
+    "keydown",
+    function (event) {
+      if (!trusted(event)) return
+      if (event.repeat) return
+      var key = String(event.key || "").toLowerCase()
+      if (key !== "f") return
+      if (event.altKey) return
+      // ⌘ on macOS, Ctrl elsewhere; the host is the one that knows which, so
+      // report either and let it decide nothing — both are "find" here.
+      if (!event.metaKey && !event.ctrlKey) return
+      event.preventDefault()
+      post("shortcut", { name: "find" })
+    },
+    true
+  )
+
   post("hello", {
     href: String(location.href),
     readyState: String(document.readyState),

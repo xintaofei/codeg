@@ -5847,6 +5847,13 @@
       "reveal": "Im Ordner zeigen",
       "dismiss": "Ausblenden"
     },
+    "find": {
+      "placeholder": "Auf Seite suchen",
+      "next": "Weitersuchen",
+      "previous": "Rückwärts suchen",
+      "noMatches": "Keine Treffer",
+      "close": "Schließen"
+    },
     "toast": {
       "firstOpen": "Im integrierten Browser geöffnet",
       "firstOpenHint": "⌘/Strg+Klick auf einen Link öffnet ihn stattdessen im Systembrowser. Die Voreinstellung lässt sich in den Einstellungen ändern.",

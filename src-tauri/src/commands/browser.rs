@@ -445,6 +445,39 @@ pub fn reload_core(
     Ok(())
 }
 
+/// Find in page. Returns whether the engine highlighted a match; an empty
+/// query is the "close the find bar" case and only clears the highlight.
+/// The search itself is WebKit's, so the page can neither see it nor break it.
+pub async fn find_core(
+    registry: &BrowserRegistry,
+    tab_id: &str,
+    query: &str,
+    forward: bool,
+) -> Result<bool, AppCommandError> {
+    let surface = surface_of(registry, tab_id)?;
+    if query.is_empty() {
+        surface
+            .clear_find()
+            .map_err(|e| window_err("Failed to clear the page search", e))?;
+        return Ok(false);
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+    let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+    surface
+        .find(query, forward, move |found| {
+            if let Some(tx) = tx.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                let _ = tx.send(found);
+            }
+        })
+        .map_err(|e| window_err("Failed to search the page", e))?;
+    // A search that never answers must not hang the caller; "no match" is the
+    // honest thing to show then.
+    match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
+        Ok(Ok(found)) => Ok(found),
+        _ => Ok(false),
+    }
+}
+
 pub fn go_back_core(registry: &BrowserRegistry, tab_id: &str) -> Result<(), AppCommandError> {
     surface_of(registry, tab_id)?
         .go_back()
@@ -595,6 +628,16 @@ pub async fn browser_stop(
     tab_id: String,
 ) -> Result<(), AppCommandError> {
     stop_core(&app, &registry, &tab_id)
+}
+
+#[tauri::command]
+pub async fn browser_find(
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+    query: String,
+    forward: bool,
+) -> Result<bool, AppCommandError> {
+    find_core(&registry, &tab_id, &query, forward).await
 }
 
 #[tauri::command]

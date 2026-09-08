@@ -108,6 +108,28 @@ impl BrowserSurface {
             window: |w| Ok(w.eval_with_callback(js, callback)?))
     }
 
+    /// Find in page. Only embedded surfaces have it: an owned window is a
+    /// plain `WebviewWindow`, whose `WKWebView` the host does not hold.
+    pub fn find(
+        &self,
+        query: &str,
+        forward: bool,
+        callback: impl Fn(bool) + Send + 'static,
+    ) -> Result<(), SurfaceError> {
+        per_surface!(self,
+            child: |c| Ok(c.find(query, forward, callback)?),
+            window: |_w| {
+                let _ = (query, forward, callback);
+                Err(SurfaceError("find in page needs an embedded surface".into()))
+            })
+    }
+
+    pub fn clear_find(&self) -> Result<(), SurfaceError> {
+        per_surface!(self,
+            child: |c| Ok(c.clear_find()?),
+            window: |_w| Err(SurfaceError("find in page needs an embedded surface".into())))
+    }
+
     pub fn hide(&self) -> Result<(), SurfaceError> {
         per_surface!(self, child: |c| Ok(c.set_visible(false)?), window: |w| Ok(w.hide()?))
     }

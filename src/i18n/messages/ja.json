@@ -5847,6 +5847,13 @@
       "reveal": "フォルダに表示",
       "dismiss": "閉じる"
     },
+    "find": {
+      "placeholder": "ページ内を検索",
+      "next": "次を検索",
+      "previous": "前を検索",
+      "noMatches": "一致なし",
+      "close": "閉じる"
+    },
     "toast": {
       "firstOpen": "内蔵ブラウザで開きました",
       "firstOpenHint": "⌘/Ctrl を押しながらリンクをクリックするとシステムのブラウザで開きます。既定は設定で変更できます。",

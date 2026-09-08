@@ -5847,6 +5847,13 @@
       "reveal": "在文件夹中显示",
       "dismiss": "忽略"
     },
+    "find": {
+      "placeholder": "在页面中查找",
+      "next": "下一个",
+      "previous": "上一个",
+      "noMatches": "无匹配",
+      "close": "关闭"
+    },
     "toast": {
       "firstOpen": "已在内置浏览器中打开",
       "firstOpenHint": "按住 ⌘/Ctrl 点击链接可改用系统浏览器。默认方式可在设置中修改。",

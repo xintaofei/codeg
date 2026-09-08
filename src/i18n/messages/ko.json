@@ -5847,6 +5847,13 @@
       "reveal": "폴더에서 보기",
       "dismiss": "닫기"
     },
+    "find": {
+      "placeholder": "페이지에서 찾기",
+      "next": "다음 찾기",
+      "previous": "이전 찾기",
+      "noMatches": "일치 항목 없음",
+      "close": "닫기"
+    },
     "toast": {
       "firstOpen": "내장 브라우저에서 열었습니다",
       "firstOpenHint": "⌘/Ctrl을 누른 채 링크를 클릭하면 시스템 브라우저에서 열립니다. 기본값은 설정에서 바꿀 수 있습니다.",
