@@ -589,6 +589,7 @@
       "deleteFailed": "刪除 Skill 失敗",
       "enabled": "Skill 已啟用",
       "disabled": "Skill 已停用",
+      "codexNewSession": "僅對新建的 Codex 工作階段生效；已開啟的工作階段可能仍保留先前載入的 Skill。",
       "toggleFailed": "更新 Skill 可用狀態失敗"
     },
     "templates": {

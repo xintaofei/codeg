@@ -589,6 +589,7 @@
       "deleteFailed": "Skillの削除に失敗しました",
       "enabled": "Skillを有効にしました",
       "disabled": "Skillを無効にしました",
+      "codexNewSession": "新しく作成した Codex セッションに適用されます。既存のセッションには、すでに読み込まれた Skill が残る場合があります。",
       "toggleFailed": "Skillの利用可否の更新に失敗しました"
     },
     "templates": {

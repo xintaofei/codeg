@@ -46,6 +46,8 @@ const messages = {
       ...enMessages.SkillsSettings.toasts,
       enabled: "Skill enabled",
       disabled: "Skill disabled",
+      codexNewSession:
+        "Applies to new Codex sessions. Existing sessions may retain skills they already loaded.",
       toggleFailed: "Failed to update skill availability",
     },
   },
@@ -158,6 +160,45 @@ describe("SkillsSettings availability", () => {
     await waitFor(() => expect(api.acpListAgentSkills).toHaveBeenCalledTimes(3))
     await waitFor(() => expect(availability).not.toBeChecked())
     expect(api.acpReadAgentSkill).toHaveBeenCalledTimes(1)
+    expect(toast.success).toHaveBeenCalledWith("Skill disabled", {
+      description:
+        "Applies to new Codex sessions. Existing sessions may retain skills they already loaded.",
+    })
+  })
+
+  it("keeps the existing success toast for non-Codex agents", async () => {
+    const claudeSkill = skill({
+      path: "/home/test/.claude/skills/demo/SKILL.md",
+    })
+    api.acpListAgents.mockResolvedValue([claudeAgent])
+    api.acpListAgentSkills
+      .mockResolvedValueOnce(listResult(claudeSkill))
+      .mockResolvedValueOnce(listResult(claudeSkill))
+      .mockResolvedValueOnce(
+        listResult(skill({ ...claudeSkill, enabled: false }))
+      )
+    api.acpSetAgentSkillEnabled.mockResolvedValue(
+      skill({ ...claudeSkill, enabled: false })
+    )
+
+    renderSettings()
+
+    fireEvent.click(
+      await screen.findByRole("switch", {
+        name: "Toggle Demo Skill for Claude Code",
+      })
+    )
+
+    await waitFor(() =>
+      expect(api.acpSetAgentSkillEnabled).toHaveBeenCalledWith({
+        agentType: "claude_code",
+        scope: "global",
+        skillId: "demo",
+        workspacePath: null,
+        enabled: false,
+      })
+    )
+    await waitFor(() => expect(api.acpListAgentSkills).toHaveBeenCalledTimes(3))
     expect(toast.success).toHaveBeenCalledWith("Skill disabled")
   })
 

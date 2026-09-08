@@ -589,6 +589,7 @@
       "deleteFailed": "No se pudo eliminar la Skill",
       "enabled": "Skill activada",
       "disabled": "Skill desactivada",
+      "codexNewSession": "Se aplica a las sesiones nuevas de Codex. Las sesiones existentes pueden conservar las Skills que ya cargaron.",
       "toggleFailed": "No se pudo actualizar la disponibilidad de la Skill"
     },
     "templates": {

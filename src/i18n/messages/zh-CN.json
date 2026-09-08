@@ -589,6 +589,7 @@
       "deleteFailed": "删除 Skill 失败",
       "enabled": "Skill 已启用",
       "disabled": "Skill 已禁用",
+      "codexNewSession": "仅对新建的 Codex 会话生效；已打开的会话可能仍保留此前加载的 Skill。",
       "toggleFailed": "更新 Skill 可用状态失败"
     },
     "templates": {

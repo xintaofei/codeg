@@ -589,6 +589,7 @@
       "deleteFailed": "Failed to delete skill",
       "enabled": "Skill enabled",
       "disabled": "Skill disabled",
+      "codexNewSession": "Applies to new Codex sessions. Existing sessions may retain skills they already loaded.",
       "toggleFailed": "Failed to update skill availability"
     },
     "templates": {

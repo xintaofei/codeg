@@ -448,7 +448,14 @@ export function SkillsSettings() {
             skill.scope === "project" ? workspacePathForRequest : null,
           enabled,
         })
-        toast.success(skillsT(enabled ? "toasts.enabled" : "toasts.disabled"))
+        const message = skillsT(enabled ? "toasts.enabled" : "toasts.disabled")
+        if (selectedAgent.agent_type === "codex") {
+          toast.success(message, {
+            description: skillsT("toasts.codexNewSession"),
+          })
+        } else {
+          toast.success(message)
+        }
       } catch (err) {
         toast.error(skillsT("toasts.toggleFailed"), {
           description: toErrorMessage(err),

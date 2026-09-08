@@ -589,6 +589,7 @@
       "deleteFailed": "فشل حذف Skill",
       "enabled": "تم تفعيل Skill",
       "disabled": "تم تعطيل Skill",
+      "codexNewSession": "ينطبق على جلسات Codex الجديدة. قد تحتفظ الجلسات الحالية بالـ Skills التي سبق تحميلها.",
       "toggleFailed": "فشل تحديث حالة توفر Skill"
     },
     "templates": {

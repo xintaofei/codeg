@@ -589,6 +589,7 @@
       "deleteFailed": "Skill 삭제에 실패했습니다",
       "enabled": "Skill이 활성화되었습니다",
       "disabled": "Skill이 비활성화되었습니다",
+      "codexNewSession": "새로 만든 Codex 세션에 적용됩니다. 기존 세션에는 이미 불러온 Skill이 남아 있을 수 있습니다.",
       "toggleFailed": "Skill 사용 여부를 업데이트하지 못했습니다"
     },
     "templates": {
