@@ -1,3 +1,4 @@
+import { StrictMode } from "react"
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -223,14 +224,91 @@ describe("BrowserBridgeView", () => {
     expect(api.bridgeClose).toHaveBeenCalledWith(holdId)
   })
 
-  it("a failed open holds nothing, so nothing is released", async () => {
-    api.bridgeOpen.mockRejectedValue(new Error("no bridge port is free"))
+  it("a failed open is released too: the server may have recorded it", async () => {
+    api.bridgeOpen.mockRejectedValue(new Error("Request timed out"))
     const view = renderView(<BrowserBridgeView tab={tab()} />)
     await screen.findByText("This page can't be shown here")
+    const holdId = api.bridgeOpen.mock.calls[0][1]
     await act(async () => {
       view.unmount()
     })
-    expect(api.bridgeClose).not.toHaveBeenCalled()
+    expect(api.bridgeClose).toHaveBeenCalledTimes(1)
+    expect(api.bridgeClose).toHaveBeenCalledWith(holdId)
+  })
+
+  it("unmounted while the probe is pending: the hold is released, no outcome is painted", async () => {
+    api.bridgeOpen.mockResolvedValue(grant)
+    let resolveProbe: (ok: boolean) => void = () => {}
+    api.probeBridge.mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        resolveProbe = resolve
+      })
+    )
+    const view = renderView(<BrowserBridgeView tab={tab()} />)
+    await waitFor(() => expect(api.probeBridge).toHaveBeenCalled())
+    const holdId = api.bridgeOpen.mock.calls[0][1]
+    await act(async () => {
+      view.unmount()
+    })
+    await waitFor(() => expect(api.bridgeClose).toHaveBeenCalledWith(holdId))
+    await act(async () => {
+      resolveProbe(true)
+    })
+    expect(api.bridgeClose).toHaveBeenCalledTimes(1)
+  })
+
+  it("two quick reloads: every earlier hold released once, the newest kept", async () => {
+    api.bridgeOpen.mockImplementation(() =>
+      Promise.resolve({
+        ...grant,
+        entryPath: `/__codeg_bridge/enter/cap-${api.bridgeOpen.mock.calls.length}`,
+      })
+    )
+    renderView(<BrowserBridgeView tab={tab()} />)
+    await screen.findByTitle("Dev server preview")
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }))
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }))
+    await waitFor(() => expect(api.bridgeOpen).toHaveBeenCalledTimes(3))
+    const ids = api.bridgeOpen.mock.calls.map((call) => call[1] as string)
+    expect(new Set(ids).size).toBe(3)
+    await waitFor(() => expect(api.bridgeClose).toHaveBeenCalledTimes(2))
+    expect(api.bridgeClose).toHaveBeenCalledWith(ids[0])
+    expect(api.bridgeClose).toHaveBeenCalledWith(ids[1])
+    expect(api.bridgeClose).not.toHaveBeenCalledWith(ids[2])
+    await waitFor(() =>
+      expect(
+        screen.getByTitle("Dev server preview").getAttribute("src")
+      ).toContain("cap-3")
+    )
+  })
+
+  it("under StrictMode's effect replay exactly one hold stays open", async () => {
+    api.bridgeOpen.mockImplementation(() =>
+      Promise.resolve({
+        ...grant,
+        entryPath: `/__codeg_bridge/enter/cap-${api.bridgeOpen.mock.calls.length}`,
+      })
+    )
+    render(
+      <StrictMode>
+        <NextIntlClientProvider locale="en" messages={enMessages}>
+          <BrowserBridgeView tab={tab()} />
+        </NextIntlClientProvider>
+      </StrictMode>
+    )
+    await screen.findByTitle("Dev server preview")
+    await waitFor(() => expect(api.bridgeOpen).toHaveBeenCalledTimes(2))
+    const [first, second] = api.bridgeOpen.mock.calls.map(
+      (call) => call[1] as string
+    )
+    expect(first).not.toBe(second)
+    await waitFor(() => expect(api.bridgeClose).toHaveBeenCalledWith(first))
+    expect(api.bridgeClose).toHaveBeenCalledTimes(1)
+    expect(api.bridgeClose).not.toHaveBeenCalledWith(second)
+    // The frame shows the surviving attempt's entry.
+    expect(
+      screen.getByTitle("Dev server preview").getAttribute("src")
+    ).toContain("cap-2")
   })
 
   it("a reload releases the previous attempt's hold, not the new one's", async () => {

@@ -602,7 +602,7 @@ pub(crate) async fn do_start_web_server_with_state(
     // Advertise the IP the socket is actually bound to, not the raw config.
     let advertised_host = advertise_host(local_addr, &host);
     tracing::info!("[WEB] Starting web server on {}", addr);
-    configure_browser_bridge(&host, actual_port);
+    configure_browser_bridge(&advertised_host, actual_port);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let handle = tokio::spawn(async move {
@@ -630,8 +630,10 @@ pub(crate) async fn do_start_web_server_with_state(
     })
 }
 
-/// Bridge listeners follow the web service: same bind address, the ports
-/// after its own unless `CODEG_BRIDGE_PORTS` says otherwise.
+/// Bridge listeners follow the web service: the address its socket is
+/// actually bound to (so a `localhost` that resolves to two families lands
+/// on the same one), the ports after its own unless `CODEG_BRIDGE_PORTS`
+/// says otherwise.
 fn configure_browser_bridge(bind_host: &str, port: u16) {
     let config = browser_bridge::BridgeConfig::from_env(bind_host, port);
     match &config {
@@ -906,7 +908,7 @@ pub(crate) async fn do_start_web_server_tauri(
     // Advertise the IP the socket is actually bound to, not the raw config.
     let advertised_host = advertise_host(local_addr, &host_val);
     tracing::info!("[WEB] Starting web server on {}", addr);
-    configure_browser_bridge(&host_val, actual_port);
+    configure_browser_bridge(&advertised_host, actual_port);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let handle = tokio::spawn(async move {

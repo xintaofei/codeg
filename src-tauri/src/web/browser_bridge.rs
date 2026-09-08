@@ -41,9 +41,12 @@
 //! navigates itself to the target (so the first document request, like every
 //! request the page makes afterwards, is same-origin with the listener), and
 //! every other request must be same-origin — `Sec-Fetch-Site: same-origin`
-//! (or `none`, a navigation the user typed), or, for a browser without Fetch
-//! Metadata, an `Origin` on the listener's own port. A request one proxied
-//! page aims at another listener is `same-site`, and is refused.
+//! (or `none`, a navigation the user typed), or, where the browser sends no
+//! Fetch Metadata (plain-http deployments: the headers only go to
+//! trustworthy origins), an `Origin` or `Referer` naming the listener's own
+//! authority. A request one proxied page aims at another listener is
+//! `same-site`, or names the other page's authority, and is refused; a page
+//! can drop its `Referer` but never claim another origin's.
 //!
 //! A capability stays valid for the life of its listener. A listener lives
 //! while a workbench tab holds it, closes a minute after the last hold is
@@ -368,12 +371,17 @@ pub async fn open(target_port: u16, tab_id: &str) -> Result<BridgeGrant, BridgeE
             shutdown: Mutex::new(None),
             task: Mutex::new(None),
         });
+        // Armed before it is published, so a `configure(None)` that drains
+        // the map right after publication finds a listener it can close.
+        serve(socket, listener.clone());
         // Another task may have bound this target while we were binding, and
         // the bridge may have been switched off: a listener is published only
         // under the configuration it was opened for.
         let winner = {
             let config_now = lock(&BRIDGE.config);
             if config_now.is_none() || BRIDGE.generation.load(Ordering::Acquire) != generation {
+                drop(config_now);
+                listener.close();
                 return Err(BridgeError::Disabled);
             }
             let mut listeners = lock(&BRIDGE.listeners);
@@ -386,13 +394,14 @@ pub async fn open(target_port: u16, tab_id: &str) -> Result<BridgeGrant, BridgeE
             }
         };
         if Arc::ptr_eq(&winner, &listener) {
-            serve(socket, listener.clone());
             SWEEPER.get_or_init(|| {
                 tokio::spawn(sweep_task());
             });
             tracing::info!(
                 "[bridge] port {bridge_port} now forwards to 127.0.0.1:{target_port}"
             );
+        } else {
+            listener.close();
         }
         return Ok(winner.grant(tab_id, config.public_host.clone()));
     }
@@ -516,11 +525,16 @@ async fn enter(
     // initiator and arrives `same-site`, which is exactly what `forward`
     // refuses. A page that navigates itself makes the next request
     // same-origin with this listener.
+    // `Referrer-Policy: origin`: the navigation the page makes carries this
+    // listener's origin as its referrer (what `forward` checks when the
+    // browser sends no Fetch Metadata) and not the entry URL with its
+    // capability.
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
         .header(header::SET_COOKIE, cookie)
         .header(header::CACHE_CONTROL, "no-store")
+        .header(header::REFERRER_POLICY, "origin")
         .body(Body::from(bounce_page(&to)))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
@@ -548,7 +562,7 @@ async fn forward(State(listener): State<Arc<Listener>>, request: Request) -> Res
     if !presented.is_some_and(|cap| listener.has_cap(&cap)) {
         return forbidden_page();
     }
-    if !same_origin_initiator(&parts.headers, listener.bridge_port) {
+    if !same_origin_initiator(&parts.headers) {
         return cross_origin_page();
     }
     listener.touch();
@@ -864,44 +878,89 @@ fn is_local_path(path: &str) -> bool {
 /// page: `same-origin` is the page itself, `none` a navigation the user
 /// typed; `same-site` is another port on this host — a different proxied
 /// page, or the workbench, neither of which may talk to the dev server
-/// directly — and `cross-site` is anyone else. Without Fetch Metadata (older
-/// browsers, non-browser clients) an `Origin`, when present, must name this
-/// listener's port; websocket handshakes always carry one.
-fn same_origin_initiator(headers: &HeaderMap, bridge_port: u16) -> bool {
+/// directly — and `cross-site` is anyone else. Browsers send Fetch Metadata
+/// only to trustworthy origins (https, or the local machine), so on a plain
+/// http deployment the `Origin` (always on websockets, POSTs and CORS
+/// requests) or else the `Referer` must name this listener's own authority,
+/// the one in the request's `Host`; a page can omit its referrer but cannot
+/// claim another origin's. Nothing to go on — an address typed in on such a
+/// deployment, or a page that hides its referrer — is refused.
+fn same_origin_initiator(headers: &HeaderMap) -> bool {
     if let Some(site) = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
         return matches!(site.trim(), "same-origin" | "none");
     }
-    match headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
-        Some(origin) => origin_port(origin) == Some(bridge_port),
-        None => true,
+    let Some(own) = request_authority(headers) else {
+        return false;
+    };
+    if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        return url_authority(origin).is_some_and(|a| a == own);
     }
+    if let Some(referer) = headers.get(header::REFERER).and_then(|v| v.to_str().ok()) {
+        return url_authority(referer).is_some_and(|a| a == own);
+    }
+    false
 }
 
-/// The port an `Origin` header names, explicit or the scheme's default.
-fn origin_port(origin: &str) -> Option<u16> {
-    let url = reqwest::Url::parse(origin.trim()).ok()?;
-    url.port_or_known_default()
-}
-
-/// A CSP without its `frame-ancestors` directive; `None` when nothing else
-/// was in it (the header is then dropped).
-fn without_frame_ancestors(value: &HeaderValue) -> Option<HeaderValue> {
-    let raw = value.to_str().ok()?;
-    let kept: Vec<&str> = raw
-        .split(';')
+/// `host:port` the browser addressed, from `X-Forwarded-Host` (a reverse
+/// proxy in front) or `Host`, with the default port made explicit.
+fn request_authority(headers: &HeaderMap) -> Option<String> {
+    let forwarded = headers
+        .get("x-forwarded-host")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
         .map(str::trim)
-        .filter(|directive| {
-            !directive.is_empty()
-                && !directive
-                    .split_whitespace()
-                    .next()
-                    .is_some_and(|name| name.eq_ignore_ascii_case("frame-ancestors"))
-        })
-        .collect();
-    if kept.is_empty() {
+        .filter(|v| !v.is_empty());
+    let host = match forwarded {
+        Some(host) => host.to_string(),
+        None => headers.get(header::HOST)?.to_str().ok()?.trim().to_string(),
+    };
+    let scheme = if forwarded_https(headers) { "https" } else { "http" };
+    url_authority(&format!("{scheme}://{host}"))
+}
+
+/// `host:port` of an absolute URL, port explicit (the scheme's default when
+/// the URL has none), host lower-cased; `None` for anything else (`null`,
+/// a relative reference).
+fn url_authority(raw: &str) -> Option<String> {
+    let url = reqwest::Url::parse(raw.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
         return None;
     }
-    HeaderValue::from_str(&kept.join("; ")).ok()
+    let host = url.host_str()?.to_ascii_lowercase();
+    let port = url.port_or_known_default()?;
+    Some(format!("{host}:{port}"))
+}
+
+/// A CSP without its `frame-ancestors` directive — in every policy of the
+/// header (a header value may carry several, comma-separated); `None` when
+/// nothing else was in it (the header is then dropped).
+fn without_frame_ancestors(value: &HeaderValue) -> Option<HeaderValue> {
+    let raw = value.to_str().ok()?;
+    let policies: Vec<String> = raw
+        .split(',')
+        .filter_map(|policy| {
+            let kept: Vec<&str> = policy
+                .split(';')
+                .map(str::trim)
+                .filter(|directive| {
+                    !directive.is_empty()
+                        && !directive
+                            .split_whitespace()
+                            .next()
+                            .is_some_and(|name| name.eq_ignore_ascii_case("frame-ancestors"))
+                })
+                .collect();
+            if kept.is_empty() {
+                None
+            } else {
+                Some(kept.join("; "))
+            }
+        })
+        .collect();
+    if policies.is_empty() {
+        return None;
+    }
+    HeaderValue::from_str(&policies.join(", ")).ok()
 }
 
 fn forwarded_https(headers: &HeaderMap) -> bool {
@@ -1179,30 +1238,60 @@ mod tests {
 
     #[test]
     fn only_the_listeners_own_page_may_ask() {
-        let with = |name: &str, value: &'static str| {
+        let headers = |pairs: &[(&str, &'static str)]| {
             let mut headers = HeaderMap::new();
-            headers.insert(HeaderName::from_bytes(name.as_bytes()).unwrap(), HeaderValue::from_static(value));
+            for (name, value) in pairs {
+                headers.append(HeaderName::from_bytes(name.as_bytes()).unwrap(), HeaderValue::from_static(value));
+            }
             headers
         };
-        assert!(same_origin_initiator(&with("sec-fetch-site", "same-origin"), 3081));
-        assert!(same_origin_initiator(&with("sec-fetch-site", "none"), 3081));
-        // Another port on this host: another proxied page or the workbench.
-        assert!(!same_origin_initiator(&with("sec-fetch-site", "same-site"), 3081));
-        assert!(!same_origin_initiator(&with("sec-fetch-site", "cross-site"), 3081));
-        // Fetch Metadata wins over Origin when both are there.
-        let mut both = with("sec-fetch-site", "same-site");
-        both.insert(header::ORIGIN, HeaderValue::from_static("http://h:3081"));
-        assert!(!same_origin_initiator(&both, 3081));
-        // Without it, the Origin's port decides; no Origin at all passes.
-        assert!(same_origin_initiator(&with("origin", "http://h:3081"), 3081));
-        assert!(same_origin_initiator(&with("origin", "https://codeg.example:3081"), 3081));
-        assert!(!same_origin_initiator(&with("origin", "http://h:3082"), 3081));
-        assert!(!same_origin_initiator(&with("origin", "http://h"), 3081));
-        assert!(!same_origin_initiator(&with("origin", "null"), 3081));
-        assert!(same_origin_initiator(&HeaderMap::new(), 3081));
-        assert_eq!(origin_port("https://h"), Some(443));
-        assert_eq!(origin_port("http://h"), Some(80));
-        assert_eq!(origin_port("http://[::1]:3081"), Some(3081));
+        // Fetch Metadata decides when it is there, whatever else is.
+        assert!(same_origin_initiator(&headers(&[("sec-fetch-site", "same-origin")])));
+        assert!(same_origin_initiator(&headers(&[("sec-fetch-site", "none")])));
+        assert!(!same_origin_initiator(&headers(&[("sec-fetch-site", "same-site")])));
+        assert!(!same_origin_initiator(&headers(&[("sec-fetch-site", "cross-site")])));
+        assert!(!same_origin_initiator(&headers(&[
+            ("sec-fetch-site", "same-site"),
+            ("host", "h:3081"),
+            ("origin", "http://h:3081"),
+        ])));
+        // Without it (plain http): Origin, else Referer, must name the
+        // authority the request was addressed to.
+        assert!(same_origin_initiator(&headers(&[("host", "h:3081"), ("origin", "http://h:3081")])));
+        assert!(same_origin_initiator(&headers(&[("host", "H:3081"), ("origin", "http://h:3081")])));
+        assert!(!same_origin_initiator(&headers(&[("host", "h:3081"), ("origin", "http://h:3082")])));
+        assert!(!same_origin_initiator(&headers(&[("host", "h:3081"), ("origin", "http://other:3081")])));
+        assert!(!same_origin_initiator(&headers(&[("host", "h:3081"), ("origin", "null")])));
+        assert!(same_origin_initiator(&headers(&[("host", "h:3081"), ("referer", "http://h:3081/")])));
+        assert!(same_origin_initiator(&headers(&[("host", "h:3081"), ("referer", "http://h:3081/a/b?c")])));
+        assert!(!same_origin_initiator(&headers(&[("host", "h:3081"), ("referer", "http://h:3082/")])));
+        // Origin wins over Referer when both are there.
+        assert!(!same_origin_initiator(&headers(&[
+            ("host", "h:3081"),
+            ("origin", "http://h:3082"),
+            ("referer", "http://h:3081/"),
+        ])));
+        // Nothing to go on: refused (a typed address, a hidden referrer).
+        assert!(!same_origin_initiator(&headers(&[("host", "h:3081")])));
+        assert!(!same_origin_initiator(&HeaderMap::new()));
+        // Behind a TLS proxy the browser's authority is the forwarded one.
+        assert!(same_origin_initiator(&headers(&[
+            ("host", "127.0.0.1:3081"),
+            ("x-forwarded-host", "codeg.example"),
+            ("x-forwarded-proto", "https"),
+            ("origin", "https://codeg.example"),
+        ])));
+        assert!(!same_origin_initiator(&headers(&[
+            ("host", "127.0.0.1:3081"),
+            ("x-forwarded-host", "codeg.example"),
+            ("origin", "http://127.0.0.1:3081"),
+        ])));
+        assert_eq!(url_authority("https://h").as_deref(), Some("h:443"));
+        assert_eq!(url_authority("http://h").as_deref(), Some("h:80"));
+        assert_eq!(url_authority("http://[::1]:3081/x").as_deref(), Some("[::1]:3081"));
+        assert_eq!(url_authority("null"), None);
+        assert_eq!(url_authority("/relative"), None);
+        assert_eq!(url_authority("ftp://h:21"), None);
     }
 
     #[test]
@@ -1235,6 +1324,13 @@ mod tests {
             strip("img-src https://frame-ancestors.example").as_deref(),
             Some("img-src https://frame-ancestors.example")
         );
+        // Several policies in one header: each loses the directive; a
+        // policy left empty disappears.
+        assert_eq!(
+            strip("default-src 'self', frame-ancestors 'none', img-src *; frame-ancestors 'self'").as_deref(),
+            Some("default-src 'self', img-src *")
+        );
+        assert_eq!(strip("frame-ancestors 'none', frame-ancestors 'self'"), None);
     }
 
     #[test]

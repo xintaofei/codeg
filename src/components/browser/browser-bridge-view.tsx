@@ -99,13 +99,13 @@ export function BrowserBridgeView({ tab }: { tab: BrowserWorkspaceTab }) {
     })()
     return () => {
       cancelled = true
-      // Release this attempt's hold once its open has settled (a failed
-      // open holds nothing). The listener closes a minute later unless
-      // another tab uses it; coming back mints a new grant and reloads.
-      void opening.then(
-        () => bridgeClose(holdId).catch(() => {}),
-        () => {}
-      )
+      // Release this attempt's hold once its open has settled — on
+      // rejection too: a lost response or a timeout does not say whether
+      // the server recorded the hold, and releasing an unknown id is a
+      // no-op there. The listener closes a minute later unless another
+      // tab uses it; coming back mints a new grant and reloads.
+      const release = () => bridgeClose(holdId).catch(() => {})
+      void opening.then(release, release)
     }
   }, [url, tabId, attempt])
 

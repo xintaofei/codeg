@@ -264,10 +264,8 @@ async fn requests_need_this_listeners_cookie() {
     // like a direct one.
     let response = client()
         .get(&url)
-        .header(
-            header::COOKIE,
-            format!("{}; codeg.locale=zh-CN; sid=abc", cookie_for(&grant)),
-        )
+        .header(header::COOKIE, format!("{}; codeg.locale=zh-CN; sid=abc", cookie_for(&grant)))
+        .header("sec-fetch-site", "same-origin")
         // The page's own request: an Origin on this listener's port (the
         // public hostname may differ from the bind address).
         .header(
@@ -332,15 +330,38 @@ async fn only_the_pages_own_requests_pass() {
         send(Some("cross-site"), Some(base(&grant))).await.unwrap().status(),
         StatusCode::FORBIDDEN
     );
-    // Without Fetch Metadata the Origin's port decides.
+    // Without Fetch Metadata (plain http) the Origin must name the
+    // authority the request went to — this listener's.
     assert_eq!(
-        send(None, Some(format!("http://codeg.example:{}", grant.bridge_port))).await.unwrap().status(),
+        send(None, Some(format!("http://127.0.0.1:{}", grant.bridge_port))).await.unwrap().status(),
         StatusCode::OK
     );
     assert_eq!(
         send(None, Some(format!("http://127.0.0.1:{}", grant.bridge_port + 1))).await.unwrap().status(),
         StatusCode::FORBIDDEN
     );
+    assert_eq!(
+        send(None, Some(format!("http://codeg.example:{}", grant.bridge_port))).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    // Else the Referer; nothing at all is refused (a page cannot forge a
+    // referrer, only hide it).
+    let with_referer = |referer: String| {
+        client()
+            .get(&url)
+            .header(header::COOKIE, cookie_for(&grant))
+            .header(header::REFERER, referer)
+            .send()
+    };
+    assert_eq!(
+        with_referer(format!("{}/some/page?x=1", base(&grant))).await.unwrap().status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        with_referer(format!("http://127.0.0.1:{}/", grant.bridge_port + 1)).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(send(None, None).await.unwrap().status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -352,6 +373,7 @@ async fn redirects_and_bodies_pass_through() {
     let response = client()
         .get(format!("{}/redirect", base(&grant)))
         .header(header::COOKIE, cookie_for(&grant))
+        .header("sec-fetch-site", "same-origin")
         .send()
         .await
         .unwrap();
@@ -363,6 +385,7 @@ async fn redirects_and_bodies_pass_through() {
     let response = client()
         .post(format!("{}/echo", base(&grant)))
         .header(header::COOKIE, cookie_for(&grant))
+        .header("sec-fetch-site", "same-origin")
         .header(header::CONTENT_TYPE, "application/json")
         .body("{\"a\":1}")
         .send()
@@ -379,6 +402,7 @@ async fn redirects_and_bodies_pass_through() {
     let response = client()
         .get(format!("{}/__codeg_bridge/other", base(&grant)))
         .header(header::COOKIE, cookie_for(&grant))
+        .header("sec-fetch-site", "same-origin")
         .send()
         .await
         .unwrap();
@@ -494,6 +518,7 @@ async fn tabs_share_a_listener_per_target_port() {
         let response = client()
             .get(format!("{}/hello", base(&first)))
             .header(header::COOKIE, cookie_for(grant))
+            .header("sec-fetch-site", "same-origin")
             .send()
             .await
             .unwrap();

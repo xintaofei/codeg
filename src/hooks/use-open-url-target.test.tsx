@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   openWithOsHandler: vi.fn(() => Promise.resolve()),
   toast: Object.assign(vi.fn(), { error: vi.fn() }),
   remote: false,
+  desktop: true,
   route: { isConversations: true } as { isConversations: boolean } | null,
   viewerHost: null as { open: (r: unknown) => void } | null,
   actions: null as { openBrowserTab: (url: string) => string | null } | null,
@@ -32,7 +33,7 @@ vi.mock("@/lib/link-open", () => ({
 }))
 vi.mock("@/lib/transport", () => ({
   isRemoteDesktopMode: () => mocks.remote,
-  isDesktop: () => true,
+  isDesktop: () => mocks.desktop,
   getTransport: () => ({ call: mocks.transportCall }),
 }))
 
@@ -40,6 +41,10 @@ import {
   resetBrowserCapabilitiesCacheForTests,
   setBrowserCapabilitiesForTests,
 } from "@/lib/browser/browser-api"
+import {
+  bridgeStatus,
+  resetBridgeStatusForTests,
+} from "@/lib/browser/browser-bridge"
 import { resetBrowserPrefsForTests } from "@/lib/browser/browser-prefs"
 import { isPrimaryModifier, useOpenUrlTarget } from "./use-open-url-target"
 
@@ -212,6 +217,72 @@ describe("useOpenUrlTarget", () => {
         forceTarget: "system",
       }).kind
     ).toBe("system")
+  })
+})
+
+describe("useOpenUrlTarget in a browser (web mode)", () => {
+  beforeEach(() => {
+    mocks.desktop = false
+    mocks.actions = { openBrowserTab: mocks.openBrowserTab }
+    resetBridgeStatusForTests()
+  })
+
+  afterEach(() => {
+    mocks.desktop = true
+  })
+
+  it("opens a loopback http address as a bridged tab once the server said the bridge is on", async () => {
+    mocks.transportCall.mockResolvedValueOnce({
+      enabled: true,
+      ports: [3081],
+      publicHost: null,
+    })
+    await bridgeStatus()
+    const { result } = renderHook(() => useOpenUrlTarget())
+    let action: unknown
+    act(() => {
+      action = result.current("http://localhost:3000/", {
+        source: "transcript",
+        modifier: true,
+      })
+    })
+    expect(action).toMatchObject({ kind: "builtin", remoteOverride: true })
+    expect(mocks.openBrowserTab).toHaveBeenCalledWith("http://localhost:3000/")
+    // No first-open toast: the "system browser always" choice is the desktop's.
+    expect(mocks.toast).not.toHaveBeenCalled()
+    // A public address still goes to a new browser tab.
+    act(() => {
+      action = result.current("https://example.com/", { source: "transcript" })
+    })
+    expect(action).toMatchObject({ kind: "system" })
+    expect(mocks.openInSystemBrowser).toHaveBeenCalledWith(
+      "https://example.com/"
+    )
+  })
+
+  it("without the answer yet, opens a new tab and asks the server for next time", async () => {
+    mocks.transportCall.mockResolvedValue({
+      enabled: true,
+      ports: [3081],
+      publicHost: null,
+    })
+    const { result } = renderHook(() => useOpenUrlTarget())
+    let action: unknown
+    act(() => {
+      action = result.current("http://localhost:3000/", { source: "terminal" })
+    })
+    expect(action).toMatchObject({ kind: "system" })
+    expect(mocks.transportCall).toHaveBeenCalledWith(
+      "browser_bridge_status",
+      {}
+    )
+    await act(async () => {
+      await bridgeStatus()
+    })
+    act(() => {
+      action = result.current("http://localhost:3000/", { source: "terminal" })
+    })
+    expect(action).toMatchObject({ kind: "builtin", remoteOverride: true })
   })
 })
 

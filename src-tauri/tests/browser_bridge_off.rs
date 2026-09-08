@@ -65,10 +65,24 @@ async fn switching_the_bridge_off_closes_everything_and_refuses_new_opens() {
         .send()
         .await
         .is_err());
-    // Back on: opens work again.
-    configure();
+    // Back on — bound to `localhost` by name this time: opens work again
+    // and the listener answers on the resolved address.
+    browser_bridge::configure(Some(BridgeConfig {
+        bind_host: "localhost".to_string(),
+        ports: vec![0],
+        public_host: None,
+        reserved: vec![1],
+    }));
     let again = browser_bridge::open(upstream, "tab-on").await.unwrap();
     assert_ne!(again.bridge_port, 0);
+    let response = client()
+        .get(format!("http://localhost:{}/hello", again.bridge_port))
+        .header(header::COOKIE, cookie_for(&again))
+        .header("sec-fetch-site", "same-origin")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
     browser_bridge::close("tab-on");
 }
 
