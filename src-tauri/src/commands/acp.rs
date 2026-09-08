@@ -9710,7 +9710,9 @@ fn create_skill_link(source: &Path, destination: &Path) -> std::io::Result<()> {
 fn remove_skill_link(path: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     if super::experts::path_is_reparse_point(path) && path.is_dir() {
-        return junction::delete(path);
+        // `junction::delete` strips the reparse data but leaves an empty
+        // directory behind. `remove_dir` removes the junction entry itself.
+        return fs::remove_dir(path);
     }
     fs::remove_file(path)
 }
@@ -19193,11 +19195,12 @@ wire_api = "chat"
             fs::write(skill.join("SKILL.md"), "inline config").unwrap();
             fs::create_dir_all(&codex_home).unwrap();
             let content_path = fs::canonicalize(skill.join("SKILL.md")).unwrap();
+            let encoded_path =
+                toml_edit::Value::from(content_path.to_string_lossy().as_ref()).to_string();
             fs::write(
                 codex_home.join("config.toml"),
                 format!(
-                    "# inline form is valid Codex TOML\n[skills]\nconfig = [{{ path = \"{}\", enabled = true }}]\n",
-                    content_path.display()
+                    "# inline form is valid Codex TOML\n[skills]\nconfig = [{{ path = {encoded_path}, enabled = true }}]\n"
                 ),
             )
             .unwrap();
