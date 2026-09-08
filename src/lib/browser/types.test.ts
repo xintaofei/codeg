@@ -17,6 +17,7 @@ describe("browser wire types", () => {
     const state = {
       tabId: "t1",
       ownerWindow: "main",
+      kind: "page",
       surface: "child",
       channel: "native",
       url: "https://example.com/",
@@ -49,6 +50,7 @@ describe("browser wire types", () => {
         reason: null,
       },
       downloadsDir: "/Users/dev/Downloads",
+      docGuest: false,
       policy: {
         enabled: true,
         managedRules: [{ pattern: "*.internal.example", action: "block" }],

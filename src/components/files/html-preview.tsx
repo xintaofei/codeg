@@ -1,8 +1,14 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react"
 import { useTranslations } from "next-intl"
-import { ShieldCheck, ShieldOff } from "lucide-react"
+import { AppWindow, ShieldCheck, ShieldOff } from "lucide-react"
 import { readWorkspaceFileBase64 } from "@/lib/api"
 import {
   extractHtmlTitle,
@@ -10,6 +16,12 @@ import {
   withSandboxCsp,
 } from "@/lib/html-preview-inline"
 import type { FileWorkspaceTab } from "@/contexts/workspace-context"
+import { DocGuestPreview } from "@/components/files/doc-guest-preview"
+import {
+  useBrowserPrefs,
+  type HtmlPreviewEngine,
+} from "@/lib/browser/browser-prefs"
+import { useBrowserCapabilities } from "@/lib/browser/use-browser-capabilities"
 import { cn } from "@/lib/utils"
 
 // Trusted sandbox: scripts run, popups/forms/modals work, but the frame still
@@ -19,6 +31,44 @@ import { cn } from "@/lib/utils"
 // the actual in-app security boundary for previewing untrusted HTML.
 const SANDBOX_TRUSTED = "allow-scripts allow-popups allow-forms allow-modals"
 
+// A per-file choice of engine made from a preview's own menu, kept for the
+// session (a preview unmounts whenever its file leaves the screen). Module
+// state with a tiny subscription so every mount of the same file agrees.
+const engineOverrides = new Map<string, HtmlPreviewEngine>()
+const overrideListeners = new Set<() => void>()
+
+function setEngineOverride(tabId: string, engine: HtmlPreviewEngine): void {
+  engineOverrides.set(tabId, engine)
+  for (const listener of [...overrideListeners]) listener()
+}
+
+function subscribeOverrides(listener: () => void): () => void {
+  overrideListeners.add(listener)
+  return () => {
+    overrideListeners.delete(listener)
+  }
+}
+
+function useEngineOverride(tabId: string): HtmlPreviewEngine | null {
+  return useSyncExternalStore(
+    subscribeOverrides,
+    () => engineOverrides.get(tabId) ?? null,
+    () => null
+  )
+}
+
+/** Tests only. */
+export function resetHtmlPreviewEngineOverridesForTests(): void {
+  engineOverrides.clear()
+}
+
+/**
+ * The preview of an HTML file. On the desktop, where the backend offers the
+ * document guest, that is what renders it (see `DocGuestPreview`); the inline
+ * `srcdoc` iframe remains the web build's renderer and one menu choice away
+ * everywhere. The choice is the user's setting, overridden per file from the
+ * preview's own menu.
+ */
 export function HtmlPreview({
   tab,
   rootPath,
@@ -30,7 +80,54 @@ export function HtmlPreview({
   // outside-workspace files. The tab path itself is absolute.
   rootPath: string | null
 }) {
+  const prefs = useBrowserPrefs()
+  const capabilities = useBrowserCapabilities()
+  const override = useEngineOverride(tab.id)
+  const guestAvailable = capabilities?.docGuest === true && Boolean(tab.path)
+  const engine: HtmlPreviewEngine = !guestAvailable
+    ? "inline"
+    : (override ?? prefs.htmlPreviewEngine)
+  const tabId = tab.id
+  const useInline = useCallback(
+    () => setEngineOverride(tabId, "inline"),
+    [tabId]
+  )
+  const useGuest = useCallback(() => setEngineOverride(tabId, "guest"), [tabId])
+  if (engine === "guest") {
+    return (
+      <DocGuestPreview
+        key={tab.id}
+        tab={tab}
+        rootPath={rootPath}
+        onUseInline={useInline}
+      />
+    )
+  }
+  return (
+    <InlineHtmlPreview
+      key={tab.id}
+      tab={tab}
+      rootPath={rootPath}
+      onUseGuest={guestAvailable ? useGuest : null}
+    />
+  )
+}
+
+/** The inline renderer: the file's markup, its local sub-resources inlined,
+ *  in a sandboxed `srcdoc` iframe. */
+export function InlineHtmlPreview({
+  tab,
+  rootPath,
+  onUseGuest,
+}: {
+  tab: FileWorkspaceTab
+  rootPath: string | null
+  /** Offered when a document guest is available and the user chose the
+   *  inline renderer for this file. */
+  onUseGuest: (() => void) | null
+}) {
   const t = useTranslations("Folder.fileWorkspacePanel")
+  const tDoc = useTranslations("Browser.doc")
   const [inlined, setInlined] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [trusted, setTrusted] = useState(false)
@@ -96,25 +193,38 @@ export function HtmlPreview({
         >
           {heading}
         </span>
-        <button
-          type="button"
-          onClick={() => setTrusted((v) => !v)}
-          aria-pressed={trusted}
-          title={t("htmlPreviewTrustHint")}
-          className={cn(
-            "inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors",
-            trusted
-              ? "text-amber-600 dark:text-amber-500 hover:bg-amber-500/10"
-              : "text-muted-foreground hover:bg-primary/8"
-          )}
-        >
-          {trusted ? (
-            <ShieldOff className="h-3.5 w-3.5" />
-          ) : (
-            <ShieldCheck className="h-3.5 w-3.5" />
-          )}
-          {t("htmlPreviewTrust")}
-        </button>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => setTrusted((v) => !v)}
+            aria-pressed={trusted}
+            title={t("htmlPreviewTrustHint")}
+            className={cn(
+              "inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors",
+              trusted
+                ? "text-amber-600 dark:text-amber-500 hover:bg-amber-500/10"
+                : "text-muted-foreground hover:bg-primary/8"
+            )}
+          >
+            {trusted ? (
+              <ShieldOff className="h-3.5 w-3.5" />
+            ) : (
+              <ShieldCheck className="h-3.5 w-3.5" />
+            )}
+            {t("htmlPreviewTrust")}
+          </button>
+          {onUseGuest ? (
+            <button
+              type="button"
+              onClick={onUseGuest}
+              title={tDoc("useGuest")}
+              aria-label={tDoc("useGuest")}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-primary/8"
+            >
+              <AppWindow className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
+        </div>
       </div>
       <div className="relative flex-1 min-h-0">
         {loading && (

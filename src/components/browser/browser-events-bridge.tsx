@@ -24,9 +24,11 @@ import {
   requestBrowserFind,
   setBrowserTabNotice,
   setBrowserTabState,
+  setDocGuestState,
 } from "@/lib/browser/browser-tab-store"
 import {
   BROWSER_CLOSED_EVENT,
+  BROWSER_DOC_STATE_EVENT,
   BROWSER_DOWNLOAD_EVENT,
   BROWSER_NAVIGATION_BLOCKED_EVENT,
   BROWSER_OPEN_REQUEST_EVENT,
@@ -40,6 +42,7 @@ import {
   type BrowserPopupPayload,
   type BrowserShortcutPayload,
   type BrowserTabState,
+  type DocGuestState,
 } from "@/lib/browser/types"
 import { getTransport } from "@/lib/transport"
 import { getCurrentWindowLabel } from "@/lib/browser/window-label"
@@ -59,6 +62,8 @@ import { getCurrentWindowLabel } from "@/lib/browser/window-label"
  * - `browser://shortcut` → a browser shortcut the page had focus for (⌘F)
  * - `browser://navigation-blocked` → a notice on the tab whose navigation
  *   policy refused
+ * - `browser://doc-state` → the mode of a document guest (the file column's
+ *   HTML preview), including a fall-back to safe mode
  *
  * It also carries the user's site rules the other way: the backend enforces
  * `block` on every navigation a tab attempts, and learns the table from here
@@ -184,6 +189,9 @@ export function BrowserEventsBridge() {
             })
           }
         ),
+        transport.subscribe<DocGuestState>(BROWSER_DOC_STATE_EVENT, (doc) => {
+          setDocGuestState(doc)
+        }),
         transport.subscribe<BrowserOpenRequestPayload>(
           BROWSER_OPEN_REQUEST_EVENT,
           (request) => {

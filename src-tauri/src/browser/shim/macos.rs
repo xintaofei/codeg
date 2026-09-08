@@ -726,6 +726,19 @@ pub fn profile_configuration(mtm: MainThreadMarker) -> Retained<WKWebViewConfigu
     }
 }
 
+/// A configuration for a document guest: a data store that lives in memory
+/// and dies with the webview, so nothing a document stores outlives it or is
+/// shared with browser tabs or the app. Nothing here depends on the macOS
+/// version — non-persistent stores predate identifier-based ones.
+pub fn document_configuration(mtm: MainThreadMarker) -> Retained<WKWebViewConfiguration> {
+    // SAFETY: main thread; both objects are live.
+    unsafe {
+        let configuration = WKWebViewConfiguration::new(mtm);
+        configuration.setWebsiteDataStore(&WKWebsiteDataStore::nonPersistentDataStore(mtm));
+        configuration
+    }
+}
+
 /// Create the profile's store if needed and point it at `proxy` (or at no
 /// proxy). Open tabs use the new value for their next connections; setting the
 /// same value again does nothing, so callers can be liberal.

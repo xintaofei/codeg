@@ -19,6 +19,7 @@ import {
   AppWindow,
   Download,
   Eraser,
+  FileCode2,
   Globe,
   Link2,
   ListFilter,
@@ -63,6 +64,7 @@ import {
   LINK_SOURCES,
   setBrowserDevtools,
   setBrowserHostRules,
+  setBrowserHtmlPreviewEngine,
   setBrowserSurfaceOverride,
   setBrowserSuspendBackgroundTabs,
   setBrowserTerminalClickMenu,
@@ -327,6 +329,9 @@ export function BrowserSettingsSection() {
   const [proxy, setProxy] = useState<BrowserProxyStatus | null>(null)
   const [downloadsDir, setDownloadsDir] = useState<string | null>(null)
   const [policy, setPolicy] = useState<BrowserPolicyStatus | null>(null)
+  // Whether this build hosts document guests (null until known); the HTML
+  // preview switch is inert where there is none to switch to.
+  const [docGuest, setDocGuest] = useState<boolean | null>(null)
 
   // Fetched when the section opens (not once per app run): the answer follows
   // the proxy setting, which lives on another settings page.
@@ -339,12 +344,14 @@ export function BrowserSettingsSection() {
         setProxy(caps.proxy)
         setDownloadsDir(caps.downloadsDir || null)
         setPolicy(caps.policy ?? null)
+        setDocGuest(caps.docGuest ?? false)
       })
       .catch(() => {
         if (cancelled) return
         setProxy(null)
         setDownloadsDir(null)
         setPolicy(null)
+        setDocGuest(null)
       })
     return () => {
       cancelled = true
@@ -450,6 +457,22 @@ export function BrowserSettingsSection() {
               checked={prefs.terminalClickMenu}
               onCheckedChange={(enabled) =>
                 setBrowserTerminalClickMenu(enabled)
+              }
+            />
+          }
+        />
+        <SettingRow
+          icon={FileCode2}
+          title={t("htmlPreviewTitle")}
+          description={t("htmlPreviewHint")}
+          htmlFor="browser-html-preview"
+          control={
+            <Switch
+              id="browser-html-preview"
+              checked={prefs.htmlPreviewEngine === "guest"}
+              disabled={docGuest === false}
+              onCheckedChange={(enabled) =>
+                setBrowserHtmlPreviewEngine(enabled ? "guest" : "inline")
               }
             />
           }

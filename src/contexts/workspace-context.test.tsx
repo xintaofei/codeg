@@ -3561,6 +3561,7 @@ describe("browser tabs", () => {
       setBrowserTabState({
         tabId: backendId,
         ownerWindow: "main",
+        kind: "page",
         surface: "child",
         channel: "native",
         url: "https://example.com/docs/deep",
@@ -3609,6 +3610,7 @@ describe("browser tabs", () => {
       setBrowserTabState({
         tabId: opened.id.slice("browser:".length),
         ownerWindow: "main",
+        kind: "page",
         surface: "child",
         channel: "native",
         url: "https://example.com/docs/deep",

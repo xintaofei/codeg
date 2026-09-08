@@ -4795,6 +4795,8 @@
     "rulesEmpty": "No rules yet.",
     "terminalMenuTitle": "Terminal link menu",
     "terminalMenuHint": "Clicking a link in the terminal shows a small menu (built-in browser, system browser, copy link) instead of opening it right away. ⌘/Ctrl-click still opens the link directly.",
+    "htmlPreviewTitle": "HTML file previews",
+    "htmlPreviewHint": "Show HTML files through the built-in browser, in a locked-down document view: no scripts until you enable them for a file, and only its own folder is reachable. Off: the inline preview is used, as in the web app.",
     "managedDisabled": "The built-in browser is turned off by your administrator's policy; links open in the system browser."
   },
   "LogsSettings": {
@@ -5921,6 +5923,26 @@
       "openBuiltin": "Open in built-in browser",
       "openSystem": "Open in system browser",
       "copy": "Copy link"
+    },
+    "doc": {
+      "scriptsOff": "Enable scripts",
+      "scriptsOn": "Scripts on",
+      "scriptsHint": "Run this document's scripts. They can only read files in its folder and cannot reach the network. If any of those files changes later, scripts turn off again.",
+      "reload": "Reload",
+      "more": "More",
+      "copyPath": "Copy path",
+      "useInline": "Use inline preview",
+      "useGuest": "Use built-in browser preview",
+      "unsaved": "Unsaved changes are not shown",
+      "reset": "{file} changed after scripts were enabled. Scripts are off again.",
+      "enableAgain": "Enable again",
+      "dismiss": "Dismiss",
+      "externalLink": "Link to {host} was not followed",
+      "openLink": "Open link",
+      "downloadRefused": "Downloads are not allowed in a document preview",
+      "openWithSystem": "Open with system app",
+      "schemeBlocked": "{url} can't be opened here",
+      "cannotShow": "This document can't be shown"
     }
   }
 }

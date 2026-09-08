@@ -48,6 +48,7 @@ function loaded(id: string) {
   setBrowserTabState({
     tabId: id,
     ownerWindow: "main",
+    kind: "page",
     surface: "child",
     channel: "native",
     url: "https://example.com/",

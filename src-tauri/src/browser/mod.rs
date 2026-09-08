@@ -13,6 +13,7 @@
 //! Module map:
 //! - `types`      — wire types shared with `src/lib/browser/types.ts`
 //! - `policy`     — pure decisions (scheme allow-list, …)
+//! - `doc_guest`  — the `codeg-doc:` guest that shows a local HTML file
 //! - `profile`    — the tabs' own data store / directory and their proxy
 //! - `downloads`  — destination policy and records for page downloads
 //! - `registry`   — tab id → surface + last known state
@@ -26,6 +27,7 @@
 //!   `browser-smoke`, never in a release build)
 
 pub mod channel;
+pub mod doc_guest;
 pub mod downloads;
 pub mod events;
 pub mod hooks;
@@ -46,6 +48,7 @@ pub mod shim;
 #[cfg(feature = "browser-smoke")]
 pub mod smoke;
 
+pub use doc_guest::DocGuests;
 pub use downloads::BrowserDownloads;
 pub use registry::BrowserRegistry;
 

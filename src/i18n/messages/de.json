@@ -4795,6 +4795,8 @@
     "rulesEmpty": "Noch keine Regeln.",
     "terminalMenuTitle": "Link-Menü im Terminal",
     "terminalMenuHint": "Ein Klick auf einen Link im Terminal zeigt ein kleines Menü (integrierter Browser, Systembrowser, Link kopieren), statt ihn sofort zu öffnen. ⌘/Strg-Klick öffnet den Link weiterhin direkt.",
+    "htmlPreviewTitle": "Vorschau von HTML-Dateien",
+    "htmlPreviewHint": "Zeigt HTML-Dateien über den integrierten Browser in einer abgeschotteten Dokumentansicht: keine Skripte, bis du sie für eine Datei aktivierst, und nur der eigene Ordner ist erreichbar. Aus: Die Inline-Vorschau wird verwendet, wie in der Web-App.",
     "managedDisabled": "Die Richtlinie der Administration hat den integrierten Browser abgeschaltet; Links öffnen sich im Systembrowser."
   },
   "LogsSettings": {
@@ -5921,6 +5923,26 @@
       "openBuiltin": "Im integrierten Browser öffnen",
       "openSystem": "Im Systembrowser öffnen",
       "copy": "Link kopieren"
+    },
+    "doc": {
+      "scriptsOff": "Skripte aktivieren",
+      "scriptsOn": "Skripte aktiv",
+      "scriptsHint": "Führt die Skripte dieses Dokuments aus. Sie können nur Dateien aus seinem Ordner lesen und haben keinen Netzwerkzugriff. Ändert sich danach eine dieser Dateien, werden Skripte wieder deaktiviert.",
+      "reload": "Neu laden",
+      "more": "Mehr",
+      "copyPath": "Pfad kopieren",
+      "useInline": "Inline-Vorschau verwenden",
+      "useGuest": "Vorschau im integrierten Browser verwenden",
+      "unsaved": "Ungespeicherte Änderungen werden nicht angezeigt",
+      "reset": "{file} wurde geändert, nachdem Skripte aktiviert wurden. Skripte sind wieder deaktiviert.",
+      "enableAgain": "Erneut aktivieren",
+      "dismiss": "Schließen",
+      "externalLink": "Dem Link zu {host} wurde nicht gefolgt",
+      "openLink": "Link öffnen",
+      "downloadRefused": "In einer Dokumentvorschau sind keine Downloads erlaubt",
+      "openWithSystem": "Mit System-App öffnen",
+      "schemeBlocked": "{url} kann hier nicht geöffnet werden",
+      "cannotShow": "Dieses Dokument kann nicht angezeigt werden"
     }
   }
 }

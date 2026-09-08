@@ -32,6 +32,11 @@ export type LinkTarget = "builtin" | "system"
  *  back to the owned-window surface without a rebuild. */
 export type SurfaceOverride = "auto" | "child" | "window"
 
+/** What renders an HTML file's preview on the desktop: the document guest
+ *  (a native surface served by the backend from the file's folder) or the
+ *  inline `srcdoc` iframe the web build uses. */
+export type HtmlPreviewEngine = "guest" | "inline"
+
 export interface BrowserPrefsSnapshot {
   defaultTarget: Readonly<Record<LinkSource, LinkTarget>>
   devtools: boolean
@@ -49,6 +54,9 @@ export interface BrowserPrefsSnapshot {
    *  one more click on every link is only worth it to people who switch
    *  destinations often; a modifier-click already offers the other one. */
   terminalClickMenu: boolean
+  /** Guest by default wherever a guest exists; the inline preview remains
+   *  one switch away for anyone who prefers the old rendering. */
+  htmlPreviewEngine: HtmlPreviewEngine
 }
 
 export const DEFAULT_BROWSER_PREFS: BrowserPrefsSnapshot = Object.freeze({
@@ -65,6 +73,7 @@ export const DEFAULT_BROWSER_PREFS: BrowserPrefsSnapshot = Object.freeze({
   suspendBackgroundTabs: false,
   hostRules: Object.freeze([]) as readonly HostRule[],
   terminalClickMenu: false,
+  htmlPreviewEngine: "guest",
 }) as BrowserPrefsSnapshot
 
 const KEY_PREFIX = "browser:"
@@ -81,6 +90,7 @@ const SUSPEND_KEY = `${KEY_PREFIX}suspend-background-tabs`
 // place, and half a table is not a meaningful state.
 const HOST_RULES_KEY = `${KEY_PREFIX}host-rules`
 const TERMINAL_MENU_KEY = `${KEY_PREFIX}terminal-click-menu`
+const HTML_PREVIEW_KEY = `${KEY_PREFIX}html-preview-engine`
 
 function readRaw(key: string): string | null {
   if (typeof window === "undefined") return null
@@ -130,6 +140,8 @@ function read(): BrowserPrefsSnapshot {
     suspendBackgroundTabs: readRaw(SUSPEND_KEY) === "true",
     hostRules: parseHostRules(readRaw(HOST_RULES_KEY)),
     terminalClickMenu: readRaw(TERMINAL_MENU_KEY) === "true",
+    htmlPreviewEngine:
+      readRaw(HTML_PREVIEW_KEY) === "inline" ? "inline" : "guest",
   }
 }
 
@@ -193,6 +205,10 @@ export function setBrowserTerminalClickMenu(enabled: boolean): void {
   write(TERMINAL_MENU_KEY, enabled ? "true" : null)
 }
 
+export function setBrowserHtmlPreviewEngine(engine: HtmlPreviewEngine): void {
+  write(HTML_PREVIEW_KEY, engine === "inline" ? "inline" : null)
+}
+
 export function subscribeBrowserPrefs(listener: () => void): () => void {
   if (typeof window === "undefined") return () => {}
   const onChange = () => listener()
@@ -237,6 +253,7 @@ export function resetBrowserPrefsForTests(): void {
     localStorage.removeItem(SUSPEND_KEY)
     localStorage.removeItem(HOST_RULES_KEY)
     localStorage.removeItem(TERMINAL_MENU_KEY)
+    localStorage.removeItem(HTML_PREVIEW_KEY)
   } catch {
     /* ignore */
   }

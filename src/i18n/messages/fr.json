@@ -4795,6 +4795,8 @@
     "rulesEmpty": "Aucune règle pour l'instant.",
     "terminalMenuTitle": "Menu des liens du terminal",
     "terminalMenuHint": "Un clic sur un lien dans le terminal affiche un petit menu (navigateur intégré, navigateur système, copier le lien) au lieu de l'ouvrir immédiatement. ⌘/Ctrl-clic ouvre toujours le lien directement.",
+    "htmlPreviewTitle": "Aperçu des fichiers HTML",
+    "htmlPreviewHint": "Affiche les fichiers HTML via le navigateur intégré, dans une vue document verrouillée : aucun script tant que vous ne l'activez pas pour un fichier, et seul son propre dossier est accessible. Désactivé : l'aperçu en ligne est utilisé, comme dans l'application web.",
     "managedDisabled": "La politique de votre administrateur a désactivé le navigateur intégré ; les liens s'ouvrent dans le navigateur système."
   },
   "LogsSettings": {
@@ -5921,6 +5923,26 @@
       "openBuiltin": "Ouvrir dans le navigateur intégré",
       "openSystem": "Ouvrir dans le navigateur système",
       "copy": "Copier le lien"
+    },
+    "doc": {
+      "scriptsOff": "Activer les scripts",
+      "scriptsOn": "Scripts activés",
+      "scriptsHint": "Exécute les scripts de ce document. Ils ne peuvent lire que les fichiers de son dossier et n'ont pas accès au réseau. Si l'un de ces fichiers change ensuite, les scripts sont de nouveau désactivés.",
+      "reload": "Recharger",
+      "more": "Plus",
+      "copyPath": "Copier le chemin",
+      "useInline": "Utiliser l'aperçu en ligne",
+      "useGuest": "Utiliser l'aperçu du navigateur intégré",
+      "unsaved": "Les modifications non enregistrées ne sont pas affichées",
+      "reset": "{file} a changé après l'activation des scripts. Les scripts sont de nouveau désactivés.",
+      "enableAgain": "Réactiver",
+      "dismiss": "Fermer",
+      "externalLink": "Le lien vers {host} n'a pas été suivi",
+      "openLink": "Ouvrir le lien",
+      "downloadRefused": "Les téléchargements ne sont pas autorisés dans l'aperçu d'un document",
+      "openWithSystem": "Ouvrir avec l'application système",
+      "schemeBlocked": "{url} ne peut pas être ouvert ici",
+      "cannotShow": "Ce document ne peut pas être affiché"
     }
   }
 }

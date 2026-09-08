@@ -6,6 +6,7 @@ import type { BrowserTabState, FrozenFrame } from "@/lib/browser/types"
 
 const api = vi.hoisted(() => ({
   browserOpenTab: vi.fn(),
+  browserClose: vi.fn(() => Promise.resolve()),
   browserSetBounds: vi.fn(() => Promise.resolve()),
   browserSetVisible: vi.fn<
     (
@@ -17,6 +18,11 @@ const api = vi.hoisted(() => ({
   >(() => Promise.resolve(null)),
 }))
 vi.mock("@/lib/browser/browser-api", () => api)
+// `releaseBrowserTab` only talks to the backend on the desktop.
+vi.mock("@/lib/transport", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/transport")>()),
+  isDesktop: () => true,
+}))
 vi.mock("@/contexts/workspace-context", () => ({
   useWorkspaceView: () => ({
     mode: "conversation",
@@ -31,8 +37,11 @@ vi.mock("@/components/ui/overlay-host-hidden", () => ({
   useOverlayHostHidden: () => false,
 }))
 
-import { BrowserSurfaceHost } from "./browser-surface-host"
-import { resetBrowserTabStoreForTests } from "@/lib/browser/browser-tab-store"
+import { BrowserSurfaceHost, NativeSurfaceHost } from "./browser-surface-host"
+import {
+  getBrowserTabState,
+  resetBrowserTabStoreForTests,
+} from "@/lib/browser/browser-tab-store"
 import {
   acquireNativeSurfaceOcclusion,
   resetNativeSurfaceOcclusionForTests,
@@ -58,6 +67,7 @@ function state(id = "abc"): BrowserTabState {
   return {
     tabId: id,
     ownerWindow: "main",
+    kind: "page",
     surface: "child",
     channel: "degraded",
     url: "",
@@ -140,6 +150,33 @@ describe("BrowserSurfaceHost", () => {
     unmount()
     expect(api.browserSetVisible).toHaveBeenLastCalledWith(
       "host1",
+      false,
+      false
+    )
+  })
+
+  it("tears a destroy-on-unmount surface down instead of hiding it", async () => {
+    const create = vi.fn(() =>
+      Promise.resolve({ ...state("doc-1"), kind: "document" as const })
+    )
+    const { unmount } = render(
+      <NativeSurfaceHost
+        backendId="doc-1"
+        storeKey="browser:doc-1"
+        create={create}
+        destroyOnUnmount
+      />
+    )
+    await flush()
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(getBrowserTabState("browser:doc-1")?.kind).toBe("document")
+
+    unmount()
+    await flush()
+    expect(api.browserClose).toHaveBeenCalledWith("doc-1")
+    expect(getBrowserTabState("browser:doc-1")).toBeNull()
+    expect(api.browserSetVisible).not.toHaveBeenCalledWith(
+      "doc-1",
       false,
       false
     )

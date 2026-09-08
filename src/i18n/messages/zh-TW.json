@@ -4795,6 +4795,8 @@
     "rulesEmpty": "還沒有規則。",
     "terminalMenuTitle": "終端機連結選單",
     "terminalMenuHint": "點擊終端機中的連結時先顯示一個小選單（內建瀏覽器、系統瀏覽器、複製連結），而不是直接開啟。⌘/Ctrl 點擊仍會直接開啟。",
+    "htmlPreviewTitle": "HTML 檔案預覽",
+    "htmlPreviewHint": "透過內建瀏覽器以受限的文件檢視顯示 HTML 檔案：在你為某個檔案啟用之前不執行指令碼，且只能存取它自己的資料夾。關閉後使用內嵌預覽，與網頁版相同。",
     "managedDisabled": "管理員原則已關閉內建瀏覽器；連結將在系統瀏覽器中開啟。"
   },
   "LogsSettings": {
@@ -5921,6 +5923,26 @@
       "openBuiltin": "在內建瀏覽器中開啟",
       "openSystem": "在系統瀏覽器中開啟",
       "copy": "複製連結"
+    },
+    "doc": {
+      "scriptsOff": "啟用指令碼",
+      "scriptsOn": "指令碼已啟用",
+      "scriptsHint": "執行此文件的指令碼。指令碼只能讀取所在資料夾中的檔案，無法存取網路。之後這些檔案若有任何變更，指令碼會再次關閉。",
+      "reload": "重新載入",
+      "more": "更多",
+      "copyPath": "複製路徑",
+      "useInline": "使用內嵌預覽",
+      "useGuest": "使用內建瀏覽器預覽",
+      "unsaved": "未儲存的變更不會顯示",
+      "reset": "{file} 在啟用指令碼後發生了變更，指令碼已再次關閉。",
+      "enableAgain": "再次啟用",
+      "dismiss": "關閉",
+      "externalLink": "未跟隨指向 {host} 的連結",
+      "openLink": "開啟連結",
+      "downloadRefused": "文件預覽中不允許下載",
+      "openWithSystem": "用系統應用程式開啟",
+      "schemeBlocked": "{url} 無法在這裡開啟",
+      "cannotShow": "無法顯示此文件"
     }
   }
 }

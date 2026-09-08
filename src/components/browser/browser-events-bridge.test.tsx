@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => {
           isolatedStorage: true,
           proxy: { url: null, applies: "live", reason: null },
           downloadsDir: "/Users/dev/Downloads",
+          docGuest: false,
           policy: { enabled: true, managedRules: [], managedSource: null },
         })
     ),
@@ -135,6 +136,7 @@ describe("BrowserEventsBridge", () => {
     expect(mocks.browserClose).toHaveBeenCalledWith("stale-2")
     expect([...mocks.handlers.keys()].sort()).toEqual([
       "browser://closed",
+      "browser://doc-state",
       "browser://download",
       "browser://navigation-blocked",
       "browser://open-request",
@@ -192,6 +194,7 @@ describe("BrowserEventsBridge", () => {
       source: "modifier-click",
       activate: false,
       ownerWindow: "main",
+      kind: "page",
       openerTabId: "abc",
     })
     expect(mocks.openBrowserTab).toHaveBeenCalledTimes(2)
@@ -203,6 +206,7 @@ describe("BrowserEventsBridge", () => {
     mocks.handlers.get("browser://state")!({
       tabId: "abc",
       ownerWindow: "main",
+      kind: "page",
       surface: "child",
       channel: "native",
       url: "https://example.com/",
@@ -246,6 +250,7 @@ describe("BrowserEventsBridge", () => {
     setBrowserTabState({
       tabId: "abc-p1",
       ownerWindow: "main",
+      kind: "page",
       surface: "child",
       channel: "native",
       url: "",
@@ -264,6 +269,7 @@ describe("BrowserEventsBridge", () => {
     mocks.handlers.get("browser://closed")!({
       tabId: "abc-p1",
       ownerWindow: "main",
+      kind: "page",
     })
     expect(getBrowserTabState("browser:abc-p1")).toBeNull()
     expect(mocks.closeFileTab).toHaveBeenCalledWith("browser:abc-p1")
@@ -290,6 +296,7 @@ describe("BrowserEventsBridge", () => {
       isolatedStorage: false,
       proxy: { url: null, applies: "unsupported", reason: null },
       downloadsDir: "/Users/dev/Downloads",
+      docGuest: false,
       policy: { enabled: true, managedRules: [], managedSource: null },
     })
     render(<BrowserEventsBridge />)
@@ -367,6 +374,7 @@ describe("BrowserEventsBridge", () => {
         isolatedStorage: true,
         proxy: { url: null, applies: "live", reason: null },
         downloadsDir: "/Users/dev/Downloads",
+        docGuest: false,
         policy: { enabled: true, managedRules: [], managedSource: null },
       })
       await Promise.resolve()

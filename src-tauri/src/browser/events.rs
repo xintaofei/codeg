@@ -5,12 +5,13 @@ use tauri::AppHandle;
 
 use crate::web::event_bridge::{emit_event, EventEmitter};
 
+use super::doc_guest::DocGuestState;
 use super::downloads::{BrowserDownload, DOWNLOAD_EVENT};
 use super::types::{
     BrowserClosedPayload, BrowserNavigationBlockedPayload, BrowserOpenRequestPayload,
     BrowserPopupPayload, BrowserShortcutPayload, BrowserTabState, NavigationBlockReason,
-    CLOSED_EVENT, NAVIGATION_BLOCKED_EVENT, OPEN_REQUEST_EVENT, POPUP_EVENT, SHORTCUT_EVENT,
-    STATE_EVENT,
+    CLOSED_EVENT, DOC_STATE_EVENT, NAVIGATION_BLOCKED_EVENT, OPEN_REQUEST_EVENT, POPUP_EVENT,
+    SHORTCUT_EVENT, STATE_EVENT,
 };
 
 pub fn emit_state(app: &AppHandle, state: &BrowserTabState) {
@@ -45,6 +46,10 @@ pub fn emit_shortcut(app: &AppHandle, tab_id: &str, shortcut: &str) {
             shortcut: shortcut.to_string(),
         },
     );
+}
+
+pub fn emit_doc_state(app: &AppHandle, state: &DocGuestState) {
+    emit_event(&EventEmitter::Tauri(app.clone()), DOC_STATE_EVENT, state);
 }
 
 pub fn emit_download(app: &AppHandle, download: &BrowserDownload) {

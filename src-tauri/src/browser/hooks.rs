@@ -413,12 +413,13 @@ pub fn title_changed(app: &AppHandle, tab_id: &str, title: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browser::types::{BrowserTabState, ChannelKind, SurfaceKind};
+    use crate::browser::types::{BrowserTabState, ChannelKind, SurfaceKind, TabKind};
 
     fn state(url: &str, requested: &str) -> BrowserTabState {
         BrowserTabState {
             tab_id: "t1".into(),
             owner_window: "main".into(),
+            kind: TabKind::Page,
             surface: SurfaceKind::Child,
             channel: ChannelKind::Native,
             url: url.into(),

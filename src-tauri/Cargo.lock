@@ -1081,6 +1081,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "objc2-web-kit",
+ "percent-encoding",
  "portable-pty",
  "prost",
  "qrcode",

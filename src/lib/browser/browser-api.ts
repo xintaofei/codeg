@@ -11,6 +11,8 @@ import type {
   BrowserCapabilities,
   BrowserDownload,
   BrowserTabState,
+  DocGuestState,
+  DocMode,
   FrozenFrame,
   SurfaceChoice,
 } from "./types"
@@ -25,6 +27,7 @@ const UNAVAILABLE: BrowserCapabilities = {
   proxy: { url: null, applies: "unsupported", reason: null },
   downloadsDir: "",
   policy: { enabled: false, managedRules: [], managedSource: null },
+  docGuest: false,
 }
 
 let capabilitiesPromise: Promise<BrowserCapabilities> | null = null
@@ -109,6 +112,55 @@ export function browserOpenTab(
     folderId: params.folderId ?? null,
     devtools: params.devtools ?? false,
   })
+}
+
+export interface OpenDocGuestParams {
+  tabId: string
+  /** Absolute path of the HTML file. */
+  path: string
+  /** Directory to confine the document to (the owning workspace folder);
+   *  null = the file's own directory. */
+  root: string | null
+  bounds: Bounds
+  background?: boolean
+  devtools?: boolean
+}
+
+export interface DocGuestOpenResult {
+  state: BrowserTabState
+  doc: DocGuestState
+}
+
+/** Show a local HTML file through a document guest (see the Rust
+ *  `doc_guest` module): an embedded surface registered like a tab's, whose
+ *  requests the backend answers from the file's folder. */
+export function browserDocOpen(
+  params: OpenDocGuestParams
+): Promise<DocGuestOpenResult> {
+  return getTransport().call<DocGuestOpenResult>("browser_doc_open", {
+    tabId: params.tabId,
+    path: params.path,
+    root: params.root,
+    bounds: params.bounds,
+    background: params.background ?? false,
+    devtools: params.devtools ?? false,
+  })
+}
+
+/** Switch a document guest between safe and dynamic mode; the guest reloads
+ *  so the new policy travels with the document. */
+export function browserDocSetMode(
+  tabId: string,
+  mode: DocMode
+): Promise<DocGuestState> {
+  return getTransport().call<DocGuestState>("browser_doc_set_mode", {
+    tabId,
+    mode,
+  })
+}
+
+export function browserDocState(tabId: string): Promise<DocGuestState> {
+  return getTransport().call<DocGuestState>("browser_doc_state", { tabId })
 }
 
 export function browserClose(tabId: string): Promise<void> {

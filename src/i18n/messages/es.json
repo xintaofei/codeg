@@ -4795,6 +4795,8 @@
     "rulesEmpty": "Aún no hay reglas.",
     "terminalMenuTitle": "Menú de enlaces del terminal",
     "terminalMenuHint": "Al hacer clic en un enlace del terminal se muestra un pequeño menú (navegador integrado, navegador del sistema, copiar enlace) en lugar de abrirlo de inmediato. ⌘/Ctrl+clic sigue abriendo el enlace directamente.",
+    "htmlPreviewTitle": "Vista previa de archivos HTML",
+    "htmlPreviewHint": "Muestra los archivos HTML a través del navegador integrado, en una vista de documento restringida: sin scripts hasta que los actives para un archivo, y solo con acceso a su propia carpeta. Desactivado: se usa la vista previa en línea, como en la aplicación web.",
     "managedDisabled": "La política de tu administrador ha desactivado el navegador integrado; los enlaces se abren en el navegador del sistema."
   },
   "LogsSettings": {
@@ -5921,6 +5923,26 @@
       "openBuiltin": "Abrir en el navegador integrado",
       "openSystem": "Abrir en el navegador del sistema",
       "copy": "Copiar enlace"
+    },
+    "doc": {
+      "scriptsOff": "Activar scripts",
+      "scriptsOn": "Scripts activados",
+      "scriptsHint": "Ejecuta los scripts de este documento. Solo pueden leer archivos de su carpeta y no tienen acceso a la red. Si después cambia alguno de esos archivos, los scripts se desactivan de nuevo.",
+      "reload": "Recargar",
+      "more": "Más",
+      "copyPath": "Copiar ruta",
+      "useInline": "Usar vista previa en línea",
+      "useGuest": "Usar la vista previa del navegador integrado",
+      "unsaved": "Los cambios sin guardar no se muestran",
+      "reset": "{file} cambió después de activar los scripts. Los scripts están desactivados de nuevo.",
+      "enableAgain": "Activar de nuevo",
+      "dismiss": "Cerrar",
+      "externalLink": "No se siguió el enlace a {host}",
+      "openLink": "Abrir enlace",
+      "downloadRefused": "No se permiten descargas en la vista previa de un documento",
+      "openWithSystem": "Abrir con la aplicación del sistema",
+      "schemeBlocked": "{url} no se puede abrir aquí",
+      "cannotShow": "No se puede mostrar este documento"
     }
   }
 }

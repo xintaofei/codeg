@@ -10,13 +10,14 @@ use tauri::{AppHandle, Manager, State, WebviewWindow};
 use tauri::Url;
 
 use crate::app_error::AppCommandError;
+use crate::browser::doc_guest::{self, DocGuestState, DocGuests, DocMode};
 use crate::browser::downloads::{BrowserDownload, BrowserDownloads};
 use crate::browser::policy::{BrowserPolicy, HostRule};
 use crate::browser::registry::{BrowserRegistry, BrowserTab};
 use crate::browser::surface::BrowserSurface;
 use crate::browser::types::{
     Bounds, BrowserCapabilities, BrowserErrorInfo, BrowserErrorKind, BrowserTabState, ChannelKind,
-    FrozenFrame, SurfaceChoice, SurfaceKind,
+    FrozenFrame, SurfaceChoice, SurfaceKind, TabKind,
 };
 use crate::browser::{events, hooks, policy, tab_label};
 
@@ -74,6 +75,7 @@ pub fn capabilities(policy: &BrowserPolicy) -> BrowserCapabilities {
         proxy: crate::browser::profile::proxy_status(),
         downloads_dir: crate::browser::downloads::downloads_dir_display(),
         policy: policy.status(),
+        doc_guest: enabled && doc_guest::supported(),
     }
 }
 
@@ -213,6 +215,7 @@ pub fn open_tab_core(
     let state = BrowserTabState {
         tab_id: params.tab_id.clone(),
         owner_window: owner.label().to_string(),
+        kind: TabKind::Page,
         surface: surface.kind(),
         channel: ChannelKind::Degraded,
         url: String::new(),
@@ -287,6 +290,183 @@ pub fn open_tab_core(
     Ok(state)
 }
 
+pub struct DocOpenParams {
+    pub tab_id: String,
+    /// Absolute path of the HTML file.
+    pub path: String,
+    /// Directory to confine the document to (the owning workspace folder);
+    /// the file's own directory when absent or not containing the file.
+    pub root: Option<String>,
+    pub bounds: Bounds,
+    pub background: bool,
+    pub devtools: bool,
+}
+
+/// What `browser_doc_open` answers: the tab like any other, and the guest's
+/// own state (mode, root, URL).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocOpenResult {
+    pub state: BrowserTabState,
+    pub doc: DocGuestState,
+}
+
+/// Show a local HTML file through a document guest (see `doc_guest`). The
+/// guest is an embedded surface like a tab's, registered under the same
+/// registry so bounds, visibility, reload and close work unchanged; the
+/// grant — root, entry, mode — is looked up by document, so the file comes
+/// back in the mode the user last chose for it this session.
+pub fn doc_open_core(
+    app: &AppHandle,
+    owner: &WebviewWindow,
+    registry: &BrowserRegistry,
+    guests: &DocGuests,
+    params: DocOpenParams,
+) -> Result<DocOpenResult, AppCommandError> {
+    validate_tab_id(&params.tab_id)?;
+    if registry.contains(&params.tab_id) {
+        return Err(AppCommandError::already_exists(format!(
+            "browser tab {} is already open",
+            params.tab_id
+        )));
+    }
+    if app
+        .try_state::<BrowserPolicy>()
+        .is_some_and(|policy| !policy.enabled())
+    {
+        return Err(AppCommandError::invalid_input(
+            "the built-in browser is disabled by the administrator's policy",
+        ));
+    }
+    if !doc_guest::supported() {
+        return Err(AppCommandError::invalid_input(
+            "document guests need the embedded browser surface (macOS for now)",
+        ));
+    }
+    let (root, entry) = doc_guest::resolve_document(&params.path, params.root.as_deref())
+        .map_err(AppCommandError::invalid_input)?;
+    let grant = guests
+        .grant_for(root, entry)
+        .map_err(AppCommandError::invalid_input)?;
+    let label = doc_guest::doc_label(&params.tab_id);
+    let surface = {
+        #[cfg(all(feature = "browser-child", target_os = "macos"))]
+        {
+            BrowserSurface::Child(
+                crate::browser::surface_child::create_document(
+                    app,
+                    owner,
+                    &params.tab_id,
+                    &label,
+                    params.bounds,
+                    params.background,
+                    params.devtools,
+                    grant.clone(),
+                )
+                .map_err(|e| window_err("Failed to create document webview", e))?,
+            )
+        }
+        #[cfg(not(all(feature = "browser-child", target_os = "macos")))]
+        {
+            let _ = (owner, &label);
+            return Err(AppCommandError::invalid_input(
+                "document guests need the embedded browser surface (macOS for now)",
+            ));
+        }
+    };
+    let url = grant.document_url();
+    let state = BrowserTabState {
+        tab_id: params.tab_id.clone(),
+        owner_window: owner.label().to_string(),
+        kind: TabKind::Document,
+        surface: surface.kind(),
+        channel: ChannelKind::Degraded,
+        url: String::new(),
+        requested_url: url.clone(),
+        title: String::new(),
+        favicon: None,
+        loading: true,
+        can_go_back: false,
+        can_go_forward: false,
+        origin: None,
+        zoom: 1.0,
+        error: None,
+        remote_host: None,
+        opener_tab_id: None,
+    };
+    if let Err(err) = registry.insert(BrowserTab::new(
+        state.clone(),
+        surface.clone(),
+        params.bounds,
+        !params.background,
+        params.devtools,
+    )) {
+        let _ = surface.close();
+        return Err(err);
+    }
+    guests.bind(&params.tab_id, grant.clone());
+    let mut state = state;
+    match surface.install_channel() {
+        Ok(true) => {}
+        Ok(false) => {
+            if let Some(next) =
+                registry.update_state(&params.tab_id, |s| s.channel = ChannelKind::Legacy)
+            {
+                state = next;
+            }
+        }
+        Err(err) => {
+            tracing::warn!(
+                "[browser] document {}: page channel unavailable ({err}); continuing degraded",
+                params.tab_id
+            );
+        }
+    }
+    if params.background {
+        let _ = surface.hide();
+    }
+    let parsed = Url::parse(&url)
+        .map_err(|e| AppCommandError::invalid_input(format!("bad document url {url:?}: {e}")))?;
+    if let Err(err) = surface.navigate(parsed) {
+        registry.remove(&params.tab_id);
+        guests.unbind(&params.tab_id);
+        let _ = surface.close();
+        return Err(window_err("Failed to load the document", err));
+    }
+    hooks::begin_load(app, &params.tab_id);
+    events::emit_state(app, &state);
+    let doc = grant.state(&params.tab_id);
+    events::emit_doc_state(app, &doc);
+    Ok(DocOpenResult { state, doc })
+}
+
+/// The user's choice of mode for a document. Takes effect on the reload
+/// this performs: the CSP travels with the document, and a fresh approval
+/// starts counting from now.
+pub fn doc_set_mode_core(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    guests: &DocGuests,
+    tab_id: &str,
+    mode: DocMode,
+) -> Result<DocGuestState, AppCommandError> {
+    let grant = guests
+        .for_tab(tab_id)
+        .ok_or_else(|| AppCommandError::not_found(format!("document guest {tab_id} not found")))?;
+    grant.set_mode(mode);
+    let doc = grant.state(tab_id);
+    events::emit_doc_state(app, &doc);
+    reload_core(app, registry, tab_id)?;
+    Ok(doc)
+}
+
+pub fn doc_state_core(guests: &DocGuests, tab_id: &str) -> Result<DocGuestState, AppCommandError> {
+    guests
+        .for_tab(tab_id)
+        .map(|grant| grant.state(tab_id))
+        .ok_or_else(|| AppCommandError::not_found(format!("document guest {tab_id} not found")))
+}
+
 /// Wipe cookies, caches and every other kind of stored site data. All tabs
 /// share one persistent store, so this is app-wide; open pages keep running
 /// (nothing is reloaded, as in a browser).
@@ -358,6 +538,9 @@ fn surface_of(registry: &BrowserRegistry, tab_id: &str) -> Result<BrowserSurface
 pub fn close_core(app: &AppHandle, registry: &BrowserRegistry, tab_id: &str) -> Result<(), AppCommandError> {
     if let Some(tab) = registry.remove(tab_id) {
         let _ = tab.surface.close();
+        if let Some(guests) = app.try_state::<DocGuests>() {
+            guests.unbind(tab_id);
+        }
         events::emit_closed(app, tab_id, &tab.state.owner_window);
     }
     Ok(())
@@ -370,6 +553,9 @@ pub fn close_all_for_owner(app: &AppHandle, owner_window: &str) {
     if let Some(registry) = app.try_state::<BrowserRegistry>() {
         for tab in registry.remove_by_owner(owner_window) {
             let _ = tab.surface.close();
+            if let Some(guests) = app.try_state::<DocGuests>() {
+                guests.unbind(&tab.state.tab_id);
+            }
         }
     }
 }
@@ -516,6 +702,15 @@ pub fn navigate_core(
 ) -> Result<BrowserTabState, AppCommandError> {
     let url = parse_web_url(raw_url)?;
     let surface = surface_of(registry, tab_id)?;
+    // A document guest shows one file; it is not an address bar.
+    if registry
+        .state(tab_id)
+        .is_some_and(|state| state.kind == TabKind::Document)
+    {
+        return Err(AppCommandError::invalid_input(
+            "a document view cannot be navigated to another address",
+        ));
+    }
     // Refused by a site rule: the block page takes the place of the page,
     // as in a browser, and nothing is loaded. Whatever was loading before
     // is stopped and its watcher retired, or its commit or failure would
@@ -703,6 +898,55 @@ pub async fn browser_open_tab(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn browser_doc_open(
+    app: AppHandle,
+    window: WebviewWindow,
+    registry: State<'_, BrowserRegistry>,
+    guests: State<'_, DocGuests>,
+    tab_id: String,
+    path: String,
+    root: Option<String>,
+    bounds: Bounds,
+    background: Option<bool>,
+    devtools: Option<bool>,
+) -> Result<DocOpenResult, AppCommandError> {
+    doc_open_core(
+        &app,
+        &window,
+        &registry,
+        &guests,
+        DocOpenParams {
+            tab_id,
+            path,
+            root,
+            bounds,
+            background: background.unwrap_or(false),
+            devtools: devtools.unwrap_or(false),
+        },
+    )
+}
+
+#[tauri::command]
+pub async fn browser_doc_set_mode(
+    app: AppHandle,
+    registry: State<'_, BrowserRegistry>,
+    guests: State<'_, DocGuests>,
+    tab_id: String,
+    mode: DocMode,
+) -> Result<DocGuestState, AppCommandError> {
+    doc_set_mode_core(&app, &registry, &guests, &tab_id, mode)
+}
+
+#[tauri::command]
+pub async fn browser_doc_state(
+    guests: State<'_, DocGuests>,
+    tab_id: String,
+) -> Result<DocGuestState, AppCommandError> {
+    doc_state_core(&guests, &tab_id)
+}
+
+#[tauri::command]
 pub async fn browser_clear_data(
     app: AppHandle,
     registry: State<'_, BrowserRegistry>,
@@ -873,6 +1117,7 @@ mod tests {
         assert!(caps.surface.is_some());
         assert!(!caps.platform.is_empty());
         assert!(caps.policy.enabled);
+        assert_eq!(caps.doc_guest, doc_guest::supported());
     }
 
     /// An administrator can turn the feature off: no surface is offered and
@@ -887,6 +1132,7 @@ mod tests {
         let caps = capabilities(&policy);
         assert!(!caps.available);
         assert!(caps.surface.is_none());
+        assert!(!caps.doc_guest);
         assert!(!caps.policy.enabled);
         assert!(caps.reasons.iter().any(|r| r.contains("policy")));
     }

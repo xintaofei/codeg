@@ -9,6 +9,7 @@ import {
   setAllDefaultLinkTargets,
   setBrowserDevtools,
   setBrowserHostRules,
+  setBrowserHtmlPreviewEngine,
   setBrowserSurfaceOverride,
   setBrowserTerminalClickMenu,
   setDefaultLinkTarget,
@@ -160,6 +161,16 @@ describe("browser prefs", () => {
     setBrowserTerminalClickMenu(false)
     expect(localStorage.getItem("browser:terminal-click-menu")).toBeNull()
     expect(getBrowserPrefs().terminalClickMenu).toBe(false)
+  })
+
+  it("defaults the HTML preview engine to the guest and stores only inline", () => {
+    expect(getBrowserPrefs().htmlPreviewEngine).toBe("guest")
+    setBrowserHtmlPreviewEngine("inline")
+    expect(localStorage.getItem("browser:html-preview-engine")).toBe("inline")
+    expect(getBrowserPrefs().htmlPreviewEngine).toBe("inline")
+    setBrowserHtmlPreviewEngine("guest")
+    expect(localStorage.getItem("browser:html-preview-engine")).toBeNull()
+    expect(getBrowserPrefs().htmlPreviewEngine).toBe("guest")
   })
 
   it("useBrowserPrefs re-renders on change", () => {

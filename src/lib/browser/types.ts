@@ -4,6 +4,11 @@
 
 export type SurfaceKind = "child" | "window"
 
+/** What a tab shows: a web page, or a local HTML file through the document
+ *  guest (`codeg-doc:`), which the file column hosts in place of the inline
+ *  HTML preview. */
+export type TabKind = "page" | "document"
+
 export type ChannelKind = "native" | "degraded" | "legacy"
 
 /** Logical pixels, the unit `getBoundingClientRect()` reports. */
@@ -31,6 +36,7 @@ export interface BrowserErrorInfo {
 export interface BrowserTabState {
   tabId: string
   ownerWindow: string
+  kind: TabKind
   surface: SurfaceKind
   channel: ChannelKind
   /** Last committed URL ("" until the first document commits). */
@@ -94,6 +100,36 @@ export interface BrowserCapabilities {
   /** Absolute path a page's downloads land in. */
   downloadsDir: string
   policy: BrowserPolicyStatus
+  /** Local HTML files can be shown through the document guest (an embedded
+   *  surface with a handler for `codeg-doc:`; macOS for now). */
+  docGuest: boolean
+}
+
+/** How a document guest serves its file: as a picture of itself (no script,
+ *  no connection), or with its own scripts running, confined to its folder. */
+export type DocMode = "safe" | "dynamic"
+
+export type DocResetReason = "newer" | "changed"
+
+/** Why a guest fell back to safe mode on its own: `path` (relative to the
+ *  root) was found newer than the approval, or different from what had been
+ *  served since it. */
+export interface DocReset {
+  path: string
+  reason: DocResetReason
+}
+
+/** `browser://doc-state`: mode and status of one document guest. */
+export interface DocGuestState {
+  tabId: string
+  mode: DocMode
+  /** Absolute directory every request is confined to. */
+  root: string
+  /** Absolute path of the document. */
+  entry: string
+  /** The document's URL inside the guest. */
+  url: string
+  reset: DocReset | null
 }
 
 /** The last frame of a page, returned by a hide-with-freeze: the placeholder
@@ -166,8 +202,16 @@ export const BROWSER_TELEMETRY_EVENT = "browser://telemetry"
 export const BROWSER_DOWNLOAD_EVENT = "browser://download"
 export const BROWSER_SHORTCUT_EVENT = "browser://shortcut"
 export const BROWSER_NAVIGATION_BLOCKED_EVENT = "browser://navigation-blocked"
+export const BROWSER_DOC_STATE_EVENT = "browser://doc-state"
 
-export type NavigationBlockReason = "host-rule" | "scheme"
+/** `external` and `download` come from document guests only: a web address
+ *  the document pointed at (the user may open it in a tab), and a download
+ *  it tried to start (documents do not download). */
+export type NavigationBlockReason =
+  | "host-rule"
+  | "scheme"
+  | "external"
+  | "download"
 
 /** `browser://navigation-blocked`: a top-level navigation a tab attempted
  *  was refused by policy; the tab itself is unchanged. */

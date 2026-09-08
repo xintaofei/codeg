@@ -20,6 +20,7 @@ import {
   hasSurfaceClaim,
   markBrowserTabHidden,
   markBrowserTabShown,
+  releaseBrowserTab,
   runSurfaceOp,
   setBrowserTabState,
   surfaceClaimIsCurrent,
@@ -29,7 +30,7 @@ import {
   useFallbackOverlayOpen,
   useNativeSurfaceOccluded,
 } from "@/lib/browser/native-surface-occlusion"
-import type { Bounds } from "@/lib/browser/types"
+import type { Bounds, BrowserTabState } from "@/lib/browser/types"
 import { browserTabBackendId } from "@/lib/file-tab-id"
 import { cn } from "@/lib/utils"
 
@@ -60,8 +61,29 @@ function elementVisible(el: HTMLElement): boolean {
   return true
 }
 
+export interface NativeSurfaceHostProps {
+  /** The backend's id of the surface (label-safe). */
+  backendId: string
+  /** Where the surface's state lives in the tab store: `browser:<backendId>`
+   *  (the workspace tab id for a browser tab; a key of its own for a
+   *  document guest hosted by a file tab). */
+  storeKey: string
+  /** Create the surface at these bounds; resolves to its first state. Keep
+   *  the identity stable for the life of the mount (memoize it): a new
+   *  identity only re-syncs, never re-creates. */
+  create: (bounds: Bounds) => Promise<BrowserTabState>
+  /** Tear the surface down when this host unmounts. A browser tab's surface
+   *  belongs to its tab record and merely hides (the record outlives every
+   *  host); a document guest belongs to the preview on screen and goes with
+   *  it — the document comes back the same from disk. */
+  destroyOnUnmount?: boolean
+  /** Force-hide (e.g. while a DOM error page replaces the page). */
+  hidden?: boolean
+  className?: string
+}
+
 /**
- * The placeholder a browser tab's native webview is fitted to.
+ * The placeholder a native webview is fitted to.
  *
  * The webview is a native view painted by the OS above the DOM at this
  * element's rect, so this component never renders page content itself. It
@@ -71,17 +93,14 @@ function elementVisible(el: HTMLElement): boolean {
  * holds an occlusion lease, the tab is showing an error page — handing
  * keyboard focus back to the main webview first so the overlay gets Esc/Tab.
  */
-export function BrowserSurfaceHost({
-  tab,
+export function NativeSurfaceHost({
+  backendId,
+  storeKey,
+  create,
+  destroyOnUnmount = false,
   hidden = false,
   className,
-}: {
-  tab: BrowserWorkspaceTab
-  /** Force-hide (e.g. while a DOM error page replaces the page). */
-  hidden?: boolean
-  className?: string
-}) {
-  const backendId = browserTabBackendId(tab.id)
+}: NativeSurfaceHostProps) {
   const ref = useRef<HTMLDivElement | null>(null)
   const lastBoundsRef = useRef<Bounds | null>(null)
   const lastVisibleRef = useRef<boolean | null>(null)
@@ -120,11 +139,11 @@ export function BrowserSurfaceHost({
   // flipped. Called from every signal that could change either.
   const sync = useCallback(() => {
     const el = ref.current
-    if (!el || !backendId) return
+    if (!el) return
     // An owned window is not fitted to this element — the placeholder is
     // invisible by design — so only the "is this tab on screen" signals
     // apply, and there are no bounds to push.
-    if (getBrowserTabState(tab.id)?.surface === "window") {
+    if (getBrowserTabState(storeKey)?.surface === "window") {
       if (lastVisibleRef.current !== shouldShow) {
         lastVisibleRef.current = shouldShow
         void browserSetVisible(backendId, shouldShow, !shouldShow).catch(
@@ -169,14 +188,14 @@ export function BrowserSurfaceHost({
           .catch(() => {})
       }
     }
-  }, [backendId, overlayHide, shouldShow, tab.id])
+  }, [backendId, overlayHide, shouldShow, storeKey])
 
   // Whether this tab currently has a live surface. Also the re-creation
   // signal: if the state goes away while this host is mounted — the tab was
   // released by the background unload just as the user switched to it — the
   // effect below runs again and loads the page instead of leaving a blank
   // pane behind.
-  const loaded = useBrowserTabState(tab.id) !== null
+  const loaded = useBrowserTabState(storeKey) !== null
 
   // Create the surface once per tab record; adopted popups and re-mounts
   // already have one (the store knows about it). A record whose surface was
@@ -184,8 +203,8 @@ export function BrowserSurfaceHost({
   // here, at the URL the record was updated to.
   useEffect(() => {
     const el = ref.current
-    if (!el || !backendId) return
-    if (getBrowserTabState(tab.id)) {
+    if (!el) return
+    if (getBrowserTabState(storeKey)) {
       lastBoundsRef.current = null
       lastVisibleRef.current = null
       sync()
@@ -199,21 +218,9 @@ export function BrowserSurfaceHost({
     const bounds = measure(el)
     lastBoundsRef.current = bounds
     lastVisibleRef.current = true
-    // Preferences are read once, here: a surface cannot change its inspector
-    // or its kind after it exists, so a settings change applies to new tabs.
-    const prefs = getBrowserPrefs()
     // Queued per tab id: a close issued for an earlier generation must reach
     // the backend before this create, never after it.
-    runSurfaceOp(backendId, () =>
-      browserOpenTab({
-        tabId: backendId,
-        url: tab.browser.initialUrl,
-        bounds,
-        folderId: tab.folderId,
-        surface: prefs.surfaceOverride,
-        devtools: prefs.devtools,
-      })
-    )
+    runSurfaceOp(backendId, () => create(bounds))
       .then((next) => {
         if (!surfaceClaimIsCurrent(backendId, token)) {
           // Someone else claimed this id meanwhile: their own create is
@@ -238,12 +245,12 @@ export function BrowserSurfaceHost({
     // Intentionally not re-run on `sync` identity changes: creation is a
     // one-shot per mount, the effect below handles every later sync.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backendId, tab.id, tab.browser.initialUrl, tab.folderId, loaded])
+  }, [backendId, storeKey, create, loaded])
 
   // Geometry and visibility tracking for the life of the mount.
   useEffect(() => {
     const el = ref.current
-    if (!el || !backendId) return
+    if (!el) return
     let frame = 0
     const schedule = () => {
       if (frame) return
@@ -275,24 +282,29 @@ export function BrowserSurfaceHost({
   }, [sync, view.mode, view.activePane, view.filesMaximized, routeVisible])
 
   // Mount = the tab is on screen; unmount = it is no longer (another tab took
-  // the pane, the drawer closed, the panel went away). Hide, never destroy —
-  // the record owns the surface. The store keeps the timestamps so the
-  // optional background unload knows how long a page has been off screen.
+  // the pane, the drawer closed, the panel went away). A browser tab's
+  // surface hides, never dies — the record owns it, and the store keeps the
+  // timestamps so the optional background unload knows how long a page has
+  // been off screen. A document guest is torn down: it is the preview's, and
+  // the preview is gone.
   useEffect(() => {
-    if (!backendId) return
-    markBrowserTabShown(tab.id)
+    markBrowserTabShown(storeKey)
     return () => {
       lastVisibleRef.current = null
       hideSeqRef.current += 1
-      markBrowserTabHidden(tab.id)
-      void browserSetVisible(backendId, false, false).catch(() => {})
+      markBrowserTabHidden(storeKey)
+      if (destroyOnUnmount) {
+        releaseBrowserTab(storeKey)
+      } else {
+        void browserSetVisible(backendId, false, false).catch(() => {})
+      }
     }
-  }, [backendId, tab.id])
+  }, [backendId, destroyOnUnmount, storeKey])
 
   return (
     <div
       ref={ref}
-      data-browser-surface={backendId ?? undefined}
+      data-browser-surface={backendId}
       className={cn(
         "relative h-full w-full min-h-0 min-w-0 bg-background",
         className
@@ -317,5 +329,52 @@ export function BrowserSurfaceHost({
         </div>
       ) : null}
     </div>
+  )
+}
+
+/**
+ * The surface host of a browser tab: the workspace tab record names the
+ * backend id and the URL, and the surface is created with the preferences
+ * read at that moment (a surface cannot change its inspector or its kind
+ * after it exists, so a settings change applies to new tabs).
+ */
+export function BrowserSurfaceHost({
+  tab,
+  hidden = false,
+  className,
+}: {
+  tab: BrowserWorkspaceTab
+  /** Force-hide (e.g. while a DOM error page replaces the page). */
+  hidden?: boolean
+  className?: string
+}) {
+  const backendId = browserTabBackendId(tab.id)
+  const initialUrl = tab.browser.initialUrl
+  const folderId = tab.folderId
+  const create = useCallback(
+    (bounds: Bounds) => {
+      const prefs = getBrowserPrefs()
+      return browserOpenTab({
+        tabId: backendId ?? "",
+        url: initialUrl,
+        bounds,
+        folderId,
+        surface: prefs.surfaceOverride,
+        devtools: prefs.devtools,
+      })
+    },
+    [backendId, folderId, initialUrl]
+  )
+  // A browser tab always has a backend id; anything else is not a browser
+  // tab and gets no surface.
+  if (!backendId) return null
+  return (
+    <NativeSurfaceHost
+      backendId={backendId}
+      storeKey={tab.id}
+      create={create}
+      hidden={hidden}
+      className={className}
+    />
   )
 }

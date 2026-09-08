@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
+use crate::browser::doc_guest::{DocGuests, DocMode};
 use crate::browser::registry::BrowserRegistry;
 use crate::browser::types::{Bounds, SurfaceChoice};
 use crate::commands::browser as browser_commands;
@@ -239,6 +240,51 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                 },
             )
             .map_err(err_string)?;
+            Ok(json!(state))
+        }
+        "browser_doc_open" => {
+            let owner = owner()?;
+            let guests = app.state::<DocGuests>();
+            let result = browser_commands::doc_open_core(
+                app,
+                &owner,
+                &registry,
+                &guests,
+                browser_commands::DocOpenParams {
+                    tab_id: str_arg(cmd, "tab_id")?,
+                    path: str_arg(cmd, "path")?,
+                    root: cmd.get("root").and_then(Value::as_str).map(str::to_string),
+                    bounds: bounds_arg(cmd)?,
+                    background: cmd
+                        .get("background")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    devtools: cmd.get("devtools").and_then(Value::as_bool).unwrap_or(false),
+                },
+            )
+            .map_err(err_string)?;
+            Ok(json!(result))
+        }
+        "browser_doc_mode" => {
+            let guests = app.state::<DocGuests>();
+            let mode = match cmd.get("mode").and_then(Value::as_str) {
+                Some("dynamic") => DocMode::Dynamic,
+                _ => DocMode::Safe,
+            };
+            let state = browser_commands::doc_set_mode_core(
+                app,
+                &registry,
+                &guests,
+                &str_arg(cmd, "tab_id")?,
+                mode,
+            )
+            .map_err(err_string)?;
+            Ok(json!(state))
+        }
+        "browser_doc_state" => {
+            let guests = app.state::<DocGuests>();
+            let state = browser_commands::doc_state_core(&guests, &str_arg(cmd, "tab_id")?)
+                .map_err(err_string)?;
             Ok(json!(state))
         }
         "browser_set_bounds" => {

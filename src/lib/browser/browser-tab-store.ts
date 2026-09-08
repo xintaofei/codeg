@@ -9,7 +9,11 @@
 import { useSyncExternalStore } from "react"
 
 import { browserClose } from "./browser-api"
-import type { BrowserTabState, NavigationBlockReason } from "./types"
+import type {
+  BrowserTabState,
+  DocGuestState,
+  NavigationBlockReason,
+} from "./types"
 import { buildFileTabId } from "@/lib/file-tab-id"
 import { isDesktop } from "@/lib/transport"
 
@@ -142,9 +146,39 @@ export function setBrowserTabState(state: BrowserTabState): void {
 
 export function removeBrowserTabState(workspaceTabId: string): void {
   const hadNotice = notices.delete(workspaceTabId)
+  const hadDoc = docStates.delete(workspaceTabId)
   hiddenAt.delete(workspaceTabId)
   findRequests.delete(workspaceTabId)
-  if (states.delete(workspaceTabId) || hadNotice) notify()
+  if (states.delete(workspaceTabId) || hadNotice || hadDoc) notify()
+}
+
+// Mode and status of document guests (`browser://doc-state`), keyed like the
+// tab state. Separate from it because it changes on its own schedule — the
+// user's mode choice, a fall-back to safe mode — and carries no page state.
+const docStates = new Map<string, DocGuestState>()
+
+export function setDocGuestState(doc: DocGuestState): void {
+  const key = browserWorkspaceTabId(doc.tabId)
+  const previous = docStates.get(key)
+  if (previous && JSON.stringify(previous) === JSON.stringify(doc)) return
+  docStates.set(key, doc)
+  notify()
+}
+
+export function getDocGuestState(workspaceTabId: string): DocGuestState | null {
+  return docStates.get(workspaceTabId) ?? null
+}
+
+/** Live document-guest state for one tab, or null for a tab that is not a
+ *  document (or before its first `browser://doc-state`). */
+export function useDocGuestState(
+  workspaceTabId: string | null
+): DocGuestState | null {
+  return useSyncExternalStore(
+    subscribeBrowserTabs,
+    () => (workspaceTabId ? (docStates.get(workspaceTabId) ?? null) : null),
+    getServerSnapshot
+  )
 }
 
 export function subscribeBrowserTabs(listener: Listener): () => void {
@@ -243,6 +277,7 @@ function getServerZero(): number {
 export function resetBrowserTabStoreForTests(): void {
   states.clear()
   notices.clear()
+  docStates.clear()
   listeners.clear()
   createdSurfaces.clear()
   surfaceOps.clear()

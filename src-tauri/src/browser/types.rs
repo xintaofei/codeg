@@ -14,6 +14,16 @@ pub enum SurfaceKind {
     Window,
 }
 
+/// What a tab shows: a web page, or a local HTML document served through the
+/// `codeg-doc:` guest (see `doc_guest`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TabKind {
+    #[default]
+    Page,
+    Document,
+}
+
 /// How the page ↔ host channel was installed for a tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -66,6 +76,7 @@ pub struct BrowserTabState {
     pub tab_id: String,
     /// Label of the window the tab belongs to (`main`, `remote-workspace-*`).
     pub owner_window: String,
+    pub kind: TabKind,
     pub surface: SurfaceKind,
     pub channel: ChannelKind,
     /// Last committed URL.
@@ -106,6 +117,9 @@ pub struct BrowserCapabilities {
     /// The administrator's policy in force (rules shown read-only, and
     /// whether the browser is enabled at all).
     pub policy: crate::browser::policy::BrowserPolicyStatus,
+    /// Local HTML files can be shown through the `codeg-doc:` document guest
+    /// (an embedded surface with a handler for that scheme; macOS for now).
+    pub doc_guest: bool,
 }
 
 /// The last frame of a page, handed back by `browser_set_visible` when the
@@ -147,12 +161,20 @@ pub const SHORTCUT_EVENT: &str = "browser://shortcut";
 /// type is not allowed in a tab, or a site rule blocks the host. The status
 /// layer tells the user; nothing else happens.
 pub const NAVIGATION_BLOCKED_EVENT: &str = "browser://navigation-blocked";
+/// The mode and status of a document guest changed (`DocGuestState`): the
+/// user switched it, or the guest fell back to safe mode on its own.
+pub const DOC_STATE_EVENT: &str = "browser://doc-state";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NavigationBlockReason {
     HostRule,
     Scheme,
+    /// A document guest pointed at a web address: not loaded in the guest,
+    /// but the user may open it in a browser tab.
+    External,
+    /// A document guest tried to download a file; documents do not download.
+    Download,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -223,6 +245,7 @@ mod tests {
         let state = BrowserTabState {
             tab_id: "t1".into(),
             owner_window: "main".into(),
+            kind: TabKind::Page,
             surface: SurfaceKind::Child,
             channel: ChannelKind::Native,
             url: "about:blank".into(),
@@ -241,6 +264,7 @@ mod tests {
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(json["tabId"], "t1");
         assert_eq!(json["ownerWindow"], "main");
+        assert_eq!(json["kind"], "page");
         assert_eq!(json["surface"], "child");
         assert_eq!(json["channel"], "native");
         assert_eq!(json["requestedUrl"], "https://example.com/");

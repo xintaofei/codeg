@@ -4795,6 +4795,8 @@
     "rulesEmpty": "Ainda não há regras.",
     "terminalMenuTitle": "Menu de links do terminal",
     "terminalMenuHint": "Clicar em um link no terminal mostra um pequeno menu (navegador integrado, navegador do sistema, copiar link) em vez de abri-lo imediatamente. ⌘/Ctrl+clique continua abrindo o link diretamente.",
+    "htmlPreviewTitle": "Pré-visualização de arquivos HTML",
+    "htmlPreviewHint": "Mostra arquivos HTML pelo navegador integrado, em uma visualização de documento restrita: sem scripts até você ativá-los para um arquivo, e só a própria pasta é acessível. Desativado: usa a pré-visualização em linha, como no aplicativo web.",
     "managedDisabled": "A política do seu administrador desativou o navegador integrado; os links abrem no navegador do sistema."
   },
   "LogsSettings": {
@@ -5921,6 +5923,26 @@
       "openBuiltin": "Abrir no navegador integrado",
       "openSystem": "Abrir no navegador do sistema",
       "copy": "Copiar link"
+    },
+    "doc": {
+      "scriptsOff": "Ativar scripts",
+      "scriptsOn": "Scripts ativados",
+      "scriptsHint": "Executa os scripts deste documento. Eles só podem ler arquivos da sua pasta e não têm acesso à rede. Se algum desses arquivos mudar depois, os scripts são desativados novamente.",
+      "reload": "Recarregar",
+      "more": "Mais",
+      "copyPath": "Copiar caminho",
+      "useInline": "Usar pré-visualização em linha",
+      "useGuest": "Usar a pré-visualização do navegador integrado",
+      "unsaved": "Alterações não salvas não são exibidas",
+      "reset": "{file} mudou depois que os scripts foram ativados. Os scripts foram desativados novamente.",
+      "enableAgain": "Ativar novamente",
+      "dismiss": "Fechar",
+      "externalLink": "O link para {host} não foi seguido",
+      "openLink": "Abrir link",
+      "downloadRefused": "Downloads não são permitidos na pré-visualização de um documento",
+      "openWithSystem": "Abrir com o aplicativo do sistema",
+      "schemeBlocked": "{url} não pode ser aberto aqui",
+      "cannotShow": "Este documento não pode ser exibido"
     }
   }
 }

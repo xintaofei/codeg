@@ -34,6 +34,7 @@ use tauri_runtime_wry::wry::{
 };
 
 use super::channel::{self, MessageSink};
+use super::doc_guest::{self, DocGrant, GuestNavigation};
 #[cfg(target_os = "windows")]
 use super::profile;
 use super::events;
@@ -43,7 +44,7 @@ use super::registry::{BrowserRegistry, BrowserTab};
 use super::surface::BrowserSurface;
 use super::types::{
     Bounds, BrowserOpenRequestPayload, BrowserPopupPayload, BrowserTabState, ChannelKind,
-    NavigationBlockReason, PopupPresentation, SurfaceKind,
+    NavigationBlockReason, PopupPresentation, SurfaceKind, TabKind,
 };
 #[cfg(target_os = "macos")]
 use super::shim::macos as shim;
@@ -511,6 +512,16 @@ type OpenerConfiguration = objc2::rc::Retained<objc2_web_kit::WKWebViewConfigura
 #[cfg(not(target_os = "macos"))]
 type OpenerConfiguration = ();
 
+/// What a child webview is for. A page gets the browser's policy (scheme
+/// lists, site rules, popups, downloads); a document guest gets the guest's
+/// (its own scheme, nothing else, no popups, no downloads) and the handler
+/// that serves its files.
+#[derive(Clone)]
+pub enum ChildKind {
+    Page,
+    Document(Arc<DocGrant>),
+}
+
 /// Main thread only. Builds the child webview at `bounds` with every hook
 /// attached and **no URL**: a regular tab is navigated by the caller once the
 /// page channel is installed, a popup is navigated by the engine itself.
@@ -532,6 +543,7 @@ fn build_child(
     visible: bool,
     devtools: bool,
     configuration: Option<OpenerConfiguration>,
+    kind: &ChildKind,
 ) -> Result<wry::WebView, String> {
     #[cfg(target_os = "windows")]
     {
@@ -550,6 +562,7 @@ fn build_child(
                 visible,
                 devtools,
                 configuration,
+                kind,
             )?
             .build_as_child(owner)
             .map_err(|e| e.to_string())
@@ -567,9 +580,65 @@ fn build_child(
             visible,
             devtools,
             configuration,
+            kind,
         )?
         .build_as_child(owner)
         .map_err(|e| e.to_string())
+    }
+}
+
+/// The `codeg-doc:` handler of one document guest. Registered on the guest's
+/// builder alone, bound to its grant, and checked against the webview it is
+/// called for; the file work happens off the main thread (the engine calls
+/// here on it), and a request that ends dynamic mode reports the new state.
+fn document_protocol(
+    app: &AppHandle,
+    tab_id: &str,
+    label: &str,
+    grant: Arc<DocGrant>,
+) -> impl Fn(wry::WebViewId<'_>, wry::http::Request<Vec<u8>>, wry::RequestAsyncResponder) + 'static {
+    let app = app.clone();
+    let tab_id = tab_id.to_string();
+    let label = label.to_string();
+    move |webview_id, request, responder| {
+        if webview_id != label {
+            tracing::warn!(
+                "[browser] document request from webview {webview_id:?} refused (handler belongs to {label})"
+            );
+            responder.respond(doc_guest::forbidden());
+            return;
+        }
+        let grant = grant.clone();
+        let app = app.clone();
+        let tab_id = tab_id.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let served = grant.serve(&request);
+            let reset = served.reset.is_some();
+            if let Some(reset) = &served.reset {
+                tracing::info!(
+                    "[browser] document {tab_id}: {} {:?} after scripts were enabled; back in safe mode",
+                    reset.path,
+                    reset.reason
+                );
+                events::emit_doc_state(&app, &grant.state(&tab_id));
+            }
+            responder.respond(served.response);
+            // The document that is loading was served under the dynamic
+            // policy; reload it so the safe one applies to the whole page,
+            // not only to the file that was refused. Done here, not left to
+            // the frontend, so the fence holds with nobody watching.
+            if reset {
+                if let Some(registry) = app.try_state::<BrowserRegistry>() {
+                    if let Some(surface) = registry.surface(&tab_id) {
+                        if let Err(err) = surface.reload() {
+                            tracing::warn!("[browser] document {tab_id}: reload after reset failed: {err}");
+                        } else {
+                            hooks::begin_load(&app, &tab_id);
+                        }
+                    }
+                }
+            }
+        });
     }
 }
 
@@ -584,10 +653,12 @@ fn configure_child<'a>(
     visible: bool,
     devtools: bool,
     configuration: Option<OpenerConfiguration>,
+    kind: &ChildKind,
 ) -> Result<WebViewBuilder<'a>, String> {
     let nav_id = tab_id.to_string();
     let nav_app = app.clone();
     let nav_owner = owner.label().to_string();
+    let nav_kind = kind.clone();
     let mut builder = builder
         .with_id(label)
         .with_bounds(rect(bounds))
@@ -603,6 +674,26 @@ fn configure_child<'a>(
             // The engine asks about every frame's navigation; only the
             // top-level one gets the strict list and a notice when refused.
             let main_frame = current_navigation_is_main_frame();
+            // A document guest: its own documents and nothing with a scheme
+            // of its own. A web address is reported so the user can open it
+            // in a tab; the guest itself never leaves its root.
+            if let ChildKind::Document(_) = &nav_kind {
+                return match doc_guest::guest_navigation(&parsed, main_frame) {
+                    GuestNavigation::Allow => true,
+                    GuestNavigation::External => {
+                        if main_frame {
+                            hooks::navigation_blocked(&nav_app, &nav_id, &url, NavigationBlockReason::External);
+                        }
+                        false
+                    }
+                    GuestNavigation::Scheme => {
+                        if main_frame {
+                            hooks::navigation_blocked(&nav_app, &nav_id, &url, NavigationBlockReason::Scheme);
+                        }
+                        false
+                    }
+                };
+            }
             let scheme_ok = if main_frame {
                 policy::navigation_allowed(&parsed)
             } else {
@@ -663,34 +754,68 @@ fn configure_child<'a>(
             let app = app.clone();
             let id = tab_id.to_string();
             move |title| hooks::title_changed(&app, &id, title)
-        })
-        // The engine transfers the file; the host only decides where it may
-        // land (`downloads::requested` rewrites the path) and reports it.
-        .with_download_started_handler({
-            let app = app.clone();
-            let id = tab_id.to_string();
-            move |url, destination| super::downloads::requested(&app, &id, &url, destination)
-        })
-        .with_download_completed_handler({
-            let app = app.clone();
-            move |url: String, path, success| {
-                super::downloads::finished(&app, &url, path, success)
-            }
-        })
-        .with_new_window_req_handler(new_window_handler(app.clone(), owner.clone(), tab_id.to_string()));
+        });
+    builder = match kind {
+        ChildKind::Page => builder
+            // The engine transfers the file; the host only decides where it
+            // may land (`downloads::requested` rewrites the path) and
+            // reports it.
+            .with_download_started_handler({
+                let app = app.clone();
+                let id = tab_id.to_string();
+                move |url, destination| super::downloads::requested(&app, &id, &url, destination)
+            })
+            .with_download_completed_handler({
+                let app = app.clone();
+                move |url: String, path, success| {
+                    super::downloads::finished(&app, &url, path, success)
+                }
+            })
+            .with_new_window_req_handler(new_window_handler(app.clone(), owner.clone(), tab_id.to_string())),
+        ChildKind::Document(grant) => builder
+            // A document does not download and does not open windows: both
+            // are refused and reported, and a web address a `window.open`
+            // names is offered to the user like a link would be.
+            .with_download_started_handler({
+                let app = app.clone();
+                let id = tab_id.to_string();
+                move |url, _destination| {
+                    hooks::navigation_blocked(&app, &id, &url, NavigationBlockReason::Download);
+                    false
+                }
+            })
+            .with_new_window_req_handler({
+                let app = app.clone();
+                let id = tab_id.to_string();
+                move |url, _features| {
+                    let reason = match Url::parse(&url) {
+                        Ok(parsed) if matches!(parsed.scheme(), "http" | "https") => {
+                            NavigationBlockReason::External
+                        }
+                        _ => NavigationBlockReason::Scheme,
+                    };
+                    hooks::navigation_blocked(&app, &id, &url, reason);
+                    NewWindowResponse::Deny
+                }
+            })
+            .with_asynchronous_custom_protocol(
+                doc_guest::DOC_SCHEME.to_string(),
+                document_protocol(app, tab_id, label, grant.clone()),
+            ),
+    };
     #[cfg(target_os = "macos")]
     {
         use tauri_runtime_wry::wry::WebViewBuilderExtMacos;
+        let mtm = objc2::MainThreadMarker::new().ok_or("not on the main thread")?;
         // A popup keeps its opener's configuration (that is what preserves
         // `window.opener`); a regular tab gets one whose data store is the
         // browser profile's, so nothing a page stores lands in the app's own
-        // store and the profile's proxy applies.
-        let configuration = match configuration {
-            Some(configuration) => configuration,
-            None => {
-                let mtm = objc2::MainThreadMarker::new().ok_or("not on the main thread")?;
-                super::shim::macos::profile_configuration(mtm)
-            }
+        // store and the profile's proxy applies; a document guest gets a
+        // store that dies with it.
+        let configuration = match (configuration, kind) {
+            (Some(configuration), _) => configuration,
+            (None, ChildKind::Page) => super::shim::macos::profile_configuration(mtm),
+            (None, ChildKind::Document(_)) => super::shim::macos::document_configuration(mtm),
         };
         builder = builder.with_webview_configuration(configuration);
     }
@@ -704,6 +829,12 @@ fn configure_child<'a>(
         builder = builder.with_additional_browser_args(profile::windows_browser_args(
             profile::frozen_proxy().as_ref(),
         ));
+        // A document guest keeps nothing: an in-private profile of the same
+        // environment. (Not exercised yet — `doc_guest::supported()` is false
+        // here until it is.)
+        if let ChildKind::Document(_) = kind {
+            builder = builder.with_incognito(true);
+        }
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = configuration;
@@ -731,7 +862,41 @@ pub fn create(
     let id = tab_id.to_string();
     let label = label.to_string();
     run_on_main(&app.clone(), move || -> Result<(), String> {
-        let webview = build_child(&app, &owner, &id, &label, bounds, !background, devtools, None)?;
+        let webview = build_child(&app, &owner, &id, &label, bounds, !background, devtools, None, &ChildKind::Page)?;
+        attach_navigation_delegate(&app, &id, &webview);
+        SURFACES.with(|s| s.borrow_mut().insert(id, webview));
+        Ok(())
+    })?
+    .map_err(ChildError::Op)?;
+    Ok(handle)
+}
+
+/// Build the child webview for a document guest: the same surface as a tab,
+/// with the guest's policy and the handler that serves `grant`'s files. The
+/// caller navigates to the document once the page ↔ host channel is in.
+#[allow(clippy::too_many_arguments)]
+pub fn create_document(
+    app: &AppHandle,
+    owner: &WebviewWindow,
+    tab_id: &str,
+    label: &str,
+    bounds: Bounds,
+    background: bool,
+    devtools: bool,
+    grant: Arc<DocGrant>,
+) -> Result<ChildHandle, ChildError> {
+    let handle = ChildHandle {
+        tab_id: tab_id.to_string(),
+        label: label.to_string(),
+        app: app.clone(),
+    };
+    let app = app.clone();
+    let owner = owner.clone();
+    let id = tab_id.to_string();
+    let label = label.to_string();
+    run_on_main(&app.clone(), move || -> Result<(), String> {
+        let kind = ChildKind::Document(grant);
+        let webview = build_child(&app, &owner, &id, &label, bounds, !background, devtools, None, &kind)?;
         attach_navigation_delegate(&app, &id, &webview);
         SURFACES.with(|s| s.borrow_mut().insert(id, webview));
         Ok(())
@@ -807,7 +972,7 @@ fn new_window_handler(
                 .update(&opener_tab_id, |tab| (tab.last_bounds, tab.devtools))
                 .unwrap_or_default();
             let configuration = features.opener.target_configuration.clone();
-            let webview = match build_child(&app, &owner, &tab_id, &label, bounds, true, devtools, Some(configuration)) {
+            let webview = match build_child(&app, &owner, &tab_id, &label, bounds, true, devtools, Some(configuration), &ChildKind::Page) {
                 Ok(webview) => webview,
                 Err(err) => {
                     tracing::warn!("[browser] popup webview creation failed: {err}");
@@ -839,6 +1004,7 @@ fn new_window_handler(
             let state = BrowserTabState {
                 tab_id: tab_id.clone(),
                 owner_window: owner.label().to_string(),
+                kind: TabKind::Page,
                 surface: SurfaceKind::Child,
                 channel,
                 url: String::new(),

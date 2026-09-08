@@ -139,6 +139,7 @@ tower-http = { version = "0.6", features = ["fs", "cors", "compression-gzip", "c
 # Direct deps (already in the graph via axum) so the compression predicate can
 # name the exact types tower-http's `Predicate` trait is defined over.
 http = "1"
+percent-encoding = "2"
 http-body = "1"
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 futures-util = "0.3"

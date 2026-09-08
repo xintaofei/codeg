@@ -50,6 +50,7 @@ function capabilitiesWith(proxy: {
     isolatedStorage: true,
     proxy,
     downloadsDir: "/Users/dev/Downloads",
+    docGuest: true,
     policy: { enabled: true, managedRules: [], managedSource: null },
   }
 }
@@ -182,6 +183,33 @@ describe("BrowserSettingsSection", () => {
 
     fireEvent.click(screen.getByLabelText("Terminal link menu"))
     expect(getBrowserPrefs().terminalClickMenu).toBe(false)
+  })
+
+  it("persists the HTML preview engine switch, on by default", async () => {
+    renderSection()
+    expandSection()
+    const toggle = screen.getByLabelText("HTML file previews")
+    expect(toggle).toBeChecked()
+    await waitFor(() => expect(toggle).not.toBeDisabled())
+
+    fireEvent.click(toggle)
+    expect(getBrowserPrefs().htmlPreviewEngine).toBe("inline")
+    expect(screen.getByLabelText("HTML file previews")).not.toBeChecked()
+
+    fireEvent.click(screen.getByLabelText("HTML file previews"))
+    expect(getBrowserPrefs().htmlPreviewEngine).toBe("guest")
+  })
+
+  it("leaves the HTML preview switch inert where no document guest exists", async () => {
+    mocks.browserCapabilitiesNow.mockResolvedValue({
+      ...capabilitiesWith({ url: null, applies: "live", reason: null }),
+      docGuest: false,
+    })
+    renderSection()
+    expandSection()
+    await waitFor(() =>
+      expect(screen.getByLabelText("HTML file previews")).toBeDisabled()
+    )
   })
 
   it("persists the inspector switch and follows a change made elsewhere", () => {

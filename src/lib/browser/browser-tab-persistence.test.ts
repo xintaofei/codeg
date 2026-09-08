@@ -53,6 +53,7 @@ function state(over: Partial<BrowserTabState> = {}): BrowserTabState {
   return {
     tabId: "abc",
     ownerWindow: "main",
+    kind: "page",
     surface: "child",
     channel: "native",
     url: "https://example.com/deep",

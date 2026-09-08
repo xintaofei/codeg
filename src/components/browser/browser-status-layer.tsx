@@ -42,6 +42,11 @@ function noticeText(
       // has a host of `file`): name the whole thing, as typed by the page.
       return `${t("navigationBlocked", { host: notice.url })} · ${t("navigationBlockedScheme")}`
     }
+    // `external` / `download` are raised by document guests, which have a
+    // notice bar of their own; a browser tab only ever sees a site rule.
+    if (notice.reason !== "host-rule") {
+      return t("navigationBlocked", { host })
+    }
     return `${t("navigationBlocked", { host })} · ${t("navigationBlockedRule")}`
   }
   const why =
