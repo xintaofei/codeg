@@ -12,17 +12,21 @@
 //!   grant (root + entry) and checks the webview id it is called for.
 //! - **Only files under the root.** Same rule as the inline preview: the root
 //!   is the workspace folder the file sits in (else its own directory), the
-//!   path is canonicalized and confined, and the final component is opened
-//!   without following a symlink. No directory listings.
+//!   path is canonicalized and confined, and the file is then opened
+//!   component by component without following any symlink (a directory
+//!   swapped for a symlink after the check is refused, not followed). No
+//!   directory listings.
 //! - **Safe mode by default.** The document is served with a CSP that runs
 //!   no script and opens no connection; images, styles and fonts come from
 //!   the root only. **Dynamic mode** is a per-file, per-session decision by
 //!   the user: scripts run, but still only from the root, and the only
 //!   endpoint they can reach is the root (`connect-src 'self'`).
 //! - **What was approved is what runs.** Dynamic mode records when it was
-//!   granted; a file whose timestamps are newer than that, or whose content
-//!   differs from what was served since, drops the guest back to safe mode
-//!   and is not served. The document the user approved cannot be swapped
+//!   granted; a file whose timestamps (its own, or the symlink's it was
+//!   requested through) are newer than that, or whose content differs from
+//!   what was served under the same path since, drops the guest back to safe
+//!   mode and is not served — and every guest showing the document reloads
+//!   under the safe policy. The document the user approved cannot be swapped
 //!   underneath the approval.
 //! - **A guest goes nowhere else.** Top-level navigation to a web address is
 //!   refused and reported so the user can open it in a browser tab;
@@ -291,7 +295,7 @@ impl DocGrant {
         let Some(rel) = request_rel_path(request.uri()) else {
             return Served::error(StatusCode::BAD_REQUEST, "not a document path", mode);
         };
-        let (canonical, rel, mut file, metadata) = match self.open_confined(&rel) {
+        let (canonical, rel, links_changed, mut file, metadata) = match self.open_confined(&rel) {
             Ok(opened) => opened,
             Err(status) => {
                 return Served::error(status, status.canonical_reason().unwrap_or("error"), mode)
@@ -310,14 +314,13 @@ impl DocGrant {
         }
         drop(file);
         let rel_display = rel.to_string_lossy().replace('\\', "/");
-        // Dynamic mode: the file must be the one that was approved. Checked
-        // and recorded under the lock, so two requests for a changed file
-        // cannot both pass by racing the pin.
-        if mode == DocMode::Dynamic {
-            if let Err(reset) = self.verify_approved(&rel_display, &canonical, &metadata, &bytes) {
-                let mut inner = self.lock();
-                inner.approval = None;
-                inner.reset = Some(reset.clone());
+        // The mode this response is served under is decided together with
+        // the approval check, under one lock: a request that started while
+        // scripts were on but finds them off answers as safe mode, and one
+        // that finds the file changed ends dynamic mode right there.
+        let mode = match self.approve(&rel_display, &rel, links_changed, &metadata, &bytes) {
+            Ok(mode) => mode,
+            Err(reset) => {
                 let mut served = Served::error(
                     StatusCode::FORBIDDEN,
                     "file changed after scripts were enabled; the document is back in safe mode",
@@ -326,7 +329,7 @@ impl DocGrant {
                 served.reset = Some(reset);
                 return served;
             }
-        }
+        };
         let content_type = content_type(&canonical);
         let total = bytes.len() as u64;
         let mut builder = response_builder(mode).header(header::CONTENT_TYPE, content_type);
@@ -367,10 +370,18 @@ impl DocGrant {
     }
 
     /// Resolve `rel` under the root, confined: canonicalized (so a symlink
-    /// cannot lead outside — a linked folder of the workspace is inside),
-    /// a directory answered by its `index.html`, and the final component
-    /// opened without following a symlink swapped in after the check.
-    fn open_confined(&self, rel: &Path) -> Result<(PathBuf, PathBuf, File, Metadata), StatusCode> {
+    /// cannot lead outside — a linked folder of the workspace is inside), a
+    /// directory answered by its `index.html`, and then opened along the
+    /// canonical path without following any symlink, so a component swapped
+    /// for a link after the check is refused rather than followed. Also
+    /// returns the newest change time of any symlink the REQUESTED path goes
+    /// through (a leaf or a directory link), which the approval check needs:
+    /// retargeting a link is a change of what the path names.
+    #[allow(clippy::type_complexity)]
+    fn open_confined(
+        &self,
+        rel: &Path,
+    ) -> Result<(PathBuf, PathBuf, Option<SystemTime>, File, Metadata), StatusCode> {
         let mut rel = rel.to_path_buf();
         let mut canonical =
             std::fs::canonicalize(self.root.join(&rel)).map_err(|_| StatusCode::NOT_FOUND)?;
@@ -382,50 +393,145 @@ impl DocGrant {
         if !crate::commands::folders::is_within_workspace(&self.root, &canonical) {
             return Err(StatusCode::FORBIDDEN);
         }
-        let file = crate::commands::folders::open_no_follow(&canonical)
-            .map_err(|_| StatusCode::NOT_FOUND)?;
+        let links_changed = newest_link_change(&self.root, &rel);
+        let file = open_beneath(&canonical).map_err(|_| StatusCode::NOT_FOUND)?;
         let metadata = file.metadata().map_err(|_| StatusCode::NOT_FOUND)?;
         if !metadata.is_file() {
             return Err(StatusCode::NOT_FOUND);
         }
-        Ok((canonical, rel, file, metadata))
+        Ok((canonical, rel, links_changed, file, metadata))
     }
 
-    /// Dynamic mode's check: the file's timestamps predate the approval, and
-    /// its content is what was served since (pinned on first serve).
-    fn verify_approved(
+    /// Decide the mode a file is served under, and in dynamic mode check
+    /// that it is the file that was approved: its timestamps — and those of
+    /// the symlink it was requested through, if any — predate the approval,
+    /// and its content is what was served under the same requested path
+    /// since (pinned on first serve; keyed by the requested path, so a link
+    /// retargeted to another file is a change). A failed check ends dynamic
+    /// mode right here, under the same lock that checked, so a newer
+    /// approval taken meanwhile is not the one being cancelled.
+    fn approve(
         &self,
         rel_display: &str,
-        canonical: &Path,
+        rel: &Path,
+        links_changed: Option<SystemTime>,
         metadata: &Metadata,
         bytes: &[u8],
-    ) -> Result<(), DocReset> {
+    ) -> Result<DocMode, DocReset> {
         let mut inner = self.lock();
         let Some(approval) = inner.approval.as_mut() else {
-            // Switched to safe mode while this request was in flight: serve
-            // it as safe mode would (the CSP already went out with the
-            // document; the next load is a safe one).
-            return Ok(());
+            // Safe mode — including a request that started while scripts
+            // were on and finds them off: it answers under the safe policy.
+            return Ok(DocMode::Safe);
         };
-        if newest_change(metadata) > approval.approved_at {
-            return Err(DocReset {
-                path: rel_display.to_string(),
-                reason: DocResetReason::Newer,
-            });
+        let mut newest = newest_change(metadata);
+        if let Some(links) = links_changed {
+            newest = newest.max(links);
         }
-        let digest: [u8; 32] = Sha256::digest(bytes).into();
-        match approval.pins.get(canonical) {
-            Some(pinned) if *pinned != digest => Err(DocReset {
-                path: rel_display.to_string(),
-                reason: DocResetReason::Changed,
-            }),
-            Some(_) => Ok(()),
-            None => {
-                approval.pins.insert(canonical.to_path_buf(), digest);
-                Ok(())
+        let failed = if newest > approval.approved_at {
+            Some(DocResetReason::Newer)
+        } else {
+            let digest: [u8; 32] = Sha256::digest(bytes).into();
+            match approval.pins.get(rel) {
+                Some(pinned) if *pinned != digest => Some(DocResetReason::Changed),
+                Some(_) => None,
+                None => {
+                    approval.pins.insert(rel.to_path_buf(), digest);
+                    None
+                }
+            }
+        };
+        match failed {
+            None => Ok(DocMode::Dynamic),
+            Some(reason) => {
+                let reset = DocReset {
+                    path: rel_display.to_string(),
+                    reason,
+                };
+                inner.approval = None;
+                inner.reset = Some(reset.clone());
+                Err(reset)
             }
         }
     }
+}
+
+/// Open a canonical path for reading without following any symlink along
+/// the way: each component is opened relative to the previous one with
+/// `O_NOFOLLOW` (directories with `O_DIRECTORY` as well), so a directory the
+/// confinement check saw as real cannot be swapped for a link to somewhere
+/// else between the check and the open. The path is canonical, so under
+/// normal conditions no component is a link and the walk succeeds.
+#[cfg(unix)]
+fn open_beneath(canonical: &Path) -> std::io::Result<File> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+    use std::path::Component;
+
+    let mut components = canonical.components().peekable();
+    if components.next() != Some(Component::RootDir) {
+        return Err(std::io::Error::other("document path is not absolute"));
+    }
+    // SAFETY: plain libc calls with checked arguments; every descriptor is
+    // owned by a `File` as soon as it is valid, so none leaks on an error.
+    let mut dir = unsafe {
+        let fd = libc::open(c"/".as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC);
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        File::from_raw_fd(fd)
+    };
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            return Err(std::io::Error::other("document path is not canonical"));
+        };
+        let name = CString::new(name.as_bytes())
+            .map_err(|_| std::io::Error::other("NUL in document path"))?;
+        let last = components.peek().is_none();
+        let flags = libc::O_RDONLY
+            | libc::O_NOFOLLOW
+            | libc::O_CLOEXEC
+            | if last { 0 } else { libc::O_DIRECTORY };
+        // The parent stays open across the call and is closed right after,
+        // when `dir` is replaced.
+        let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), flags) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        dir = unsafe { File::from_raw_fd(fd) };
+    }
+    Ok(dir)
+}
+
+#[cfg(not(unix))]
+fn open_beneath(canonical: &Path) -> std::io::Result<File> {
+    // No `openat` here: the final component is protected (reparse points
+    // are not followed), the ancestors are the same residual every confined
+    // reader in this code base has on this platform.
+    crate::commands::folders::open_no_follow(canonical)
+}
+
+/// The newest change time among the symlinks the requested path traverses
+/// under the root — a leaf link or a directory link at any depth. A link is
+/// recreated when it is retargeted, so its own timestamps say when the path
+/// last changed what it names; plain directories are left out on purpose (a
+/// directory's mtime moves for every unrelated file created next to the
+/// document, which is no reason to distrust the document).
+fn newest_link_change(root: &Path, rel: &Path) -> Option<SystemTime> {
+    let mut newest = None;
+    let mut path = root.to_path_buf();
+    for component in rel.components() {
+        path.push(component);
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            break;
+        };
+        if metadata.file_type().is_symlink() {
+            let changed = newest_change(&metadata);
+            newest = Some(newest.map_or(changed, |n: SystemTime| n.max(changed)));
+        }
+    }
+    newest
 }
 
 /// The last time the file changed by any account the filesystem keeps: its
@@ -660,6 +766,19 @@ impl DocGuests {
             .get(tab_id)
             .cloned()
     }
+
+    /// Every guest currently showing `grant`'s document. A reset applies to
+    /// all of them: one guest's document would otherwise keep its dynamic
+    /// policy and could still run what the others just refused.
+    pub fn tabs_of(&self, grant: &Arc<DocGrant>) -> Vec<String> {
+        self.by_tab
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .filter(|(_, bound)| Arc::ptr_eq(bound, grant))
+            .map(|(tab_id, _)| tab_id.clone())
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -801,6 +920,98 @@ mod tests {
         assert_eq!(grant.mode(), DocMode::Safe);
     }
 
+    /// Pins are keyed by the path that was asked for: a link served once
+    /// and then pointed at another file is a change under that path, even
+    /// when the new target is older than the approval.
+    #[cfg(unix)]
+    #[test]
+    fn a_retargeted_link_is_a_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let grant = grant_in(dir.path());
+        let site = dir.path().join("site");
+        write(&site, "old.js", b"old()");
+        write(&site, "new.js", b"new()");
+        // Both targets predate the approval by a wide margin.
+        for name in ["old.js", "new.js"] {
+            let file = File::options().write(true).open(site.join(name)).unwrap();
+            file.set_modified(SystemTime::now() - Duration::from_secs(3600)).unwrap();
+        }
+        std::os::unix::fs::symlink(site.join("old.js"), site.join("alias.js")).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        grant.set_mode(DocMode::Dynamic);
+        // The link itself was created just before the approval: fine.
+        // (Its own timestamps are those of the symlink, not of the target.)
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(get(&grant, "/alias.js").response.status(), StatusCode::OK);
+        std::fs::remove_file(site.join("alias.js")).unwrap();
+        std::os::unix::fs::symlink(site.join("new.js"), site.join("alias.js")).unwrap();
+        let served = get(&grant, "/alias.js");
+        assert_eq!(served.response.status(), StatusCode::FORBIDDEN);
+        assert!(served.reset.is_some());
+        assert_eq!(grant.mode(), DocMode::Safe);
+    }
+
+    /// A directory link retargeted after the approval changes what every
+    /// path through it names: a file not yet pinned, older than the
+    /// approval, must still be refused.
+    #[cfg(unix)]
+    #[test]
+    fn a_retargeted_directory_link_is_a_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let grant = grant_in(dir.path());
+        let site = dir.path().join("site");
+        write(&site, "v1/lazy.js", b"v1()");
+        write(&site, "v2/lazy.js", b"v2()");
+        for name in ["v1/lazy.js", "v2/lazy.js"] {
+            let file = File::options().write(true).open(site.join(name)).unwrap();
+            file.set_modified(SystemTime::now() - Duration::from_secs(3600)).unwrap();
+        }
+        std::os::unix::fs::symlink(site.join("v1"), site.join("vendor")).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        grant.set_mode(DocMode::Dynamic);
+        std::thread::sleep(Duration::from_millis(20));
+        // Retarget the DIRECTORY link; `vendor/lazy.js` was never served.
+        std::fs::remove_file(site.join("vendor")).unwrap();
+        std::os::unix::fs::symlink(site.join("v2"), site.join("vendor")).unwrap();
+        let served = get(&grant, "/vendor/lazy.js");
+        assert_eq!(served.response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(served.reset.as_ref().map(|r| r.reason), Some(DocResetReason::Newer));
+        assert_eq!(grant.mode(), DocMode::Safe);
+    }
+
+    /// The component-wise open refuses a path that goes through a symlink,
+    /// which is what a directory swapped for a link after the confinement
+    /// check would look like.
+    #[cfg(unix)]
+    #[test]
+    fn open_beneath_refuses_symlinked_components() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        write(&real, "a.txt", b"a");
+        std::os::unix::fs::symlink(&real, dir.path().join("link")).unwrap();
+        let canonical = std::fs::canonicalize(real.join("a.txt")).unwrap();
+        assert!(open_beneath(&canonical).is_ok());
+        let through_link = std::fs::canonicalize(dir.path()).unwrap().join("link/a.txt");
+        assert!(open_beneath(&through_link).is_err());
+        assert!(open_beneath(Path::new("relative/a.txt")).is_err());
+    }
+
+    /// A request that finds scripts switched off meanwhile answers as safe
+    /// mode: the policy in the response follows the decision, not the mode
+    /// the request started under.
+    #[test]
+    fn a_request_after_a_switch_to_safe_is_served_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let grant = grant_in(dir.path());
+        grant.set_mode(DocMode::Dynamic);
+        grant.set_mode(DocMode::Safe);
+        let page = get(&grant, "/index.html");
+        assert_eq!(page.response.status(), StatusCode::OK);
+        assert!(csp(&page).contains("script-src 'none'"));
+        assert!(page.reset.is_none());
+    }
+
     #[test]
     fn ranges_are_answered_in_bounded_pieces() {
         let dir = tempfile::tempdir().unwrap();
@@ -910,8 +1121,22 @@ mod tests {
         assert_eq!(second.mode(), DocMode::Dynamic);
         guests.bind("t1", first.clone());
         assert!(guests.for_tab("t1").is_some());
+        // Every guest of a document, for a reset that must reach them all.
+        guests.bind("t2", first.clone());
+        let other = write(dir.path(), "b.html", b"y");
+        let other = guests
+            .grant_for(
+                std::fs::canonicalize(dir.path()).unwrap(),
+                std::fs::canonicalize(other).unwrap(),
+            )
+            .unwrap();
+        guests.bind("t3", other);
+        let mut tabs = guests.tabs_of(&first);
+        tabs.sort();
+        assert_eq!(tabs, vec!["t1".to_string(), "t2".to_string()]);
         guests.unbind("t1");
         assert!(guests.for_tab("t1").is_none());
+        assert_eq!(guests.tabs_of(&first), vec!["t2".to_string()]);
         assert_eq!(doc_label("t1"), "codeg-doc-t1");
     }
 

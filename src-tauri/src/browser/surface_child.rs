@@ -34,7 +34,7 @@ use tauri_runtime_wry::wry::{
 };
 
 use super::channel::{self, MessageSink};
-use super::doc_guest::{self, DocGrant, GuestNavigation};
+use super::doc_guest::{self, DocGrant, DocGuests, GuestNavigation};
 #[cfg(target_os = "windows")]
 use super::profile;
 use super::events;
@@ -623,17 +623,23 @@ fn document_protocol(
                 events::emit_doc_state(&app, &grant.state(&tab_id));
             }
             responder.respond(served.response);
-            // The document that is loading was served under the dynamic
-            // policy; reload it so the safe one applies to the whole page,
-            // not only to the file that was refused. Done here, not left to
-            // the frontend, so the fence holds with nobody watching.
+            // The documents that are loading were served under the dynamic
+            // policy; reload every guest of this grant so the safe one
+            // applies to the whole page everywhere, not only to the file
+            // that was refused in this guest. Done here, not left to the
+            // frontend, so the fence holds with nobody watching.
             if reset {
-                if let Some(registry) = app.try_state::<BrowserRegistry>() {
-                    if let Some(surface) = registry.surface(&tab_id) {
+                let registry = app.try_state::<BrowserRegistry>();
+                let guests = app.try_state::<DocGuests>();
+                if let (Some(registry), Some(guests)) = (registry, guests) {
+                    for id in guests.tabs_of(&grant) {
+                        let Some(surface) = registry.surface(&id) else {
+                            continue;
+                        };
                         if let Err(err) = surface.reload() {
-                            tracing::warn!("[browser] document {tab_id}: reload after reset failed: {err}");
+                            tracing::warn!("[browser] document {id}: reload after reset failed: {err}");
                         } else {
-                            hooks::begin_load(&app, &tab_id);
+                            hooks::begin_load(&app, &id);
                         }
                     }
                 }

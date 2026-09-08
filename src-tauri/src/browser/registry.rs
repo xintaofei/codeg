@@ -2,7 +2,7 @@
 //! webview hooks and the window-close cleanup. The mutex is only ever held
 //! for map operations; every surface call happens on a clone taken out of it.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -87,9 +87,29 @@ impl BrowserTab {
     }
 }
 
+/// The right to open a tab under an id, held from before its surface is
+/// built until the tab is registered (`insert_reserved`) or the attempt is
+/// abandoned (drop). Two opens of one id would otherwise both build a
+/// surface and the loser, closing "its" surface, would close the winner's.
+pub struct OpenReservation<'a> {
+    registry: &'a BrowserRegistry,
+    tab_id: String,
+    consumed: bool,
+}
+
+impl Drop for OpenReservation<'_> {
+    fn drop(&mut self) {
+        if !self.consumed {
+            self.registry.release_opening(&self.tab_id);
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct BrowserRegistry {
     tabs: Mutex<HashMap<String, BrowserTab>>,
+    /// Ids whose open is under way (reserved, not yet inserted).
+    opening: Mutex<HashSet<String>>,
     /// One async lock per tab for `set_visible`: a hide that first captures
     /// a freeze frame spans an await, and the request behind it must not
     /// apply in between (tokio's mutex hands the lock out in arrival order).
@@ -117,6 +137,50 @@ impl BrowserRegistry {
             .clone()
     }
 
+    fn release_opening(&self, tab_id: &str) {
+        self.opening
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(tab_id);
+    }
+
+    /// Claim `tab_id` for an open that is about to build a surface. Fails
+    /// when a tab with that id exists or another open of it is under way.
+    /// Lock order: tabs, then opening.
+    pub fn reserve(&self, tab_id: &str) -> Result<OpenReservation<'_>, AppCommandError> {
+        let tabs = self.lock();
+        let mut opening = self
+            .opening
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if tabs.contains_key(tab_id) || !opening.insert(tab_id.to_string()) {
+            return Err(AppCommandError::already_exists(format!(
+                "browser tab {tab_id} is already open"
+            )));
+        }
+        Ok(OpenReservation {
+            registry: self,
+            tab_id: tab_id.to_string(),
+            consumed: false,
+        })
+    }
+
+    /// Register a tab under the id its reservation holds.
+    pub fn insert_reserved(
+        &self,
+        tab: BrowserTab,
+        mut reservation: OpenReservation<'_>,
+    ) -> Result<(), AppCommandError> {
+        debug_assert_eq!(reservation.tab_id, tab.state.tab_id);
+        reservation.consumed = true;
+        let id = reservation.tab_id.clone();
+        let result = self.insert(tab);
+        self.release_opening(&id);
+        result
+    }
+
+    /// Register a tab whose id was not reserved (a popup adopted on the main
+    /// thread, whose id was minted there and checked against this map).
     pub fn insert(&self, mut tab: BrowserTab) -> Result<(), AppCommandError> {
         tab.generation = self.generations.fetch_add(1, Ordering::Relaxed) + 1;
         let mut tabs = self.lock();
@@ -344,6 +408,18 @@ mod tests {
             }
         }
         v
+    }
+
+    /// One open at a time per id: the second reservation fails while the
+    /// first is held, and a dropped reservation frees the id again.
+    #[test]
+    fn open_reservations_are_exclusive_and_released_on_drop() {
+        let registry = BrowserRegistry::default();
+        let first = registry.reserve("t1").expect("first reservation");
+        assert!(registry.reserve("t1").is_err(), "second open of the same id must fail");
+        assert!(registry.reserve("t2").is_ok(), "another id is unaffected");
+        drop(first);
+        assert!(registry.reserve("t1").is_ok(), "released on drop");
     }
 
     #[test]

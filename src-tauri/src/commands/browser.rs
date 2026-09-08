@@ -162,12 +162,9 @@ pub fn open_tab_core(
     params: OpenTabParams,
 ) -> Result<BrowserTabState, AppCommandError> {
     validate_tab_id(&params.tab_id)?;
-    if registry.contains(&params.tab_id) {
-        return Err(AppCommandError::already_exists(format!(
-            "browser tab {} is already open",
-            params.tab_id
-        )));
-    }
+    // Held until the tab is registered: a second open of the same id while
+    // this one builds its surface must fail, not build a second surface.
+    let reservation = registry.reserve(&params.tab_id)?;
     if app
         .try_state::<BrowserPolicy>()
         .is_some_and(|policy| !policy.enabled())
@@ -231,13 +228,16 @@ pub fn open_tab_core(
         remote_host: None,
         opener_tab_id: None,
     };
-    if let Err(err) = registry.insert(BrowserTab::new(
-        state.clone(),
-        surface.clone(),
-        params.bounds,
-        !params.background,
-        params.devtools,
-    )) {
+    if let Err(err) = registry.insert_reserved(
+        BrowserTab::new(
+            state.clone(),
+            surface.clone(),
+            params.bounds,
+            !params.background,
+            params.devtools,
+        ),
+        reservation,
+    ) {
         let _ = surface.close();
         return Err(err);
     }
@@ -324,12 +324,7 @@ pub fn doc_open_core(
     params: DocOpenParams,
 ) -> Result<DocOpenResult, AppCommandError> {
     validate_tab_id(&params.tab_id)?;
-    if registry.contains(&params.tab_id) {
-        return Err(AppCommandError::already_exists(format!(
-            "browser tab {} is already open",
-            params.tab_id
-        )));
-    }
+    let reservation = registry.reserve(&params.tab_id)?;
     if app
         .try_state::<BrowserPolicy>()
         .is_some_and(|policy| !policy.enabled())
@@ -368,7 +363,7 @@ pub fn doc_open_core(
         }
         #[cfg(not(all(feature = "browser-child", target_os = "macos")))]
         {
-            let _ = (owner, &label);
+            let _ = (owner, &label, reservation);
             return Err(AppCommandError::invalid_input(
                 "document guests need the embedded browser surface (macOS for now)",
             ));
@@ -394,13 +389,16 @@ pub fn doc_open_core(
         remote_host: None,
         opener_tab_id: None,
     };
-    if let Err(err) = registry.insert(BrowserTab::new(
-        state.clone(),
-        surface.clone(),
-        params.bounds,
-        !params.background,
-        params.devtools,
-    )) {
+    if let Err(err) = registry.insert_reserved(
+        BrowserTab::new(
+            state.clone(),
+            surface.clone(),
+            params.bounds,
+            !params.background,
+            params.devtools,
+        ),
+        reservation,
+    ) {
         let _ = surface.close();
         return Err(err);
     }
@@ -453,11 +451,47 @@ pub fn doc_set_mode_core(
     let grant = guests
         .for_tab(tab_id)
         .ok_or_else(|| AppCommandError::not_found(format!("document guest {tab_id} not found")))?;
+    let surface = surface_of(registry, tab_id)?;
     grant.set_mode(mode);
     let doc = grant.state(tab_id);
     events::emit_doc_state(app, &doc);
-    reload_core(app, registry, tab_id)?;
+    reload_document(app, registry, tab_id, &surface, &grant.document_url())?;
     Ok(doc)
+}
+
+/// Load a document guest's page again so the policy in force travels with
+/// it. Nothing committed yet (the first load still in flight, or refused):
+/// navigate to the document instead — a reload has nothing to reload, and
+/// the general retry path would refuse a `codeg-doc:` address.
+fn reload_document(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    tab_id: &str,
+    surface: &BrowserSurface,
+    document_url: &str,
+) -> Result<(), AppCommandError> {
+    let state = registry.update_state(tab_id, |state| {
+        state.requested_url = document_url.to_string();
+        state.loading = true;
+        state.error = None;
+    });
+    if surface.url().is_ok() {
+        surface
+            .reload()
+            .map_err(|e| window_err("Failed to reload the document", e))?;
+    } else {
+        let url = Url::parse(document_url).map_err(|e| {
+            AppCommandError::invalid_input(format!("bad document url {document_url:?}: {e}"))
+        })?;
+        surface
+            .navigate(url)
+            .map_err(|e| window_err("Failed to load the document", e))?;
+    }
+    hooks::begin_load(app, tab_id);
+    if let Some(state) = state {
+        events::emit_state(app, &state);
+    }
+    Ok(())
 }
 
 pub fn doc_state_core(guests: &DocGuests, tab_id: &str) -> Result<DocGuestState, AppCommandError> {
@@ -754,6 +788,16 @@ pub fn reload_core(
     let current = registry
         .state(tab_id)
         .ok_or_else(|| AppCommandError::not_found(format!("browser tab {tab_id} not found")))?;
+    // A document guest reloads its one document (its address is not a web
+    // address the retry path below would accept).
+    if current.kind == TabKind::Document {
+        let document_url = app
+            .try_state::<DocGuests>()
+            .and_then(|guests| guests.for_tab(tab_id))
+            .map(|grant| grant.document_url())
+            .unwrap_or(current.requested_url);
+        return reload_document(app, registry, tab_id, &surface, &document_url);
+    }
     // Retry rather than reload when the page showing is not the one asked
     // for: a navigation that failed before committing left nothing to reload
     // (or left an older document, which the error page now covers), and the

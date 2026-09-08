@@ -219,6 +219,15 @@ describe("DocGuestPreview", () => {
     renderPreview()
     await flush()
     const id = openedId()
+    // Scripts on first, so the fall-back is a visible transition.
+    api.browserDocSetMode.mockImplementation((tabId: string, mode: string) =>
+      Promise.resolve(docState(tabId, { mode: mode as "safe" | "dynamic" }))
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Enable scripts" }))
+    await flush()
+    expect(
+      screen.getByRole("button", { name: "Scripts on" })
+    ).toBeInTheDocument()
     api.browserReload.mockClear()
     act(() =>
       setDocGuestState(
@@ -228,6 +237,10 @@ describe("DocGuestPreview", () => {
         })
       )
     )
+    // The switch shows safe mode again.
+    expect(
+      screen.getByRole("button", { name: "Enable scripts" })
+    ).toHaveAttribute("aria-pressed", "false")
     expect(
       screen.getByText(
         "app.js changed after scripts were enabled. Scripts are off again."
@@ -235,13 +248,19 @@ describe("DocGuestPreview", () => {
     ).toBeInTheDocument()
     // The backend reloaded the document itself; the preview does not.
     expect(api.browserReload).not.toHaveBeenCalled()
+    // A fresh call, not the one that enabled scripts before the reset.
+    api.browserDocSetMode.mockClear()
     api.browserDocSetMode.mockImplementation((tabId: string) =>
       Promise.resolve(docState(tabId, { mode: "dynamic" }))
     )
     fireEvent.click(screen.getByRole("button", { name: "Enable again" }))
     await flush()
+    expect(api.browserDocSetMode).toHaveBeenCalledTimes(1)
     expect(api.browserDocSetMode).toHaveBeenCalledWith(id, "dynamic")
     expect(screen.queryByText(/changed after scripts/)).not.toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Scripts on" })
+    ).toBeInTheDocument()
   })
 
   it("offers to open a web link the document pointed at, through the app's link decision", async () => {
@@ -324,7 +343,7 @@ describe("DocGuestPreview", () => {
     expect(api.browserReload).toHaveBeenCalledWith(id)
   })
 
-  it("tears the guest down on unmount and reuses its id on the next mount", async () => {
+  it("tears the guest down on unmount; the next mount gets a guest of its own", async () => {
     const first = renderPreview()
     await flush()
     const id = openedId()
@@ -335,7 +354,63 @@ describe("DocGuestPreview", () => {
     renderPreview()
     await flush()
     expect(api.browserDocOpen).toHaveBeenCalledTimes(2)
-    expect(openedId()).toBe(id)
+    expect(openedId()).not.toBe(id)
+    expect(api.browserClose).toHaveBeenCalledTimes(1)
+  })
+
+  it("gives two previews of one file two guests", async () => {
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <DocGuestPreview
+          tab={tab()}
+          rootPath="/tmp/site"
+          onUseInline={vi.fn()}
+        />
+        <DocGuestPreview
+          tab={tab()}
+          rootPath="/tmp/site"
+          onUseInline={vi.fn()}
+        />
+      </NextIntlClientProvider>
+    )
+    await flush()
+    expect(api.browserDocOpen).toHaveBeenCalledTimes(2)
+    const ids = api.browserDocOpen.mock.calls.map(
+      (call) => (call[0] as { tabId: string }).tabId
+    )
+    expect(new Set(ids).size).toBe(2)
+  })
+
+  it("applies a save that lands while the guest is still being created", async () => {
+    let resolveOpen: ((value: unknown) => void) | null = null
+    api.browserDocOpen.mockImplementation(
+      ({ tabId }: { tabId: string }) =>
+        new Promise((resolve) => {
+          resolveOpen = (value) => resolve(value)
+          void tabId
+        })
+    )
+    const { rerender } = renderPreview()
+    await flush()
+    const id = openedId()
+    expect(api.browserReload).not.toHaveBeenCalled()
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <DocGuestPreview
+          tab={tab({ content: "<p>saved</p>", savedContent: "<p>saved</p>" })}
+          rootPath="/tmp/site"
+          onUseInline={vi.fn()}
+        />
+      </NextIntlClientProvider>
+    )
+    // Nothing to reload yet, and the change is not forgotten.
+    expect(api.browserReload).not.toHaveBeenCalled()
+    await act(async () => {
+      resolveOpen?.({ state: tabState(id), doc: docState(id) })
+      await Promise.resolve()
+    })
+    await flush()
+    expect(api.browserReload).toHaveBeenCalledWith(id)
   })
 
   it("offers the inline renderer from its menu", async () => {

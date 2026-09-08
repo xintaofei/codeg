@@ -277,6 +277,7 @@ describe("BrowserEventsBridge", () => {
     unmount()
     expect(mocks.unsubscribed.sort()).toEqual([
       "browser://closed",
+      "browser://doc-state",
       "browser://download",
       "browser://navigation-blocked",
       "browser://open-request",

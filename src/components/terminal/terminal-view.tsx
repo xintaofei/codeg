@@ -590,6 +590,10 @@ export function TerminalView({
     return () => {
       cancelled = true
       cleanup?.()
+      // A click held for the menu belongs to the terminal that was clicked;
+      // when this effect re-runs for another terminal (or unmounts) the
+      // menu must not outlive it and open the old terminal's link.
+      setLinkClick(null)
     }
   }, [terminalId, workingDir, shell, initialCommand, attach])
 

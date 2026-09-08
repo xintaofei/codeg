@@ -90,6 +90,15 @@ describe("TerminalLinkMenu", () => {
     expect(onChoose).toHaveBeenCalledWith("https://example.com/a", "builtin")
   })
 
+  it("closes after a choice, so the caller can hand focus back", () => {
+    const { onChoose, onClose } = renderMenu({})
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: "Open in system browser" })
+    )
+    expect(onChoose).toHaveBeenCalledWith("https://example.com/a", "system")
+    expect(onClose).toHaveBeenCalled()
+  })
+
   it("chooses the system browser explicitly", () => {
     const { onChoose } = renderMenu({})
     fireEvent.click(

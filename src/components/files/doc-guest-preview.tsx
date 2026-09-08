@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
   Copy,
@@ -41,21 +41,6 @@ import { extractHtmlTitle } from "@/lib/html-preview-inline"
 import { getAllowedExternalProtocol } from "@/lib/link-classify"
 import { openWithOsHandler } from "@/lib/link-open"
 import { cn, copyTextToClipboard } from "@/lib/utils"
-
-// One backend id per file tab for the session. The guest is torn down
-// whenever the file leaves the screen and created again when it returns —
-// under the same id, so the store's per-id ordering of create and close
-// applies across the two.
-const backendIds = new Map<string, string>()
-
-function backendIdFor(fileTabId: string): string {
-  let id = backendIds.get(fileTabId)
-  if (!id) {
-    id = `doc-${crypto.randomUUID()}`
-    backendIds.set(fileTabId, id)
-  }
-  return id
-}
 
 function dirname(path: string): string {
   const cut = path.replace(/[\\/]+$/, "")
@@ -98,7 +83,15 @@ export function DocGuestPreview({
 }) {
   const t = useTranslations("Browser.doc")
   const path = tab.path ?? ""
-  const backendId = useMemo(() => backendIdFor(tab.id), [tab.id])
+  // One backend id per MOUNT. The guest is torn down when its preview
+  // unmounts and created afresh when a preview mounts again, so two previews
+  // of one file at the same time — the file column kept mounted (hidden)
+  // behind a full-page route and the viewer drawer on that route — are two
+  // guests, each fitted to its own placeholder and each with its own state,
+  // sharing nothing but the document's grant on the backend. A fresh id per
+  // mount also means a create that answers after its preview is gone lands
+  // under an id nobody is looking at.
+  const [backendId] = useState(() => `doc-${crypto.randomUUID()}`)
   const storeKey = browserWorkspaceTabId(backendId)
   const state = useBrowserTabState(storeKey)
   const doc = useDocGuestState(storeKey)
@@ -124,13 +117,16 @@ export function DocGuestPreview({
   )
 
   // The file on disk changed under the guest — a save from the editor, an
-  // external change the watcher picked up: show the new one. The first value
-  // is the one the guest loaded.
+  // external change the watcher picked up: show the new one. The value at
+  // mount is what the guest is being created from; a change is only
+  // consumed once there is a guest to reload, so a save that lands while
+  // the guest is still being created is applied as soon as it exists.
   const savedRef = useRef(tab.savedContent)
   useEffect(() => {
+    if (!state) return
     if (savedRef.current === tab.savedContent) return
     savedRef.current = tab.savedContent
-    if (state) void browserReload(backendId).catch(() => {})
+    void browserReload(backendId).catch(() => {})
   }, [backendId, state, tab.savedContent])
 
   // When the backend drops the guest back to safe mode (a served file

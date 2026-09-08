@@ -105,6 +105,10 @@ describe("HtmlPreview engine choice", () => {
     renderPreview()
     await flush()
     expect(screen.getByTitle("HTML preview")).toBeInTheDocument()
+    expect(screen.queryByTestId("doc-guest")).not.toBeInTheDocument()
+    expect(
+      screen.queryByLabelText("Use built-in browser preview")
+    ).not.toBeInTheDocument()
   })
 
   it("follows the setting, and a per-file choice made from the preview overrides it", async () => {
