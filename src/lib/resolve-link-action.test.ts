@@ -453,7 +453,7 @@ describe("resolveLinkAction — web mode with the port bridge", () => {
     })
   })
 
-  it("does nothing without the bridge, and yields to a block rule", () => {
+  it("leaves the new-tab behaviour without the bridge, and yields to a block rule", () => {
     expect(
       resolveLinkAction("http://localhost:3000/", ctx({ surface: webSurface }))
     ).toEqual({ kind: "system", url: "http://localhost:3000/" })

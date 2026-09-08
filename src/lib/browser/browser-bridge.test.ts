@@ -15,9 +15,11 @@ import {
   bridgeOrigin,
   bridgeStatus,
   bridgeStatusSnapshot,
+  fragmentOf,
   isBridgeableUrl,
   probeBridge,
   resetBridgeStatusForTests,
+  STATUS_RETRY_DELAYS_MS,
   type BridgeGrant,
 } from "./browser-bridge"
 
@@ -67,12 +69,35 @@ describe("bridgeStatus", () => {
     expect(bridgeStatusSnapshot()?.enabled).toBe(false)
   })
 
-  it("treats a failed call as off and asks again next time", async () => {
-    call.mockRejectedValueOnce(new Error("down"))
-    expect((await bridgeStatus()).enabled).toBe(false)
-    call.mockResolvedValue({ enabled: true, ports: [0], publicHost: "h" })
-    expect((await bridgeStatus()).enabled).toBe(true)
-    expect(call).toHaveBeenCalledTimes(2)
+  it("retries a failed call before answering off, then asks again next time", async () => {
+    vi.useFakeTimers()
+    try {
+      call
+        .mockRejectedValueOnce(new Error("down"))
+        .mockRejectedValueOnce(new Error("down"))
+        .mockResolvedValueOnce({ enabled: true, ports: [0], publicHost: "h" })
+      const pending = bridgeStatus()
+      await vi.advanceTimersByTimeAsync(STATUS_RETRY_DELAYS_MS[0])
+      await vi.advanceTimersByTimeAsync(STATUS_RETRY_DELAYS_MS[1])
+      expect((await pending).enabled).toBe(true)
+      expect(call).toHaveBeenCalledTimes(3)
+
+      // Every try failed: off for this call, not cached.
+      resetBridgeStatusForTests()
+      call.mockReset()
+      call.mockRejectedValue(new Error("down"))
+      const failing = bridgeStatus()
+      for (const delay of STATUS_RETRY_DELAYS_MS) {
+        await vi.advanceTimersByTimeAsync(delay)
+      }
+      expect((await failing).enabled).toBe(false)
+      expect(bridgeStatusSnapshot()).toBeNull()
+      call.mockReset()
+      call.mockResolvedValue({ enabled: true, ports: [0], publicHost: null })
+      expect((await bridgeStatus()).enabled).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -142,13 +167,20 @@ describe("bridge URLs", () => {
     )
   })
 
-  it("always redirect to a root-relative path", () => {
-    expect(
-      bridgeEntryUrl(
-        { ...grant, path: "" },
-        { protocol: "http:", hostname: "h" }
-      )
-    ).toBe("http://h:3081/__codeg_bridge/enter/cap123?to=%2F")
+  it("send an empty path to the root and keep the address's fragment", () => {
+    const page = { protocol: "http:", hostname: "h" }
+    expect(bridgeEntryUrl({ ...grant, path: "" }, page)).toBe(
+      "http://h:3081/__codeg_bridge/enter/cap123?to=%2F"
+    )
+    expect(bridgeEntryUrl(grant, page, "#install")).toBe(
+      "http://h:3081/__codeg_bridge/enter/cap123?to=%2Fdocs%3Fx%3D1%23install"
+    )
+    expect(bridgeEntryUrl(grant, page, "")).toBe(
+      "http://h:3081/__codeg_bridge/enter/cap123?to=%2Fdocs%3Fx%3D1"
+    )
+    expect(fragmentOf("http://localhost:3000/docs#install")).toBe("#install")
+    expect(fragmentOf("http://localhost:3000/docs")).toBe("")
+    expect(fragmentOf("not a url")).toBe("")
   })
 })
 

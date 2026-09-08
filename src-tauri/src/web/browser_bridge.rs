@@ -35,6 +35,16 @@
 //! workbench's own cookies (locale preferences) reach the bridge the same way
 //! and are stripped before a request goes on to the dev server.
 //!
+//! Cookies ignore ports, so a page on one bridge port could make the browser
+//! attach another listener's cookie to a request it sends there. Two things
+//! keep the listeners apart: the entry answers with a small page that
+//! navigates itself to the target (so the first document request, like every
+//! request the page makes afterwards, is same-origin with the listener), and
+//! every other request must be same-origin — `Sec-Fetch-Site: same-origin`
+//! (or `none`, a navigation the user typed), or, for a browser without Fetch
+//! Metadata, an `Origin` on the listener's own port. A request one proxied
+//! page aims at another listener is `same-site`, and is refused.
+//!
 //! A capability stays valid for the life of its listener. A listener lives
 //! while a workbench tab holds it, closes a minute after the last hold is
 //! released, and closes after two hours without a request even when held (a
@@ -42,10 +52,11 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
-use axum::body::Body;
+use axum::body::{Body, HttpBody};
 use axum::extract::ws::{CloseFrame, Message as DownMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Path as AxumPath, RawQuery, Request, State};
 use axum::http::request::Parts;
@@ -269,12 +280,17 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 struct Bridge {
     config: Mutex<Option<BridgeConfig>>,
+    /// Bumped by every `configure`, so an `open` that started under an
+    /// earlier configuration cannot publish a listener after the bridge was
+    /// switched off (or re-pointed) while it was binding.
+    generation: AtomicU64,
     /// Live listeners by target port.
     listeners: Mutex<HashMap<u16, Arc<Listener>>>,
 }
 
 static BRIDGE: LazyLock<Bridge> = LazyLock::new(|| Bridge {
     config: Mutex::new(None),
+    generation: AtomicU64::new(0),
     listeners: Mutex::new(HashMap::new()),
 });
 
@@ -284,7 +300,11 @@ static SWEEPER: OnceLock<()> = OnceLock::new();
 /// listener; changing the configuration keeps the listeners already bound.
 pub fn configure(config: Option<BridgeConfig>) {
     let off = config.is_none();
-    *lock(&BRIDGE.config) = config;
+    {
+        let mut current = lock(&BRIDGE.config);
+        *current = config;
+        BRIDGE.generation.fetch_add(1, Ordering::AcqRel);
+    }
     if off {
         shutdown_all();
     }
@@ -313,7 +333,11 @@ pub fn listener_count() -> usize {
 /// Let `tab_id` reach `127.0.0.1:{target_port}` through a bridge listener,
 /// binding one when the port has none yet.
 pub async fn open(target_port: u16, tab_id: &str) -> Result<BridgeGrant, BridgeError> {
-    let config = lock(&BRIDGE.config).clone().ok_or(BridgeError::Disabled)?;
+    let (config, generation) = {
+        let config = lock(&BRIDGE.config);
+        let generation = BRIDGE.generation.load(Ordering::Acquire);
+        (config.clone().ok_or(BridgeError::Disabled)?, generation)
+    };
     if config.reserved.contains(&target_port) {
         return Err(BridgeError::Reserved(target_port));
     }
@@ -344,8 +368,14 @@ pub async fn open(target_port: u16, tab_id: &str) -> Result<BridgeGrant, BridgeE
             shutdown: Mutex::new(None),
             task: Mutex::new(None),
         });
-        // Another task may have bound this target while we were binding.
+        // Another task may have bound this target while we were binding, and
+        // the bridge may have been switched off: a listener is published only
+        // under the configuration it was opened for.
         let winner = {
+            let config_now = lock(&BRIDGE.config);
+            if config_now.is_none() || BRIDGE.generation.load(Ordering::Acquire) != generation {
+                return Err(BridgeError::Disabled);
+            }
             let mut listeners = lock(&BRIDGE.listeners);
             match listeners.get(&target_port) {
                 Some(existing) => existing.clone(),
@@ -416,12 +446,14 @@ async fn sweep_task() {
     }
 }
 
+/// Binds like the API listener does: an IP literal (bare or bracketed IPv6)
+/// or a hostname such as `localhost`, resolved here.
 async fn bind(host: &str, port: u16) -> std::io::Result<tokio::net::TcpListener> {
-    let addr: SocketAddr = format!("{host}:{port}")
-        .parse()
-        .or_else(|_| format!("[{host}]:{port}").parse())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{e}")))?;
-    let socket = tokio::net::TcpListener::bind(addr).await?;
+    let host = host.trim().trim_start_matches('[').trim_end_matches(']');
+    let socket = match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => tokio::net::TcpListener::bind(SocketAddr::new(ip, port)).await?,
+        Err(_) => tokio::net::TcpListener::bind((host, port)).await?,
+    };
     if let Err(err) = super::socket_inherit::mark_listener_non_inheritable(&socket) {
         tracing::warn!("[bridge] failed to mark listener non-inheritable: {err}");
     }
@@ -480,13 +512,30 @@ async fn enter(
         "{}={cap}; Path=/; HttpOnly; SameSite=Lax{secure}",
         listener.cookie_name()
     );
+    // Not a redirect: a redirected request keeps the workbench as its
+    // initiator and arrives `same-site`, which is exactly what `forward`
+    // refuses. A page that navigates itself makes the next request
+    // same-origin with this listener.
     Response::builder()
-        .status(StatusCode::FOUND)
-        .header(header::LOCATION, to)
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
         .header(header::SET_COOKIE, cookie)
         .header(header::CACHE_CONTROL, "no-store")
-        .body(Body::empty())
+        .body(Body::from(bounce_page(&to)))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// The entry's answer: a page whose only job is to go to `to` on this
+/// origin, by script or, failing that, by meta refresh. Replaces itself in
+/// the history, so the frame's back button does not return here.
+fn bounce_page(to: &str) -> String {
+    let attribute = escape_html(to);
+    let script = json_for_script(to);
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\">\
+         <meta http-equiv=\"refresh\" content=\"0;url={attribute}\"><title>codeg</title></head>\
+         <body><script>location.replace({script})</script></body></html>"
+    )
 }
 
 async fn forward(State(listener): State<Arc<Listener>>, request: Request) -> Response {
@@ -498,6 +547,9 @@ async fn forward(State(listener): State<Arc<Listener>>, request: Request) -> Res
     let presented = cookie_value(&parts.headers, &cookie_name);
     if !presented.is_some_and(|cap| listener.has_cap(&cap)) {
         return forbidden_page();
+    }
+    if !same_origin_initiator(&parts.headers, listener.bridge_port) {
+        return cross_origin_page();
     }
     listener.touch();
     if is_websocket_upgrade(&parts.headers) {
@@ -548,7 +600,8 @@ fn drop_request_header(name: &str) -> bool {
 
 /// Response headers that must not reach the browser: connection-level ones,
 /// and `X-Frame-Options` — the page is being shown in the user's own workbench
-/// on purpose.
+/// on purpose (a CSP `frame-ancestors` directive goes the same way, see
+/// `without_frame_ancestors`).
 fn drop_response_header(name: &str) -> bool {
     matches!(
         name,
@@ -573,7 +626,9 @@ async fn proxy_http(listener: &Listener, parts: Parts, body: Body) -> Response {
     for (name, value) in rewritten_request_headers(&parts.headers, target) {
         builder = builder.header(name, value);
     }
-    if has_body(&parts.headers) {
+    // Anything the browser sent as a body goes on as a stream (chunked
+    // upstream when the length is unknown); a body-less GET stays body-less.
+    if !body.is_end_stream() {
         builder = builder.body(reqwest::Body::wrap_stream(body.into_data_stream()));
     }
 
@@ -592,6 +647,14 @@ async fn proxy_http(listener: &Listener, parts: Parts, body: Body) -> Response {
                 out = out.header(name, rewritten);
                 continue;
             }
+        }
+        if name == header::CONTENT_SECURITY_POLICY
+            || name == header::CONTENT_SECURITY_POLICY_REPORT_ONLY
+        {
+            if let Some(kept) = without_frame_ancestors(value) {
+                out = out.header(name, kept);
+            }
+            continue;
         }
         out = out.header(name, value);
     }
@@ -629,15 +692,6 @@ fn rewritten_request_headers(headers: &HeaderMap, target: u16) -> Vec<(HeaderNam
         }
     }
     out
-}
-
-fn has_body(headers: &HeaderMap) -> bool {
-    headers
-        .get(header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok())
-        .is_some_and(|n| n > 0)
-        || headers.contains_key(header::TRANSFER_ENCODING)
 }
 
 /// An absolute `Location` on the target itself becomes a path on the bridge
@@ -805,6 +859,51 @@ fn is_local_path(path: &str) -> bool {
         && !path.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
+/// Whether the browser says this request comes from the listener's own
+/// page. `Sec-Fetch-Site` is set by the browser and cannot be forged by a
+/// page: `same-origin` is the page itself, `none` a navigation the user
+/// typed; `same-site` is another port on this host — a different proxied
+/// page, or the workbench, neither of which may talk to the dev server
+/// directly — and `cross-site` is anyone else. Without Fetch Metadata (older
+/// browsers, non-browser clients) an `Origin`, when present, must name this
+/// listener's port; websocket handshakes always carry one.
+fn same_origin_initiator(headers: &HeaderMap, bridge_port: u16) -> bool {
+    if let Some(site) = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
+        return matches!(site.trim(), "same-origin" | "none");
+    }
+    match headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        Some(origin) => origin_port(origin) == Some(bridge_port),
+        None => true,
+    }
+}
+
+/// The port an `Origin` header names, explicit or the scheme's default.
+fn origin_port(origin: &str) -> Option<u16> {
+    let url = reqwest::Url::parse(origin.trim()).ok()?;
+    url.port_or_known_default()
+}
+
+/// A CSP without its `frame-ancestors` directive; `None` when nothing else
+/// was in it (the header is then dropped).
+fn without_frame_ancestors(value: &HeaderValue) -> Option<HeaderValue> {
+    let raw = value.to_str().ok()?;
+    let kept: Vec<&str> = raw
+        .split(';')
+        .map(str::trim)
+        .filter(|directive| {
+            !directive.is_empty()
+                && !directive
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("frame-ancestors"))
+        })
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    HeaderValue::from_str(&kept.join("; ")).ok()
+}
+
 fn forwarded_https(headers: &HeaderMap) -> bool {
     headers
         .get("x-forwarded-proto")
@@ -885,6 +984,14 @@ fn forbidden_page() -> Response {
     )
 }
 
+fn cross_origin_page() -> Response {
+    html_page(
+        StatusCode::FORBIDDEN,
+        "This request did not come from the page itself",
+        "A dev server shown through codeg only answers its own page. Open the address from codeg to view it.",
+    )
+}
+
 fn bad_gateway_page(target: u16, err: &dyn std::fmt::Display) -> Response {
     let detail = escape_html(&err.to_string());
     html_page(
@@ -898,6 +1005,18 @@ fn escape_html(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+/// A JSON string literal safe inside a `<script>` block: `<`, `>` and `&`
+/// become escapes so no `</script>` (or comment opener) can end the block.
+fn json_for_script(text: &str) -> String {
+    serde_json::to_string(text)
+        .unwrap_or_else(|_| "\"/\"".to_string())
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
 }
 
 #[cfg(test)]
@@ -1056,6 +1175,66 @@ mod tests {
         assert_eq!(json["bridgePort"], 3081);
         assert_eq!(json["entryPath"], "/__codeg_bridge/enter/abc");
         assert!(json["publicHost"].is_null());
+    }
+
+    #[test]
+    fn only_the_listeners_own_page_may_ask() {
+        let with = |name: &str, value: &'static str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(HeaderName::from_bytes(name.as_bytes()).unwrap(), HeaderValue::from_static(value));
+            headers
+        };
+        assert!(same_origin_initiator(&with("sec-fetch-site", "same-origin"), 3081));
+        assert!(same_origin_initiator(&with("sec-fetch-site", "none"), 3081));
+        // Another port on this host: another proxied page or the workbench.
+        assert!(!same_origin_initiator(&with("sec-fetch-site", "same-site"), 3081));
+        assert!(!same_origin_initiator(&with("sec-fetch-site", "cross-site"), 3081));
+        // Fetch Metadata wins over Origin when both are there.
+        let mut both = with("sec-fetch-site", "same-site");
+        both.insert(header::ORIGIN, HeaderValue::from_static("http://h:3081"));
+        assert!(!same_origin_initiator(&both, 3081));
+        // Without it, the Origin's port decides; no Origin at all passes.
+        assert!(same_origin_initiator(&with("origin", "http://h:3081"), 3081));
+        assert!(same_origin_initiator(&with("origin", "https://codeg.example:3081"), 3081));
+        assert!(!same_origin_initiator(&with("origin", "http://h:3082"), 3081));
+        assert!(!same_origin_initiator(&with("origin", "http://h"), 3081));
+        assert!(!same_origin_initiator(&with("origin", "null"), 3081));
+        assert!(same_origin_initiator(&HeaderMap::new(), 3081));
+        assert_eq!(origin_port("https://h"), Some(443));
+        assert_eq!(origin_port("http://h"), Some(80));
+        assert_eq!(origin_port("http://[::1]:3081"), Some(3081));
+    }
+
+    #[test]
+    fn bounce_page_goes_to_the_path_and_escapes_it() {
+        let page = bounce_page("/docs?x=1#top");
+        assert!(page.contains("content=\"0;url=/docs?x=1#top\""));
+        assert!(page.contains("location.replace(\"/docs?x=1#top\")"));
+        let hostile = bounce_page("/a\"><script>alert(1)</script>");
+        // The attribute is entity-escaped, the script literal cannot close
+        // the block: exactly one `</script>` remains, the page's own.
+        assert!(!hostile.contains("<script>alert"));
+        assert!(hostile.contains("url=/a&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;\""));
+        assert!(hostile.contains("location.replace(\"/a\\\"\\u003e\\u003cscript\\u003ealert(1)\\u003c/script\\u003e\")"));
+        assert_eq!(hostile.matches("</script>").count(), 1);
+    }
+
+    #[test]
+    fn frame_ancestors_is_dropped_from_a_csp() {
+        let strip = |raw: &'static str| {
+            without_frame_ancestors(&HeaderValue::from_static(raw)).map(|v| v.to_str().unwrap().to_string())
+        };
+        assert_eq!(
+            strip("default-src 'self'; frame-ancestors 'none'; img-src *").as_deref(),
+            Some("default-src 'self'; img-src *")
+        );
+        assert_eq!(strip("FRAME-ANCESTORS 'self'"), None);
+        assert_eq!(strip("default-src 'self'").as_deref(), Some("default-src 'self'"));
+        // A source expression that merely contains the word stays.
+        assert_eq!(
+            strip("img-src https://frame-ancestors.example").as_deref(),
+            Some("img-src https://frame-ancestors.example")
+        );
     }
 
     #[test]

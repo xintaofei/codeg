@@ -11,7 +11,10 @@ import {
   browserCapabilities,
   browserCapabilitiesSnapshot,
 } from "@/lib/browser/browser-api"
-import { bridgeStatusSnapshot } from "@/lib/browser/browser-bridge"
+import {
+  bridgeStatus,
+  bridgeStatusSnapshot,
+} from "@/lib/browser/browser-bridge"
 import {
   getBrowserPrefs,
   markBrowserFirstOpenSeen,
@@ -77,14 +80,17 @@ export function useOpenUrlTarget() {
     (url: string, options: OpenUrlOptions): LinkAction => {
       const capabilities = browserCapabilitiesSnapshot()
       const somewhereToOpen = openBrowserTab !== null || viewerHost !== null
+      // In a browser the server's answer is primed at startup; if it is
+      // still missing here (the call failed and its retries ran out), ask
+      // again for the next click rather than staying blind for the session.
+      if (!isDesktop() && bridgeStatusSnapshot() === null) void bridgeStatus()
       const surface: LinkSurface = {
         builtinAvailable: (capabilities?.available ?? false) && somewhereToOpen,
         fileColumnVisible,
         viewerHostAvailable: viewerHost !== null,
         remoteDesktop: isRemoteDesktopMode(),
-        // In a browser the server's answer is primed at startup by the
-        // events bridge; before it is in, a loopback link opens as it
-        // always did (a new tab) rather than waiting out the gesture.
+        // Before the answer is in, a loopback link opens as it always did
+        // (a new tab) rather than waiting out the gesture.
         bridgeAvailable:
           !isDesktop() &&
           (bridgeStatusSnapshot()?.enabled ?? false) &&

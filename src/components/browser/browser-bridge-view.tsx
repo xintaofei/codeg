@@ -11,12 +11,13 @@ import {
   bridgeEntryUrl,
   bridgeOpen,
   bridgeOrigin,
+  fragmentOf,
   probeBridge,
   type BridgeGrant,
 } from "@/lib/browser/browser-bridge"
 import { browserTabBackendId } from "@/lib/file-tab-id"
 import { openExternalTab } from "@/lib/link-open"
-import { copyTextToClipboard } from "@/lib/utils"
+import { copyTextToClipboard, randomUUID } from "@/lib/utils"
 
 const ICON_BTN =
   "flex h-7 w-7 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-primary/8 hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
@@ -42,12 +43,14 @@ function messageOf(error: unknown): string {
 
 /**
  * The web-mode body of a browser tab: a dev server on the codeg host shown
- * through the port bridge in an iframe. Each mount takes a fresh grant (a
- * reload too), releases it on unmount, and probes the bridge port from this
- * browser before showing the frame so an unreachable port is explained
- * instead of left blank. "Open in a new tab" stays available throughout:
- * whatever the frame cannot show, a top-level tab on the same bridge origin
- * can.
+ * through the port bridge in an iframe. Each attempt (a mount, a reload, a
+ * new address) takes a fresh grant under a hold id of its own and releases
+ * exactly that hold when it is over — after the open has settled, so an
+ * unmount during the round trip cannot leave a hold behind or take a later
+ * attempt's away. The bridge port is probed from this browser before the
+ * frame shows, so an unreachable port is explained instead of left blank.
+ * "Open in a new tab" stays available throughout: whatever the frame cannot
+ * show, a top-level tab on the same bridge origin can.
  */
 export function BrowserBridgeView({ tab }: { tab: BrowserWorkspaceTab }) {
   const t = useTranslations("Browser.bridge")
@@ -72,17 +75,21 @@ export function BrowserBridgeView({ tab }: { tab: BrowserWorkspaceTab }) {
     const settle = (phase: Phase) => {
       if (!cancelled) setOutcome({ attempt, url, phase })
     }
+    // `randomUUID` from utils: `crypto.randomUUID` is missing in a
+    // non-secure context, which is where web mode over a LAN address runs.
+    const holdId = `${tabId}:${randomUUID()}`
+    const opening = bridgeOpen(url, holdId)
     void (async () => {
       let grant: BridgeGrant
       try {
-        grant = await bridgeOpen(url, tabId)
+        grant = await opening
       } catch (error) {
         settle({ kind: "error", message: messageOf(error) })
         return
       }
       const page = window.location
       const origin = bridgeOrigin(grant, page)
-      const src = bridgeEntryUrl(grant, page)
+      const src = bridgeEntryUrl(grant, page, fragmentOf(url))
       const reachable = await probeBridge(origin)
       settle(
         reachable
@@ -92,17 +99,15 @@ export function BrowserBridgeView({ tab }: { tab: BrowserWorkspaceTab }) {
     })()
     return () => {
       cancelled = true
+      // Release this attempt's hold once its open has settled (a failed
+      // open holds nothing). The listener closes a minute later unless
+      // another tab uses it; coming back mints a new grant and reloads.
+      void opening.then(
+        () => bridgeClose(holdId).catch(() => {}),
+        () => {}
+      )
     }
   }, [url, tabId, attempt])
-
-  // The hold ends with the view: the listener closes a minute later unless
-  // another tab uses it. Coming back mints a new grant and reloads the page.
-  useEffect(
-    () => () => {
-      void bridgeClose(tabId).catch(() => {})
-    },
-    [tabId]
-  )
 
   const src =
     phase.kind === "ready" || phase.kind === "unreachable" ? phase.src : null

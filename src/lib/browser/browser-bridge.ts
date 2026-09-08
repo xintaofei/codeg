@@ -29,30 +29,45 @@ export interface BridgeGrant {
 
 const OFF: BridgeStatus = { enabled: false, ports: [], publicHost: null }
 
+/** Pauses between attempts when the status call fails (the server is
+ *  starting, a flaky connection): three tries in all, then the next caller
+ *  asks again. */
+export const STATUS_RETRY_DELAYS_MS = [1000, 3000]
+
 let statusPromise: Promise<BridgeStatus> | null = null
 let resolvedStatus: BridgeStatus | null = null
 
+async function askStatus(): Promise<BridgeStatus> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const status = await getTransport().call<BridgeStatus>(
+        "browser_bridge_status",
+        {}
+      )
+      resolvedStatus = status
+      return status
+    } catch {
+      const delay = STATUS_RETRY_DELAYS_MS[attempt]
+      if (delay === undefined) {
+        statusPromise = null
+        return OFF
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay))
+    }
+  }
+}
+
 /**
  * Whether this server bridges dev-server ports. Cached for the session; the
- * desktop never needs it (its browser tabs reach the host directly).
+ * desktop never needs it (its browser tabs reach the host directly). A call
+ * that fails after its retries is not cached, so the next caller asks again.
  */
 export function bridgeStatus(): Promise<BridgeStatus> {
   if (isDesktop()) {
     resolvedStatus = OFF
     return Promise.resolve(OFF)
   }
-  if (!statusPromise) {
-    statusPromise = getTransport()
-      .call<BridgeStatus>("browser_bridge_status", {})
-      .then((status) => {
-        resolvedStatus = status
-        return status
-      })
-      .catch(() => {
-        statusPromise = null
-        return OFF
-      })
-  }
+  if (!statusPromise) statusPromise = askStatus()
   return statusPromise
 }
 
@@ -110,10 +125,29 @@ export function bridgeOrigin(grant: BridgeGrant, page: PageLocation): string {
   return `${page.protocol}//${authority}:${grant.bridgePort}`
 }
 
-/** The URL the frame loads first: the entry that sets the cookie. */
-export function bridgeEntryUrl(grant: BridgeGrant, page: PageLocation): string {
-  const to = grant.path.startsWith("/") ? grant.path : `/${grant.path}`
+/**
+ * The URL the frame loads first: the entry that sets the cookie, told where
+ * to go next. The grant carries the path and query; the fragment of the
+ * address the user opened (`#install`) never reached the server and is
+ * appended here.
+ */
+export function bridgeEntryUrl(
+  grant: BridgeGrant,
+  page: PageLocation,
+  fragment = ""
+): string {
+  const path = grant.path.startsWith("/") ? grant.path : `/${grant.path}`
+  const to = fragment && !path.includes("#") ? `${path}${fragment}` : path
   return `${bridgeOrigin(grant, page)}${grant.entryPath}?to=${encodeURIComponent(to)}`
+}
+
+/** `#install` of an address, or the empty string. */
+export function fragmentOf(url: string): string {
+  try {
+    return new URL(url).hash
+  } catch {
+    return ""
+  }
 }
 
 /**

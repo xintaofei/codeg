@@ -98,7 +98,7 @@ describe("BrowserBridgeView", () => {
     )) as HTMLIFrameElement
     expect(api.bridgeOpen).toHaveBeenCalledWith(
       "http://localhost:3000/docs?x=1",
-      "tab-1"
+      expect.stringMatching(/^tab-1:/)
     )
     const expectedSrc = bridgeEntryUrl(grant, window.location)
     expect(frame.getAttribute("src")).toBe(expectedSrc)
@@ -177,15 +177,80 @@ describe("BrowserBridgeView", () => {
     ).toBeDisabled()
   })
 
-  it("releases the grant when the view goes away", async () => {
+  it("keeps the address's fragment for the frame", async () => {
+    api.bridgeOpen.mockResolvedValue(grant)
+    renderView(
+      <BrowserBridgeView tab={tab("http://localhost:3000/docs?x=1#install")} />
+    )
+    const frame = await screen.findByTitle("Dev server preview")
+    expect(frame.getAttribute("src")).toBe(
+      bridgeEntryUrl(grant, window.location, "#install")
+    )
+    expect(frame.getAttribute("src")).toContain("%23install")
+  })
+
+  it("releases exactly the hold it opened, once the open has settled", async () => {
     api.bridgeOpen.mockResolvedValue(grant)
     const view = renderView(<BrowserBridgeView tab={tab()} />)
     await screen.findByTitle("Dev server preview")
+    const holdId = api.bridgeOpen.mock.calls[0][1]
     expect(api.bridgeClose).not.toHaveBeenCalled()
     await act(async () => {
       view.unmount()
     })
-    expect(api.bridgeClose).toHaveBeenCalledWith("tab-1")
+    expect(api.bridgeClose).toHaveBeenCalledTimes(1)
+    expect(api.bridgeClose).toHaveBeenCalledWith(holdId)
+  })
+
+  it("unmounted while the open is pending: closes after it lands, never before", async () => {
+    let resolveOpen: (grant: BridgeGrant) => void = () => {}
+    api.bridgeOpen.mockReturnValue(
+      new Promise<BridgeGrant>((resolve) => {
+        resolveOpen = resolve
+      })
+    )
+    const view = renderView(<BrowserBridgeView tab={tab()} />)
+    const holdId = api.bridgeOpen.mock.calls[0][1]
+    await act(async () => {
+      view.unmount()
+    })
+    expect(api.bridgeClose).not.toHaveBeenCalled()
+    await act(async () => {
+      resolveOpen(grant)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(api.bridgeClose).toHaveBeenCalledWith(holdId)
+  })
+
+  it("a failed open holds nothing, so nothing is released", async () => {
+    api.bridgeOpen.mockRejectedValue(new Error("no bridge port is free"))
+    const view = renderView(<BrowserBridgeView tab={tab()} />)
+    await screen.findByText("This page can't be shown here")
+    await act(async () => {
+      view.unmount()
+    })
+    expect(api.bridgeClose).not.toHaveBeenCalled()
+  })
+
+  it("a reload releases the previous attempt's hold, not the new one's", async () => {
+    api.bridgeOpen.mockResolvedValueOnce(grant).mockResolvedValueOnce({
+      ...grant,
+      entryPath: "/__codeg_bridge/enter/cap-two",
+    })
+    renderView(<BrowserBridgeView tab={tab()} />)
+    await screen.findByTitle("Dev server preview")
+    const first = api.bridgeOpen.mock.calls[0][1]
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }))
+    await waitFor(() =>
+      expect(
+        screen.getByTitle("Dev server preview").getAttribute("src")
+      ).toContain("cap-two")
+    )
+    const second = api.bridgeOpen.mock.calls[1][1]
+    expect(second).not.toBe(first)
+    await waitFor(() => expect(api.bridgeClose).toHaveBeenCalledWith(first))
+    expect(api.bridgeClose).not.toHaveBeenCalledWith(second)
   })
 })
 

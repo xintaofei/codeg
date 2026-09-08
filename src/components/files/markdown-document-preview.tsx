@@ -323,6 +323,14 @@ export function MarkdownDocumentPreview({
                     modifier: isPrimaryModifier(e),
                   })
                 }}
+                // A middle click would otherwise take the native path (a
+                // background tab on the raw address, past the site rules);
+                // it opens "the other way", like a modified click.
+                onAuxClick={(e) => {
+                  if (e.button !== 1) return
+                  e.preventDefault()
+                  openUrlTarget(external, { source: "editor", modifier: true })
+                }}
               >
                 {children}
               </BrowserLink>

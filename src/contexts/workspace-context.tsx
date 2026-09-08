@@ -73,6 +73,7 @@ import {
   releaseBrowserTab,
 } from "@/lib/browser/browser-tab-store"
 import { hostnameOf, normalizeUrlForDedupe } from "@/lib/browser/browser-url"
+import { randomUUID } from "@/lib/utils"
 
 export type WorkspaceMode = "conversation" | "fusion"
 
@@ -806,7 +807,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         ? fileTabsRef.current.find((tab) => tab.id === options.openerTabId)
         : undefined
       const record = browserTabRecord(
-        crypto.randomUUID(),
+        randomUUID(),
         url,
         options?.folderId ??
           opener?.folderId ??
@@ -897,7 +898,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           open.add(normalized)
           records.push(
             browserTabRecord(
-              crypto.randomUUID(),
+              randomUUID(),
               entry.url,
               entry.folderId,
               null,
