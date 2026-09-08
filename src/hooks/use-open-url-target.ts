@@ -20,6 +20,7 @@ import {
 } from "@/lib/browser/browser-prefs"
 import { displayHostPort } from "@/lib/browser/browser-url"
 import { openInSystemBrowser, openWithOsHandler } from "@/lib/link-open"
+import { classifyLinkTarget } from "@/lib/link-classify"
 import {
   resolveLinkAction,
   type LinkAction,
@@ -140,15 +141,21 @@ export function useOpenUrlTarget() {
 
   return useCallback(
     (url: string, options: OpenUrlOptions): OpenUrlOutcome => {
-      // On the desktop the decision needs the backend's answer — whether a
-      // built-in browser exists and which site rules the administrator has
-      // fixed. Before it is in (the first moments after launch) a click is
-      // held until it arrives rather than routed on a guess: routed to the
-      // system browser it would slip past a managed block. Only the desktop
-      // waits; there the system browser is reached through a command, not
-      // through `window.open`, so no user gesture is spent. In the browser
-      // the answer is immediate and this never runs.
-      if (browserCapabilitiesSnapshot() === null && isDesktop()) {
+      // On the desktop the decision for a WEB address needs the backend's
+      // answer — whether a built-in browser exists and which site rules the
+      // administrator has fixed. Before it is in (the first moments after
+      // launch) such a click is held until it arrives rather than routed on
+      // a guess: routed to the system browser it would slip past a managed
+      // block. Only the desktop waits; there the system browser is reached
+      // through a command, not through `window.open`, so no user gesture is
+      // spent. In the browser the answer is immediate and this never runs.
+      // `mailto:`, `tel:`, file paths and refused schemes do not depend on
+      // the answer and go through at once.
+      if (
+        browserCapabilitiesSnapshot() === null &&
+        isDesktop() &&
+        classifyLinkTarget(url).kind === "http"
+      ) {
         void browserCapabilities().then(() => {
           run(url, options)
         })
