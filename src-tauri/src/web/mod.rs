@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod browser_bridge;
 pub mod compression;
 pub mod event_bridge;
 pub mod handlers;
@@ -601,6 +602,7 @@ pub(crate) async fn do_start_web_server_with_state(
     // Advertise the IP the socket is actually bound to, not the raw config.
     let advertised_host = advertise_host(local_addr, &host);
     tracing::info!("[WEB] Starting web server on {}", addr);
+    configure_browser_bridge(&host, actual_port);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let handle = tokio::spawn(async move {
@@ -628,7 +630,35 @@ pub(crate) async fn do_start_web_server_with_state(
     })
 }
 
+/// Bridge listeners follow the web service: same bind address, the ports
+/// after its own unless `CODEG_BRIDGE_PORTS` says otherwise.
+fn configure_browser_bridge(bind_host: &str, port: u16) {
+    let config = browser_bridge::BridgeConfig::from_env(bind_host, port);
+    match &config {
+        Some(config) => tracing::info!(
+            "[WEB] Port bridge for dev servers: ports {}",
+            describe_ports(&config.ports)
+        ),
+        None => tracing::info!("[WEB] Port bridge for dev servers: off (CODEG_BRIDGE_PORTS)"),
+    }
+    browser_bridge::configure(config);
+}
+
+/// `3081-3090` for a contiguous pool, the list otherwise, `any free port` for `0`.
+pub fn describe_ports(ports: &[u16]) -> String {
+    if ports == [0] {
+        return "any free port".to_string();
+    }
+    let contiguous = ports.windows(2).all(|w| w[1] == w[0] + 1);
+    match (ports.first(), ports.last()) {
+        (Some(first), Some(last)) if contiguous && ports.len() > 2 => format!("{first}-{last}"),
+        _ => ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "),
+    }
+}
+
 pub(crate) async fn do_stop_web_server(state: &WebServerState) {
+    // The bridge listeners belong to this web service: no API, no grants.
+    browser_bridge::configure(None);
     let handle_opt = state.handle.lock().unwrap().take();
     let shutdown_tx = state.shutdown_tx.lock().unwrap().take();
 
@@ -876,6 +906,7 @@ pub(crate) async fn do_start_web_server_tauri(
     // Advertise the IP the socket is actually bound to, not the raw config.
     let advertised_host = advertise_host(local_addr, &host_val);
     tracing::info!("[WEB] Starting web server on {}", addr);
+    configure_browser_bridge(&host_val, actual_port);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let handle = tokio::spawn(async move {

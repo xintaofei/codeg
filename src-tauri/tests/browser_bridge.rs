@@ -1,0 +1,440 @@
+//! Integration tests for the web-mode port bridge (`web::browser_bridge`):
+//! real listeners on loopback, a real upstream standing in for a dev server,
+//! and a real WebSocket through both.
+
+use std::sync::OnceLock;
+
+use axum::extract::ws::{Message, WebSocketUpgrade};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::Router;
+use codeg_lib::web::browser_bridge::{self, BridgeConfig, BridgeError, BridgeGrant};
+use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+const RESERVED_PORT: u16 = 1;
+
+fn configure_once() {
+    static ONCE: OnceLock<()> = OnceLock::new();
+    ONCE.get_or_init(|| {
+        browser_bridge::configure(Some(BridgeConfig {
+            bind_host: "127.0.0.1".to_string(),
+            ports: vec![0],
+            public_host: None,
+            reserved: vec![RESERVED_PORT],
+        }));
+    });
+}
+
+/// A loopback server standing in for a dev server. Echoes the request
+/// headers it cares about back as `x-echo-*` response headers.
+async fn spawn_upstream() -> u16 {
+    async fn hello(headers: HeaderMap) -> Response {
+        let echo = |name: &str| {
+            headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string()
+        };
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("x-frame-options", "DENY")
+            .header("set-cookie", "sid=1; Path=/")
+            .header("x-echo-cookie", echo("cookie"))
+            .header("x-echo-origin", echo("origin"))
+            .header("x-echo-referer", echo("referer"))
+            .header("x-echo-host", echo("host"))
+            .header("x-echo-accept-encoding", echo("accept-encoding"))
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(axum::body::Body::from("hello from upstream"))
+            .unwrap()
+    }
+    async fn redirect(headers: HeaderMap) -> Response {
+        let host = headers
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("127.0.0.1");
+        Response::builder()
+            .status(StatusCode::FOUND)
+            .header(header::LOCATION, format!("http://{host}/after?x=1"))
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+    async fn echo(headers: HeaderMap, body: String) -> Response {
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(
+                header::CONTENT_TYPE,
+                headers
+                    .get(header::CONTENT_TYPE)
+                    .cloned()
+                    .unwrap_or_else(|| "text/plain".parse().unwrap()),
+            )
+            .body(axum::body::Body::from(format!("echo:{body}")))
+            .unwrap()
+    }
+    async fn ws(ws: WebSocketUpgrade, headers: HeaderMap) -> Response {
+        let origin = headers
+            .get("origin")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        ws.protocols(["vite-hmr"]).on_upgrade(move |mut socket| async move {
+            let _ = socket
+                .send(Message::Text(format!("origin:{origin}").into()))
+                .await;
+            while let Some(Ok(message)) = socket.recv().await {
+                match message {
+                    Message::Text(text) => {
+                        if socket
+                            .send(Message::Text(format!("echo:{text}").into()))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Message::Close(_) => break,
+                    _ => {}
+                }
+            }
+        })
+    }
+    let app = Router::new()
+        .route("/hello", get(hello))
+        .route("/redirect", get(redirect))
+        .route("/echo", post(echo))
+        .route("/ws", get(ws));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    port
+}
+
+fn client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .build()
+        .unwrap()
+}
+
+fn cap_of(grant: &BridgeGrant) -> &str {
+    grant
+        .entry_path
+        .strip_prefix(browser_bridge::ENTER_PREFIX)
+        .expect("entry path carries the capability")
+}
+
+fn cookie_for(grant: &BridgeGrant) -> String {
+    format!("codeg-bridge-{}={}", grant.bridge_port, cap_of(grant))
+}
+
+fn base(grant: &BridgeGrant) -> String {
+    format!("http://127.0.0.1:{}", grant.bridge_port)
+}
+
+#[tokio::test]
+async fn entry_sets_the_cookie_and_redirects_to_the_page() {
+    configure_once();
+    let upstream = spawn_upstream().await;
+    let grant = browser_bridge::open(upstream, "tab-entry").await.unwrap();
+    assert_eq!(grant.target_port, upstream);
+    assert_ne!(grant.bridge_port, 0);
+
+    let response = client()
+        .get(format!(
+            "{}{}?to=%2Fhello%3Fq%3D1",
+            base(&grant),
+            grant.entry_path
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(
+        response.headers().get(header::LOCATION).unwrap(),
+        "/hello?q=1"
+    );
+    let cookie = response
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        cookie,
+        format!("{}; Path=/; HttpOnly; SameSite=Lax", cookie_for(&grant))
+    );
+    assert_eq!(
+        response.headers().get(header::CACHE_CONTROL).unwrap(),
+        "no-store"
+    );
+
+    // Behind a TLS-terminating proxy the cookie is marked Secure.
+    let response = client()
+        .get(format!("{}{}", base(&grant), grant.entry_path))
+        .header("x-forwarded-proto", "https")
+        .send()
+        .await
+        .unwrap();
+    assert!(response
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .ends_with("; Secure"));
+    assert_eq!(response.headers().get(header::LOCATION).unwrap(), "/");
+
+    // The redirect target must stay on this origin.
+    let response = client()
+        .get(format!(
+            "{}{}?to=%2F%2Fevil.example%2F",
+            base(&grant),
+            grant.entry_path
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.headers().get(header::LOCATION).unwrap(), "/");
+
+    // A capability the listener never issued sets nothing.
+    let response = client()
+        .get(format!(
+            "{}{}nope",
+            base(&grant),
+            browser_bridge::ENTER_PREFIX
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(response.headers().get(header::SET_COOKIE).is_none());
+}
+
+#[tokio::test]
+async fn requests_need_this_listeners_cookie() {
+    configure_once();
+    let upstream = spawn_upstream().await;
+    let grant = browser_bridge::open(upstream, "tab-cookie").await.unwrap();
+    let url = format!("{}/hello", base(&grant));
+
+    // No cookie, a wrong value, another listener's name: all refused before
+    // the upstream is touched.
+    let response = client().get(&url).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = client()
+        .get(&url)
+        .header(header::COOKIE, format!("codeg-bridge-{}=wrong", grant.bridge_port))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = client()
+        .get(&url)
+        .header(
+            header::COOKIE,
+            format!("codeg-bridge-{}={}", grant.bridge_port + 1, cap_of(&grant)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let forbidden = response.text().await.unwrap();
+    assert!(forbidden.contains("Reopen the page from codeg"));
+
+    // With the cookie the page comes through, without the anti-framing
+    // header and with its own cookies; the request the upstream saw looked
+    // like a direct one.
+    let response = client()
+        .get(&url)
+        .header(
+            header::COOKIE,
+            format!("{}; codeg.locale=zh-CN; sid=abc", cookie_for(&grant)),
+        )
+        .header(header::ORIGIN, "http://codeg.example:3080")
+        .header(header::REFERER, format!("{}/from/here?tab=2", base(&grant)))
+        .header(header::ACCEPT_ENCODING, "gzip, br")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let headers = response.headers().clone();
+    assert!(headers.get("x-frame-options").is_none());
+    assert_eq!(headers.get(header::SET_COOKIE).unwrap(), "sid=1; Path=/");
+    assert_eq!(headers.get("x-echo-cookie").unwrap(), "sid=abc");
+    assert_eq!(
+        headers.get("x-echo-origin").unwrap(),
+        format!("http://127.0.0.1:{upstream}").as_str()
+    );
+    assert_eq!(
+        headers.get("x-echo-referer").unwrap(),
+        format!("http://127.0.0.1:{upstream}/from/here?tab=2").as_str()
+    );
+    assert_eq!(
+        headers.get("x-echo-host").unwrap(),
+        format!("127.0.0.1:{upstream}").as_str()
+    );
+    assert_eq!(headers.get("x-echo-accept-encoding").unwrap(), "gzip, br");
+    assert_eq!(response.text().await.unwrap(), "hello from upstream");
+}
+
+#[tokio::test]
+async fn redirects_and_bodies_pass_through() {
+    configure_once();
+    let upstream = spawn_upstream().await;
+    let grant = browser_bridge::open(upstream, "tab-redirect").await.unwrap();
+
+    let response = client()
+        .get(format!("{}/redirect", base(&grant)))
+        .header(header::COOKIE, cookie_for(&grant))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FOUND);
+    // The upstream answered with its own absolute address; the browser must
+    // stay on the bridge origin.
+    assert_eq!(response.headers().get(header::LOCATION).unwrap(), "/after?x=1");
+
+    let response = client()
+        .post(format!("{}/echo", base(&grant)))
+        .header(header::COOKIE, cookie_for(&grant))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body("{\"a\":1}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE).unwrap(),
+        "application/json"
+    );
+    assert_eq!(response.text().await.unwrap(), "echo:{\"a\":1}");
+
+    // A path outside the page's space on the bridge itself.
+    let response = client()
+        .get(format!("{}/__codeg_bridge/other", base(&grant)))
+        .header(header::COOKIE, cookie_for(&grant))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    // The reachability probe needs nothing.
+    let response = client()
+        .get(format!("{}{}", base(&grant), browser_bridge::PING_PATH))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .unwrap(),
+        "*"
+    );
+}
+
+#[tokio::test]
+async fn websockets_are_bridged_with_their_subprotocol() {
+    configure_once();
+    let upstream = spawn_upstream().await;
+    let grant = browser_bridge::open(upstream, "tab-ws").await.unwrap();
+
+    let mut request = format!("ws://127.0.0.1:{}/ws", grant.bridge_port)
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert(header::COOKIE, cookie_for(&grant).parse().unwrap());
+    request
+        .headers_mut()
+        .insert(header::SEC_WEBSOCKET_PROTOCOL, "vite-hmr".parse().unwrap());
+    request
+        .headers_mut()
+        .insert(header::ORIGIN, format!("{}", base(&grant)).parse().unwrap());
+    let (mut socket, response) = tokio_tungstenite::connect_async(request).await.unwrap();
+    assert_eq!(
+        response.headers().get(header::SEC_WEBSOCKET_PROTOCOL).unwrap(),
+        "vite-hmr"
+    );
+    // The upstream saw an Origin naming itself, as a page served directly
+    // by it would send.
+    let first = socket.next().await.unwrap().unwrap();
+    assert_eq!(
+        first.into_text().unwrap().as_str(),
+        format!("origin:http://127.0.0.1:{upstream}")
+    );
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text("ping".into()))
+        .await
+        .unwrap();
+    let reply = socket.next().await.unwrap().unwrap();
+    assert_eq!(reply.into_text().unwrap().as_str(), "echo:ping");
+    socket.close(None).await.unwrap();
+
+    // Without the cookie the upgrade is refused.
+    let request = format!("ws://127.0.0.1:{}/ws", grant.bridge_port)
+        .into_client_request()
+        .unwrap();
+    let err = tokio_tungstenite::connect_async(request).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            tokio_tungstenite::tungstenite::Error::Http(ref response)
+                if response.status() == StatusCode::FORBIDDEN
+        ),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn tabs_share_a_listener_per_target_port() {
+    configure_once();
+    let upstream = spawn_upstream().await;
+    let other_upstream = spawn_upstream().await;
+    let first = browser_bridge::open(upstream, "tab-a").await.unwrap();
+    let second = browser_bridge::open(upstream, "tab-b").await.unwrap();
+    let other = browser_bridge::open(other_upstream, "tab-c").await.unwrap();
+
+    assert_eq!(first.bridge_port, second.bridge_port);
+    assert_ne!(cap_of(&first), cap_of(&second));
+    assert_ne!(other.bridge_port, first.bridge_port);
+
+    // Both capabilities open the shared listener; neither opens the other.
+    for grant in [&first, &second] {
+        let response = client()
+            .get(format!("{}/hello", base(&first)))
+            .header(header::COOKIE, cookie_for(grant))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let response = client()
+        .get(format!("{}/hello", base(&other)))
+        .header(
+            header::COOKIE,
+            format!("codeg-bridge-{}={}", other.bridge_port, cap_of(&first)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn codegs_own_port_is_refused() {
+    configure_once();
+    let err = browser_bridge::open(RESERVED_PORT, "tab-reserved")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, BridgeError::Reserved(p) if p == RESERVED_PORT));
+}

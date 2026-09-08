@@ -5899,6 +5899,17 @@
       "openInWorkspace": "작업 공간에서 열기",
       "cannotOpen": "이 주소는 여기에서 열 수 없습니다."
     },
+    "bridge": {
+      "frameTitle": "개발 서버 미리보기",
+      "opening": "서버를 통해 연결하는 중…",
+      "reload": "새로고침",
+      "openExternal": "새 탭에서 열기",
+      "copyAddress": "주소 복사",
+      "copied": "주소를 복사했습니다",
+      "unreachableTitle": "브리지 포트에 연결할 수 없습니다",
+      "unreachableHint": "codeg 서버가 이 페이지를 {origin}에 올렸지만 브라우저에서 접근할 수 없습니다. 해당 포트를 공개하거나(CODEG_BRIDGE_PORTS 참고) CODEG_BRIDGE_PUBLIC_HOST를 설정하세요. codeg를 HTTPS로 제공한다면 브리지 포트에도 HTTPS가 필요합니다.",
+      "errorTitle": "이 페이지는 여기에 표시할 수 없습니다"
+    },
     "download": {
       "started": "내려받는 중…",
       "completed": "저장됨",

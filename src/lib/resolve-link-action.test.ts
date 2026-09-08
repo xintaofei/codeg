@@ -392,3 +392,93 @@ describe("resolveLinkAction — placement", () => {
     ).toMatchObject({ placement: "tab" })
   })
 })
+
+describe("resolveLinkAction — web mode with the port bridge", () => {
+  const bridged: LinkSurface = { ...webSurface, bridgeAvailable: true }
+
+  it.each([
+    "http://localhost:3000/",
+    "http://127.0.0.1:8080/x?y=1",
+    "http://[::1]:5173/",
+    "http://0.0.0.0:3000/",
+    "http://app.localhost:4000/",
+  ])("%s opens built-in through the bridge", (url) => {
+    expect(resolveLinkAction(url, ctx({ surface: bridged }))).toEqual({
+      kind: "builtin",
+      url,
+      placement: "tab",
+      remoteOverride: true,
+    })
+  })
+
+  it("cannot be inverted or forced to the system browser", () => {
+    expect(
+      resolveLinkAction(
+        "http://localhost:3000/",
+        ctx({ surface: bridged, modifier: true })
+      )
+    ).toMatchObject({ kind: "builtin", remoteOverride: true })
+    expect(
+      resolveLinkAction(
+        "http://localhost:3000/",
+        ctx({ surface: bridged, forceTarget: "system", prefs: systemPrefs })
+      )
+    ).toMatchObject({ kind: "builtin", remoteOverride: true })
+  })
+
+  it("lands in the drawer under a full-page route", () => {
+    expect(
+      resolveLinkAction(
+        "http://localhost:3000/",
+        ctx({
+          surface: {
+            ...bridged,
+            fileColumnVisible: false,
+            viewerHostAvailable: true,
+          },
+        })
+      )
+    ).toMatchObject({ kind: "builtin", placement: "drawer" })
+  })
+
+  it.each([
+    "https://localhost:3000/",
+    "http://192.168.1.10:3000/",
+    "http://api.internal.local/",
+    "https://example.com/",
+  ])("%s still goes to a new tab: only loopback http is bridged", (url) => {
+    expect(resolveLinkAction(url, ctx({ surface: bridged }))).toEqual({
+      kind: "system",
+      url,
+    })
+  })
+
+  it("does nothing without the bridge, and yields to a block rule", () => {
+    expect(
+      resolveLinkAction("http://localhost:3000/", ctx({ surface: webSurface }))
+    ).toEqual({ kind: "system", url: "http://localhost:3000/" })
+    expect(
+      resolveLinkAction(
+        "http://localhost:3000/",
+        ctx({
+          surface: bridged,
+          hostRules: [{ pattern: "localhost", action: "block" }],
+        })
+      )
+    ).toMatchObject({ kind: "reject", reason: "blocked-host" })
+  })
+
+  it("is ignored on the desktop, where the native tab wins", () => {
+    expect(
+      resolveLinkAction(
+        "http://localhost:3000/",
+        ctx({ surface: { ...desktopSurface, bridgeAvailable: true } })
+      )
+    ).toEqual({
+      kind: "builtin",
+      url: "http://localhost:3000/",
+      placement: "tab",
+      remoteOverride: false,
+    })
+  })
+})

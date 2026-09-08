@@ -5899,6 +5899,17 @@
       "openInWorkspace": "Ouvrir dans l'espace de travail",
       "cannotOpen": "Cette adresse ne peut pas être ouverte ici."
     },
+    "bridge": {
+      "frameTitle": "Aperçu du serveur de développement",
+      "opening": "Connexion via le serveur…",
+      "reload": "Recharger",
+      "openExternal": "Ouvrir dans un nouvel onglet",
+      "copyAddress": "Copier l'adresse",
+      "copied": "Adresse copiée",
+      "unreachableTitle": "Le port passerelle est inaccessible",
+      "unreachableHint": "Le serveur codeg expose cette page sur {origin}, mais votre navigateur ne l'atteint pas. Publiez ce port (voir CODEG_BRIDGE_PORTS) ou définissez CODEG_BRIDGE_PUBLIC_HOST ; si codeg est servi en HTTPS, les ports passerelle doivent l'être aussi.",
+      "errorTitle": "Cette page ne peut pas être affichée ici"
+    },
     "download": {
       "started": "Téléchargement…",
       "completed": "Enregistré",

@@ -5899,6 +5899,17 @@
       "openInWorkspace": "ワークスペースで開く",
       "cannotOpen": "このアドレスはここでは開けません。"
     },
+    "bridge": {
+      "frameTitle": "開発サーバーのプレビュー",
+      "opening": "サーバー経由で接続しています…",
+      "reload": "再読み込み",
+      "openExternal": "新しいタブで開く",
+      "copyAddress": "アドレスをコピー",
+      "copied": "アドレスをコピーしました",
+      "unreachableTitle": "ブリッジポートに到達できません",
+      "unreachableHint": "codeg サーバーはこのページを {origin} で公開していますが、お使いのブラウザから到達できません。そのポートを公開する（CODEG_BRIDGE_PORTS を参照）か CODEG_BRIDGE_PUBLIC_HOST を設定してください。codeg を HTTPS で提供している場合は、ブリッジポートにも HTTPS が必要です。",
+      "errorTitle": "このページはここに表示できません"
+    },
     "download": {
       "started": "ダウンロード中…",
       "completed": "保存しました",

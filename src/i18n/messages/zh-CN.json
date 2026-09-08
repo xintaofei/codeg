@@ -5899,6 +5899,17 @@
       "openInWorkspace": "在工作区中打开",
       "cannotOpen": "无法在此打开该地址。"
     },
+    "bridge": {
+      "frameTitle": "开发服务器预览",
+      "opening": "正在通过服务器连接…",
+      "reload": "重新加载",
+      "openExternal": "在新标签页打开",
+      "copyAddress": "复制地址",
+      "copied": "已复制地址",
+      "unreachableTitle": "无法访问端口桥",
+      "unreachableHint": "codeg 服务器把这个页面放在 {origin}，但你的浏览器访问不到它。请开放该端口（见 CODEG_BRIDGE_PORTS）或设置 CODEG_BRIDGE_PUBLIC_HOST；如果 codeg 通过 HTTPS 提供服务，端口桥也需要 HTTPS。",
+      "errorTitle": "无法在这里显示此页面"
+    },
     "download": {
       "started": "正在下载…",
       "completed": "已保存",

@@ -5899,6 +5899,17 @@
       "openInWorkspace": "فتح في مساحة العمل",
       "cannotOpen": "لا يمكن فتح هذا العنوان هنا."
     },
+    "bridge": {
+      "frameTitle": "معاينة خادم التطوير",
+      "opening": "جارٍ الاتصال عبر الخادم…",
+      "reload": "إعادة التحميل",
+      "openExternal": "فتح في علامة تبويب جديدة",
+      "copyAddress": "نسخ العنوان",
+      "copied": "تم نسخ العنوان",
+      "unreachableTitle": "تعذّر الوصول إلى منفذ الجسر",
+      "unreachableHint": "وضع خادم codeg هذه الصفحة على {origin}، لكن متصفحك لا يستطيع الوصول إليه. انشر هذا المنفذ (راجع CODEG_BRIDGE_PORTS) أو اضبط CODEG_BRIDGE_PUBLIC_HOST؛ وإذا كان codeg يُقدَّم عبر HTTPS فإن منافذ الجسر تحتاج إلى HTTPS أيضًا.",
+      "errorTitle": "لا يمكن عرض هذه الصفحة هنا"
+    },
     "download": {
       "started": "جارٍ التنزيل…",
       "completed": "تم الحفظ",

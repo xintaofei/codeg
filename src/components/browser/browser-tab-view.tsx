@@ -10,6 +10,9 @@ import {
 } from "@/lib/browser/browser-tab-store"
 import { browserTabBackendId } from "@/lib/file-tab-id"
 
+import { isDesktop } from "@/lib/transport"
+
+import { BrowserBridgeView } from "./browser-bridge-view"
 import { BrowserFindBar } from "./browser-find-bar"
 import {
   BrowserDownloadBar,
@@ -21,10 +24,17 @@ import { BrowserSurfaceHost } from "./browser-surface-host"
 import { BrowserToolbar } from "./browser-toolbar"
 
 /**
- * The file-pane content of a browser tab: toolbar, notices, and the native
- * surface (or, when the page could not load, a DOM error page in its place).
+ * The file-pane content of a browser tab. On the desktop: toolbar, notices,
+ * and the native surface (or, when the page could not load, a DOM error page
+ * in its place). In a browser there is no native surface; the tab shows a
+ * dev server on the codeg host through the port bridge instead.
  */
 export function BrowserTabView({ tab }: { tab: BrowserWorkspaceTab }) {
+  if (!isDesktop()) return <BrowserBridgeView tab={tab} />
+  return <NativeBrowserTabView tab={tab} />
+}
+
+function NativeBrowserTabView({ tab }: { tab: BrowserWorkspaceTab }) {
   const state = useBrowserTabState(tab.id)
   const backendId = browserTabBackendId(tab.id)
   const [findOpen, setFindOpen] = useState(false)

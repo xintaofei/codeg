@@ -44,7 +44,8 @@ import {
   type BrowserTabState,
   type DocGuestState,
 } from "@/lib/browser/types"
-import { getTransport } from "@/lib/transport"
+import { getTransport, isDesktop } from "@/lib/transport"
+import { bridgeStatus } from "@/lib/browser/browser-bridge"
 import { getCurrentWindowLabel } from "@/lib/browser/window-label"
 
 /**
@@ -113,6 +114,9 @@ export function BrowserEventsBridge() {
     unsubscribers.push(subscribeBrowserPrefs(() => push(true)))
 
     void (async () => {
+      // In a browser the only browser-tab surface is the port bridge; ask
+      // once now so a click on `localhost:3000` can be routed synchronously.
+      if (!isDesktop()) void bridgeStatus()
       const capabilities = await browserCapabilities()
       if (cancelled || !capabilities.available) return
       // Tab records are session-only, so any surface the backend still holds

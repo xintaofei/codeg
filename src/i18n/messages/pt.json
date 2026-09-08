@@ -5899,6 +5899,17 @@
       "openInWorkspace": "Abrir no espaço de trabalho",
       "cannotOpen": "Este endereço não pode ser aberto aqui."
     },
+    "bridge": {
+      "frameTitle": "Pré-visualização do servidor de desenvolvimento",
+      "opening": "Conectando através do servidor…",
+      "reload": "Recarregar",
+      "openExternal": "Abrir em uma nova aba",
+      "copyAddress": "Copiar endereço",
+      "copied": "Endereço copiado",
+      "unreachableTitle": "A porta da ponte não está acessível",
+      "unreachableHint": "O servidor do codeg colocou esta página em {origin}, mas seu navegador não consegue alcançá-la. Publique essa porta (veja CODEG_BRIDGE_PORTS) ou defina CODEG_BRIDGE_PUBLIC_HOST; se o codeg é servido por HTTPS, as portas da ponte também precisam de HTTPS.",
+      "errorTitle": "Esta página não pode ser exibida aqui"
+    },
     "download": {
       "started": "Baixando…",
       "completed": "Salvo",

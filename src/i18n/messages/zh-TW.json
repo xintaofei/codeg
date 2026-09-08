@@ -5899,6 +5899,17 @@
       "openInWorkspace": "在工作區中開啟",
       "cannotOpen": "無法在此開啟此網址。"
     },
+    "bridge": {
+      "frameTitle": "開發伺服器預覽",
+      "opening": "正在透過伺服器連線…",
+      "reload": "重新載入",
+      "openExternal": "在新分頁開啟",
+      "copyAddress": "複製網址",
+      "copied": "已複製網址",
+      "unreachableTitle": "無法連上連接埠橋接",
+      "unreachableHint": "codeg 伺服器把這個頁面放在 {origin}，但你的瀏覽器連不上它。請開放該連接埠（見 CODEG_BRIDGE_PORTS）或設定 CODEG_BRIDGE_PUBLIC_HOST；若 codeg 以 HTTPS 提供服務，橋接連接埠也需要 HTTPS。",
+      "errorTitle": "無法在這裡顯示此頁面"
+    },
     "download": {
       "started": "正在下載…",
       "completed": "已儲存",

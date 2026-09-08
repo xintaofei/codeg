@@ -12,16 +12,20 @@
 //      rather than handed to the OS.
 //   2. terminal rules — a `block` site rule (the administrator's table is
 //      consulted before the user's), or a loopback/private address seen from a
-//      window bound to a REMOTE codeg-server. These cannot be inverted by the
-//      modifier key: flipping a remote `localhost:3000` to the system browser
-//      would only ever hit the local machine's loopback.
+//      window bound to a REMOTE codeg-server, or a loopback http address seen
+//      from a browser whose codeg-server bridges its ports. These cannot be
+//      inverted by the modifier key: flipping a remote `localhost:3000` to
+//      the system browser would only ever hit the local machine's loopback.
 //   3. base target — an explicit menu choice, else a site rule, else the
 //      per-source preference; without a built-in browser it is always `system`.
 //   4. modifier — ⌘ (macOS) / Ctrl (elsewhere) inverts an ordinary preference.
 //   5. placement — the file column when it is on screen, else the transcript's
 //      own viewer drawer (full-page routes), else the column anyway.
 
-import { isLoopbackOrPrivateHost } from "@/lib/browser/browser-url"
+import {
+  isLoopbackHost,
+  isLoopbackOrPrivateHost,
+} from "@/lib/browser/browser-url"
 import type {
   BrowserPrefsSnapshot,
   LinkSource,
@@ -42,6 +46,9 @@ export interface LinkSurface {
   viewerHostAvailable: boolean
   /** The window is bound to a remote codeg-server (`isRemoteDesktopMode()`). */
   remoteDesktop: boolean
+  /** Web mode, and the codeg-server bridges its loopback ports so a dev
+   *  server there can be shown in a tab (`bridgeStatus().enabled`). */
+  bridgeAvailable?: boolean
 }
 
 export interface ResolveLinkContext {
@@ -73,8 +80,9 @@ export type LinkAction =
       kind: "builtin"
       url: string
       placement: "tab" | "drawer"
-      /** Chosen by the remote-workspace terminal rule: the address is loopback
-       *  or private and only reachable from the remote host. */
+      /** Chosen by a terminal rule rather than a preference: the address is
+       *  loopback or private and only reachable from the codeg host (a
+       *  remote-workspace window, or a browser with the port bridge). */
       remoteOverride: boolean
     }
 
@@ -119,6 +127,20 @@ export function resolveLinkAction(
     surface.remoteDesktop &&
     surface.builtinAvailable &&
     isLoopbackOrPrivateHost(hostname)
+  ) {
+    return {
+      kind: "builtin",
+      url,
+      placement: placementFor(surface),
+      remoteOverride: true,
+    }
+  }
+
+  if (
+    !surface.builtinAvailable &&
+    surface.bridgeAvailable === true &&
+    parsed.protocol === "http:" &&
+    isLoopbackHost(hostname)
   ) {
     return {
       kind: "builtin",

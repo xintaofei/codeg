@@ -11,6 +11,7 @@ import {
   browserCapabilities,
   browserCapabilitiesSnapshot,
 } from "@/lib/browser/browser-api"
+import { bridgeStatusSnapshot } from "@/lib/browser/browser-bridge"
 import {
   getBrowserPrefs,
   markBrowserFirstOpenSeen,
@@ -75,13 +76,19 @@ export function useOpenUrlTarget() {
   const run = useCallback(
     (url: string, options: OpenUrlOptions): LinkAction => {
       const capabilities = browserCapabilitiesSnapshot()
+      const somewhereToOpen = openBrowserTab !== null || viewerHost !== null
       const surface: LinkSurface = {
-        builtinAvailable:
-          (capabilities?.available ?? false) &&
-          (openBrowserTab !== null || viewerHost !== null),
+        builtinAvailable: (capabilities?.available ?? false) && somewhereToOpen,
         fileColumnVisible,
         viewerHostAvailable: viewerHost !== null,
         remoteDesktop: isRemoteDesktopMode(),
+        // In a browser the server's answer is primed at startup by the
+        // events bridge; before it is in, a loopback link opens as it
+        // always did (a new tab) rather than waiting out the gesture.
+        bridgeAvailable:
+          !isDesktop() &&
+          (bridgeStatusSnapshot()?.enabled ?? false) &&
+          somewhereToOpen,
       }
       const prefs = getBrowserPrefs()
       const action = resolveLinkAction(url, {
@@ -108,7 +115,10 @@ export function useOpenUrlTarget() {
           } else if (viewerHost) {
             viewerHost.open({ kind: "browser", url: action.url })
           }
-          if (!prefs.firstOpenSeen) {
+          // The first-open notice offers the "system browser always"
+          // preference, which is the desktop's; a bridged dev server in web
+          // mode has no such choice.
+          if (!prefs.firstOpenSeen && surface.builtinAvailable) {
             markBrowserFirstOpenSeen()
             toast(t("firstOpen"), {
               description: t("firstOpenHint"),

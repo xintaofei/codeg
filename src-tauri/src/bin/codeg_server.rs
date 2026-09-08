@@ -585,6 +585,18 @@ async fn async_main() -> ExitCode {
     // Token on stderr ONLY (bearer credential — keep it out of the log files
     // and the in-app viewer); the bind addresses are safe to log normally.
     eprintln!("[SERVER] Token: {}", token);
+    // Port bridge for dev servers on this host (web-mode built-in browser):
+    // the ports after ours unless CODEG_BRIDGE_PORTS says otherwise.
+    let bridge = codeg_lib::web::browser_bridge::BridgeConfig::from_env(&host, actual_port);
+    match &bridge {
+        Some(config) => tracing::info!(
+            "[SERVER] Port bridge for dev servers: ports {} (CODEG_BRIDGE_PORTS)",
+            codeg_lib::web::describe_ports(&config.ports)
+        ),
+        None => tracing::info!("[SERVER] Port bridge for dev servers: off (CODEG_BRIDGE_PORTS)"),
+    }
+    codeg_lib::web::browser_bridge::configure(bridge);
+
     tracing::info!("[SERVER] Listening on:");
     for addr in &addresses {
         tracing::info!("  {}", addr);

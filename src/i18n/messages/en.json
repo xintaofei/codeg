@@ -5899,6 +5899,17 @@
       "openInWorkspace": "Open in workspace",
       "cannotOpen": "This address can't be opened here."
     },
+    "bridge": {
+      "frameTitle": "Dev server preview",
+      "opening": "Connecting through the server…",
+      "reload": "Reload",
+      "openExternal": "Open in a new tab",
+      "copyAddress": "Copy address",
+      "copied": "Address copied",
+      "unreachableTitle": "The bridge port can't be reached",
+      "unreachableHint": "codeg's server put this page on {origin}, but your browser can't reach it. Publish that port (see CODEG_BRIDGE_PORTS) or set CODEG_BRIDGE_PUBLIC_HOST; if codeg is served over HTTPS, the bridge ports need HTTPS too.",
+      "errorTitle": "This page can't be shown here"
+    },
     "download": {
       "started": "Downloading…",
       "completed": "Saved",
