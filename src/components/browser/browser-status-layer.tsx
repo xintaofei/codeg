@@ -1,11 +1,25 @@
 "use client"
 
-import { ExternalLink, RotateCw, ShieldAlert, X } from "lucide-react"
+import {
+  AlertTriangle,
+  Check,
+  Download,
+  ExternalLink,
+  FolderOpen,
+  RotateCw,
+  ShieldAlert,
+  X,
+} from "lucide-react"
 import { useTranslations } from "next-intl"
 
 import type { BrowserWorkspaceTab } from "@/contexts/workspace-context"
 import { useOptionalWorkspaceActions } from "@/contexts/workspace-context"
 import { browserReload } from "@/lib/browser/browser-api"
+import {
+  dismissAllBrowserDownloads,
+  dismissBrowserDownload,
+  useBrowserTabDownloads,
+} from "@/lib/browser/browser-downloads-store"
 import {
   setBrowserTabNotice,
   useBrowserTabNotice,
@@ -13,7 +27,7 @@ import {
 import { displayHostPort } from "@/lib/browser/browser-url"
 import type { BrowserErrorInfo, BrowserTabState } from "@/lib/browser/types"
 import { browserTabBackendId } from "@/lib/file-tab-id"
-import { openUrl } from "@/lib/platform"
+import { openUrl, revealItemInDir } from "@/lib/platform"
 
 /** Bars that sit OUTSIDE the native surface's rect (a native view paints over
  *  any DOM placed on top of it): blocked popups, remote-egress banner. */
@@ -171,6 +185,68 @@ export function BrowserOwnedWindowCard({
       >
         {t("ownedWindowShow")}
       </button>
+    </div>
+  )
+}
+
+/**
+ * Downloads of this tab, above the page. A download is never opened for the
+ * user — the bar offers "show in folder", which is what a file arriving from
+ * the web deserves; running it is their decision, in their file manager.
+ */
+export function BrowserDownloadBar({ tab }: { tab: BrowserWorkspaceTab }) {
+  const t = useTranslations("Browser.download")
+  const downloads = useBrowserTabDownloads(tab.id)
+  if (downloads.length === 0) return null
+  return (
+    <div className="flex flex-col border-b border-border/60 bg-muted/40">
+      {downloads.map((download) => (
+        <div
+          key={download.id}
+          className="flex h-8 items-center gap-2 px-3 text-xs text-foreground"
+        >
+          {download.state === "completed" ? (
+            <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+          ) : download.state === "failed" ? (
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+          ) : (
+            <Download className="h-3.5 w-3.5 shrink-0 animate-pulse text-muted-foreground" />
+          )}
+          <span className="min-w-0 flex-1 truncate" title={download.path}>
+            {download.fileName}
+            <span className="ml-2 text-muted-foreground">
+              {download.state === "completed"
+                ? t("completed")
+                : download.state === "failed"
+                  ? t("failed")
+                  : t("started")}
+            </span>
+          </span>
+          {download.state === "completed" ? (
+            <button
+              type="button"
+              className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-medium text-primary hover:bg-primary/8"
+              onClick={() => void revealItemInDir(download.path)}
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
+              {t("reveal")}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-primary/8"
+            title={t("dismiss")}
+            aria-label={t("dismiss")}
+            onClick={() =>
+              downloads.length > 1
+                ? dismissBrowserDownload(download.id)
+                : dismissAllBrowserDownloads()
+            }
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      ))}
     </div>
   )
 }

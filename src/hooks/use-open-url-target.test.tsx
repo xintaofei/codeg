@@ -46,6 +46,7 @@ const AVAILABLE = {
   reasons: [],
   isolatedStorage: true,
   proxy: { url: null, applies: "live" as const, reason: null },
+  downloadsDir: "/Users/dev/Downloads",
 }
 
 describe("useOpenUrlTarget", () => {

@@ -2,9 +2,10 @@
 //! (`parent`). The only surface on Linux, the fallback everywhere else, and
 //! the shape popups take when they cannot be adopted as tabs.
 
-use tauri::webview::PageLoadEvent;
+use tauri::webview::{DownloadEvent, PageLoadEvent};
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
+use super::downloads;
 use super::events;
 use super::hooks;
 use super::policy;
@@ -45,7 +46,22 @@ pub fn create(
             let tab_id = tab_id.to_string();
             move |_window, title| hooks::title_changed(&app, &tab_id, title)
         })
-        .on_download(|_webview, _event| false)
+        .on_download({
+            let app = app.clone();
+            let tab_id = tab_id.to_string();
+            move |_webview, event| match event {
+                DownloadEvent::Requested { url, destination } => {
+                    downloads::requested(&app, &tab_id, url.as_str(), destination)
+                }
+                DownloadEvent::Finished { url, path, success } => {
+                    downloads::finished(&app, url.as_str(), path, success);
+                    true
+                }
+                // `DownloadEvent` is non-exhaustive: a variant added upstream
+                // must not silently become "allowed".
+                _ => false,
+            }
+        })
         .disable_drag_drop_handler()
         .zoom_hotkeys_enabled(true)
         .browser_extensions_enabled(false);

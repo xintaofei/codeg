@@ -4762,7 +4762,9 @@
     "proxyUnsupported": "当前 macOS 版本不支持（需要 macOS 14 或更高）。",
     "proxyUnusable": "配置的代理不是浏览器标签页能使用的类型（仅支持 http 和 socks5）。",
     "suspendTitle": "卸载后台标签页",
-    "suspendHint": "释放在后台停留 30 分钟的浏览器标签页所占的内存。切回时会重新加载；滚动位置和历史记录会丢失。"
+    "suspendHint": "释放在后台停留 30 分钟的浏览器标签页所占的内存。切回时会重新加载；滚动位置和历史记录会丢失。",
+    "downloadsTitle": "下载",
+    "downloadsHint": "网页下载的文件保存在 {dir}。不会自动打开，也不会覆盖已有文件。"
   },
   "LogsSettings": {
     "loading": "加载中…",
@@ -5837,6 +5839,13 @@
       "description": "从会话中打开的网页",
       "openInWorkspace": "在工作区中打开",
       "cannotOpen": "无法在此打开该地址。"
+    },
+    "download": {
+      "started": "正在下载…",
+      "completed": "已保存",
+      "failed": "下载失败",
+      "reveal": "在文件夹中显示",
+      "dismiss": "忽略"
     },
     "toast": {
       "firstOpen": "已在内置浏览器中打开",

@@ -6,6 +6,7 @@ import { useBrowserTabState } from "@/lib/browser/browser-tab-store"
 import { browserTabBackendId } from "@/lib/file-tab-id"
 
 import {
+  BrowserDownloadBar,
   BrowserErrorPage,
   BrowserNoticeBar,
   BrowserOwnedWindowCard,
@@ -28,6 +29,7 @@ export function BrowserTabView({ tab }: { tab: BrowserWorkspaceTab }) {
     <div className="flex h-full min-h-0 flex-col">
       <BrowserToolbar tab={tab} state={state} />
       <BrowserNoticeBar tab={tab} state={state} />
+      <BrowserDownloadBar tab={tab} />
       <div className="relative min-h-0 flex-1">
         {/* Always mounted so the native surface keeps its bounds; the DOM
             layers below only show when the surface is hidden (error) or

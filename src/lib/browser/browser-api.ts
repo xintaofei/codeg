@@ -8,6 +8,7 @@ import { getTransport, isDesktop } from "@/lib/transport"
 import type {
   Bounds,
   BrowserCapabilities,
+  BrowserDownload,
   BrowserTabState,
   SurfaceChoice,
 } from "./types"
@@ -20,6 +21,7 @@ const UNAVAILABLE: BrowserCapabilities = {
   reasons: ["built-in browser needs the desktop runtime"],
   isolatedStorage: false,
   proxy: { url: null, applies: "unsupported", reason: null },
+  downloadsDir: "",
 }
 
 let capabilitiesPromise: Promise<BrowserCapabilities> | null = null
@@ -163,4 +165,14 @@ export function browserListTabs(): Promise<BrowserTabState[]> {
 /** Wipe cookies, caches and storage shared by every built-in browser tab. */
 export function browserClearData(): Promise<void> {
   return getTransport().call<void>("browser_clear_data", {})
+}
+
+/** Downloads this run started, oldest first. */
+export function browserListDownloads(): Promise<BrowserDownload[]> {
+  return getTransport().call<BrowserDownload[]>("browser_list_downloads", {})
+}
+
+/** Forget the records; the downloaded files stay where they are. */
+export function browserClearDownloads(): Promise<void> {
+  return getTransport().call<void>("browser_clear_downloads", {})
 }

@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => {
           reasons: [],
           isolatedStorage: true,
           proxy: { url: null, applies: "live", reason: null },
+          downloadsDir: "/Users/dev/Downloads",
         })
     ),
     subscribe: vi.fn((event: string, handler: Handler) => {
@@ -37,6 +38,18 @@ const mocks = vi.hoisted(() => {
     browserListTabs: vi.fn(() =>
       Promise.resolve([{ tabId: "stale-1" }, { tabId: "stale-2" }])
     ),
+    browserListDownloads: vi.fn(() =>
+      Promise.resolve([
+        {
+          id: "dl-1",
+          tabId: "t1",
+          url: "https://example.com/a.bin",
+          fileName: "a.bin",
+          path: "/Users/dev/Downloads/a.bin",
+          state: "completed",
+        },
+      ])
+    ),
   }
 })
 
@@ -44,6 +57,7 @@ vi.mock("@/lib/browser/browser-api", () => ({
   browserCapabilities: mocks.capabilities,
   browserClose: mocks.browserClose,
   browserListTabs: mocks.browserListTabs,
+  browserListDownloads: mocks.browserListDownloads,
 }))
 vi.mock("@/lib/transport", () => ({
   getTransport: () => ({ subscribe: mocks.subscribe }),
@@ -62,6 +76,10 @@ import {
   resetBrowserTabStoreForTests,
   setBrowserTabState,
 } from "@/lib/browser/browser-tab-store"
+import {
+  getBrowserDownloads,
+  resetBrowserDownloadsForTests,
+} from "@/lib/browser/browser-downloads-store"
 import { BrowserEventsBridge } from "./browser-events-bridge"
 
 async function flush() {
@@ -80,9 +98,14 @@ describe("BrowserEventsBridge", () => {
     mocks.closeFileTab.mockClear()
     mocks.openBrowserTab.mockClear()
     mocks.browserClose.mockClear()
+    mocks.browserListDownloads.mockClear()
     resetBrowserTabStoreForTests()
+    resetBrowserDownloadsForTests()
   })
-  afterEach(() => resetBrowserTabStoreForTests())
+  afterEach(() => {
+    resetBrowserTabStoreForTests()
+    resetBrowserDownloadsForTests()
+  })
 
   it("subscribes to the streams once the capabilities say a browser exists, after sweeping orphans", async () => {
     const { unmount } = render(<BrowserEventsBridge />)
@@ -92,10 +115,22 @@ describe("BrowserEventsBridge", () => {
     expect(mocks.browserClose).toHaveBeenCalledWith("stale-2")
     expect([...mocks.handlers.keys()].sort()).toEqual([
       "browser://closed",
+      "browser://download",
       "browser://open-request",
       "browser://popup",
       "browser://state",
     ])
+    // Downloads already running when this document mounted are shown again.
+    expect(getBrowserDownloads().map((d) => d.id)).toEqual(["dl-1"])
+    mocks.handlers.get("browser://download")!({
+      id: "dl-2",
+      tabId: "t1",
+      url: "https://example.com/b.bin",
+      fileName: "b.bin",
+      path: "/Users/dev/Downloads/b.bin",
+      state: "started",
+    })
+    expect(getBrowserDownloads().map((d) => d.id)).toEqual(["dl-2", "dl-1"])
 
     mocks.handlers.get("browser://open-request")!({
       url: "https://example.com/from-agent",
@@ -200,6 +235,7 @@ describe("BrowserEventsBridge", () => {
     unmount()
     expect(mocks.unsubscribed.sort()).toEqual([
       "browser://closed",
+      "browser://download",
       "browser://open-request",
       "browser://popup",
       "browser://state",
@@ -215,6 +251,7 @@ describe("BrowserEventsBridge", () => {
       reasons: ["web"],
       isolatedStorage: false,
       proxy: { url: null, applies: "unsupported", reason: null },
+      downloadsDir: "/Users/dev/Downloads",
     })
     render(<BrowserEventsBridge />)
     await flush()

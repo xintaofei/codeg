@@ -4762,7 +4762,9 @@
     "proxyUnsupported": "No disponible en esta versión de macOS (se necesita 14 o posterior).",
     "proxyUnusable": "El proxy configurado no es de un tipo que las pestañas del navegador puedan usar (solo http y socks5).",
     "suspendTitle": "Descargar pestañas en segundo plano",
-    "suspendHint": "Libera la memoria de las pestañas del navegador que llevan 30 minutos en segundo plano. Se vuelven a cargar al regresar; se pierden la posición de desplazamiento y el historial."
+    "suspendHint": "Libera la memoria de las pestañas del navegador que llevan 30 minutos en segundo plano. Se vuelven a cargar al regresar; se pierden la posición de desplazamiento y el historial.",
+    "downloadsTitle": "Descargas",
+    "downloadsHint": "Los archivos que descarga una página se guardan en {dir}. No se abre nada automáticamente y nunca se reemplaza un archivo existente."
   },
   "LogsSettings": {
     "loading": "Cargando…",
@@ -5837,6 +5839,13 @@
       "description": "Una página web abierta desde la conversación",
       "openInWorkspace": "Abrir en el espacio de trabajo",
       "cannotOpen": "Esta dirección no se puede abrir aquí."
+    },
+    "download": {
+      "started": "Descargando…",
+      "completed": "Guardado",
+      "failed": "Error",
+      "reveal": "Mostrar en la carpeta",
+      "dismiss": "Descartar"
     },
     "toast": {
       "firstOpen": "Abierto en el navegador integrado",

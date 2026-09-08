@@ -523,8 +523,19 @@ fn configure_child<'a>(
             let id = tab_id.to_string();
             move |title| hooks::title_changed(&app, &id, title)
         })
-        // Downloads are refused until the download UI exists (P2).
-        .with_download_started_handler(|_url, _destination| false)
+        // The engine transfers the file; the host only decides where it may
+        // land (`downloads::requested` rewrites the path) and reports it.
+        .with_download_started_handler({
+            let app = app.clone();
+            let id = tab_id.to_string();
+            move |url, destination| super::downloads::requested(&app, &id, &url, destination)
+        })
+        .with_download_completed_handler({
+            let app = app.clone();
+            move |url: String, path, success| {
+                super::downloads::finished(&app, &url, path, success)
+            }
+        })
         .with_new_window_req_handler(new_window_handler(app.clone(), owner.clone(), tab_id.to_string()));
     #[cfg(target_os = "macos")]
     {

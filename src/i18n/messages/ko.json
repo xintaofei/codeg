@@ -4762,7 +4762,9 @@
     "proxyUnsupported": "이 macOS 버전에서는 사용할 수 없습니다(macOS 14 이상 필요).",
     "proxyUnusable": "설정된 프록시는 브라우저 탭에서 사용할 수 없는 종류입니다(http 및 socks5만 지원).",
     "suspendTitle": "백그라운드 탭 내려놓기",
-    "suspendHint": "30분 동안 백그라운드에 있는 브라우저 탭의 메모리를 해제합니다. 다시 전환하면 새로 불러오며, 스크롤 위치와 방문 기록은 사라집니다."
+    "suspendHint": "30분 동안 백그라운드에 있는 브라우저 탭의 메모리를 해제합니다. 다시 전환하면 새로 불러오며, 스크롤 위치와 방문 기록은 사라집니다.",
+    "downloadsTitle": "다운로드",
+    "downloadsHint": "페이지에서 내려받은 파일은 {dir}에 저장됩니다. 자동으로 열지 않으며 기존 파일을 덮어쓰지 않습니다."
   },
   "LogsSettings": {
     "loading": "불러오는 중…",
@@ -5837,6 +5839,13 @@
       "description": "대화에서 연 웹 페이지",
       "openInWorkspace": "작업 공간에서 열기",
       "cannotOpen": "이 주소는 여기에서 열 수 없습니다."
+    },
+    "download": {
+      "started": "내려받는 중…",
+      "completed": "저장됨",
+      "failed": "실패함",
+      "reveal": "폴더에서 보기",
+      "dismiss": "닫기"
     },
     "toast": {
       "firstOpen": "내장 브라우저에서 열었습니다",

@@ -4762,7 +4762,9 @@
     "proxyUnsupported": "Auf dieser macOS-Version nicht verfügbar (14 oder neuer erforderlich).",
     "proxyUnusable": "Der konfigurierte Proxy ist kein Typ, den Browser-Tabs verwenden können (nur http und socks5).",
     "suspendTitle": "Hintergrund-Tabs entladen",
-    "suspendHint": "Gibt den Speicher von Browser-Tabs frei, die 30 Minuten im Hintergrund waren. Beim Zurückwechseln werden sie neu geladen; Scrollposition und Verlauf gehen verloren."
+    "suspendHint": "Gibt den Speicher von Browser-Tabs frei, die 30 Minuten im Hintergrund waren. Beim Zurückwechseln werden sie neu geladen; Scrollposition und Verlauf gehen verloren.",
+    "downloadsTitle": "Downloads",
+    "downloadsHint": "Von einer Seite geladene Dateien werden in {dir} gespeichert. Nichts wird automatisch geöffnet, und eine vorhandene Datei wird nie ersetzt."
   },
   "LogsSettings": {
     "loading": "Wird geladen…",
@@ -5837,6 +5839,13 @@
       "description": "Eine aus der Unterhaltung geöffnete Webseite",
       "openInWorkspace": "Im Arbeitsbereich öffnen",
       "cannotOpen": "Diese Adresse kann hier nicht geöffnet werden."
+    },
+    "download": {
+      "started": "Wird geladen…",
+      "completed": "Gespeichert",
+      "failed": "Fehlgeschlagen",
+      "reveal": "Im Ordner zeigen",
+      "dismiss": "Ausblenden"
     },
     "toast": {
       "firstOpen": "Im integrierten Browser geöffnet",

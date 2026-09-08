@@ -14,6 +14,7 @@
 //! - `types`      — wire types shared with `src/lib/browser/types.ts`
 //! - `policy`     — pure decisions (scheme allow-list, …)
 //! - `profile`    — the tabs' own data store / directory and their proxy
+//! - `downloads`  — destination policy and records for page downloads
 //! - `registry`   — tab id → surface + last known state
 //! - `surface`    — the enum over the concrete surfaces and their common ops
 //! - `surface_child` / `surface_window` — the concrete builders
@@ -25,6 +26,7 @@
 //!   `browser-smoke`, never in a release build)
 
 pub mod channel;
+pub mod downloads;
 pub mod events;
 pub mod hooks;
 pub mod policy;
@@ -44,6 +46,7 @@ pub mod shim;
 #[cfg(feature = "browser-smoke")]
 pub mod smoke;
 
+pub use downloads::BrowserDownloads;
 pub use registry::BrowserRegistry;
 
 /// Label prefix of every browser tab webview / window. Nothing under this

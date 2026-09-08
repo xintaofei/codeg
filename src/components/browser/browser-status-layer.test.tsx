@@ -4,21 +4,35 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const mocks = vi.hoisted(() => ({
   actions: null as null | { openBrowserTab: ReturnType<typeof vi.fn> },
+  openUrl: vi.fn(),
+  revealItemInDir: vi.fn(),
 }))
 
 vi.mock("@/contexts/workspace-context", () => ({
   useOptionalWorkspaceActions: () => mocks.actions,
 }))
 vi.mock("@/lib/browser/browser-api", () => ({ browserReload: vi.fn() }))
-vi.mock("@/lib/platform", () => ({ openUrl: vi.fn() }))
+vi.mock("@/lib/platform", () => ({
+  openUrl: mocks.openUrl,
+  revealItemInDir: mocks.revealItemInDir,
+}))
 
-import { BrowserErrorPage, BrowserNoticeBar } from "./browser-status-layer"
+import {
+  BrowserDownloadBar,
+  BrowserErrorPage,
+  BrowserNoticeBar,
+} from "./browser-status-layer"
 import type { BrowserWorkspaceTab } from "@/contexts/workspace-context"
 import enMessages from "@/i18n/messages/en.json"
 import {
   resetBrowserTabStoreForTests,
   setBrowserTabNotice,
 } from "@/lib/browser/browser-tab-store"
+import {
+  resetBrowserDownloadsForTests,
+  setBrowserDownload,
+} from "@/lib/browser/browser-downloads-store"
+import type { BrowserDownload } from "@/lib/browser/types"
 
 const tab = {
   id: "browser:abc",
@@ -44,7 +58,10 @@ function renderBar() {
 
 beforeEach(() => {
   resetBrowserTabStoreForTests()
+  resetBrowserDownloadsForTests()
   mocks.actions = null
+  mocks.openUrl.mockClear()
+  mocks.revealItemInDir.mockClear()
 })
 
 describe("BrowserNoticeBar", () => {
@@ -133,5 +150,63 @@ describe("BrowserErrorPage", () => {
     expect(
       screen.queryByText(/a proxy may be required/)
     ).not.toBeInTheDocument()
+  })
+})
+
+describe("BrowserDownloadBar", () => {
+  function renderDownloads() {
+    return render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <BrowserDownloadBar tab={tab} />
+      </NextIntlClientProvider>
+    )
+  }
+
+  const download = (over: Partial<BrowserDownload> = {}): BrowserDownload => ({
+    id: "dl-1",
+    tabId: "abc",
+    url: "https://example.com/a.bin",
+    fileName: "a.bin",
+    path: "/Users/dev/Downloads/a.bin",
+    state: "started",
+    ...over,
+  })
+
+  it("renders nothing without downloads", () => {
+    const { container } = renderDownloads()
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  // Never "open": a file that just arrived from the web is revealed in the
+  // file manager, and running it stays the user's decision.
+  it("offers show-in-folder only once a download completed", () => {
+    renderDownloads()
+    act(() => setBrowserDownload(download()))
+    expect(screen.getByText("a.bin")).toBeInTheDocument()
+    expect(screen.getByText("Downloading…")).toBeInTheDocument()
+    expect(screen.queryByText("Show in folder")).not.toBeInTheDocument()
+
+    act(() => setBrowserDownload(download({ state: "completed" })))
+    expect(screen.getByText("Saved")).toBeInTheDocument()
+    fireEvent.click(screen.getByText("Show in folder"))
+    expect(mocks.revealItemInDir).toHaveBeenCalledWith(
+      "/Users/dev/Downloads/a.bin"
+    )
+  })
+
+  it("shows a failed download and lets the row be dismissed", () => {
+    renderDownloads()
+    act(() => setBrowserDownload(download({ state: "failed" })))
+    expect(screen.getByText("Failed")).toBeInTheDocument()
+    expect(screen.queryByText("Show in folder")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }))
+    expect(screen.queryByText("a.bin")).not.toBeInTheDocument()
+  })
+
+  it("ignores downloads that belong to another tab", () => {
+    const { container } = renderDownloads()
+    act(() => setBrowserDownload(download({ tabId: "other" })))
+    expect(container).toBeEmptyDOMElement()
   })
 })

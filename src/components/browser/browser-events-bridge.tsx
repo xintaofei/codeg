@@ -6,8 +6,13 @@ import { useWorkspaceActions } from "@/contexts/workspace-context"
 import {
   browserCapabilities,
   browserClose,
+  browserListDownloads,
   browserListTabs,
 } from "@/lib/browser/browser-api"
+import {
+  hydrateBrowserDownloads,
+  setBrowserDownload,
+} from "@/lib/browser/browser-downloads-store"
 import {
   browserWorkspaceTabId,
   removeBrowserTabState,
@@ -16,10 +21,12 @@ import {
 } from "@/lib/browser/browser-tab-store"
 import {
   BROWSER_CLOSED_EVENT,
+  BROWSER_DOWNLOAD_EVENT,
   BROWSER_OPEN_REQUEST_EVENT,
   BROWSER_POPUP_EVENT,
   BROWSER_STATE_EVENT,
   type BrowserClosedPayload,
+  type BrowserDownload,
   type BrowserOpenRequestPayload,
   type BrowserPopupPayload,
   type BrowserTabState,
@@ -38,6 +45,7 @@ import { getCurrentWindowLabel } from "@/lib/browser/window-label"
  *   by the user, owner window gone) drops its tab record
  * - `browser://open-request` → the backend (an agent tool, a deep link, the
  *   dev puppet) asks this window's workspace to open a URL
+ * - `browser://download` → the download bar of the tab that started it
  *
  * Only subscribes where a built-in browser exists; in web mode there is
  * nothing to hear.
@@ -62,6 +70,13 @@ export function BrowserEventsBridge() {
         await Promise.all(orphans.map((tab) => browserClose(tab.tabId)))
       } catch {
         /* nothing to sweep */
+      }
+      // Downloads outlive the tabs that started them (and this document): a
+      // reload must not lose the record of a file that is still arriving.
+      try {
+        hydrateBrowserDownloads(await browserListDownloads())
+      } catch {
+        /* no downloads to show */
       }
       if (cancelled) return
       const transport = getTransport()
@@ -94,6 +109,12 @@ export function BrowserEventsBridge() {
             const tabId = browserWorkspaceTabId(closed.tabId)
             removeBrowserTabState(tabId)
             closeFileTab(tabId)
+          }
+        ),
+        transport.subscribe<BrowserDownload>(
+          BROWSER_DOWNLOAD_EVENT,
+          (download) => {
+            setBrowserDownload(download)
           }
         ),
         transport.subscribe<BrowserOpenRequestPayload>(

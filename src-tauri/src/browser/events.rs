@@ -5,6 +5,7 @@ use tauri::AppHandle;
 
 use crate::web::event_bridge::{emit_event, EventEmitter};
 
+use super::downloads::{BrowserDownload, DOWNLOAD_EVENT};
 use super::types::{
     BrowserClosedPayload, BrowserOpenRequestPayload, BrowserPopupPayload, BrowserTabState,
     CLOSED_EVENT, OPEN_REQUEST_EVENT, POPUP_EVENT, STATE_EVENT,
@@ -31,4 +32,8 @@ pub fn emit_popup(app: &AppHandle, payload: &BrowserPopupPayload) {
 
 pub fn emit_open_request(app: &AppHandle, payload: &BrowserOpenRequestPayload) {
     emit_event(&EventEmitter::Tauri(app.clone()), OPEN_REQUEST_EVENT, payload);
+}
+
+pub fn emit_download(app: &AppHandle, download: &BrowserDownload) {
+    emit_event(&EventEmitter::Tauri(app.clone()), DOWNLOAD_EVENT, download);
 }

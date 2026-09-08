@@ -4762,7 +4762,9 @@
     "proxyUnsupported": "Not available on this version of macOS (14 or later is needed).",
     "proxyUnusable": "The configured proxy is not one browser tabs can use (http and socks5 only).",
     "suspendTitle": "Unload background tabs",
-    "suspendHint": "Release the memory of browser tabs that stay in the background for 30 minutes. They load again when you switch back; scroll position and history are lost."
+    "suspendHint": "Release the memory of browser tabs that stay in the background for 30 minutes. They load again when you switch back; scroll position and history are lost.",
+    "downloadsTitle": "Downloads",
+    "downloadsHint": "Files a page downloads are saved to {dir}. Nothing is opened automatically, and an existing file is never replaced."
   },
   "LogsSettings": {
     "loading": "Loading…",
@@ -5837,6 +5839,13 @@
       "description": "A web page opened from the conversation",
       "openInWorkspace": "Open in workspace",
       "cannotOpen": "This address can't be opened here."
+    },
+    "download": {
+      "started": "Downloading…",
+      "completed": "Saved",
+      "failed": "Failed",
+      "reveal": "Show in folder",
+      "dismiss": "Dismiss"
     },
     "toast": {
       "firstOpen": "Opened in the built-in browser",

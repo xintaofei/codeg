@@ -7,6 +7,7 @@ use tauri::{AppHandle, Manager, State, WebviewWindow};
 use tauri::Url;
 
 use crate::app_error::AppCommandError;
+use crate::browser::downloads::{BrowserDownload, BrowserDownloads};
 use crate::browser::registry::{BrowserRegistry, BrowserTab};
 use crate::browser::surface::BrowserSurface;
 use crate::browser::types::{
@@ -61,6 +62,7 @@ pub fn capabilities() -> BrowserCapabilities {
         reasons,
         isolated_storage: crate::browser::profile::isolated_storage(),
         proxy: crate::browser::profile::proxy_status(),
+        downloads_dir: crate::browser::downloads::downloads_dir_display(),
     }
 }
 
@@ -609,6 +611,24 @@ pub async fn browser_list_tabs(
     registry: State<'_, BrowserRegistry>,
 ) -> Result<Vec<BrowserTabState>, AppCommandError> {
     Ok(registry.list_for_owner(window.label()))
+}
+
+/// Downloads this run started, oldest first. The frontend hydrates from it on
+/// mount; afterwards `browser://download` keeps it current.
+#[tauri::command]
+pub async fn browser_list_downloads(
+    downloads: State<'_, BrowserDownloads>,
+) -> Result<Vec<BrowserDownload>, AppCommandError> {
+    Ok(downloads.list())
+}
+
+/// Forget the records (the "dismiss" of the download bar). The files stay.
+#[tauri::command]
+pub async fn browser_clear_downloads(
+    downloads: State<'_, BrowserDownloads>,
+) -> Result<(), AppCommandError> {
+    downloads.clear();
+    Ok(())
 }
 
 #[cfg(test)]

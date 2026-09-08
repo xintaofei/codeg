@@ -4762,7 +4762,9 @@
     "proxyUnsupported": "Indisponível nesta versão do macOS (é necessária a 14 ou posterior).",
     "proxyUnusable": "O proxy configurado não é de um tipo que os separadores do navegador possam usar (apenas http e socks5).",
     "suspendTitle": "Descarregar abas em segundo plano",
-    "suspendHint": "Libera a memória das abas do navegador que ficam 30 minutos em segundo plano. Elas recarregam quando você volta; a posição de rolagem e o histórico são perdidos."
+    "suspendHint": "Libera a memória das abas do navegador que ficam 30 minutos em segundo plano. Elas recarregam quando você volta; a posição de rolagem e o histórico são perdidos.",
+    "downloadsTitle": "Downloads",
+    "downloadsHint": "Os arquivos baixados por uma página são salvos em {dir}. Nada é aberto automaticamente e um arquivo existente nunca é substituído."
   },
   "LogsSettings": {
     "loading": "Carregando…",
@@ -5837,6 +5839,13 @@
       "description": "Uma página da web aberta a partir da conversa",
       "openInWorkspace": "Abrir no espaço de trabalho",
       "cannotOpen": "Este endereço não pode ser aberto aqui."
+    },
+    "download": {
+      "started": "Baixando…",
+      "completed": "Salvo",
+      "failed": "Falhou",
+      "reveal": "Mostrar na pasta",
+      "dismiss": "Dispensar"
     },
     "toast": {
       "firstOpen": "Aberto no navegador integrado",

@@ -3,8 +3,8 @@
 /**
  * Built-in browser settings: where links open by default (per source), whether
  * browser tabs get the web inspector, which native surface hosts them, whether
- * background tabs are unloaded after a while, and a one-shot "clear browsing
- * data".
+ * background tabs are unloaded after a while, where downloads land, and a
+ * one-shot "clear browsing data".
  *
  * Preferences live in localStorage (`browser-prefs.ts`): written immediately,
  * mirrored across windows through the storage event, so there is no Save
@@ -17,6 +17,7 @@ import { useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
   AppWindow,
+  Download,
   Eraser,
   Globe,
   Link2,
@@ -119,6 +120,7 @@ export function BrowserSettingsSection() {
   const [confirmClear, setConfirmClear] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [proxy, setProxy] = useState<BrowserProxyStatus | null>(null)
+  const [downloadsDir, setDownloadsDir] = useState<string | null>(null)
 
   // Fetched when the section opens (not once per app run): the answer follows
   // the proxy setting, which lives on another settings page.
@@ -127,10 +129,14 @@ export function BrowserSettingsSection() {
     let cancelled = false
     browserCapabilitiesNow()
       .then((caps) => {
-        if (!cancelled) setProxy(caps.proxy)
+        if (cancelled) return
+        setProxy(caps.proxy)
+        setDownloadsDir(caps.downloadsDir || null)
       })
       .catch(() => {
-        if (!cancelled) setProxy(null)
+        if (cancelled) return
+        setProxy(null)
+        setDownloadsDir(null)
       })
     return () => {
       cancelled = true
@@ -276,6 +282,11 @@ export function BrowserSettingsSection() {
             ))}
           </div>
         </SettingRow>
+        <SettingRow
+          icon={Download}
+          title={t("downloadsTitle")}
+          description={t("downloadsHint", { dir: downloadsDir ?? "…" })}
+        />
         <SettingRow
           icon={Eraser}
           title={t("clearTitle")}

@@ -398,6 +398,15 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
             .map_err(err_string)?;
             Ok(Value::Null)
         }
+        // Download records this run produced, oldest first.
+        "browser_downloads" => Ok(serde_json::to_value(
+            app.state::<crate::browser::BrowserDownloads>().list(),
+        )
+        .unwrap_or(Value::Null)),
+        "browser_clear_downloads" => {
+            app.state::<crate::browser::BrowserDownloads>().clear();
+            Ok(Value::Null)
+        }
         "browser_clear_data" => {
             browser_commands::clear_data_core(app, &registry)
                 .await

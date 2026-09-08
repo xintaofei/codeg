@@ -101,6 +101,8 @@ pub struct BrowserCapabilities {
     /// Browsing data lives apart from the app's own web storage.
     pub isolated_storage: bool,
     pub proxy: crate::browser::profile::BrowserProxyStatus,
+    /// Where a page's downloads land, for the settings section.
+    pub downloads_dir: String,
 }
 
 /// Caller's surface preference for `browser_open_tab`.

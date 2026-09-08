@@ -75,6 +75,21 @@ export interface BrowserCapabilities {
   /** Browsing data lives apart from the app's own web storage. */
   isolatedStorage: boolean
   proxy: BrowserProxyStatus
+  /** Absolute path a page's downloads land in. */
+  downloadsDir: string
+}
+
+export type BrowserDownloadState = "started" | "completed" | "failed"
+
+/** `browser://download`: one record, emitted when it starts and when it ends. */
+export interface BrowserDownload {
+  id: string
+  tabId: string
+  url: string
+  fileName: string
+  /** Absolute path the engine writes to; never overwrites an existing file. */
+  path: string
+  state: BrowserDownloadState
 }
 
 export type SurfaceChoice = "auto" | "child" | "window"
@@ -121,3 +136,4 @@ export const BROWSER_STATE_EVENT = "browser://state"
 export const BROWSER_CLOSED_EVENT = "browser://closed"
 export const BROWSER_POPUP_EVENT = "browser://popup"
 export const BROWSER_TELEMETRY_EVENT = "browser://telemetry"
+export const BROWSER_DOWNLOAD_EVENT = "browser://download"

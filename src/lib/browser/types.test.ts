@@ -46,6 +46,7 @@ describe("browser wire types", () => {
         applies: "live",
         reason: null,
       },
+      downloadsDir: "/Users/dev/Downloads",
     } satisfies BrowserCapabilities
     const popup = {
       presentation: "adopted",
