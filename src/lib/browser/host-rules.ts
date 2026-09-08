@@ -100,17 +100,18 @@ export function parseHostRulePattern(
     if (!Number.isInteger(port) || port < 1 || port > 65535) return null
   }
   let matcher: HostMatcher
-  if (host === "*") {
+  if (bracketed) {
+    // Brackets mean an IPv6 literal and nothing else — not a wildcard, not
+    // a name.
+    const canonical = canonicalIpv6(host)
+    if (!canonical) return null
+    matcher = { kind: "exact", host: canonical }
+  } else if (host === "*") {
     matcher = { kind: "any" }
   } else if (host.startsWith("*.")) {
     const suffix = host.slice(2)
     if (!validHostname(suffix)) return null
     matcher = { kind: "suffix", suffix: `.${suffix}` }
-  } else if (bracketed) {
-    // Brackets mean an IPv6 literal and nothing else.
-    const canonical = canonicalIpv6(host)
-    if (!canonical) return null
-    matcher = { kind: "exact", host: canonical }
   } else if (validHostname(host)) {
     matcher = { kind: "exact", host }
   } else {
@@ -168,11 +169,22 @@ function matches(
   return hostOk && (rule.port === null || rule.port === port)
 }
 
+type Score = [number, number, number, number]
+
+/** Among equally specific rules the more restrictive one wins — two
+ *  spellings of one host may both be in the table, and a block must not
+ *  depend on which was listed first. */
+const RESTRICTIVENESS: Record<HostRuleAction, number> = {
+  block: 2,
+  system: 1,
+  builtin: 0,
+}
+
 /**
  * Higher wins: an exact host over a wildcard, a longer wildcard suffix over
- * a shorter one, `*` last; a pinned port breaks a tie.
+ * a shorter one, `*` last; a pinned port breaks a tie; then the action.
  */
-function specificity(rule: ParsedHostRulePattern): [number, number, number] {
+function score(rule: ParsedHostRulePattern, action: HostRuleAction): Score {
   const host = rule.host
   const [kind, len] =
     host.kind === "exact"
@@ -180,23 +192,20 @@ function specificity(rule: ParsedHostRulePattern): [number, number, number] {
       : host.kind === "suffix"
         ? [1, host.suffix.length]
         : [0, 0]
-  return [kind, len, rule.port === null ? 0 : 1]
+  return [kind, len, rule.port === null ? 0 : 1, RESTRICTIVENESS[action]]
 }
 
-function moreSpecific(
-  a: [number, number, number],
-  b: [number, number, number]
-): boolean {
-  for (let i = 0; i < 3; i += 1) {
+function higher(a: Score, b: Score): boolean {
+  for (let i = 0; i < a.length; i += 1) {
     if (a[i] !== b[i]) return a[i] > b[i]
   }
   return false
 }
 
 /**
- * The rule that applies to `parsed`: the most specific matching pattern, and
- * among equally specific ones the first listed. Unparsable patterns never
- * match.
+ * The rule that applies to `parsed`: the most specific matching pattern;
+ * among equally specific ones the most restrictive action, and among those
+ * the first listed. Unparsable patterns never match.
  */
 export function matchHostRule(
   rules: readonly HostRule[] | undefined,
@@ -206,14 +215,33 @@ export function matchHostRule(
   const hostname = ruleHostname(parsed)
   if (!hostname) return null
   const port = effectivePort(parsed)
-  let best: { rule: HostRule; score: [number, number, number] } | null = null
+  let best: { rule: HostRule; score: Score } | null = null
   for (const rule of rules) {
     const pattern = parseHostRulePattern(rule.pattern)
     if (!pattern || !matches(pattern, hostname, port)) continue
-    const score = specificity(pattern)
-    if (!best || moreSpecific(score, best.score)) best = { rule, score }
+    const candidate = score(pattern, rule.action)
+    if (!best || higher(candidate, best.score)) {
+      best = { rule, score: candidate }
+    }
   }
   return best?.rule ?? null
+}
+
+/**
+ * What a pattern matches, as a key: two patterns with the same key are the
+ * same rule however they are spelled (`[::1]` / `[0:0:0:0:0:0:0:1]`, case,
+ * whitespace). `null` for anything that is not a pattern.
+ */
+export function hostRulePatternKey(pattern: string): string | null {
+  const parsed = parseHostRulePattern(pattern)
+  if (!parsed) return null
+  const host =
+    parsed.host.kind === "any"
+      ? "*"
+      : parsed.host.kind === "suffix"
+        ? `*${parsed.host.suffix}`
+        : parsed.host.host
+  return `${host}:${parsed.port ?? ""}`
 }
 
 /** Whether a value read from storage or the wire is a rule. */

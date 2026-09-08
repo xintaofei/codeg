@@ -3,6 +3,7 @@
 //! for map operations; every surface call happens on a clone taken out of it.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -50,6 +51,10 @@ pub struct BrowserTab {
     /// newer request has been made meanwhile — otherwise a quick close of the
     /// overlay would be followed by a stale hide.
     pub visible_seq: u64,
+    /// Which incarnation of this tab id this is (a tab id is reused when a
+    /// released tab is brought back). An operation that spans an await
+    /// captures it and stands down if the id now names a later incarnation.
+    pub generation: u64,
     /// URL of the main-frame navigation the engine reported as started and
     /// has neither committed nor failed yet (platforms with a navigation
     /// delegate only). Lets a commit of `about:blank` in its place be
@@ -75,6 +80,7 @@ impl BrowserTab {
             load_seq: 0,
             download_seq: None,
             visible_seq: 0,
+            generation: 0,
             provisional_url: None,
             gestures: VecDeque::with_capacity(GESTURE_RING_CAPACITY),
         }
@@ -88,6 +94,8 @@ pub struct BrowserRegistry {
     /// a freeze frame spans an await, and the request behind it must not
     /// apply in between (tokio's mutex hands the lock out in arrival order).
     visibility: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Source of `BrowserTab::generation`, never reused within a process.
+    generations: AtomicU64,
 }
 
 impl BrowserRegistry {
@@ -109,7 +117,8 @@ impl BrowserRegistry {
             .clone()
     }
 
-    pub fn insert(&self, tab: BrowserTab) -> Result<(), AppCommandError> {
+    pub fn insert(&self, mut tab: BrowserTab) -> Result<(), AppCommandError> {
+        tab.generation = self.generations.fetch_add(1, Ordering::Relaxed) + 1;
         let mut tabs = self.lock();
         let id = tab.state.tab_id.clone();
         if tabs.contains_key(&id) {
@@ -184,13 +193,23 @@ impl BrowserRegistry {
     /// Detach every tab owned by a window (called when that window is
     /// destroyed); the caller closes the returned surfaces.
     pub fn remove_by_owner(&self, owner_window: &str) -> Vec<BrowserTab> {
-        let mut tabs = self.lock();
-        let ids: Vec<String> = tabs
-            .values()
-            .filter(|t| t.state.owner_window == owner_window)
-            .map(|t| t.state.tab_id.clone())
-            .collect();
-        ids.into_iter().filter_map(|id| tabs.remove(&id)).collect()
+        let removed: Vec<BrowserTab> = {
+            let mut tabs = self.lock();
+            let ids: Vec<String> = tabs
+                .values()
+                .filter(|t| t.state.owner_window == owner_window)
+                .map(|t| t.state.tab_id.clone())
+                .collect();
+            ids.into_iter().filter_map(|id| tabs.remove(&id)).collect()
+        };
+        let mut locks = self
+            .visibility
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for tab in &removed {
+            locks.remove(&tab.state.tab_id);
+        }
+        removed
     }
 
     pub fn push_gesture(&self, tab_id: &str, payload: Value) {

@@ -113,6 +113,14 @@ describe("BrowserSettingsSection", () => {
     ).toBeInTheDocument()
     expect(getBrowserPrefs().hostRules).toHaveLength(1)
 
+    // Another spelling of the same rule is the same rule.
+    fireEvent.change(pattern, { target: { value: "BLOCKED.example" } })
+    fireEvent.click(screen.getByRole("button", { name: "Add" }))
+    expect(
+      screen.getByText("There is already a rule for this pattern")
+    ).toBeInTheDocument()
+    expect(getBrowserPrefs().hostRules).toHaveLength(1)
+
     fireEvent.change(pattern, { target: { value: "https://not a pattern" } })
     fireEvent.click(screen.getByRole("button", { name: "Add" }))
     expect(screen.getByText("Not a valid pattern")).toBeInTheDocument()

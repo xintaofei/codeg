@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  hostRulePatternKey,
   isHostRule,
   matchHostRule,
   normalizeHostRulePattern,
@@ -58,6 +59,9 @@ describe("host rule patterns", () => {
       "[::1]x",
       "[1::2::3]",
       "[not-an-address]",
+      "[*]",
+      "[*.example.com]",
+      "[*]:443",
       "*.*",
     ]) {
       expect(validateHostRulePattern(bad), bad).toBe("invalid")
@@ -182,6 +186,8 @@ describe("matchHostRule", () => {
     expect(action("https://wiki.corp.example/")).toBe("builtin")
     expect(action("https://a.sso.corp.example/")).toBe("builtin")
     expect(action("https://elsewhere.example/")).toBe("system")
+    // Equal specificity: the more restrictive action, whatever the order —
+    // including two spellings of one host.
     expect(
       matchHostRule(
         [
@@ -190,6 +196,37 @@ describe("matchHostRule", () => {
         ],
         new URL("https://dup.example/")
       )?.action
-    ).toBe("builtin")
+    ).toBe("block")
+    expect(
+      matchHostRule(
+        [
+          { pattern: "[0:0:0:0:0:0:0:1]", action: "system" },
+          { pattern: "[::1]", action: "block" },
+        ],
+        new URL("http://[::1]/")
+      )?.action
+    ).toBe("block")
+    // Equal in every respect: the first listed.
+    const same: HostRule[] = [
+      { pattern: "dup.example", action: "system" },
+      { pattern: "dup.example", action: "system" },
+    ]
+    expect(matchHostRule(same, new URL("https://dup.example/"))).toBe(same[0])
+  })
+
+  it("keys two spellings of one rule the same", () => {
+    expect(hostRulePatternKey("[0:0:0:0:0:0:0:1]:3000")).toBe(
+      hostRulePatternKey(" [::1]:3000 ")
+    )
+    expect(hostRulePatternKey("Example.COM")).toBe(
+      hostRulePatternKey("example.com")
+    )
+    expect(hostRulePatternKey("example.com")).not.toBe(
+      hostRulePatternKey("example.com:80")
+    )
+    expect(hostRulePatternKey("*.example.com")).not.toBe(
+      hostRulePatternKey("example.com")
+    )
+    expect(hostRulePatternKey("not a pattern")).toBeNull()
   })
 })

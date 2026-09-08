@@ -119,18 +119,19 @@ fn parse_pattern(pattern: &str) -> Option<ParsedPattern> {
         Some(digits) => Some(digits.parse::<u16>().ok().filter(|p| *p > 0)?),
         None => None,
     };
-    let host = if host == "*" {
+    let host = if bracketed {
+        // Brackets mean an IPv6 literal and nothing else — not a wildcard,
+        // not a name. Stored as typed, matched in the form URLs carry
+        // (`::1`, never `0:0:0:0:0:0:0:1`), or a rule would look right and
+        // never apply.
+        HostMatcher::Exact(canonical_ipv6(&host)?)
+    } else if host == "*" {
         HostMatcher::Any
     } else if let Some(suffix) = host.strip_prefix("*.") {
         if !valid_hostname(suffix) {
             return None;
         }
         HostMatcher::Suffix(format!(".{suffix}"))
-    } else if bracketed {
-        // Brackets mean an IPv6 literal and nothing else. Stored as typed,
-        // matched in the form URLs carry (`::1`, never `0:0:0:0:0:0:0:1`),
-        // or a rule would look right and never apply.
-        HostMatcher::Exact(canonical_ipv6(&host)?)
     } else if valid_hostname(&host) {
         HostMatcher::Exact(host)
     } else {
@@ -199,13 +200,27 @@ impl ParsedPattern {
     }
 }
 
-/// The rule that applies to `url`: the most specific matching pattern, and
-/// among equally specific ones the first listed. Unparsable patterns never
-/// match. Same algorithm as `matchHostRule` on the frontend.
+impl HostRuleAction {
+    /// Among equally specific rules the more restrictive one wins — two
+    /// spellings of one host (`[::1]` and `[0:0:0:0:0:0:0:1]`) may both be
+    /// in the table, and a block must not depend on which was listed first.
+    fn restrictiveness(self) -> u8 {
+        match self {
+            HostRuleAction::Block => 2,
+            HostRuleAction::System => 1,
+            HostRuleAction::Builtin => 0,
+        }
+    }
+}
+
+/// The rule that applies to `url`: the most specific matching pattern; among
+/// equally specific ones the most restrictive action, and among those the
+/// first listed. Unparsable patterns never match. Same algorithm as
+/// `matchHostRule` on the frontend.
 pub fn match_host_rule<'a>(rules: &'a [HostRule], url: &Url) -> Option<&'a HostRule> {
     let hostname = rule_hostname(url)?;
     let port = effective_port(url);
-    let mut best: Option<(&HostRule, (u8, usize, u8))> = None;
+    let mut best: Option<(&HostRule, (u8, usize, u8, u8))> = None;
     for rule in rules {
         let Some(parsed) = parse_pattern(&rule.pattern) else {
             continue;
@@ -213,7 +228,8 @@ pub fn match_host_rule<'a>(rules: &'a [HostRule], url: &Url) -> Option<&'a HostR
         if !parsed.matches(&hostname, port) {
             continue;
         }
-        let score = parsed.specificity();
+        let (kind, len, pinned) = parsed.specificity();
+        let score = (kind, len, pinned, rule.action.restrictiveness());
         if best.as_ref().is_none_or(|(_, current)| score > *current) {
             best = Some((rule, score));
         }
@@ -538,6 +554,9 @@ mod tests {
             "[1::2::3]",
             "[not-an-address]",
             "[fe80::1%25en0]",
+            "[*]",
+            "[*.example.com]",
+            "[*]:443",
             "*.*",
         ] {
             assert!(!valid_pattern(bad), "{bad:?} should not parse");
@@ -605,15 +624,33 @@ mod tests {
         assert_eq!(action("https://wiki.corp.example/"), Some(HostRuleAction::Builtin));
         assert_eq!(action("https://a.sso.corp.example/"), Some(HostRuleAction::Builtin));
         assert_eq!(action("https://elsewhere.example/"), Some(HostRuleAction::System));
-        // Equal specificity: the first listed.
+        // Equal specificity: the more restrictive action, whatever the order
+        // — including two spellings of one host.
         let tie = [
             rule("dup.example", HostRuleAction::Builtin),
             rule("dup.example", HostRuleAction::Block),
         ];
         assert_eq!(
             match_host_rule(&tie, &u("https://dup.example/")).map(|r| r.action),
-            Some(HostRuleAction::Builtin)
+            Some(HostRuleAction::Block)
         );
+        let aliases = [
+            rule("[0:0:0:0:0:0:0:1]", HostRuleAction::System),
+            rule("[::1]", HostRuleAction::Block),
+        ];
+        assert_eq!(
+            match_host_rule(&aliases, &u("http://[::1]/")).map(|r| r.action),
+            Some(HostRuleAction::Block)
+        );
+        // Equal in every respect: the first listed.
+        let same = [
+            rule("dup.example", HostRuleAction::System),
+            rule("dup.example", HostRuleAction::System),
+        ];
+        assert!(std::ptr::eq(
+            match_host_rule(&same, &u("https://dup.example/")).unwrap(),
+            &same[0]
+        ));
     }
 
     #[test]

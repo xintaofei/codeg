@@ -467,6 +467,15 @@ pub fn current_navigation_is_main_frame() -> Option<bool> {
 pub struct NavigationDelegateIvars {
     inner: Retained<ProtocolObject<dyn WKNavigationDelegate>>,
     sink: NavigationSink,
+    /// The `WKNavigation` that started most recently (by identity). A
+    /// redirect, interruption or failure reported for an OLDER navigation
+    /// — a superseded load, a download the previous document started — is
+    /// not news about the load in flight and is dropped.
+    current: Cell<usize>,
+}
+
+fn navigation_id(navigation: Option<&WKNavigation>) -> usize {
+    navigation.map_or(0, |n| n as *const WKNavigation as usize)
 }
 
 define_class!(
@@ -516,7 +525,8 @@ define_class!(
         }
 
         #[unsafe(method(webView:didStartProvisionalNavigation:))]
-        fn did_start_provisional(&self, webview: &WKWebView, _navigation: Option<&WKNavigation>) {
+        fn did_start_provisional(&self, webview: &WKWebView, navigation: Option<&WKNavigation>) {
+            self.ivars().current.set(navigation_id(navigation));
             // `URL` is the active URL: the provisional one while a load is in
             // flight, so this is where the navigation is heading.
             // SAFETY: main thread, live webview.
@@ -528,7 +538,10 @@ define_class!(
         }
 
         #[unsafe(method(webView:didReceiveServerRedirectForProvisionalNavigation:))]
-        fn did_redirect_provisional(&self, webview: &WKWebView, _navigation: Option<&WKNavigation>) {
+        fn did_redirect_provisional(&self, webview: &WKWebView, navigation: Option<&WKNavigation>) {
+            if self.is_stale(navigation) {
+                return;
+            }
             // SAFETY: main thread, live webview; `URL` is the redirect target
             // by the time WebKit reports the redirect.
             let url = unsafe { webview.URL().and_then(|u| u.absoluteString()) }.map(|s| s.to_string());
@@ -539,12 +552,19 @@ define_class!(
         }
 
         #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
-        fn did_fail_provisional(&self, _webview: &WKWebView, _navigation: Option<&WKNavigation>, error: &NSError) {
+        fn did_fail_provisional(&self, _webview: &WKWebView, navigation: Option<&WKNavigation>, error: &NSError) {
+            if self.is_stale(navigation) {
+                tracing::debug!("[browser] ignoring the failure of a superseded navigation");
+                return;
+            }
             self.report_failure(error, true);
         }
 
         #[unsafe(method(webView:didFailNavigation:withError:))]
-        fn did_fail(&self, _webview: &WKWebView, _navigation: Option<&WKNavigation>, error: &NSError) {
+        fn did_fail(&self, _webview: &WKWebView, navigation: Option<&WKNavigation>, error: &NSError) {
+            if self.is_stale(navigation) {
+                return;
+            }
             self.report_failure(error, false);
         }
     }
@@ -556,11 +576,21 @@ impl CodegNavigationDelegate {
         sink: NavigationSink,
         mtm: MainThreadMarker,
     ) -> Retained<Self> {
-        let this = mtm
-            .alloc::<Self>()
-            .set_ivars(NavigationDelegateIvars { inner, sink });
+        let this = mtm.alloc::<Self>().set_ivars(NavigationDelegateIvars {
+            inner,
+            sink,
+            current: Cell::new(0),
+        });
         // SAFETY: plain NSObject init.
         unsafe { msg_send![super(this), init] }
+    }
+
+    /// A callback about a navigation other than the one that started last.
+    /// WebKit hands the same `WKNavigation` object to every callback of one
+    /// navigation, so identity is the comparison; a callback without one
+    /// (nil, as for some engine-internal loads) is taken at face value.
+    fn is_stale(&self, navigation: Option<&WKNavigation>) -> bool {
+        navigation.is_some_and(|n| n as *const WKNavigation as usize != self.ivars().current.get())
     }
 
     fn report_failure(&self, error: &NSError, provisional: bool) {

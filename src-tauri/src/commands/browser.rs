@@ -454,15 +454,19 @@ pub async fn set_visible_core(
     // time and in the order they came, and one that a newer request has
     // overtaken while it waited or captured is dropped rather than applied
     // late (the newer one carries the state that stands).
-    let seq = registry
+    let stamp = registry
         .update(tab_id, |tab| {
             tab.visible_seq += 1;
-            tab.visible_seq
+            (tab.visible_seq, tab.generation)
         })
-        .unwrap_or(0);
+        .unwrap_or_default();
     let lock = registry.visibility_lock(tab_id);
     let _applying = lock.lock().await;
-    let superseded = || registry.update(tab_id, |tab| tab.visible_seq) != Some(seq);
+    // Both the sequence and the incarnation: the id may have been closed and
+    // reopened while this waited, and the new tab's own counter must not be
+    // mistaken for ours.
+    let superseded =
+        || registry.update(tab_id, |tab| (tab.visible_seq, tab.generation)) != Some(stamp);
     if superseded() {
         return Ok(None);
     }

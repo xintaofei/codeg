@@ -72,6 +72,7 @@ import {
 } from "@/lib/browser/browser-prefs"
 import {
   HOST_RULE_ACTIONS,
+  hostRulePatternKey,
   normalizeHostRulePattern,
   validateHostRulePattern,
   type HostRule,
@@ -158,11 +159,12 @@ function HostRulesEditor({
       return
     }
     const pattern = normalizeHostRulePattern(draft)
-    // Stored rows are normalized by this editor, but a row written by hand
-    // may not be; compare in the normalized form either way.
-    if (
-      rules.some((rule) => normalizeHostRulePattern(rule.pattern) === pattern)
-    ) {
+    // Two spellings of one rule are one rule (`[::1]` and
+    // `[0:0:0:0:0:0:0:1]`, case, whitespace): compare what they match, not
+    // the text. Otherwise both would sit in the table and only one could
+    // ever apply.
+    const key = hostRulePatternKey(pattern)
+    if (rules.some((rule) => hostRulePatternKey(rule.pattern) === key)) {
       setProblem("duplicate")
       return
     }
@@ -183,9 +185,9 @@ function HostRulesEditor({
 
   return (
     <div className="space-y-1.5">
-      {managed.map((rule) => (
+      {managed.map((rule, index) => (
         <div
-          key={`managed:${rule.pattern}`}
+          key={`managed:${index}:${rule.pattern}`}
           className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-muted/40 px-3 py-2"
           title={t("ruleManaged")}
         >
