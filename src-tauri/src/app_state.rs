@@ -37,8 +37,8 @@ pub struct AppState {
     /// requests here. v1 uses the default `DelegationConfig`; settings UI
     /// hot-swaps via `delegation_broker.set_config`.
     pub delegation_broker: Arc<DelegationBroker>,
-    /// Collaboration-turn coordinator for the continuable-delegation MVP
-    /// (v2 design). Default OFF; the settings command flips it at runtime.
+    /// Collaboration-turn coordinator for the continuable-delegation MVP.
+    /// Default OFF; the settings command flips it at runtime.
     pub continuation_coordinator:
         Arc<crate::acp::delegation::continuation::ContinuationCoordinator>,
     /// Per-launch ephemeral tokens identifying parent ACP connections.

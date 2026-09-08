@@ -1,4 +1,4 @@
-//! A27 real-adapter smoke: does a strict session/resume actually PRESERVE
+//! Real-adapter smoke: does a strict session/resume actually PRESERVE
 //! context across a full process release?
 //!
 //! Round 1: launch the real `claude-agent-acp` adapter over stdio, open a
@@ -8,7 +8,7 @@
 //! the SAME id, then ask for the marker — the prompt does NOT contain it, so
 //! a correct answer can only come from restored agent-side context.
 //!
-//! This proves limited context continuation (v2 design's top risk), not full
+//! This proves limited context continuation, not full
 //! semantic memory. It requires a logged-in Claude Code CLI on this machine,
 //! so it is `#[ignore]`d: run explicitly with
 //!

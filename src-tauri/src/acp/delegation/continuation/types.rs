@@ -241,7 +241,7 @@ impl StrictAttachGate {
 }
 
 // ---------------------------------------------------------------------------
-// Wire contract (v2 design §6) — schema_version = 1
+// Wire contract — schema_version = 1
 // ---------------------------------------------------------------------------
 
 pub const CONTINUATION_SCHEMA_VERSION: i32 = 1;

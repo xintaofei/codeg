@@ -864,11 +864,10 @@ mod tauri_app {
                             ),
                         ),
                         // The collaboration arms share the managed
-                        // coordinator (Task 4 dual-mode wiring).
+                        // coordinator.
                         Some(continuation_coordinator.clone()),
                     );
-                    // Startup recovery BEFORE the listener accepts (v2 design
-                    // §5.2: recovery precedes admission).
+                    // Startup recovery runs BEFORE the listener accepts new work.
                     {
                         let coordinator = continuation_coordinator.clone();
                         tauri::async_runtime::block_on(async move {

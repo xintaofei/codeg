@@ -1,4 +1,4 @@
-//! Read-only collaboration-session query (v2 design §6): the web-mode mirror
+//! Read-only collaboration-session query: the web-mode mirror
 //! of the Tauri `get_collaboration_session` command. Both wrap the SAME
 //! coordinator core (`commands::collaboration`), so pagination, parent
 //! scoping, and DTO semantics cannot drift across transports.

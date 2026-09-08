@@ -8,8 +8,8 @@ use crate::acp::delegation::continuation::ContinuationCoordinator;
 use crate::app_error::AppCommandError;
 use crate::db::service::app_metadata_service;
 
-/// Storage key for the continuable-delegation experiment. DEFAULT OFF
-/// (v2 design D6): the key's absence reads as disabled, so an old database
+/// Storage key for the continuable-delegation experiment. DEFAULT OFF:
+/// the key's absence reads as disabled, so an old database
 /// upgrades to "off" without a migration.
 pub const KEY_CONTINUATION_ENABLED: &str = "continuable_delegation_enabled";
 

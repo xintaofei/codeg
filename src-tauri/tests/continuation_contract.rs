@@ -1,4 +1,4 @@
-//! Wire-contract guard for the collaboration DTOs (v2 design §7 / A26):
+//! Wire-contract guard for the collaboration DTOs:
 //! the SAME JSON fixtures under `tests/fixtures/collaboration/` are loaded by
 //! the TypeScript parser test (`src/lib/collaboration.test.ts`), so the Rust
 //! serialization and the TS runtime validation can never drift. Any field

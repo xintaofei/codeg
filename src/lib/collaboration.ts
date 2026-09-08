@@ -15,7 +15,7 @@
 import { getTransport } from "@/lib/transport"
 
 // ---------------------------------------------------------------------------
-// Wire vocabulary (v2 design §6)
+// Wire vocabulary
 // ---------------------------------------------------------------------------
 
 export const CONTINUATION_SCHEMA_VERSION = 1
@@ -304,7 +304,7 @@ export function parseCollaborationSnapshot(
 // API
 // ---------------------------------------------------------------------------
 
-/** Pagination defaults (v2 design §6): default 20, hard cap 100. */
+/** Pagination defaults: default 20, hard cap 100. */
 export const COLLAB_SNAPSHOT_DEFAULT_LIMIT = 20
 export const COLLAB_SNAPSHOT_MAX_LIMIT = 100
 

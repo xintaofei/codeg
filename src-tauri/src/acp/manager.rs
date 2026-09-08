@@ -223,9 +223,8 @@ fn is_reserved_turn_id(id: &str) -> bool {
 }
 
 /// The backend rejection ordinary prompt entries return for a conversation
-/// reserved by an open/blocked collaboration session (v2 design §4.2: the
-/// coordinator owns the child's writes until close; a disabled button is
-/// not the contract).
+/// reserved by an open/blocked collaboration session. The coordinator owns
+/// the child's writes until close; a disabled button cannot enforce this.
 fn reserved_for_delegation_error(conversation_id: i32) -> AcpError {
     AcpError::protocol(format!(
         "conversation {conversation_id} is reserved for delegation rework; send your \
@@ -1133,7 +1132,7 @@ impl ConnectionManager {
         conn_id: &str,
         blocks: Vec<PromptInputBlock>,
     ) -> Result<(), AcpError> {
-        // Collaboration write reservation (reacceptance R8): judged by the
+        // Collaboration write reservation: judged by the
         // connection's ACTUAL bound conversation, not a caller-supplied id —
         // an already-linked reserved child must refuse a prompt that omits
         // the conversation id exactly like one that names it. The
@@ -1285,8 +1284,8 @@ impl ConnectionManager {
         // here — a backend rejection, not a disabled button. Unreserved
         // conversations behave exactly as before.
         //
-        // The check must cover the connection's ACTUAL binding as well
-        // (reacceptance R8): an already-linked reserved child must refuse a
+        // The check must cover the connection's ACTUAL binding as well:
+        // an already-linked reserved child must refuse a
         // prompt that omits the conversation id (it would otherwise ride the
         // already-linked fast path into the reserved child). And a
         // caller-supplied target that disagrees with that binding is a

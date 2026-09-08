@@ -76,7 +76,7 @@ impl ResumedSpawn {
 }
 
 /// Non-sensitive facts captured from a LIVE child connection so a successful
-/// delegation result can freeze a resume binding (v2 design §5.3). Contains
+/// delegation result can freeze a resume binding. Contains
 /// ONLY identities — never tokens, API keys, or environment variables:
 /// * `external_session_id` — the agent-assigned ACP session id the child is
 ///   running in (what a strict re-attach must load).

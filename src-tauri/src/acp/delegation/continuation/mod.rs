@@ -1,5 +1,5 @@
 //! Strict session recovery: re-attach an EXISTING external agent session
-//! without ever falling back to `session/new` (v2 design §5.3).
+//! without ever falling back to `session/new`.
 //!
 //! The ordinary spawn path recovers with the chain resume → load → new: any
 //! failure falls through to a brand-new session, which is the right behavior

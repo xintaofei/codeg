@@ -6,7 +6,7 @@
  *
  * Data comes exclusively from `get_collaboration_session` (the shared
  * read-only core); this component NEVER talks to the agent. While the dialog
- * is open it polls at most once per second (v2 design §6) and stops the
+ * is open it polls at most once per second and stops the
  * moment it closes — the interval lives in an effect keyed on `open`, and the
  * in-flight/seq gates (same pattern as `subagent-session-dialog.tsx`) drop
  * stale responses. Version ratcheting keeps an older snapshot from
@@ -88,7 +88,7 @@ export function CollaborationTurnList({
   const versionWatermarkRef = useRef<Map<string, number>>(new Map())
   // The turns currently rendered (mirrored from every snapshot write). React
   // defers `setSnapshot` updaters, so any decision that must be made in the
-  // same tick as the response (the R9 follow-up below) reads this instead of
+  // same tick as the response reads this instead of
   // waiting for the updater to run.
   const turnsRef = useRef<TurnReport[]>([])
 
@@ -98,7 +98,7 @@ export function CollaborationTurnList({
   // seen replaces/inserts; turns the response omits are kept. Sorting by
   // ordinal keeps the list stable. Sharing this is what stops a history page
   // that ALSO carries the projected active round from duplicating it
-  // (reacceptance R10) and keeps pagination responses version-checked.
+  // and keeps pagination responses version-checked.
   const applyTurns = useCallback(
     (incoming: TurnReport[], prev: TurnReport[] | undefined): TurnReport[] => {
       const watermark = versionWatermarkRef.current
@@ -134,8 +134,8 @@ export function CollaborationTurnList({
           sourceTaskId,
         })
         if (seq !== seqRef.current) return // a newer load superseded this one
-        // Known NON-TERMINAL turns the fresh page did NOT include (reacceptance
-        // R9): a projected active round that reached a terminal beyond the
+        // Known NON-TERMINAL turns the fresh page did NOT include: a
+        // projected active round that reached a terminal beyond the
         // first page's window disappears from every later first-page response,
         // so without a follow-up fetch it would render as running forever.
         // Computed from the turns ALREADY rendered (the ref) — the snapshot
@@ -150,11 +150,9 @@ export function CollaborationTurnList({
           .map((turn) => turn.ordinal)
         setSnapshot((prev) => {
           // Version ratchet per turn — maintained on EVERY load including the
-          // first (acceptance F11: an uninitialized watermark let the first
-          // poll roll a completed v2 back to a stale running v1) — and a
-          // turn-ID merge that PRESERVES loaded history pages (acceptance
-          // F12: the poll only re-reads the first page; a page 2 the user
-          // loaded must not vanish on the next tick).
+          // first, so a poll cannot roll completed v2 back to stale running v1.
+          // Preserve loaded history pages when merging by turn ID: the poll
+          // only re-reads page 1, so page 2 must survive the next tick.
           const merged = applyTurns(fresh.turns, prev?.turns)
           turnsRef.current = merged
           // The deepest cursor wins: pagination may have walked further back
@@ -228,8 +226,8 @@ export function CollaborationTurnList({
       })
       setSnapshot((prev) => {
         if (!prev) return prev
-        // Merge through the SAME version-ratcheted turn-ID merge as the poll
-        // (reacceptance R10): a history page that also carries the projected
+        // Merge through the SAME version-ratcheted turn-ID merge as the poll:
+        // a history page that also carries the projected
         // active round must not render it twice (and must not let an older
         // version roll a rendered turn back).
         const merged = applyTurns(older.turns, prev.turns)

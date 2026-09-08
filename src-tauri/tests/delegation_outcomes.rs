@@ -1,15 +1,15 @@
-//! PR1 integration: frozen COMPLETED delegation outcomes.
+//! Integration tests for frozen completed delegation outcomes.
 //!
-//! Covers the v2 design §4.1 contract end to end against real SQLite:
+//! Covers the storage contract end to end against real SQLite:
 //! * first-writer-wins success freezing (identical replay idempotent,
 //!   different result conflicts, canceled/failed never frozen),
 //! * frozen-first status projection surviving cache eviction, broker rebuild,
-//!   and child-status drift (A01/A02),
+//!   and child-status drift,
 //! * the upstream `resume_delegation` path staying intact for interrupted
-//!   tasks (A33/A34) while a frozen snapshot refuses to re-resume a completed
-//!   task (A35),
-//! * complete/cancel races freezing only the success winner (A03), and
-//! * storage failures diagnosing loudly without faking durability (A04).
+//!   tasks while a frozen snapshot refuses to re-resume a completed
+//!   task,
+//! * complete/cancel races freezing only the success winner, and
+//! * storage failures diagnosing loudly without faking durability.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -377,7 +377,7 @@ async fn broker_freezes_success_but_never_canceled_or_failed() {
     assert_eq!(store.write_count().await, 1);
 }
 
-/// A01 + A02: the frozen result survives cache eviction, broker rebuild, and
+/// the frozen result survives cache eviction, broker rebuild, and
 /// child-status drift; the mutable fallback never shadows it.
 #[tokio::test]
 async fn frozen_result_survives_rebuild_and_child_status_drift() {
@@ -452,7 +452,7 @@ async fn frozen_result_survives_rebuild_and_child_status_drift() {
 // Resume interplay: interrupted tasks keep resuming, frozen ones do not
 // ---------------------------------------------------------------------------
 
-/// A33: canceled → resume (same id) → running → completed. The canceled phase
+/// canceled → resume (same id) → running → completed. The canceled phase
 /// leaves NO outcome row, the resumed run freezes exactly one success result,
 /// and a rebuilt broker still reports the frozen text.
 #[tokio::test]
@@ -508,7 +508,7 @@ async fn resume_flow_freezes_only_the_eventual_success() {
     assert_eq!(report.text.as_deref(), Some("finished after resume"));
 }
 
-/// A35: once the success snapshot exists, the OLD resume tool must refuse even
+/// once the success snapshot exists, the OLD resume tool must refuse even
 /// when the cache was evicted and the child row's status later drifted — the
 /// frozen store, not the mutable fallback, decides.
 #[tokio::test]
@@ -565,7 +565,7 @@ async fn frozen_snapshot_refuses_old_resume_after_status_drift() {
     assert_eq!(status.text.as_deref(), Some("original success"));
 }
 
-/// A34 (partial): a canceled task WITHOUT a frozen snapshot keeps its upstream
+/// a canceled task WITHOUT a frozen snapshot keeps its upstream
 /// resume path — spawn failure leaves the canceled record intact and no row.
 #[tokio::test]
 async fn resume_spawn_failure_keeps_task_resumable_without_snapshot() {
@@ -606,7 +606,7 @@ async fn resume_spawn_failure_keeps_task_resumable_without_snapshot() {
     assert_eq!(ack.status, TaskStatus::Running);
 }
 
-/// A04: a storage failure must not fake durability. The in-memory one-shot
+/// a storage failure must not fake durability. The in-memory one-shot
 /// behavior (report + teardown disconnect) completes normally, the failure is
 /// reported by the store, and no row is silently pretended into existence.
 #[tokio::test]
@@ -648,7 +648,7 @@ async fn storage_failure_preserves_legacy_behavior_and_diagnostics() {
     assert_ne!(report.status, TaskStatus::Completed);
 }
 
-/// A03 (sequenced): in the complete-vs-cancel race, only the SUCCESS winner
+/// in the complete-vs-cancel race, only the SUCCESS winner
 /// freezes a row; when cancel wins, nothing is written and the upstream path
 /// keeps the task resumable.
 #[tokio::test]
@@ -683,7 +683,7 @@ async fn complete_cancel_race_freezes_only_success_winner() {
     assert_eq!(store.write_count().await, 1);
 }
 
-/// A04 (UTF-8 cap): an oversized multi-byte result is frozen UTF-8-safe, within
+/// an oversized multi-byte result is frozen UTF-8-safe, within
 /// the cap, flagged truncated; a short result passes through unflagged.
 #[tokio::test]
 async fn oversized_chinese_result_is_frozen_truncated_and_valid_utf8() {
@@ -731,7 +731,6 @@ async fn oversized_chinese_result_is_frozen_truncated_and_valid_utf8() {
     assert_eq!(row.text, "short 结果");
 }
 
-/// Acceptance F2 regression (was `review_frozen_result_must_use_persistent_…`):
 /// the same parent CONVERSATION reconnects on a NEW parent connection while a
 /// stale cache entry from the OLD connection still sits in the completed map.
 /// The persistent-scope resolution must win — the frozen result stays readable

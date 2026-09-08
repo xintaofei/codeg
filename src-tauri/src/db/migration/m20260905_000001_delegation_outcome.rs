@@ -5,7 +5,7 @@ pub struct Migration;
 
 /// Immutable store of COMPLETED delegation results (`delegation_outcome`).
 ///
-/// PR1 scope (v2 design §4.1): one row per broker `task_id` (= the child row's
+/// One row per broker `task_id` (= the child row's
 /// `delegation_call_id`), written ONCE when the task's current execution wins
 /// the terminal race with a SUCCESSFUL outcome. Canceled / failed terminals are
 /// deliberately NEVER written here — a canceled task keeps the upstream

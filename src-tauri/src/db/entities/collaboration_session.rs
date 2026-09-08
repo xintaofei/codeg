@@ -1,7 +1,7 @@
 use sea_orm::entity::prelude::*;
 
-/// The exclusive write relationship over ONE delegation child conversation
-/// (v2 design §4.2). Created when the first rework turn for a frozen
+/// The exclusive write relationship over ONE delegation child conversation.
+/// Created when the first rework turn for a frozen
 /// completed source is accepted; from then until `close_session` the
 /// coordinator owns every write to the child session.
 ///

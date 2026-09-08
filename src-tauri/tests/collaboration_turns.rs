@@ -1,4 +1,4 @@
-//! PR2 Task 3: collaboration turn coordinator over REAL SQLite.
+//! Collaboration turn coordinator over real SQLite.
 //!
 //! Every scenario below drives the real coordinator against a real on-disk
 //! database (migrations included), with only the ACP boundary replaced by a
@@ -6,9 +6,8 @@
 //! outcomes, gates for deterministic interleavings, and storage-failure
 //! injection via actually dropping a table).
 //!
-//! Covers the v2 plan's Task-3 assertion table (idempotency, conflict,
-//! concurrency, ordinals, terminal-wins, close semantics), the startup
-//! recovery table (A13/A14), and the storage-failure contract (A15).
+//! Covers idempotency, conflicts, concurrent admission, ordinal ordering,
+//! terminal precedence, closing, startup recovery, and storage failures.
 
 // Monomorphized futures from the coordinator get deep; keep the compiler
 // comfortable.
@@ -678,8 +677,8 @@ async fn cancel_running_goes_cancel_requested_then_unknown_blocks() {
     assert_eq!(report.state, TurnState::CancelRequested);
     assert_eq!(h.runtime.counters().2, 1, "the agent must be asked to stop");
 
-    // No confirmation ever arrives; the hard-timeout path (Task 4 wires the
-    // timer) settles unknown and blocks the session.
+    // No confirmation ever arrives; the hard-timeout path settles unknown
+    // and blocks the session.
     let (turn, execution) = h
         .coordinator
         .execution_owner_by_turn(&ack.turn_id)
@@ -807,7 +806,7 @@ async fn cancel_during_dispatch_repeats_after_send_and_terminal_stays_single() {
 }
 
 // ---------------------------------------------------------------------------
-// Startup recovery (A13 / A14)
+// Startup recovery
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -911,7 +910,7 @@ async fn recovery_interrupts_undispatched_turns_and_blocks_unknowns() {
 }
 
 // ---------------------------------------------------------------------------
-// Storage failure (A15)
+// Storage failure
 // ---------------------------------------------------------------------------
 
 /// If the dispatching write fails after attach, NOTHING is sent and the
@@ -977,7 +976,7 @@ async fn storage_failure_at_admission_admits_nothing() {
 }
 
 // ---------------------------------------------------------------------------
-// Ownership (A21 pre-wiring)
+// Ownership
 // ---------------------------------------------------------------------------
 
 /// A foreign parent gets the same opaque rejection for its own and unknown
@@ -1001,7 +1000,6 @@ async fn cross_parent_access_is_opaque() {
     assert_eq!(ack.state, TurnState::Accepted);
 }
 
-/// Acceptance F4 regression (was `review_parent_cancel_during_prepare_…`):
 /// the parent connection goes away while the round is parked inside the
 /// strict attach (preparing). `cancel_by_parent_connection` must cancel the
 /// pending round so the drive NEVER sends; and for an already-running round
@@ -1382,7 +1380,7 @@ async fn parent_cancel_after_atomic_claim_before_dispatch_cancels_owner() {
     );
 }
 
-/// The attached-round half of F4: cancel delivery FAILURE means the outcome
+/// For an attached round, cancel delivery FAILURE means the outcome
 /// is unknowable — outcome_unknown + session blocked, never a fabricated
 /// canceled.
 #[tokio::test]
@@ -1421,7 +1419,6 @@ async fn parent_cancel_with_failing_delivery_settles_unknown() {
     assert_eq!(session.state, "blocked");
 }
 
-/// Acceptance F5 regression (was `review_restart_must_block_already_…`):
 /// a crash between the two pre-atomic writes could leave `outcome_unknown`
 /// under an `open` session; startup recovery must repair exactly that.
 #[tokio::test]
@@ -1493,7 +1490,7 @@ async fn restart_must_block_already_unknown_open_session() {
     assert_eq!(session_after.state, "blocked");
 }
 
-/// Acceptance F6: close and continue share the per-source admission lock, so
+/// Regression: close and continue share the per-source admission lock, so
 /// a close that passes its active-check cannot race a continue inserting a
 /// turn into a session that ends up closed. The observable serialization:
 /// closing twice concurrently is idempotent and a continue after close is
@@ -1557,7 +1554,6 @@ async fn close_and_continue_do_not_interleave() {
     }
 }
 
-/// Acceptance F10 regression (was `review_snapshot_must_keep_history_cursor…`):
 /// with 24 terminal rounds + 1 active round (25 total) and a 20-row page, the
 /// snapshot must report a cursor that still reaches rounds 21–24 — appending
 /// the active round to the page must NOT flip `next_after_ordinal` to None.
@@ -1656,11 +1652,10 @@ async fn snapshot_keeps_history_cursor_when_active_is_appended() {
 }
 
 // ---------------------------------------------------------------------------
-// Reacceptance regressions (R3/R4/R5/R6): boundary state and transport
-// failure injection mirroring the independent re-review's probes.
+// Boundary-state races and transport failure regressions.
 // ---------------------------------------------------------------------------
 
-/// R3: a cancel whose first report snapshot was taken while the round was
+/// A cancel whose first report snapshot was taken while the round was
 /// `preparing` must re-decide on the LATEST persisted state — the concurrent
 /// drive advancing preparing → dispatching → running before the CAS must
 /// land the round in `cancel_requested` (and ask the agent to stop), not
@@ -1757,7 +1752,7 @@ async fn review_cancel_must_redecide_after_preparing_snapshot_advances() {
     );
 }
 
-/// R4: a parent cleanup whose cancel ENQUEUED successfully (transport Ok)
+/// A parent cleanup whose cancel ENQUEUED successfully (transport Ok)
 /// but was never confirmed by any agent stop event must not report the round
 /// as cleanly canceled — enqueue is not a terminal. With the disconnect also
 /// failing (the execution demonstrably still owned), the round must sit at
@@ -1794,7 +1789,7 @@ async fn review_parent_cancel_enqueue_is_not_stop_confirmation() {
     );
 }
 
-/// R6: a close whose held-connection release FAILS must not have written
+/// A close whose held-connection release FAILS must not have written
 /// `closed` first — the write reservation (open/blocked session) has to
 /// survive the failed release so ordinary writers stay out while the
 /// platform still holds the connection.
@@ -1835,7 +1830,7 @@ async fn review_failed_close_must_keep_child_write_reservation() {
     );
 }
 
-/// R5: admission re-validates the session state inside the inserting
+/// Admission re-validates the session state inside the inserting
 /// transaction. After an interleaving `settle_unknown_and_block` commit
 /// (turn terminal + session blocked), a `continue` that already read the
 /// session as open must be refused — never insert a fresh round under the

@@ -1,16 +1,16 @@
-//! PR2 Task 2: strict session recovery over a FAKE ACP transport.
+//! Strict session recovery over a fake ACP transport.
 //!
 //! These tests drive the REAL establishment chain (`run_connection`:
 //! initialize → session/resume → session/load → session/new) against an
 //! in-memory fake agent that records every method call in order. The strict
 //! recovery guarantees under test:
 //!
-//! * A06 — a successful `session/resume` (or resume-fail → load-success)
+//! * a successful `session/resume` (or resume-fail → load-success)
 //!   attaches to the EXISTING external session id and delivers a typed
 //!   `Ready`; `session/new` is never sent.
-//! * A07 — resume and load both failing (or unsupported, or hanging) yields a
+//! * resume and load both failing (or unsupported, or hanging) yields a
 //!   typed failure, ZERO prompts, and still no `session/new`.
-//! * A08 — an early `Connected`/`SessionStarted` is not readiness: only the
+//! * an early `Connected`/`SessionStarted` is not readiness: only the
 //!   gate verdict (fired after config application succeeds) counts, and a
 //!   failed config application means no Ready and no prompt.
 //! * AllowNewFallback — the ordinary (non-strict) chain still legally falls
@@ -297,7 +297,7 @@ async fn fresh_dir(tag: &str) -> std::path::PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// A06: strict resume succeeds — initialize + session/resume, never new
+// strict resume succeeds — initialize + session/resume, never new
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -362,7 +362,7 @@ async fn strict_resume_failure_falls_back_to_load_then_readies() {
 }
 
 // ---------------------------------------------------------------------------
-// A07: strict failure — typed error, zero prompts, no session/new
+// strict failure — typed error, zero prompts, no session/new
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -484,7 +484,7 @@ async fn strict_attach_hanging_handshake_times_out_without_sending() {
 }
 
 // ---------------------------------------------------------------------------
-// A08: config application failure is NOT readiness
+// config application failure is NOT readiness
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

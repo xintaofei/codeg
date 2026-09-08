@@ -1,6 +1,6 @@
 use super::*;
 
-/// Reacceptance R1: a TurnComplete on a strict-attached connection that
+/// Regression: a TurnComplete on a strict-attached connection that
 /// was BOUND to the reserved child conversation (what
 /// `ConnectionManagerContinuationRuntime::bind_child_conversation` now
 /// guarantees before any prompt flows) must settle the registered
@@ -90,7 +90,7 @@ async fn turn_complete_on_bound_strict_connection_settles_the_collaboration_roun
         )
         .await;
 
-    // The strict connection, BOUND to the child row (the R1 latch), with
+    // The strict connection, BOUND to the child row, with
     // the round's last assistant text on its state.
     let mgr = ConnectionManager::new();
     {
@@ -118,7 +118,7 @@ async fn turn_complete_on_bound_strict_connection_settles_the_collaboration_roun
         .unwrap();
     assert_eq!(
         settled.state, "completed",
-        "the bound connection's terminal must settle the round (R1)"
+        "the bound connection's terminal must settle the round"
     );
     assert_eq!(settled.result_text.as_deref(), Some("REWORK RESULT"));
     // The child row itself advanced to PendingReview like any turn.

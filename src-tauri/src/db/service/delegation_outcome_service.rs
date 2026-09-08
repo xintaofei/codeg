@@ -1,6 +1,6 @@
 //! Immutable storage for COMPLETED delegation results.
 //!
-//! Contract (v2 design §4.1):
+//! Contract:
 //! * `insert_once` is first-writer-wins on the `task_id` primary key. A second
 //!   write of the IDENTICAL success result is idempotent (`AlreadyIdentical`);
 //!   a DIFFERENT success result never overwrites the winner (`Conflict`).

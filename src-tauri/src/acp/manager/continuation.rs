@@ -38,8 +38,7 @@ impl ConnectionManager {
     /// write reservation: the coordinator IS the reservation's owner,
     /// driving the reserved child through its controlled rounds. Every
     /// ordinary entry (`send_prompt`, `send_prompt_linked*`) keeps the check,
-    /// so the coordinator↔ordinary boundary stays explicit (reacceptance
-    /// R8).
+    /// so the coordinator↔ordinary boundary stays explicit.
     pub async fn send_prompt_for_continuation(
         &self,
         db: &DatabaseConnection,
@@ -89,7 +88,7 @@ impl ConnectionManager {
 /// to the REAL connection world — the manager's strict-attach entry, the
 /// child connection's prompt channel, and the manager's cancel/disconnect.
 /// This is the piece that turns the coordinator from a tested state machine
-/// into the actual rework loop (acceptance F3).
+/// into the actual rework loop.
 pub struct ConnectionManagerContinuationRuntime {
     pub manager: Arc<ConnectionManager>,
     pub db: Arc<crate::db::AppDatabase>,
@@ -104,7 +103,7 @@ pub const STRICT_ATTACH_TIMEOUT: std::time::Duration = std::time::Duration::from
 
 impl ConnectionManagerContinuationRuntime {
     /// Bind a strict-attached connection to the child conversation row its
-    /// collaboration session reserves (reacceptance R1). Emits the same
+    /// collaboration session reserves. Emits the same
     /// `ConversationLinked` event `send_prompt_linked`'s adopt-a-row branch
     /// does, which latches `state.conversation_id`/`folder_id` (what the
     /// lifecycle's TurnComplete settlement routing reads) and registers the
@@ -217,7 +216,7 @@ impl crate::acp::delegation::continuation::ContinuationRuntime
             )
             .await?;
         // Bind the attached connection to the reserved child conversation
-        // row BEFORE any prompt flows (reacceptance R1): a strict-attached
+        // row BEFORE any prompt flows: a strict-attached
         // connection starts with no conversation identity, and the
         // lifecycle's TurnComplete routing bails on that — the round would
         // stay `running` forever even though the agent finished. A failed
@@ -246,7 +245,7 @@ impl crate::acp::delegation::continuation::ContinuationRuntime
         // The coordinator is the ONLY writer for a reserved child session:
         // this internal path deliberately bypasses the session write
         // reservation via the manager's explicit continuation entry (the
-        // reservation exists to stop everyone ELSE — reacceptance R8).
+        // reservation exists to stop everyone ELSE).
         self.manager
             .send_prompt_for_continuation(
                 &self.db.conn,

@@ -1,4 +1,4 @@
-//! DB access for collaboration sessions and turns (v2 design §4.2/§4.3).
+//! DB access for collaboration sessions and turns.
 //!
 //! Every state transition the coordinator performs is a guarded UPDATE
 //! (current state AND owning execution id in the WHERE clause) — a CAS, not a
@@ -186,7 +186,7 @@ pub enum AdmitTurnError {
 }
 
 /// Insert the accepted turn with the admission preconditions re-validated
-/// INSIDE the same transaction (reacceptance R5): the session must still be
+/// INSIDE the same transaction: the session must still be
 /// `open` and hold no active turn at insert time. This closes the
 /// interleaving where `continue_turn` reads the session as `open`, a racing
 /// `settle_unknown_and_block` commit lands (turn terminal + session
@@ -334,8 +334,8 @@ pub async fn active_turn<C: ConnectionTrait>(
         .map_err(DbError::from)
 }
 
-/// The outcome-unknown settle, ATOMICALLY with the session blocking
-/// (acceptance F5): writing the turn terminal and the session `blocked`
+/// The outcome-unknown settle, ATOMICALLY with the session blocking:
+/// writing the turn terminal and the session `blocked`
 /// state in ONE transaction closes the window where a crash (or a failed
 /// second write) leaves an `outcome_unknown` turn under an `open` session —
 /// a state startup recovery would never repair, because recovery only scans
@@ -516,7 +516,7 @@ pub async fn settle_turn<C: ConnectionTrait + TransactionTrait>(
     Ok(applied)
 }
 
-/// Startup recovery scan (v2 design §5.2). Returns the recovered turns:
+/// Startup recovery scan. Returns the recovered turns:
 /// * accepted / preparing → `interrupted` (host restarted before dispatch),
 /// * dispatching / running / cancel_requested → `outcome_unknown` AND the
 ///   session becomes `blocked` (a send MAY have happened; the host can't
@@ -598,7 +598,7 @@ pub async fn recover_on_startup<C: ConnectionTrait + TransactionTrait>(
         }
     }
 
-    // Repair legacy gaps (acceptance F5): a turn already `outcome_unknown`
+    // Repair legacy gaps: a turn already `outcome_unknown`
     // whose session is still `open` — the pre-atomic window — must block the
     // session too, or it would accept new rounds forever despite the unknown.
     let unknown_turns = collaboration_turn::Entity::find()

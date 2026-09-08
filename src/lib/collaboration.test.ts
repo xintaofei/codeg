@@ -3,7 +3,7 @@
  *
  * The "frozen" fixtures live in `src-tauri/tests/fixtures/collaboration/` —
  * they are ALSO loaded by the Rust contract test, so the two languages are
- * pinned to byte-identical wire shapes (v2 design §7 / acceptance A26).
+ * pinned to byte-identical wire shapes.
  */
 
 import { describe, expect, it } from "vitest"

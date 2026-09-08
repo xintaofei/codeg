@@ -1,5 +1,5 @@
 /**
- * CollaborationTurnList behavior tests (v2 acceptance A24/A25): the
+ * CollaborationTurnList behavior tests: the
  * read-only list must keep newer turn states (version ratchet), never let
  * a stale response overwrite a newer one, include the active round across
  * polls, stop polling when the drawer closes, and never offer any input
@@ -339,9 +339,9 @@ describe("CollaborationTurnList", () => {
   })
 })
 
-/** Acceptance F11 regression: the FIRST load must register the version
+/** Regression: the FIRST load must register the version
  *  watermark, so a stale running-v1 poll can never roll a completed-v2 view
- *  back (was `initial completed version 2 must reject the first stale…`). */
+ *  back. */
 it("initial completed v2 rejects the first stale v1 poll", async () => {
   mockGetCollaborationSession.mockResolvedValue({
     schema_version: 1,
@@ -386,7 +386,7 @@ it("initial completed v2 rejects the first stale v1 poll", async () => {
   })
 })
 
-/** Acceptance F12 regression: a loaded history page must survive the next
+/** Regression: a loaded history page must survive the next
  *  1 Hz poll (the poll re-reads only the first page). */
 it("a loaded history page survives the next poll", async () => {
   const mkTurn = (
@@ -456,10 +456,10 @@ it("a loaded history page survives the next poll", async () => {
   })
 })
 
-// Reacceptance R9/R10: a projected active round that reaches its terminal
+// A projected active round that reaches its terminal
 // beyond the first page's window, and a history page that also carries the
 // projected active round.
-describe("CollaborationTurnList reacceptance repairs", () => {
+describe("CollaborationTurnList pagination reconciliation", () => {
   function snapshotFor(turns: TurnReport[], cursor: number | null = null) {
     return {
       schema_version: 1 as const,
@@ -485,7 +485,7 @@ describe("CollaborationTurnList reacceptance repairs", () => {
       ...extra,
     })
 
-  it("settles a previously projected active round that finished beyond page one (R9)", async () => {
+  it("settles a previously projected active round that finished beyond page one", async () => {
     // Page 1 (1-20) plus the projected active round 25; once 25 completes it
     // is no longer appended to page 1, so only a follow-up fetch that covers
     // it can settle the rendered state.
@@ -513,7 +513,7 @@ describe("CollaborationTurnList reacceptance repairs", () => {
     expect(screen.queryAllByText("Completed")).toHaveLength(21)
   })
 
-  it("does not duplicate a projected active turn when its page is loaded (R10)", async () => {
+  it("does not duplicate a projected active turn when its page is loaded", async () => {
     const page = Array.from({ length: 20 }, (_, i) =>
       mkTurn(i + 1, { state: "completed" as const })
     )

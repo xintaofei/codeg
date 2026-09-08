@@ -3,8 +3,7 @@ use sea_orm_migration::prelude::*;
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
-/// Collaboration sessions and turns for the continuous-delegation MVP
-/// (v2 design §4.2 / §4.3).
+/// Collaboration sessions and turns for the continuous-delegation MVP.
 ///
 /// `collaboration_session` — the exclusive write relationship over ONE child
 /// conversation, created when the first rework turn for a frozen completed

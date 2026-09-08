@@ -86,7 +86,7 @@ fn frozen_report_projects_the_original_bounded_text() {
     assert_eq!(report.blocked_on, None);
 }
 
-/// Acceptance F1 regression (was `review_late_old_completion_…`): a
+/// Regression: a
 /// canceled task resumed under the SAME id on a NEW connection must not
 /// be consumed by the OLD connection's late completion. The late
 /// terminal is rejected at the pending lock; the resumed execution keeps
@@ -161,7 +161,7 @@ async fn late_old_completion_must_not_freeze_resumed_execution() {
     assert_eq!(status.text.as_deref(), Some("NEW C2 RESULT"));
 }
 
-/// Reacceptance R2 regression: while a resumed delegation is still in its
+/// Regression: while a resumed delegation is still in its
 /// SETUP phase (prompt sent, park parked at the metadata write — the
 /// setup reservation is live), the CURRENT connection's early completion
 /// is buffered, and a LATE terminal from the OLD (superseded) connection

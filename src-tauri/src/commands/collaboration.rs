@@ -1,4 +1,4 @@
-//! Read-only collaboration-session snapshot (v2 design §6): shared core for
+//! Read-only collaboration-session snapshot: shared core for
 //! the Tauri command and the HTTP handler. UI reads NEVER operate on the
 //! agent — they only project stored turns through the coordinator's scoped
 //! queries.
@@ -8,7 +8,7 @@ use crate::acp::delegation::continuation::{
 };
 use crate::app_error::AppCommandError;
 
-/// Pagination caps (v2 design §6): default 20, hard ceiling 100.
+/// Pagination caps: default 20, hard ceiling 100.
 pub const COLLAB_SNAPSHOT_DEFAULT_LIMIT: u32 = 20;
 pub const COLLAB_SNAPSHOT_MAX_LIMIT: u32 = 100;
 
@@ -64,8 +64,8 @@ pub async fn get_collaboration_session_core(
         .map_err(app_error)?
         .unwrap_or_default();
 
-    // The history cursor is derived from the HISTORICAL page ALONE
-    // (acceptance F10): appending the active round below must not change
+    // The history cursor is derived from the HISTORICAL page ALONE:
+    // appending the active round below must not change
     // whether more history exists, or pages 21..N become unreachable.
     let next_after_ordinal = if turns_page.len() as u64 == limit as u64 {
         turns_page.last().map(|t| t.ordinal)

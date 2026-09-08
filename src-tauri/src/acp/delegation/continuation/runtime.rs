@@ -5,7 +5,7 @@
 //! strict attach, one prompt send, cancel, release, blocking-prompt probe —
 //! goes through this trait, so tests can drive the full turn state machine
 //! against a controllable double with counters and fault injection, while
-//! production wires the real `ConnectionManager` strict entry (Task 4).
+//! production wires the real `ConnectionManager` strict entry.
 
 use async_trait::async_trait;
 
@@ -54,7 +54,7 @@ pub trait ContinuationRuntime: Send + Sync {
     /// child inherits its emitter / owner window like any delegation spawn.
     /// `child_conversation_id` is the persistent child conversation the
     /// session row reserves: the runtime MUST bind the attached connection
-    /// to that row before any prompt flows (reacceptance R1) — without the
+    /// to that row before any prompt flows — without the
     /// binding, a completing turn carries no conversation id and the
     /// lifecycle's settlement routing never fires.
     /// The returned connection id is bound to `(turn_id, execution_id)`; any

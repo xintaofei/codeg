@@ -472,7 +472,7 @@ impl PendingInner {
     /// pre-registration races.
     ///
     /// The buffer entry additionally validates the terminal's CONNECTION
-    /// identity against the setup's reserved child (reacceptance R2): a late
+    /// identity against the setup's reserved child: a late
     /// completion from a superseded connection (canceled C1 racing a resumed
     /// C2 that reuses the task id) must neither enter the buffer NOR evict a
     /// valid buffered result from the current connection — otherwise the
@@ -1489,8 +1489,8 @@ pub enum CompleteCallResult {
     RejectedStale,
     /// No running task and no compatible buffer: the terminal arrived
     /// mid-setup from a connection the setup does NOT reserve — a superseded
-    /// execution's late result, dropped at the buffer entry (reacceptance
-    /// R2). Like `RejectedStale`, it must not flip the child row's status.
+    /// execution's late result, dropped at the buffer entry. Like
+    /// `RejectedStale`, it must not flip the child row's status.
     DroppedStale,
 }
 
@@ -3122,7 +3122,7 @@ impl DelegationBroker {
                     } else {
                         // A setup exists for this id but reserves a DIFFERENT
                         // child connection: a superseded execution's late
-                        // terminal, dropped at the buffer entry (R2). It
+                        // terminal, dropped at the buffer entry. It
                         // resolved nothing here either.
                         return CompleteCallResult::DroppedStale;
                     }

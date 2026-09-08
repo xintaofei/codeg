@@ -31,7 +31,7 @@ use crate::db::AppDatabase;
 /// confirmation before the host declares the outcome UNKNOWABLE (settles
 /// `outcome_unknown` and blocks the session). Without this deadline a lost
 /// confirmation would wedge the session forever: a `cancel_requested` turn
-/// is active, and close refuses active sessions (acceptance F7).
+/// is active, and close refuses active sessions.
 pub const CANCEL_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A parent identity resolved from a TRUSTED context (the MCP listener's
@@ -100,12 +100,11 @@ pub struct ContinuationCoordinator {
     /// parent_connection_id → rounds accepted but NOT yet attached
     /// (accepted/preparing). The parent cleanup path cancels these so a
     /// parent disconnecting mid-prepare can never let the drive attach +
-    /// send afterwards (acceptance F4).
+    /// send afterwards.
     parent_pending: Arc<Mutex<HashMap<String, Vec<PendingRound>>>>,
     /// Per-source-task admission locks: two concurrent continue_turn calls
     /// for the same source serialize here before touching the DB. `close`
-    /// takes the SAME lock so admission and closing cannot interleave
-    /// (acceptance F6).
+    /// takes the SAME lock so admission and closing cannot interleave.
     admission_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     /// Woken on every settle so bounded `get_turn` waits re-check promptly.
     settle_notify: Arc<Notify>,
@@ -226,7 +225,7 @@ impl ContinuationCoordinator {
         *self.enabled.read().await
     }
 
-    /// The execution owning a connection, for lifecycle routing (Task 4):
+    /// The execution owning a connection, for lifecycle routing:
     /// `(turn_id, execution_id)` when the connection is currently driving a
     /// collaboration turn.
     pub async fn execution_owner(
@@ -407,7 +406,7 @@ impl ContinuationCoordinator {
             ));
         };
         // A frozen result without a verifiable binding is never continuable —
-        // PR1 stores null exactly for that case, and guessing defaults is
+        // The frozen outcome stores null in that case, and guessing defaults is
         // forbidden by design.
         let binding = outcome
             .resume_binding_json
@@ -551,7 +550,7 @@ impl ContinuationCoordinator {
             .map_err(|e| { tracing::warn!("[continuation] storage op failed: {e}"); storage_unavailable() })?,
         };
 
-        // Transactional admission (reacceptance R5): session state and the
+        // Transactional admission: session state and the
         // single-active invariant are re-validated in the SAME transaction
         // that inserts the turn, so an interleaving unknown-settle (turn
         // terminal + session blocked) can never slip between the checks and
@@ -695,7 +694,7 @@ impl ContinuationCoordinator {
 
         // Strict attach — the ONLY path into the child session. The runtime
         // binds the attached connection to the reserved child conversation
-        // row (R1) so lifecycle terminals can settle this round.
+        // row so lifecycle terminals can settle this round.
         #[cfg(any(test, feature = "test-utils"))]
         self.wait_drive_gate_for_test("before_attach").await;
         let pending_claim = self
@@ -1024,11 +1023,11 @@ impl ContinuationCoordinator {
 
     /// A cancel-without-confirmation timeout / hard disconnect: the outcome
     /// is UNKNOWABLE — settle `outcome_unknown` and block the session IN ONE
-    /// TRANSACTION (acceptance F5), so no admission can slip between and a
+    /// TRANSACTION, so no admission can slip between and a
     /// crash cannot leave unknown+open.
     ///
-    /// The settle also takes the source's per-source admission lock
-    /// (reacceptance R5): unknown settlement and `continue_turn` admission
+    /// The settle also takes the source's per-source admission lock:
+    /// unknown settlement and `continue_turn` admission
     /// share one serialization boundary, so an admission that already read
     /// the session as `open` cannot insert a fresh round after this write
     /// commits (and the transactional re-validation inside `admit_turn`
@@ -1150,8 +1149,8 @@ impl ContinuationCoordinator {
     }
 
     /// Release a round's connection at terminal/close. The ownership record
-    /// is removed ONLY after the disconnect actually succeeded (acceptance
-    /// F8): a failed disconnect leaves the owner entry in place with a
+    /// is removed ONLY after the disconnect actually succeeded: a failed
+    /// disconnect leaves the owner entry in place with a
     /// warning, so `close_session` can still see — and report — the resource
     /// instead of claiming a release that never happened.
     async fn release_connection(&self, turn_id: &str, connection_id: &str) {
@@ -1441,8 +1440,8 @@ impl ContinuationCoordinator {
             ));
         }
         if session.state != "closed" {
-            // Take the SAME per-source admission lock `continue_turn` uses
-            // (acceptance F6): a continue admitted between close's active
+            // Take the SAME per-source admission lock `continue_turn` uses:
+            // a continue admitted between close's active
             // check and its write would otherwise produce a CLOSED session
             // with a LIVE turn — the one interleaving the write reservation
             // must never allow.
@@ -1493,7 +1492,7 @@ impl ContinuationCoordinator {
                     )
                     .with_ids(Some(session_id), None));
                 }
-                // Release BEFORE writing closed (reacceptance R6): the write
+                // Release BEFORE writing closed: the write
                 // reservation is what keeps ordinary writers out of the child
                 // while the platform still holds its connection. Writing
                 // `closed` first and failing the release afterwards would
@@ -1589,7 +1588,7 @@ impl ContinuationCoordinator {
         }
     }
 
-    /// Read-only turn listing for the UI projection (Task 5): turns ordered
+    /// Read-only turn listing for the UI projection: turns ordered
     /// by ordinal after `after_ordinal`, scoped to the owning parent.
     pub async fn list_turns_for_session(
         &self,
@@ -1648,8 +1647,7 @@ impl ContinuationCoordinator {
     ///   terminal requires the agent's own stop event (via the lifecycle);
     ///   an undeliverable stop or an expired deadline settles
     ///   `outcome_unknown` and blocks the session. Enqueuing the cancel
-    ///   command is never treated as the agent's stop confirmation
-    ///   (reacceptance R4).
+    ///   command is never treated as the agent's stop confirmation.
     pub async fn cancel_by_parent_connection(&self, parent_connection_id: &str) {
         // Snapshot both ownership registries atomically, using the same lock
         // order as the drive's handoff. No attach can disappear between the
@@ -1744,7 +1742,7 @@ impl ContinuationCoordinator {
         })
     }
 
-    /// The reservation check ordinary write paths consult (Task 4 wiring):
+    /// The reservation check ordinary write paths consult:
     /// is this child conversation currently reserved by an open/blocked
     /// collaboration session?
     pub async fn child_is_reserved(&self, child_conversation_id: i32) -> bool {

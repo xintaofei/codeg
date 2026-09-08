@@ -482,7 +482,7 @@ async fn forward_turn_complete_to_broker(
         CompleteCallResult::Resolved | CompleteCallResult::Buffered => TerminalForward::Proceed,
         // Both stale flavors rejected the terminal against the CURRENT
         // execution/connection — the row's status must not be flipped by a
-        // superseded event either (R2: also at the mid-setup buffer entry).
+        // superseded event either, including at the mid-setup buffer entry.
         CompleteCallResult::RejectedStale | CompleteCallResult::DroppedStale => {
             TerminalForward::StaleIgnored
         }

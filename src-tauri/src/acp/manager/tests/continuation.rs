@@ -271,7 +271,7 @@ async fn pid_zero_while_driver_can_spawn_times_out_retains_and_retries() {
     assert!(mgr.resources.get(connection_id).await.is_none());
 }
 
-/// Reacceptance R7: reclaiming a real stuck transport must force its whole
+/// Regression: reclaiming a real stuck transport must force its whole
 /// process tree, then wait for both the vendored owned-Child reaper callback
 /// and the real connection driver guard before reporting success.
 /// Unix-only (relies on sh / kill(2)).
@@ -357,12 +357,12 @@ async fn disconnect_and_reclaim_kills_a_stuck_process_tree_and_confirms_exit() {
     assert_eq!(mgr.resources.len().await, 0, "confirmed resource retires");
 }
 
-/// Reacceptance R8 + R1: once a child conversation is reserved by an
+/// Regression: once a child conversation is reserved by an
 /// open collaboration session, EVERY ordinary prompt entry refuses it —
 /// including the already-linked path with the conversation id OMITTED
 /// (previously the bypass) — while the continuation runtime's explicit
 /// privileged send still flows, after binding the strict connection to
-/// the child row (the R1 latch the lifecycle's settlement routing reads)
+/// the child row that the lifecycle settlement routing reads
 /// and flipping the row to InProgress.
 #[tokio::test]
 async fn reserved_child_refuses_ordinary_entries_but_continuation_send_flows() {
@@ -436,7 +436,7 @@ async fn reserved_child_refuses_ordinary_entries_but_continuation_send_flows() {
             text: "ordinary write".into(),
         }]
     };
-    // Plain entry with the id omitted: previously the bypass (R8).
+    // Plain entry with the id omitted must also enforce the reservation.
     let err = mgr
         .send_prompt("ordinary-conn", blocks())
         .await
@@ -490,7 +490,7 @@ async fn reserved_child_refuses_ordinary_entries_but_continuation_send_flows() {
     assert!(ordinary_rx.try_recv().is_err());
 
     // The continuation runtime: bind a fresh strict connection to the
-    // child row (R1), then the privileged send flows.
+    // child row, then the privileged send flows.
     let mgr_arc = Arc::new(mgr);
     let runtime = ConnectionManagerContinuationRuntime {
         manager: mgr_arc.clone(),
@@ -516,7 +516,7 @@ async fn reserved_child_refuses_ordinary_entries_but_continuation_send_flows() {
         assert_eq!(
             state.read().await.conversation_id,
             Some(cid),
-            "the bind latched the conversation identity (R1)"
+            "the bind latched the conversation identity"
         );
     }
     // A drifted row (wrong external session) must refuse the bind.

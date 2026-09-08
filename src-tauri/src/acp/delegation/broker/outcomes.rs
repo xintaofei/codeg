@@ -14,7 +14,7 @@ use crate::models::AgentType;
 
 use super::{cap_completed_text, DelegationBroker};
 
-/// Immutable store of COMPLETED delegation results (v2 design §4.1). One row
+/// Immutable store of COMPLETED delegation results. One row
 /// per `task_id`, written when the task's current execution wins the terminal
 /// race with a SUCCESSFUL outcome. Canceled/failed terminals are deliberately
 /// never written: a canceled task keeps the upstream `resume_delegation` path

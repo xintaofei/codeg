@@ -11,7 +11,7 @@ use crate::web::event_bridge::EventEmitter;
 use super::ConnectionManager;
 
 impl ConnectionManager {
-    /// Forcibly reclaim one stuck connection (reacceptance R7): the graceful
+    /// Forcibly reclaim one stuck connection: the graceful
     /// `Disconnect` command is only consumed by the connection's conversation
     /// loop, so a driver still parked in the resume/load handshake
     /// (`block_task().await`) never reads it — plain [`Self::disconnect`]
@@ -121,7 +121,7 @@ impl ConnectionManager {
         Ok(())
     }
 
-    /// Strictly attach an EXISTING external agent session (v2 design §5.3).
+    /// Strictly attach an EXISTING external agent session.
     ///
     /// Unlike [`Self::spawn_agent`] this entry:
     /// * verifies the recorded resume binding BEFORE any agent process starts
@@ -335,8 +335,8 @@ impl ConnectionManager {
                 // so the reclaim must go through the forced ladder —
                 // graceful command, grace window, hard `kill_tree`, confirmed
                 // exit — or the agent process would outlive its registration
-                // and block every future strict resume of the same session
-                // (acceptance F9, reacceptance R7). A late Ready lands on a
+                // and block every future strict resume of the same session.
+                // A late Ready lands on a
                 // dead connection and is harmless.
                 let primary = StrictAttachError::new(
                     StrictAttachErrorCode::ResumeTimeout,

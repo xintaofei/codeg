@@ -2471,7 +2471,7 @@ pub(crate) async fn spawn_agent_connection_with_transport_managed<
                 inj.tokens.revoke(&tok).await;
             }
             // Collaboration rounds owned by THIS parent end with it: cancel
-            // their active/preparing turns and settle them (acceptedance F4).
+            // their active/preparing turns and settle them.
             // Runs BEFORE the one-shot cascade so preparing rounds are
             // canceled before they can attach+send.
             if let Some(collab) = inj.collaboration.as_ref() {
