@@ -7,8 +7,10 @@ use crate::web::event_bridge::{emit_event, EventEmitter};
 
 use super::downloads::{BrowserDownload, DOWNLOAD_EVENT};
 use super::types::{
-    BrowserClosedPayload, BrowserOpenRequestPayload, BrowserPopupPayload, BrowserShortcutPayload,
-    BrowserTabState, CLOSED_EVENT, OPEN_REQUEST_EVENT, POPUP_EVENT, SHORTCUT_EVENT, STATE_EVENT,
+    BrowserClosedPayload, BrowserNavigationBlockedPayload, BrowserOpenRequestPayload,
+    BrowserPopupPayload, BrowserShortcutPayload, BrowserTabState, NavigationBlockReason,
+    CLOSED_EVENT, NAVIGATION_BLOCKED_EVENT, OPEN_REQUEST_EVENT, POPUP_EVENT, SHORTCUT_EVENT,
+    STATE_EVENT,
 };
 
 pub fn emit_state(app: &AppHandle, state: &BrowserTabState) {
@@ -47,4 +49,16 @@ pub fn emit_shortcut(app: &AppHandle, tab_id: &str, shortcut: &str) {
 
 pub fn emit_download(app: &AppHandle, download: &BrowserDownload) {
     emit_event(&EventEmitter::Tauri(app.clone()), DOWNLOAD_EVENT, download);
+}
+
+pub fn emit_navigation_blocked(app: &AppHandle, tab_id: &str, url: &str, reason: NavigationBlockReason) {
+    emit_event(
+        &EventEmitter::Tauri(app.clone()),
+        NAVIGATION_BLOCKED_EVENT,
+        BrowserNavigationBlockedPayload {
+            tab_id: tab_id.to_string(),
+            url: url.to_string(),
+            reason,
+        },
+    );
 }

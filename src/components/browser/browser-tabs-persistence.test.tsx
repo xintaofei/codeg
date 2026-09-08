@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
         isolatedStorage: true,
         proxy: { url: null, applies: "live", reason: null },
         downloadsDir: "/Users/dev/Downloads",
+        policy: { enabled: true, managedRules: [], managedSource: null },
       })
   ),
   restoreBrowserTabs: vi.fn(),
@@ -156,6 +157,7 @@ describe("BrowserTabsPersistence", () => {
         isolatedStorage: true,
         proxy: { url: null, applies: "live", reason: null },
         downloadsDir: "/Users/dev/Downloads",
+        policy: { enabled: true, managedRules: [], managedSource: null },
       })
       await Promise.resolve()
     })
@@ -193,6 +195,7 @@ describe("BrowserTabsPersistence", () => {
       isolatedStorage: false,
       proxy: { url: null, applies: "unsupported", reason: null },
       downloadsDir: "/Users/dev/Downloads",
+      policy: { enabled: true, managedRules: [], managedSource: null },
     })
     render(<BrowserTabsPersistence />)
     await act(async () => {

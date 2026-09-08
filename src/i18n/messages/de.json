@@ -4764,7 +4764,21 @@
     "suspendTitle": "Hintergrund-Tabs entladen",
     "suspendHint": "Gibt den Speicher von Browser-Tabs frei, die 30 Minuten im Hintergrund waren. Beim Zurückwechseln werden sie neu geladen; Scrollposition und Verlauf gehen verloren.",
     "downloadsTitle": "Downloads",
-    "downloadsHint": "Von einer Seite geladene Dateien werden in {dir} gespeichert. Nichts wird automatisch geöffnet, und eine vorhandene Datei wird nie ersetzt."
+    "downloadsHint": "Von einer Seite geladene Dateien werden in {dir} gespeichert. Nichts wird automatisch geöffnet, und eine vorhandene Datei wird nie ersetzt.",
+    "rulesTitle": "Site-Regeln",
+    "rulesHint": "Pro Site: immer der integrierte Browser, immer der Systembrowser oder blockieren. Muster sind ein Hostname, *.example.com oder *, optional mit :Port; der spezifischste Treffer gewinnt.",
+    "rulePatternPlaceholder": "example.com oder *.example.com",
+    "rulePatternLabel": "Site-Muster",
+    "ruleActionLabel": "Aktion",
+    "ruleActionFor": "Aktion für {pattern}",
+    "ruleAdd": "Hinzufügen",
+    "ruleRemove": "Regel entfernen",
+    "ruleActionBlock": "Blockieren",
+    "ruleManaged": "Von der Administration festgelegt",
+    "ruleInvalid": "Kein gültiges Muster",
+    "ruleDuplicate": "Für dieses Muster gibt es bereits eine Regel",
+    "rulesEmpty": "Noch keine Regeln.",
+    "managedDisabled": "Die Richtlinie der Administration hat den integrierten Browser abgeschaltet; Links öffnen sich im Systembrowser."
   },
   "LogsSettings": {
     "loading": "Wird geladen…",
@@ -5829,7 +5843,13 @@
       "openInSystem": "Im Systembrowser öffnen",
       "ownedWindow": "Diese Seite wird in einem eigenen Fenster angezeigt.",
       "ownedWindowShow": "Fenster anzeigen",
-      "remoteBanner": "Geöffnet über {host}"
+      "remoteBanner": "Geöffnet über {host}",
+      "navigationBlocked": "Navigation blockiert: {host}",
+      "navigationBlockedRule": "durch eine Site-Regel blockiert",
+      "navigationBlockedScheme": "diese Adressart kann hier nicht geöffnet werden",
+      "navigationBlockedOpenSystem": "Mit System-App öffnen",
+      "errorBlockedHint": "Eine Site-Regel blockiert diese Adresse. Regeln werden unter Einstellungen → Integrierter Browser verwaltet.",
+      "popupDeniedBlockedHost": "durch eine Site-Regel blockiert"
     },
     "tab": {
       "untitled": "Neuer Tab"
@@ -5857,7 +5877,8 @@
     "toast": {
       "firstOpen": "Im integrierten Browser geöffnet",
       "firstOpenHint": "⌘/Strg+Klick auf einen Link öffnet ihn stattdessen im Systembrowser. Die Voreinstellung lässt sich in den Einstellungen ändern.",
-      "useSystemAlways": "Immer den Systembrowser verwenden"
+      "useSystemAlways": "Immer den Systembrowser verwenden",
+      "blockedHost": "Durch eine Site-Regel blockiert: {host}"
     },
     "link": {
       "openBuiltin": "Im integrierten Browser öffnen",

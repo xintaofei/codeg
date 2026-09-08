@@ -4764,7 +4764,21 @@
     "suspendTitle": "Unload background tabs",
     "suspendHint": "Release the memory of browser tabs that stay in the background for 30 minutes. They load again when you switch back; scroll position and history are lost.",
     "downloadsTitle": "Downloads",
-    "downloadsHint": "Files a page downloads are saved to {dir}. Nothing is opened automatically, and an existing file is never replaced."
+    "downloadsHint": "Files a page downloads are saved to {dir}. Nothing is opened automatically, and an existing file is never replaced.",
+    "rulesTitle": "Site rules",
+    "rulesHint": "Per site: always the built-in browser, always the system browser, or block. Patterns are a hostname, *.example.com or *, with an optional :port; the most specific match wins.",
+    "rulePatternPlaceholder": "example.com or *.example.com",
+    "rulePatternLabel": "Site pattern",
+    "ruleActionLabel": "Action",
+    "ruleActionFor": "Action for {pattern}",
+    "ruleAdd": "Add",
+    "ruleRemove": "Remove rule",
+    "ruleActionBlock": "Block",
+    "ruleManaged": "Set by your administrator",
+    "ruleInvalid": "Not a valid pattern",
+    "ruleDuplicate": "There is already a rule for this pattern",
+    "rulesEmpty": "No rules yet.",
+    "managedDisabled": "The built-in browser is turned off by your administrator's policy; links open in the system browser."
   },
   "LogsSettings": {
     "loading": "Loading…",
@@ -5829,7 +5843,13 @@
       "openInSystem": "Open in system browser",
       "ownedWindow": "This page is shown in its own window.",
       "ownedWindowShow": "Show window",
-      "remoteBanner": "Opened through {host}"
+      "remoteBanner": "Opened through {host}",
+      "navigationBlocked": "Navigation blocked: {host}",
+      "navigationBlockedRule": "blocked by a site rule",
+      "navigationBlockedScheme": "address type not allowed here",
+      "navigationBlockedOpenSystem": "Open with system app",
+      "errorBlockedHint": "A site rule blocks this address. Rules are managed in Settings → Built-in browser.",
+      "popupDeniedBlockedHost": "blocked by a site rule"
     },
     "tab": {
       "untitled": "New tab"
@@ -5857,7 +5877,8 @@
     "toast": {
       "firstOpen": "Opened in the built-in browser",
       "firstOpenHint": "⌘/Ctrl-click a link to open it in your system browser instead. Change the default in Settings.",
-      "useSystemAlways": "Always use system browser"
+      "useSystemAlways": "Always use system browser",
+      "blockedHost": "Blocked by a site rule: {host}"
     },
     "link": {
       "openBuiltin": "Open in built-in browser",

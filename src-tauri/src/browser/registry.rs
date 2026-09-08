@@ -45,6 +45,16 @@ pub struct BrowserTab {
     /// rather than on the URL keeps a redirected download working while a
     /// later, genuinely failing navigation still reports itself.
     pub download_seq: Option<u64>,
+    /// Bumped by every `set_visible` request. A hide that first captures a
+    /// freeze frame is asynchronous; when it comes back it applies only if no
+    /// newer request has been made meanwhile — otherwise a quick close of the
+    /// overlay would be followed by a stale hide.
+    pub visible_seq: u64,
+    /// URL of the main-frame navigation the engine reported as started and
+    /// has neither committed nor failed yet (platforms with a navigation
+    /// delegate only). Lets a commit of `about:blank` in its place be
+    /// recognised for what it is: a load the engine refused silently.
+    pub provisional_url: Option<String>,
     pub gestures: VecDeque<GestureRecord>,
 }
 
@@ -64,6 +74,8 @@ impl BrowserTab {
             devtools,
             load_seq: 0,
             download_seq: None,
+            visible_seq: 0,
+            provisional_url: None,
             gestures: VecDeque::with_capacity(GESTURE_RING_CAPACITY),
         }
     }

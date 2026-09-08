@@ -103,6 +103,23 @@ pub struct BrowserCapabilities {
     pub proxy: crate::browser::profile::BrowserProxyStatus,
     /// Where a page's downloads land, for the settings section.
     pub downloads_dir: String,
+    /// The administrator's policy in force (rules shown read-only, and
+    /// whether the browser is enabled at all).
+    pub policy: crate::browser::policy::BrowserPolicyStatus,
+}
+
+/// The last frame of a page, handed back by `browser_set_visible` when the
+/// frontend hides a surface under an overlay: the placeholder paints it so
+/// the page does not vanish while a dialog or menu is open over it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrozenFrame {
+    /// `image/jpeg`.
+    pub mime: String,
+    /// Base64 of the encoded image.
+    pub data: String,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Caller's surface preference for `browser_open_tab`.
@@ -126,6 +143,25 @@ pub const OPEN_REQUEST_EVENT: &str = "browser://open-request";
 /// so the app's own DOM never sees the keystroke). Only the fixed set below
 /// is forwarded; the payload carries no page data.
 pub const SHORTCUT_EVENT: &str = "browser://shortcut";
+/// A top-level navigation a tab attempted was refused by policy: the address
+/// type is not allowed in a tab, or a site rule blocks the host. The status
+/// layer tells the user; nothing else happens.
+pub const NAVIGATION_BLOCKED_EVENT: &str = "browser://navigation-blocked";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NavigationBlockReason {
+    HostRule,
+    Scheme,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserNavigationBlockedPayload {
+    pub tab_id: String,
+    pub url: String,
+    pub reason: NavigationBlockReason,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -215,5 +251,21 @@ mod tests {
         assert_eq!(bounds.y, 2.5);
         let choice: SurfaceChoice = serde_json::from_str(r#""window""#).unwrap();
         assert_eq!(choice, SurfaceChoice::Window);
+
+        let blocked = serde_json::to_value(BrowserNavigationBlockedPayload {
+            tab_id: "t1".into(),
+            url: "https://blocked.example/".into(),
+            reason: NavigationBlockReason::HostRule,
+        })
+        .unwrap();
+        assert_eq!(blocked["reason"], "host-rule");
+        let frame = serde_json::to_value(FrozenFrame {
+            mime: "image/jpeg".into(),
+            data: "AAAA".into(),
+            width: 10,
+            height: 4,
+        })
+        .unwrap();
+        assert_eq!(frame["mime"], "image/jpeg");
     }
 }

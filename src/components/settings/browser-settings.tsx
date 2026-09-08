@@ -21,8 +21,12 @@ import {
   Eraser,
   Globe,
   Link2,
+  ListFilter,
+  Lock,
   MoonStar,
   Network,
+  Plus,
+  Trash2,
   Wrench,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -40,6 +44,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
@@ -56,6 +61,7 @@ import {
 import {
   LINK_SOURCES,
   setBrowserDevtools,
+  setBrowserHostRules,
   setBrowserSurfaceOverride,
   setBrowserSuspendBackgroundTabs,
   setDefaultLinkTarget,
@@ -64,7 +70,18 @@ import {
   type LinkTarget,
   type SurfaceOverride,
 } from "@/lib/browser/browser-prefs"
-import type { BrowserProxyStatus } from "@/lib/browser/types"
+import {
+  HOST_RULE_ACTIONS,
+  normalizeHostRulePattern,
+  validateHostRulePattern,
+  type HostRule,
+  type HostRuleAction,
+} from "@/lib/browser/host-rules"
+import type {
+  BrowserPolicyStatus,
+  BrowserProxyStatus,
+  WireHostRule,
+} from "@/lib/browser/types"
 import { isDesktop } from "@/lib/platform"
 
 // Literal message keys per id — next-intl only resolves literal keys, so the
@@ -82,6 +99,12 @@ const TARGET_LABEL_KEYS = {
   builtin: "targetBuiltin",
   system: "targetSystem",
 } as const satisfies Record<LinkTarget, string>
+
+const ACTION_LABEL_KEYS = {
+  builtin: "targetBuiltin",
+  system: "targetSystem",
+  block: "ruleActionBlock",
+} as const satisfies Record<HostRuleAction, string>
 
 const SURFACES: readonly SurfaceOverride[] = ["auto", "child", "window"]
 const SURFACE_LABEL_KEYS = {
@@ -111,6 +134,176 @@ export function proxyStatusLines(
   return lines
 }
 
+/**
+ * The site-rule table: the administrator's rows first (read-only, with a
+ * lock), then the user's, then a line to add one. Every change is written at
+ * once, like the rest of the section. There is no ordering to manage: the
+ * most specific pattern wins, which the hint says.
+ */
+function HostRulesEditor({
+  rules,
+  managed,
+}: {
+  rules: readonly HostRule[]
+  managed: readonly WireHostRule[]
+}) {
+  const t = useTranslations("BrowserSettings")
+  const [draft, setDraft] = useState("")
+  const [draftAction, setDraftAction] = useState<HostRuleAction>("system")
+  const [problem, setProblem] = useState<"invalid" | "duplicate" | null>(null)
+
+  const add = () => {
+    if (validateHostRulePattern(draft)) {
+      setProblem("invalid")
+      return
+    }
+    const pattern = normalizeHostRulePattern(draft)
+    if (rules.some((rule) => rule.pattern === pattern)) {
+      setProblem("duplicate")
+      return
+    }
+    setBrowserHostRules([...rules, { pattern, action: draftAction }])
+    setDraft("")
+    setProblem(null)
+  }
+  const setAction = (index: number, action: HostRuleAction) => {
+    setBrowserHostRules(
+      rules.map((rule, i) => (i === index ? { ...rule, action } : rule))
+    )
+  }
+  const remove = (index: number) => {
+    setBrowserHostRules(rules.filter((_, i) => i !== index))
+  }
+
+  return (
+    <div className="space-y-1.5">
+      {managed.map((rule) => (
+        <div
+          key={`managed:${rule.pattern}`}
+          className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-muted/40 px-3 py-2"
+          title={t("ruleManaged")}
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            <Lock
+              className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+              aria-label={t("ruleManaged")}
+            />
+            <span className="truncate font-mono text-xs">{rule.pattern}</span>
+          </span>
+          <span className="shrink-0 text-xs text-muted-foreground">
+            {t(ACTION_LABEL_KEYS[rule.action])}
+          </span>
+        </div>
+      ))}
+      {rules.map((rule, index) => (
+        <div
+          key={rule.pattern}
+          className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background px-3 py-2"
+        >
+          <span className="min-w-0 truncate font-mono text-xs">
+            {rule.pattern}
+          </span>
+          <div className="flex shrink-0 items-center gap-1">
+            <Select
+              value={rule.action}
+              onValueChange={(value) =>
+                setAction(index, value as HostRuleAction)
+              }
+            >
+              <SelectTrigger
+                size="sm"
+                className="w-40 bg-background text-xs"
+                aria-label={t("ruleActionFor", { pattern: rule.pattern })}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                {HOST_RULE_ACTIONS.map((action) => (
+                  <SelectItem key={action} value={action}>
+                    {t(ACTION_LABEL_KEYS[action])}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              title={t("ruleRemove")}
+              aria-label={t("ruleRemove")}
+              onClick={() => remove(index)}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        </div>
+      ))}
+      {rules.length === 0 && managed.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{t("rulesEmpty")}</p>
+      ) : null}
+      <form
+        className="flex items-start gap-2"
+        onSubmit={(event) => {
+          event.preventDefault()
+          add()
+        }}
+      >
+        <div className="min-w-0 flex-1">
+          <Input
+            value={draft}
+            onChange={(event) => {
+              setDraft(event.target.value)
+              if (problem) setProblem(null)
+            }}
+            placeholder={t("rulePatternPlaceholder")}
+            aria-label={t("rulePatternLabel")}
+            aria-invalid={problem ? true : undefined}
+            className="h-8 bg-background font-mono text-xs"
+            spellCheck={false}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+          />
+          {problem ? (
+            <p className="mt-1 text-xs text-destructive">
+              {t(problem === "duplicate" ? "ruleDuplicate" : "ruleInvalid")}
+            </p>
+          ) : null}
+        </div>
+        <Select
+          value={draftAction}
+          onValueChange={(value) => setDraftAction(value as HostRuleAction)}
+        >
+          <SelectTrigger
+            size="sm"
+            className="w-40 bg-background text-xs"
+            aria-label={t("ruleActionLabel")}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="end">
+            {HOST_RULE_ACTIONS.map((action) => (
+              <SelectItem key={action} value={action}>
+                {t(ACTION_LABEL_KEYS[action])}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          type="submit"
+          variant="outline"
+          size="sm"
+          className="bg-background"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          {t("ruleAdd")}
+        </Button>
+      </form>
+    </div>
+  )
+}
+
 export function BrowserSettingsSection() {
   const t = useTranslations("BrowserSettings")
   const prefs = useBrowserPrefs()
@@ -121,6 +314,7 @@ export function BrowserSettingsSection() {
   const [clearing, setClearing] = useState(false)
   const [proxy, setProxy] = useState<BrowserProxyStatus | null>(null)
   const [downloadsDir, setDownloadsDir] = useState<string | null>(null)
+  const [policy, setPolicy] = useState<BrowserPolicyStatus | null>(null)
 
   // Fetched when the section opens (not once per app run): the answer follows
   // the proxy setting, which lives on another settings page.
@@ -132,11 +326,13 @@ export function BrowserSettingsSection() {
         if (cancelled) return
         setProxy(caps.proxy)
         setDownloadsDir(caps.downloadsDir || null)
+        setPolicy(caps.policy ?? null)
       })
       .catch(() => {
         if (cancelled) return
         setProxy(null)
         setDownloadsDir(null)
+        setPolicy(null)
       })
     return () => {
       cancelled = true
@@ -167,6 +363,11 @@ export function BrowserSettingsSection() {
       open={expanded}
       onOpenChange={setExpanded}
     >
+      {policy && !policy.enabled ? (
+        <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-foreground">
+          {t("managedDisabled")}
+        </p>
+      ) : null}
       <SettingCard>
         {/* One setting with five values, so one row whose control is the
             list — not five rows repeating the same explanation. */}
@@ -209,6 +410,19 @@ export function BrowserSettingsSection() {
               )
             })}
           </div>
+        </SettingRow>
+      </SettingCard>
+
+      <SettingCard>
+        <SettingRow
+          icon={ListFilter}
+          title={t("rulesTitle")}
+          description={t("rulesHint")}
+        >
+          <HostRulesEditor
+            rules={prefs.hostRules}
+            managed={policy?.managedRules ?? []}
+          />
         </SettingRow>
       </SettingCard>
 

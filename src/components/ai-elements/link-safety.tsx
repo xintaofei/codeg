@@ -220,7 +220,8 @@ export function useOpenLinkOrFile() {
           source: "transcript",
           modifier: consumeLinkGestureModifier(),
         })
-        if (action.kind === "reject") {
+        // A host blocked by a site rule is reported by the hook itself.
+        if (action.kind === "reject" && action.reason !== "blocked-host") {
           toast.error(t("errorFailedLink"), {
             description: t("errorUnsupportedLinkProtocol"),
           })

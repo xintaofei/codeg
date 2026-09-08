@@ -4764,7 +4764,21 @@
     "suspendTitle": "Descargar pestañas en segundo plano",
     "suspendHint": "Libera la memoria de las pestañas del navegador que llevan 30 minutos en segundo plano. Se vuelven a cargar al regresar; se pierden la posición de desplazamiento y el historial.",
     "downloadsTitle": "Descargas",
-    "downloadsHint": "Los archivos que descarga una página se guardan en {dir}. No se abre nada automáticamente y nunca se reemplaza un archivo existente."
+    "downloadsHint": "Los archivos que descarga una página se guardan en {dir}. No se abre nada automáticamente y nunca se reemplaza un archivo existente.",
+    "rulesTitle": "Reglas de sitio",
+    "rulesHint": "Por sitio: siempre el navegador integrado, siempre el navegador del sistema, o bloquear. Los patrones son un nombre de host, *.example.com o *, con un :puerto opcional; gana la coincidencia más específica.",
+    "rulePatternPlaceholder": "example.com o *.example.com",
+    "rulePatternLabel": "Patrón de sitio",
+    "ruleActionLabel": "Acción",
+    "ruleActionFor": "Acción para {pattern}",
+    "ruleAdd": "Añadir",
+    "ruleRemove": "Quitar regla",
+    "ruleActionBlock": "Bloquear",
+    "ruleManaged": "Definida por tu administrador",
+    "ruleInvalid": "No es un patrón válido",
+    "ruleDuplicate": "Ya existe una regla para este patrón",
+    "rulesEmpty": "Aún no hay reglas.",
+    "managedDisabled": "La política de tu administrador ha desactivado el navegador integrado; los enlaces se abren en el navegador del sistema."
   },
   "LogsSettings": {
     "loading": "Cargando…",
@@ -5829,7 +5843,13 @@
       "openInSystem": "Abrir en el navegador del sistema",
       "ownedWindow": "Esta página se muestra en su propia ventana.",
       "ownedWindowShow": "Mostrar ventana",
-      "remoteBanner": "Abierto a través de {host}"
+      "remoteBanner": "Abierto a través de {host}",
+      "navigationBlocked": "Navegación bloqueada: {host}",
+      "navigationBlockedRule": "bloqueada por una regla de sitio",
+      "navigationBlockedScheme": "este tipo de dirección no se puede abrir aquí",
+      "navigationBlockedOpenSystem": "Abrir con la app del sistema",
+      "errorBlockedHint": "Una regla de sitio bloquea esta dirección. Las reglas se gestionan en Ajustes → Navegador integrado.",
+      "popupDeniedBlockedHost": "bloqueada por una regla de sitio"
     },
     "tab": {
       "untitled": "Nueva pestaña"
@@ -5857,7 +5877,8 @@
     "toast": {
       "firstOpen": "Abierto en el navegador integrado",
       "firstOpenHint": "Haz ⌘/Ctrl+clic en un enlace para abrirlo en el navegador del sistema. Cambia el valor predeterminado en Ajustes.",
-      "useSystemAlways": "Usar siempre el navegador del sistema"
+      "useSystemAlways": "Usar siempre el navegador del sistema",
+      "blockedHost": "Bloqueado por una regla de sitio: {host}"
     },
     "link": {
       "openBuiltin": "Abrir en el navegador integrado",

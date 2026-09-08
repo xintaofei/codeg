@@ -22,11 +22,40 @@ import {
 import {
   setBrowserTabNotice,
   useBrowserTabNotice,
+  type BrowserTabNotice,
 } from "@/lib/browser/browser-tab-store"
 import { displayHostPort } from "@/lib/browser/browser-url"
 import type { BrowserErrorInfo, BrowserTabState } from "@/lib/browser/types"
 import { browserTabBackendId } from "@/lib/file-tab-id"
+import { getAllowedExternalProtocol } from "@/lib/link-classify"
+import { openWithOsHandler } from "@/lib/link-open"
 import { openUrl, revealItemInDir } from "@/lib/platform"
+
+function noticeText(
+  t: ReturnType<typeof useTranslations<"Browser.status">>,
+  notice: BrowserTabNotice
+): string {
+  const host = displayHostPort(notice.url) ?? notice.url
+  if (notice.kind === "navigation-blocked") {
+    if (notice.reason === "scheme") {
+      // Not a web address, so its "host" would mislead (`vscode://file/…`
+      // has a host of `file`): name the whole thing, as typed by the page.
+      return `${t("navigationBlocked", { host: notice.url })} · ${t("navigationBlockedScheme")}`
+    }
+    return `${t("navigationBlocked", { host })} · ${t("navigationBlockedRule")}`
+  }
+  const why =
+    notice.reason === "no-gesture"
+      ? t("popupDeniedNoGesture")
+      : notice.reason === "blocked-scheme"
+        ? t("popupDeniedBlockedScheme")
+        : notice.reason === "blocked-host"
+          ? t("popupDeniedBlockedHost")
+          : null
+  return why
+    ? `${t("popupDenied", { host })} · ${why}`
+    : t("popupDenied", { host })
+}
 
 /** Bars that sit OUTSIDE the native surface's rect (a native view paints over
  *  any DOM placed on top of it): blocked popups, remote-egress banner. */
@@ -54,19 +83,33 @@ export function BrowserNoticeBar({
         <div className="flex h-8 items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-3 text-xs text-foreground">
           <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-amber-600" />
           <span className="min-w-0 flex-1 truncate">
-            {t("popupDenied", {
-              host: displayHostPort(notice.url) ?? notice.url,
-            })}
-            {notice.reason === "no-gesture"
-              ? ` · ${t("popupDeniedNoGesture")}`
-              : notice.reason === "blocked-scheme"
-                ? ` · ${t("popupDeniedBlockedScheme")}`
-                : ""}
+            {noticeText(t, notice)}
           </span>
+          {/* A `mailto:` / `tel:` link the page pointed at: not a page, so
+              not for a tab, but the OS has a handler for it — the same
+              hand-off the transcript makes for those two schemes. Any
+              other refused scheme stays refused. */}
+          {notice.kind === "navigation-blocked" &&
+          notice.reason === "scheme" &&
+          getAllowedExternalProtocol(notice.url) ? (
+            <button
+              type="button"
+              className="shrink-0 rounded px-1.5 py-0.5 text-xs font-medium text-primary hover:bg-primary/8"
+              onClick={() => {
+                void openWithOsHandler(notice.url)
+                setBrowserTabNotice(tab.id, null)
+              }}
+            >
+              {t("navigationBlockedOpenSystem")}
+            </button>
+          ) : null}
           {/* Opens the blocked address as a plain tab: the page's own
               `window.open` is gone, so there is no opener to preserve — the
-              same trade a browser's "show blocked pop-up" makes. */}
-          {actions ? (
+              same trade a browser's "show blocked pop-up" makes. A pop-up a
+              site rule refused stays refused. */}
+          {notice.kind === "popup-denied" &&
+          notice.reason !== "blocked-host" &&
+          actions ? (
             <button
               type="button"
               className="shrink-0 rounded px-1.5 py-0.5 text-xs font-medium text-primary hover:bg-primary/8"
@@ -123,10 +166,18 @@ export function BrowserErrorPage({
 }) {
   const t = useTranslations("Browser.status")
   const backendId = browserTabBackendId(tab.id)
-  // Platform errors carry their own (untranslated) text; the one we raise
-  // ourselves for a navigation that never produced a page does not.
-  const detail =
-    error.message || (error.kind === "failed" ? t("errorFailedHint") : "")
+  // Platform errors carry their own text (in the system language); the
+  // hint is ours, in the user's, and says what to do about it.
+  const detail = error.message
+  const hint =
+    error.kind === "failed"
+      ? t("errorFailedHint")
+      : error.kind === "blocked"
+        ? t("errorBlockedHint")
+        : ""
+  // A site rule means "not this host": offering the system browser would
+  // undo the rule with one click.
+  const blocked = error.kind === "blocked"
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
       <ShieldAlert className="h-8 w-8 text-muted-foreground/60" />
@@ -139,6 +190,9 @@ export function BrowserErrorPage({
       {detail ? (
         <p className="max-w-md text-xs text-muted-foreground/80">{detail}</p>
       ) : null}
+      {hint ? (
+        <p className="max-w-md text-xs text-muted-foreground/80">{hint}</p>
+      ) : null}
       <div className="mt-1 flex items-center gap-2">
         <button
           type="button"
@@ -148,14 +202,16 @@ export function BrowserErrorPage({
           <RotateCw className="h-3.5 w-3.5" />
           {t("retry")}
         </button>
-        <button
-          type="button"
-          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs hover:bg-primary/8"
-          onClick={() => void openUrl(error.url || url)}
-        >
-          <ExternalLink className="h-3.5 w-3.5" />
-          {t("openInSystem")}
-        </button>
+        {blocked ? null : (
+          <button
+            type="button"
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs hover:bg-primary/8"
+            onClick={() => void openUrl(error.url || url)}
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            {t("openInSystem")}
+          </button>
+        )}
       </div>
     </div>
   )

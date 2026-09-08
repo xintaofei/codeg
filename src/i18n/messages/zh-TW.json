@@ -4764,7 +4764,21 @@
     "suspendTitle": "卸載背景分頁",
     "suspendHint": "釋放在背景停留 30 分鐘的瀏覽器分頁所佔的記憶體。切回時會重新載入；捲動位置與歷史記錄會遺失。",
     "downloadsTitle": "下載",
-    "downloadsHint": "網頁下載的檔案儲存於 {dir}。不會自動開啟，也不會覆蓋既有檔案。"
+    "downloadsHint": "網頁下載的檔案儲存於 {dir}。不會自動開啟，也不會覆蓋既有檔案。",
+    "rulesTitle": "站點規則",
+    "rulesHint": "按站點設定：一律用內建瀏覽器、一律用系統瀏覽器，或阻止。模式可以是主機名稱、*.example.com 或 *，可選加 :連接埠；最具體的符合項生效。",
+    "rulePatternPlaceholder": "example.com 或 *.example.com",
+    "rulePatternLabel": "站點模式",
+    "ruleActionLabel": "動作",
+    "ruleActionFor": "{pattern} 的動作",
+    "ruleAdd": "新增",
+    "ruleRemove": "刪除規則",
+    "ruleActionBlock": "阻止",
+    "ruleManaged": "由管理員設定",
+    "ruleInvalid": "不是有效的模式",
+    "ruleDuplicate": "已有針對該模式的規則",
+    "rulesEmpty": "還沒有規則。",
+    "managedDisabled": "管理員原則已關閉內建瀏覽器；連結將在系統瀏覽器中開啟。"
   },
   "LogsSettings": {
     "loading": "載入中…",
@@ -5829,7 +5843,13 @@
       "openInSystem": "在系統瀏覽器中開啟",
       "ownedWindow": "此頁面顯示在獨立視窗中。",
       "ownedWindowShow": "顯示視窗",
-      "remoteBanner": "經由 {host} 開啟"
+      "remoteBanner": "經由 {host} 開啟",
+      "navigationBlocked": "已阻止跳轉：{host}",
+      "navigationBlockedRule": "被站點規則阻止",
+      "navigationBlockedScheme": "此類位址不能在這裡開啟",
+      "navigationBlockedOpenSystem": "用系統應用程式開啟",
+      "errorBlockedHint": "站點規則阻止了這個位址。規則在「設定 → 內建瀏覽器」中管理。",
+      "popupDeniedBlockedHost": "被站點規則阻止"
     },
     "tab": {
       "untitled": "新分頁"
@@ -5857,7 +5877,8 @@
     "toast": {
       "firstOpen": "已在內建瀏覽器中開啟",
       "firstOpenHint": "按住 ⌘/Ctrl 點擊連結可改用系統瀏覽器。預設方式可在設定中修改。",
-      "useSystemAlways": "一律使用系統瀏覽器"
+      "useSystemAlways": "一律使用系統瀏覽器",
+      "blockedHost": "被站點規則阻止：{host}"
     },
     "link": {
       "openBuiltin": "在內建瀏覽器中開啟",

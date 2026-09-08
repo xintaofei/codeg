@@ -9,7 +9,7 @@
 import { useSyncExternalStore } from "react"
 
 import { browserClose } from "./browser-api"
-import type { BrowserTabState } from "./types"
+import type { BrowserTabState, NavigationBlockReason } from "./types"
 import { buildFileTabId } from "@/lib/file-tab-id"
 import { isDesktop } from "@/lib/transport"
 
@@ -190,11 +190,10 @@ export function releaseBrowserTab(workspaceTabId: string): void {
 }
 
 /** A transient, dismissible message shown between the toolbar and the page. */
-export interface BrowserTabNotice {
-  kind: "popup-denied"
-  url: string
-  reason: string | null
-}
+export type BrowserTabNotice =
+  | { kind: "popup-denied"; url: string; reason: string | null }
+  /** A top-level navigation the tab attempted was refused by policy. */
+  | { kind: "navigation-blocked"; url: string; reason: NavigationBlockReason }
 
 const notices = new Map<string, BrowserTabNotice>()
 

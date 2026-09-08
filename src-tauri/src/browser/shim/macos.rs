@@ -6,24 +6,30 @@
 //! `WKContentWorld` needs macOS 11; older systems fall back to the page world
 //! (reported as `ChannelKind::Legacy`).
 
-use std::cell::RefCell;
-use std::collections::HashSet;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::ptr::NonNull;
+use std::sync::Arc;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{define_class, msg_send, sel, DeclaredClass, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
-use objc2_foundation::{ns_string, NSArray, NSDate, NSDictionary, NSError, NSProcessInfo, NSString, NSUUID};
+use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSImageCompressionFactor};
+use objc2_foundation::{
+    ns_string, NSArray, NSDate, NSDictionary, NSError, NSNumber, NSProcessInfo, NSString, NSURL,
+    NSURLErrorFailingURLErrorKey, NSUUID,
+};
 use objc2_web_kit::{
-    WKContentWorld, WKFindConfiguration, WKFindResult, WKScriptMessage, WKScriptMessageHandler,
+    WKContentWorld, WKFindConfiguration, WKFindResult, WKNavigation, WKNavigationAction,
+    WKNavigationActionPolicy, WKNavigationDelegate, WKScriptMessage, WKScriptMessageHandler,
     WKSnapshotConfiguration, WKUserContentController, WKUserScript, WKUserScriptInjectionTime,
-    WKWebViewConfiguration, WKWebsiteDataRecord, WKWebsiteDataStore,
+    WKWebView, WKWebViewConfiguration, WKWebsiteDataRecord, WKWebsiteDataStore,
 };
 use tauri_runtime_wry::wry::{self, WebViewExtMacOS};
 
 use super::super::channel::MessageSink;
+use super::super::hooks::{classify_load_error, LoadFailure};
 use super::super::profile::{BrowserProxy, ProxyScheme, DEFAULT_DATA_STORE_IDENTIFIER};
 
 pub const WORLD_NAME: &str = "codeg";
@@ -190,6 +196,60 @@ pub fn eval_in_world(
     Ok(())
 }
 
+/// Viewport snapshot as JPEG: `(bytes, pixel width, pixel height)`. Built for
+/// the freeze frame a placeholder shows while its surface is hidden under an
+/// overlay, so it takes the frame as displayed now (`afterScreenUpdates:
+/// false`) and encodes as JPEG through AppKit — a 5-megapixel PNG would take
+/// longer to encode than the overlay's own open animation.
+pub fn snapshot_jpeg(
+    webview: &wry::WebView,
+    quality: f64,
+    callback: impl Fn(Result<(Vec<u8>, u32, u32), String>) + Send + 'static,
+) -> Result<(), String> {
+    let mtm = mtm()?;
+    let wk = webview.webview();
+    let block = RcBlock::<dyn Fn(*mut NSImage, *mut NSError)>::new(
+        move |image: *mut NSImage, error: *mut NSError| {
+            // SAFETY: WebKit passes valid or null pointers; we only read.
+            let outcome = unsafe {
+                if !error.is_null() {
+                    Err((*error).localizedDescription().to_string())
+                } else if image.is_null() {
+                    Err("snapshot returned no image".to_string())
+                } else {
+                    encode_jpeg(&*image, quality, mtm)
+                }
+            };
+            callback(outcome);
+        },
+    );
+    // SAFETY: main thread, live webview.
+    unsafe {
+        let config = WKSnapshotConfiguration::new(mtm);
+        config.setAfterScreenUpdates(false);
+        wk.takeSnapshotWithConfiguration_completionHandler(Some(&config), &block);
+    }
+    Ok(())
+}
+
+/// # Safety
+/// Main thread, live image.
+unsafe fn encode_jpeg(image: &NSImage, quality: f64, mtm: MainThreadMarker) -> Result<(Vec<u8>, u32, u32), String> {
+    let cg = image
+        .CGImageForProposedRect_context_hints(std::ptr::null_mut(), None, None)
+        .ok_or_else(|| "snapshot has no bitmap".to_string())?;
+    let rep = NSBitmapImageRep::initWithCGImage(mtm.alloc(), &cg);
+    let width = u32::try_from(rep.pixelsWide()).unwrap_or(0);
+    let height = u32::try_from(rep.pixelsHigh()).unwrap_or(0);
+    let factor = NSNumber::new_f64(quality);
+    let factor_object: &AnyObject = &factor;
+    let properties = NSDictionary::from_slices(&[NSImageCompressionFactor], &[factor_object]);
+    let data = rep
+        .representationUsingType_properties(NSBitmapImageFileType::JPEG, &properties)
+        .ok_or_else(|| "jpeg encoding failed".to_string())?;
+    Ok((data.to_vec(), width, height))
+}
+
 /// Viewport snapshot as PNG bytes.
 pub fn snapshot_png(
     webview: &wry::WebView,
@@ -349,6 +409,196 @@ pub fn debug_view(webview: &wry::WebView) -> serde_json::Value {
         "hasSuperview": has_superview,
         "frame": frame,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Navigation delegate: what wry does not report
+// ---------------------------------------------------------------------------
+//
+// wry installs its own `WKNavigationDelegate` and surfaces two of its
+// callbacks (commit, finish). A tab needs three more: the provisional start
+// (where a page-initiated navigation is heading), the failures (which kind,
+// and at once rather than when a poll notices the spinner stopped), and, for
+// the policy decision wry does forward, whether the action is for the main
+// frame. Rather than re-implementing wry's delegate — its handlers reach into
+// private state — the tab's `WKWebView` gets a wrapper: it answers the
+// callbacks it cares about and forwards every other selector to wry's object
+// (`forwardingTargetForSelector:`), which stays alive inside wry's
+// `WebView` for as long as the tab does. `respondsToSelector:` is answered
+// from both, so WebKit sees exactly the optional methods wry implements plus
+// ours. The wrapper is dropped together with the webview: keeping it longer
+// would keep wry's delegate, and through it the `WKWebView`, alive.
+
+/// Events the wrapper reports, on the main thread.
+pub enum NavigationEvent {
+    /// A main-frame navigation started; the URL it is heading for.
+    Started(String),
+    Failed(LoadFailure),
+}
+
+pub type NavigationSink = Arc<dyn Fn(NavigationEvent) + Send + Sync>;
+
+thread_local! {
+    /// Wrappers by `WKWebView` pointer, kept alive here (`navigationDelegate`
+    /// is a weak property).
+    static NAV_DELEGATES: RefCell<HashMap<usize, Retained<CodegNavigationDelegate>>> =
+        RefCell::new(HashMap::new());
+    /// Whether the navigation action currently being decided targets the main
+    /// frame. Set around the forward to wry, whose synchronous call into the
+    /// navigation handler is the only place the host learns about the action
+    /// — and wry's handler signature carries the URL alone.
+    static CURRENT_ACTION_MAIN_FRAME: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// Inside a navigation handler: does the action being decided target the
+/// main frame? `None` outside a decision (other platforms, or a call from
+/// elsewhere), which callers treat as "main frame" — the strict reading.
+pub fn current_navigation_is_main_frame() -> Option<bool> {
+    CURRENT_ACTION_MAIN_FRAME.with(|flag| flag.get())
+}
+
+pub struct NavigationDelegateIvars {
+    inner: Retained<ProtocolObject<dyn WKNavigationDelegate>>,
+    sink: NavigationSink,
+}
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = NavigationDelegateIvars]
+    pub struct CodegNavigationDelegate;
+
+    unsafe impl NSObjectProtocol for CodegNavigationDelegate {}
+
+    impl CodegNavigationDelegate {
+        #[unsafe(method(respondsToSelector:))]
+        fn responds_to_selector(&self, selector: Sel) -> bool {
+            self.class().responds_to(selector) || self.ivars().inner.respondsToSelector(selector)
+        }
+
+        #[unsafe(method(forwardingTargetForSelector:))]
+        fn forwarding_target_for_selector(&self, _selector: Sel) -> *mut AnyObject {
+            Retained::as_ptr(&self.ivars().inner) as *mut AnyObject
+        }
+    }
+
+    unsafe impl WKNavigationDelegate for CodegNavigationDelegate {
+        #[unsafe(method(webView:decidePolicyForNavigationAction:decisionHandler:))]
+        fn decide_policy(
+            &self,
+            webview: &WKWebView,
+            action: &WKNavigationAction,
+            handler: &block2::Block<dyn Fn(WKNavigationActionPolicy)>,
+        ) {
+            // SAFETY: WebKit hands us live objects on the main thread.
+            let main_frame = unsafe { action.targetFrame().map(|frame| frame.isMainFrame()) };
+            // No target frame = a new window; the strict reading applies.
+            CURRENT_ACTION_MAIN_FRAME.with(|flag| flag.set(Some(main_frame.unwrap_or(true))));
+            let inner = &self.ivars().inner;
+            // SAFETY: forwarding the exact selector and arguments WebKit gave
+            // us to the delegate that implements it.
+            unsafe {
+                let _: () = msg_send![
+                    &**inner,
+                    webView: webview,
+                    decidePolicyForNavigationAction: action,
+                    decisionHandler: handler
+                ];
+            }
+            CURRENT_ACTION_MAIN_FRAME.with(|flag| flag.set(None));
+        }
+
+        #[unsafe(method(webView:didStartProvisionalNavigation:))]
+        fn did_start_provisional(&self, webview: &WKWebView, _navigation: Option<&WKNavigation>) {
+            // `URL` is the active URL: the provisional one while a load is in
+            // flight, so this is where the navigation is heading.
+            // SAFETY: main thread, live webview.
+            let url = unsafe { webview.URL().and_then(|u| u.absoluteString()) }.map(|s| s.to_string());
+            tracing::debug!("[browser] navigation started: {url:?}");
+            if let Some(url) = url {
+                (self.ivars().sink)(NavigationEvent::Started(url));
+            }
+        }
+
+        #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
+        fn did_fail_provisional(&self, _webview: &WKWebView, _navigation: Option<&WKNavigation>, error: &NSError) {
+            self.report_failure(error, true);
+        }
+
+        #[unsafe(method(webView:didFailNavigation:withError:))]
+        fn did_fail(&self, _webview: &WKWebView, _navigation: Option<&WKNavigation>, error: &NSError) {
+            self.report_failure(error, false);
+        }
+    }
+);
+
+impl CodegNavigationDelegate {
+    fn new(
+        inner: Retained<ProtocolObject<dyn WKNavigationDelegate>>,
+        sink: NavigationSink,
+        mtm: MainThreadMarker,
+    ) -> Retained<Self> {
+        let this = mtm
+            .alloc::<Self>()
+            .set_ivars(NavigationDelegateIvars { inner, sink });
+        // SAFETY: plain NSObject init.
+        unsafe { msg_send![super(this), init] }
+    }
+
+    fn report_failure(&self, error: &NSError, provisional: bool) {
+        let domain = error.domain().to_string();
+        let code = i64::try_from(error.code()).unwrap_or(i64::MAX);
+        let kind = classify_load_error(&domain, code);
+        tracing::debug!(
+            "[browser] navigation failed (provisional: {provisional}): {domain} {code} -> {kind:?}: {}",
+            error.localizedDescription()
+        );
+        let Some(kind) = kind else {
+            return;
+        };
+        // SAFETY: main thread; the dictionary and its values are live.
+        let url = unsafe {
+            error
+                .userInfo()
+                .objectForKey(NSURLErrorFailingURLErrorKey)
+                .and_then(|value| value.downcast::<NSURL>().ok())
+                .and_then(|url| url.absoluteString())
+                .map(|s| s.to_string())
+        };
+        (self.ivars().sink)(NavigationEvent::Failed(LoadFailure {
+            kind,
+            message: error.localizedDescription().to_string(),
+            url,
+            provisional,
+        }));
+    }
+}
+
+/// Wrap the webview's navigation delegate. Idempotent per webview.
+pub fn install_navigation_delegate(webview: &wry::WebView, sink: NavigationSink) -> Result<(), String> {
+    let mtm = mtm()?;
+    let wk = webview.webview();
+    let key = Retained::as_ptr(&wk) as usize;
+    let installed = NAV_DELEGATES.with(|map| map.borrow().contains_key(&key));
+    if installed {
+        return Ok(());
+    }
+    // SAFETY: main thread, live webview.
+    let inner = unsafe { wk.navigationDelegate() }
+        .ok_or_else(|| "the webview has no navigation delegate to wrap".to_string())?;
+    let delegate = CodegNavigationDelegate::new(inner, sink, mtm);
+    // SAFETY: main thread; the wrapper is retained in `NAV_DELEGATES` below,
+    // which is what keeps the weak `navigationDelegate` valid.
+    unsafe { wk.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
+    NAV_DELEGATES.with(|map| map.borrow_mut().insert(key, delegate));
+    Ok(())
+}
+
+/// Drop the wrapper of a webview that is going away (call before the wry
+/// `WebView` is dropped, on the main thread).
+pub fn forget_navigation_delegate(webview: &wry::WebView) {
+    let key = webview_pointer(webview);
+    NAV_DELEGATES.with(|map| map.borrow_mut().remove(&key));
 }
 
 // ---------------------------------------------------------------------------

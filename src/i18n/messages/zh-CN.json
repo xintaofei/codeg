@@ -4764,7 +4764,21 @@
     "suspendTitle": "卸载后台标签页",
     "suspendHint": "释放在后台停留 30 分钟的浏览器标签页所占的内存。切回时会重新加载；滚动位置和历史记录会丢失。",
     "downloadsTitle": "下载",
-    "downloadsHint": "网页下载的文件保存在 {dir}。不会自动打开，也不会覆盖已有文件。"
+    "downloadsHint": "网页下载的文件保存在 {dir}。不会自动打开，也不会覆盖已有文件。",
+    "rulesTitle": "站点规则",
+    "rulesHint": "按站点设定：始终用内置浏览器、始终用系统浏览器，或阻止。模式可以是主机名、*.example.com 或 *，可选加 :端口；最具体的匹配生效。",
+    "rulePatternPlaceholder": "example.com 或 *.example.com",
+    "rulePatternLabel": "站点模式",
+    "ruleActionLabel": "动作",
+    "ruleActionFor": "{pattern} 的动作",
+    "ruleAdd": "添加",
+    "ruleRemove": "删除规则",
+    "ruleActionBlock": "阻止",
+    "ruleManaged": "由管理员设定",
+    "ruleInvalid": "不是有效的模式",
+    "ruleDuplicate": "已有针对该模式的规则",
+    "rulesEmpty": "还没有规则。",
+    "managedDisabled": "管理员策略已关闭内置浏览器；链接将在系统浏览器中打开。"
   },
   "LogsSettings": {
     "loading": "加载中…",
@@ -5829,7 +5843,13 @@
       "openInSystem": "在系统浏览器中打开",
       "ownedWindow": "该页面显示在独立窗口中。",
       "ownedWindowShow": "显示窗口",
-      "remoteBanner": "经由 {host} 打开"
+      "remoteBanner": "经由 {host} 打开",
+      "navigationBlocked": "已阻止跳转：{host}",
+      "navigationBlockedRule": "被站点规则阻止",
+      "navigationBlockedScheme": "此类地址不能在这里打开",
+      "navigationBlockedOpenSystem": "用系统应用打开",
+      "errorBlockedHint": "站点规则阻止了这个地址。规则在「设置 → 内置浏览器」中管理。",
+      "popupDeniedBlockedHost": "被站点规则阻止"
     },
     "tab": {
       "untitled": "新标签页"
@@ -5857,7 +5877,8 @@
     "toast": {
       "firstOpen": "已在内置浏览器中打开",
       "firstOpenHint": "按住 ⌘/Ctrl 点击链接可改用系统浏览器。默认方式可在设置中修改。",
-      "useSystemAlways": "始终使用系统浏览器"
+      "useSystemAlways": "始终使用系统浏览器",
+      "blockedHost": "被站点规则阻止：{host}"
     },
     "link": {
       "openBuiltin": "在内置浏览器中打开",

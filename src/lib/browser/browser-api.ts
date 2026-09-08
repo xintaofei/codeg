@@ -5,11 +5,13 @@
 
 import { getTransport, isDesktop } from "@/lib/transport"
 
+import type { HostRule } from "./host-rules"
 import type {
   Bounds,
   BrowserCapabilities,
   BrowserDownload,
   BrowserTabState,
+  FrozenFrame,
   SurfaceChoice,
 } from "./types"
 
@@ -22,6 +24,7 @@ const UNAVAILABLE: BrowserCapabilities = {
   isolatedStorage: false,
   proxy: { url: null, applies: "unsupported", reason: null },
   downloadsDir: "",
+  policy: { enabled: false, managedRules: [], managedSource: null },
 }
 
 let capabilitiesPromise: Promise<BrowserCapabilities> | null = null
@@ -116,15 +119,34 @@ export function browserSetBounds(tabId: string, bounds: Bounds): Promise<void> {
   return getTransport().call<void>("browser_set_bounds", { tabId, bounds })
 }
 
+/**
+ * Show or hide a tab's surface. Hiding with `freeze` asks for the frame the
+ * page shows at that moment, to paint in the placeholder while an overlay is
+ * open over it; `null` when the platform cannot provide one in time.
+ */
 export function browserSetVisible(
   tabId: string,
   visible: boolean,
-  handoffFocus = false
-): Promise<void> {
-  return getTransport().call<void>("browser_set_visible", {
-    tabId,
-    visible,
-    handoffFocus,
+  handoffFocus = false,
+  freeze = false
+): Promise<FrozenFrame | null> {
+  return getTransport()
+    .call<FrozenFrame | null | undefined>("browser_set_visible", {
+      tabId,
+      visible,
+      handoffFocus,
+      freeze,
+    })
+    .then((frame) => frame ?? null)
+}
+
+/** The user's site rules, for the backend to enforce `block` on navigations. */
+export function browserSetHostRules(rules: readonly HostRule[]): Promise<void> {
+  return getTransport().call<void>("browser_set_host_rules", {
+    rules: rules.map((rule) => ({
+      pattern: rule.pattern,
+      action: rule.action,
+    })),
   })
 }
 

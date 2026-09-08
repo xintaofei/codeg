@@ -4764,7 +4764,21 @@
     "suspendTitle": "Descarregar abas em segundo plano",
     "suspendHint": "Libera a memória das abas do navegador que ficam 30 minutos em segundo plano. Elas recarregam quando você volta; a posição de rolagem e o histórico são perdidos.",
     "downloadsTitle": "Downloads",
-    "downloadsHint": "Os arquivos baixados por uma página são salvos em {dir}. Nada é aberto automaticamente e um arquivo existente nunca é substituído."
+    "downloadsHint": "Os arquivos baixados por uma página são salvos em {dir}. Nada é aberto automaticamente e um arquivo existente nunca é substituído.",
+    "rulesTitle": "Regras de site",
+    "rulesHint": "Por site: sempre o navegador integrado, sempre o navegador do sistema ou bloquear. Os padrões são um nome de host, *.example.com ou *, com :porta opcional; a correspondência mais específica vence.",
+    "rulePatternPlaceholder": "example.com ou *.example.com",
+    "rulePatternLabel": "Padrão de site",
+    "ruleActionLabel": "Ação",
+    "ruleActionFor": "Ação para {pattern}",
+    "ruleAdd": "Adicionar",
+    "ruleRemove": "Remover regra",
+    "ruleActionBlock": "Bloquear",
+    "ruleManaged": "Definida pelo seu administrador",
+    "ruleInvalid": "Não é um padrão válido",
+    "ruleDuplicate": "Já existe uma regra para este padrão",
+    "rulesEmpty": "Ainda não há regras.",
+    "managedDisabled": "A política do seu administrador desativou o navegador integrado; os links abrem no navegador do sistema."
   },
   "LogsSettings": {
     "loading": "Carregando…",
@@ -5829,7 +5843,13 @@
       "openInSystem": "Abrir no navegador do sistema",
       "ownedWindow": "Esta página é exibida em uma janela própria.",
       "ownedWindowShow": "Mostrar janela",
-      "remoteBanner": "Aberto via {host}"
+      "remoteBanner": "Aberto via {host}",
+      "navigationBlocked": "Navegação bloqueada: {host}",
+      "navigationBlockedRule": "bloqueada por uma regra de site",
+      "navigationBlockedScheme": "este tipo de endereço não pode ser aberto aqui",
+      "navigationBlockedOpenSystem": "Abrir com o app do sistema",
+      "errorBlockedHint": "Uma regra de site bloqueia este endereço. As regras são geridas em Configurações → Navegador integrado.",
+      "popupDeniedBlockedHost": "bloqueada por uma regra de site"
     },
     "tab": {
       "untitled": "Nova aba"
@@ -5857,7 +5877,8 @@
     "toast": {
       "firstOpen": "Aberto no navegador integrado",
       "firstOpenHint": "⌘/Ctrl+clique em um link para abri-lo no navegador do sistema. Altere o padrão em Configurações.",
-      "useSystemAlways": "Sempre usar o navegador do sistema"
+      "useSystemAlways": "Sempre usar o navegador do sistema",
+      "blockedHost": "Bloqueado por uma regra de site: {host}"
     },
     "link": {
       "openBuiltin": "Abrir no navegador integrado",

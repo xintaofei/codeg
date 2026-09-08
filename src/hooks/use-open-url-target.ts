@@ -15,6 +15,7 @@ import {
   type LinkSource,
   type LinkTarget,
 } from "@/lib/browser/browser-prefs"
+import { displayHostPort } from "@/lib/browser/browser-url"
 import { openInSystemBrowser, openWithOsHandler } from "@/lib/link-open"
 import {
   resolveLinkAction,
@@ -49,9 +50,10 @@ export function isPrimaryModifier(event: {
  * touches the app: the built-in browser tab (or the transcript's side panel
  * under a full-page route), the system browser, or the OS handler.
  *
- * Returns the action taken so callers can react (a `reject` shows nothing
- * here — the caller owns the error toast wording). Local file paths are not
- * handled: they are `useOpenFileTarget`'s job and never reach this hook.
+ * Returns the action taken so callers can react. Of the rejections only the
+ * site-rule block is reported here (its wording is the browser's); the caller
+ * owns the toast for an unsupported scheme. Local file paths are not handled:
+ * they are `useOpenFileTarget`'s job and never reach this hook.
  */
 export function useOpenUrlTarget() {
   const t = useTranslations("Browser.toast")
@@ -80,6 +82,8 @@ export function useOpenUrlTarget() {
         forceTarget: options.forceTarget,
         surface,
         prefs,
+        hostRules: prefs.hostRules,
+        managedHostRules: capabilities?.policy.managedRules,
       })
       switch (action.kind) {
         case "system":
@@ -108,8 +112,18 @@ export function useOpenUrlTarget() {
           }
           break
         }
-        case "file":
         case "reject":
+          // The one rejection this hook owns the wording of: a site rule
+          // decided, and the user should learn which host it was.
+          if (action.reason === "blocked-host") {
+            toast.error(
+              t("blockedHost", {
+                host: displayHostPort(action.url) ?? action.url,
+              })
+            )
+          }
+          break
+        case "file":
           break
       }
       return action

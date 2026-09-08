@@ -227,13 +227,52 @@ describe("resolveLinkAction — host rules", () => {
     ).toMatchObject({ kind: "system" })
   })
 
-  it("first matching rule wins and ports pin a rule", () => {
+  it("the most specific rule wins and ports pin a rule", () => {
     expect(
       resolveLinkAction("https://sso.corp.example:8443/", ctx({ hostRules }))
     ).toMatchObject({ kind: "system" })
     expect(
       resolveLinkAction("https://sso.corp.example/", ctx({ hostRules }))
     ).toMatchObject({ kind: "builtin" })
+    // Order in the table does not matter: an exact host beats a wildcard.
+    const reversed = [
+      { pattern: "*.corp.example", action: "system" as const },
+      { pattern: "wiki.corp.example", action: "builtin" as const },
+    ]
+    expect(
+      resolveLinkAction(
+        "https://wiki.corp.example/",
+        ctx({ hostRules: reversed })
+      )
+    ).toMatchObject({ kind: "builtin" })
+  })
+
+  it("the administrator's rules are consulted before the user's", () => {
+    const managedHostRules = [
+      { pattern: "*.internal.example", action: "block" as const },
+    ]
+    // A more specific user rule does not lift a managed block …
+    expect(
+      resolveLinkAction(
+        "https://wiki.internal.example/",
+        ctx({
+          managedHostRules,
+          hostRules: [
+            { pattern: "wiki.internal.example", action: "builtin" as const },
+          ],
+        })
+      )
+    ).toMatchObject({ kind: "reject", reason: "blocked-host" })
+    // … and a host the managed table says nothing about falls through.
+    expect(
+      resolveLinkAction(
+        "https://example.com/",
+        ctx({
+          managedHostRules,
+          hostRules: [{ pattern: "example.com", action: "system" as const }],
+        })
+      )
+    ).toMatchObject({ kind: "system" })
   })
 
   it("matchHostRule: wildcard semantics", () => {

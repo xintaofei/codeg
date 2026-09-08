@@ -8,7 +8,12 @@ import {
   browserClose,
   browserListDownloads,
   browserListTabs,
+  browserSetHostRules,
 } from "@/lib/browser/browser-api"
+import {
+  getBrowserPrefs,
+  subscribeBrowserPrefs,
+} from "@/lib/browser/browser-prefs"
 import {
   hydrateBrowserDownloads,
   setBrowserDownload,
@@ -23,12 +28,14 @@ import {
 import {
   BROWSER_CLOSED_EVENT,
   BROWSER_DOWNLOAD_EVENT,
+  BROWSER_NAVIGATION_BLOCKED_EVENT,
   BROWSER_OPEN_REQUEST_EVENT,
   BROWSER_POPUP_EVENT,
   BROWSER_SHORTCUT_EVENT,
   BROWSER_STATE_EVENT,
   type BrowserClosedPayload,
   type BrowserDownload,
+  type BrowserNavigationBlockedPayload,
   type BrowserOpenRequestPayload,
   type BrowserPopupPayload,
   type BrowserShortcutPayload,
@@ -50,6 +57,13 @@ import { getCurrentWindowLabel } from "@/lib/browser/window-label"
  *   dev puppet) asks this window's workspace to open a URL
  * - `browser://download` → the download bar of the tab that started it
  * - `browser://shortcut` → a browser shortcut the page had focus for (⌘F)
+ * - `browser://navigation-blocked` → a notice on the tab whose navigation
+ *   policy refused
+ *
+ * It also carries the user's site rules the other way: the backend enforces
+ * `block` on every navigation a tab attempts, and learns the table from here
+ * at startup and whenever the preference changes (the settings window writes
+ * it; the storage event brings it over).
  *
  * Only subscribes where a built-in browser exists; in web mode there is
  * nothing to hear.
@@ -129,6 +143,16 @@ export function BrowserEventsBridge() {
             setBrowserDownload(download)
           }
         ),
+        transport.subscribe<BrowserNavigationBlockedPayload>(
+          BROWSER_NAVIGATION_BLOCKED_EVENT,
+          (blocked) => {
+            setBrowserTabNotice(browserWorkspaceTabId(blocked.tabId), {
+              kind: "navigation-blocked",
+              url: blocked.url,
+              reason: blocked.reason,
+            })
+          }
+        ),
         transport.subscribe<BrowserOpenRequestPayload>(
           BROWSER_OPEN_REQUEST_EVENT,
           (request) => {
@@ -150,6 +174,13 @@ export function BrowserEventsBridge() {
         return
       }
       unsubscribers.push(...subs)
+      const pushHostRules = () => {
+        void browserSetHostRules(getBrowserPrefs().hostRules).catch(() => {
+          /* the backend keeps its last table */
+        })
+      }
+      pushHostRules()
+      unsubscribers.push(subscribeBrowserPrefs(pushHostRules))
     })()
 
     return () => {

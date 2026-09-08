@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest"
 
 import type {
   BrowserCapabilities,
+  BrowserNavigationBlockedPayload,
   BrowserPopupPayload,
   BrowserTabState,
+  FrozenFrame,
 } from "./types"
 
 // These literals are copied from what the Rust side serializes (see the
@@ -47,6 +49,11 @@ describe("browser wire types", () => {
         reason: null,
       },
       downloadsDir: "/Users/dev/Downloads",
+      policy: {
+        enabled: true,
+        managedRules: [{ pattern: "*.internal.example", action: "block" }],
+        managedSource: "/etc/codeg/policy.json",
+      },
     } satisfies BrowserCapabilities
     const popup = {
       presentation: "adopted",
@@ -57,5 +64,20 @@ describe("browser wire types", () => {
       reason: null,
     } satisfies BrowserPopupPayload
     expect(caps.available && popup.presentation === "adopted").toBe(true)
+  })
+
+  it("matches the Rust serialization of the blocked-navigation event and the freeze frame", () => {
+    const blocked = {
+      tabId: "t1",
+      url: "https://blocked.example/",
+      reason: "host-rule",
+    } satisfies BrowserNavigationBlockedPayload
+    const frame = {
+      mime: "image/jpeg",
+      data: "AAAA",
+      width: 10,
+      height: 4,
+    } satisfies FrozenFrame
+    expect(blocked.reason === "host-rule" && frame.mime).toBe("image/jpeg")
   })
 })

@@ -38,12 +38,12 @@ use super::channel::{self, MessageSink};
 use super::profile;
 use super::events;
 use super::hooks;
-use super::policy;
+use super::policy::{self, BrowserPolicy};
 use super::registry::{BrowserRegistry, BrowserTab};
 use super::surface::BrowserSurface;
 use super::types::{
     Bounds, BrowserOpenRequestPayload, BrowserPopupPayload, BrowserTabState, ChannelKind,
-    PopupPresentation, SurfaceKind,
+    NavigationBlockReason, PopupPresentation, SurfaceKind,
 };
 #[cfg(target_os = "macos")]
 use super::shim::macos as shim;
@@ -122,6 +122,63 @@ fn message_sink(app: &AppHandle) -> MessageSink {
     Arc::new(move |raw, main_frame, source| match tab_id_for_webview(source) {
         Some(tab_id) => channel::handle_message(&app, &tab_id, raw, main_frame),
         None => tracing::debug!("[browser] channel message from an unknown webview dropped"),
+    })
+}
+
+/// Where the platform delegate's navigation events go: the registry, via
+/// the hooks (main thread).
+#[cfg(target_os = "macos")]
+fn navigation_sink(app: &AppHandle, tab_id: &str) -> shim::NavigationSink {
+    let app = app.clone();
+    let tab_id = tab_id.to_string();
+    Arc::new(move |event| match event {
+        shim::NavigationEvent::Started(url) => {
+            if let Ok(url) = Url::parse(&url) {
+                hooks::navigation_started(&app, &tab_id, &url);
+            }
+        }
+        shim::NavigationEvent::Failed(failure) => hooks::navigation_failed(&app, &tab_id, failure),
+    })
+}
+
+/// Main thread only. Wrap the engine's navigation delegate so failures and
+/// provisional starts reach the registry. Not fatal when it cannot be done:
+/// the load watcher still notices a failed load, only later and untyped.
+#[cfg(target_os = "macos")]
+fn attach_navigation_delegate(app: &AppHandle, tab_id: &str, webview: &wry::WebView) {
+    if let Err(err) = shim::install_navigation_delegate(webview, navigation_sink(app, tab_id)) {
+        tracing::warn!(
+            "[browser] tab {tab_id}: navigation delegate not installed ({err}); failures are detected by polling"
+        );
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn attach_navigation_delegate(_app: &AppHandle, _tab_id: &str, _webview: &wry::WebView) {}
+
+/// Inside a navigation handler: is the action being decided for the main
+/// frame? Where the platform cannot say, the strict answer.
+fn current_navigation_is_main_frame() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        shim::current_navigation_is_main_frame().unwrap_or(true)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// Main thread only: forget a tab's webview together with everything hung
+/// on it. `true` when there was one.
+fn drop_surface(id: &str) -> bool {
+    SURFACES.with(|s| {
+        let removed = s.borrow_mut().remove(id);
+        #[cfg(target_os = "macos")]
+        if let Some(webview) = &removed {
+            shim::forget_navigation_delegate(webview);
+        }
+        removed.is_some()
     })
 }
 
@@ -293,6 +350,26 @@ impl ChildHandle {
         }
     }
 
+    /// The frame as displayed now, JPEG-encoded, for the freeze frame.
+    pub fn snapshot_jpeg(
+        &self,
+        quality: f64,
+        callback: impl Fn(Result<(Vec<u8>, u32, u32), String>) + Send + 'static,
+    ) -> Result<(), ChildError> {
+        #[cfg(target_os = "macos")]
+        {
+            self.with(move |wv| shim::snapshot_jpeg(wv, quality, callback))?
+                .map_err(ChildError::Op)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (quality, callback);
+            Err(ChildError::Op(
+                "snapshots are not implemented on this platform yet".into(),
+            ))
+        }
+    }
+
     /// Highlight the next / previous match of `query`; the callback gets
     /// whether anything matched.
     pub fn find(
@@ -413,9 +490,7 @@ impl ChildHandle {
     /// native view from the window when the `WebView` drops).
     pub fn close(&self) -> Result<(), ChildError> {
         let id = self.tab_id.clone();
-        let removed = run_on_main(&self.app, move || {
-            SURFACES.with(|s| s.borrow_mut().remove(&id)).is_some()
-        })?;
+        let removed = run_on_main(&self.app, move || drop_surface(&id))?;
         if removed {
             Ok(())
         } else {
@@ -515,11 +590,35 @@ fn configure_child<'a>(
         .with_devtools(devtools)
         .with_hotkeys_zoom(true)
         .with_navigation_handler(move |url| {
-            let allowed = Url::parse(&url)
-                .map(|u| policy::navigation_allowed(&u))
-                .unwrap_or(false);
-            if !allowed {
-                tracing::info!("[browser] tab {nav_id} blocked navigation to {url}");
+            let Ok(parsed) = Url::parse(&url) else {
+                tracing::info!("[browser] tab {nav_id} blocked unparsable navigation {url:?}");
+                return false;
+            };
+            // The engine asks about every frame's navigation; only the
+            // top-level one gets the strict list and a notice when refused.
+            let main_frame = current_navigation_is_main_frame();
+            let scheme_ok = if main_frame {
+                policy::navigation_allowed(&parsed)
+            } else {
+                policy::subframe_navigation_allowed(&parsed)
+            };
+            if !scheme_ok {
+                if main_frame {
+                    hooks::navigation_blocked(&nav_app, &nav_id, &url, NavigationBlockReason::Scheme);
+                } else {
+                    tracing::debug!("[browser] tab {nav_id} blocked frame navigation to {url}");
+                }
+                return false;
+            }
+            // A `block` site rule applies to every frame: a page must not be
+            // able to load a blocked host by embedding it.
+            if nav_app
+                .try_state::<BrowserPolicy>()
+                .is_some_and(|policy| policy.blocked(&parsed))
+            {
+                if main_frame {
+                    hooks::navigation_blocked(&nav_app, &nav_id, &url, NavigationBlockReason::HostRule);
+                }
                 return false;
             }
             // ⌘/Ctrl-click on a plain anchor: the page did not prevent the
@@ -627,6 +726,7 @@ pub fn create(
     let label = label.to_string();
     run_on_main(&app.clone(), move || -> Result<(), String> {
         let webview = build_child(&app, &owner, &id, &label, bounds, !background, devtools, None)?;
+        attach_navigation_delegate(&app, &id, &webview);
         SURFACES.with(|s| s.borrow_mut().insert(id, webview));
         Ok(())
     })?
@@ -670,6 +770,12 @@ fn new_window_handler(
             Ok(u) if policy::navigation_allowed(&u) => u,
             _ => return deny(&app, &opener_tab_id, &url, &features, "blocked-scheme"),
         };
+        if app
+            .try_state::<BrowserPolicy>()
+            .is_some_and(|policy| policy.blocked(&parsed))
+        {
+            return deny(&app, &opener_tab_id, &url, &features, "blocked-host");
+        }
         let has_gesture = registry
             .recent_gestures(&opener_tab_id)
             .iter()
@@ -698,6 +804,7 @@ fn new_window_handler(
             let platform = objc2::rc::Retained::into_super(
                 tauri_runtime_wry::wry::WebViewExtMacOS::webview(&webview),
             );
+            attach_navigation_delegate(&app, &tab_id, &webview);
             SURFACES.with(|s| s.borrow_mut().insert(tab_id.clone(), webview));
             let handle = ChildHandle {
                 tab_id: tab_id.clone(),
@@ -741,7 +848,7 @@ fn new_window_handler(
                 devtools,
             )) {
                 tracing::warn!("[browser] popup registry insert failed: {err}");
-                SURFACES.with(|s| s.borrow_mut().remove(&tab_id));
+                drop_surface(&tab_id);
                 return deny(&app, &opener_tab_id, &url, &features, "registry");
             }
             // The engine navigates this webview itself; arm the failed-load

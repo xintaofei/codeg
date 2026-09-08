@@ -248,7 +248,7 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
         }
         "browser_set_visible" => {
             let owner = owner()?;
-            browser_commands::set_visible_core(
+            let frame = browser_commands::set_visible_core(
                 &owner,
                 &registry,
                 &str_arg(cmd, "tab_id")?,
@@ -256,9 +256,39 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                 cmd.get("handoff_focus")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                cmd.get("freeze").and_then(Value::as_bool).unwrap_or(false),
             )
+            .await
             .map_err(err_string)?;
-            Ok(Value::Null)
+            // The frame itself is large; report its shape, and write it out
+            // when asked so a run can look at it.
+            match frame {
+                Some(frame) => {
+                    if let Some(path) = cmd.get("frame_path").and_then(Value::as_str) {
+                        use base64::Engine as _;
+                        let bytes = base64::engine::general_purpose::STANDARD
+                            .decode(&frame.data)
+                            .map_err(err_string)?;
+                        std::fs::write(path, bytes).map_err(err_string)?;
+                    }
+                    Ok(json!({
+                        "frame": { "mime": frame.mime, "width": frame.width, "height": frame.height, "base64Len": frame.data.len() }
+                    }))
+                }
+                None => Ok(json!({ "frame": Value::Null })),
+            }
+        }
+        "browser_set_host_rules" => {
+            let rules: Vec<crate::browser::policy::HostRule> =
+                serde_json::from_value(cmd.get("rules").cloned().unwrap_or(json!([])))
+                    .map_err(|e| format!("bad rules: {e}"))?;
+            let policy = app.state::<crate::browser::policy::BrowserPolicy>();
+            policy.set_user_rules(rules);
+            Ok(json!({ "userRules": policy.user_rules().len() }))
+        }
+        "browser_capabilities" => {
+            let policy = app.state::<crate::browser::policy::BrowserPolicy>();
+            Ok(serde_json::to_value(browser_commands::capabilities(&policy)).map_err(err_string)?)
         }
         "browser_navigate" => {
             let state = browser_commands::navigate_core(

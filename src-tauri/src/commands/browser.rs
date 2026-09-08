@@ -3,15 +3,20 @@
 //! dev-only smoke puppet, so every code path the frontend uses is the one the
 //! P0/P1 checks exercised.
 
+use std::time::Duration;
+
+use base64::Engine as _;
 use tauri::{AppHandle, Manager, State, WebviewWindow};
 use tauri::Url;
 
 use crate::app_error::AppCommandError;
 use crate::browser::downloads::{BrowserDownload, BrowserDownloads};
+use crate::browser::policy::{BrowserPolicy, HostRule};
 use crate::browser::registry::{BrowserRegistry, BrowserTab};
 use crate::browser::surface::BrowserSurface;
 use crate::browser::types::{
-    Bounds, BrowserCapabilities, BrowserTabState, ChannelKind, SurfaceChoice, SurfaceKind,
+    Bounds, BrowserCapabilities, BrowserErrorInfo, BrowserErrorKind, BrowserTabState, ChannelKind,
+    FrozenFrame, SurfaceChoice, SurfaceKind,
 };
 use crate::browser::{events, hooks, policy, tab_label};
 
@@ -40,9 +45,14 @@ fn platform_name() -> &'static str {
 
 /// What this build can do on this machine. `channel` stays `degraded` until
 /// the isolated-world channel installer lands; the frontend keys off
-/// `available` and `surface`.
-pub fn capabilities() -> BrowserCapabilities {
+/// `available` and `surface`. An administrator's policy can turn the whole
+/// feature off, in which case every link goes to the system browser.
+pub fn capabilities(policy: &BrowserPolicy) -> BrowserCapabilities {
     let mut reasons = Vec::new();
+    let enabled = policy.enabled();
+    if !enabled {
+        reasons.push("disabled by the administrator's policy".to_string());
+    }
     let surface = if CHILD_SURFACE_COMPILED {
         SurfaceKind::Child
     } else {
@@ -55,15 +65,32 @@ pub fn capabilities() -> BrowserCapabilities {
     };
     reasons.push("page channel not installed yet".to_string());
     BrowserCapabilities {
-        available: true,
-        surface: Some(surface),
+        available: enabled,
+        surface: enabled.then_some(surface),
         platform: platform_name().to_string(),
         channel: ChannelKind::Degraded,
         reasons,
         isolated_storage: crate::browser::profile::isolated_storage(),
         proxy: crate::browser::profile::proxy_status(),
         downloads_dir: crate::browser::downloads::downloads_dir_display(),
+        policy: policy.status(),
     }
+}
+
+/// The error a tab shows for an address a site rule blocks. No message: the
+/// status layer has its own wording, in the user's language.
+fn blocked_error(url: &Url) -> BrowserErrorInfo {
+    BrowserErrorInfo {
+        kind: BrowserErrorKind::Blocked,
+        message: String::new(),
+        url: Some(url.to_string()),
+    }
+}
+
+/// Whether the policy in force refuses `url` outright.
+fn blocked_by_policy(app: &AppHandle, url: &Url) -> bool {
+    app.try_state::<BrowserPolicy>()
+        .is_some_and(|policy| policy.blocked(url))
 }
 
 fn pick_surface(choice: SurfaceChoice) -> SurfaceKind {
@@ -138,6 +165,14 @@ pub fn open_tab_core(
             "browser tab {} is already open",
             params.tab_id
         )));
+    }
+    if app
+        .try_state::<BrowserPolicy>()
+        .is_some_and(|policy| !policy.enabled())
+    {
+        return Err(AppCommandError::invalid_input(
+            "the built-in browser is disabled by the administrator's policy",
+        ));
     }
     let url = parse_web_url(&params.url)?;
     let label = tab_label(&params.tab_id);
@@ -228,6 +263,19 @@ pub fn open_tab_core(
     }
     if params.background && surface.is_embedded() {
         let _ = surface.hide();
+    }
+    // A blocked address gets its tab — the caller (an agent tool, a deep
+    // link) asked for one and the block page is where the user learns why —
+    // but nothing is loaded into it.
+    if blocked_by_policy(app, &url) {
+        let state = registry
+            .update_state(&params.tab_id, |s| {
+                s.loading = false;
+                s.error = Some(blocked_error(&url));
+            })
+            .unwrap_or(state);
+        events::emit_state(app, &state);
+        return Ok(state);
     }
     if let Err(err) = surface.navigate(url) {
         registry.remove(&params.tab_id);
@@ -348,14 +396,73 @@ pub fn set_bounds_core(
     Ok(())
 }
 
-pub fn set_visible_core(
+/// JPEG quality of the freeze frame: legible text under a dimmed overlay,
+/// small enough to ride the IPC without being noticed.
+const FREEZE_JPEG_QUALITY: f64 = 0.8;
+/// How long a hide may wait for its freeze frame. Longer than this and the
+/// overlay would sit under the page for a visible moment; the hide then goes
+/// ahead without a frame.
+const FREEZE_CAPTURE_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// The frame the surface shows now, for the placeholder to paint while the
+/// surface is hidden. `None` whenever it cannot be had in time — a blank
+/// placeholder is the state before this existed, never an error.
+async fn capture_freeze_frame(surface: &BrowserSurface) -> Option<FrozenFrame> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(Vec<u8>, u32, u32), String>>();
+    let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+    if let Err(err) = surface.snapshot_jpeg(FREEZE_JPEG_QUALITY, move |result| {
+        if let Some(tx) = tx.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            let _ = tx.send(result);
+        }
+    }) {
+        tracing::debug!("[browser] no freeze frame: {err}");
+        return None;
+    }
+    match tokio::time::timeout(FREEZE_CAPTURE_TIMEOUT, rx).await {
+        Ok(Ok(Ok((bytes, width, height)))) => Some(FrozenFrame {
+            mime: "image/jpeg".to_string(),
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+            width,
+            height,
+        }),
+        Ok(Ok(Err(err))) => {
+            tracing::debug!("[browser] freeze frame failed: {err}");
+            None
+        }
+        Ok(Err(_)) | Err(_) => {
+            tracing::debug!("[browser] freeze frame did not arrive in time");
+            None
+        }
+    }
+}
+
+/// Show or hide a surface. Hiding with `freeze` first captures the frame the
+/// surface shows and hands it back, so the placeholder can keep showing the
+/// page while an overlay is open over it; the capture is asynchronous, and a
+/// request that a newer one overtook meanwhile is dropped rather than
+/// applied late.
+pub async fn set_visible_core(
     owner: &WebviewWindow,
     registry: &BrowserRegistry,
     tab_id: &str,
     visible: bool,
     handoff_focus: bool,
-) -> Result<(), AppCommandError> {
+    freeze: bool,
+) -> Result<Option<FrozenFrame>, AppCommandError> {
     let surface = surface_of(registry, tab_id)?;
+    let seq = registry
+        .update(tab_id, |tab| {
+            tab.visible_seq += 1;
+            tab.visible_seq
+        })
+        .unwrap_or(0);
+    let mut frame = None;
+    if !visible && freeze && surface.is_embedded() {
+        frame = capture_freeze_frame(&surface).await;
+        if registry.update(tab_id, |tab| tab.visible_seq) != Some(seq) {
+            return Ok(None);
+        }
+    }
     let bounds = registry
         .update(tab_id, |tab| {
             tab.visible = visible;
@@ -381,7 +488,7 @@ pub fn set_visible_core(
             .hide()
             .map_err(|e| window_err("Failed to hide browser surface", e))?;
     }
-    Ok(())
+    Ok(frame)
 }
 
 pub fn navigate_core(
@@ -392,6 +499,19 @@ pub fn navigate_core(
 ) -> Result<BrowserTabState, AppCommandError> {
     let url = parse_web_url(raw_url)?;
     let surface = surface_of(registry, tab_id)?;
+    // Refused by a site rule: the block page takes the place of the page,
+    // as in a browser, and nothing is loaded.
+    if blocked_by_policy(app, &url) {
+        let state = registry
+            .update_state(tab_id, |state| {
+                state.requested_url = url.to_string();
+                state.loading = false;
+                state.error = Some(blocked_error(&url));
+            })
+            .ok_or_else(|| AppCommandError::not_found(format!("browser tab {tab_id} not found")))?;
+        events::emit_state(app, &state);
+        return Ok(state);
+    }
     let state = registry
         .update_state(tab_id, |state| {
             state.requested_url = url.to_string();
@@ -510,8 +630,21 @@ pub fn state_core(registry: &BrowserRegistry, tab_id: &str) -> Result<BrowserTab
 }
 
 #[tauri::command]
-pub async fn browser_capabilities() -> Result<BrowserCapabilities, AppCommandError> {
-    Ok(capabilities())
+pub async fn browser_capabilities(
+    policy: State<'_, BrowserPolicy>,
+) -> Result<BrowserCapabilities, AppCommandError> {
+    Ok(capabilities(&policy))
+}
+
+/// The user's site rules, pushed by the frontend (which owns the preference)
+/// at startup and on every change. Invalid patterns are dropped.
+#[tauri::command]
+pub async fn browser_set_host_rules(
+    policy: State<'_, BrowserPolicy>,
+    rules: Vec<HostRule>,
+) -> Result<(), AppCommandError> {
+    policy.set_user_rules(rules);
+    Ok(())
 }
 
 #[tauri::command]
@@ -579,14 +712,17 @@ pub async fn browser_set_visible(
     tab_id: String,
     visible: bool,
     handoff_focus: Option<bool>,
-) -> Result<(), AppCommandError> {
+    freeze: Option<bool>,
+) -> Result<Option<FrozenFrame>, AppCommandError> {
     set_visible_core(
         &window,
         &registry,
         &tab_id,
         visible,
         handoff_focus.unwrap_or(false),
+        freeze.unwrap_or(false),
     )
+    .await
 }
 
 #[tauri::command]
@@ -709,9 +845,26 @@ mod tests {
 
     #[test]
     fn capabilities_report_a_surface() {
-        let caps = capabilities();
+        let caps = capabilities(&BrowserPolicy::default());
         assert!(caps.available);
         assert!(caps.surface.is_some());
         assert!(!caps.platform.is_empty());
+        assert!(caps.policy.enabled);
+    }
+
+    /// An administrator can turn the feature off: no surface is offered and
+    /// the reason is spelled out for the settings section.
+    #[test]
+    fn capabilities_follow_a_disabling_policy() {
+        let policy = BrowserPolicy::with_managed(crate::browser::policy::ManagedPolicy {
+            browser_enabled: false,
+            host_rules: Vec::new(),
+            source: None,
+        });
+        let caps = capabilities(&policy);
+        assert!(!caps.available);
+        assert!(caps.surface.is_none());
+        assert!(!caps.policy.enabled);
+        assert!(caps.reasons.iter().any(|r| r.contains("policy")));
     }
 }

@@ -8,7 +8,7 @@ use tauri::{AppHandle, Manager, Url};
 
 use super::events;
 use super::registry::BrowserRegistry;
-use super::types::{BrowserErrorInfo, BrowserErrorKind};
+use super::types::{BrowserErrorInfo, BrowserErrorKind, NavigationBlockReason};
 
 pub fn origin_of(url: &Url) -> Option<String> {
     let origin = url.origin();
@@ -19,7 +19,20 @@ pub fn origin_of(url: &Url) -> Option<String> {
     }
 }
 
+/// A commit of `about:blank` while the navigation the engine had started was
+/// for somewhere else. WebKit refuses some loads without ever reporting a
+/// failure — a request to a restricted port (1, 7, 25, … the list every
+/// browser keeps) is answered by committing an empty document in place of
+/// the page — and this is the only trace it leaves. A page that navigates
+/// itself to `about:blank` announces that URL as its provisional start first,
+/// so it is not mistaken for one.
+pub fn blank_substituted_for(provisional: Option<&str>, committed: &Url) -> bool {
+    committed.as_str() == "about:blank"
+        && provisional.is_some_and(|started| started != "about:blank")
+}
+
 pub fn page_load(app: &AppHandle, tab_id: &str, url: &Url, started: bool) {
+    tracing::debug!("[browser] tab {tab_id} page load {}: {url}", if started { "started" } else { "finished" });
     let Some(registry) = app.try_state::<BrowserRegistry>() else {
         return;
     };
@@ -38,27 +51,156 @@ pub fn page_load(app: &AppHandle, tab_id: &str, url: &Url, started: bool) {
                 )
             })
     };
-    let state = registry.update_state(tab_id, |state| {
-        state.url = url.to_string();
-        state.loading = started;
-        state.origin = origin_of(url);
+    let state = registry.update(tab_id, |tab| {
+        let failed_address = (started && blank_substituted_for(tab.provisional_url.as_deref(), url))
+            .then(|| tab.provisional_url.clone())
+            .flatten();
+        let substituted = failed_address.is_some();
         if started {
-            state.error = None;
-            // The previous document's title must not label the new one; the
-            // toolbar falls back to the host until `title_changed` fires.
-            state.title.clear();
+            tab.provisional_url = None;
+        }
+        let state = &mut tab.state;
+        state.url = url.to_string();
+        state.origin = origin_of(url);
+        if let Some(address) = failed_address {
+            // The engine gave up on the page and put nothing in its place:
+            // that is a failed load of the address that was asked for, and
+            // the empty document that committed is not worth a spinner.
+            state.loading = false;
+            state.error = Some(BrowserErrorInfo {
+                kind: BrowserErrorKind::Failed,
+                message: String::new(),
+                url: Some(address),
+            });
+        } else {
+            state.loading = started;
+            if started {
+                state.error = None;
+                // The previous document's title must not label the new one;
+                // the toolbar falls back to the host until `title_changed`
+                // fires.
+                state.title.clear();
+            }
         }
         if let Some((back, forward)) = history {
             state.can_go_back = back;
             state.can_go_forward = forward;
         }
+        (state.clone(), substituted)
+    });
+    let Some((state, substituted)) = state else {
+        return;
+    };
+    events::emit_state(app, &state);
+    if started && !substituted {
+        begin_load(app, tab_id);
+    }
+}
+
+/// The engine started a main-frame navigation (WebKit's
+/// `didStartProvisionalNavigation`, before any byte has arrived). This is the
+/// earliest the tab knows where it is heading: a link click, a redirect chain
+/// or a form post all announce themselves here, so `requested_url` follows
+/// the page's own navigations and not only the address bar's. The failed-load
+/// watcher is armed from here for page-initiated navigations; the commands
+/// arm it themselves as well, and a second arming only retires the first.
+pub fn navigation_started(app: &AppHandle, tab_id: &str, url: &Url) {
+    let Some(registry) = app.try_state::<BrowserRegistry>() else {
+        return;
+    };
+    let state = registry.update(tab_id, |tab| {
+        tab.provisional_url = Some(url.to_string());
+        tab.state.requested_url = url.to_string();
+        tab.state.loading = true;
+        tab.state.error = None;
+        tab.state.clone()
     });
     if let Some(state) = state {
         events::emit_state(app, &state);
     }
-    if started {
-        begin_load(app, tab_id);
+    begin_load(app, tab_id);
+}
+
+/// A navigation the engine reported as failed (a platform delegate callback,
+/// where one exists — wry itself never reports failure).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadFailure {
+    pub kind: BrowserErrorKind,
+    /// The platform's own description, in the system language.
+    pub message: String,
+    /// The address that failed, when the error names one.
+    pub url: Option<String>,
+    /// Failed before anything committed (nothing of the new page is showing)
+    /// rather than after (the page is up, a later part of the load broke).
+    pub provisional: bool,
+}
+
+/// Classify a platform load error. `None` means "not a failure of the page":
+/// a cancelled navigation (superseded by another, stopped by the user) and a
+/// load the host itself redirected to a download or refused by policy both
+/// end with an error code that is not the page's fault and must not paint an
+/// error page. Domains and codes are Apple's (`NSURLErrorDomain`,
+/// `WebKitErrorDomain`); other platforms map their own onto the same kinds.
+pub fn classify_load_error(domain: &str, code: i64) -> Option<BrowserErrorKind> {
+    match domain {
+        "NSURLErrorDomain" => match code {
+            // NSURLErrorCancelled
+            -999 => None,
+            // NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed
+            -1003 | -1006 => Some(BrowserErrorKind::Dns),
+            // NSURLErrorSecureConnectionFailed … NSURLErrorClientCertificateRequired
+            -1206..=-1200 => Some(BrowserErrorKind::Tls),
+            _ => Some(BrowserErrorKind::Failed),
+        },
+        // WebKitErrorFrameLoadInterruptedByPolicyChange: the policy delegate
+        // (our own navigation handler) cancelled the load, or it became a
+        // download. Both are handled where they happen.
+        "WebKitErrorDomain" if code == 102 => None,
+        _ => Some(BrowserErrorKind::Failed),
     }
+}
+
+/// Apply a reported failure. A provisional failure replaces the page with the
+/// error page for the address that was asked for; a failure after commit
+/// only stops the spinner — the document that committed stays, as in a
+/// browser. Either way the load watcher, seeing `loading: false`, stands
+/// down.
+pub fn navigation_failed(app: &AppHandle, tab_id: &str, failure: LoadFailure) {
+    let Some(registry) = app.try_state::<BrowserRegistry>() else {
+        return;
+    };
+    let state = registry.update(tab_id, |tab| {
+        if failure.provisional {
+            tab.provisional_url = None;
+        }
+        let state = &mut tab.state;
+        state.loading = false;
+        if failure.provisional {
+            let url = failure
+                .url
+                .clone()
+                .filter(|u| !u.is_empty())
+                .or_else(|| (!state.requested_url.is_empty()).then(|| state.requested_url.clone()))
+                .or_else(|| (!state.url.is_empty()).then(|| state.url.clone()));
+            state.error = Some(BrowserErrorInfo {
+                kind: failure.kind,
+                message: failure.message.clone(),
+                url,
+            });
+        }
+        state.clone()
+    });
+    if let Some(state) = state {
+        events::emit_state(app, &state);
+    }
+}
+
+/// A top-level navigation was refused (scheme not allowed, or a site rule).
+/// Nothing changes in the tab; the status layer shows why the click did
+/// nothing.
+pub fn navigation_blocked(app: &AppHandle, tab_id: &str, url: &str, reason: NavigationBlockReason) {
+    tracing::info!("[browser] tab {tab_id} blocked navigation to {url} ({reason:?})");
+    events::emit_navigation_blocked(app, tab_id, url, reason);
 }
 
 /// Arm the failed-load watcher for a navigation that is starting now. Called
@@ -276,6 +418,40 @@ mod tests {
         assert!(!s.loading);
         assert!(s.error.is_none());
         assert_eq!(s.requested_url, "");
+    }
+
+    /// An empty document committed in place of the page that was started is
+    /// a refused load; a page that heads for `about:blank` itself is not.
+    #[test]
+    fn a_blank_commit_counts_as_failure_only_when_something_else_was_started() {
+        let blank = Url::parse("about:blank").unwrap();
+        let page = Url::parse("http://127.0.0.1:1/").unwrap();
+        assert!(blank_substituted_for(Some("http://127.0.0.1:1/"), &blank));
+        assert!(!blank_substituted_for(Some("about:blank"), &blank));
+        assert!(!blank_substituted_for(None, &blank));
+        assert!(!blank_substituted_for(Some("http://127.0.0.1:1/"), &page));
+    }
+
+    /// Apple's codes, by kind — and the two that are NOT page failures.
+    #[test]
+    fn load_errors_classify_by_domain_and_code() {
+        use BrowserErrorKind::*;
+        assert_eq!(classify_load_error("NSURLErrorDomain", -1003), Some(Dns));
+        assert_eq!(classify_load_error("NSURLErrorDomain", -1006), Some(Dns));
+        assert_eq!(classify_load_error("NSURLErrorDomain", -1200), Some(Tls));
+        assert_eq!(classify_load_error("NSURLErrorDomain", -1202), Some(Tls));
+        assert_eq!(classify_load_error("NSURLErrorDomain", -1206), Some(Tls));
+        assert_eq!(classify_load_error("NSURLErrorDomain", -1004), Some(Failed));
+        assert_eq!(classify_load_error("NSURLErrorDomain", -1001), Some(Failed));
+        assert_eq!(classify_load_error("NSURLErrorDomain", -1009), Some(Failed));
+        assert_eq!(classify_load_error("NSURLErrorDomain", -1199), Some(Failed));
+        assert_eq!(classify_load_error("NSURLErrorDomain", -1207), Some(Failed));
+        // Superseded / stopped: not an error of the page.
+        assert_eq!(classify_load_error("NSURLErrorDomain", -999), None);
+        // Cancelled by our own policy handler, or became a download.
+        assert_eq!(classify_load_error("WebKitErrorDomain", 102), None);
+        assert_eq!(classify_load_error("WebKitErrorDomain", 101), Some(Failed));
+        assert_eq!(classify_load_error("WKErrorDomain", 2), Some(Failed));
     }
 
     #[test]

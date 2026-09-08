@@ -1,0 +1,193 @@
+// Site rules of the built-in browser: "always open this host in the built-in
+// browser / in the system browser / never". The matching here decides which
+// rule applies to a URL; the same algorithm runs in Rust
+// (`src-tauri/src/browser/policy.rs`), which enforces `block` on every
+// navigation a tab attempts, so both sides must stay identical.
+
+import type { LinkTarget } from "./browser-prefs"
+
+export type HostRuleAction = LinkTarget | "block"
+
+export const HOST_RULE_ACTIONS: readonly HostRuleAction[] = [
+  "builtin",
+  "system",
+  "block",
+]
+
+export interface HostRule {
+  /** Hostname, `*.suffix`, or `*`; an optional `:port` pins the port. */
+  pattern: string
+  action: HostRuleAction
+}
+
+/** Longest a hostname can be (RFC 1035), plus a port. */
+const MAX_PATTERN_LEN = 253 + 6
+
+type HostMatcher =
+  | { kind: "any" }
+  | { kind: "suffix"; suffix: string }
+  | { kind: "exact"; host: string }
+
+export interface ParsedHostRulePattern {
+  host: HostMatcher
+  port: number | null
+}
+
+function validHostname(host: string): boolean {
+  return (
+    host.length > 0 &&
+    !host.startsWith(".") &&
+    !host.endsWith(".") &&
+    !host.includes("..") &&
+    /^[a-z0-9._-]+$/.test(host)
+  )
+}
+
+function validIpv6(host: string): boolean {
+  return host.includes(":") && /^[0-9a-f:.]+$/.test(host)
+}
+
+/**
+ * Parse a pattern; `null` for anything that is not one. Case-insensitive,
+ * surrounding whitespace ignored. Same grammar as the Rust side.
+ */
+export function parseHostRulePattern(
+  pattern: string
+): ParsedHostRulePattern | null {
+  const trimmed = pattern.trim().toLowerCase()
+  if (!trimmed || trimmed.length > MAX_PATTERN_LEN) return null
+  let host: string
+  let portText: string | null = null
+  if (trimmed.startsWith("[")) {
+    // `[::1]:3000` — an IPv6 literal keeps its brackets; the port follows.
+    const close = trimmed.indexOf("]")
+    if (close === -1) return null
+    host = trimmed.slice(1, close)
+    const tail = trimmed.slice(close + 1)
+    if (tail.startsWith(":")) portText = tail.slice(1)
+    else if (tail.length > 0) return null
+  } else {
+    const colon = trimmed.lastIndexOf(":")
+    if (colon !== -1) {
+      const digits = trimmed.slice(colon + 1)
+      if (!/^\d+$/.test(digits)) return null
+      host = trimmed.slice(0, colon)
+      portText = digits
+    } else {
+      host = trimmed
+    }
+  }
+  let port: number | null = null
+  if (portText !== null) {
+    port = Number(portText)
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null
+  }
+  let matcher: HostMatcher
+  if (host === "*") {
+    matcher = { kind: "any" }
+  } else if (host.startsWith("*.")) {
+    const suffix = host.slice(2)
+    if (!validHostname(suffix)) return null
+    matcher = { kind: "suffix", suffix: `.${suffix}` }
+  } else if (validHostname(host) || validIpv6(host)) {
+    matcher = { kind: "exact", host }
+  } else {
+    return null
+  }
+  return { host: matcher, port }
+}
+
+/** Why a typed pattern is not accepted, or `null` when it is. */
+export function validateHostRulePattern(
+  pattern: string
+): "empty" | "invalid" | null {
+  if (!pattern.trim()) return "empty"
+  return parseHostRulePattern(pattern) ? null : "invalid"
+}
+
+/** The form a pattern is stored in: trimmed and lower-cased. */
+export function normalizeHostRulePattern(pattern: string): string {
+  return pattern.trim().toLowerCase()
+}
+
+function effectivePort(parsed: URL): number | null {
+  if (parsed.port) return Number(parsed.port)
+  if (parsed.protocol === "https:") return 443
+  if (parsed.protocol === "http:") return 80
+  return null
+}
+
+function matches(
+  rule: ParsedHostRulePattern,
+  hostname: string,
+  port: number | null
+): boolean {
+  const host = rule.host
+  const hostOk =
+    host.kind === "any"
+      ? true
+      : host.kind === "suffix"
+        ? hostname.endsWith(host.suffix) && hostname.length > host.suffix.length
+        : hostname === host.host
+  return hostOk && (rule.port === null || rule.port === port)
+}
+
+/**
+ * Higher wins: an exact host over a wildcard, a longer wildcard suffix over
+ * a shorter one, `*` last; a pinned port breaks a tie.
+ */
+function specificity(rule: ParsedHostRulePattern): [number, number, number] {
+  const host = rule.host
+  const [kind, len] =
+    host.kind === "exact"
+      ? [2, host.host.length]
+      : host.kind === "suffix"
+        ? [1, host.suffix.length]
+        : [0, 0]
+  return [kind, len, rule.port === null ? 0 : 1]
+}
+
+function moreSpecific(
+  a: [number, number, number],
+  b: [number, number, number]
+): boolean {
+  for (let i = 0; i < 3; i += 1) {
+    if (a[i] !== b[i]) return a[i] > b[i]
+  }
+  return false
+}
+
+/**
+ * The rule that applies to `parsed`: the most specific matching pattern, and
+ * among equally specific ones the first listed. Unparsable patterns never
+ * match.
+ */
+export function matchHostRule(
+  rules: readonly HostRule[] | undefined,
+  parsed: URL
+): HostRule | null {
+  if (!rules || rules.length === 0) return null
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase()
+  const port = effectivePort(parsed)
+  let best: { rule: HostRule; score: [number, number, number] } | null = null
+  for (const rule of rules) {
+    const pattern = parseHostRulePattern(rule.pattern)
+    if (!pattern || !matches(pattern, hostname, port)) continue
+    const score = specificity(pattern)
+    if (!best || moreSpecific(score, best.score)) best = { rule, score }
+  }
+  return best?.rule ?? null
+}
+
+/** Whether a value read from storage or the wire is a rule. */
+export function isHostRule(value: unknown): value is HostRule {
+  if (!value || typeof value !== "object") return false
+  const candidate = value as { pattern?: unknown; action?: unknown }
+  return (
+    typeof candidate.pattern === "string" &&
+    candidate.pattern.trim().length > 0 &&
+    candidate.pattern.length <= MAX_PATTERN_LEN &&
+    typeof candidate.action === "string" &&
+    (HOST_RULE_ACTIONS as readonly string[]).includes(candidate.action)
+  )
+}

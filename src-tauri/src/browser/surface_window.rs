@@ -8,9 +8,10 @@ use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBui
 use super::downloads;
 use super::events;
 use super::hooks;
-use super::policy;
+use super::policy::{self, BrowserPolicy};
 use super::profile;
 use super::registry::BrowserRegistry;
+use super::types::NavigationBlockReason;
 
 pub fn create(
     app: &AppHandle,
@@ -28,7 +29,26 @@ pub fn create(
         .min_inner_size(480.0, 320.0)
         .focused(!background)
         .devtools(devtools)
-        .on_navigation(policy::navigation_allowed)
+        // tauri only asks about top-level navigations here, so every refusal
+        // is worth a notice.
+        .on_navigation({
+            let app = app.clone();
+            let tab_id = tab_id.to_string();
+            move |url| {
+                if !policy::navigation_allowed(url) {
+                    hooks::navigation_blocked(&app, &tab_id, url.as_str(), NavigationBlockReason::Scheme);
+                    return false;
+                }
+                if app
+                    .try_state::<BrowserPolicy>()
+                    .is_some_and(|policy| policy.blocked(url))
+                {
+                    hooks::navigation_blocked(&app, &tab_id, url.as_str(), NavigationBlockReason::HostRule);
+                    return false;
+                }
+                true
+            }
+        })
         .on_page_load({
             let app = app.clone();
             let tab_id = tab_id.to_string();

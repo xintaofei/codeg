@@ -4764,7 +4764,21 @@
     "suspendTitle": "إلغاء تحميل علامات التبويب في الخلفية",
     "suspendHint": "يحرّر ذاكرة علامات تبويب المتصفح التي تبقى في الخلفية لمدة 30 دقيقة. يُعاد تحميلها عند العودة إليها؛ ويُفقد موضع التمرير والسجل.",
     "downloadsTitle": "التنزيلات",
-    "downloadsHint": "تُحفظ الملفات التي تنزّلها الصفحة في {dir}. لا يُفتح أي ملف تلقائيًا، ولا يُستبدل ملف موجود أبدًا."
+    "downloadsHint": "تُحفظ الملفات التي تنزّلها الصفحة في {dir}. لا يُفتح أي ملف تلقائيًا، ولا يُستبدل ملف موجود أبدًا.",
+    "rulesTitle": "قواعد المواقع",
+    "rulesHint": "لكل موقع: دائمًا المتصفح المدمج، أو دائمًا متصفح النظام، أو الحظر. الأنماط هي اسم مضيف أو *.example.com أو *، مع :منفذ اختياري؛ وتفوز المطابقة الأكثر تحديدًا.",
+    "rulePatternPlaceholder": "example.com أو *.example.com",
+    "rulePatternLabel": "نمط الموقع",
+    "ruleActionLabel": "الإجراء",
+    "ruleActionFor": "الإجراء لـ {pattern}",
+    "ruleAdd": "إضافة",
+    "ruleRemove": "إزالة القاعدة",
+    "ruleActionBlock": "حظر",
+    "ruleManaged": "محدّد من قِبل المسؤول",
+    "ruleInvalid": "ليس نمطًا صالحًا",
+    "ruleDuplicate": "توجد قاعدة لهذا النمط بالفعل",
+    "rulesEmpty": "لا توجد قواعد بعد.",
+    "managedDisabled": "أوقفت سياسة المسؤول المتصفح المدمج؛ تُفتح الروابط في متصفح النظام."
   },
   "LogsSettings": {
     "loading": "جارٍ التحميل…",
@@ -5829,7 +5843,13 @@
       "openInSystem": "فتح في متصفح النظام",
       "ownedWindow": "تُعرض هذه الصفحة في نافذة مستقلة.",
       "ownedWindowShow": "إظهار النافذة",
-      "remoteBanner": "فُتح عبر {host}"
+      "remoteBanner": "فُتح عبر {host}",
+      "navigationBlocked": "تم حظر الانتقال: {host}",
+      "navigationBlockedRule": "محظور بقاعدة موقع",
+      "navigationBlockedScheme": "لا يمكن فتح هذا النوع من العناوين هنا",
+      "navigationBlockedOpenSystem": "فتح بتطبيق النظام",
+      "errorBlockedHint": "تحظر قاعدة موقع هذا العنوان. تُدار القواعد في الإعدادات ← المتصفح المدمج.",
+      "popupDeniedBlockedHost": "محظور بقاعدة موقع"
     },
     "tab": {
       "untitled": "علامة تبويب جديدة"
@@ -5857,7 +5877,8 @@
     "toast": {
       "firstOpen": "تم الفتح في المتصفح المدمج",
       "firstOpenHint": "اضغط ⌘/Ctrl أثناء النقر على رابط لفتحه في متصفح النظام بدلًا من ذلك. يمكن تغيير الافتراضي من الإعدادات.",
-      "useSystemAlways": "استخدام متصفح النظام دائمًا"
+      "useSystemAlways": "استخدام متصفح النظام دائمًا",
+      "blockedHost": "محظور بقاعدة موقع: {host}"
     },
     "link": {
       "openBuiltin": "فتح في المتصفح المدمج",

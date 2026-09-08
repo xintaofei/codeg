@@ -6,12 +6,17 @@ const mocks = vi.hoisted(() => ({
   actions: null as null | { openBrowserTab: ReturnType<typeof vi.fn> },
   openUrl: vi.fn(),
   revealItemInDir: vi.fn(),
+  openWithOsHandler: vi.fn(),
 }))
 
 vi.mock("@/contexts/workspace-context", () => ({
   useOptionalWorkspaceActions: () => mocks.actions,
 }))
 vi.mock("@/lib/browser/browser-api", () => ({ browserReload: vi.fn() }))
+vi.mock("@/lib/link-open", () => ({
+  openWithOsHandler: mocks.openWithOsHandler,
+  openInSystemBrowser: vi.fn(),
+}))
 vi.mock("@/lib/platform", () => ({
   openUrl: mocks.openUrl,
   revealItemInDir: mocks.revealItemInDir,
@@ -62,6 +67,7 @@ beforeEach(() => {
   mocks.actions = null
   mocks.openUrl.mockClear()
   mocks.revealItemInDir.mockClear()
+  mocks.openWithOsHandler.mockClear()
 })
 
 describe("BrowserNoticeBar", () => {
@@ -128,6 +134,67 @@ function renderError(error: {
   )
 }
 
+describe("BrowserNoticeBar — refused navigations", () => {
+  it("names the host a site rule blocked, with nothing to click but dismiss", () => {
+    mocks.actions = { openBrowserTab: vi.fn() }
+    setBrowserTabNotice("browser:abc", {
+      kind: "navigation-blocked",
+      url: "https://blocked.example/path",
+      reason: "host-rule",
+    })
+    renderBar()
+    expect(
+      screen.getByText(
+        /Navigation blocked: blocked\.example · blocked by a site rule/
+      )
+    ).toBeInTheDocument()
+    expect(screen.queryByText("Open anyway")).not.toBeInTheDocument()
+    expect(screen.queryByText("Open with system app")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText("Dismiss"))
+    expect(screen.queryByText(/Navigation blocked/)).not.toBeInTheDocument()
+  })
+
+  // A `mailto:` the page pointed at is not a page, but the OS can take it —
+  // the same hand-off the transcript makes for that scheme.
+  it("offers the OS handler for a mailto: the tab refused, and nothing for other schemes", () => {
+    setBrowserTabNotice("browser:abc", {
+      kind: "navigation-blocked",
+      url: "mailto:someone@example.com",
+      reason: "scheme",
+    })
+    const { unmount } = renderBar()
+    expect(
+      screen.getByText(/address type not allowed here/)
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByText("Open with system app"))
+    expect(mocks.openWithOsHandler).toHaveBeenCalledWith(
+      "mailto:someone@example.com"
+    )
+    expect(screen.queryByText(/Navigation blocked/)).not.toBeInTheDocument()
+    unmount()
+
+    setBrowserTabNotice("browser:abc", {
+      kind: "navigation-blocked",
+      url: "vscode://file/x",
+      reason: "scheme",
+    })
+    renderBar()
+    expect(screen.queryByText("Open with system app")).not.toBeInTheDocument()
+  })
+
+  it("does not offer to open a pop-up a site rule refused", () => {
+    mocks.actions = { openBrowserTab: vi.fn() }
+    setBrowserTabNotice("browser:abc", {
+      kind: "popup-denied",
+      url: "https://blocked.example/",
+      reason: "blocked-host",
+    })
+    renderBar()
+    expect(screen.getByText(/blocked by a site rule/)).toBeInTheDocument()
+    expect(screen.queryByText("Open anyway")).not.toBeInTheDocument()
+  })
+})
+
 describe("BrowserErrorPage", () => {
   it("explains a navigation that never produced a page", () => {
     renderError({
@@ -150,6 +217,37 @@ describe("BrowserErrorPage", () => {
     expect(
       screen.queryByText(/a proxy may be required/)
     ).not.toBeInTheDocument()
+    expect(screen.getByText("Open in system browser")).toBeInTheDocument()
+  })
+
+  // The engine's description (system language) and our hint (user language)
+  // are both worth showing: one says what happened, the other what to do.
+  it("shows the platform's description and the hint together for a failed load", () => {
+    renderError({
+      kind: "failed",
+      message: "Could not connect to the server.",
+      url: "https://down.example/",
+    })
+    expect(
+      screen.getByText("Could not connect to the server.")
+    ).toBeInTheDocument()
+    expect(screen.getByText(/a proxy may be required/)).toBeInTheDocument()
+  })
+
+  it("explains a site-rule block and does not offer the system browser", () => {
+    renderError({
+      kind: "blocked",
+      message: "",
+      url: "https://blocked.example/",
+    })
+    expect(
+      screen.getByText("This address is blocked in the built-in browser")
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/A site rule blocks this address/)
+    ).toBeInTheDocument()
+    expect(screen.getByText("Retry")).toBeInTheDocument()
+    expect(screen.queryByText("Open in system browser")).not.toBeInTheDocument()
   })
 })
 

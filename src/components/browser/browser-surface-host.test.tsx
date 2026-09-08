@@ -2,12 +2,19 @@ import { act, render } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { BrowserWorkspaceTab } from "@/contexts/workspace-context"
-import type { BrowserTabState } from "@/lib/browser/types"
+import type { BrowserTabState, FrozenFrame } from "@/lib/browser/types"
 
 const api = vi.hoisted(() => ({
   browserOpenTab: vi.fn(),
   browserSetBounds: vi.fn(() => Promise.resolve()),
-  browserSetVisible: vi.fn(() => Promise.resolve()),
+  browserSetVisible: vi.fn<
+    (
+      id: string,
+      visible: boolean,
+      handoff: boolean,
+      freeze?: boolean
+    ) => Promise<FrozenFrame | null>
+  >(() => Promise.resolve(null)),
 }))
 vi.mock("@/lib/browser/browser-api", () => api)
 vi.mock("@/contexts/workspace-context", () => ({
@@ -115,8 +122,14 @@ describe("BrowserSurfaceHost", () => {
       release = acquireNativeSurfaceOcclusion("dialog")
       await new Promise((resolve) => setTimeout(resolve, 0))
     })
-    // Hidden with focus handoff.
-    expect(api.browserSetVisible).toHaveBeenLastCalledWith("host1", false, true)
+    // Hidden with focus handoff, and a freeze frame requested: the
+    // placeholder stays on screen under the overlay.
+    expect(api.browserSetVisible).toHaveBeenLastCalledWith(
+      "host1",
+      false,
+      true,
+      true
+    )
 
     await act(async () => {
       release()
@@ -183,10 +196,80 @@ describe("BrowserSurfaceHost", () => {
     expect(api.browserSetVisible).toHaveBeenLastCalledWith("host2", true, false)
   })
 
+  // Under an overlay the placeholder stays on screen, so the hide asks for
+  // the page's last frame and paints it until the surface shows again.
+  it("paints the freeze frame while hidden under an overlay and drops it once shown", async () => {
+    api.browserOpenTab.mockImplementation(() => Promise.resolve(state("host4")))
+    let resolveShow: () => void = () => {}
+    api.browserSetVisible.mockImplementation(
+      (_id: string, visible: boolean, _handoff: boolean, freeze?: boolean) => {
+        if (visible) {
+          return new Promise<null>((resolve) => {
+            resolveShow = () => resolve(null)
+          })
+        }
+        return Promise.resolve(
+          freeze
+            ? { mime: "image/jpeg", data: "QUJD", width: 1600, height: 1200 }
+            : null
+        )
+      }
+    )
+    const { container } = render(<BrowserSurfaceHost tab={tab("host4")} />)
+    await flush()
+
+    let release: () => void = () => {}
+    await act(async () => {
+      release = acquireNativeSurfaceOcclusion("dialog")
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(api.browserSetVisible).toHaveBeenLastCalledWith(
+      "host4",
+      false,
+      true,
+      true
+    )
+    const frame = container.querySelector("img[data-browser-frozen-frame]")
+    expect(frame).not.toBeNull()
+    expect(frame?.getAttribute("src")).toBe("data:image/jpeg;base64,QUJD")
+
+    await act(async () => {
+      release()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(api.browserSetVisible).toHaveBeenLastCalledWith("host4", true, false)
+    // Still painted until the native view is back: no blank frame between.
+    expect(
+      container.querySelector("img[data-browser-frozen-frame]")
+    ).not.toBeNull()
+    await act(async () => {
+      resolveShow()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(container.querySelector("img[data-browser-frozen-frame]")).toBeNull()
+  })
+
+  it("does not ask for a frame when the error page hides the surface", async () => {
+    api.browserOpenTab.mockImplementation(() => Promise.resolve(state("host5")))
+    render(<BrowserSurfaceHost tab={tab("host5")} hidden />)
+    await flush()
+    expect(api.browserSetVisible).toHaveBeenLastCalledWith(
+      "host5",
+      false,
+      true,
+      false
+    )
+  })
+
   it("stays hidden while the view is force-hidden (error page)", async () => {
     api.browserOpenTab.mockImplementation(() => Promise.resolve(state("host3")))
     render(<BrowserSurfaceHost tab={tab("host3")} hidden />)
     await flush()
-    expect(api.browserSetVisible).toHaveBeenLastCalledWith("host3", false, true)
+    expect(api.browserSetVisible).toHaveBeenLastCalledWith(
+      "host3",
+      false,
+      true,
+      false
+    )
   })
 })

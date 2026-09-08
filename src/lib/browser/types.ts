@@ -66,6 +66,22 @@ export interface BrowserProxyStatus {
   reason: string | null
 }
 
+/** A site rule as the backend sees it (same shape as `host-rules.ts`). */
+export interface WireHostRule {
+  pattern: string
+  action: "builtin" | "system" | "block"
+}
+
+/** The administrator's policy in force. */
+export interface BrowserPolicyStatus {
+  /** `false`: the built-in browser is turned off machine-wide. */
+  enabled: boolean
+  /** Rules fixed by the administrator; shown read-only, consulted first. */
+  managedRules: WireHostRule[]
+  /** Path of the policy file, when one was read. */
+  managedSource: string | null
+}
+
 export interface BrowserCapabilities {
   available: boolean
   surface: SurfaceKind | null
@@ -77,6 +93,17 @@ export interface BrowserCapabilities {
   proxy: BrowserProxyStatus
   /** Absolute path a page's downloads land in. */
   downloadsDir: string
+  policy: BrowserPolicyStatus
+}
+
+/** The last frame of a page, returned by a hide-with-freeze: the placeholder
+ *  paints it while the surface is hidden under an overlay. */
+export interface FrozenFrame {
+  mime: string
+  /** Base64 of the encoded image. */
+  data: string
+  width: number
+  height: number
 }
 
 export type BrowserDownloadState = "started" | "completed" | "failed"
@@ -138,6 +165,17 @@ export const BROWSER_POPUP_EVENT = "browser://popup"
 export const BROWSER_TELEMETRY_EVENT = "browser://telemetry"
 export const BROWSER_DOWNLOAD_EVENT = "browser://download"
 export const BROWSER_SHORTCUT_EVENT = "browser://shortcut"
+export const BROWSER_NAVIGATION_BLOCKED_EVENT = "browser://navigation-blocked"
+
+export type NavigationBlockReason = "host-rule" | "scheme"
+
+/** `browser://navigation-blocked`: a top-level navigation a tab attempted
+ *  was refused by policy; the tab itself is unchanged. */
+export interface BrowserNavigationBlockedPayload {
+  tabId: string
+  url: string
+  reason: NavigationBlockReason
+}
 
 /** A browser shortcut the page had keyboard focus for. */
 export interface BrowserShortcutPayload {

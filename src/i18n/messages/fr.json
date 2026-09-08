@@ -4764,7 +4764,21 @@
     "suspendTitle": "Décharger les onglets en arrière-plan",
     "suspendHint": "Libère la mémoire des onglets du navigateur restés 30 minutes en arrière-plan. Ils se rechargent quand vous y revenez ; la position de défilement et l’historique sont perdus.",
     "downloadsTitle": "Téléchargements",
-    "downloadsHint": "Les fichiers téléchargés par une page sont enregistrés dans {dir}. Rien n’est ouvert automatiquement et aucun fichier existant n’est remplacé."
+    "downloadsHint": "Les fichiers téléchargés par une page sont enregistrés dans {dir}. Rien n’est ouvert automatiquement et aucun fichier existant n’est remplacé.",
+    "rulesTitle": "Règles de site",
+    "rulesHint": "Par site : toujours le navigateur intégré, toujours le navigateur système, ou bloquer. Les motifs sont un nom d'hôte, *.example.com ou *, avec un :port facultatif ; la correspondance la plus précise l'emporte.",
+    "rulePatternPlaceholder": "example.com ou *.example.com",
+    "rulePatternLabel": "Motif de site",
+    "ruleActionLabel": "Action",
+    "ruleActionFor": "Action pour {pattern}",
+    "ruleAdd": "Ajouter",
+    "ruleRemove": "Supprimer la règle",
+    "ruleActionBlock": "Bloquer",
+    "ruleManaged": "Définie par votre administrateur",
+    "ruleInvalid": "Motif non valide",
+    "ruleDuplicate": "Une règle existe déjà pour ce motif",
+    "rulesEmpty": "Aucune règle pour l'instant.",
+    "managedDisabled": "La politique de votre administrateur a désactivé le navigateur intégré ; les liens s'ouvrent dans le navigateur système."
   },
   "LogsSettings": {
     "loading": "Chargement…",
@@ -5829,7 +5843,13 @@
       "openInSystem": "Ouvrir dans le navigateur système",
       "ownedWindow": "Cette page s'affiche dans sa propre fenêtre.",
       "ownedWindowShow": "Afficher la fenêtre",
-      "remoteBanner": "Ouvert via {host}"
+      "remoteBanner": "Ouvert via {host}",
+      "navigationBlocked": "Navigation bloquée : {host}",
+      "navigationBlockedRule": "bloquée par une règle de site",
+      "navigationBlockedScheme": "ce type d'adresse ne peut pas s'ouvrir ici",
+      "navigationBlockedOpenSystem": "Ouvrir avec l'app système",
+      "errorBlockedHint": "Une règle de site bloque cette adresse. Les règles se gèrent dans Réglages → Navigateur intégré.",
+      "popupDeniedBlockedHost": "bloquée par une règle de site"
     },
     "tab": {
       "untitled": "Nouvel onglet"
@@ -5857,7 +5877,8 @@
     "toast": {
       "firstOpen": "Ouvert dans le navigateur intégré",
       "firstOpenHint": "⌘/Ctrl+clic sur un lien pour l'ouvrir dans le navigateur système. Le choix par défaut se modifie dans les Réglages.",
-      "useSystemAlways": "Toujours utiliser le navigateur système"
+      "useSystemAlways": "Toujours utiliser le navigateur système",
+      "blockedHost": "Bloqué par une règle de site : {host}"
     },
     "link": {
       "openBuiltin": "Ouvrir dans le navigateur intégré",

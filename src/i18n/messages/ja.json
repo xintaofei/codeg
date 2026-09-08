@@ -4764,7 +4764,21 @@
     "suspendTitle": "バックグラウンドのタブを解放",
     "suspendHint": "30 分間バックグラウンドにあるブラウザタブのメモリを解放します。戻ると再読み込みされ、スクロール位置と履歴は失われます。",
     "downloadsTitle": "ダウンロード",
-    "downloadsHint": "ページからダウンロードしたファイルは {dir} に保存されます。自動的に開かれることはなく、既存のファイルを上書きしません。"
+    "downloadsHint": "ページからダウンロードしたファイルは {dir} に保存されます。自動的に開かれることはなく、既存のファイルを上書きしません。",
+    "rulesTitle": "サイトルール",
+    "rulesHint": "サイトごとに設定: 常に内蔵ブラウザ、常にシステムブラウザ、またはブロック。パターンはホスト名、*.example.com、* のいずれかで、:ポートを付けられます。最も具体的な一致が優先されます。",
+    "rulePatternPlaceholder": "example.com または *.example.com",
+    "rulePatternLabel": "サイトのパターン",
+    "ruleActionLabel": "動作",
+    "ruleActionFor": "{pattern} の動作",
+    "ruleAdd": "追加",
+    "ruleRemove": "ルールを削除",
+    "ruleActionBlock": "ブロック",
+    "ruleManaged": "管理者による設定",
+    "ruleInvalid": "有効なパターンではありません",
+    "ruleDuplicate": "このパターンのルールは既にあります",
+    "rulesEmpty": "ルールはまだありません。",
+    "managedDisabled": "管理者のポリシーにより内蔵ブラウザは無効です。リンクはシステムブラウザで開きます。"
   },
   "LogsSettings": {
     "loading": "読み込み中…",
@@ -5829,7 +5843,13 @@
       "openInSystem": "システムのブラウザで開く",
       "ownedWindow": "このページは別ウィンドウに表示されています。",
       "ownedWindowShow": "ウィンドウを表示",
-      "remoteBanner": "{host} 経由で開いています"
+      "remoteBanner": "{host} 経由で開いています",
+      "navigationBlocked": "移動をブロックしました: {host}",
+      "navigationBlockedRule": "サイトルールによりブロック",
+      "navigationBlockedScheme": "この種類のアドレスはここでは開けません",
+      "navigationBlockedOpenSystem": "システムアプリで開く",
+      "errorBlockedHint": "サイトルールがこのアドレスをブロックしています。ルールは「設定 → 内蔵ブラウザ」で管理します。",
+      "popupDeniedBlockedHost": "サイトルールによりブロック"
     },
     "tab": {
       "untitled": "新しいタブ"
@@ -5857,7 +5877,8 @@
     "toast": {
       "firstOpen": "内蔵ブラウザで開きました",
       "firstOpenHint": "⌘/Ctrl を押しながらリンクをクリックするとシステムのブラウザで開きます。既定は設定で変更できます。",
-      "useSystemAlways": "常にシステムのブラウザを使う"
+      "useSystemAlways": "常にシステムのブラウザを使う",
+      "blockedHost": "サイトルールによりブロック: {host}"
     },
     "link": {
       "openBuiltin": "内蔵ブラウザで開く",

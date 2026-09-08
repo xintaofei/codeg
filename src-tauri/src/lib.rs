@@ -395,6 +395,7 @@ mod tauri_app {
             .manage(ConnectionManager::new())
             .manage(crate::browser::BrowserRegistry::default())
             .manage(crate::browser::BrowserDownloads::default())
+            .manage(crate::browser::policy::BrowserPolicy::load())
             .manage(TerminalManager::new())
             .manage(ChatChannelManager::new())
             .manage(windows::SettingsWindowState::new())
@@ -1210,6 +1211,7 @@ mod tauri_app {
                 browser_commands::browser_find,
                 browser_commands::browser_list_downloads,
                 browser_commands::browser_clear_downloads,
+                browser_commands::browser_set_host_rules,
                 conversations::list_conversations,
                 conversations::get_conversation,
                 conversations::list_all_conversations,

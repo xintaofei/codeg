@@ -47,6 +47,7 @@ const AVAILABLE = {
   isolatedStorage: true,
   proxy: { url: null, applies: "live" as const, reason: null },
   downloadsDir: "/Users/dev/Downloads",
+  policy: { enabled: true, managedRules: [], managedSource: null },
 }
 
 describe("useOpenUrlTarget", () => {

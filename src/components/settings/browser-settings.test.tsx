@@ -49,6 +49,8 @@ function capabilitiesWith(proxy: {
     reasons: [],
     isolatedStorage: true,
     proxy,
+    downloadsDir: "/Users/dev/Downloads",
+    policy: { enabled: true, managedRules: [], managedSource: null },
   }
 }
 
@@ -86,6 +88,64 @@ describe("BrowserSettingsSection", () => {
     expect(
       screen.getByRole("combobox", { name: "Tab surface" })
     ).toHaveTextContent("Automatic")
+  })
+
+  it("adds, validates and removes site rules, writing the preference at once", () => {
+    renderSection()
+    expandSection()
+    expect(screen.getByText("No rules yet.")).toBeInTheDocument()
+
+    const pattern = screen.getByRole("textbox", { name: "Site pattern" })
+    fireEvent.change(pattern, { target: { value: " Blocked.Example " } })
+    fireEvent.click(screen.getByRole("button", { name: "Add" }))
+    // Stored normalized, with the picker's default action.
+    expect(getBrowserPrefs().hostRules).toEqual([
+      { pattern: "blocked.example", action: "system" },
+    ])
+    expect(screen.getByText("blocked.example")).toBeInTheDocument()
+    expect(screen.queryByText("No rules yet.")).not.toBeInTheDocument()
+    expect(pattern).toHaveValue("")
+
+    fireEvent.change(pattern, { target: { value: "blocked.example" } })
+    fireEvent.click(screen.getByRole("button", { name: "Add" }))
+    expect(
+      screen.getByText("There is already a rule for this pattern")
+    ).toBeInTheDocument()
+    expect(getBrowserPrefs().hostRules).toHaveLength(1)
+
+    fireEvent.change(pattern, { target: { value: "https://not a pattern" } })
+    fireEvent.click(screen.getByRole("button", { name: "Add" }))
+    expect(screen.getByText("Not a valid pattern")).toBeInTheDocument()
+    expect(getBrowserPrefs().hostRules).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove rule" }))
+    expect(getBrowserPrefs().hostRules).toEqual([])
+    expect(screen.getByText("No rules yet.")).toBeInTheDocument()
+  })
+
+  it("shows the administrator's rules read-only and says when the browser is turned off", async () => {
+    mocks.browserCapabilitiesNow.mockResolvedValue({
+      ...capabilitiesWith({ url: null, applies: "live", reason: null }),
+      available: false,
+      policy: {
+        enabled: false,
+        managedRules: [{ pattern: "*.internal.example", action: "block" }],
+        managedSource: "/etc/codeg/policy.json",
+      },
+    })
+    renderSection()
+    expandSection()
+    expect(await screen.findByText("*.internal.example")).toBeInTheDocument()
+    expect(
+      screen.getByText(/turned off by your administrator/)
+    ).toBeInTheDocument()
+    expect(
+      screen.getAllByLabelText("Set by your administrator").length
+    ).toBeGreaterThan(0)
+    // Nothing to remove: it is not the user's row.
+    expect(
+      screen.queryByRole("button", { name: "Remove rule" })
+    ).not.toBeInTheDocument()
   })
 
   it("persists the background-unload switch, which is off by default", () => {

@@ -183,6 +183,18 @@ impl BrowserSurface {
             window: |_w| { let _ = callback; Err(SurfaceError("snapshots for owned windows land with the platform shims".into())) })
     }
 
+    /// The frame as displayed now, JPEG-encoded (for the freeze frame shown
+    /// while a surface is hidden under an overlay). Embedded surfaces only.
+    pub fn snapshot_jpeg(
+        &self,
+        quality: f64,
+        callback: impl Fn(Result<(Vec<u8>, u32, u32), String>) + Send + 'static,
+    ) -> Result<(), SurfaceError> {
+        per_surface!(self,
+            child: |c| Ok(c.snapshot_jpeg(quality, callback)?),
+            window: |_w| { let _ = (quality, callback); Err(SurfaceError("snapshots for owned windows land with the platform shims".into())) })
+    }
+
     pub fn go_back(&self) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.go_back()?),

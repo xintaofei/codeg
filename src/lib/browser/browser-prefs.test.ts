@@ -8,11 +8,23 @@ import {
   resetBrowserPrefsForTests,
   setAllDefaultLinkTargets,
   setBrowserDevtools,
+  setBrowserHostRules,
   setBrowserSurfaceOverride,
   setDefaultLinkTarget,
   subscribeBrowserPrefs,
   useBrowserPrefs,
 } from "./browser-prefs"
+
+/** Invalidate the in-memory snapshot the way a cross-window change does,
+ *  without touching storage. The subscription that clears the cache only
+ *  exists while someone listens, hence the throwaway subscriber. */
+function resetCacheOnly() {
+  const unsubscribe = subscribeBrowserPrefs(() => {})
+  window.dispatchEvent(
+    new StorageEvent("storage", { key: "browser:host-rules" })
+  )
+  unsubscribe()
+}
 
 describe("browser prefs", () => {
   beforeEach(() => {
@@ -101,6 +113,41 @@ describe("browser prefs", () => {
     unsubscribe()
     setBrowserDevtools(true)
     expect(listener).toHaveBeenCalledTimes(2)
+  })
+
+  it("stores the site-rule table under one key and drops junk on read", () => {
+    expect(getBrowserPrefs().hostRules).toEqual([])
+    setBrowserHostRules([
+      { pattern: "*.corp.example", action: "builtin" },
+      { pattern: "blocked.example", action: "block" },
+    ])
+    expect(getBrowserPrefs().hostRules).toEqual([
+      { pattern: "*.corp.example", action: "builtin" },
+      { pattern: "blocked.example", action: "block" },
+    ])
+    expect(localStorage.getItem("browser:host-rules")).not.toBeNull()
+
+    // A hand-edited or corrupt entry costs that entry, not the table.
+    localStorage.setItem(
+      "browser:host-rules",
+      JSON.stringify([
+        { pattern: "ok.example", action: "system" },
+        { pattern: "", action: "block" },
+        { pattern: "x.example", action: "explode" },
+        "junk",
+      ])
+    )
+    resetCacheOnly()
+    expect(getBrowserPrefs().hostRules).toEqual([
+      { pattern: "ok.example", action: "system" },
+    ])
+    localStorage.setItem("browser:host-rules", "{ not json")
+    resetCacheOnly()
+    expect(getBrowserPrefs().hostRules).toEqual([])
+
+    // An empty table removes the key rather than storing `[]`.
+    setBrowserHostRules([])
+    expect(localStorage.getItem("browser:host-rules")).toBeNull()
   })
 
   it("useBrowserPrefs re-renders on change", () => {

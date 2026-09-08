@@ -7,6 +7,8 @@
 
 import { useSyncExternalStore } from "react"
 
+import { isHostRule, type HostRule } from "./host-rules"
+
 /** Where a clicked address came from; each source carries its own default. */
 export type LinkSource =
   | "transcript"
@@ -39,6 +41,9 @@ export interface BrowserPrefsSnapshot {
    *  while (they reload when shown again). Off by default: a page's state
    *  is worth more than its memory unless the user says otherwise. */
   suspendBackgroundTabs: boolean
+  /** Per-site overrides of the default target, and outright blocks. The
+   *  administrator's rules (from the backend's policy) are not in here. */
+  hostRules: readonly HostRule[]
 }
 
 export const DEFAULT_BROWSER_PREFS: BrowserPrefsSnapshot = Object.freeze({
@@ -53,6 +58,7 @@ export const DEFAULT_BROWSER_PREFS: BrowserPrefsSnapshot = Object.freeze({
   surfaceOverride: "auto",
   firstOpenSeen: false,
   suspendBackgroundTabs: false,
+  hostRules: Object.freeze([]) as readonly HostRule[],
 }) as BrowserPrefsSnapshot
 
 const KEY_PREFIX = "browser:"
@@ -65,6 +71,9 @@ const DEVTOOLS_KEY = `${KEY_PREFIX}devtools`
 const SURFACE_KEY = `${KEY_PREFIX}surface-override`
 const FIRST_OPEN_KEY = `${KEY_PREFIX}first-open-seen`
 const SUSPEND_KEY = `${KEY_PREFIX}suspend-background-tabs`
+// One key for the whole table: a rule list is one setting, edited in one
+// place, and half a table is not a meaningful state.
+const HOST_RULES_KEY = `${KEY_PREFIX}host-rules`
 
 function readRaw(key: string): string | null {
   if (typeof window === "undefined") return null
@@ -83,6 +92,20 @@ function parseSurface(raw: string | null): SurfaceOverride | null {
   return raw === "auto" || raw === "child" || raw === "window" ? raw : null
 }
 
+/** Stored rules, one bad entry dropped rather than the whole list. */
+function parseHostRules(raw: string | null): readonly HostRule[] {
+  if (!raw) return DEFAULT_BROWSER_PREFS.hostRules
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return DEFAULT_BROWSER_PREFS.hostRules
+    return parsed
+      .filter(isHostRule)
+      .map((rule) => ({ pattern: rule.pattern, action: rule.action }))
+  } catch {
+    return DEFAULT_BROWSER_PREFS.hostRules
+  }
+}
+
 function read(): BrowserPrefsSnapshot {
   const defaultTarget = {} as Record<LinkSource, LinkTarget>
   for (const source of LINK_SOURCES) {
@@ -98,6 +121,7 @@ function read(): BrowserPrefsSnapshot {
       DEFAULT_BROWSER_PREFS.surfaceOverride,
     firstOpenSeen: readRaw(FIRST_OPEN_KEY) === "true",
     suspendBackgroundTabs: readRaw(SUSPEND_KEY) === "true",
+    hostRules: parseHostRules(readRaw(HOST_RULES_KEY)),
   }
 }
 
@@ -149,6 +173,14 @@ export function setBrowserSuspendBackgroundTabs(enabled: boolean): void {
   write(SUSPEND_KEY, enabled ? "true" : null)
 }
 
+/** Replace the site-rule table (an empty table removes the key). */
+export function setBrowserHostRules(rules: readonly HostRule[]): void {
+  const cleaned = rules
+    .filter(isHostRule)
+    .map((rule) => ({ pattern: rule.pattern, action: rule.action }))
+  write(HOST_RULES_KEY, cleaned.length > 0 ? JSON.stringify(cleaned) : null)
+}
+
 export function subscribeBrowserPrefs(listener: () => void): () => void {
   if (typeof window === "undefined") return () => {}
   const onChange = () => listener()
@@ -191,6 +223,7 @@ export function resetBrowserPrefsForTests(): void {
     localStorage.removeItem(SURFACE_KEY)
     localStorage.removeItem(FIRST_OPEN_KEY)
     localStorage.removeItem(SUSPEND_KEY)
+    localStorage.removeItem(HOST_RULES_KEY)
   } catch {
     /* ignore */
   }

@@ -22,8 +22,10 @@ const mocks = vi.hoisted(() => {
           isolatedStorage: true,
           proxy: { url: null, applies: "live", reason: null },
           downloadsDir: "/Users/dev/Downloads",
+          policy: { enabled: true, managedRules: [], managedSource: null },
         })
     ),
+    browserSetHostRules: vi.fn(() => Promise.resolve()),
     subscribe: vi.fn((event: string, handler: Handler) => {
       handlers.set(event, handler)
       return Promise.resolve(() => {
@@ -58,6 +60,7 @@ vi.mock("@/lib/browser/browser-api", () => ({
   browserClose: mocks.browserClose,
   browserListTabs: mocks.browserListTabs,
   browserListDownloads: mocks.browserListDownloads,
+  browserSetHostRules: mocks.browserSetHostRules,
 }))
 vi.mock("@/lib/transport", () => ({
   getTransport: () => ({ subscribe: mocks.subscribe }),
@@ -72,10 +75,15 @@ vi.mock("@/contexts/workspace-context", () => ({
 }))
 
 import {
+  resetBrowserPrefsForTests,
+  setBrowserHostRules,
+} from "@/lib/browser/browser-prefs"
+import {
   getBrowserTabState,
   resetBrowserTabStoreForTests,
   setBrowserTabState,
   useBrowserFindRequest,
+  useBrowserTabNotice,
 } from "@/lib/browser/browser-tab-store"
 import {
   getBrowserDownloads,
@@ -108,12 +116,15 @@ describe("BrowserEventsBridge", () => {
     mocks.openBrowserTab.mockClear()
     mocks.browserClose.mockClear()
     mocks.browserListDownloads.mockClear()
+    mocks.browserSetHostRules.mockClear()
     resetBrowserTabStoreForTests()
     resetBrowserDownloadsForTests()
+    resetBrowserPrefsForTests()
   })
   afterEach(() => {
     resetBrowserTabStoreForTests()
     resetBrowserDownloadsForTests()
+    resetBrowserPrefsForTests()
   })
 
   it("subscribes to the streams once the capabilities say a browser exists, after sweeping orphans", async () => {
@@ -125,6 +136,7 @@ describe("BrowserEventsBridge", () => {
     expect([...mocks.handlers.keys()].sort()).toEqual([
       "browser://closed",
       "browser://download",
+      "browser://navigation-blocked",
       "browser://open-request",
       "browser://popup",
       "browser://shortcut",
@@ -260,6 +272,7 @@ describe("BrowserEventsBridge", () => {
     expect(mocks.unsubscribed.sort()).toEqual([
       "browser://closed",
       "browser://download",
+      "browser://navigation-blocked",
       "browser://open-request",
       "browser://popup",
       "browser://shortcut",
@@ -277,9 +290,46 @@ describe("BrowserEventsBridge", () => {
       isolatedStorage: false,
       proxy: { url: null, applies: "unsupported", reason: null },
       downloadsDir: "/Users/dev/Downloads",
+      policy: { enabled: true, managedRules: [], managedSource: null },
     })
     render(<BrowserEventsBridge />)
     await flush()
     expect(mocks.subscribe).not.toHaveBeenCalled()
+  })
+
+  it("pushes the user's site rules to the backend at start and whenever they change", async () => {
+    const { unmount } = render(<BrowserEventsBridge />)
+    await flush()
+    expect(mocks.browserSetHostRules).toHaveBeenCalledWith([])
+    await act(async () => {
+      setBrowserHostRules([{ pattern: "blocked.example", action: "block" }])
+    })
+    expect(mocks.browserSetHostRules).toHaveBeenLastCalledWith([
+      { pattern: "blocked.example", action: "block" },
+    ])
+    unmount()
+    // After unmount the preference subscription is gone with the rest.
+    mocks.browserSetHostRules.mockClear()
+    await act(async () => {
+      setBrowserHostRules([])
+    })
+    expect(mocks.browserSetHostRules).not.toHaveBeenCalled()
+  })
+
+  it("turns a refused navigation into a notice on its tab", async () => {
+    render(<BrowserEventsBridge />)
+    await flush()
+    mocks.handlers.get("browser://navigation-blocked")!({
+      tabId: "abc",
+      url: "https://blocked.example/",
+      reason: "host-rule",
+    })
+    const view = renderHook(() => useBrowserTabNotice("browser:abc"))
+    expect(view.result.current).toEqual({
+      kind: "navigation-blocked",
+      url: "https://blocked.example/",
+      reason: "host-rule",
+    })
+    view.unmount()
   })
 })

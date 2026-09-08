@@ -4764,7 +4764,21 @@
     "suspendTitle": "백그라운드 탭 내려놓기",
     "suspendHint": "30분 동안 백그라운드에 있는 브라우저 탭의 메모리를 해제합니다. 다시 전환하면 새로 불러오며, 스크롤 위치와 방문 기록은 사라집니다.",
     "downloadsTitle": "다운로드",
-    "downloadsHint": "페이지에서 내려받은 파일은 {dir}에 저장됩니다. 자동으로 열지 않으며 기존 파일을 덮어쓰지 않습니다."
+    "downloadsHint": "페이지에서 내려받은 파일은 {dir}에 저장됩니다. 자동으로 열지 않으며 기존 파일을 덮어쓰지 않습니다.",
+    "rulesTitle": "사이트 규칙",
+    "rulesHint": "사이트별 설정: 항상 내장 브라우저, 항상 시스템 브라우저, 또는 차단. 패턴은 호스트 이름, *.example.com 또는 *이며 :포트를 붙일 수 있습니다. 가장 구체적인 일치가 적용됩니다.",
+    "rulePatternPlaceholder": "example.com 또는 *.example.com",
+    "rulePatternLabel": "사이트 패턴",
+    "ruleActionLabel": "동작",
+    "ruleActionFor": "{pattern}의 동작",
+    "ruleAdd": "추가",
+    "ruleRemove": "규칙 삭제",
+    "ruleActionBlock": "차단",
+    "ruleManaged": "관리자가 설정함",
+    "ruleInvalid": "올바른 패턴이 아닙니다",
+    "ruleDuplicate": "이 패턴에 대한 규칙이 이미 있습니다",
+    "rulesEmpty": "아직 규칙이 없습니다.",
+    "managedDisabled": "관리자 정책으로 내장 브라우저가 꺼져 있습니다. 링크는 시스템 브라우저에서 열립니다."
   },
   "LogsSettings": {
     "loading": "불러오는 중…",
@@ -5829,7 +5843,13 @@
       "openInSystem": "시스템 브라우저에서 열기",
       "ownedWindow": "이 페이지는 별도의 창에 표시됩니다.",
       "ownedWindowShow": "창 표시",
-      "remoteBanner": "{host}을(를) 통해 열림"
+      "remoteBanner": "{host}을(를) 통해 열림",
+      "navigationBlocked": "이동이 차단됨: {host}",
+      "navigationBlockedRule": "사이트 규칙으로 차단됨",
+      "navigationBlockedScheme": "이 종류의 주소는 여기서 열 수 없습니다",
+      "navigationBlockedOpenSystem": "시스템 앱으로 열기",
+      "errorBlockedHint": "사이트 규칙이 이 주소를 차단합니다. 규칙은 설정 → 내장 브라우저에서 관리합니다.",
+      "popupDeniedBlockedHost": "사이트 규칙으로 차단됨"
     },
     "tab": {
       "untitled": "새 탭"
@@ -5857,7 +5877,8 @@
     "toast": {
       "firstOpen": "내장 브라우저에서 열었습니다",
       "firstOpenHint": "⌘/Ctrl을 누른 채 링크를 클릭하면 시스템 브라우저에서 열립니다. 기본값은 설정에서 바꿀 수 있습니다.",
-      "useSystemAlways": "항상 시스템 브라우저 사용"
+      "useSystemAlways": "항상 시스템 브라우저 사용",
+      "blockedHost": "사이트 규칙으로 차단됨: {host}"
     },
     "link": {
       "openBuiltin": "내장 브라우저에서 열기",
