@@ -670,9 +670,16 @@ impl CodegNavigationDelegate {
 }
 
 /// Re-decide the identity for the page the webview shows (the preference
-/// changed). Main thread.
-pub fn apply_user_agent_to(webview: &wry::WebView, url: &tauri::Url) {
-    apply_user_agent(&webview.webview(), url);
+/// changed), from the webview's own URL. Main thread. A webview with no URL
+/// yet (nothing committed) is left alone: its first navigation decides.
+pub fn refresh_user_agent(webview: &wry::WebView) {
+    let wk = webview.webview();
+    // SAFETY: main thread, live webview.
+    let url = unsafe { wk.URL().and_then(|u| u.absoluteString()) }
+        .and_then(|s| tauri::Url::parse(&s.to_string()).ok());
+    if let Some(url) = url {
+        apply_user_agent(&wk, &url);
+    }
 }
 
 /// Give the webview the user agent `profile::user_agent_for` wants for a

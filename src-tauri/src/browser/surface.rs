@@ -251,12 +251,9 @@ impl BrowserSurface {
     /// Re-decide the identity the surface presents for the page it shows
     /// (the sign-in preference changed). Owned windows have no per-navigation
     /// identity and keep the engine's own.
-    pub fn apply_user_agent(&self, url: &Url) -> Result<(), SurfaceError> {
+    pub fn refresh_user_agent(&self) -> Result<(), SurfaceError> {
         per_surface!(self,
-            child: |c| Ok(c.apply_user_agent(url)?),
-            window: |_w| {
-                let _ = url;
-                Ok(())
-            })
+            child: |c| Ok(c.refresh_user_agent()?),
+            window: |_w| Ok(()))
     }
 }

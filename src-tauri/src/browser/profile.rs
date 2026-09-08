@@ -16,10 +16,11 @@
 //! identifier on macOS 14+, a directory on Windows / Linux — so the backend
 //! keeps no list of its own. Every profile shares the app's proxy setting.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Url};
@@ -352,42 +353,118 @@ pub fn proxy_settings_changed(app: &AppHandle) {
     }
 }
 
-/// Profiles whose deletion is under way. Opening a tab, adopting a popup or
-/// clearing data in one of these is refused until the deletion has finished,
-/// so nothing can recreate the store between the closing of its tabs and
-/// the removal of its files.
-static REMOVING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
-
-fn removing() -> std::sync::MutexGuard<'static, Option<HashSet<String>>> {
-    REMOVING.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+/// Who is using a profile's store right now, and which profiles are being
+/// deleted. Opening a tab, adopting a popup and clearing data each hold an
+/// `Admission` for the whole of their work (through the insert into the
+/// registry, through the clear); a deletion marks the profile — refusing
+/// new admissions — and then waits for the ones in flight to finish before
+/// it touches the store. Without both halves, an open that had passed its
+/// check could still build a webview on a store whose deletion had begun.
+#[derive(Default)]
+struct Occupancy {
+    removing: HashSet<String>,
+    in_flight: HashMap<String, usize>,
 }
 
-/// Marks a profile as being deleted for as long as it lives.
-pub struct RemovalGuard(String);
+static OCCUPANCY: Mutex<Option<Occupancy>> = Mutex::new(None);
 
-impl Drop for RemovalGuard {
+fn occupancy() -> std::sync::MutexGuard<'static, Option<Occupancy>> {
+    OCCUPANCY.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Holds the profile in use for as long as it lives.
+pub struct Admission(String);
+
+impl Drop for Admission {
     fn drop(&mut self) {
-        if let Some(set) = removing().as_mut() {
-            set.remove(&self.0);
+        if let Some(state) = occupancy().as_mut() {
+            if let Some(count) = state.in_flight.get_mut(&self.0) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    state.in_flight.remove(&self.0);
+                }
+            }
         }
     }
 }
 
-/// Start deleting `profile_id`; a second deletion of the same profile while
-/// one is running is refused.
+/// Take the profile into use for an operation; refused while the profile is
+/// being deleted.
+pub fn admit(profile_id: &str) -> Result<Admission, String> {
+    let mut guard = occupancy();
+    let state = guard.get_or_insert_with(Occupancy::default);
+    if state.removing.contains(profile_id) {
+        return Err("this browser profile is being deleted".to_string());
+    }
+    *state.in_flight.entry(profile_id.to_string()).or_insert(0) += 1;
+    Ok(Admission(profile_id.to_string()))
+}
+
+/// Marks a profile as being deleted for as long as the last clone lives —
+/// the deletion command holds one, and so does every native completion
+/// callback it starts, so a command that times out cannot lift the mark
+/// while WebKit is still working on the store.
+pub struct RemovalGuard(Arc<RemovalMark>);
+
+struct RemovalMark(String);
+
+impl Drop for RemovalMark {
+    fn drop(&mut self) {
+        if let Some(state) = occupancy().as_mut() {
+            state.removing.remove(&self.0);
+        }
+    }
+}
+
+impl RemovalGuard {
+    /// Another holder of the same mark (for a callback that outlives the
+    /// command).
+    pub fn share(&self) -> RemovalGuard {
+        RemovalGuard(self.0.clone())
+    }
+}
+
+/// Start deleting `profile_id`: from now on `admit` refuses it. A second
+/// deletion of the same profile while one is running is refused.
 pub fn begin_removal(profile_id: &str) -> Result<RemovalGuard, String> {
-    let mut guard = removing();
-    let set = guard.get_or_insert_with(HashSet::new);
-    if !set.insert(profile_id.to_string()) {
+    let mut guard = occupancy();
+    let state = guard.get_or_insert_with(Occupancy::default);
+    if !state.removing.insert(profile_id.to_string()) {
         return Err(format!("browser profile {profile_id:?} is already being deleted"));
     }
-    Ok(RemovalGuard(profile_id.to_string()))
+    Ok(RemovalGuard(Arc::new(RemovalMark(profile_id.to_string()))))
 }
 
 pub fn is_removing(profile_id: &str) -> bool {
-    removing()
+    occupancy()
         .as_ref()
-        .is_some_and(|set| set.contains(profile_id))
+        .is_some_and(|state| state.removing.contains(profile_id))
+}
+
+/// Operations holding the profile in use right now.
+pub fn in_flight(profile_id: &str) -> usize {
+    occupancy()
+        .as_ref()
+        .and_then(|state| state.in_flight.get(profile_id).copied())
+        .unwrap_or(0)
+}
+
+/// How long a deletion waits for the profile's in-flight operations (an
+/// open building its webview, a clear) before giving up.
+pub const REMOVAL_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Wait until nothing holds the profile in use (deletion has already been
+/// marked, so nothing new can). `false` when `REMOVAL_DRAIN_TIMEOUT` passes
+/// first.
+pub async fn wait_until_idle(profile_id: &str) -> bool {
+    let deadline = std::time::Instant::now() + REMOVAL_DRAIN_TIMEOUT;
+    while in_flight(profile_id) > 0 {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    true
 }
 
 /// Windows / Linux: delete a profile's directory, and with it everything the
@@ -619,10 +696,43 @@ mod tests {
         assert!(is_removing("p-going"));
         assert!(begin_removal("p-going").is_err());
         assert!(!is_removing("p-other"));
+        // A callback's share keeps the mark after the command's own is gone.
+        let shared = guard.share();
         drop(guard);
+        assert!(is_removing("p-going"));
+        drop(shared);
         assert!(!is_removing("p-going"));
         // Free again once the first deletion is over.
         drop(begin_removal("p-going").unwrap());
+    }
+
+    #[test]
+    fn admissions_are_counted_and_refused_during_a_deletion() {
+        assert_eq!(in_flight("p-busy"), 0);
+        let a = admit("p-busy").unwrap();
+        let b = admit("p-busy").unwrap();
+        assert_eq!(in_flight("p-busy"), 2);
+        drop(a);
+        assert_eq!(in_flight("p-busy"), 1);
+        let removal = begin_removal("p-busy").unwrap();
+        assert!(admit("p-busy").is_err());
+        // Other profiles are not affected.
+        drop(admit("p-free").unwrap());
+        drop(b);
+        assert_eq!(in_flight("p-busy"), 0);
+        drop(removal);
+        drop(admit("p-busy").unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_deletion_waits_for_the_profile_to_drain() {
+        let held = admit("p-drain").unwrap();
+        let _removal = begin_removal("p-drain").unwrap();
+        let waiter = tokio::spawn(async { wait_until_idle("p-drain").await });
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(!waiter.is_finished());
+        drop(held);
+        assert!(waiter.await.unwrap());
     }
 
     #[test]

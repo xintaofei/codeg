@@ -181,11 +181,10 @@ pub fn open_tab_core(
     let url = parse_web_url(&params.url)?;
     let label = tab_label(&params.tab_id);
     profile::check(&params.profile).map_err(AppCommandError::invalid_input)?;
-    if profile::is_removing(&params.profile) {
-        return Err(AppCommandError::invalid_input(
-            "this browser profile is being deleted",
-        ));
-    }
+    // Held until this returns (the tab is registered by then): a deletion of
+    // the profile that has begun refuses the open, one that begins now waits
+    // for it.
+    let _admission = profile::admit(&params.profile).map_err(AppCommandError::invalid_input)?;
     profile::prepare(app, &params.profile)
         .map_err(|e| window_err("Failed to prepare the browser profile", e))?;
 
@@ -529,11 +528,8 @@ pub async fn clear_data_core(
     // default has no store of its own, and clearing "it" would clear the
     // shared one.
     profile::check(profile_id).map_err(AppCommandError::invalid_input)?;
-    if profile::is_removing(profile_id) {
-        return Err(AppCommandError::invalid_input(
-            "this browser profile is being deleted",
-        ));
-    }
+    // Held through the clear: see `open_tab_core`.
+    let _admission = profile::admit(profile_id).map_err(AppCommandError::invalid_input)?;
     #[cfg(target_os = "macos")]
     {
         // Straight at the profile's store: works with no tab open and reports
@@ -582,26 +578,32 @@ pub async fn remove_profile_core(
     }
     // From here until the store is gone, nothing may put it back in use:
     // opens, popups and clears of this profile are refused (see
-    // `profile::is_removing`), and the guard lifts that when this returns.
-    let _removing = profile::begin_removal(profile_id).map_err(AppCommandError::invalid_input)?;
+    // `profile::admit`), the ones already under way are waited for, and the
+    // mark lifts when the last holder is gone — the native completion
+    // callbacks hold shares, so a command that times out cannot lift it
+    // while WebKit is still at work.
+    let removing = profile::begin_removal(profile_id).map_err(AppCommandError::invalid_input)?;
+    if !profile::wait_until_idle(profile_id).await {
+        return Err(AppCommandError::invalid_input(
+            "the browser profile is busy; try again in a moment",
+        ));
+    }
     // Detach only tabs that are STILL in the profile when each is taken: a
     // tab id can be reused by a later incarnation in another profile.
-    let mut had_tabs = false;
     for tab_id in registry.tabs_in_profile(profile_id) {
         let Some(tab) = registry.remove_if(&tab_id, |tab| tab.state.profile.as_deref() == Some(profile_id))
         else {
             continue;
         };
-        had_tabs = true;
         let _ = tab.surface.close();
         if let Some(guests) = app.try_state::<DocGuests>() {
             guests.unbind(&tab_id);
         }
         events::emit_closed(app, &tab_id, &tab.state.owner_window);
     }
-    if had_tabs {
-        tokio::time::sleep(Duration::from_millis(300)).await;
-    }
+    // A moment for the engine to let go of views that were just closed —
+    // here or by a close that was still running when the tabs were listed.
+    tokio::time::sleep(Duration::from_millis(300)).await;
     #[cfg(target_os = "macos")]
     {
         // Two main-thread turns: the data goes through the store first (that
@@ -612,13 +614,21 @@ pub async fn remove_profile_core(
         // an autoreleased one — is still alive when WebKit checks.
         let what = "Failed to delete the browser profile";
         let clearing = profile_id.to_string();
+        let mark = removing.share();
         on_main_until_done(app, what, move |done| {
-            crate::browser::shim::macos::clear_profile_store(&clearing, done)
+            crate::browser::shim::macos::clear_profile_store(&clearing, move || {
+                let _held = &mark;
+                done()
+            })
         })
         .await?;
-        let removing = profile_id.to_string();
+        let removing_id = profile_id.to_string();
+        let mark = removing.share();
         on_main_until_result(app, what, move |done| {
-            crate::browser::shim::macos::remove_profile_store(&removing, done)
+            crate::browser::shim::macos::remove_profile_store(&removing_id, move |result| {
+                let _held = &mark;
+                done(result)
+            })
         })
         .await
     }
@@ -628,8 +638,10 @@ pub async fn remove_profile_core(
         crate::browser::surface_child::forget_profile_context(app, profile_id)
             .map_err(|e| window_err("Failed to delete the browser profile", e))?;
         let _ = app;
-        profile::remove_directory(profile_id)
-            .map_err(|e| window_err("Failed to delete the browser profile", e))
+        let result = profile::remove_directory(profile_id)
+            .map_err(|e| window_err("Failed to delete the browser profile", e));
+        drop(removing);
+        result
     }
 }
 
@@ -1025,18 +1037,15 @@ pub async fn browser_set_host_rules(
 /// not only to their next navigation.
 pub fn set_sign_in_user_agent_core(registry: &BrowserRegistry, enabled: bool) {
     profile::set_sign_in_user_agent(enabled);
+    // Each surface decides from its own current URL on the main thread, so a
+    // tab id reused by a newer incarnation meanwhile cannot be given the
+    // older page's identity.
     for state in registry.list() {
         if state.kind != TabKind::Page {
             continue;
         }
-        let Some(url) = [state.url.as_str(), state.requested_url.as_str()]
-            .into_iter()
-            .find_map(|candidate| Url::parse(candidate).ok())
-        else {
-            continue;
-        };
         if let Some(surface) = registry.surface(&state.tab_id) {
-            if let Err(err) = surface.apply_user_agent(&url) {
+            if let Err(err) = surface.refresh_user_agent() {
                 tracing::debug!("[browser] tab {}: identity not re-applied: {err}", state.tab_id);
             }
         }

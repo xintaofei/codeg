@@ -965,34 +965,50 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     [browserTabRecord]
   )
 
-  // A deleted profile has no store any more. Its loaded tabs were closed by
-  // the backend as part of the deletion; the records that were not loaded
-  // (restored, suspended) would recreate the store the moment they are
-  // shown, so they move to the default profile as soon as the preference
-  // says the profile is gone.
+  // A deleted profile has no store any more. Its loaded tabs are closed by
+  // the backend as part of the deletion (their records go with the
+  // `browser://closed` event, and until then they still name the store their
+  // surface lives in); the records that are NOT loaded (restored, suspended)
+  // would recreate the store the moment they are shown, so they move to the
+  // default profile as soon as the preference says the profile is gone — or
+  // go, if the default profile already has a tab on that page (one tab per
+  // page and profile).
   useEffect(
     () =>
       subscribeBrowserPrefs(() => {
         const prefs = getBrowserPrefs()
         setFileTabs((prev) => {
-          let changed = false
-          const next = prev.map((tab) => {
-            if (
-              tab.kind !== "browser" ||
-              browserProfileExists(prefs, tab.browser.profile)
-            ) {
-              return tab
+          const dormantOrphan = (tab: FileWorkspaceTab) =>
+            tab.kind === "browser" &&
+            !browserProfileExists(prefs, tab.browser.profile) &&
+            getBrowserTabState(tab.id) === null
+          if (!prev.some(dormantOrphan)) return prev
+          const inDefault = new Set(
+            prev.flatMap((tab) =>
+              tab.kind === "browser" &&
+              tab.browser.profile === DEFAULT_BROWSER_PROFILE_ID
+                ? [normalizeUrlForDedupe(tab.browser.initialUrl) ?? ""]
+                : []
+            )
+          )
+          const next: FileWorkspaceTab[] = []
+          for (const tab of prev) {
+            if (!dormantOrphan(tab) || tab.kind !== "browser") {
+              next.push(tab)
+              continue
             }
-            changed = true
-            return {
+            const key = normalizeUrlForDedupe(tab.browser.initialUrl) ?? ""
+            if (inDefault.has(key)) continue
+            inDefault.add(key)
+            next.push({
               ...tab,
               browser: {
                 ...tab.browser,
                 profile: DEFAULT_BROWSER_PROFILE_ID,
               },
-            }
-          })
-          return changed ? next : prev
+            })
+          }
+          return next
         })
       }),
     []
@@ -1014,14 +1030,18 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     // go: the tab strip keeps showing the page's title, and the surface
     // created when the tab is next shown loads that page, not the address
     // the tab was opened with. History and scroll position are lost, as in
-    // a browser's discarded tab.
+    // a browser's discarded tab. A profile deleted while the tab was loaded
+    // is left behind here too: the dormant record must not name it.
+    const profile = browserProfileExists(getBrowserPrefs(), tab.browser.profile)
+      ? tab.browser.profile
+      : DEFAULT_BROWSER_PROFILE_ID
     setFileTabs((prev) =>
       prev.map((t) =>
         t.id === tabId && t.kind === "browser"
           ? {
               ...t,
               title,
-              browser: { ...t.browser, initialUrl: url },
+              browser: { ...t.browser, initialUrl: url, profile },
             }
           : t
       )

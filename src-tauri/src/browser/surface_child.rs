@@ -399,17 +399,17 @@ impl ChildHandle {
         }
     }
 
-    /// Present the identity `profile::user_agent_for` wants for `url` from
-    /// now on (the preference changed while the page is showing).
-    pub fn apply_user_agent(&self, url: &Url) -> Result<(), ChildError> {
+    /// Re-decide the identity for the page the webview shows right now (the
+    /// preference changed). Read from the webview itself on the main thread,
+    /// not from a state snapshot: a tab id can name a newer incarnation by
+    /// the time a snapshot is acted on.
+    pub fn refresh_user_agent(&self) -> Result<(), ChildError> {
         #[cfg(target_os = "macos")]
         {
-            let url = url.clone();
-            self.with(move |wv| shim::apply_user_agent_to(wv, &url))
+            self.with(shim::refresh_user_agent)
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = url;
             Ok(())
         }
     }
@@ -698,6 +698,10 @@ fn configure_child<'a>(
     let nav_app = app.clone();
     let nav_owner = owner.label().to_string();
     let nav_kind = kind.clone();
+    // The profile this webview was built in, fixed for its life: what the
+    // hooks report, rather than a registry lookup that could find a later
+    // incarnation of the same id or nothing at all.
+    let nav_profile = profile.to_string();
     let mut builder = builder
         .with_id(label)
         .with_bounds(rect(bounds))
@@ -773,7 +777,7 @@ fn configure_child<'a>(
                             activate: false,
                             owner_window: Some(nav_owner.clone()),
                             opener_tab_id: Some(nav_id.clone()),
-                            profile: registry.state(&nav_id).and_then(|state| state.profile),
+                            profile: Some(nav_profile.clone()),
                         },
                     );
                     return false;
@@ -811,7 +815,7 @@ fn configure_child<'a>(
                     super::downloads::finished(&app, &url, path, success)
                 }
             })
-            .with_new_window_req_handler(new_window_handler(app.clone(), owner.clone(), tab_id.to_string())),
+            .with_new_window_req_handler(new_window_handler(app.clone(), owner.clone(), tab_id.to_string(), profile.to_string())),
         ChildKind::Document(grant) => builder
             // A document does not download and does not open windows: both
             // are refused and reported, and a web address a `window.open`
@@ -978,6 +982,7 @@ fn new_window_handler(
     app: AppHandle,
     owner: WebviewWindow,
     opener_tab_id: String,
+    opener_profile: String,
 ) -> impl Fn(String, NewWindowFeatures) -> NewWindowResponse + 'static {
     move |url, features| {
         let Some(registry) = app.try_state::<BrowserRegistry>() else {
@@ -1019,17 +1024,15 @@ fn new_window_handler(
                 .unwrap_or_default();
             let configuration = features.opener.target_configuration.clone();
             // The opener's configuration carries the opener's data store, so
-            // the popup lives in the opener's profile whatever is said here;
-            // the state says the same so the frontend can show it.
-            let profile = registry
-                .state(&opener_tab_id)
-                .and_then(|state| state.profile)
-                .unwrap_or_else(|| profile::DEFAULT_PROFILE_ID.to_string());
-            // The opener's profile is on its way out: its tabs are being
-            // closed, and a popup would put the store back in use.
-            if profile::is_removing(&profile) {
+            // the popup lives in the opener's profile — the one its webview
+            // was built in — whatever the registry says about the opener by
+            // now; the state says the same so the frontend can show it.
+            let profile = opener_profile.clone();
+            // Held until the popup is registered: a deletion of the profile
+            // that has begun refuses it, and one that begins now waits.
+            let Ok(_admission) = profile::admit(&profile) else {
                 return deny(&app, &opener_tab_id, &url, &features, "profile-deleting");
-            }
+            };
             let webview = match build_child(&app, &owner, &tab_id, &label, bounds, true, devtools, Some(configuration), &ChildKind::Page, &profile) {
                 Ok(webview) => webview,
                 Err(err) => {
@@ -1110,7 +1113,7 @@ fn new_window_handler(
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = (&owner, parsed);
+            let _ = (&owner, parsed, &opener_profile);
             deny(&app, &opener_tab_id, &url, &features, "unsupported-platform")
         }
     }

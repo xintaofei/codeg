@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useSyncExternalStore } from "react"
 import { useTranslations } from "next-intl"
 import { PanelRightOpen } from "lucide-react"
 
@@ -32,6 +32,26 @@ import { BrowserTabView } from "./browser-tab-view"
  * opens (or re-uses) the tab record without activating the file column, shows
  * its view here, and "open in workspace" leads back to the column.
  */
+
+// Which workspace record each drawer URL was opened as (see
+// `BrowserViewerBody`). Module-level: the drawer is one component, and the
+// value has to be written from an effect and read while rendering.
+const openedTabs = new Map<string, string | null>()
+const openedListeners = new Set<() => void>()
+
+function subscribeOpened(listener: () => void): () => void {
+  openedListeners.add(listener)
+  return () => {
+    openedListeners.delete(listener)
+  }
+}
+
+function rememberOpened(url: string, id: string | null): void {
+  if (openedTabs.get(url) === id) return
+  openedTabs.set(url, id)
+  for (const listener of [...openedListeners]) listener()
+}
+
 export function BrowserViewerDrawer({
   url,
   open,
@@ -73,31 +93,38 @@ function BrowserViewerBody({
   const { fileTabs } = useWorkspaceFileTabs()
   const route = useOptionalWorkbenchRoute()
 
-  // Open (or re-use) the workspace tab without activating the file column;
-  // the record shows up in `fileTabs` and is found below, so no local state
-  // is needed.
+  // Open (or re-use) the workspace tab without activating the file column,
+  // and remember WHICH record that was: the same page can be open in two
+  // profiles, and the one to show is the one this drawer asked for, whatever
+  // the preference says later. The id lives in a small store outside React
+  // (an effect may not set state, and a ref may not be read while
+  // rendering); it is keyed by URL so a drawer reused for another address
+  // starts over.
   useEffect(() => {
-    openBrowserTab(url, { activate: false })
+    rememberOpened(url, openBrowserTab(url, { activate: false }))
   }, [openBrowserTab, url])
+  const openedId = useSyncExternalStore(
+    subscribeOpened,
+    () => openedTabs.get(url) ?? null,
+    () => null
+  )
 
-  // The same page can be open in two profiles; the drawer asked for it with
-  // no opener and no profile, so it lives in the profile new tabs use — the
-  // same resolution `openBrowserTab` makes. Any profile as a fallback, for a
-  // record that predates the preference.
+  // Before the effect has run (first paint) the record is found the way
+  // `openBrowserTab` itself resolves an address with no opener: by URL in
+  // the profile new tabs use. Never a tab of another profile.
   const prefs = useBrowserPrefs()
   const wantedProfile = browserProfileExists(prefs, prefs.newTabProfile)
     ? prefs.newTabProfile
     : DEFAULT_BROWSER_PROFILE_ID
   const wanted = normalizeUrlForDedupe(url)
-  const candidates = fileTabs.filter(
-    (it) =>
-      it.kind === "browser" &&
-      normalizeUrlForDedupe(it.browser.initialUrl) === wanted
-  )
   const tab =
-    candidates.find(
-      (it) => it.kind === "browser" && it.browser.profile === wantedProfile
-    ) ?? candidates[0]
+    (openedId ? fileTabs.find((it) => it.id === openedId) : undefined) ??
+    fileTabs.find(
+      (it) =>
+        it.kind === "browser" &&
+        it.browser.profile === wantedProfile &&
+        normalizeUrlForDedupe(it.browser.initialUrl) === wanted
+    )
   const tabId = tab?.id ?? null
 
   return (
