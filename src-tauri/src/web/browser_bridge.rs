@@ -211,6 +211,10 @@ pub enum BridgeError {
 struct Listener {
     target_port: u16,
     bridge_port: u16,
+    /// Believe `X-Forwarded-Host` / `X-Forwarded-Proto`: only when the
+    /// operator declared a proxy in front (`CODEG_BRIDGE_PUBLIC_HOST`); a
+    /// page can ask its browser to send those headers, `Host` it cannot.
+    trust_forwarded: bool,
     caps: Mutex<Vec<String>>,
     /// Workbench tabs holding this listener open.
     holds: Mutex<HashSet<String>>,
@@ -365,6 +369,7 @@ pub async fn open(target_port: u16, tab_id: &str) -> Result<BridgeGrant, BridgeE
         let listener = Arc::new(Listener {
             target_port,
             bridge_port,
+            trust_forwarded: config.public_host.is_some(),
             caps: Mutex::new(Vec::new()),
             holds: Mutex::new(HashSet::new()),
             last_seen: Mutex::new(Instant::now()),
@@ -562,7 +567,7 @@ async fn forward(State(listener): State<Arc<Listener>>, request: Request) -> Res
     if !presented.is_some_and(|cap| listener.has_cap(&cap)) {
         return forbidden_page();
     }
-    if !same_origin_initiator(&parts.headers) {
+    if !same_origin_initiator(&parts.headers, listener.trust_forwarded) {
         return cross_origin_page();
     }
     listener.touch();
@@ -885,11 +890,11 @@ fn is_local_path(path: &str) -> bool {
 /// the one in the request's `Host`; a page can omit its referrer but cannot
 /// claim another origin's. Nothing to go on — an address typed in on such a
 /// deployment, or a page that hides its referrer — is refused.
-fn same_origin_initiator(headers: &HeaderMap) -> bool {
+fn same_origin_initiator(headers: &HeaderMap, trust_forwarded: bool) -> bool {
     if let Some(site) = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
         return matches!(site.trim(), "same-origin" | "none");
     }
-    let Some(own) = request_authority(headers) else {
+    let Some(own) = request_authority(headers, trust_forwarded) else {
         return false;
     };
     if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
@@ -901,20 +906,24 @@ fn same_origin_initiator(headers: &HeaderMap) -> bool {
     false
 }
 
-/// `host:port` the browser addressed, from `X-Forwarded-Host` (a reverse
-/// proxy in front) or `Host`, with the default port made explicit.
-fn request_authority(headers: &HeaderMap) -> Option<String> {
-    let forwarded = headers
-        .get("x-forwarded-host")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(str::trim)
-        .filter(|v| !v.is_empty());
+/// `host:port` the browser addressed: `Host`, or — behind a declared proxy —
+/// `X-Forwarded-Host` (first value), with the default port made explicit.
+fn request_authority(headers: &HeaderMap, trust_forwarded: bool) -> Option<String> {
+    let forwarded = if trust_forwarded {
+        headers
+            .get("x-forwarded-host")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    } else {
+        None
+    };
     let host = match forwarded {
         Some(host) => host.to_string(),
         None => headers.get(header::HOST)?.to_str().ok()?.trim().to_string(),
     };
-    let scheme = if forwarded_https(headers) { "https" } else { "http" };
+    let scheme = if trust_forwarded && forwarded_https(headers) { "https" } else { "http" };
     url_authority(&format!("{scheme}://{host}"))
 }
 
@@ -1245,47 +1254,61 @@ mod tests {
             }
             headers
         };
+        let direct = |pairs: &[(&str, &'static str)]| same_origin_initiator(&headers(pairs), false);
+        let proxied = |pairs: &[(&str, &'static str)]| same_origin_initiator(&headers(pairs), true);
         // Fetch Metadata decides when it is there, whatever else is.
-        assert!(same_origin_initiator(&headers(&[("sec-fetch-site", "same-origin")])));
-        assert!(same_origin_initiator(&headers(&[("sec-fetch-site", "none")])));
-        assert!(!same_origin_initiator(&headers(&[("sec-fetch-site", "same-site")])));
-        assert!(!same_origin_initiator(&headers(&[("sec-fetch-site", "cross-site")])));
-        assert!(!same_origin_initiator(&headers(&[
+        assert!(direct(&[("sec-fetch-site", "same-origin")]));
+        assert!(direct(&[("sec-fetch-site", "none")]));
+        assert!(!direct(&[("sec-fetch-site", "same-site")]));
+        assert!(!direct(&[("sec-fetch-site", "cross-site")]));
+        assert!(!direct(&[
             ("sec-fetch-site", "same-site"),
             ("host", "h:3081"),
             ("origin", "http://h:3081"),
-        ])));
+        ]));
         // Without it (plain http): Origin, else Referer, must name the
         // authority the request was addressed to.
-        assert!(same_origin_initiator(&headers(&[("host", "h:3081"), ("origin", "http://h:3081")])));
-        assert!(same_origin_initiator(&headers(&[("host", "H:3081"), ("origin", "http://h:3081")])));
-        assert!(!same_origin_initiator(&headers(&[("host", "h:3081"), ("origin", "http://h:3082")])));
-        assert!(!same_origin_initiator(&headers(&[("host", "h:3081"), ("origin", "http://other:3081")])));
-        assert!(!same_origin_initiator(&headers(&[("host", "h:3081"), ("origin", "null")])));
-        assert!(same_origin_initiator(&headers(&[("host", "h:3081"), ("referer", "http://h:3081/")])));
-        assert!(same_origin_initiator(&headers(&[("host", "h:3081"), ("referer", "http://h:3081/a/b?c")])));
-        assert!(!same_origin_initiator(&headers(&[("host", "h:3081"), ("referer", "http://h:3082/")])));
+        assert!(direct(&[("host", "h:3081"), ("origin", "http://h:3081")]));
+        assert!(direct(&[("host", "H:3081"), ("origin", "http://h:3081")]));
+        assert!(!direct(&[("host", "h:3081"), ("origin", "http://h:3082")]));
+        assert!(!direct(&[("host", "h:3081"), ("origin", "http://other:3081")]));
+        assert!(!direct(&[("host", "h:3081"), ("origin", "null")]));
+        assert!(direct(&[("host", "h:3081"), ("referer", "http://h:3081/")]));
+        assert!(direct(&[("host", "h:3081"), ("referer", "http://h:3081/a/b?c")]));
+        assert!(!direct(&[("host", "h:3081"), ("referer", "http://h:3082/")]));
         // Origin wins over Referer when both are there.
-        assert!(!same_origin_initiator(&headers(&[
+        assert!(!direct(&[
             ("host", "h:3081"),
             ("origin", "http://h:3082"),
             ("referer", "http://h:3081/"),
-        ])));
+        ]));
         // Nothing to go on: refused (a typed address, a hidden referrer).
-        assert!(!same_origin_initiator(&headers(&[("host", "h:3081")])));
-        assert!(!same_origin_initiator(&HeaderMap::new()));
-        // Behind a TLS proxy the browser's authority is the forwarded one.
-        assert!(same_origin_initiator(&headers(&[
+        assert!(!direct(&[("host", "h:3081")]));
+        assert!(!direct(&[]));
+        // Forwarding headers count only behind a declared proxy: a page can
+        // ask its browser to send `X-Forwarded-Host`, so without one it is
+        // ignored in favour of `Host`.
+        assert!(proxied(&[
             ("host", "127.0.0.1:3081"),
             ("x-forwarded-host", "codeg.example"),
             ("x-forwarded-proto", "https"),
             ("origin", "https://codeg.example"),
-        ])));
-        assert!(!same_origin_initiator(&headers(&[
+        ]));
+        assert!(!proxied(&[
             ("host", "127.0.0.1:3081"),
             ("x-forwarded-host", "codeg.example"),
             ("origin", "http://127.0.0.1:3081"),
-        ])));
+        ]));
+        assert!(!direct(&[
+            ("host", "h:3081"),
+            ("x-forwarded-host", "h:3082"),
+            ("origin", "http://h:3082"),
+        ]));
+        assert!(direct(&[
+            ("host", "h:3081"),
+            ("x-forwarded-host", "h:3082"),
+            ("origin", "http://h:3081"),
+        ]));
         assert_eq!(url_authority("https://h").as_deref(), Some("h:443"));
         assert_eq!(url_authority("http://h").as_deref(), Some("h:80"));
         assert_eq!(url_authority("http://[::1]:3081/x").as_deref(), Some("[::1]:3081"));

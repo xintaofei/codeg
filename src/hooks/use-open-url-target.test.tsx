@@ -224,6 +224,10 @@ describe("useOpenUrlTarget in a browser (web mode)", () => {
   beforeEach(() => {
     mocks.desktop = false
     mocks.actions = { openBrowserTab: mocks.openBrowserTab }
+    mocks.transportCall.mockReset()
+    mocks.openBrowserTab.mockClear()
+    mocks.openInSystemBrowser.mockClear()
+    mocks.toast.mockClear()
     resetBridgeStatusForTests()
   })
 
@@ -272,6 +276,8 @@ describe("useOpenUrlTarget in a browser (web mode)", () => {
       action = result.current("http://localhost:3000/", { source: "terminal" })
     })
     expect(action).toMatchObject({ kind: "system" })
+    expect(mocks.openInSystemBrowser).toHaveBeenCalledTimes(1)
+    expect(mocks.transportCall).toHaveBeenCalledTimes(1)
     expect(mocks.transportCall).toHaveBeenCalledWith(
       "browser_bridge_status",
       {}

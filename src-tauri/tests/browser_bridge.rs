@@ -174,6 +174,13 @@ async fn entry_sets_the_cookie_and_redirects_to_the_page() {
         response.headers().get(header::CACHE_CONTROL).unwrap(),
         "no-store"
     );
+    // The navigation the page makes carries this listener's origin as its
+    // referrer — what the gate checks without Fetch Metadata — and not the
+    // entry URL with the capability.
+    assert_eq!(
+        response.headers().get(header::REFERRER_POLICY).unwrap(),
+        "origin"
+    );
     let page = response.text().await.unwrap();
     assert!(page.contains("location.replace(\"/hello?q=1\")"), "{page}");
     assert!(page.contains("content=\"0;url=/hello?q=1\""), "{page}");
