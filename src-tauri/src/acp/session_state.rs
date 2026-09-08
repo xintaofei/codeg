@@ -386,6 +386,10 @@ pub struct SessionState {
     // 事件锚点
     pub event_seq: u64,
     pub last_activity_at: DateTime<Utc>,
+    /// Most recent output produced by the agent in the current user turn.
+    /// Unlike `last_activity_at`, keepalive and session metadata never advance
+    /// this timestamp. `None` means this turn has not produced output yet.
+    pub last_output_at: Option<DateTime<Utc>>,
 
     /// Per-connection event broadcaster used by the WS attach protocol.
     /// New subscribers register receivers here while holding the SessionState
@@ -650,6 +654,7 @@ impl SessionState {
             session_started_tx: None,
             event_seq: 0,
             last_activity_at: Utc::now(),
+            last_output_at: None,
             event_stream: Arc::new(ConnectionEventStream::new()),
             recent_events: RecentEventsBuffer::new(),
             delegation_token: None,
@@ -823,6 +828,9 @@ impl SessionState {
                 self.settle_retry_incidents_on_progress();
                 if parent_tool_use_id.is_none() || self.status == ConnectionStatus::Prompting {
                     self.append_text_delta(text, parent_tool_use_id.as_deref());
+                    if !text.is_empty() {
+                        self.last_output_at = Some(Utc::now());
+                    }
                 }
             }
             AcpEvent::Thinking {
@@ -832,6 +840,9 @@ impl SessionState {
                 self.settle_retry_incidents_on_progress();
                 if parent_tool_use_id.is_none() || self.status == ConnectionStatus::Prompting {
                     self.append_thinking_delta(text, parent_tool_use_id.as_deref());
+                    if !text.is_empty() {
+                        self.last_output_at = Some(Utc::now());
+                    }
                 }
             }
             AcpEvent::ToolCall {
@@ -866,6 +877,7 @@ impl SessionState {
                 // duplicate ref. Mirrors text/thinking deltas in lazily
                 // creating `live_message` if absent.
                 self.push_tool_call_ref_if_absent(tool_call_id);
+                self.last_output_at = Some(Utc::now());
             }
             AcpEvent::ToolCallUpdate {
                 tool_call_id,
@@ -879,6 +891,16 @@ impl SessionState {
                 images,
                 ..
             } => {
+                let has_visible_update = title.is_some()
+                    || status.is_some()
+                    || content.is_some()
+                    || raw_input.is_some()
+                    || raw_output.is_some()
+                    || locations.is_some()
+                    || images.is_some();
+                let before = has_visible_update
+                    .then(|| self.tool_call_visible_state(tool_call_id))
+                    .flatten();
                 self.upsert_tool_call(
                     tool_call_id,
                     None,
@@ -896,6 +918,11 @@ impl SessionState {
                 // still gets anchored. Idempotent so the normal-flow case is
                 // a no-op here.
                 self.push_tool_call_ref_if_absent(tool_call_id);
+                if has_visible_update
+                    && before != self.tool_call_visible_state(tool_call_id)
+                {
+                    self.last_output_at = Some(Utc::now());
+                }
             }
             AcpEvent::PermissionRequest {
                 request_id,
@@ -1112,6 +1139,11 @@ impl SessionState {
                 self.status = ConnectionStatus::Connected;
             }
             AcpEvent::UserMessage { message_id, blocks } => {
+                // Output evidence is turn-scoped. Clear it before recording the
+                // next user prompt so a fresh run never inherits old activity.
+                self.last_output_at = None;
+                self.live_message = None;
+                self.active_tool_calls.clear();
                 // Capture the in-flight user prompt so a client attaching
                 // mid-turn renders the user turn from the snapshot (the
                 // one-shot event won't replay for it). Cleared on TurnComplete.
@@ -1702,6 +1734,16 @@ impl SessionState {
                 parent_tool_use_id: parent_tool_use_id.map(str::to_owned),
             }),
         }
+    }
+
+    /// Serialize the frontend-visible portion of a tool call for change
+    /// detection. ACP `meta` is intentionally removed: it carries internal
+    /// routing/extension facts and must not masquerade as fresh agent output.
+    fn tool_call_visible_state(&self, tool_call_id: &str) -> Option<serde_json::Value> {
+        let state = self.active_tool_calls.get(tool_call_id)?;
+        let mut value = serde_json::to_value(state).ok()?;
+        value.as_object_mut()?.remove("meta");
+        Some(value)
     }
 
     /// Push a `ToolCallRef` block onto `live_message.content` for the given
@@ -2806,6 +2848,116 @@ mod tests {
         });
         // Last non-empty line of the text that follows the final tool call.
         assert_eq!(s.latest_live_reply(100).as_deref(), Some("Details here"));
+    }
+
+    #[test]
+    fn output_evidence_tracks_only_agent_output_in_the_current_turn() {
+        let mut s = fresh_state();
+        assert_eq!(s.last_output_at, None);
+
+        s.apply_event(&text_user_message("user-1", "first turn"));
+        assert_eq!(s.last_output_at, None, "echoed user text is not output");
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "working".into(),
+            parent_tool_use_id: None,
+        });
+        let first_output = s.last_output_at.expect("agent text stamps output");
+        s.apply_event(&AcpEvent::PermissionRequest {
+            request_id: "permission-current".into(),
+            tool_call: serde_json::json!({
+                "toolCallId": "tc-current",
+                "title": "Approve current operation"
+            }),
+            options: vec![],
+            queued: 0,
+        });
+
+        s.apply_event(&AcpEvent::SelectorsReady);
+        assert_eq!(
+            s.last_output_at,
+            Some(first_output),
+            "session metadata must not look like fresh output"
+        );
+
+        s.apply_event(&text_user_message("user-2", "next turn"));
+        assert_eq!(
+            s.last_output_at, None,
+            "a new turn cannot inherit prior output evidence"
+        );
+        assert_eq!(
+            s.latest_live_reply(100),
+            None,
+            "a retained abnormal-turn live message must not become current output"
+        );
+        assert_eq!(
+            s.blocking_prompt(100).map(|blocked| blocked.request_id),
+            Some("permission-current".into()),
+            "clearing stale output must not invent or erase blocking evidence"
+        );
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "new answer".into(),
+            parent_tool_use_id: None,
+        });
+        assert!(s.last_output_at.is_some(), "agent output stamps evidence");
+        assert_eq!(
+            s.latest_live_reply(100).as_deref(),
+            Some("new answer"),
+            "new-turn output must not merge with prior-turn content"
+        );
+    }
+
+    #[test]
+    fn tool_output_evidence_ignores_metadata_only_updates() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "tc-evidence".into(),
+            title: "Read file".into(),
+            kind: "read".into(),
+            status: "in_progress".into(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: None,
+            meta: None,
+            images: None,
+        });
+        let started = s.last_output_at.expect("new visible tool call is evidence");
+
+        s.apply_event(&AcpEvent::ToolCallUpdate {
+            tool_call_id: "tc-evidence".into(),
+            title: None,
+            status: None,
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            raw_output_append: None,
+            locations: None,
+            meta: Some(serde_json::json!({"internal": true})),
+            images: None,
+        });
+        assert_eq!(
+            s.last_output_at,
+            Some(started),
+            "metadata-only updates must not advance output evidence"
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        s.apply_event(&AcpEvent::ToolCallUpdate {
+            tool_call_id: "tc-evidence".into(),
+            title: None,
+            status: Some("completed".into()),
+            content: None,
+            raw_input: None,
+            raw_output: Some("done".into()),
+            raw_output_append: None,
+            locations: None,
+            meta: None,
+            images: None,
+        });
+        assert!(
+            s.last_output_at.expect("result stamps output") > started,
+            "a meaningful execution-state/result update advances evidence"
+        );
     }
 
     #[test]

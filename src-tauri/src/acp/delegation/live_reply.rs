@@ -1,11 +1,9 @@
 //! `ChildLiveReplyLookup` — broker capability that peeks at a still-running
-//! delegation child's **in-memory** session to pull a one-line "what it's doing
-//! right now" hint. The broker uses it to enrich `get_delegation_status`'s
-//! running report from a bare `"Running."` into a two-line
-//! `"Running.\nLatest sub-agent reply: …"`, so the parent LLM (and the user) can
-//! see the child is genuinely making progress. The hint sits on its own line so
-//! content-only hosts can anchor "still running" to the standalone first line
-//! (see `attach_live_reply` in `super::broker`).
+//! delegation child's **in-memory** session to pull a coherent snapshot of its
+//! latest reply, real blocking prompt, and last agent-output time. The broker
+//! uses it to enrich `get_delegation_status` without treating silence or elapsed
+//! time as proof of progress. Content-only hosts still anchor running status to
+//! the standalone first line `"Running."`.
 //!
 //! Kept behind a trait for the same reason as [`super::meta_writer`] /
 //! [`super::broker::ChildStatusLookup`]: the broker stays decoupled from
@@ -18,12 +16,13 @@
 //! invert lock order against the broker's own state.
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use std::sync::Arc;
 
 use crate::acp::delegation::types::BlockedOn;
 use crate::acp::manager::ConnectionManager;
 
-/// Char budget for the inline live-reply hint — one tidy line, not a transcript.
+/// Char budget for inline live-reply evidence — one tidy line, not a transcript.
 /// Read by [`ConnectionManagerLiveReplyLookup`] and passed to
 /// [`crate::acp::SessionState::latest_live_reply`].
 pub const LIVE_REPLY_CAP: usize = 120;
@@ -32,21 +31,19 @@ pub const LIVE_REPLY_CAP: usize = 120;
 /// this is one line of a tool report, not a transcript.
 pub const BLOCKED_TITLE_CAP: usize = 120;
 
-/// Capability the broker uses to fetch a running child's latest one-line reply.
+/// Coherent point-in-time evidence from one child session-state read.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChildLiveSnapshot {
+    pub latest_reply: Option<String>,
+    pub blocked_on: Option<BlockedOn>,
+    pub last_output_at: Option<DateTime<Utc>>,
+}
+
+/// Capability the broker uses to fetch a running child's live evidence.
 #[async_trait]
 pub trait ChildLiveReplyLookup: Send + Sync {
-    /// The child's latest single-line activity, or `None` when it hasn't
-    /// produced anything renderable yet / the connection is gone.
-    async fn latest_reply(&self, child_connection_id: &str) -> Option<String>;
-
-    /// What the child is parked on, if anything — a permission, a question, or
-    /// a plan approval. `None` means it is genuinely working (or is gone).
-    ///
-    /// Defaulted to `None` so the Noop / mock impls and every test call site
-    /// stay untouched; only the production lookup answers for real.
-    async fn blocked_on(&self, _child_connection_id: &str) -> Option<BlockedOn> {
-        None
-    }
+    /// `None` means the connection disappeared before it could be read.
+    async fn snapshot(&self, child_connection_id: &str) -> Option<ChildLiveSnapshot>;
 }
 
 /// Default lookup — always `None`. Used by `DelegationBroker::new` / `with_writers`
@@ -57,15 +54,14 @@ pub struct NoopChildLiveReplyLookup;
 
 #[async_trait]
 impl ChildLiveReplyLookup for NoopChildLiveReplyLookup {
-    async fn latest_reply(&self, _child_connection_id: &str) -> Option<String> {
+    async fn snapshot(&self, _child_connection_id: &str) -> Option<ChildLiveSnapshot> {
         None
     }
 }
 
-/// Production impl backed by `ConnectionManager`. Reads the child connection's
-/// live `SessionState` and asks it for a one-line progress hint. A missing
-/// connection (child torn down between the status read and this call) collapses
-/// to `None` — the report just stays `"Running."`.
+/// Production impl backed by `ConnectionManager`. A missing connection (child
+/// torn down between the status read and this call) collapses to `None` — the
+/// report just stays `"Running."`.
 #[derive(Clone)]
 pub struct ConnectionManagerLiveReplyLookup {
     pub manager: Arc<ConnectionManager>,
@@ -73,18 +69,14 @@ pub struct ConnectionManagerLiveReplyLookup {
 
 #[async_trait]
 impl ChildLiveReplyLookup for ConnectionManagerLiveReplyLookup {
-    async fn latest_reply(&self, child_connection_id: &str) -> Option<String> {
-        let state = self.manager.get_state(child_connection_id).await?;
-        // Bind the guard to a local: `latest_live_reply` returns an owned String,
-        // so nothing borrows the guard past this scope.
-        let guard = state.read().await;
-        guard.latest_live_reply(LIVE_REPLY_CAP)
-    }
-
-    async fn blocked_on(&self, child_connection_id: &str) -> Option<BlockedOn> {
+    async fn snapshot(&self, child_connection_id: &str) -> Option<ChildLiveSnapshot> {
         let state = self.manager.get_state(child_connection_id).await?;
         let guard = state.read().await;
-        guard.blocking_prompt(BLOCKED_TITLE_CAP)
+        Some(ChildLiveSnapshot {
+            latest_reply: guard.latest_live_reply(LIVE_REPLY_CAP),
+            blocked_on: guard.blocking_prompt(BLOCKED_TITLE_CAP),
+            last_output_at: guard.last_output_at,
+        })
     }
 }
 
@@ -102,32 +94,33 @@ pub mod mock {
     /// exactly the transition `get_tasks_status` must wake on.
     #[derive(Default)]
     pub struct MockChildLiveReplyLookup {
-        pub reply: Option<String>,
-        blocked: Mutex<Option<BlockedOn>>,
+        snapshot: Mutex<ChildLiveSnapshot>,
     }
 
     impl MockChildLiveReplyLookup {
         pub fn new(reply: Option<String>) -> Self {
             Self {
-                reply,
-                blocked: Mutex::new(None),
+                snapshot: Mutex::new(ChildLiveSnapshot {
+                    latest_reply: reply,
+                    ..ChildLiveSnapshot::default()
+                }),
             }
         }
 
         /// Set (or clear) what every child looks blocked on from now on.
         pub fn set_blocked(&self, blocked: Option<BlockedOn>) {
-            *self.blocked.lock().unwrap() = blocked;
+            self.snapshot.lock().unwrap().blocked_on = blocked;
+        }
+
+        pub fn set_last_output_at(&self, last_output_at: Option<DateTime<Utc>>) {
+            self.snapshot.lock().unwrap().last_output_at = last_output_at;
         }
     }
 
     #[async_trait]
     impl ChildLiveReplyLookup for MockChildLiveReplyLookup {
-        async fn latest_reply(&self, _child_connection_id: &str) -> Option<String> {
-            self.reply.clone()
-        }
-
-        async fn blocked_on(&self, _child_connection_id: &str) -> Option<BlockedOn> {
-            self.blocked.lock().unwrap().clone()
+        async fn snapshot(&self, _child_connection_id: &str) -> Option<ChildLiveSnapshot> {
+            Some(self.snapshot.lock().unwrap().clone())
         }
     }
 }

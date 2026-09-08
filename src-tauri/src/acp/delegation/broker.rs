@@ -60,7 +60,9 @@ use async_trait::async_trait;
 use tokio::sync::{Mutex, Notify};
 
 use crate::acp::delegation::event_emitter::{DelegationEventEmitter, NoopEventEmitter};
-use crate::acp::delegation::live_reply::{ChildLiveReplyLookup, NoopChildLiveReplyLookup};
+use crate::acp::delegation::live_reply::{
+    ChildLiveReplyLookup, ChildLiveSnapshot, NoopChildLiveReplyLookup,
+};
 use crate::acp::delegation::meta_writer::{
     build_delegation_meta, is_synthetic_parent_tool_use_id, DelegationMetaWriter, NoopMetaWriter,
 };
@@ -1078,6 +1080,25 @@ fn attach_blocked(report: &mut DelegationTaskReport, blocked: BlockedOn) {
     report.blocked_on = Some(blocked);
 }
 
+/// Attach one coherent child-state snapshot to a running report. A real block
+/// remains authoritative over the earlier reply, while the timestamp states
+/// exactly when agent output last changed without implying progress or an ETA.
+fn attach_live_snapshot(report: &mut DelegationTaskReport, snapshot: ChildLiveSnapshot) {
+    match snapshot.blocked_on {
+        Some(blocked) => attach_blocked(report, blocked),
+        None => {
+            if let Some(reply) = snapshot.latest_reply {
+                report.message = Some(format!("Running.\nLatest sub-agent reply: {reply}"));
+            }
+        }
+    }
+    if let Some(last_output_at) = snapshot.last_output_at {
+        let message = report.message.get_or_insert_with(|| "Running.".to_string());
+        message.push_str("\nLast sub-agent output: ");
+        message.push_str(&last_output_at.to_rfc3339());
+    }
+}
+
 /// Status report for a still-running task.
 fn running_report(task_id: &str, task: &RunningTask) -> DelegationTaskReport {
     DelegationTaskReport {
@@ -1494,10 +1515,9 @@ pub struct DelegationBroker {
     /// no-op ("unknown"); production wires `DbChildStatusLookup` via
     /// `with_status_lookup`.
     status_lookup: Arc<dyn ChildStatusLookup>,
-    /// Peeks a still-running child's live session for a one-line progress hint,
-    /// used to enrich `get_delegation_status`'s running report. Defaults to a
-    /// no-op ("no hint"); production wires `ConnectionManagerLiveReplyLookup` via
-    /// `with_live_reply_lookup`.
+    /// Peeks a still-running child's live session for coherent output/blocking
+    /// evidence used to enrich `get_delegation_status`. Defaults to no evidence;
+    /// production wires `ConnectionManagerLiveReplyLookup`.
     live_reply_lookup: Arc<dyn ChildLiveReplyLookup>,
     /// Immutable store for COMPLETED delegation results. Written when a task's
     /// current execution wins the terminal race with a success; read ahead of
@@ -1585,10 +1605,9 @@ impl DelegationBroker {
         self
     }
 
-    /// Replace the live-reply lookup used to enrich `get_delegation_status`'s
-    /// running report with the child's latest one-line progress. Builder-style,
-    /// layered onto `with_writers` by the production wiring; tests opt in with a
-    /// `MockChildLiveReplyLookup`.
+    /// Replace the child live-state lookup used to enrich a running status.
+    /// Builder-style, layered onto `with_writers` by production wiring; tests
+    /// opt in with a `MockChildLiveReplyLookup`.
     pub fn with_live_reply_lookup(
         mut self,
         live_reply_lookup: Arc<dyn ChildLiveReplyLookup>,
@@ -3660,13 +3679,12 @@ impl DelegationBroker {
                 .filter(|c| matches!(c, StatusClass::Running { .. }))
                 .count();
 
-            // Probe each running child for a blocking prompt. Done HERE, after
+            // Snapshot each running child HERE, after
             // the pending lock was dropped at the end of the block above and
             // before any early return, because it takes the child's
-            // `SessionState` lock — the same ordering `attach_live_reply` has
-            // always used. The result rides along to `assemble_reports` so a
-            // pass never probes the same child twice.
-            let blocked = self.probe_blocked(&classes).await;
+            // `SessionState` lock. The result rides through claim and assembly
+            // so a pass never probes a child twice or mixes two instants.
+            let live_snapshots = self.probe_live(&classes).await;
 
             // Return now when the poll is Immediate, OR when at least one
             // requested task is already (or now) terminal — i.e. not EVERY task
@@ -3683,7 +3701,12 @@ impl DelegationBroker {
             // re-snapshots all-running and re-parks.
             if matches!(wait, StatusWait::Immediate) || running_count < task_ids.len() {
                 return self
-                    .assemble_reports(parent_conversation_id, task_ids, classes, blocked)
+                    .assemble_reports(
+                        parent_conversation_id,
+                        task_ids,
+                        classes,
+                        live_snapshots,
+                    )
                     .await;
             }
             // Every task is still running, but one of them just parked on the
@@ -3691,10 +3714,10 @@ impl DelegationBroker {
             // until a human acts, so stop waiting and say so. The claim marks
             // each prompt as surfaced, so the NEXT poll on the same prompt falls
             // through to the park below instead of returning instantly.
-            let claimed = self.claim_new_blocks(task_ids, &blocked).await;
+            let claimed = self.claim_new_blocks(task_ids, &live_snapshots).await;
             if claimed.any_claimed {
                 return self
-                    .assemble_reports(parent_conversation_id, task_ids, classes, blocked)
+                    .assemble_reports(parent_conversation_id, task_ids, classes, live_snapshots)
                     .await;
             }
             // A `Bounded` wait gives up at its deadline and returns the running
@@ -3702,7 +3725,7 @@ impl DelegationBroker {
             let now = Instant::now();
             if deadline.is_some_and(|d| now >= d) {
                 return self
-                    .assemble_reports(parent_conversation_id, task_ids, classes, blocked)
+                    .assemble_reports(parent_conversation_id, task_ids, classes, live_snapshots)
                     .await;
             }
             // Park until the next completion signal — bounded by the deadline
@@ -3735,21 +3758,20 @@ impl DelegationBroker {
         }
     }
 
-    /// Ask each `Running` entry's child what it is blocked on, position-aligned
-    /// with `classes` (non-running slots are `None`). One probe per child per
-    /// pass; must be called with the pending lock RELEASED (it takes the child's
-    /// `SessionState` lock).
-    async fn probe_blocked(&self, classes: &[StatusClass]) -> Vec<Option<BlockedOn>> {
+    /// Snapshot each `Running` child's reply, blocking prompt, and output time
+    /// under one child-state read lock. Slots align with `classes`; non-running
+    /// entries are `None`.
+    async fn probe_live(&self, classes: &[StatusClass]) -> Vec<Option<ChildLiveSnapshot>> {
         let mut out = Vec::with_capacity(classes.len());
         for class in classes {
-            let blocked = match class {
+            let snapshot = match class {
                 StatusClass::Running {
                     child_connection_id,
                     ..
-                } => self.live_reply_lookup.blocked_on(child_connection_id).await,
+                } => self.live_reply_lookup.snapshot(child_connection_id).await,
                 _ => None,
             };
-            out.push(blocked);
+            out.push(snapshot);
         }
         out
     }
@@ -3773,16 +3795,21 @@ impl DelegationBroker {
     async fn claim_new_blocks(
         &self,
         task_ids: &[String],
-        blocked: &[Option<BlockedOn>],
+        live_snapshots: &[Option<ChildLiveSnapshot>],
     ) -> ClaimedBlocks {
         let mut out = ClaimedBlocks::default();
-        if blocked.iter().all(|b| b.is_none()) {
+        if live_snapshots
+            .iter()
+            .all(|snapshot| snapshot.as_ref().and_then(|s| s.blocked_on.as_ref()).is_none())
+        {
             return out;
         }
         let now = Instant::now();
         let mut inner = self.pending.inner.lock().await;
-        for (id, blocked) in task_ids.iter().zip(blocked) {
-            let Some(blocked) = blocked else { continue };
+        for (id, snapshot) in task_ids.iter().zip(live_snapshots) {
+            let Some(blocked) = snapshot.as_ref().and_then(|s| s.blocked_on.as_ref()) else {
+                continue;
+            };
             let Some(task) = inner.running.get_mut(id) else {
                 continue;
             };
@@ -3812,34 +3839,29 @@ impl DelegationBroker {
     /// live reply (or blocking prompt) attached; `NotInMemory` ids fall back to
     /// the DB status lookup. Reports come back in `task_ids` order.
     ///
-    /// `blocked` is the already-probed result from [`Self::probe_blocked`] for
-    /// this same pass, position-aligned with `classes`.
+    /// `live_snapshots` is the already-probed result from [`Self::probe_live`]
+    /// for this same pass, position-aligned with `classes`.
     async fn assemble_reports(
         &self,
         parent_conversation_id: Option<i32>,
         task_ids: &[String],
         classes: Vec<StatusClass>,
-        blocked: Vec<Option<BlockedOn>>,
+        live_snapshots: Vec<Option<ChildLiveSnapshot>>,
     ) -> Vec<DelegationTaskReport> {
         let mut out = Vec::with_capacity(classes.len());
-        let mut blocked = blocked.into_iter().chain(std::iter::repeat_with(|| None));
+        let mut live_snapshots = live_snapshots
+            .into_iter()
+            .chain(std::iter::repeat_with(|| None));
         for (id, class) in task_ids.iter().zip(classes) {
-            let blocked = blocked.next().flatten();
+            let snapshot = live_snapshots.next().flatten();
             let report = match class {
                 StatusClass::Settled(report) => report,
                 StatusClass::Running {
                     mut report,
-                    child_connection_id,
+                    ..
                 } => {
-                    match blocked {
-                        // A blocked child's last reply is stale by definition —
-                        // it is what it said BEFORE it stopped — so the block
-                        // replaces it rather than competing with it.
-                        Some(blocked) => attach_blocked(&mut report, blocked),
-                        None => {
-                            self.attach_live_reply(&mut report, &child_connection_id)
-                                .await
-                        }
+                    if let Some(snapshot) = snapshot {
+                        attach_live_snapshot(&mut report, snapshot);
                     }
                     report
                 }
@@ -3850,34 +3872,6 @@ impl DelegationBroker {
             out.push(report);
         }
         out
-    }
-
-    /// Upgrade a running report's bare `"Running."` message with the child's
-    /// latest one-line activity, so the parent LLM gets a concrete sign of
-    /// progress it can report in one shot (instead of polling-and-narrating).
-    /// Called only on the actual running-return paths, AFTER the pending lock is
-    /// released. A no-op when the lookup has nothing (default Noop lookup, child
-    /// gone, or no live output yet) — the report stays `"Running."`.
-    ///
-    /// The hint goes on its OWN line (`"Running.\nLatest sub-agent reply: …"`),
-    /// not appended to the marker line. On hosts that persist only the
-    /// `CallToolResult` content text (e.g. Claude Code), the frontend recognizes
-    /// a still-running poll by the standalone first line `"Running."` — keeping
-    /// the child-controlled reply text on a separate line means a *completed*
-    /// result that merely starts with "Running. …" can never be misread as
-    /// running. See `textRunningStatus` in `src/lib/delegation-status.ts`.
-    async fn attach_live_reply(
-        &self,
-        report: &mut DelegationTaskReport,
-        child_connection_id: &str,
-    ) {
-        if let Some(reply) = self
-            .live_reply_lookup
-            .latest_reply(child_connection_id)
-            .await
-        {
-            report.message = Some(format!("Running.\nLatest sub-agent reply: {reply}"));
-        }
     }
 
     /// Backs the `cancel_delegation` tool. Cancels a running task owned by the
@@ -3948,7 +3942,33 @@ impl DelegationBroker {
             Some(rec)
                 if parent_conversation_id.is_some() && rec.parent_id == parent_conversation_id =>
             {
-                db_report(task_id, &rec)
+                if rec.status != TaskStatus::Running {
+                    return db_report(task_id, &rec);
+                }
+                if self
+                    .spawner
+                    .has_live_connection_for_conversation(rec.child_conversation_id)
+                    .await
+                {
+                    let mut report = db_report(task_id, &rec);
+                    report.message = Some(format!(
+                        "Running.\nA child session is attached to conversation {}; \
+                         open it to inspect current activity.",
+                        rec.child_conversation_id
+                    ));
+                    report
+                } else {
+                    let mut report = db_report(task_id, &rec);
+                    report.status = TaskStatus::Canceled;
+                    report.error_code = Some("interrupted".to_string());
+                    report.message = Some(format!(
+                        "The delegation was already interrupted; there is no live execution \
+                         to stop. Resume it with resume_delegation using the same task_id. \
+                         Open child session {} to inspect partial output.",
+                        rec.child_conversation_id
+                    ));
+                    report
+                }
             }
             _ => unknown_report(task_id),
         }
@@ -5142,11 +5162,17 @@ mod tests {
         let mock = Arc::new(MockSpawner::new());
         mock.queue_spawn(Ok("child-conn-1".into())).await;
         mock.queue_send(Ok(42)).await;
+        let live_lookup = Arc::new(MockChildLiveReplyLookup::new(Some(
+            "Reading config.rs".into(),
+        )));
+        live_lookup.set_last_output_at(Some(
+            chrono::DateTime::parse_from_rfc3339("2026-09-08T03:04:05Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        ));
         let broker =
             DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup())
-                .with_live_reply_lookup(Arc::new(MockChildLiveReplyLookup::new(Some(
-                    "Reading config.rs".into(),
-                ))));
+                .with_live_reply_lookup(live_lookup);
         enable_delegation(&broker).await;
 
         let ack = broker.start_delegation(request(1, "pt-1")).await;
@@ -5161,7 +5187,10 @@ mod tests {
         // "still running" to the standalone first line "Running.".
         assert_eq!(
             report.message.as_deref(),
-            Some("Running.\nLatest sub-agent reply: Reading config.rs")
+            Some(
+                "Running.\nLatest sub-agent reply: Reading config.rs\n\
+                 Last sub-agent output: 2026-09-08T03:04:05+00:00"
+            )
         );
     }
 
@@ -9744,6 +9773,82 @@ mod tests {
         .with_status_lookup(lookup.clone() as Arc<dyn ChildStatusLookup>);
         enable_delegation(&broker).await;
         (mock, lookup, broker)
+    }
+
+    #[tokio::test]
+    async fn orphaned_running_row_is_interrupted_for_status_cancel_and_infinite_batch_wait() {
+        let (mock, lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Running))).await;
+
+        let immediate = broker
+            .get_task_status("parent-conn", Some(1), "task-1", StatusWait::Immediate)
+            .await;
+        assert_eq!(immediate.status, TaskStatus::Canceled);
+        assert_eq!(immediate.error_code.as_deref(), Some("interrupted"));
+        assert_eq!(immediate.child_conversation_id, Some(42));
+        assert!(immediate.message.as_deref().unwrap_or_default().contains("same task_id"));
+
+        let ids = vec!["task-1".to_string(), "task-2".to_string()];
+        let batch = tokio::time::timeout(
+            Duration::from_millis(100),
+            broker.get_tasks_status("parent-conn", Some(1), &ids, StatusWait::Infinite),
+        )
+        .await
+        .expect("orphaned DB rows must not park an infinite batch wait");
+        assert!(batch.iter().all(|report| {
+            report.status == TaskStatus::Canceled
+                && report.error_code.as_deref() == Some("interrupted")
+        }));
+
+        let canceled = broker
+            .cancel_task_by_id("parent-conn", Some(1), "task-1")
+            .await;
+        assert_eq!(canceled.status, TaskStatus::Canceled);
+        assert_eq!(canceled.error_code.as_deref(), Some("interrupted"));
+        assert!(canceled.message.as_deref().unwrap_or_default().contains("already interrupted"));
+        assert!(mock.cancels.lock().await.is_empty());
+        assert!(mock.disconnects.lock().await.is_empty());
+        assert_eq!(
+            lookup.ctx.lock().await.as_ref().map(|ctx| ctx.status),
+            Some(TaskStatus::Running),
+            "read-only projection must not rewrite persisted status"
+        );
+    }
+
+    #[tokio::test]
+    async fn attached_running_row_stays_running_without_claiming_cached_execution() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Running))).await;
+        mock.mark_conversation_live(42).await;
+
+        let status = broker
+            .get_task_status("parent-conn", Some(1), "task-1", StatusWait::Immediate)
+            .await;
+        assert_eq!(status.status, TaskStatus::Running);
+        assert_eq!(status.error_code, None);
+        let message = status.message.as_deref().unwrap_or_default();
+        assert!(message.contains("attached"));
+        assert!(!message.contains("Result no longer cached"));
+        assert!(!message.contains("delegation is still executing"));
+
+        let canceled = broker
+            .cancel_task_by_id("parent-conn", Some(1), "task-1")
+            .await;
+        assert_eq!(canceled.status, TaskStatus::Running);
+        assert!(mock.cancels.lock().await.is_empty());
+        assert!(mock.disconnects.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn foreign_running_row_remains_opaque_before_liveness_probe() {
+        let mut ctx = resume_ctx(TaskStatus::Running);
+        ctx.parent_id = Some(99);
+        let (mock, _lookup, broker) = resume_harness(Some(ctx)).await;
+        mock.mark_conversation_live(42).await;
+
+        let report = broker
+            .get_task_status("parent-conn", Some(1), "task-1", StatusWait::Immediate)
+            .await;
+        assert_eq!(report.status, TaskStatus::Unknown);
+        assert_eq!(report.child_conversation_id, None);
     }
 
     #[test]

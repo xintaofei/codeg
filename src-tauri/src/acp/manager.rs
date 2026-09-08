@@ -7220,6 +7220,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn keepalive_touch_does_not_advance_output_evidence() {
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection(
+            "touch-evidence",
+            AgentType::ClaudeCode,
+            None,
+            EventEmitter::Noop,
+        )
+        .await;
+        let state = mgr.get_state("touch-evidence").await.expect("state");
+        {
+            let mut guard = state.write().await;
+            guard.apply_event(&AcpEvent::ContentDelta {
+                text: "real output".into(),
+                parent_tool_use_id: None,
+            });
+        }
+        let before = state.read().await.last_output_at;
+        assert!(mgr.touch("touch-evidence").await);
+        assert_eq!(
+            state.read().await.last_output_at,
+            before,
+            "frontend keepalive is not model output"
+        );
+    }
+
+    #[tokio::test]
     async fn fork_session_adopts_a_sibling_the_lifecycle_subscriber_already_made() {
         // Fork's reply reaches us BEFORE `handle_fork_or_exit` emits
         // `SessionStarted{S2}`, so this persistence and the lifecycle worker
