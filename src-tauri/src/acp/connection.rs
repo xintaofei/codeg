@@ -8698,7 +8698,11 @@ async fn handle_turn_notification(
 ) {
     let should_poll_now =
         track_terminal_tool_calls(agent_type, &notif.update, tracked_terminal_tool_calls);
-    probe.note_update(agent_type, &notif.update);
+    probe.note_update(
+        agent_type,
+        &notif.update,
+        !cb_state.open_subagents.is_empty(),
+    );
     // Custom agents have no store of their own to parse later.
     record_transcript_update(agent_type, &session_id.0, &notif.update);
     emit_conversation_update(
@@ -8787,6 +8791,53 @@ fn log_dropped_update(
     }
 }
 
+/// Bounded recognition state for the one provider diagnostic proven to be
+/// misreported as ACP `Refusal`. It records match progress, never response text.
+#[derive(Debug, Default)]
+struct TerminalAuthDiagnostic {
+    matched: usize,
+    invalid: bool,
+}
+
+impl TerminalAuthDiagnostic {
+    const UNAUTHORIZED_401: &'static [u8] = b"401 Unauthorized";
+
+    /// Observe one terminal-answer fragment without retaining its text. The
+    /// only accepted value is the complete provider diagnostic, ignoring ASCII
+    /// case and surrounding whitespace. Any other prose invalidates the
+    /// candidate, so quoting the diagnostic in an explanation is never enough.
+    fn note_text(&mut self, text: &str) {
+        for ch in text.chars() {
+            if self.invalid {
+                return;
+            }
+            if self.matched == 0 && ch.is_whitespace() {
+                continue;
+            }
+            if self.matched == Self::UNAUTHORIZED_401.len() {
+                if !ch.is_whitespace() {
+                    self.invalid = true;
+                }
+                continue;
+            }
+            let expected = Self::UNAUTHORIZED_401[self.matched] as char;
+            if ch.eq_ignore_ascii_case(&expected) {
+                self.matched += 1;
+            } else {
+                self.invalid = true;
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn is_unauthorized_401(&self) -> bool {
+        !self.invalid && self.matched == Self::UNAUTHORIZED_401.len()
+    }
+}
+
 /// What a single turn was observed to produce. Scoped to one turn and reset at
 /// each turn start.
 ///
@@ -8811,6 +8862,10 @@ struct TurnOutputProbe {
     /// `StderrTail` write position at turn start, so the diagnosis can scope
     /// stderr to this turn.
     stderr_mark: u64,
+    /// Streaming, text-free recognition of an exact top-level terminal
+    /// `401 Unauthorized` reply. Reset on tool activity because only text after
+    /// the last tool call is the terminal answer.
+    auth_diagnostic: TerminalAuthDiagnostic,
 }
 
 impl TurnOutputProbe {
@@ -8821,11 +8876,40 @@ impl TurnOutputProbe {
         }
     }
 
-    fn note_update(&mut self, agent_type: AgentType, update: &SessionUpdate) {
+    fn note_update(
+        &mut self,
+        agent_type: AgentType,
+        update: &SessionUpdate,
+        codebuddy_subagent_window_open: bool,
+    ) {
         if is_agent_output_update(agent_type, update) {
             self.saw_agent_output = true;
         } else {
             self.saw_metadata_update = true;
+        }
+
+        match update {
+            SessionUpdate::AgentMessageChunk(ContentChunk {
+                content: ContentBlock::Text(text),
+                meta,
+                ..
+            }) => {
+                let nested = should_suppress_subagent_chunk(
+                    agent_type,
+                    codebuddy_subagent_window_open,
+                    meta.as_ref(),
+                ) || claude_chunk_parent_tool_use_id(agent_type, meta.as_ref()).is_some();
+                if !nested
+                    && pi_message_chunk_route(agent_type, &text.text, meta.as_ref())
+                        == PiChunkRoute::Prose
+                {
+                    self.auth_diagnostic.note_text(&text.text);
+                }
+            }
+            SessionUpdate::ToolCall(_) | SessionUpdate::ToolCallUpdate(_) => {
+                self.auth_diagnostic.reset();
+            }
+            _ => {}
         }
     }
 
@@ -8979,6 +9063,9 @@ fn finish_turn_reason<'a>(
     raw_reason_str: &'a str,
     stderr_tail: &StderrTail,
 ) -> (&'a str, Option<EmptyTurnReport>) {
+    if raw_reason_str == "refusal" && probe.auth_diagnostic.is_unauthorized_401() {
+        return ("auth_required", None);
+    }
     if raw_reason_str != "end_turn" || probe.saw_agent_output {
         return (raw_reason_str, None);
     }
@@ -9008,7 +9095,10 @@ fn turn_failure_error_event(
     let (code, message, details) = match reason_str {
         "refusal" => (
             "turn_failed_refusal",
-            format!("{agent_type} refused to continue this turn."),
+            format!(
+                "{agent_type} ended this turn with a refusal or an upstream error. \
+                 Check the agent output and provider status before retrying."
+            ),
             None,
         ),
         "max_tokens" => (
@@ -17925,6 +18015,7 @@ mod tests {
         probe.note_update(
             AgentType::ClaudeCode,
             &SessionUpdate::Plan(Plan::new(Vec::new())),
+            false,
         );
         assert!(!probe.saw_agent_output, "Plan is not agent output");
         assert!(probe.saw_metadata_update);
@@ -17932,6 +18023,7 @@ mod tests {
         probe.note_update(
             AgentType::ClaudeCode,
             &SessionUpdate::AgentMessageChunk(ContentChunk::new("hi".into())),
+            false,
         );
         assert!(probe.saw_agent_output);
     }
@@ -18008,6 +18100,163 @@ mod tests {
         let silent = TurnOutputProbe::new(0);
         assert_eq!(finish_turn_reason(&silent, "cancelled", &tail).0, "cancelled");
         assert_eq!(finish_turn_reason(&silent, "end_turn", &tail).0, "empty");
+    }
+
+    fn agent_text_update(text: &str) -> SessionUpdate {
+        SessionUpdate::AgentMessageChunk(ContentChunk::new(text.to_string().into()))
+    }
+
+    fn nested_agent_text_update(text: &str, meta: serde_json::Value) -> SessionUpdate {
+        SessionUpdate::AgentMessageChunk(
+            ContentChunk::new(text.to_string().into())
+                .meta(meta.as_object().cloned().expect("object meta")),
+        )
+    }
+
+    /// Regression for CodeBuddy reporting a provider 401 as ACP `Refusal`.
+    /// Removing the refusal normalization must make this fail.
+    #[test]
+    fn finish_turn_reason_promotes_split_terminal_401_refusal_to_auth_required() {
+        let tail = StderrTail::new();
+        let mut probe = TurnOutputProbe::new(0);
+        for text in ["  401 Unau", "thorized\n"] {
+            probe.note_update(AgentType::CodeBuddy, &agent_text_update(text), false);
+        }
+
+        let (reason, report) = finish_turn_reason(&probe, "refusal", &tail);
+        assert_eq!(reason, "auth_required");
+        assert!(report.is_none());
+    }
+
+    /// A substring match would turn an agent's explanation or quoted prompt
+    /// into a false sign-out. Success and cancellation remain authoritative too.
+    #[test]
+    fn finish_turn_reason_keeps_quoted_401_and_non_refusal_outcomes() {
+        let tail = StderrTail::new();
+        let mut quoted = TurnOutputProbe::new(0);
+        quoted.note_update(
+            AgentType::CodeBuddy,
+            &agent_text_update(
+                "The log says `401 Unauthorized`, but that quote alone does not prove sign-out.",
+            ),
+            false,
+        );
+        assert_eq!(finish_turn_reason(&quoted, "refusal", &tail).0, "refusal");
+
+        let mut exact = TurnOutputProbe::new(0);
+        exact.note_update(
+            AgentType::CodeBuddy,
+            &agent_text_update("401 Unauthorized"),
+            false,
+        );
+        assert_eq!(finish_turn_reason(&exact, "end_turn", &tail).0, "end_turn");
+        assert_eq!(finish_turn_reason(&exact, "cancelled", &tail).0, "cancelled");
+
+        let mut ordinary = TurnOutputProbe::new(0);
+        ordinary.note_update(
+            AgentType::CodeBuddy,
+            &agent_text_update("I cannot help with that request."),
+            false,
+        );
+        assert_eq!(finish_turn_reason(&ordinary, "refusal", &tail).0, "refusal");
+    }
+
+    /// Authentication evidence is scoped to the final top-level answer of one
+    /// turn. Thinking and parented sub-agent text are not that answer, and tool
+    /// activity starts a fresh terminal-answer candidate.
+    #[test]
+    fn auth_diagnostic_resets_and_ignores_non_terminal_output() {
+        let tail = StderrTail::new();
+
+        let mut previous_turn = TurnOutputProbe::new(0);
+        previous_turn.note_update(
+            AgentType::CodeBuddy,
+            &agent_text_update("401 Unauthorized"),
+            false,
+        );
+        assert_eq!(
+            finish_turn_reason(&previous_turn, "refusal", &tail).0,
+            "auth_required"
+        );
+
+        let current_turn = TurnOutputProbe::new(0);
+        assert_eq!(
+            finish_turn_reason(&current_turn, "refusal", &tail).0,
+            "refusal",
+            "a fresh turn must not inherit diagnostic state"
+        );
+
+        let irrelevant_updates = [
+            (
+                AgentType::CodeBuddy,
+                SessionUpdate::AgentThoughtChunk(ContentChunk::new(
+                    "401 Unauthorized".to_string().into(),
+                )),
+                false,
+            ),
+            (
+                AgentType::CodeBuddy,
+                nested_agent_text_update(
+                    "401 Unauthorized",
+                    serde_json::json!({"codebuddy.ai/isSubagent": true}),
+                ),
+                false,
+            ),
+            (
+                AgentType::ClaudeCode,
+                nested_agent_text_update(
+                    "401 Unauthorized",
+                    serde_json::json!({"claudeCode": {"parentToolUseId": "toolu_child"}}),
+                ),
+                false,
+            ),
+            (
+                AgentType::CodeBuddy,
+                agent_text_update("401 Unauthorized"),
+                true,
+            ),
+            (
+                AgentType::CodeBuddy,
+                SessionUpdate::ToolCall(
+                    sacp::schema::ToolCall::new("call-auth-quote", "401 Unauthorized")
+                        .raw_output(serde_json::json!({"error": "401 Unauthorized"})),
+                ),
+                false,
+            ),
+        ];
+        for (agent_type, update, subagent_window_open) in irrelevant_updates {
+            let mut probe = TurnOutputProbe::new(0);
+            probe.note_update(agent_type, &update, subagent_window_open);
+            assert_eq!(
+                finish_turn_reason(&probe, "refusal", &tail).0,
+                "refusal",
+                "irrelevant update was treated as terminal auth evidence: {update:?}"
+            );
+        }
+
+        let mut after_tool = TurnOutputProbe::new(0);
+        after_tool.note_update(
+            AgentType::CodeBuddy,
+            &agent_text_update("401 Unauthorized"),
+            false,
+        );
+        after_tool.note_update(
+            AgentType::CodeBuddy,
+            &SessionUpdate::ToolCall(sacp::schema::ToolCall::new("call-1", "Read")),
+            false,
+        );
+        assert_eq!(
+            finish_turn_reason(&after_tool, "refusal", &tail).0,
+            "refusal",
+            "tool activity clears text that came before it"
+        );
+        for text in ["401 Un", "authorized"] {
+            after_tool.note_update(AgentType::CodeBuddy, &agent_text_update(text), false);
+        }
+        assert_eq!(
+            finish_turn_reason(&after_tool, "refusal", &tail).0,
+            "auth_required"
+        );
     }
 
     /// Guards the two-exit refactor: the helper only computes, so calling it
@@ -20384,6 +20633,7 @@ mod tests {
             probe.note_update(
                 AgentType::Pi,
                 &serde_json::from_value(wire).expect("valid wire shape"),
+                false,
             );
         }
         assert!(!probe.saw_agent_output);
@@ -20393,6 +20643,7 @@ mod tests {
         probe.note_update(
             AgentType::Pi,
             &serde_json::from_value(pi_chunk("是的，插件已加载。")).expect("valid wire shape"),
+            false,
         );
         assert!(probe.saw_agent_output);
     }

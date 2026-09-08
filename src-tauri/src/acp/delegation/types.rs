@@ -140,7 +140,9 @@ pub enum DelegationError {
     SubagentRuntimeError(String),
     /// Child agent ended its turn via `refusal`. Often a backend / gateway
     /// error masquerading as a refusal per the ACP spec gap.
-    #[error("subagent refused to continue")]
+    #[error(
+        "subagent ended with a refusal or upstream error; inspect its output and provider status before retrying"
+    )]
     ChildRefusal,
     #[error("subagent reached max token budget")]
     ChildMaxTokens,
