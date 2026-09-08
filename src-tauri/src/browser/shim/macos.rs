@@ -14,7 +14,7 @@ use std::sync::Arc;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject, Sel};
-use objc2::{define_class, msg_send, sel, DeclaredClass, MainThreadMarker, MainThreadOnly};
+use objc2::{define_class, msg_send, sel, DeclaredClass, MainThreadMarker, MainThreadOnly, Message};
 use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSImageCompressionFactor};
 use objc2_foundation::{
     ns_string, NSArray, NSDate, NSDictionary, NSError, NSNumber, NSProcessInfo, NSString, NSURL,
@@ -511,26 +511,56 @@ define_class!(
             // No target frame = a new window; the strict reading applies.
             CURRENT_ACTION_MAIN_FRAME.with(|flag| flag.set(Some(main_frame.unwrap_or(true))));
             // The identity this webview presents follows where its main
-            // frame is going (the sign-in exception); a new window's URL is
-            // the new window's business.
-            if main_frame == Some(true) {
-                // SAFETY: live action on the main thread.
-                let url = unsafe { action.request().URL().and_then(|u| u.absoluteString()) }
-                    .map(|s| s.to_string());
-                if let Some(url) = url.and_then(|u| tauri::Url::parse(&u).ok()) {
-                    apply_user_agent(webview, &url);
-                }
-            }
+            // frame is going (the sign-in exception) — but only once the
+            // navigation is admitted: a refused address must not change what
+            // the page that stays presents. So the decision handler is
+            // wrapped, and the identity is set right before the `Allow`
+            // reaches WebKit (still ahead of the request, see
+            // `apply_user_agent`). A new window's URL is the new window's
+            // business.
             let inner = &self.ivars().inner;
-            // SAFETY: forwarding the exact selector and arguments WebKit gave
-            // us to the delegate that implements it.
-            unsafe {
-                let _: () = msg_send![
-                    &**inner,
-                    webView: webview,
-                    decidePolicyForNavigationAction: action,
-                    decisionHandler: handler
-                ];
+            let admitted_url = if main_frame == Some(true) {
+                // SAFETY: live action on the main thread.
+                unsafe { action.request().URL().and_then(|u| u.absoluteString()) }
+                    .and_then(|s| tauri::Url::parse(&s.to_string()).ok())
+            } else {
+                None
+            };
+            match admitted_url {
+                Some(url) => {
+                    let retained = webview.retain();
+                    let original = handler.copy();
+                    let wrapped = RcBlock::new(move |policy: WKNavigationActionPolicy| {
+                        if policy == WKNavigationActionPolicy::Allow {
+                            apply_user_agent(&retained, &url);
+                        }
+                        original.call((policy,));
+                    });
+                    // SAFETY: same selector and arguments WebKit gave us,
+                    // with a block of the same signature in the handler's
+                    // place; wry calls it once, synchronously or later, and
+                    // the block copies keep everything it needs alive.
+                    unsafe {
+                        let _: () = msg_send![
+                            &**inner,
+                            webView: webview,
+                            decidePolicyForNavigationAction: action,
+                            decisionHandler: &*wrapped
+                        ];
+                    }
+                }
+                None => {
+                    // SAFETY: forwarding the exact selector and arguments
+                    // WebKit gave us to the delegate that implements it.
+                    unsafe {
+                        let _: () = msg_send![
+                            &**inner,
+                            webView: webview,
+                            decidePolicyForNavigationAction: action,
+                            decisionHandler: handler
+                        ];
+                    }
+                }
             }
             CURRENT_ACTION_MAIN_FRAME.with(|flag| flag.set(None));
         }
@@ -639,11 +669,19 @@ impl CodegNavigationDelegate {
     }
 }
 
+/// Re-decide the identity for the page the webview shows (the preference
+/// changed). Main thread.
+pub fn apply_user_agent_to(webview: &wry::WebView, url: &tauri::Url) {
+    apply_user_agent(&webview.webview(), url);
+}
+
 /// Give the webview the user agent `profile::user_agent_for` wants for a
 /// main-frame navigation to `url`, when that differs from what it presents
-/// now. Called from the policy decision, i.e. before the engine sends the
-/// request: `customUserAgent` reaches the web process ahead of the policy
-/// answer, so the request being decided already carries it.
+/// now. Called as the policy decision is answered, i.e. before the engine
+/// sends the request: `customUserAgent` reaches the web process ahead of
+/// the policy answer, so the request being decided already carries it (a
+/// request the server redirects elsewhere keeps the identity it left with;
+/// the destination's own requests follow the rule again).
 fn apply_user_agent(webview: &WKWebView, url: &tauri::Url) {
     let wanted = profile::user_agent_for(url);
     // SAFETY: main thread, live webview.

@@ -207,7 +207,34 @@ describe("BrowserEventsBridge", () => {
     expect(mocks.openBrowserTab).toHaveBeenCalledTimes(2)
     expect(mocks.openBrowserTab).toHaveBeenLastCalledWith(
       "https://example.com/next-to-opener",
-      { activate: false, openerTabId: "browser:abc" }
+      { activate: false, openerTabId: "browser:abc", profile: "default" }
+    )
+    // The opener's profile travels with the request: the new tab belongs to
+    // the same signed-in session even when the opener record is gone.
+    mocks.handlers.get("browser://open-request")!({
+      url: "https://example.com/in-work",
+      source: "modifier-click",
+      activate: false,
+      ownerWindow: "main",
+      openerTabId: "abc",
+      profile: "p-work",
+    })
+    expect(mocks.openBrowserTab).toHaveBeenLastCalledWith(
+      "https://example.com/in-work",
+      { activate: false, openerTabId: "browser:abc", profile: "p-work" }
+    )
+    // A request from an agent or a deep link leaves the profile open.
+    mocks.handlers.get("browser://open-request")!({
+      url: "https://example.com/no-opinion",
+      source: "agent",
+      activate: true,
+      ownerWindow: "main",
+      openerTabId: null,
+      profile: null,
+    })
+    expect(mocks.openBrowserTab).toHaveBeenLastCalledWith(
+      "https://example.com/no-opinion",
+      { activate: true, openerTabId: undefined, profile: undefined }
     )
 
     mocks.handlers.get("browser://state")!({
@@ -245,6 +272,7 @@ describe("BrowserEventsBridge", () => {
       backendTabId: "abc-p1",
       url: "https://example.com/popup",
       openerBackendTabId: "abc",
+      profile: "default",
     })
     mocks.handlers.get("browser://popup")!({
       presentation: "denied",

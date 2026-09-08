@@ -11,7 +11,11 @@ import {
   browserSetBounds,
   browserSetVisible,
 } from "@/lib/browser/browser-api"
-import { getBrowserPrefs } from "@/lib/browser/browser-prefs"
+import {
+  browserProfileExists,
+  DEFAULT_BROWSER_PROFILE_ID,
+  getBrowserPrefs,
+} from "@/lib/browser/browser-prefs"
 import { browserClose } from "@/lib/browser/browser-api"
 import {
   claimSurfaceCreation,
@@ -362,7 +366,12 @@ export function BrowserSurfaceHost({
         folderId,
         surface: prefs.surfaceOverride,
         devtools: prefs.devtools,
-        profile,
+        // The record is moved to the default profile when its own is
+        // deleted; should a create run before that reaches this window, the
+        // backend still must not recreate the deleted store.
+        profile: browserProfileExists(prefs, profile)
+          ? profile
+          : DEFAULT_BROWSER_PROFILE_ID,
       })
     },
     [backendId, folderId, initialUrl, profile]

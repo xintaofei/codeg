@@ -4816,7 +4816,7 @@
     "profileDeleteFailed": "无法删除配置文件：{message}",
     "clearConfirmDescriptionProfile": "将删除配置文件 {name} 的 Cookie、缓存和站点存储。已打开的标签页会保留，但各网站的登录状态会失效。",
     "signInUaTitle": "Google 登录兼容",
-    "signInUaHint": "Google 拒绝在内嵌浏览器中登录。开启后，标签页只对 Google 的登录页面（accounts.google.com）呈现 Firefox 身份；其他地方仍使用引擎自己的身份。"
+    "signInUaHint": "Google 拒绝在内嵌浏览器中登录。开启后，标签页只对 Google 的登录页面（accounts.google.com）呈现 Firefox 身份；其他地方仍使用引擎自己的身份。仅对嵌入式标签页生效，独立窗口不适用；登录页把你跳转到别的站点时，到那里的第一个请求仍带着登录身份。"
   },
   "LogsSettings": {
     "loading": "加载中…",

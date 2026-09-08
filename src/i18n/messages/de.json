@@ -4816,7 +4816,7 @@
     "profileDeleteFailed": "Das Profil konnte nicht gelöscht werden: {message}",
     "clearConfirmDescriptionProfile": "Cookies, Caches und Website-Daten des Profils {name} werden entfernt. Offene Tabs bleiben offen, aber du wirst bei Websites abgemeldet.",
     "signInUaTitle": "Kompatibilität mit der Google-Anmeldung",
-    "signInUaHint": "Google verweigert die Anmeldung aus eingebetteten Browsern. Wenn eingeschaltet, geben sich Tabs nur gegenüber Googles Anmeldeseiten (accounts.google.com) als Firefox aus; überall sonst gilt die eigene Kennung der Engine."
+    "signInUaHint": "Google verweigert die Anmeldung aus eingebetteten Browsern. Wenn eingeschaltet, geben sich Tabs nur gegenüber Googles Anmeldeseiten (accounts.google.com) als Firefox aus; überall sonst gilt die eigene Kennung der Engine. Nur in eingebetteten Tabs, nicht im separaten Fenster; leitet eine Anmeldeseite auf eine andere Website weiter, trägt die erste Anfrage dort noch die Anmeldekennung."
   },
   "LogsSettings": {
     "loading": "Wird geladen…",

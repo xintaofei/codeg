@@ -180,6 +180,9 @@ export interface BrowserPopupPayload {
   url: string
   requestedSize: [number, number] | null
   reason: string | null
+  /** The profile an adopted popup lives in (its opener's, as the backend
+   *  knows it); null when denied. */
+  profile: string | null
 }
 
 /** `browser://telemetry`: page-side data forwarded as-is; never trust it. */
@@ -201,6 +204,9 @@ export interface BrowserOpenRequestPayload {
   ownerWindow: string | null
   /** Backend id of the tab the request came from (modifier-click), if any. */
   openerTabId: string | null
+  /** The profile the new tab belongs in (the opener's for a modifier-click);
+   *  null leaves the choice to the frontend. */
+  profile: string | null
 }
 
 export const BROWSER_OPEN_REQUEST_EVENT = "browser://open-request"

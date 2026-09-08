@@ -3344,6 +3344,18 @@ describe("browser tabs", () => {
           adopt
         </button>
         <button
+          onClick={() =>
+            adoptBrowserTab({
+              backendTabId: "orphan-p1",
+              url: "https://example.com/orphan-popup",
+              openerBackendTabId: "gone",
+              profile: "p-work",
+            })
+          }
+        >
+          adopt-orphan
+        </button>
+        <button
           onClick={() => {
             if (activeFileTabId) closeFileTab(activeFileTabId)
           }}
@@ -3575,6 +3587,7 @@ describe("browser tabs", () => {
   // A profile is a separate cookie jar: the same page in two profiles is two
   // sessions, so it is two tabs; within one profile the one-tab rule holds.
   it("keeps one tab per URL per profile and inherits the opener's profile", () => {
+    setBrowserProfiles([{ id: "p-work", name: "Work" }])
     render(
       <WorkspaceProvider>
         <BrowserProbe />
@@ -3599,6 +3612,40 @@ describe("browser tabs", () => {
     act(() => screen.getByText("adopt").click())
     const popup = readTabs().find((t) => t.url === "https://example.com/popup")
     expect(popup?.profile).toBe("default")
+  })
+
+  // A tab of a deleted profile must never recreate that profile's store:
+  // reopening (⇧⌘T) and dormant records both land in the default profile.
+  it("moves tabs of a deleted profile to the default one", () => {
+    setBrowserProfiles([{ id: "p-work", name: "Work" }])
+    render(
+      <WorkspaceProvider>
+        <BrowserProbe />
+      </WorkspaceProvider>
+    )
+    act(() => screen.getByText("open-work").click())
+    expect(readTabs().map((t) => t.profile)).toEqual(["p-work"])
+    // The profile disappears (deleted from the settings window): the
+    // dormant record follows the preference.
+    act(() => setBrowserProfiles([]))
+    expect(readTabs().map((t) => t.profile)).toEqual(["default"])
+    // Asking for the deleted profile outright is answered with the default.
+    act(() => screen.getByText("open-work").click())
+    expect(readTabs().map((t) => t.profile)).toEqual(["default"])
+    expect(readTabs()).toHaveLength(1)
+  })
+
+  it("adopts a popup in the profile the backend names even without its opener", () => {
+    render(
+      <WorkspaceProvider>
+        <BrowserProbe />
+      </WorkspaceProvider>
+    )
+    act(() => screen.getByText("adopt-orphan").click())
+    const popup = readTabs().find(
+      (t) => t.url === "https://example.com/orphan-popup"
+    )
+    expect(popup?.profile).toBe("p-work")
   })
 
   it("opens new tabs in the preferred profile when it exists", () => {

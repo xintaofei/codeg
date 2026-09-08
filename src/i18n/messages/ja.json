@@ -4816,7 +4816,7 @@
     "profileDeleteFailed": "プロファイルを削除できませんでした: {message}",
     "clearConfirmDescriptionProfile": "プロファイル {name} の Cookie、キャッシュ、サイトデータを削除します。開いているタブはそのままですが、各サイトからログアウトされます。",
     "signInUaTitle": "Google ログインとの互換性",
-    "signInUaHint": "Google は埋め込みブラウザーからのログインを拒否します。オンにすると、タブは Google のログインページ（accounts.google.com）に対してだけ Firefox として名乗ります。それ以外ではエンジン本来の識別情報を使います。"
+    "signInUaHint": "Google は埋め込みブラウザーからのログインを拒否します。オンにすると、タブは Google のログインページ（accounts.google.com）に対してだけ Firefox として名乗ります。それ以外ではエンジン本来の識別情報を使います。埋め込みタブにのみ適用され、別ウィンドウ表示には適用されません。ログインページから別のサイトへリダイレクトされた場合、そのサイトへの最初のリクエストにはログイン時の識別情報が残ります。"
   },
   "LogsSettings": {
     "loading": "読み込み中…",

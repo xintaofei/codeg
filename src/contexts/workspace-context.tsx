@@ -73,7 +73,12 @@ import {
   releaseBrowserTab,
 } from "@/lib/browser/browser-tab-store"
 import { hostnameOf, normalizeUrlForDedupe } from "@/lib/browser/browser-url"
-import { getBrowserPrefs } from "@/lib/browser/browser-prefs"
+import {
+  DEFAULT_BROWSER_PROFILE_ID,
+  browserProfileExists,
+  getBrowserPrefs,
+  subscribeBrowserPrefs,
+} from "@/lib/browser/browser-prefs"
 import { randomUUID } from "@/lib/utils"
 
 export type WorkspaceMode = "conversation" | "fusion"
@@ -302,6 +307,8 @@ interface WorkspaceActionsValue {
     backendTabId: string
     url: string
     openerBackendTabId: string
+    /** The profile the backend built the popup in; null = unknown. */
+    profile?: string | null
   }) => string
   // Bring back browser tabs saved by a previous run, as records only: none
   // is activated, and a native surface is created for one when it is first
@@ -808,11 +815,17 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         ? fileTabsRef.current.find((tab) => tab.id === options.openerTabId)
         : undefined
       // A tab opened from another tab (⌘-click, a popup) belongs with it:
-      // same cookies, same signed-in state. Otherwise the preference.
-      const profile =
+      // same cookies, same signed-in state. Otherwise the preference. A
+      // profile that no longer exists (a reopened tab of a deleted one, a
+      // stale record) is not recreated on the backend: default instead.
+      const prefs = getBrowserPrefs()
+      const wanted =
         options?.profile ??
         (opener?.kind === "browser" ? opener.browser.profile : undefined) ??
-        getBrowserPrefs().newTabProfile
+        prefs.newTabProfile
+      const profile = browserProfileExists(prefs, wanted)
+        ? wanted
+        : DEFAULT_BROWSER_PROFILE_ID
       // One tab per page AND profile: the same page in two profiles is two
       // different sessions, and both are worth a tab.
       const existing = fileTabsRef.current.find(
@@ -867,6 +880,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       backendTabId: string
       url: string
       openerBackendTabId: string
+      /** The profile the backend built the popup in (its opener's). */
+      profile?: string | null
     }) => {
       const openerId = buildFileTabId({
         kind: "browser",
@@ -874,15 +889,17 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       })
       const opener = fileTabsRef.current.find((tab) => tab.id === openerId)
       // A popup shares its opener's data store on the backend whatever is
-      // said here; the record says the same so the toolbar shows it.
+      // said here; the record says the same so the toolbar shows it. The
+      // backend's word comes first — the opener record may be gone by now.
       const record = browserTabRecord(
         params.backendTabId,
         params.url,
         opener?.folderId ?? activeFolderRef.current?.id ?? null,
         openerId,
-        opener?.kind === "browser"
-          ? opener.browser.profile
-          : getBrowserPrefs().newTabProfile
+        params.profile ??
+          (opener?.kind === "browser"
+            ? opener.browser.profile
+            : getBrowserPrefs().newTabProfile)
       )
       setFileTabs((prev) => {
         if (prev.some((tab) => tab.id === record.id)) return prev
@@ -919,10 +936,14 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           )
         )
         const records: FileWorkspaceTab[] = []
+        const prefs = getBrowserPrefs()
         for (const entry of entries) {
           const normalized = normalizeUrlForDedupe(entry.url)
           if (!normalized) continue
-          const key = `${entry.profile} ${normalized}`
+          const profile = browserProfileExists(prefs, entry.profile)
+            ? entry.profile
+            : DEFAULT_BROWSER_PROFILE_ID
+          const key = `${profile} ${normalized}`
           if (open.has(key)) continue
           open.add(key)
           records.push(
@@ -931,7 +952,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
               entry.url,
               entry.folderId,
               null,
-              entry.profile,
+              profile,
               entry.title
             )
           )
@@ -942,6 +963,39 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       })
     },
     [browserTabRecord]
+  )
+
+  // A deleted profile has no store any more. Its loaded tabs were closed by
+  // the backend as part of the deletion; the records that were not loaded
+  // (restored, suspended) would recreate the store the moment they are
+  // shown, so they move to the default profile as soon as the preference
+  // says the profile is gone.
+  useEffect(
+    () =>
+      subscribeBrowserPrefs(() => {
+        const prefs = getBrowserPrefs()
+        setFileTabs((prev) => {
+          let changed = false
+          const next = prev.map((tab) => {
+            if (
+              tab.kind !== "browser" ||
+              browserProfileExists(prefs, tab.browser.profile)
+            ) {
+              return tab
+            }
+            changed = true
+            return {
+              ...tab,
+              browser: {
+                ...tab.browser,
+                profile: DEFAULT_BROWSER_PROFILE_ID,
+              },
+            }
+          })
+          return changed ? next : prev
+        })
+      }),
+    []
   )
 
   const suspendBrowserTab = useCallback((tabId: string) => {

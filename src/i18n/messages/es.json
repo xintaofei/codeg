@@ -4816,7 +4816,7 @@
     "profileDeleteFailed": "No se pudo eliminar el perfil: {message}",
     "clearConfirmDescriptionProfile": "Se eliminarán las cookies, cachés y almacenamiento de sitios del perfil {name}. Las pestañas abiertas permanecen, pero se cerrará tu sesión en los sitios.",
     "signInUaTitle": "Compatibilidad con el inicio de sesión de Google",
-    "signInUaHint": "Google rechaza iniciar sesión desde navegadores integrados. Si está activado, las pestañas se presentan como Firefox solo ante las páginas de inicio de sesión de Google (accounts.google.com); en el resto se usa la identidad propia del motor."
+    "signInUaHint": "Google rechaza iniciar sesión desde navegadores integrados. Si está activado, las pestañas se presentan como Firefox solo ante las páginas de inicio de sesión de Google (accounts.google.com); en el resto se usa la identidad propia del motor. Solo en pestañas integradas, no en la ventana separada; cuando una página de inicio de sesión te redirige a otro sitio, la primera solicitud allí aún lleva la identidad de inicio de sesión."
   },
   "LogsSettings": {
     "loading": "Cargando…",

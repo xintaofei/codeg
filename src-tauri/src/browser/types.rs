@@ -215,6 +215,9 @@ pub struct BrowserOpenRequestPayload {
     /// Tab the request originated in (a modifier-click inside it). The
     /// frontend inserts the new tab right after it, like a browser does.
     pub opener_tab_id: Option<String>,
+    /// The profile the new tab belongs in: the opener's for a modifier-click
+    /// (the same signed-in session), else the frontend's choice.
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,6 +240,9 @@ pub struct BrowserPopupPayload {
     /// `window.open` size features, when the page asked for any.
     pub requested_size: Option<[f64; 2]>,
     pub reason: Option<String>,
+    /// The profile an adopted popup lives in — its opener's, whatever the
+    /// frontend knows about the opener by the time the event arrives.
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -288,6 +294,28 @@ mod tests {
         let choice: SurfaceChoice = serde_json::from_str(r#""window""#).unwrap();
         assert_eq!(choice, SurfaceChoice::Window);
 
+        let popup = serde_json::to_value(BrowserPopupPayload {
+            presentation: PopupPresentation::Adopted,
+            opener_tab_id: "t1".into(),
+            tab_id: Some("t1-p1".into()),
+            url: "https://example.com/popup".into(),
+            requested_size: None,
+            reason: None,
+            profile: Some("p-work".into()),
+        })
+        .unwrap();
+        assert_eq!(popup["profile"], "p-work");
+        let request = serde_json::to_value(BrowserOpenRequestPayload {
+            url: "https://example.com/".into(),
+            source: "modifier-click".into(),
+            activate: false,
+            owner_window: Some("main".into()),
+            opener_tab_id: Some("t1".into()),
+            profile: Some("p-work".into()),
+        })
+        .unwrap();
+        assert_eq!(request["profile"], "p-work");
+        assert_eq!(request["openerTabId"], "t1");
         let blocked = serde_json::to_value(BrowserNavigationBlockedPayload {
             tab_id: "t1".into(),
             url: "https://blocked.example/".into(),

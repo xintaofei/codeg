@@ -4816,7 +4816,7 @@
     "profileDeleteFailed": "프로필을 삭제할 수 없습니다: {message}",
     "clearConfirmDescriptionProfile": "프로필 {name}의 쿠키, 캐시, 사이트 저장소가 삭제됩니다. 열린 탭은 유지되지만 각 사이트에서 로그아웃됩니다.",
     "signInUaTitle": "Google 로그인 호환",
-    "signInUaHint": "Google은 내장 브라우저에서의 로그인을 거부합니다. 켜면 탭이 Google 로그인 페이지(accounts.google.com)에만 Firefox로 표시되고, 그 밖의 곳에서는 엔진 고유의 식별 정보를 사용합니다."
+    "signInUaHint": "Google은 내장 브라우저에서의 로그인을 거부합니다. 켜면 탭이 Google 로그인 페이지(accounts.google.com)에만 Firefox로 표시되고, 그 밖의 곳에서는 엔진 고유의 식별 정보를 사용합니다.내장 탭에만 적용되며 별도 창에는 적용되지 않습니다. 로그인 페이지가 다른 사이트로 리디렉션하면 그곳으로 가는 첫 요청에는 로그인 식별 정보가 그대로 남습니다."
   },
   "LogsSettings": {
     "loading": "불러오는 중…",

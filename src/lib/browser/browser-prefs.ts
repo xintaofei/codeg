@@ -317,19 +317,25 @@ export function setBrowserProfiles(profiles: readonly BrowserProfile[]): void {
   write(PROFILES_KEY, cleaned.length > 0 ? JSON.stringify(cleaned) : null)
 }
 
+/** The stored list as of now, not as of the last read: another window's
+ *  write may not have reached this one's `storage` listener yet, and a
+ *  read-modify-write from the cached snapshot would drop it. */
+function currentProfiles(): readonly BrowserProfile[] {
+  cached = null
+  return getBrowserPrefs().profiles
+}
+
 /** Create a profile named `name`; returns it (with its new id). */
 export function addBrowserProfile(name: string): BrowserProfile {
   const profile = { id: mintBrowserProfileId(), name: name.trim() }
-  setBrowserProfiles([...getBrowserPrefs().profiles, profile])
+  setBrowserProfiles([...currentProfiles(), profile])
   return profile
 }
 
 /** Forget a profile. The "new tabs" choice falls back to the default profile
  *  on its own (it is resolved against the list on every read). */
 export function removeBrowserProfile(id: string): void {
-  setBrowserProfiles(
-    getBrowserPrefs().profiles.filter((profile) => profile.id !== id)
-  )
+  setBrowserProfiles(currentProfiles().filter((profile) => profile.id !== id))
 }
 
 /** The profile new tabs open in (the default one removes the key). */

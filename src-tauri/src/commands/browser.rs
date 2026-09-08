@@ -181,6 +181,11 @@ pub fn open_tab_core(
     let url = parse_web_url(&params.url)?;
     let label = tab_label(&params.tab_id);
     profile::check(&params.profile).map_err(AppCommandError::invalid_input)?;
+    if profile::is_removing(&params.profile) {
+        return Err(AppCommandError::invalid_input(
+            "this browser profile is being deleted",
+        ));
+    }
     profile::prepare(app, &params.profile)
         .map_err(|e| window_err("Failed to prepare the browser profile", e))?;
 
@@ -520,10 +525,14 @@ pub async fn clear_data_core(
     registry: &BrowserRegistry,
     profile_id: &str,
 ) -> Result<(), AppCommandError> {
-    if !profile::valid_profile_id(profile_id) {
-        return Err(AppCommandError::invalid_input(format!(
-            "invalid browser profile id {profile_id:?}"
-        )));
+    // `check`, not only the syntax: below macOS 14 a profile other than the
+    // default has no store of its own, and clearing "it" would clear the
+    // shared one.
+    profile::check(profile_id).map_err(AppCommandError::invalid_input)?;
+    if profile::is_removing(profile_id) {
+        return Err(AppCommandError::invalid_input(
+            "this browser profile is being deleted",
+        ));
     }
     #[cfg(target_os = "macos")]
     {
@@ -540,18 +549,15 @@ pub async fn clear_data_core(
     {
         // Until the Windows / Linux shims land, clearing goes through a live
         // surface of the profile (they all share its store); with none open
-        // there is nothing to call into.
+        // there is nothing to call into. Picked under one lock: a tab id
+        // looked up separately could by then name a tab of another profile.
         let _ = app;
-        let Some(state) = registry
-            .list()
-            .into_iter()
-            .find(|state| state.profile.as_deref() == Some(profile_id))
-        else {
+        let Some(surface) = registry.surface_in_profile(profile_id) else {
             return Err(AppCommandError::invalid_input(
                 "open a page in this profile first, then clear its data",
             ));
         };
-        surface_of(registry, &state.tab_id)?
+        surface
             .clear_browsing_data()
             .map_err(|e| window_err("Failed to clear browsing data", e))
     }
@@ -568,25 +574,30 @@ pub async fn remove_profile_core(
     registry: &BrowserRegistry,
     profile_id: &str,
 ) -> Result<(), AppCommandError> {
-    if !profile::valid_profile_id(profile_id) {
-        return Err(AppCommandError::invalid_input(format!(
-            "invalid browser profile id {profile_id:?}"
-        )));
-    }
+    profile::check(profile_id).map_err(AppCommandError::invalid_input)?;
     if profile_id == profile::DEFAULT_PROFILE_ID {
         return Err(AppCommandError::invalid_input(
             "the default browser profile cannot be deleted; clear its data instead",
         ));
     }
-    let open: Vec<String> = registry
-        .list()
-        .into_iter()
-        .filter(|state| state.profile.as_deref() == Some(profile_id))
-        .map(|state| state.tab_id)
-        .collect();
-    let had_tabs = !open.is_empty();
-    for tab_id in open {
-        close_core(app, registry, &tab_id)?;
+    // From here until the store is gone, nothing may put it back in use:
+    // opens, popups and clears of this profile are refused (see
+    // `profile::is_removing`), and the guard lifts that when this returns.
+    let _removing = profile::begin_removal(profile_id).map_err(AppCommandError::invalid_input)?;
+    // Detach only tabs that are STILL in the profile when each is taken: a
+    // tab id can be reused by a later incarnation in another profile.
+    let mut had_tabs = false;
+    for tab_id in registry.tabs_in_profile(profile_id) {
+        let Some(tab) = registry.remove_if(&tab_id, |tab| tab.state.profile.as_deref() == Some(profile_id))
+        else {
+            continue;
+        };
+        had_tabs = true;
+        let _ = tab.surface.close();
+        if let Some(guests) = app.try_state::<DocGuests>() {
+            guests.unbind(&tab_id);
+        }
+        events::emit_closed(app, &tab_id, &tab.state.owner_window);
     }
     if had_tabs {
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1009,11 +1020,37 @@ pub async fn browser_set_host_rules(
     Ok(())
 }
 
+/// Record the "sign-in user agent" preference and re-decide the identity of
+/// every open page under it, so a flip applies to the pages on screen and
+/// not only to their next navigation.
+pub fn set_sign_in_user_agent_core(registry: &BrowserRegistry, enabled: bool) {
+    profile::set_sign_in_user_agent(enabled);
+    for state in registry.list() {
+        if state.kind != TabKind::Page {
+            continue;
+        }
+        let Some(url) = [state.url.as_str(), state.requested_url.as_str()]
+            .into_iter()
+            .find_map(|candidate| Url::parse(candidate).ok())
+        else {
+            continue;
+        };
+        if let Some(surface) = registry.surface(&state.tab_id) {
+            if let Err(err) = surface.apply_user_agent(&url) {
+                tracing::debug!("[browser] tab {}: identity not re-applied: {err}", state.tab_id);
+            }
+        }
+    }
+}
+
 /// The "sign-in user agent" preference, pushed by the frontend (which owns
 /// it) at startup and on every change.
 #[tauri::command]
-pub async fn browser_set_sign_in_user_agent(enabled: bool) -> Result<(), AppCommandError> {
-    profile::set_sign_in_user_agent(enabled);
+pub async fn browser_set_sign_in_user_agent(
+    registry: State<'_, BrowserRegistry>,
+    enabled: bool,
+) -> Result<(), AppCommandError> {
+    set_sign_in_user_agent_core(&registry, enabled);
     Ok(())
 }
 

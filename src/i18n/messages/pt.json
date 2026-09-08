@@ -4816,7 +4816,7 @@
     "profileDeleteFailed": "Não foi possível excluir o perfil: {message}",
     "clearConfirmDescriptionProfile": "Os cookies, caches e armazenamento de sites do perfil {name} serão removidos. As abas abertas continuam abertas, mas você sairá dos sites.",
     "signInUaTitle": "Compatibilidade com o login do Google",
-    "signInUaHint": "O Google recusa login a partir de navegadores incorporados. Quando ativado, as abas se apresentam como Firefox apenas às páginas de login do Google (accounts.google.com); em todo o resto é usada a identidade do próprio mecanismo."
+    "signInUaHint": "O Google recusa login a partir de navegadores incorporados. Quando ativado, as abas se apresentam como Firefox apenas às páginas de login do Google (accounts.google.com); em todo o resto é usada a identidade do próprio mecanismo. Apenas em abas incorporadas, não na janela separada; quando uma página de login redireciona para outro site, a primeira solicitação a ele ainda leva a identidade de login."
   },
   "LogsSettings": {
     "loading": "Carregando…",

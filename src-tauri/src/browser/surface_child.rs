@@ -399,6 +399,21 @@ impl ChildHandle {
         }
     }
 
+    /// Present the identity `profile::user_agent_for` wants for `url` from
+    /// now on (the preference changed while the page is showing).
+    pub fn apply_user_agent(&self, url: &Url) -> Result<(), ChildError> {
+        #[cfg(target_os = "macos")]
+        {
+            let url = url.clone();
+            self.with(move |wv| shim::apply_user_agent_to(wv, &url))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = url;
+            Ok(())
+        }
+    }
+
     pub fn clear_find(&self) -> Result<(), ChildError> {
         #[cfg(target_os = "macos")]
         {
@@ -758,6 +773,7 @@ fn configure_child<'a>(
                             activate: false,
                             owner_window: Some(nav_owner.clone()),
                             opener_tab_id: Some(nav_id.clone()),
+                            profile: registry.state(&nav_id).and_then(|state| state.profile),
                         },
                     );
                     return false;
@@ -945,6 +961,7 @@ fn deny(app: &AppHandle, opener_tab_id: &str, url: &str, features: &NewWindowFea
             url: url.to_string(),
             requested_size: features.size.map(|s| [s.width, s.height]),
             reason: Some(reason.to_string()),
+            profile: None,
         },
     );
     NewWindowResponse::Deny
@@ -1008,6 +1025,11 @@ fn new_window_handler(
                 .state(&opener_tab_id)
                 .and_then(|state| state.profile)
                 .unwrap_or_else(|| profile::DEFAULT_PROFILE_ID.to_string());
+            // The opener's profile is on its way out: its tabs are being
+            // closed, and a popup would put the store back in use.
+            if profile::is_removing(&profile) {
+                return deny(&app, &opener_tab_id, &url, &features, "profile-deleting");
+            }
             let webview = match build_child(&app, &owner, &tab_id, &label, bounds, true, devtools, Some(configuration), &ChildKind::Page, &profile) {
                 Ok(webview) => webview,
                 Err(err) => {
@@ -1055,7 +1077,7 @@ fn new_window_handler(
                 error: None,
                 remote_host: None,
                 opener_tab_id: Some(opener_tab_id.clone()),
-                profile: Some(profile),
+                profile: Some(profile.clone()),
             };
             if let Err(err) = registry.insert(BrowserTab::new(
                 state.clone(),
@@ -1081,6 +1103,7 @@ fn new_window_handler(
                     url: parsed.to_string(),
                     requested_size: features.size.map(|s| [s.width, s.height]),
                     reason: None,
+                    profile: Some(profile),
                 },
             );
             NewWindowResponse::Create { webview: platform }

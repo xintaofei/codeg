@@ -232,6 +232,33 @@ describe("browser prefs", () => {
     expect(getBrowserPrefs().profiles).toEqual([{ id: "p-a", name: "A" }])
   })
 
+  // Two windows: the other one's write has landed in storage but its
+  // `storage` event has not been delivered here yet. Adding or removing
+  // must build on what is stored, not on this window's stale snapshot.
+  it("adds and removes profiles on top of the stored list, not the cached one", () => {
+    const work = addBrowserProfile("Work")
+    expect(getBrowserPrefs().profiles).toEqual([work])
+    localStorage.setItem(
+      "browser:profiles",
+      JSON.stringify([work, { id: "p-elsewhere", name: "Elsewhere" }])
+    )
+    const personal = addBrowserProfile("Personal")
+    expect(getBrowserPrefs().profiles.map((p) => p.name)).toEqual([
+      "Work",
+      "Elsewhere",
+      "Personal",
+    ])
+    localStorage.setItem(
+      "browser:profiles",
+      JSON.stringify([work, personal, { id: "p-late", name: "Late" }])
+    )
+    removeBrowserProfile(work.id)
+    expect(getBrowserPrefs().profiles.map((p) => p.name)).toEqual([
+      "Personal",
+      "Late",
+    ])
+  })
+
   it("resolves the new-tab profile against the list, falling back to the default", () => {
     expect(getBrowserPrefs().newTabProfile).toBe("default")
     const work = addBrowserProfile("Work")

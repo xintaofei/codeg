@@ -360,6 +360,26 @@ describe("BrowserSettingsSection", () => {
     )
   })
 
+  it("closes a delete dialog whose profile vanished meanwhile", async () => {
+    setBrowserProfiles([{ id: "p-work", name: "Work" }])
+    renderSection()
+    expandSection()
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Delete profile Work" })
+    )
+    expect(
+      screen.getByRole("heading", { name: "Delete profile Work?" })
+    ).toBeInTheDocument()
+    // Another window deleted it: nothing left to confirm.
+    act(() => setBrowserProfiles([]))
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("heading", { name: "Delete profile Work?" })
+      ).not.toBeInTheDocument()
+    )
+    expect(mocks.browserRemoveProfile).not.toHaveBeenCalled()
+  })
+
   it("keeps a profile the backend could not delete", async () => {
     setBrowserProfiles([{ id: "p-work", name: "Work" }])
     mocks.browserRemoveProfile.mockRejectedValue(new Error("store in use"))

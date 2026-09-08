@@ -17,6 +17,11 @@ import {
   useWorkspaceFileTabs,
 } from "@/contexts/workspace-context"
 import { normalizeUrlForDedupe } from "@/lib/browser/browser-url"
+import {
+  DEFAULT_BROWSER_PROFILE_ID,
+  browserProfileExists,
+  useBrowserPrefs,
+} from "@/lib/browser/browser-prefs"
 
 import { BrowserTabView } from "./browser-tab-view"
 
@@ -69,18 +74,30 @@ function BrowserViewerBody({
   const route = useOptionalWorkbenchRoute()
 
   // Open (or re-use) the workspace tab without activating the file column;
-  // the record shows up in `fileTabs` and is found by its URL below, so no
-  // local state is needed.
+  // the record shows up in `fileTabs` and is found below, so no local state
+  // is needed.
   useEffect(() => {
     openBrowserTab(url, { activate: false })
   }, [openBrowserTab, url])
 
+  // The same page can be open in two profiles; the drawer asked for it with
+  // no opener and no profile, so it lives in the profile new tabs use — the
+  // same resolution `openBrowserTab` makes. Any profile as a fallback, for a
+  // record that predates the preference.
+  const prefs = useBrowserPrefs()
+  const wantedProfile = browserProfileExists(prefs, prefs.newTabProfile)
+    ? prefs.newTabProfile
+    : DEFAULT_BROWSER_PROFILE_ID
   const wanted = normalizeUrlForDedupe(url)
-  const tab = fileTabs.find(
+  const candidates = fileTabs.filter(
     (it) =>
       it.kind === "browser" &&
       normalizeUrlForDedupe(it.browser.initialUrl) === wanted
   )
+  const tab =
+    candidates.find(
+      (it) => it.kind === "browser" && it.browser.profile === wantedProfile
+    ) ?? candidates[0]
   const tabId = tab?.id ?? null
 
   return (

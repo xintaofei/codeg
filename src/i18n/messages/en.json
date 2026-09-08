@@ -4816,7 +4816,7 @@
     "profileDeleteFailed": "Could not delete the profile: {message}",
     "clearConfirmDescriptionProfile": "Cookies, caches and site storage of the profile {name} will be removed. Open tabs stay open, but you will be signed out of sites.",
     "signInUaTitle": "Google sign-in compatibility",
-    "signInUaHint": "Google refuses to sign in from embedded browsers. When on, tabs present a Firefox identity to Google's sign-in pages only (accounts.google.com); everywhere else the engine's own identity is used."
+    "signInUaHint": "Google refuses to sign in from embedded browsers. When on, tabs present a Firefox identity to Google's sign-in pages only (accounts.google.com); everywhere else the engine's own identity is used. Embedded tabs only, not the separate-window surface; when a sign-in page redirects you to another site, the first request there still carries the sign-in identity."
   },
   "LogsSettings": {
     "loading": "Loading…",

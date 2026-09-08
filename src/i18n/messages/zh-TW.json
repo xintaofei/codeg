@@ -4816,7 +4816,7 @@
     "profileDeleteFailed": "無法刪除設定檔：{message}",
     "clearConfirmDescriptionProfile": "將刪除設定檔 {name} 的 Cookie、快取與網站儲存。已開啟的分頁會保留，但各網站的登入狀態會失效。",
     "signInUaTitle": "Google 登入相容",
-    "signInUaHint": "Google 拒絕在內嵌瀏覽器中登入。開啟後，分頁只對 Google 的登入頁面（accounts.google.com）呈現 Firefox 身分；其他地方仍使用引擎自己的身分。"
+    "signInUaHint": "Google 拒絕在內嵌瀏覽器中登入。開啟後，分頁只對 Google 的登入頁面（accounts.google.com）呈現 Firefox 身分；其他地方仍使用引擎自己的身分。僅對嵌入式分頁生效，獨立視窗不適用；登入頁把你跳轉到別的網站時，到那裡的第一個請求仍帶著登入身分。"
   },
   "LogsSettings": {
     "loading": "載入中…",

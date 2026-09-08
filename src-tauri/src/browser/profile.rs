@@ -16,8 +16,10 @@
 //! identifier on macOS 14+, a directory on Windows / Linux — so the backend
 //! keeps no list of its own. Every profile shares the app's proxy setting.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Url};
@@ -350,6 +352,44 @@ pub fn proxy_settings_changed(app: &AppHandle) {
     }
 }
 
+/// Profiles whose deletion is under way. Opening a tab, adopting a popup or
+/// clearing data in one of these is refused until the deletion has finished,
+/// so nothing can recreate the store between the closing of its tabs and
+/// the removal of its files.
+static REMOVING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+fn removing() -> std::sync::MutexGuard<'static, Option<HashSet<String>>> {
+    REMOVING.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Marks a profile as being deleted for as long as it lives.
+pub struct RemovalGuard(String);
+
+impl Drop for RemovalGuard {
+    fn drop(&mut self) {
+        if let Some(set) = removing().as_mut() {
+            set.remove(&self.0);
+        }
+    }
+}
+
+/// Start deleting `profile_id`; a second deletion of the same profile while
+/// one is running is refused.
+pub fn begin_removal(profile_id: &str) -> Result<RemovalGuard, String> {
+    let mut guard = removing();
+    let set = guard.get_or_insert_with(HashSet::new);
+    if !set.insert(profile_id.to_string()) {
+        return Err(format!("browser profile {profile_id:?} is already being deleted"));
+    }
+    Ok(RemovalGuard(profile_id.to_string()))
+}
+
+pub fn is_removing(profile_id: &str) -> bool {
+    removing()
+        .as_ref()
+        .is_some_and(|set| set.contains(profile_id))
+}
+
 /// Windows / Linux: delete a profile's directory, and with it everything the
 /// engine stored for it. The caller has made sure no tab of the profile is
 /// open (and, on Windows, dropped the web context that held the folder).
@@ -570,6 +610,19 @@ mod tests {
             data_store_identifier("work"),
             [0x76, 0x78, 0x5b, 0x58, 0x04, 0x9d, 0x56, 0xd9, 0x96, 0x83, 0x8e, 0xd6, 0xa1, 0x2f, 0xee, 0x3a]
         );
+    }
+
+    #[test]
+    fn a_profile_is_marked_for_as_long_as_its_deletion_runs() {
+        assert!(!is_removing("p-going"));
+        let guard = begin_removal("p-going").unwrap();
+        assert!(is_removing("p-going"));
+        assert!(begin_removal("p-going").is_err());
+        assert!(!is_removing("p-other"));
+        drop(guard);
+        assert!(!is_removing("p-going"));
+        // Free again once the first deletion is over.
+        drop(begin_removal("p-going").unwrap());
     }
 
     #[test]

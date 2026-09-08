@@ -167,6 +167,7 @@ export function BrowserEventsBridge() {
               backendTabId: popup.tabId,
               url: popup.url,
               openerBackendTabId: popup.openerTabId,
+              profile: popup.profile,
             })
           }
         ),
@@ -217,6 +218,7 @@ export function BrowserEventsBridge() {
             openBrowserTab(request.url, {
               activate: request.activate,
               openerTabId,
+              profile: request.profile ?? undefined,
             })
           }
         ),

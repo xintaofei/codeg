@@ -67,6 +67,7 @@ describe("browser wire types", () => {
       url: "http://127.0.0.1:8765/popup.html",
       requestedSize: [520, 640],
       reason: null,
+      profile: "p-work",
     } satisfies BrowserPopupPayload
     expect(caps.available && popup.presentation === "adopted").toBe(true)
   })

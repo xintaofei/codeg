@@ -247,11 +247,22 @@ impl BrowserRegistry {
     }
 
     pub fn remove(&self, tab_id: &str) -> Option<BrowserTab> {
+        self.remove_if(tab_id, |_| true)
+    }
+
+    /// Detach the tab under `tab_id` only if `matches` says so about the tab
+    /// that is there NOW — a tab id is reused across incarnations, and a
+    /// caller that decided on an earlier snapshot must not remove a tab it
+    /// never looked at.
+    pub fn remove_if(&self, tab_id: &str, matches: impl FnOnce(&BrowserTab) -> bool) -> Option<BrowserTab> {
         // Lock order everywhere: tabs, then visibility (never the reverse),
         // and the lock entry goes while the tabs lock is still held — a tab
         // inserted under the same id in between would otherwise lose its
         // own, freshly created lock.
         let mut tabs = self.lock();
+        if !tabs.get(tab_id).is_some_and(matches) {
+            return None;
+        }
         let removed = tabs.remove(tab_id);
         if removed.is_some() {
             self.visibility
@@ -260,6 +271,25 @@ impl BrowserRegistry {
                 .remove(tab_id);
         }
         removed
+    }
+
+    /// Ids of the tabs living in `profile`, at this moment.
+    pub fn tabs_in_profile(&self, profile: &str) -> Vec<String> {
+        self.lock()
+            .values()
+            .filter(|t| t.state.profile.as_deref() == Some(profile))
+            .map(|t| t.state.tab_id.clone())
+            .collect()
+    }
+
+    /// Any one surface of a tab living in `profile`, taken under the one
+    /// lock (a separate lookup by id could name a tab that has meanwhile
+    /// been closed and reopened in another profile).
+    pub fn surface_in_profile(&self, profile: &str) -> Option<BrowserSurface> {
+        self.lock()
+            .values()
+            .find(|t| t.state.profile.as_deref() == Some(profile))
+            .map(|t| t.surface.clone())
     }
 
     /// Detach every tab owned by a window (called when that window is

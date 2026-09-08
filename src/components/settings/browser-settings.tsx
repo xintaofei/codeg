@@ -468,10 +468,13 @@ export function BrowserSettingsSection() {
   // Folded on arrival like its neighbours: the General tab is a stack of
   // sections, and this one is five pickers tall.
   const [expanded, setExpanded] = useState(false)
-  // Which profile the clear dialog is about (null = closed).
-  const [confirmClear, setConfirmClear] = useState<ProfileRow | null>(null)
+  // Which profile the clear / delete dialog is about (null = closed). Ids,
+  // not rows: the row is derived from the current list on every render, so
+  // a profile another window deletes while the dialog is open closes it
+  // rather than being cleared or deleted again under a stale name.
+  const [confirmClearId, setConfirmClearId] = useState<string | null>(null)
   const [clearing, setClearing] = useState(false)
-  const [confirmDelete, setConfirmDelete] = useState<ProfileRow | null>(null)
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [proxy, setProxy] = useState<BrowserProxyStatus | null>(null)
   const [downloadsDir, setDownloadsDir] = useState<string | null>(null)
@@ -534,12 +537,17 @@ export function BrowserSettingsSection() {
     })),
   ]
 
+  const confirmClear =
+    profileRows.find((row) => row.id === confirmClearId) ?? null
+  const confirmDelete =
+    profileRows.find((row) => row.id === confirmDeleteId) ?? null
+
   const clear = async (row: ProfileRow) => {
     setClearing(true)
     try {
       await browserClearData(row.id)
       toast.success(t("cleared"))
-      setConfirmClear(null)
+      setConfirmClearId(null)
     } catch (error) {
       toast.error(t("clearFailed", { message: toErrorMessage(error) }))
     } finally {
@@ -555,7 +563,7 @@ export function BrowserSettingsSection() {
       // its data is never orphaned behind a list that no longer names it.
       removeBrowserProfile(row.id)
       toast.success(t("profileDeleted"))
-      setConfirmDelete(null)
+      setConfirmDeleteId(null)
     } catch (error) {
       toast.error(t("profileDeleteFailed", { message: toErrorMessage(error) }))
     } finally {
@@ -769,7 +777,7 @@ export function BrowserSettingsSection() {
                 variant="outline"
                 size="sm"
                 className="bg-background"
-                onClick={() => setConfirmClear(profileRows[0])}
+                onClick={() => setConfirmClearId(profileRows[0].id)}
               >
                 {t("clearAction")}
               </Button>
@@ -787,8 +795,8 @@ export function BrowserSettingsSection() {
           >
             <ProfilesEditor
               rows={profileRows}
-              onClear={(row) => setConfirmClear(row)}
-              onDelete={(row) => setConfirmDelete(row)}
+              onClear={(row) => setConfirmClearId(row.id)}
+              onDelete={(row) => setConfirmDeleteId(row.id)}
             />
           </SettingRow>
           <SettingRow
@@ -822,7 +830,7 @@ export function BrowserSettingsSection() {
       <AlertDialog
         open={confirmClear !== null}
         onOpenChange={(open) => {
-          if (!clearing && !open) setConfirmClear(null)
+          if (!clearing && !open) setConfirmClearId(null)
         }}
       >
         <AlertDialogContent>
@@ -858,7 +866,7 @@ export function BrowserSettingsSection() {
       <AlertDialog
         open={confirmDelete !== null}
         onOpenChange={(open) => {
-          if (!deleting && !open) setConfirmDelete(null)
+          if (!deleting && !open) setConfirmDeleteId(null)
         }}
       >
         <AlertDialogContent>
