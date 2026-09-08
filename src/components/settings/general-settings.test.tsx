@@ -167,20 +167,16 @@ describe("GeneralSettings", () => {
 
   /**
    * The command-color switch ships OFF and has to stay that way — forcing
-   * `CLICOLOR_FORCE` on the agent breaks machine parsing of everything the
-   * agent runs, so an accidental default flip is the regression worth
-   * catching. The save also has to carry `default_shell` back unchanged: both
-   * settings share one stored row, so a payload missing it would wipe the
-   * user's shell choice.
+   * color on the agent breaks machine parsing of everything the agent runs, so
+   * an accidental default flip is the regression worth catching. The save also
+   * has to carry `default_shell` back unchanged: both settings share one stored
+   * row, so a payload missing it would wipe the user's shell choice.
    */
   it("defaults command color off and preserves the shell when toggling it", async () => {
     renderSettings()
 
     const colorize = await screen.findByLabelText("Colorize command output")
     expect(colorize).toHaveAttribute("data-state", "unchecked")
-    expect(
-      screen.queryByText(/CLICOLOR_FORCE=1 for the agent/)
-    ).not.toBeInTheDocument()
 
     fireEvent.click(colorize)
 
@@ -191,10 +187,6 @@ describe("GeneralSettings", () => {
       default_shell: null,
       colorize_command_output: true,
     })
-    // Turning it on surfaces what it costs, right where it was turned on.
-    expect(
-      screen.getByText(/CLICOLOR_FORCE=1 for the agent/)
-    ).toBeInTheDocument()
   })
 
   /**

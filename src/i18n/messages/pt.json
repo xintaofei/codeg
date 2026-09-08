@@ -963,6 +963,13 @@
         "failed": "O login não foi concluído.",
         "startFailed": "Não foi possível iniciar o login",
         "credentialHint": "O token fica em cache aqui. Copie este arquivo para outra máquina sem desktop para conectá-la também."
+      },
+      "signOut": {
+        "title": "Entrou com a conta errada?",
+        "description": "O Antigravity guarda em cache a conta Google usada para entrar e a reutiliza silenciosamente, então entrar de novo não chega a outra conta. Sair descarta a credencial armazenada; as sessões do Antigravity em andamento são encerradas antes, pois de outro modo gravariam a conta antiga de volta.",
+        "action": "Sair",
+        "done": "Sessão encerrada. Entre novamente para escolher outra conta.",
+        "failed": "Não foi possível sair"
       }
     },
     "deepseek": {
@@ -1605,7 +1612,6 @@
     "terminalCurrentShell": "Em uso: {path}",
     "colorizeCommandOutput": "Colorir a saída dos comandos",
     "colorizeCommandOutputDescription": "Força cor ANSI nos comandos que os agentes executam, para que a saída apareça colorida na transcrição em vez de como texto simples. Vale para sessões novas.",
-    "colorizeCommandOutputWarning": "Isto define CLICOLOR_FORCE=1 para o agente. A maioria das ferramentas dá prioridade a isso sobre o NO_COLOR, e vale para todos os comandos que o agente executa — não apenas os que você lê. Enquanto estiver ligado, saídas destinadas a serem analisadas, como `gh --json` redirecionado para `jq`, podem falhar.",
     "renderingDescription": "Desative a aceleração de hardware se o aplicativo apresentar tela preta ou falhas de renderização (comum em certas GPUs AMD ou GPUs Intel integradas no Windows e com o driver proprietário da NVIDIA no Linux). Aplica-se apenas às versões desktop do Windows e do Linux.",
     "disableHardwareAcceleration": "Desativar aceleração de hardware",
     "renderingSaveFailed": "Falha ao salvar as configurações de renderização: {message}",
@@ -3244,9 +3250,12 @@
         "openInFileManager": "Abrir no gerenciador de arquivos",
         "copyRelativePath": "Copiar caminho relativo",
         "copyAbsolutePath": "Copiar caminho absoluto",
+        "download": "Baixar arquivo",
         "pathCopied": "Caminho copiado",
         "copyPathFailed": "Falha ao copiar o caminho",
-        "openFailed": "Falha ao abrir o arquivo local"
+        "openFailed": "Falha ao abrir o arquivo local",
+        "downloadSaved": "{name} baixado",
+        "downloadFailed": "Falha ao baixar {name}"
       },
       "messageList": {
         "attachedResources": "Recursos anexados",
@@ -5061,6 +5070,7 @@
     "phaseRetry": "Nova tentativa",
     "phaseReturn": "Continuação",
     "phaseMerge": "Merge",
+    "phaseCompact": "Compactação de contexto",
     "titleLabel": "Título",
     "titlePlaceholder": "O que precisa ser feito?",
     "promptLabel": "Descrição da tarefa",
@@ -5091,6 +5101,7 @@
     "mergeDeleteWorktree": "Excluir o worktree após o merge",
     "mergeSubmit": "Merge",
     "mergeSubmitQueue": "Adicionar à fila",
+    "mergeSubmitting": "Iniciando…",
     "mergeQueuedToast": "Adicionada à fila de merge — começa assim que o merge atual terminar.",
     "completeTitle": "Concluir tarefa",
     "completeDescription": "Esta tarefa não alterou nenhum arquivo, então não há nada para fazer merge: ela é marcada como concluída.",
@@ -5112,6 +5123,7 @@
     "settingsMaxConcurrentHint": "0 = ilimitado",
     "settingsAutoCompact": "Limite de compactação automática",
     "settingsAutoCompactHint": "Antes de uma rodada de continuação, nova tentativa ou merge, compacta a sessão se a janela de contexto estiver ao menos assim cheia. 0 = desativado.",
+    "compactingNote": "Compactando o contexto da sessão…",
     "settingsCompactCommand": "Comando de compactação",
     "settingsCompactCommandHint": "Deixe em branco para usar o que o agente oferece, ou o padrão conhecido dele.",
     "settingsCompactCommandPlaceholder": "/compact",
@@ -5786,6 +5798,23 @@
     "confirmDeleteCancel": "Cancelar",
     "confirmDeleteConfirm": "Excluir",
     "canvasActions": "Ações do quadro",
-    "mergeIntoNewRegion": "Nova região"
+    "mergeIntoNewRegion": "Nova região",
+    "addFileCard": "Cartão de arquivo",
+    "addTerminalCard": "Cartão de terminal",
+    "searchFiles": "Pesquisar arquivos…",
+    "searchFilesIn": "Pesquisar em {folder}…",
+    "searchingFiles": "Pesquisando…",
+    "noFiles": "Nenhum arquivo encontrado",
+    "noOpenFiles": "Nenhum arquivo aberto — digite para pesquisar",
+    "browseForFile": "Procurar…",
+    "filePreview": "Pré-visualização",
+    "fileSource": "Código",
+    "reloadFile": "Recarregar",
+    "removeFileCard": "Remover cartão de arquivo",
+    "restartTerminal": "Reiniciar terminal",
+    "removeTerminalCard": "Remover cartão de terminal",
+    "terminalNoDirectory": "Este cartão não tem diretório de trabalho",
+    "confirmDeleteTerminals": "{count} terminal(is) em execução serão fechados e seus processos encerrados.",
+    "confirmDeleteNotesAndTerminals": "{notes} nota(s) que você escreveu serão excluídas permanentemente e {terminals} terminal(is) em execução serão encerrados."
   }
 }

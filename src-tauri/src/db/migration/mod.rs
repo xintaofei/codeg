@@ -46,6 +46,7 @@ mod m20260830_000001_canvas_node;
 mod m20260831_000001_canvas_node_group_grid;
 mod m20260905_000001_delegation_outcome;
 mod m20260905_000002_collaboration_session;
+mod m20260907_000001_canvas_node_path;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -98,6 +99,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260831_000001_canvas_node_group_grid::Migration),
             Box::new(m20260905_000001_delegation_outcome::Migration),
             Box::new(m20260905_000002_collaboration_session::Migration),
+            Box::new(m20260907_000001_canvas_node_path::Migration),
         ]
     }
 }

@@ -77,7 +77,45 @@ pub use in_memory_transport::{
 
 /// Injected into the agent process only when the user has opted in — see
 /// [`force_command_color_enabled`] for why it is not a default.
-const DEFAULT_COMMAND_COLOR_ENV: [(&str, &str); 1] = [("CLICOLOR_FORCE", "1")];
+///
+/// Four variables because no single one reaches the toolchain an agent actually
+/// shells out to, and a toggle that leaves the common commands plain is one
+/// users reasonably read as broken. Each covers a different half of a decision
+/// some tool makes:
+///
+/// - `CLICOLOR` — the BSD *enable* flag. `CLICOLOR_FORCE` on its own is NOT one:
+///   in BSD `ls` the two conditions are separate (`getenv("CLICOLOR")` decides
+///   whether color exists at all, `getenv("CLICOLOR_FORCE")` only waives the
+///   `isatty` requirement), so forcing without enabling leaves a bare `ls`
+///   monochrome. Verified on macOS 26.6: `CLICOLOR_FORCE=1 FORCE_COLOR=1
+///   TERM=xterm-256color ls` emits zero escapes; adding `CLICOLOR=1` colors it.
+/// - `CLICOLOR_FORCE` — the waiver above, and the convention Go/Rust CLIs
+///   (`gh` via go-gh, ripgrep) read as "force". An agent's stdout is a pipe, so
+///   without it every `isatty` check answers no.
+/// - `FORCE_COLOR` — what Node's `supports-color` reads, and so what `pnpm`,
+///   `next`, `eslint`, `vitest` and the rest of the npm toolchain honor. That
+///   family ignores both `CLICOLOR*` variables entirely, which is why the
+///   toggle used to do nothing for the build command most people run first.
+/// - `TERM` — not a color flag, a precondition for the others. BSD `ls` resolves
+///   its palette through `tgetent(getenv("TERM"))` and stays monochrome when
+///   TERM names nothing, which is the normal case for a codeg launched from
+///   Finder rather than from a shell. `supports-color` reads it too, and answers
+///   256 colors for a `-256color` suffix where `FORCE_COLOR=1` alone caps at 16.
+///
+/// `TERM` is the one entry here that OVERRIDES an inherited value rather than
+/// filling in a missing one (`merge_agent_env` lists what a launch sets;
+/// everything else is inherited). That is deliberate: the agent's stdout is a
+/// pipe to codeg and never a terminal, so an inherited `TERM` describes the
+/// shell that happened to start codeg — `screen-256color` under tmux, nothing
+/// at all under Finder — not anything the agent is attached to. Pinning one
+/// known-good entry is what makes the toggle behave the same in a packaged app
+/// as in `pnpm tauri dev`. A per-agent env row still outranks all four.
+const DEFAULT_COMMAND_COLOR_ENV: [(&str, &str); 4] = [
+    ("CLICOLOR", "1"),
+    ("CLICOLOR_FORCE", "1"),
+    ("FORCE_COLOR", "1"),
+    ("TERM", "xterm-256color"),
+];
 
 /// Whether launches force color out of agent-run commands. Mirrors
 /// `SystemTerminalSettings.colorize_command_output`, applied at startup and on
@@ -90,24 +128,25 @@ const DEFAULT_COMMAND_COLOR_ENV: [(&str, &str); 1] = [("CLICOLOR_FORCE", "1")];
 /// `proxy::current_proxy_env_vars` and `prepend_officecli_path`.
 static FORCE_COMMAND_COLOR: AtomicBool = AtomicBool::new(false);
 
-/// Whether a launch should put `CLICOLOR_FORCE=1` in the agent's environment.
+/// Whether a launch should put [`DEFAULT_COMMAND_COLOR_ENV`] in the agent's
+/// environment.
 ///
-/// **Off by default**, which is a behavior change: launches used to force it
-/// unconditionally. The feature it buys is real — codeg preserves ANSI through
-/// tool-call output streaming ([`trim_partial_ansi_tail`]) so the transcript's
-/// `<Terminal>` card renders command output in color — but the cost was paid by
-/// everything else in the process tree.
+/// **Off by default**, which is a behavior change: launches used to force
+/// `CLICOLOR_FORCE` unconditionally. The feature it buys is real — codeg
+/// preserves ANSI through tool-call output streaming ([`trim_partial_ansi_tail`])
+/// so the transcript's `<Terminal>` card renders command output in color — but
+/// the cost was paid by everything else in the process tree.
 ///
 /// codeg cannot scope the force to the output it renders. Agents like Claude
 /// Code run their bash tool IN-PROCESS, so the commands whose color shows up in
 /// the card are not spawned by codeg at all; the only reachable lever is the
 /// agent's own environment, which every descendant inherits. So the same
-/// variable that colors the terminal card also colors the output the agent
-/// pipes into `jq` — and `CLICOLOR_FORCE` is, by ecosystem convention, the one
-/// color variable `NO_COLOR` cannot override (`gh`, via go-gh, computes
-/// `forced || (!disabled && isTTY)`), so no downstream command can opt back
-/// out. `gh pr list --json number` emits ANSI *inside* the JSON, and the parse
-/// fails.
+/// variables that color the terminal card also color the output the agent pipes
+/// into `jq` — and neither force flag can be vetoed downstream: `CLICOLOR_FORCE`
+/// is by ecosystem convention the one color variable `NO_COLOR` cannot override
+/// (`gh`, via go-gh, computes `forced || (!disabled && isTTY)`), and
+/// `supports-color` reads `FORCE_COLOR` before it reads anything else. `gh pr
+/// list --json number` emits ANSI *inside* the JSON, and the parse fails.
 ///
 /// The quieter cost is that the agent captures those escapes into its OWN
 /// context: every command it runs spends tokens on escape sequences and risks
@@ -116,8 +155,13 @@ static FORCE_COMMAND_COLOR: AtomicBool = AtomicBool::new(false);
 /// off rather than on-with-an-escape-hatch.
 ///
 /// Users who want the colored transcript turn it on in General Settings. A
-/// per-agent `CLICOLOR_FORCE` in the agent's env row still wins either way —
-/// `runtime_env` outranks this default in [`merge_agent_env`].
+/// per-agent row still wins over every variable this injects — `runtime_env`
+/// outranks these defaults in [`merge_agent_env`] — so one agent can be exempted
+/// while the toggle stays on globally. Exempt it with EMPTY values, not `0`: the
+/// BSD pair is presence-checked (`CLICOLOR_FORCE=0` still reads as forced —
+/// verified on macOS 26.6), and an empty value is what the spawn layer turns
+/// into `env_remove`, the same convention `child_env_value` documents in
+/// [`crate::acp::file_system_runtime`].
 pub fn force_command_color_enabled() -> bool {
     FORCE_COMMAND_COLOR.load(Ordering::Relaxed)
 }
@@ -708,6 +752,69 @@ pub fn antigravity_launch_env(runtime_env: &BTreeMap<String, String>) -> Vec<(St
 /// method id before acting on it.
 pub fn is_antigravity_auth_method(method_id: &str) -> bool {
     ANTIGRAVITY_AUTH_METHODS.contains(&method_id)
+}
+
+/// What codeg can say about the method the ACP server will authenticate with.
+///
+/// Three states, and [`Unreadable`](Self::Unreadable) is emphatically not a
+/// flavor of [`Absent`](Self::Absent). The server parses Hjson and codeg only
+/// strict JSON, so a file codeg cannot read is one the SERVER can — it names a
+/// method, codeg just cannot see which. Collapsing the two would let a caller
+/// treat "I have no idea" as "there is nothing there", which for the sign-out
+/// means aiming `logout` at a flavor with nothing to clear and reporting the
+/// `{}` it answers as a success.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AntigravityAuthType {
+    /// The file names this method, in its canonical spelling.
+    Declared(String),
+    /// No file, or a file that names no method. The server has nothing to
+    /// infer from either, and falls back to its own defaults.
+    Absent,
+    /// codeg could not read or parse it. The server still can.
+    Unreadable,
+}
+
+/// The `auth.type` the ACP server will actually authenticate with, read from
+/// the file the server reads it from.
+///
+/// Deliberately NOT the method in the stored row. The two normally agree —
+/// every launch runs [`sync_antigravity_settings_file`] — but the file is the
+/// only thing the server consults (`_infer_auth_state`), so it is also what
+/// decides which flavor of credential a sign-out actually clears.
+pub fn antigravity_effective_auth_type(
+    runtime_env: &BTreeMap<String, String>,
+) -> AntigravityAuthType {
+    let Ok(acp_dir) = antigravity_acp_dir_for_env(runtime_env) else {
+        // The directory itself cannot be named, so neither can the file.
+        return AntigravityAuthType::Unreadable;
+    };
+    let parsed = match read_antigravity_settings(&acp_dir.join("settings.json")) {
+        // `Ok(None)` is specifically "no such file", which IS positive
+        // knowledge: there is no method there to find.
+        Ok(None) => return AntigravityAuthType::Absent,
+        Ok(Some(parsed)) => parsed,
+        Err(_) => return AntigravityAuthType::Unreadable,
+    };
+    parsed
+        .get("auth")
+        .and_then(|auth| auth.get("type"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        // The server resolves the legacy spelling before it tests membership,
+        // so a caller matching on canonical ids would otherwise miss it.
+        .map(|value| AntigravityAuthType::Declared(
+            canonical_antigravity_auth_method(value).to_string(),
+        ))
+        .unwrap_or(AntigravityAuthType::Absent)
+}
+
+/// The pre-rebrand `vertex-ai` spelling resolved to the id codeg uses.
+fn canonical_antigravity_auth_method(method: &str) -> &str {
+    match method {
+        "vertex-ai" => "agent-platform",
+        other => other,
+    }
 }
 
 /// `<GEMINI_HOME>/antigravity-acp` for a launch carrying `runtime_env`, for
@@ -15955,6 +16062,102 @@ mod tests {
         assert_eq!(parsed["keep"], 1);
     }
 
+    /// The sign-out asks this instead of reading the stored row, because the
+    /// row is not what the server infers from. Getting it wrong means aiming
+    /// `logout` at a flavor that has nothing to clear — which it answers `{}`
+    /// to, so the mistake would be reported to the user as a sign-out.
+    #[test]
+    fn antigravity_effective_auth_type_reads_the_file_the_server_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let acp_dir = dir.path().join("antigravity-acp");
+        std::fs::create_dir_all(&acp_dir).unwrap();
+        let path = acp_dir.join("settings.json");
+        let home = || {
+            BTreeMap::from([(
+                "GEMINI_HOME".to_string(),
+                dir.path().to_string_lossy().to_string(),
+            )])
+        };
+
+        let declared = |method: &str| AntigravityAuthType::Declared(method.to_string());
+
+        // No file at all: positive knowledge that there is no method to find,
+        // so the server has nothing to infer from and clears both flavors.
+        assert_eq!(
+            antigravity_effective_auth_type(&home()),
+            AntigravityAuthType::Absent
+        );
+
+        std::fs::write(&path, r#"{"auth":{"type":"oauth-business"}}"#).unwrap();
+        assert_eq!(
+            antigravity_effective_auth_type(&home()),
+            declared("oauth-business")
+        );
+
+        // The FILE wins over the row, which is the whole reason this exists:
+        // the two can disagree (a hand edit, a sync codeg was refused) and only
+        // one of them is what the agent authenticates with.
+        let mut disagreeing = antigravity_runtime("oauth-personal");
+        disagreeing.extend(home());
+        assert_eq!(
+            antigravity_effective_auth_type(&disagreeing),
+            declared("oauth-business")
+        );
+
+        // The legacy spelling resolves, as it does server-side before the
+        // membership test — otherwise a caller matching canonical ids would
+        // read `vertex-ai` as "some OAuth method" and sign out of nothing.
+        std::fs::write(&path, r#"{"auth":{"type":"vertex-ai"}}"#).unwrap();
+        assert_eq!(
+            antigravity_effective_auth_type(&home()),
+            declared("agent-platform")
+        );
+
+        // An `auth` block with no type, and a blank one, are both "no method" —
+        // still positive knowledge, because codeg read the file.
+        std::fs::write(&path, r#"{"auth":{"scopes":[]}}"#).unwrap();
+        assert_eq!(
+            antigravity_effective_auth_type(&home()),
+            AntigravityAuthType::Absent
+        );
+        std::fs::write(&path, r#"{"auth":{"type":"   "}}"#).unwrap();
+        assert_eq!(
+            antigravity_effective_auth_type(&home()),
+            AntigravityAuthType::Absent
+        );
+
+        // Hjson: the server reads it and codeg does not, so the method is
+        // whatever that file says. NOT `Absent` — this is the distinction the
+        // whole enum exists for. A caller that treated it as "nothing there"
+        // would sign out of a `gemini-api-key` connection, clear nothing, and
+        // be told `{}`.
+        std::fs::write(&path, "{\n  // mine\n  \"auth\": {\"type\": \"oauth-personal\"},\n}\n")
+            .unwrap();
+        assert_eq!(
+            antigravity_effective_auth_type(&home()),
+            AntigravityAuthType::Unreadable
+        );
+
+        // And a home that cannot be named at all is unknown for the same
+        // reason: there is a file somewhere, codeg just cannot say where.
+        // Platform-native key, as in the path tests below: `child_home_dir`
+        // reads `USERPROFILE` on Windows (`expanduser` never consults `HOME`
+        // there), so blanking `HOME` removes nothing, the fallback lands on the
+        // runner's real profile, and the answer flips to `Absent`.
+        #[cfg(windows)]
+        let home_key = "USERPROFILE";
+        #[cfg(not(windows))]
+        let home_key = "HOME";
+        let unnameable = BTreeMap::from([
+            (home_key.to_string(), String::new()),
+            ("GEMINI_HOME".to_string(), String::new()),
+        ]);
+        assert_eq!(
+            antigravity_effective_auth_type(&unnameable),
+            AntigravityAuthType::Unreadable
+        );
+    }
+
     #[test]
     fn antigravity_settings_sync_leaves_an_unparseable_file_untouched() {
         // End to end: a hand-commented settings.json must survive a launch
@@ -21293,29 +21496,64 @@ mod tests {
             .map(|(_, v)| v.as_str())
     }
 
-    /// The default launch must NOT force color. `CLICOLOR_FORCE` outranks
-    /// `NO_COLOR` by convention, so injecting it leaves no way for an
+    /// The default launch must NOT force color — with EVERY variable checked,
+    /// not just the first one. Both force flags are unvetoable downstream
+    /// (`CLICOLOR_FORCE` outranks `NO_COLOR` by convention; `supports-color`
+    /// reads `FORCE_COLOR` first), so injecting either leaves no way for an
     /// agent-run `gh … --json` to get parseable output back.
+    ///
+    /// `TERM` is here for a different reason: it is the one entry that
+    /// overwrites an inherited value rather than filling in a missing one, so
+    /// leaking it into the default path would change what every un-opted-in
+    /// launch reports about its terminal.
     #[test]
-    fn merge_agent_env_omits_clicolor_force_by_default() {
+    fn merge_agent_env_omits_the_color_env_by_default() {
         let merged = merge_agent_env_with_color(false, &[], &BTreeMap::new());
-        assert_eq!(merged_value(&merged, "CLICOLOR_FORCE"), None);
+        for key in ["CLICOLOR", "CLICOLOR_FORCE", "FORCE_COLOR", "TERM"] {
+            assert_eq!(merged_value(&merged, key), None, "{key} must not be set");
+        }
     }
 
+    /// All four, because they cover disjoint decisions: `CLICOLOR` enables color
+    /// for the BSD family at all, `CLICOLOR_FORCE` waives the `isatty` check
+    /// that family (and go-gh) makes, `FORCE_COLOR` covers everything npm-based
+    /// (which ignores both `CLICOLOR*` outright), and `TERM` is what the
+    /// terminfo lookup needs before any of them can pick a palette.
+    ///
+    /// Splitting `CLICOLOR` out is not pedantry: with the other three but not
+    /// it, a bare `ls` still comes back monochrome, which is the exact symptom
+    /// this setting exists to fix.
     #[test]
-    fn merge_agent_env_injects_clicolor_force_when_opted_in() {
+    fn merge_agent_env_injects_the_whole_color_env_when_opted_in() {
         let merged = merge_agent_env_with_color(true, &[], &BTreeMap::new());
+        assert_eq!(merged_value(&merged, "CLICOLOR"), Some("1"));
         assert_eq!(merged_value(&merged, "CLICOLOR_FORCE"), Some("1"));
+        assert_eq!(merged_value(&merged, "FORCE_COLOR"), Some("1"));
+        assert_eq!(merged_value(&merged, "TERM"), Some("xterm-256color"));
     }
 
     /// The opt-in is a DEFAULT, not an override: a per-agent env row still
-    /// wins, so a user who turned the toggle on globally can still exempt one
-    /// agent (and the machine-parsing escape hatch keeps working).
+    /// wins — for every injected variable, so the escape hatch is not half a
+    /// hatch. A user who turned the toggle on globally can exempt one agent and
+    /// get machine-parseable output back from it.
+    ///
+    /// Empty rather than `"0"` for the BSD pair on purpose: those are
+    /// presence-checked, so `CLICOLOR_FORCE=0` still reads as forced. An empty
+    /// value is what the spawn layer turns into `env_remove`, and this asserts
+    /// the row reaches the merge intact so that removal can happen.
     #[test]
     fn runtime_env_still_outranks_the_color_default() {
-        let runtime_env = BTreeMap::from([("CLICOLOR_FORCE".to_string(), "0".to_string())]);
+        let runtime_env = BTreeMap::from([
+            ("CLICOLOR".to_string(), String::new()),
+            ("CLICOLOR_FORCE".to_string(), String::new()),
+            ("FORCE_COLOR".to_string(), "0".to_string()),
+            ("TERM".to_string(), "dumb".to_string()),
+        ]);
         let merged = merge_agent_env_with_color(true, &[], &runtime_env);
-        assert_eq!(merged_value(&merged, "CLICOLOR_FORCE"), Some("0"));
+        assert_eq!(merged_value(&merged, "CLICOLOR"), Some(""));
+        assert_eq!(merged_value(&merged, "CLICOLOR_FORCE"), Some(""));
+        assert_eq!(merged_value(&merged, "FORCE_COLOR"), Some("0"));
+        assert_eq!(merged_value(&merged, "TERM"), Some("dumb"));
     }
 
     /// Turning the toggle off must not disturb anything else the merge does —

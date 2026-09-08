@@ -64,7 +64,7 @@ Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다
       <a href="https://console.lqapi.xyz/sign-up?aff=KPy9" target="_blank"><img src="../images/lq-router.png" alt="LQ router" width="160" /></a><br/>
       <strong><a href="https://console.lqapi.xyz/sign-up?aff=KPy9">LQ router</a></strong>
     </td>
-    <td>본 프로젝트를 후원해 주신 LQ router 중계 서비스에 감사드립니다! LQ router는 개인 개발자와 기술 팀을 위한 엔터프라이즈급 API 통합 게이트웨이입니다. GPT, Claude, Grok, Gemini 등 주요 모델을 연동하고 기존 클라이언트 및 OpenAI SDK와 호환되며, 동적 계정 풀을 이용한 지능형 라우팅으로 하나의 엔드포인트에서 여러 모델을 호출할 수 있습니다. <a href="https://console.lqapi.xyz/sign-up?aff=KPy9">공식 웹사이트에서 그룹에 참여하면 1달러 체험 크레딧을 받을 수 있습니다</a>.</td>
+    <td>본 프로젝트를 후원해 주신 LQ router 중계 서비스에 감사드립니다! LQ router는 전문 엔터프라이즈급 AI 중계 서비스로, 기업과 개인 개발자에게 안정적이고 효율적이며 저렴한 AI 모델 API 연동 서비스를 제공합니다. GPT, Claude, Grok, Gemini 등 주요 모델을 지원하며 GPT Pro 과금 배율은 최저 0.1배입니다. <a href="https://console.lqapi.xyz/sign-up?aff=KPy9">공식 웹사이트에서 그룹에 참여하면 1달러 체험 크레딧을 받을 수 있습니다</a>.</td>
   </tr>
   <tr>
     <td align="center" width="220">
@@ -72,6 +72,17 @@ Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다
       <strong><a href="https://go.apimart.ai/gh-codeg">APIMart</a></strong>
     </td>
     <td>본 프로젝트를 후원해 주신 APIMart에 감사드립니다! APIMart는 AI 이미지·영상 생성에 특화된 저비용 API 플랫폼입니다. GPT-Image-2는 장당 $0.006부터라 1달러로 160장 이상을 생성할 수 있습니다. 이미지와 영상을 하나의 비동기 API로 처리합니다. 작업을 제출해 ID를 받고 폴링이나 콜백으로 결과를 가져오세요. 수만 장을 일괄 처리해도 타임아웃이 없고, 모델을 바꿔도 코드를 수정할 필요가 없습니다. 월 요금 없이 사용한 만큼만 지불합니다 — <a href="https://go.apimart.ai/gh-codeg">여기에서 가입</a>하면 바로 시작할 수 있습니다.</td>
+  </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg" target="_blank"><img src="../images/astraflow.png" alt="UCloud ·星图AstraFlow" width="120" /></a><br/>
+      <strong><a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg">UCloud ·星图AstraFlow</a></strong>
+    </td>
+    <td>
+      <a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg">UCloud ·星图AstraFlow</a><br/>
+      UCloud의 星图AstraFlow 대규모 모델 플랫폼은 200개 이상의 모델을 클릭 한 번으로 호출할 수 있습니다. Kimi K3, DeepSeek V4/V3, Qwen 3, GLM5.2, happyhorse 등 세계 최고 수준의 오픈소스 대규모 모델을 기본 제공하므로 직접 학습할 필요 없이 바로 사용할 수 있습니다.<br/>
+      위 링크에서 <strong>이메일</strong>로 가입하고 실명 인증을 마치면 <a href="https://f.howxm.com/xs/u/HVFW5X8EIYV1">50위안 상당의 컴퓨팅 크레딧을 받을 수 있습니다</a>.
+    </td>
   </tr>
 </table>
 

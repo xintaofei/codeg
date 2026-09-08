@@ -127,6 +127,7 @@ import type {
   PreflightResult,
   FolderCommand,
   TerminalInfo,
+  TerminalSnapshot,
   PromptInputBlock,
   FileTreeNode,
   WorkspaceFileEntry,
@@ -980,6 +981,32 @@ export async function acpAntigravityLoginFinish(
 /** Abandon a pending browser-free sign-in and stop its agent process. */
 export async function acpAntigravityLoginCancel(handle: string): Promise<void> {
   return getTransport().call("acp_antigravity_login_cancel", { handle })
+}
+
+/**
+ * Clear the credential Antigravity is holding, so the next sign-in can reach a
+ * different Google account.
+ *
+ * Without it a signed-in Antigravity cannot switch accounts at all: the agent
+ * refreshes its cached token silently, so `acpAntigravityLoginStart` answers
+ * `alreadySignedIn` and never produces a consent link.
+ *
+ * Returns the settings.json sync report rather than a success flag. Signing out
+ * removes `auth.type` from that file, so the backend writes the saved method
+ * straight back — and a `skipped` report is the warning that it could not, and
+ * that every later session will fail with "Authentication required" until the
+ * user edits the file themselves.
+ */
+export async function acpAntigravitySignOut(): Promise<AntigravitySyncReport> {
+  // The backend spawns the agent and puts two requests to it: up to 60s for
+  // `initialize` (CPython inside a PAR, unpacked on first run) plus 60s for the
+  // sign-out itself. The transport defaults — 60s on web, 30s through the
+  // remote-desktop proxy — would abort while that child is still starting.
+  return getTransport().call(
+    "acp_antigravity_sign_out",
+    {},
+    { timeoutMs: 180_000 }
+  )
 }
 
 /**
@@ -2833,7 +2860,8 @@ export async function removeFolderLink(
 
 /** Input for `canvasCreateNode`. Binding fields are kind-specific (validated
  *  server-side): folder → folderId, group → folderGroupId, agent → agentType,
- *  conversation → conversationId; custom starts empty; note uses content. */
+ *  conversation → conversationId; custom starts empty; note uses content;
+ *  file and terminal use path. */
 export interface CreateCanvasNodeInput {
   kind: CanvasNodeKind
   folderId?: number
@@ -2842,6 +2870,9 @@ export interface CreateCanvasNodeInput {
   conversationId?: number
   title?: string
   content?: string
+  /** file → the document's absolute path; terminal → its working directory.
+   *  Required for those two kinds, rejected for the rest. */
+  path?: string
   color?: string
   /** Pinned grid axes (regions only); omitted / 0 = auto. */
   gridColumns?: number
@@ -3963,7 +3994,7 @@ export interface UploadWorkspaceFileResult {
  * Tauri window (no remote binding) is rejected, because it has its own
  * native file dialogs and these helpers would just be the wrong tool.
  */
-function isWorkspaceFileApiAvailable(): boolean {
+export function isWorkspaceFileApiAvailable(): boolean {
   return !isDesktop() || isRemoteDesktopMode()
 }
 
@@ -4600,6 +4631,22 @@ export async function terminalResize(
   rows: number
 ): Promise<void> {
   return getTransport().call("terminal_resize", { terminalId, cols, rows })
+}
+
+/**
+ * Recent output of an already-running terminal, for a viewer attaching to a
+ * PTY it did not spawn (a canvas terminal card coming back from another
+ * route). `alive: false` is the settled answer "nothing to attach to" — spawn
+ * instead; it is never an error, so callers don't have to parse one.
+ *
+ * Subscribe to `terminal://output/<id>` BEFORE calling this, and drop the
+ * events whose `seq` is at or below the returned `seq` — that overlap is
+ * already in `data`. See `TerminalEvent.seq`.
+ */
+export async function terminalSnapshot(
+  terminalId: string
+): Promise<TerminalSnapshot> {
+  return getTransport().call("terminal_snapshot", { terminalId })
 }
 
 export async function terminalKill(terminalId: string): Promise<void> {

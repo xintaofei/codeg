@@ -140,6 +140,12 @@ interface WorkspaceActionsValue {
   // ignore it; a caller that must then FIND the tab (the file viewer drawer)
   // has no other way to reproduce this resolution.
   //
+  // `background` opens the tab WITHOUT bringing the files pane forward or
+  // moving its selection (it still claims the selection when nothing holds
+  // it). For openers that render the tab themselves and would otherwise
+  // rearrange a workspace the user is not looking at — the canvas's file
+  // cards, which re-open every tab on the board each time the route mounts.
+  //
   // `index` is the strip slot for a tab that is not open yet, clamped to the
   // strip; omitted = append. Reopening a closed tab passes the slot it was
   // closed from. A tab that is already open is activated where it is.
@@ -149,6 +155,7 @@ interface WorkspaceActionsValue {
       line?: number
       reload?: boolean
       folderId?: number
+      background?: boolean
       index?: number
     }
   ) => Promise<string | null>
@@ -596,8 +603,19 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   // folder surfaces as a load error on the next refresh, not a wipe.
 
   // Pure activation — no content mutation.
+  //
+  // `background` is for openers that are not the file column and must not
+  // steal it: a canvas file card opens the tab it renders FROM, so bringing
+  // the (covered) files pane forward and re-pointing its selection every time
+  // the board mounts would rearrange a workspace the user isn't even looking
+  // at. It still claims the selection when nothing holds it, so "tabs exist
+  // but none is active" never becomes reachable.
   const activateTab = useCallback(
-    (tabId: string) => {
+    (tabId: string, background = false) => {
+      if (background) {
+        setActiveFileTabId((prev) => prev ?? tabId)
+        return
+      }
       setActiveFileTabId(tabId)
       activateFilePane()
     },
@@ -608,7 +626,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   // the end. Caller has verified no tab with this id exists. If a race
   // introduced one, leave it alone.
   const seedLoadingTab = useCallback(
-    (nextTab: FileWorkspaceTab, index?: number) => {
+    (nextTab: FileWorkspaceTab, background = false, index?: number) => {
       setFileTabs((prev) => {
         if (prev.some((tab) => tab.id === nextTab.id)) return prev
         const at =
@@ -617,8 +635,12 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
             : Math.max(0, Math.min(index, prev.length))
         return [...prev.slice(0, at), nextTab, ...prev.slice(at)]
       })
-      setActiveFileTabId(nextTab.id)
-      activateFilePane()
+      if (background) {
+        setActiveFileTabId((prev) => prev ?? nextTab.id)
+      } else {
+        setActiveFileTabId(nextTab.id)
+        activateFilePane()
+      }
       // Open HTML/Markdown file tabs in the rendered preview by default rather
       // than the source editor. Only runs on first seed: reloads go through
       // markTabRefreshing (never here), so if the user later switches to the
@@ -714,13 +736,18 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   }, [])
 
   const decideLoad = useCallback(
-    (seed: FileWorkspaceTab, reload: boolean, index?: number): LoadDecision => {
+    (
+      seed: FileWorkspaceTab,
+      reload: boolean,
+      background = false,
+      index?: number
+    ): LoadDecision => {
       // Dedup synchronously. inFlightLoadsRef is updated immediately on
       // generation start, so rapid re-clicks within a single event loop
       // turn collapse here — unlike fileTabsRef.current, which only
       // reflects state after React flushes a render.
       if (inFlightLoadsRef.current.has(seed.id)) {
-        activateTab(seed.id)
+        activateTab(seed.id, background)
         return { kind: "skip" }
       }
 
@@ -730,11 +757,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         // e.g. the user closed it while a watcher-driven reload was in
         // flight — do not resurrect it as a phantom tab.
         if (reload) return { kind: "skip" }
-        seedLoadingTab(seed, index)
+        seedLoadingTab(seed, background, index)
         return { kind: "fetch", gen: beginFetchGeneration(seed.id) }
       }
 
-      activateTab(existing.id)
+      activateTab(existing.id, background)
 
       if (existing.saveState === "error") {
         markErrorRetry(existing.id, existing.kind)
@@ -1171,6 +1198,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         line?: number
         reload?: boolean
         folderId?: number
+        background?: boolean
         index?: number
       }
     ) => {
@@ -1184,19 +1212,25 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       // elsewhere (the transcript's file viewer drawer) need it to find the
       // tab this call created.
       await (async () => {
+        const background = options?.background === true
         const requestedLine =
           typeof options?.line === "number" && Number.isFinite(options.line)
             ? Math.max(1, Math.floor(options.line))
             : null
-        if (requestedLine) {
-          fileRevealRequestIdRef.current += 1
-          setPendingFileReveal({
-            requestId: fileRevealRequestIdRef.current,
-            path: absPath,
-            line: requestedLine,
-          })
-        } else {
-          setPendingFileReveal(null)
+        // A background open never touches the pending reveal: it is not
+        // asking the file column to scroll anywhere, and clearing the field
+        // would cancel a reveal some other opener is waiting on.
+        if (!background) {
+          if (requestedLine) {
+            fileRevealRequestIdRef.current += 1
+            setPendingFileReveal({
+              requestId: fileRevealRequestIdRef.current,
+              path: absPath,
+              line: requestedLine,
+            })
+          } else {
+            setPendingFileReveal(null)
+          }
         }
         const tabId = buildFileTabId({ kind: "file", path: absPath })
         const image = isImageFile(absPath)
@@ -1214,6 +1248,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const decision = decideLoad(
           seed,
           options?.reload ?? false,
+          background,
           options?.index
         )
         if (decision.kind === "skip") return

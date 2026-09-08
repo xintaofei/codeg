@@ -66,9 +66,6 @@ interface GroupPresentation {
   label: GroupLabelKey
   desc: GroupDescKey
   icon: LucideIcon
-  /** Tint for the leading glyph. Distinct hues make the six rows scannable by
-   * shape *and* colour, which is what carries a list this dense. */
-  tone: string
 }
 
 /**
@@ -79,43 +76,41 @@ interface GroupPresentation {
  * agent tools, and `DelegationSettingsSection`'s heading glyph for delegation.
  * The popover's "Open full settings" button leads straight there, so a
  * different glyph on each side would make one control look like two.
+ *
+ * No per-group hue: six fixed colours ignored the chosen theme and turned a
+ * settings list into a paint chart. The rows are told apart by icon shape and
+ * label; the tile behind the glyph takes the theme's own accent.
  */
 const GROUPS: Record<string, GroupPresentation | undefined> = {
   delegation: {
     label: "groupDelegation",
     desc: "descDelegation",
     icon: Bubbles,
-    tone: "bg-blue-500/10 text-blue-500",
   },
   feedback: {
     label: "groupFeedback",
     desc: "descFeedback",
     icon: MessageSquarePlus,
-    tone: "bg-indigo-500/10 text-indigo-500",
   },
   ask: {
     label: "groupAsk",
     desc: "descAsk",
     icon: HelpCircle,
-    tone: "bg-sky-500/10 text-sky-500",
   },
   sessions: {
     label: "groupSessions",
     desc: "descSessions",
     icon: MessageSquare,
-    tone: "bg-emerald-500/10 text-emerald-500",
   },
   automations: {
     label: "groupAutomations",
     desc: "descAutomations",
     icon: CalendarClock,
-    tone: "bg-violet-500/10 text-violet-500",
   },
   taskboard: {
     label: "groupTaskboard",
     desc: "descTaskboard",
     icon: ListTodo,
-    tone: "bg-amber-500/10 text-amber-500",
   },
 }
 
@@ -357,12 +352,10 @@ export function StatusBarMcp() {
                   key={group.key}
                   className="flex cursor-pointer items-center gap-2 px-2 py-1.5 transition-colors hover:bg-accent/40"
                 >
-                  <span
-                    className={cn(
-                      "flex size-7 shrink-0 items-center justify-center rounded-lg",
-                      meta?.tone ?? "bg-muted text-muted-foreground"
-                    )}
-                  >
+                  {/* One tile tint for every row — the theme's accent, so the
+                      list follows whatever `[data-theme]` is on. An unmapped
+                      slug gets the same tile, keeping the column even. */}
+                  <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                     <Icon className="size-3.5" />
                   </span>
                   <span className="min-w-0 flex-1">

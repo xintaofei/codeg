@@ -990,6 +990,15 @@ pub async fn acp_antigravity_login_cancel(
     Ok(Json(()))
 }
 
+pub async fn acp_antigravity_sign_out(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<crate::acp::connection::AntigravitySyncReport>, AppCommandError> {
+    let result = acp_commands::acp_antigravity_sign_out_core(&state.db, &state.connection_manager)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(result))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpPiProjectTrustStateParams {

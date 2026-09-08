@@ -425,9 +425,8 @@ export function GeneralSettings() {
         </SettingsSection>
 
         {/* Titled by the option rather than by "Color": the switch forces color
-            ON for every command an agent runs, and the cost of that reaches
-            well past the transcript — hence the warning under it rather than a
-            bare description. */}
+            ON for every command an agent runs, so the heading has to say what
+            it does, not which category it files under. */}
         <SettingsSection
           icon={Palette}
           title={t("colorizeCommandOutput")}
@@ -449,13 +448,7 @@ export function GeneralSettings() {
               }}
             />
           }
-        >
-          {colorizeCommandOutput && (
-            <p className="text-2xs text-amber-500">
-              {t("colorizeCommandOutputWarning")}
-            </p>
-          )}
-        </SettingsSection>
+        />
 
         {renderingSectionVisible && (
           // Titled by the option, not by the category it belongs to: the switch

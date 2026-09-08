@@ -640,6 +640,7 @@ mod tests {
     use super::*;
     use crate::db::test_helpers::fresh_in_memory_db;
     use crate::web::event_bridge::EventEmitter;
+    use std::collections::BTreeMap;
 
     /// Every terminal-settings save writes `FORCE_COMMAND_COLOR`, a PROCESS
     /// global — so two of these tests running concurrently (the default) would
@@ -668,7 +669,7 @@ mod tests {
         }
     }
 
-    /// Whether a REAL launch env carries `CLICOLOR_FORCE=1` right now.
+    /// The command-color variables a REAL launch env carries right now.
     ///
     /// The setting only matters if it survives the trip from the stored row
     /// through the process global into the env a spawn actually gets, and the
@@ -676,10 +677,36 @@ mod tests {
     /// place the pure-function tests in `acp::connection` cannot reach. Any
     /// launch would do; Antigravity's is the one exposed as a `pub fn`, and it
     /// merges through the same helper as every other agent.
-    fn launch_env_forces_color() -> bool {
-        crate::acp::connection::antigravity_launch_env(&std::collections::BTreeMap::new())
-            .iter()
-            .any(|(key, value)| key == "CLICOLOR_FORCE" && value == "1")
+    ///
+    /// Returns the whole set rather than a yes/no so both directions are exact:
+    /// "on" has to produce every variable (they cover disjoint decisions —
+    /// `CLICOLOR` enables the BSD family, `CLICOLOR_FORCE` waives its `isatty`
+    /// check, `FORCE_COLOR` covers the npm one, `TERM` feeds the terminfo lookup
+    /// — so a launch carrying only some of them is a failure, not a partial
+    /// success), and "off" has to produce none. A boolean over `all()` would let
+    /// the off case pass while leaking one of them.
+    fn launch_env_color_vars() -> BTreeMap<String, String> {
+        crate::acp::connection::antigravity_launch_env(&BTreeMap::new())
+            .into_iter()
+            .filter(|(key, _)| {
+                matches!(
+                    key.as_str(),
+                    "CLICOLOR" | "CLICOLOR_FORCE" | "FORCE_COLOR" | "TERM"
+                )
+            })
+            .collect()
+    }
+
+    fn expected_color_vars() -> BTreeMap<String, String> {
+        [
+            ("CLICOLOR", "1"),
+            ("CLICOLOR_FORCE", "1"),
+            ("FORCE_COLOR", "1"),
+            ("TERM", "xterm-256color"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
     }
 
     fn enabled_proxy(url: &str) -> SystemProxySettings {
@@ -882,7 +909,7 @@ mod tests {
         // before anything writes, so a regression to "forced on" fails here.
         assert!(!crate::acp::connection::force_command_color_enabled());
         assert!(
-            !launch_env_forces_color(),
+            launch_env_color_vars().is_empty(),
             "a default launch must not force color"
         );
 
@@ -900,14 +927,22 @@ mod tests {
 
         assert!(saved.colorize_command_output);
         assert!(crate::acp::connection::force_command_color_enabled());
-        assert!(launch_env_forces_color(), "the save must reach a launch");
+        assert_eq!(
+            launch_env_color_vars(),
+            expected_color_vars(),
+            "the save must reach a launch"
+        );
 
         // A fresh process would start with the global at its `false` default;
         // the startup load is what has to put it back.
         crate::acp::connection::set_force_command_color(false);
         apply_persisted_terminal_settings(&db.conn, &config).await;
         assert!(crate::acp::connection::force_command_color_enabled());
-        assert!(launch_env_forces_color(), "the restart must reach a launch");
+        assert_eq!(
+            launch_env_color_vars(),
+            expected_color_vars(),
+            "the restart must reach a launch"
+        );
 
         let reloaded = load_system_terminal_settings(&db.conn)
             .await

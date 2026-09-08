@@ -45,12 +45,14 @@ pub struct SystemTerminalSettings {
     /// renders colored in the transcript's terminal card rather than as plain
     /// text.
     ///
-    /// Off by default, and deliberately so: the only lever codeg has is
-    /// `CLICOLOR_FORCE=1` on the AGENT process (the agent runs its own bash
-    /// tool in-process — codeg never spawns those commands), which every
-    /// descendant inherits. That colors the output codeg renders AND the output
-    /// the agent pipes into `jq`, and by convention `CLICOLOR_FORCE` outranks
-    /// `NO_COLOR`, so nothing downstream can opt back out. See
+    /// Off by default, and deliberately so: the only lever codeg has is the
+    /// AGENT process's env (the agent runs its own bash tool in-process — codeg
+    /// never spawns those commands), which every descendant inherits. What it
+    /// injects there — `CLICOLOR` + `CLICOLOR_FORCE` for the BSD/Go/Rust
+    /// toolchain, `FORCE_COLOR` for the npm one, and a pinned `TERM` for the
+    /// terminfo lookup both need — colors the output codeg renders AND the
+    /// output the agent pipes into `jq`, and the force flags outrank `NO_COLOR`,
+    /// so nothing downstream can opt back out. See
     /// [`crate::acp::connection::force_command_color_enabled`].
     ///
     /// Carried in the terminal settings row rather than a key of its own
