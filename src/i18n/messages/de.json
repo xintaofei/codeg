@@ -4797,7 +4797,26 @@
     "terminalMenuHint": "Ein Klick auf einen Link im Terminal zeigt ein kleines Menü (integrierter Browser, Systembrowser, Link kopieren), statt ihn sofort zu öffnen. ⌘/Strg-Klick öffnet den Link weiterhin direkt.",
     "htmlPreviewTitle": "Vorschau von HTML-Dateien",
     "htmlPreviewHint": "Zeigt HTML-Dateien über den integrierten Browser in einer abgeschotteten Dokumentansicht: keine Skripte, bis du sie für eine Datei aktivierst, und nur der eigene Ordner ist erreichbar. Aus: Die Inline-Vorschau wird verwendet, wie in der Web-App.",
-    "managedDisabled": "Die Richtlinie der Administration hat den integrierten Browser abgeschaltet; Links öffnen sich im Systembrowser."
+    "managedDisabled": "Die Richtlinie der Administration hat den integrierten Browser abgeschaltet; Links öffnen sich im Systembrowser.",
+    "profilesTitle": "Profile",
+    "profilesHint": "Jedes Profil hat eigene Cookies, Website-Daten und Anmeldungen. Neue Tabs öffnen sich im unten gewählten Profil; über die Leiste eines Tabs lässt sich seine Seite in einem anderen öffnen.",
+    "profileDefault": "Standard",
+    "profileNewTabsTitle": "Neue Tabs öffnen sich in",
+    "profileNamePlaceholder": "Profilname, z. B. Arbeit",
+    "profileNameLabel": "Profilname",
+    "profileAdd": "Profil hinzufügen",
+    "profileNameRequired": "Gib einen Namen für das Profil ein",
+    "profileNameDuplicate": "Ein Profil mit diesem Namen gibt es bereits",
+    "profileClear": "Browserdaten von {name} löschen",
+    "profileDelete": "Profil {name} löschen",
+    "profileDeleteConfirmTitle": "Profil {name} löschen?",
+    "profileDeleteConfirmDescription": "Seine Tabs werden geschlossen und seine Cookies, Caches und Website-Daten entfernt. Das lässt sich nicht rückgängig machen.",
+    "profileDeleteConfirmAction": "Löschen",
+    "profileDeleted": "Profil gelöscht",
+    "profileDeleteFailed": "Das Profil konnte nicht gelöscht werden: {message}",
+    "clearConfirmDescriptionProfile": "Cookies, Caches und Website-Daten des Profils {name} werden entfernt. Offene Tabs bleiben offen, aber du wirst bei Websites abgemeldet.",
+    "signInUaTitle": "Kompatibilität mit der Google-Anmeldung",
+    "signInUaHint": "Google verweigert die Anmeldung aus eingebetteten Browsern. Wenn eingeschaltet, geben sich Tabs nur gegenüber Googles Anmeldeseiten (accounts.google.com) als Firefox aus; überall sonst gilt die eigene Kennung der Engine."
   },
   "LogsSettings": {
     "loading": "Wird geladen…",
@@ -5864,7 +5883,10 @@
       "copyUrl": "Link kopieren",
       "copied": "Link kopiert",
       "addressPlaceholder": "Adresse eingeben",
-      "invalidUrl": "Keine gültige Adresse"
+      "invalidUrl": "Keine gültige Adresse",
+      "profile": "Profil: {name}",
+      "profileMenuLabel": "Diese Seite in einem anderen Profil öffnen",
+      "profileDefault": "Standard"
     },
     "status": {
       "popupDenied": "Pop-up blockiert: {host}",

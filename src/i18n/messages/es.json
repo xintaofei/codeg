@@ -4797,7 +4797,26 @@
     "terminalMenuHint": "Al hacer clic en un enlace del terminal se muestra un pequeño menú (navegador integrado, navegador del sistema, copiar enlace) en lugar de abrirlo de inmediato. ⌘/Ctrl+clic sigue abriendo el enlace directamente.",
     "htmlPreviewTitle": "Vista previa de archivos HTML",
     "htmlPreviewHint": "Muestra los archivos HTML a través del navegador integrado, en una vista de documento restringida: sin scripts hasta que los actives para un archivo, y solo con acceso a su propia carpeta. Desactivado: se usa la vista previa en línea, como en la aplicación web.",
-    "managedDisabled": "La política de tu administrador ha desactivado el navegador integrado; los enlaces se abren en el navegador del sistema."
+    "managedDisabled": "La política de tu administrador ha desactivado el navegador integrado; los enlaces se abren en el navegador del sistema.",
+    "profilesTitle": "Perfiles",
+    "profilesHint": "Cada perfil guarda sus propias cookies, almacenamiento de sitios e inicios de sesión. Las pestañas nuevas se abren en el perfil elegido abajo; la barra de una pestaña puede abrir su página en otro.",
+    "profileDefault": "Predeterminado",
+    "profileNewTabsTitle": "Las pestañas nuevas se abren en",
+    "profileNamePlaceholder": "Nombre del perfil, p. ej. Trabajo",
+    "profileNameLabel": "Nombre del perfil",
+    "profileAdd": "Añadir perfil",
+    "profileNameRequired": "Escribe un nombre para el perfil",
+    "profileNameDuplicate": "Ya existe un perfil con este nombre",
+    "profileClear": "Borrar los datos de navegación de {name}",
+    "profileDelete": "Eliminar el perfil {name}",
+    "profileDeleteConfirmTitle": "¿Eliminar el perfil {name}?",
+    "profileDeleteConfirmDescription": "Se cerrarán sus pestañas y se eliminarán sus cookies, cachés y almacenamiento de sitios. Esta acción no se puede deshacer.",
+    "profileDeleteConfirmAction": "Eliminar",
+    "profileDeleted": "Perfil eliminado",
+    "profileDeleteFailed": "No se pudo eliminar el perfil: {message}",
+    "clearConfirmDescriptionProfile": "Se eliminarán las cookies, cachés y almacenamiento de sitios del perfil {name}. Las pestañas abiertas permanecen, pero se cerrará tu sesión en los sitios.",
+    "signInUaTitle": "Compatibilidad con el inicio de sesión de Google",
+    "signInUaHint": "Google rechaza iniciar sesión desde navegadores integrados. Si está activado, las pestañas se presentan como Firefox solo ante las páginas de inicio de sesión de Google (accounts.google.com); en el resto se usa la identidad propia del motor."
   },
   "LogsSettings": {
     "loading": "Cargando…",
@@ -5864,7 +5883,10 @@
       "copyUrl": "Copiar enlace",
       "copied": "Enlace copiado",
       "addressPlaceholder": "Escribe una dirección",
-      "invalidUrl": "No es una dirección válida"
+      "invalidUrl": "No es una dirección válida",
+      "profile": "Perfil: {name}",
+      "profileMenuLabel": "Abrir esta página en otro perfil",
+      "profileDefault": "Predeterminado"
     },
     "status": {
       "popupDenied": "Ventana emergente bloqueada: {host}",

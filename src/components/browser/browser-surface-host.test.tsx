@@ -59,7 +59,11 @@ function tab(id = "abc"): BrowserWorkspaceTab {
     content: "",
     loading: true,
     readonly: true,
-    browser: { initialUrl: "https://example.com/", openerTabId: null },
+    browser: {
+      initialUrl: "https://example.com/",
+      openerTabId: null,
+      profile: "default",
+    },
   }
 }
 
@@ -82,6 +86,7 @@ function state(id = "abc"): BrowserTabState {
     error: null,
     remoteHost: null,
     openerTabId: null,
+    profile: "default",
   }
 }
 

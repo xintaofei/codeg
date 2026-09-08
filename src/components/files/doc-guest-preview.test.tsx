@@ -98,6 +98,7 @@ function tabState(tabId: string): BrowserTabState {
     error: null,
     remoteHost: null,
     openerTabId: null,
+    profile: "default",
   }
 }
 

@@ -4797,7 +4797,26 @@
     "terminalMenuHint": "터미널에서 링크를 클릭하면 바로 열지 않고 작은 메뉴(내장 브라우저, 시스템 브라우저, 링크 복사)를 표시합니다. ⌘/Ctrl 클릭은 여전히 바로 엽니다.",
     "htmlPreviewTitle": "HTML 파일 미리보기",
     "htmlPreviewHint": "HTML 파일을 내장 브라우저의 제한된 문서 보기로 표시합니다. 파일별로 켜기 전에는 스크립트가 실행되지 않고, 해당 폴더 밖에는 접근할 수 없습니다. 끄면 웹 앱과 같은 인라인 미리보기를 사용합니다.",
-    "managedDisabled": "관리자 정책으로 내장 브라우저가 꺼져 있습니다. 링크는 시스템 브라우저에서 열립니다."
+    "managedDisabled": "관리자 정책으로 내장 브라우저가 꺼져 있습니다. 링크는 시스템 브라우저에서 열립니다.",
+    "profilesTitle": "프로필",
+    "profilesHint": "프로필마다 쿠키, 사이트 저장소, 로그인 상태를 따로 보관합니다. 새 탭은 아래에서 선택한 프로필에서 열립니다. 탭 도구 모음에서 같은 페이지를 다른 프로필로 열 수 있습니다.",
+    "profileDefault": "기본",
+    "profileNewTabsTitle": "새 탭에 사용할 프로필",
+    "profileNamePlaceholder": "프로필 이름(예: 업무)",
+    "profileNameLabel": "프로필 이름",
+    "profileAdd": "프로필 추가",
+    "profileNameRequired": "프로필 이름을 입력하세요",
+    "profileNameDuplicate": "같은 이름의 프로필이 이미 있습니다",
+    "profileClear": "{name}의 브라우징 데이터 지우기",
+    "profileDelete": "프로필 {name} 삭제",
+    "profileDeleteConfirmTitle": "프로필 {name}을(를) 삭제할까요?",
+    "profileDeleteConfirmDescription": "해당 탭이 닫히고 쿠키, 캐시, 사이트 저장소가 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
+    "profileDeleteConfirmAction": "삭제",
+    "profileDeleted": "프로필을 삭제했습니다",
+    "profileDeleteFailed": "프로필을 삭제할 수 없습니다: {message}",
+    "clearConfirmDescriptionProfile": "프로필 {name}의 쿠키, 캐시, 사이트 저장소가 삭제됩니다. 열린 탭은 유지되지만 각 사이트에서 로그아웃됩니다.",
+    "signInUaTitle": "Google 로그인 호환",
+    "signInUaHint": "Google은 내장 브라우저에서의 로그인을 거부합니다. 켜면 탭이 Google 로그인 페이지(accounts.google.com)에만 Firefox로 표시되고, 그 밖의 곳에서는 엔진 고유의 식별 정보를 사용합니다."
   },
   "LogsSettings": {
     "loading": "불러오는 중…",
@@ -5864,7 +5883,10 @@
       "copyUrl": "링크 복사",
       "copied": "링크를 복사했습니다",
       "addressPlaceholder": "주소 입력",
-      "invalidUrl": "올바른 주소가 아닙니다"
+      "invalidUrl": "올바른 주소가 아닙니다",
+      "profile": "프로필: {name}",
+      "profileMenuLabel": "이 페이지를 다른 프로필에서 열기",
+      "profileDefault": "기본"
     },
     "status": {
       "popupDenied": "팝업 차단됨: {host}",

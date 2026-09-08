@@ -35,11 +35,10 @@ use tauri_runtime_wry::wry::{
 
 use super::channel::{self, MessageSink};
 use super::doc_guest::{self, DocGrant, DocGuests, GuestNavigation};
-#[cfg(target_os = "windows")]
-use super::profile;
 use super::events;
 use super::hooks;
 use super::policy::{self, BrowserPolicy};
+use super::profile;
 use super::registry::{BrowserRegistry, BrowserTab};
 use super::surface::BrowserSurface;
 use super::types::{
@@ -528,9 +527,24 @@ pub enum ChildKind {
 #[cfg(target_os = "windows")]
 thread_local! {
     // WebView2 keeps a webview's cookies and storage in its environment's
-    // user-data folder; the profile's directory is that folder for every
-    // browser webview of this process. Kept alive like tauri keeps its own.
-    static WEB_CONTEXT: RefCell<Option<WebContext>> = const { RefCell::new(None) };
+    // user-data folder; a profile's directory is that folder for every
+    // browser webview of the profile in this process. One context per
+    // profile, kept alive like tauri keeps its own.
+    static WEB_CONTEXTS: RefCell<HashMap<String, WebContext>> = RefCell::new(HashMap::new());
+}
+
+/// Windows: drop the web context of a profile that is being deleted, so its
+/// folder is no longer held open by this process (the engine's own browser
+/// process may still be winding down; a deletion that fails is reported to
+/// the user, who can retry). Main thread.
+#[cfg(target_os = "windows")]
+pub fn forget_profile_context(app: &AppHandle, profile_id: &str) -> Result<(), ChildError> {
+    let profile_id = profile_id.to_string();
+    run_on_main(app, move || {
+        WEB_CONTEXTS.with(|contexts| {
+            contexts.borrow_mut().remove(&profile_id);
+        });
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -544,14 +558,15 @@ fn build_child(
     devtools: bool,
     configuration: Option<OpenerConfiguration>,
     kind: &ChildKind,
+    profile: &str,
 ) -> Result<wry::WebView, String> {
     #[cfg(target_os = "windows")]
     {
-        WEB_CONTEXT.with(|slot| {
-            let mut slot = slot.borrow_mut();
-            let context = slot.get_or_insert_with(|| {
-                WebContext::new(Some(profile::directory(profile::DEFAULT_PROFILE_ID)))
-            });
+        WEB_CONTEXTS.with(|contexts| {
+            let mut contexts = contexts.borrow_mut();
+            let context = contexts
+                .entry(profile.to_string())
+                .or_insert_with(|| WebContext::new(Some(profile::directory(profile))));
             configure_child(
                 WebViewBuilder::new_with_web_context(context),
                 app,
@@ -563,6 +578,7 @@ fn build_child(
                 devtools,
                 configuration,
                 kind,
+                profile,
             )?
             .build_as_child(owner)
             .map_err(|e| e.to_string())
@@ -581,6 +597,7 @@ fn build_child(
             devtools,
             configuration,
             kind,
+            profile,
         )?
         .build_as_child(owner)
         .map_err(|e| e.to_string())
@@ -660,6 +677,7 @@ fn configure_child<'a>(
     devtools: bool,
     configuration: Option<OpenerConfiguration>,
     kind: &ChildKind,
+    profile: &str,
 ) -> Result<WebViewBuilder<'a>, String> {
     let nav_id = tab_id.to_string();
     let nav_app = app.clone();
@@ -820,7 +838,7 @@ fn configure_child<'a>(
         // store that dies with it.
         let configuration = match (configuration, kind) {
             (Some(configuration), _) => configuration,
-            (None, ChildKind::Page) => super::shim::macos::profile_configuration(mtm),
+            (None, ChildKind::Page) => super::shim::macos::profile_configuration(mtm, profile),
             (None, ChildKind::Document(_)) => super::shim::macos::document_configuration(mtm),
         };
         builder = builder.with_webview_configuration(configuration);
@@ -828,7 +846,7 @@ fn configure_child<'a>(
     #[cfg(target_os = "windows")]
     {
         use tauri_runtime_wry::wry::WebViewBuilderExtWindows;
-        let _ = configuration;
+        let _ = (configuration, profile);
         // WebView2 takes the proxy (and everything else) from the environment's
         // browser arguments: one string for every browser webview of the
         // process, see `profile::windows_browser_args`.
@@ -849,6 +867,7 @@ fn configure_child<'a>(
 
 /// Build the child webview for a regular tab. The caller navigates afterwards,
 /// once the page ↔ host channel is installed.
+#[allow(clippy::too_many_arguments)]
 pub fn create(
     app: &AppHandle,
     owner: &WebviewWindow,
@@ -857,6 +876,7 @@ pub fn create(
     bounds: Bounds,
     background: bool,
     devtools: bool,
+    profile: &str,
 ) -> Result<ChildHandle, ChildError> {
     let handle = ChildHandle {
         tab_id: tab_id.to_string(),
@@ -867,8 +887,9 @@ pub fn create(
     let owner = owner.clone();
     let id = tab_id.to_string();
     let label = label.to_string();
+    let profile = profile.to_string();
     run_on_main(&app.clone(), move || -> Result<(), String> {
-        let webview = build_child(&app, &owner, &id, &label, bounds, !background, devtools, None, &ChildKind::Page)?;
+        let webview = build_child(&app, &owner, &id, &label, bounds, !background, devtools, None, &ChildKind::Page, &profile)?;
         attach_navigation_delegate(&app, &id, &webview);
         SURFACES.with(|s| s.borrow_mut().insert(id, webview));
         Ok(())
@@ -902,7 +923,9 @@ pub fn create_document(
     let label = label.to_string();
     run_on_main(&app.clone(), move || -> Result<(), String> {
         let kind = ChildKind::Document(grant);
-        let webview = build_child(&app, &owner, &id, &label, bounds, !background, devtools, None, &kind)?;
+        // A guest's store is its own (non-persistent); the profile only names
+        // the WebView2 environment it would share on Windows.
+        let webview = build_child(&app, &owner, &id, &label, bounds, !background, devtools, None, &kind, profile::DEFAULT_PROFILE_ID)?;
         attach_navigation_delegate(&app, &id, &webview);
         SURFACES.with(|s| s.borrow_mut().insert(id, webview));
         Ok(())
@@ -978,7 +1001,14 @@ fn new_window_handler(
                 .update(&opener_tab_id, |tab| (tab.last_bounds, tab.devtools))
                 .unwrap_or_default();
             let configuration = features.opener.target_configuration.clone();
-            let webview = match build_child(&app, &owner, &tab_id, &label, bounds, true, devtools, Some(configuration), &ChildKind::Page) {
+            // The opener's configuration carries the opener's data store, so
+            // the popup lives in the opener's profile whatever is said here;
+            // the state says the same so the frontend can show it.
+            let profile = registry
+                .state(&opener_tab_id)
+                .and_then(|state| state.profile)
+                .unwrap_or_else(|| profile::DEFAULT_PROFILE_ID.to_string());
+            let webview = match build_child(&app, &owner, &tab_id, &label, bounds, true, devtools, Some(configuration), &ChildKind::Page, &profile) {
                 Ok(webview) => webview,
                 Err(err) => {
                     tracing::warn!("[browser] popup webview creation failed: {err}");
@@ -1025,6 +1055,7 @@ fn new_window_handler(
                 error: None,
                 remote_host: None,
                 opener_tab_id: Some(opener_tab_id.clone()),
+                profile: Some(profile),
             };
             if let Err(err) = registry.insert(BrowserTab::new(
                 state.clone(),

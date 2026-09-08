@@ -9,6 +9,7 @@ import {
   browserListDownloads,
   browserListTabs,
   browserSetHostRules,
+  browserSetSignInUserAgent,
 } from "@/lib/browser/browser-api"
 import {
   getBrowserPrefs,
@@ -66,10 +67,11 @@ import { getCurrentWindowLabel } from "@/lib/browser/window-label"
  * - `browser://doc-state` → the mode of a document guest (the file column's
  *   HTML preview), including a fall-back to safe mode
  *
- * It also carries the user's site rules the other way: the backend enforces
- * `block` on every navigation a tab attempts, and learns the table from here
- * at startup and whenever the preference changes (the settings window writes
- * it; the storage event brings it over).
+ * It also carries two preferences the other way: the user's site rules (the
+ * backend enforces `block` on every navigation a tab attempts) and the
+ * sign-in user-agent switch (applied on navigations to Google's sign-in
+ * hosts). Both go at startup and whenever they change (the settings window
+ * writes them; the storage event brings them over).
  *
  * Only subscribes where a built-in browser exists; in web mode there is
  * nothing to hear.
@@ -85,29 +87,36 @@ export function BrowserEventsBridge() {
     let cancelled = false
     const unsubscribers: Array<() => void> = []
 
-    // The user's site rules go to the backend, which enforces `block` on
-    // every navigation. Subscribed BEFORE the first await: a change written
-    // by the settings window while the capabilities round trip is in flight
-    // must reach this document's cache (the subscription is what installs
-    // the cross-window listener) and then the backend. The first push
-    // happens once capabilities say a browser exists, and carries whatever
-    // is current then. A push that fails is retried once — the command has
-    // no reason to fail except the app shutting down, and a silent
-    // divergence would be an unenforced rule.
+    // The user's site rules and the sign-in user-agent switch go to the
+    // backend, which enforces `block` on every navigation and the identity
+    // on Google's sign-in hosts. Subscribed BEFORE the first await: a change
+    // written by the settings window while the capabilities round trip is
+    // in flight must reach this document's cache (the subscription is what
+    // installs the cross-window listener) and then the backend. The first
+    // push happens once capabilities say a browser exists, and carries
+    // whatever is current then. A push that fails is retried once — the
+    // commands have no reason to fail except the app shutting down, and a
+    // silent divergence would be an unenforced rule.
     let ready = false
     const push = (retry: boolean) => {
       // Before the backend is known to exist a change only invalidates the
       // cache (the subscription did that); the first push below picks up
       // whatever is current by then.
       if (!ready) return
-      void browserSetHostRules(getBrowserPrefs().hostRules).catch(() => {
+      const prefs = getBrowserPrefs()
+      void Promise.all([
+        browserSetHostRules(prefs.hostRules),
+        browserSetSignInUserAgent(prefs.signInUserAgent),
+      ]).catch(() => {
         if (cancelled) return
         if (retry) {
           window.setTimeout(() => {
             if (!cancelled) push(false)
           }, HOST_RULES_RETRY_MS)
         } else {
-          console.warn("[browser] site rules could not be sent to the backend")
+          console.warn(
+            "[browser] browser preferences could not be sent to the backend"
+          )
         }
       })
     }

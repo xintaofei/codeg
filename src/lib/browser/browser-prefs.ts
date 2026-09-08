@@ -7,6 +7,8 @@
 
 import { useSyncExternalStore } from "react"
 
+import { randomUUID } from "@/lib/utils"
+
 import { isHostRule, type HostRule } from "./host-rules"
 
 /** Where a clicked address came from; each source carries its own default. */
@@ -37,6 +39,42 @@ export type SurfaceOverride = "auto" | "child" | "window"
  *  inline `srcdoc` iframe the web build uses. */
 export type HtmlPreviewEngine = "guest" | "inline"
 
+/** The profile every installation has; it cannot be deleted, only cleared.
+ *  Its name is localized, so it is not in the list the user edits. */
+export const DEFAULT_BROWSER_PROFILE_ID = "default"
+
+/** A browser profile the user created: a cookie jar and site storage of its
+ *  own on the backend, named here. The id is minted once and never changes
+ *  (the backend derives the store from it); the name is for people. */
+export interface BrowserProfile {
+  id: string
+  name: string
+}
+
+/** Same alphabet as the backend's `valid_profile_id`: ids become directory
+ *  names and store identifiers. */
+const PROFILE_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/
+
+export function isBrowserProfileId(value: unknown): value is string {
+  return typeof value === "string" && PROFILE_ID_PATTERN.test(value)
+}
+
+export function isBrowserProfile(value: unknown): value is BrowserProfile {
+  if (!value || typeof value !== "object") return false
+  const { id, name } = value as Record<string, unknown>
+  return (
+    isBrowserProfileId(id) &&
+    id !== DEFAULT_BROWSER_PROFILE_ID &&
+    typeof name === "string" &&
+    name.trim().length > 0
+  )
+}
+
+/** A fresh id for a profile: short, opaque, and in the backend's alphabet. */
+export function mintBrowserProfileId(): string {
+  return `p-${randomUUID().replace(/-/g, "").slice(0, 12)}`
+}
+
 export interface BrowserPrefsSnapshot {
   defaultTarget: Readonly<Record<LinkSource, LinkTarget>>
   devtools: boolean
@@ -57,6 +95,16 @@ export interface BrowserPrefsSnapshot {
   /** Guest by default wherever a guest exists; the inline preview remains
    *  one switch away for anyone who prefers the old rendering. */
   htmlPreviewEngine: HtmlPreviewEngine
+  /** Profiles the user created, in the order they were made. The default
+   *  profile is not listed: it always exists and comes first. */
+  profiles: readonly BrowserProfile[]
+  /** The profile new browser tabs open in. Always names a profile that
+   *  exists (the default one when the stored choice was deleted). */
+  newTabProfile: string
+  /** Present a Firefox identity to Google's sign-in pages, which refuse
+   *  embedded browsers. On by default: without it, signing in to Google from
+   *  a tab fails with "this browser may not be secure". */
+  signInUserAgent: boolean
 }
 
 export const DEFAULT_BROWSER_PREFS: BrowserPrefsSnapshot = Object.freeze({
@@ -74,6 +122,9 @@ export const DEFAULT_BROWSER_PREFS: BrowserPrefsSnapshot = Object.freeze({
   hostRules: Object.freeze([]) as readonly HostRule[],
   terminalClickMenu: false,
   htmlPreviewEngine: "guest",
+  profiles: Object.freeze([]) as readonly BrowserProfile[],
+  newTabProfile: DEFAULT_BROWSER_PROFILE_ID,
+  signInUserAgent: true,
 }) as BrowserPrefsSnapshot
 
 const KEY_PREFIX = "browser:"
@@ -91,6 +142,10 @@ const SUSPEND_KEY = `${KEY_PREFIX}suspend-background-tabs`
 const HOST_RULES_KEY = `${KEY_PREFIX}host-rules`
 const TERMINAL_MENU_KEY = `${KEY_PREFIX}terminal-click-menu`
 const HTML_PREVIEW_KEY = `${KEY_PREFIX}html-preview-engine`
+// One key for the whole list, like the rules: a profile list is one setting.
+const PROFILES_KEY = `${KEY_PREFIX}profiles`
+const NEW_TAB_PROFILE_KEY = `${KEY_PREFIX}new-tab-profile`
+const SIGN_IN_UA_KEY = `${KEY_PREFIX}sign-in-user-agent`
 
 function readRaw(key: string): string | null {
   if (typeof window === "undefined") return null
@@ -123,6 +178,37 @@ function parseHostRules(raw: string | null): readonly HostRule[] {
   }
 }
 
+/** Stored profiles, one bad entry dropped rather than the whole list; a
+ *  second entry with an id already seen is dropped too. */
+function parseProfiles(raw: string | null): readonly BrowserProfile[] {
+  if (!raw) return DEFAULT_BROWSER_PREFS.profiles
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return DEFAULT_BROWSER_PREFS.profiles
+    const seen = new Set<string>()
+    const out: BrowserProfile[] = []
+    for (const entry of parsed) {
+      if (!isBrowserProfile(entry) || seen.has(entry.id)) continue
+      seen.add(entry.id)
+      out.push({ id: entry.id, name: entry.name.trim() })
+    }
+    return out
+  } catch {
+    return DEFAULT_BROWSER_PREFS.profiles
+  }
+}
+
+/** Whether `id` names a profile that exists: the default one or a listed one. */
+export function browserProfileExists(
+  prefs: Pick<BrowserPrefsSnapshot, "profiles">,
+  id: string
+): boolean {
+  return (
+    id === DEFAULT_BROWSER_PROFILE_ID ||
+    prefs.profiles.some((profile) => profile.id === id)
+  )
+}
+
 function read(): BrowserPrefsSnapshot {
   const defaultTarget = {} as Record<LinkSource, LinkTarget>
   for (const source of LINK_SOURCES) {
@@ -130,6 +216,13 @@ function read(): BrowserPrefsSnapshot {
       parseTarget(readRaw(targetKey(source))) ??
       DEFAULT_BROWSER_PREFS.defaultTarget[source]
   }
+  const profiles = parseProfiles(readRaw(PROFILES_KEY))
+  const storedNewTab = readRaw(NEW_TAB_PROFILE_KEY)
+  const newTabProfile =
+    isBrowserProfileId(storedNewTab) &&
+    browserProfileExists({ profiles }, storedNewTab)
+      ? storedNewTab
+      : DEFAULT_BROWSER_PROFILE_ID
   return {
     defaultTarget,
     devtools: readRaw(DEVTOOLS_KEY) === "true",
@@ -142,6 +235,9 @@ function read(): BrowserPrefsSnapshot {
     terminalClickMenu: readRaw(TERMINAL_MENU_KEY) === "true",
     htmlPreviewEngine:
       readRaw(HTML_PREVIEW_KEY) === "inline" ? "inline" : "guest",
+    profiles,
+    newTabProfile,
+    signInUserAgent: readRaw(SIGN_IN_UA_KEY) !== "false",
   }
 }
 
@@ -209,6 +305,42 @@ export function setBrowserHtmlPreviewEngine(engine: HtmlPreviewEngine): void {
   write(HTML_PREVIEW_KEY, engine === "inline" ? "inline" : null)
 }
 
+/** Replace the profile list (an empty list removes the key). */
+export function setBrowserProfiles(profiles: readonly BrowserProfile[]): void {
+  const seen = new Set<string>()
+  const cleaned: BrowserProfile[] = []
+  for (const profile of profiles) {
+    if (!isBrowserProfile(profile) || seen.has(profile.id)) continue
+    seen.add(profile.id)
+    cleaned.push({ id: profile.id, name: profile.name.trim() })
+  }
+  write(PROFILES_KEY, cleaned.length > 0 ? JSON.stringify(cleaned) : null)
+}
+
+/** Create a profile named `name`; returns it (with its new id). */
+export function addBrowserProfile(name: string): BrowserProfile {
+  const profile = { id: mintBrowserProfileId(), name: name.trim() }
+  setBrowserProfiles([...getBrowserPrefs().profiles, profile])
+  return profile
+}
+
+/** Forget a profile. The "new tabs" choice falls back to the default profile
+ *  on its own (it is resolved against the list on every read). */
+export function removeBrowserProfile(id: string): void {
+  setBrowserProfiles(
+    getBrowserPrefs().profiles.filter((profile) => profile.id !== id)
+  )
+}
+
+/** The profile new tabs open in (the default one removes the key). */
+export function setBrowserNewTabProfile(id: string): void {
+  write(NEW_TAB_PROFILE_KEY, id === DEFAULT_BROWSER_PROFILE_ID ? null : id)
+}
+
+export function setBrowserSignInUserAgent(enabled: boolean): void {
+  write(SIGN_IN_UA_KEY, enabled ? null : "false")
+}
+
 export function subscribeBrowserPrefs(listener: () => void): () => void {
   if (typeof window === "undefined") return () => {}
   const onChange = () => listener()
@@ -254,6 +386,9 @@ export function resetBrowserPrefsForTests(): void {
     localStorage.removeItem(HOST_RULES_KEY)
     localStorage.removeItem(TERMINAL_MENU_KEY)
     localStorage.removeItem(HTML_PREVIEW_KEY)
+    localStorage.removeItem(PROFILES_KEY)
+    localStorage.removeItem(NEW_TAB_PROFILE_KEY)
+    localStorage.removeItem(SIGN_IN_UA_KEY)
   } catch {
     /* ignore */
   }

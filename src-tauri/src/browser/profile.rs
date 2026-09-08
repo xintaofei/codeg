@@ -1,5 +1,5 @@
-//! Browser profile: where tabs keep cookies, caches and storage, and which
-//! proxy their traffic goes through. P1 ships one profile, `default`.
+//! Browser profiles: where tabs keep cookies, caches and storage, which
+//! proxy their traffic goes through, and the one user-agent exception.
 //!
 //! Why tabs need a container of their own: the workspace webview keeps the
 //! app's own localStorage and IndexedDB in WebKit's default data store (macOS)
@@ -9,26 +9,89 @@
 //! windows. A proxy is a property of that same container
 //! (`WKWebsiteDataStore.proxyConfigurations`, WebView2 environment arguments,
 //! the WebKitGTK network session), which is the second reason.
+//!
+//! A profile is named by an id the frontend chooses (`default` always
+//! exists, the others are minted when the user creates one in the settings);
+//! everything platform-specific is derived from the id — a stable data-store
+//! identifier on macOS 14+, a directory on Windows / Linux — so the backend
+//! keeps no list of its own. Every profile shares the app's proxy setting.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Url};
 
 pub const DEFAULT_PROFILE_ID: &str = "default";
 
+/// Longest id accepted: ids become directory names and store identifiers.
+pub const MAX_PROFILE_ID_LEN: usize = 40;
+
+/// A profile id: `default`, or what the frontend minted — lowercase ASCII
+/// letters, digits and dashes, starting with a letter or digit. A safe
+/// directory name on every platform, and nothing that could be a path.
+pub fn valid_profile_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_PROFILE_ID_LEN
+        && id
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
 /// `WKWebsiteDataStore` identifier of the default profile (macOS 14+):
 /// uuid5(NAMESPACE_URL, "https://codeg.app/browser-profile/default"). Fixed so
-/// the same store is found again after a restart or an update.
+/// the same store is found again after a restart or an update; the other
+/// profiles' identifiers come from `data_store_identifier`, which must keep
+/// producing this one for `default` (there is a test).
 pub const DEFAULT_DATA_STORE_IDENTIFIER: [u8; 16] = [
     0xb5, 0xb1, 0xc6, 0x31, 0xe0, 0x8c, 0x58, 0xf2, 0xba, 0x41, 0x9d, 0x11, 0x62, 0x85, 0x6f, 0x26,
 ];
+
+/// The data-store identifier of a profile (macOS 14+): a version-5 UUID of
+/// `https://codeg.app/browser-profile/<id>` in the URL namespace, so the
+/// same store is found again after a restart or an update and no two
+/// profiles can share one.
+pub fn data_store_identifier(profile_id: &str) -> [u8; 16] {
+    use sha1::{Digest, Sha1};
+    // RFC 4122 URL namespace, 6ba7b811-9dad-11d1-80b4-00c04fd430c8.
+    const NAMESPACE_URL: [u8; 16] = [
+        0x6b, 0xa7, 0xb8, 0x11, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8,
+    ];
+    let mut hasher = Sha1::new();
+    hasher.update(NAMESPACE_URL);
+    hasher.update(format!("https://codeg.app/browser-profile/{profile_id}").as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50; // version 5
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
+    bytes
+}
 
 /// Directory holding the profile's data on Windows (WebView2 user-data
 /// folder) and Linux (WebKitGTK data directory). Unused on macOS, where the
 /// data store identifier plays this role.
 pub fn directory(profile_id: &str) -> PathBuf {
     crate::paths::codeg_browser_profiles_root().join(profile_id)
+}
+
+/// Whether more than the default profile can exist here. macOS keeps the
+/// profiles apart through per-identifier data stores, which arrived in
+/// macOS 14; before that every tab shares WebKit's default store and a
+/// second profile would be a name without a container.
+pub fn profiles_supported() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        crate::browser::shim::macos::supports_isolated_profile()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,7 +132,7 @@ impl BrowserProxy {
 /// itself) is refused: none of the three engines' proxy hooks express it, so
 /// pretending it is plain HTTP CONNECT would send cleartext to a TLS port.
 pub fn parse_proxy(raw: &str) -> Result<BrowserProxy, String> {
-    let url = tauri::Url::parse(raw.trim()).map_err(|e| format!("invalid proxy URL {raw:?}: {e}"))?;
+    let url = Url::parse(raw.trim()).map_err(|e| format!("invalid proxy URL {raw:?}: {e}"))?;
     let scheme = match url.scheme() {
         "http" => ProxyScheme::Http,
         "socks5" | "socks5h" => ProxyScheme::Socks5,
@@ -154,6 +217,12 @@ pub fn frozen_proxy() -> Option<BrowserProxy> {
 /// Windows credentials), then the proxy. wry only injects `--proxy-server`
 /// itself when no arguments are given at all, so once we hand it a string we
 /// own the whole thing — hence one function for the entire string.
+///
+/// The string does not depend on the profile: WebView2 requires every
+/// environment on one user-data folder to be created with identical
+/// arguments, and one string for all profiles satisfies that by
+/// construction (a profile that needs different arguments — a remote-egress
+/// proxy — gets its own folder, never a second string on a shared one).
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn windows_browser_args(proxy: Option<&BrowserProxy>) -> String {
     let mut args = String::from(
@@ -225,45 +294,163 @@ pub fn isolated_storage() -> bool {
     }
 }
 
-/// Get the profile ready for a tab: its directory exists (Windows / Linux)
-/// and, on macOS, its data store exists and points at the current proxy.
-/// Idempotent and cheap after the first call.
-pub fn prepare(app: &AppHandle) -> Result<(), String> {
+/// Whether `profile_id` names a profile a tab can be opened in here: an
+/// acceptable id that, on this platform, can be a container of its own.
+pub fn check(profile_id: &str) -> Result<(), String> {
+    if !valid_profile_id(profile_id) {
+        return Err(format!("invalid browser profile id {profile_id:?}"));
+    }
+    if profile_id != DEFAULT_PROFILE_ID && !profiles_supported() {
+        return Err("browser profiles other than the default need macOS 14 or later".to_string());
+    }
+    Ok(())
+}
+
+/// Get a profile ready for a tab (see `check`): its directory exists
+/// (Windows / Linux) and, on macOS, its data store exists and points at the
+/// current proxy. Idempotent and cheap after the first call.
+pub fn prepare(app: &AppHandle, profile_id: &str) -> Result<(), String> {
+    check(profile_id)?;
     #[cfg(target_os = "macos")]
     {
         let proxy = current_proxy();
+        let profile_id = profile_id.to_string();
         run_on_main(app, move || {
-            crate::browser::shim::macos::ensure_profile(proxy_or_none(proxy))
+            crate::browser::shim::macos::ensure_profile(&profile_id, proxy_or_none(proxy))
         })?
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = app;
-        let dir = directory(DEFAULT_PROFILE_ID);
+        let dir = directory(profile_id);
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("cannot create browser profile directory {}: {e}", dir.display()))
     }
 }
 
-/// The app's proxy setting changed. macOS re-points the profile's store, which
-/// open tabs pick up for their next connections; the other platforms take the
-/// change at the next tab (Linux) or restart (Windows) — see `ProxyApplies`.
+/// The app's proxy setting changed. macOS re-points every profile's store,
+/// which open tabs pick up for their next connections; the other platforms
+/// take the change at the next tab (Linux) or restart (Windows) — see
+/// `ProxyApplies`.
 pub fn proxy_settings_changed(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     {
         let proxy = current_proxy();
         if let Err(err) = run_on_main(app, move || {
-            crate::browser::shim::macos::ensure_profile(proxy_or_none(proxy))
+            crate::browser::shim::macos::apply_proxy_to_profiles(proxy_or_none(proxy))
         })
         .and_then(|r| r)
         {
-            tracing::warn!("[browser] could not apply the proxy to the browser profile: {err}");
+            tracing::warn!("[browser] could not apply the proxy to the browser profiles: {err}");
         }
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = app;
     }
+}
+
+/// Windows / Linux: delete a profile's directory, and with it everything the
+/// engine stored for it. The caller has made sure no tab of the profile is
+/// open (and, on Windows, dropped the web context that held the folder).
+#[cfg(not(target_os = "macos"))]
+pub fn remove_directory(profile_id: &str) -> Result<(), String> {
+    let dir = directory(profile_id);
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("cannot remove browser profile directory {}: {e}", dir.display())),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The user-agent exception for Google's sign-in pages
+// ---------------------------------------------------------------------------
+//
+// Google refuses to sign a user in from an "embedded browser" — a WebKit or
+// WebView2 view whose user agent is not one of the browsers it knows — with
+// "This browser or app may not be secure". Presenting a Firefox identity to
+// its sign-in hosts, and to them only, is what every embedded browser does;
+// everywhere else the engine's own user agent stays, because bot checks
+// (Cloudflare Turnstile among them) reject a user agent that does not match
+// the engine that sent it. The switch is a user preference, on by default,
+// pushed here by the frontend like the site rules.
+
+/// Hosts that get the sign-in user agent (and their subdomains).
+const GOOGLE_SIGN_IN_HOSTS: [&str; 2] = ["accounts.google.com", "accounts.youtube.com"];
+
+/// Environment variable naming further hosts (comma-separated) that get the
+/// sign-in identity: another provider with the same refusal, or a server of
+/// one's own to check the switch against. Read once per process.
+pub const SIGN_IN_HOSTS_ENV: &str = "CODEG_BROWSER_SIGN_IN_HOSTS";
+
+fn extra_sign_in_hosts() -> &'static [String] {
+    static EXTRA: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    EXTRA.get_or_init(|| parse_host_list(&std::env::var(SIGN_IN_HOSTS_ENV).unwrap_or_default()))
+}
+
+fn parse_host_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|h| h.trim().trim_end_matches('.').to_ascii_lowercase())
+        .filter(|h| !h.is_empty())
+        .collect()
+}
+
+fn host_matches(host: &str, known: &str) -> bool {
+    host == known || host.strip_suffix(known).is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+/// Whether `host` (or a parent domain of it) is one of the sign-in hosts:
+/// Google's, plus whatever `CODEG_BROWSER_SIGN_IN_HOSTS` names.
+pub fn is_google_sign_in_host(host: &str) -> bool {
+    is_sign_in_host_among(host, extra_sign_in_hosts())
+}
+
+fn is_sign_in_host_among(host: &str, extra: &[String]) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    GOOGLE_SIGN_IN_HOSTS.iter().any(|known| host_matches(&host, known))
+        || extra.iter().any(|known| host_matches(&host, known))
+}
+
+/// Firefox ESR's user agent for this platform. Firefox freezes the macOS
+/// version at 10.15 and the Windows one at 10.0 in its own string; sending
+/// anything else would be the odd one out.
+#[cfg(target_os = "macos")]
+pub const SIGN_IN_USER_AGENT: &str =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:140.0) Gecko/20100101 Firefox/140.0";
+#[cfg(target_os = "windows")]
+pub const SIGN_IN_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub const SIGN_IN_USER_AGENT: &str =
+    "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0";
+
+static SIGN_IN_USER_AGENT_ENABLED: AtomicBool = AtomicBool::new(true);
+
+pub fn set_sign_in_user_agent(enabled: bool) {
+    SIGN_IN_USER_AGENT_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn sign_in_user_agent_enabled() -> bool {
+    SIGN_IN_USER_AGENT_ENABLED.load(Ordering::Relaxed)
+}
+
+/// The user agent a tab must present for a main-frame navigation to `url`:
+/// the sign-in identity for Google's sign-in hosts while the switch is on,
+/// else `None` — the engine's own.
+pub fn user_agent_for(url: &Url) -> Option<&'static str> {
+    if !sign_in_user_agent_enabled() {
+        return None;
+    }
+    url.host_str()
+        .filter(|host| is_google_sign_in_host(host))
+        .map(|_| SIGN_IN_USER_AGENT)
+}
+
+/// Whether this platform switches the user agent per navigation. It takes
+/// the navigation-delegate wrapper, which embedded tabs on macOS have.
+pub fn sign_in_user_agent_supported() -> bool {
+    cfg!(all(target_os = "macos", feature = "browser-child"))
 }
 
 /// An unusable proxy (unsupported scheme) means direct connections, not a
@@ -341,11 +528,102 @@ mod tests {
     }
 
     #[test]
+    fn profile_ids_are_directory_safe() {
+        for ok in ["default", "p-1a2b3c4d5e6f", "work", "a", "0abc-def"] {
+            assert!(valid_profile_id(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "Default",
+            "-lead",
+            "with space",
+            "dots..",
+            "slash/x",
+            "back\\x",
+            "über",
+            &"x".repeat(MAX_PROFILE_ID_LEN + 1),
+        ] {
+            assert!(!valid_profile_id(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn identifier_is_a_version_5_uuid() {
         // Version nibble 5, RFC 4122 variant — what uuid5() produces, so the
         // constant was not typed by hand.
         assert_eq!(DEFAULT_DATA_STORE_IDENTIFIER[6] >> 4, 5);
         assert_eq!(DEFAULT_DATA_STORE_IDENTIFIER[8] & 0xc0, 0x80);
+    }
+
+    /// The derivation must keep finding the store the default profile has
+    /// used since it shipped, and must tell profiles apart.
+    #[test]
+    fn identifiers_derive_from_the_profile_id() {
+        assert_eq!(data_store_identifier(DEFAULT_PROFILE_ID), DEFAULT_DATA_STORE_IDENTIFIER);
+        let work = data_store_identifier("work");
+        assert_ne!(work, DEFAULT_DATA_STORE_IDENTIFIER);
+        assert_eq!(work, data_store_identifier("work"));
+        assert_eq!(work[6] >> 4, 5);
+        assert_eq!(work[8] & 0xc0, 0x80);
+        // Reference value from an independent uuid5 implementation.
+        assert_eq!(
+            data_store_identifier("work"),
+            [0x76, 0x78, 0x5b, 0x58, 0x04, 0x9d, 0x56, 0xd9, 0x96, 0x83, 0x8e, 0xd6, 0xa1, 0x2f, 0xee, 0x3a]
+        );
+    }
+
+    #[test]
+    fn directories_are_per_profile() {
+        let a = directory("default");
+        let b = directory("work");
+        assert_eq!(a.file_name().unwrap(), "default");
+        assert_eq!(b.file_name().unwrap(), "work");
+        assert_eq!(a.parent(), b.parent());
+    }
+
+    #[test]
+    fn sign_in_user_agent_is_for_google_sign_in_hosts_only() {
+        set_sign_in_user_agent(true);
+        let sign_in = Url::parse("https://accounts.google.com/v3/signin/identifier?flowName=x").unwrap();
+        assert_eq!(user_agent_for(&sign_in), Some(SIGN_IN_USER_AGENT));
+        let sub = Url::parse("https://oauth.accounts.google.com/").unwrap();
+        assert_eq!(user_agent_for(&sub), Some(SIGN_IN_USER_AGENT));
+        let youtube = Url::parse("https://accounts.youtube.com/accounts/SetSID").unwrap();
+        assert_eq!(user_agent_for(&youtube), Some(SIGN_IN_USER_AGENT));
+        for native in [
+            "https://www.google.com/",
+            "https://mail.google.com/",
+            "https://accounts.google.com.evil.example/",
+            "https://notaccounts.google.com/",
+            "https://example.com/accounts.google.com",
+            "http://localhost:3000/",
+        ] {
+            assert_eq!(user_agent_for(&Url::parse(native).unwrap()), None, "{native}");
+        }
+        assert!(SIGN_IN_USER_AGENT.contains("Firefox/"));
+        assert!(is_google_sign_in_host("ACCOUNTS.GOOGLE.COM."));
+
+        set_sign_in_user_agent(false);
+        assert_eq!(user_agent_for(&sign_in), None);
+        set_sign_in_user_agent(true);
+    }
+
+    /// The environment list extends the built-in one with the same rule
+    /// (exact host or a subdomain), whatever the spelling.
+    #[test]
+    fn extra_sign_in_hosts_come_from_the_environment_list() {
+        let extra = parse_host_list(" Login.Corp.Example. ,, 127.0.0.1 ");
+        assert_eq!(extra, vec!["login.corp.example".to_string(), "127.0.0.1".to_string()]);
+        assert!(is_sign_in_host_among("login.corp.example", &extra));
+        assert!(is_sign_in_host_among("sso.login.corp.example", &extra));
+        assert!(is_sign_in_host_among("127.0.0.1", &extra));
+        assert!(!is_sign_in_host_among("corp.example", &extra));
+        assert!(!is_sign_in_host_among("notlogin.corp.example", &extra));
+        assert!(!is_sign_in_host_among("127.0.0.10", &extra));
+        // Google's hosts stay whatever the list says.
+        assert!(is_sign_in_host_among("accounts.google.com", &extra));
+        assert!(is_sign_in_host_among("accounts.google.com", &[]));
+        assert!(parse_host_list("").is_empty());
     }
 
     #[test]

@@ -155,7 +155,7 @@ describe("closed tab stack", () => {
   it("records a browser tab at its live page", () => {
     expect(
       snapshotBrowserTab(
-        { id: "browser:abc", folderId: 3 },
+        { id: "browser:abc", folderId: 3, browser: { profile: "p-work" } },
         "https://example.com/deep",
         "Deep page",
         2
@@ -167,6 +167,7 @@ describe("closed tab stack", () => {
       url: "https://example.com/deep",
       title: "Deep page",
       folderId: 3,
+      profile: "p-work",
     })
   })
 

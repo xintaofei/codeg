@@ -4797,7 +4797,26 @@
     "terminalMenuHint": "點擊終端機中的連結時先顯示一個小選單（內建瀏覽器、系統瀏覽器、複製連結），而不是直接開啟。⌘/Ctrl 點擊仍會直接開啟。",
     "htmlPreviewTitle": "HTML 檔案預覽",
     "htmlPreviewHint": "透過內建瀏覽器以受限的文件檢視顯示 HTML 檔案：在你為某個檔案啟用之前不執行指令碼，且只能存取它自己的資料夾。關閉後使用內嵌預覽，與網頁版相同。",
-    "managedDisabled": "管理員原則已關閉內建瀏覽器；連結將在系統瀏覽器中開啟。"
+    "managedDisabled": "管理員原則已關閉內建瀏覽器；連結將在系統瀏覽器中開啟。",
+    "profilesTitle": "設定檔",
+    "profilesHint": "每個設定檔有自己的 Cookie、網站儲存與登入狀態。新分頁會在下方選定的設定檔中開啟；分頁工具列可以把目前頁面在另一個設定檔裡開啟。",
+    "profileDefault": "預設",
+    "profileNewTabsTitle": "新分頁使用",
+    "profileNamePlaceholder": "設定檔名稱，例如「工作」",
+    "profileNameLabel": "設定檔名稱",
+    "profileAdd": "新增設定檔",
+    "profileNameRequired": "請輸入設定檔名稱",
+    "profileNameDuplicate": "已有同名的設定檔",
+    "profileClear": "清除 {name} 的瀏覽資料",
+    "profileDelete": "刪除設定檔 {name}",
+    "profileDeleteConfirmTitle": "刪除設定檔 {name}？",
+    "profileDeleteConfirmDescription": "它的分頁會被關閉，Cookie、快取與網站儲存會被刪除。此操作無法復原。",
+    "profileDeleteConfirmAction": "刪除",
+    "profileDeleted": "設定檔已刪除",
+    "profileDeleteFailed": "無法刪除設定檔：{message}",
+    "clearConfirmDescriptionProfile": "將刪除設定檔 {name} 的 Cookie、快取與網站儲存。已開啟的分頁會保留，但各網站的登入狀態會失效。",
+    "signInUaTitle": "Google 登入相容",
+    "signInUaHint": "Google 拒絕在內嵌瀏覽器中登入。開啟後，分頁只對 Google 的登入頁面（accounts.google.com）呈現 Firefox 身分；其他地方仍使用引擎自己的身分。"
   },
   "LogsSettings": {
     "loading": "載入中…",
@@ -5864,7 +5883,10 @@
       "copyUrl": "複製連結",
       "copied": "已複製連結",
       "addressPlaceholder": "輸入網址",
-      "invalidUrl": "不是有效的網址"
+      "invalidUrl": "不是有效的網址",
+      "profile": "設定檔：{name}",
+      "profileMenuLabel": "在其他設定檔中開啟此頁",
+      "profileDefault": "預設"
     },
     "status": {
       "popupDenied": "已攔截彈出視窗：{host}",

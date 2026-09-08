@@ -4,12 +4,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const mocks = vi.hoisted(() => ({
   browserClearData: vi.fn(),
+  browserRemoveProfile: vi.fn(),
   browserCapabilitiesNow: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn() },
 }))
 
 vi.mock("@/lib/browser/browser-api", () => ({
   browserClearData: mocks.browserClearData,
+  browserRemoveProfile: mocks.browserRemoveProfile,
   browserCapabilitiesNow: mocks.browserCapabilitiesNow,
 }))
 vi.mock("@/lib/platform", () => ({ isDesktop: () => true }))
@@ -20,6 +22,8 @@ import enMessages from "@/i18n/messages/en.json"
 import {
   getBrowserPrefs,
   resetBrowserPrefsForTests,
+  setBrowserNewTabProfile,
+  setBrowserProfiles,
   setDefaultLinkTarget,
 } from "@/lib/browser/browser-prefs"
 
@@ -51,13 +55,26 @@ function capabilitiesWith(proxy: {
     proxy,
     downloadsDir: "/Users/dev/Downloads",
     docGuest: true,
+    profiles: true,
+    signInUserAgent: true,
     policy: { enabled: true, managedRules: [], managedSource: null },
+  }
+}
+
+/** Capabilities of a platform without profiles (macOS 13, say): the one
+ *  "clear browsing data" row instead of the profile list. */
+function capabilitiesWithoutProfiles() {
+  return {
+    ...capabilitiesWith({ url: null, applies: "live", reason: null }),
+    profiles: false,
+    signInUserAgent: false,
   }
 }
 
 beforeEach(() => {
   resetBrowserPrefsForTests()
   mocks.browserClearData.mockReset()
+  mocks.browserRemoveProfile.mockReset()
   mocks.browserCapabilitiesNow.mockReset()
   mocks.browserCapabilitiesNow.mockResolvedValue(
     capabilitiesWith({ url: null, applies: "live", reason: null })
@@ -204,6 +221,8 @@ describe("BrowserSettingsSection", () => {
     mocks.browserCapabilitiesNow.mockResolvedValue({
       ...capabilitiesWith({ url: null, applies: "live", reason: null }),
       docGuest: false,
+      profiles: false,
+      signInUserAgent: false,
     })
     renderSection()
     expandSection()
@@ -231,11 +250,14 @@ describe("BrowserSettingsSection", () => {
   })
 
   it("clears browsing data only after confirmation", async () => {
+    mocks.browserCapabilitiesNow.mockResolvedValue(
+      capabilitiesWithoutProfiles()
+    )
     mocks.browserClearData.mockResolvedValue(undefined)
     renderSection()
     expandSection()
 
-    fireEvent.click(screen.getByRole("button", { name: "Clear…" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Clear…" }))
     expect(mocks.browserClearData).not.toHaveBeenCalled()
     expect(
       screen.getByRole("heading", { name: "Clear browsing data?" })
@@ -243,9 +265,149 @@ describe("BrowserSettingsSection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Clear" }))
     await waitFor(() => expect(mocks.browserClearData).toHaveBeenCalledTimes(1))
+    expect(mocks.browserClearData).toHaveBeenCalledWith("default")
     await waitFor(() =>
       expect(mocks.toast.success).toHaveBeenCalledWith("Browsing data cleared")
     )
+  })
+
+  it("lists the profiles with the default first and adds one by name", async () => {
+    setBrowserProfiles([{ id: "p-work", name: "Work" }])
+    renderSection()
+    expandSection()
+    // The list appears once the backend says profiles exist here.
+    expect(
+      await screen.findByRole("button", { name: "Clear browsing data of Work" })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Clear browsing data of Default" })
+    ).toBeInTheDocument()
+    // The default profile cannot be deleted.
+    expect(
+      screen.queryByRole("button", { name: "Delete profile Default" })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Delete profile Work" })
+    ).toBeInTheDocument()
+    // With profiles, the one "browsing data" row is gone: each row clears.
+    expect(
+      screen.queryByRole("button", { name: "Clear…" })
+    ).not.toBeInTheDocument()
+
+    const name = screen.getByRole("textbox", { name: "Profile name" })
+    fireEvent.click(screen.getByRole("button", { name: "Add profile" }))
+    expect(screen.getByText("Enter a name for the profile")).toBeInTheDocument()
+    fireEvent.change(name, { target: { value: " work " } })
+    fireEvent.click(screen.getByRole("button", { name: "Add profile" }))
+    expect(
+      screen.getByText("There is already a profile with this name")
+    ).toBeInTheDocument()
+    fireEvent.change(name, { target: { value: "Personal" } })
+    fireEvent.click(screen.getByRole("button", { name: "Add profile" }))
+    const profiles = getBrowserPrefs().profiles
+    expect(profiles.map((p) => p.name)).toEqual(["Work", "Personal"])
+    expect(profiles[1].id).toMatch(/^p-[0-9a-f]{12}$/)
+    expect(name).toHaveValue("")
+
+    // New tabs open in the chosen profile; the picker follows the list.
+    const picker = screen.getByRole("combobox", { name: "New tabs open in" })
+    expect(picker).toHaveTextContent("Default")
+    act(() => setBrowserNewTabProfile("p-work"))
+    expect(
+      screen.getByRole("combobox", { name: "New tabs open in" })
+    ).toHaveTextContent("Work")
+  })
+
+  it("clears one profile's data from its row", async () => {
+    setBrowserProfiles([{ id: "p-work", name: "Work" }])
+    mocks.browserClearData.mockResolvedValue(undefined)
+    renderSection()
+    expandSection()
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Clear browsing data of Work" })
+    )
+    expect(
+      screen.getByText(/site storage of the profile Work will be removed/)
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }))
+    await waitFor(() =>
+      expect(mocks.browserClearData).toHaveBeenCalledWith("p-work")
+    )
+  })
+
+  it("deletes a profile only once the backend has removed it", async () => {
+    setBrowserProfiles([{ id: "p-work", name: "Work" }])
+    setBrowserNewTabProfile("p-work")
+    mocks.browserRemoveProfile.mockResolvedValue(undefined)
+    renderSection()
+    expandSection()
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Delete profile Work" })
+    )
+    expect(
+      screen.getByRole("heading", { name: "Delete profile Work?" })
+    ).toBeInTheDocument()
+    expect(mocks.browserRemoveProfile).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }))
+    await waitFor(() =>
+      expect(mocks.browserRemoveProfile).toHaveBeenCalledWith("p-work")
+    )
+    await waitFor(() => expect(getBrowserPrefs().profiles).toEqual([]))
+    // The "new tabs" choice pointed at it and falls back on its own.
+    expect(getBrowserPrefs().newTabProfile).toBe("default")
+    await waitFor(() =>
+      expect(mocks.toast.success).toHaveBeenCalledWith("Profile deleted")
+    )
+  })
+
+  it("keeps a profile the backend could not delete", async () => {
+    setBrowserProfiles([{ id: "p-work", name: "Work" }])
+    mocks.browserRemoveProfile.mockRejectedValue(new Error("store in use"))
+    renderSection()
+    expandSection()
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Delete profile Work" })
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }))
+    await waitFor(() =>
+      expect(mocks.toast.error).toHaveBeenCalledWith(
+        "Could not delete the profile: store in use"
+      )
+    )
+    expect(getBrowserPrefs().profiles).toEqual([{ id: "p-work", name: "Work" }])
+    // The dialog stays, with the failure toast on top of it.
+    expect(
+      screen.getByRole("heading", { name: "Delete profile Work?" })
+    ).toBeInTheDocument()
+  })
+
+  it("persists the sign-in user-agent switch, on by default, where supported", async () => {
+    renderSection()
+    expandSection()
+    const toggle = await screen.findByLabelText("Google sign-in compatibility")
+    expect(toggle).toBeChecked()
+    fireEvent.click(toggle)
+    expect(getBrowserPrefs().signInUserAgent).toBe(false)
+    expect(
+      screen.getByLabelText("Google sign-in compatibility")
+    ).not.toBeChecked()
+  })
+
+  it("hides the sign-in switch and the profile list where the platform has neither", async () => {
+    mocks.browserCapabilitiesNow.mockResolvedValue(
+      capabilitiesWithoutProfiles()
+    )
+    renderSection()
+    expandSection()
+    expect(
+      await screen.findByRole("button", { name: "Clear…" })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByLabelText("Google sign-in compatibility")
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Add profile" })
+    ).not.toBeInTheDocument()
   })
 
   it("shows the proxy browser tabs use, fetched when the section opens", async () => {
@@ -296,11 +458,14 @@ describe("BrowserSettingsSection", () => {
   })
 
   it("keeps the dialog and reports the failure when clearing fails", async () => {
+    mocks.browserCapabilitiesNow.mockResolvedValue(
+      capabilitiesWithoutProfiles()
+    )
     mocks.browserClearData.mockRejectedValue(new Error("WebKit said no"))
     renderSection()
     expandSection()
 
-    fireEvent.click(screen.getByRole("button", { name: "Clear…" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Clear…" }))
     fireEvent.click(screen.getByRole("button", { name: "Clear" }))
     await waitFor(() =>
       expect(mocks.toast.error).toHaveBeenCalledWith(

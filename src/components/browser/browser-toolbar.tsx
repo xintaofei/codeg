@@ -7,12 +7,25 @@ import {
   Copy,
   ExternalLink,
   RotateCw,
+  UserRound,
   X,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 
-import type { BrowserWorkspaceTab } from "@/contexts/workspace-context"
+import {
+  useOptionalWorkspaceActions,
+  type BrowserWorkspaceTab,
+} from "@/contexts/workspace-context"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   browserGoBack,
   browserGoForward,
@@ -20,6 +33,10 @@ import {
   browserReload,
   browserStop,
 } from "@/lib/browser/browser-api"
+import {
+  DEFAULT_BROWSER_PROFILE_ID,
+  useBrowserPrefs,
+} from "@/lib/browser/browser-prefs"
 import type { BrowserTabState } from "@/lib/browser/types"
 import { browserTabBackendId } from "@/lib/file-tab-id"
 import { openUrl } from "@/lib/platform"
@@ -62,6 +79,78 @@ export function normalizeTypedAddress(raw: string): string | null {
   } catch {
     return null
   }
+}
+
+/**
+ * The profile chip: which cookie jar this tab lives in, and a menu to open
+ * the same page in another profile (a new tab beside this one — a tab's
+ * profile is fixed, since its surface was built in it). Only shown once the
+ * user has created a profile; with the default one alone there is nothing
+ * to choose.
+ */
+function ProfileMenu({
+  tab,
+  currentUrl,
+}: {
+  tab: BrowserWorkspaceTab
+  currentUrl: string
+}) {
+  const t = useTranslations("Browser.toolbar")
+  const prefs = useBrowserPrefs()
+  const openBrowserTab = useOptionalWorkspaceActions()?.openBrowserTab ?? null
+  const profileId = tab.browser.profile
+  if (prefs.profiles.length === 0 && profileId === DEFAULT_BROWSER_PROFILE_ID) {
+    return null
+  }
+  const nameOf = (id: string) =>
+    id === DEFAULT_BROWSER_PROFILE_ID
+      ? t("profileDefault")
+      : (prefs.profiles.find((profile) => profile.id === id)?.name ?? id)
+  const name = nameOf(profileId)
+  const ids = [
+    DEFAULT_BROWSER_PROFILE_ID,
+    ...prefs.profiles.map((profile) => profile.id),
+  ]
+  // A tab whose profile was deleted meanwhile still says where it lives.
+  if (!ids.includes(profileId)) ids.push(profileId)
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className={cn(ICON_BTN, "w-auto gap-1 px-1.5 text-xs")}
+          title={t("profile", { name })}
+          aria-label={t("profile", { name })}
+        >
+          <UserRound className="h-3.5 w-3.5 shrink-0" />
+          <span className="max-w-24 truncate">{name}</span>
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-44">
+        <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+          {t("profileMenuLabel")}
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuRadioGroup
+          value={profileId}
+          onValueChange={(id) => {
+            if (id === profileId || !openBrowserTab) return
+            openBrowserTab(currentUrl, { profile: id, openerTabId: tab.id })
+          }}
+        >
+          {ids.map((id) => (
+            <DropdownMenuRadioItem
+              key={id}
+              value={id}
+              disabled={id !== profileId && !openBrowserTab}
+            >
+              <span className="truncate">{nameOf(id)}</span>
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
 }
 
 export function BrowserToolbar({
@@ -171,6 +260,7 @@ export function BrowserToolbar({
           "focus:border-ring/50 focus:ring-2 focus:ring-ring/20"
         )}
       />
+      <ProfileMenu tab={tab} currentUrl={currentUrl} />
       <button
         type="button"
         className={ICON_BTN}

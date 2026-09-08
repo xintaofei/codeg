@@ -4797,7 +4797,26 @@
     "terminalMenuHint": "Clicar em um link no terminal mostra um pequeno menu (navegador integrado, navegador do sistema, copiar link) em vez de abri-lo imediatamente. ⌘/Ctrl+clique continua abrindo o link diretamente.",
     "htmlPreviewTitle": "Pré-visualização de arquivos HTML",
     "htmlPreviewHint": "Mostra arquivos HTML pelo navegador integrado, em uma visualização de documento restrita: sem scripts até você ativá-los para um arquivo, e só a própria pasta é acessível. Desativado: usa a pré-visualização em linha, como no aplicativo web.",
-    "managedDisabled": "A política do seu administrador desativou o navegador integrado; os links abrem no navegador do sistema."
+    "managedDisabled": "A política do seu administrador desativou o navegador integrado; os links abrem no navegador do sistema.",
+    "profilesTitle": "Perfis",
+    "profilesHint": "Cada perfil guarda seus próprios cookies, armazenamento de sites e logins. Novas abas abrem no perfil escolhido abaixo; a barra de uma aba pode abrir sua página em outro.",
+    "profileDefault": "Padrão",
+    "profileNewTabsTitle": "Novas abas abrem em",
+    "profileNamePlaceholder": "Nome do perfil, por ex. Trabalho",
+    "profileNameLabel": "Nome do perfil",
+    "profileAdd": "Adicionar perfil",
+    "profileNameRequired": "Digite um nome para o perfil",
+    "profileNameDuplicate": "Já existe um perfil com esse nome",
+    "profileClear": "Limpar os dados de navegação de {name}",
+    "profileDelete": "Excluir o perfil {name}",
+    "profileDeleteConfirmTitle": "Excluir o perfil {name}?",
+    "profileDeleteConfirmDescription": "Suas abas serão fechadas e seus cookies, caches e armazenamento de sites removidos. Isso não pode ser desfeito.",
+    "profileDeleteConfirmAction": "Excluir",
+    "profileDeleted": "Perfil excluído",
+    "profileDeleteFailed": "Não foi possível excluir o perfil: {message}",
+    "clearConfirmDescriptionProfile": "Os cookies, caches e armazenamento de sites do perfil {name} serão removidos. As abas abertas continuam abertas, mas você sairá dos sites.",
+    "signInUaTitle": "Compatibilidade com o login do Google",
+    "signInUaHint": "O Google recusa login a partir de navegadores incorporados. Quando ativado, as abas se apresentam como Firefox apenas às páginas de login do Google (accounts.google.com); em todo o resto é usada a identidade do próprio mecanismo."
   },
   "LogsSettings": {
     "loading": "Carregando…",
@@ -5864,7 +5883,10 @@
       "copyUrl": "Copiar link",
       "copied": "Link copiado",
       "addressPlaceholder": "Digite um endereço",
-      "invalidUrl": "Endereço inválido"
+      "invalidUrl": "Endereço inválido",
+      "profile": "Perfil: {name}",
+      "profileMenuLabel": "Abrir esta página em outro perfil",
+      "profileDefault": "Padrão"
     },
     "status": {
       "popupDenied": "Pop-up bloqueado: {host}",

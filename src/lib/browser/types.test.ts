@@ -32,6 +32,7 @@ describe("browser wire types", () => {
       error: null,
       remoteHost: null,
       openerTabId: null,
+      profile: "default",
     } satisfies BrowserTabState
     expect(state.surface).toBe("child")
   })
@@ -51,6 +52,8 @@ describe("browser wire types", () => {
       },
       downloadsDir: "/Users/dev/Downloads",
       docGuest: false,
+      profiles: false,
+      signInUserAgent: false,
       policy: {
         enabled: true,
         managedRules: [{ pattern: "*.internal.example", action: "block" }],

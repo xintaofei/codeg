@@ -73,6 +73,7 @@ import {
   releaseBrowserTab,
 } from "@/lib/browser/browser-tab-store"
 import { hostnameOf, normalizeUrlForDedupe } from "@/lib/browser/browser-url"
+import { getBrowserPrefs } from "@/lib/browser/browser-prefs"
 import { randomUUID } from "@/lib/utils"
 
 export type WorkspaceMode = "conversation" | "fusion"
@@ -106,6 +107,9 @@ export interface BrowserTabSeed {
   initialUrl: string
   /** Set on a tab adopted from another tab's `window.open` (popup). */
   openerTabId: string | null
+  /** The browser profile the tab lives in (its cookie jar and storage).
+   *  Fixed for the tab's life: the surface is built in it. */
+  profile: string
 }
 
 interface FileWorkspaceTabBase {
@@ -279,7 +283,8 @@ interface WorkspaceActionsValue {
   // `index` is the strip slot for a tab that is not open yet, clamped to the
   // strip; omitted = append, and an `openerTabId` wins over it. Reopening a
   // closed tab passes the slot it was closed from. A tab already on this URL
-  // is activated where it is.
+  // in the same profile is activated where it is. `profile` defaults to the
+  // opener's, else to the preference for new tabs.
   openBrowserTab: (
     url: string,
     options?: {
@@ -287,6 +292,7 @@ interface WorkspaceActionsValue {
       activate?: boolean
       openerTabId?: string
       index?: number
+      profile?: string
     }
   ) => string | null
   // Register a tab for a webview the BACKEND already created — a popup the
@@ -315,6 +321,8 @@ export interface RestorableBrowserTab {
   url: string
   title: string | null
   folderId: number | null
+  /** A profile that exists (the restorer maps deleted ones to the default). */
+  profile: string
 }
 
 interface WorkspaceViewValue {
@@ -765,6 +773,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       url: string,
       folderId: number | null,
       openerTabId: string | null,
+      profile: string,
       title?: string | null
     ): BrowserWorkspaceTab => ({
       id: buildFileTabId({ kind: "browser", id: backendTabId }),
@@ -777,7 +786,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       content: "",
       loading: true,
       readonly: true,
-      browser: { initialUrl: url, openerTabId },
+      browser: { initialUrl: url, openerTabId, profile },
     }),
     []
   )
@@ -790,22 +799,32 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         activate?: boolean
         openerTabId?: string
         index?: number
+        profile?: string
       }
     ) => {
       const normalized = normalizeUrlForDedupe(url)
       if (!normalized) return null
+      const opener = options?.openerTabId
+        ? fileTabsRef.current.find((tab) => tab.id === options.openerTabId)
+        : undefined
+      // A tab opened from another tab (⌘-click, a popup) belongs with it:
+      // same cookies, same signed-in state. Otherwise the preference.
+      const profile =
+        options?.profile ??
+        (opener?.kind === "browser" ? opener.browser.profile : undefined) ??
+        getBrowserPrefs().newTabProfile
+      // One tab per page AND profile: the same page in two profiles is two
+      // different sessions, and both are worth a tab.
       const existing = fileTabsRef.current.find(
         (tab) =>
           tab.kind === "browser" &&
+          tab.browser.profile === profile &&
           normalizeUrlForDedupe(tab.browser.initialUrl) === normalized
       )
       if (existing) {
         if (options?.activate !== false) activateTab(existing.id)
         return existing.id
       }
-      const opener = options?.openerTabId
-        ? fileTabsRef.current.find((tab) => tab.id === options.openerTabId)
-        : undefined
       const record = browserTabRecord(
         randomUUID(),
         url,
@@ -813,7 +832,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           opener?.folderId ??
           activeFolderRef.current?.id ??
           null,
-        opener?.id ?? null
+        opener?.id ?? null,
+        profile
       )
       const insert = (prev: FileWorkspaceTab[]) => {
         if (prev.some((tab) => tab.id === record.id)) return prev
@@ -853,11 +873,16 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         id: params.openerBackendTabId,
       })
       const opener = fileTabsRef.current.find((tab) => tab.id === openerId)
+      // A popup shares its opener's data store on the backend whatever is
+      // said here; the record says the same so the toolbar shows it.
       const record = browserTabRecord(
         params.backendTabId,
         params.url,
         opener?.folderId ?? activeFolderRef.current?.id ?? null,
-        openerId
+        openerId,
+        opener?.kind === "browser"
+          ? opener.browser.profile
+          : getBrowserPrefs().newTabProfile
       )
       setFileTabs((prev) => {
         if (prev.some((tab) => tab.id === record.id)) return prev
@@ -887,21 +912,26 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const open = new Set(
           prev.flatMap((tab) =>
             tab.kind === "browser"
-              ? [normalizeUrlForDedupe(tab.browser.initialUrl) ?? ""]
+              ? [
+                  `${tab.browser.profile} ${normalizeUrlForDedupe(tab.browser.initialUrl) ?? ""}`,
+                ]
               : []
           )
         )
         const records: FileWorkspaceTab[] = []
         for (const entry of entries) {
           const normalized = normalizeUrlForDedupe(entry.url)
-          if (!normalized || open.has(normalized)) continue
-          open.add(normalized)
+          if (!normalized) continue
+          const key = `${entry.profile} ${normalized}`
+          if (open.has(key)) continue
+          open.add(key)
           records.push(
             browserTabRecord(
               randomUUID(),
               entry.url,
               entry.folderId,
               null,
+              entry.profile,
               entry.title
             )
           )

@@ -22,6 +22,8 @@ const DESKTOP_WITHOUT_BROWSER = {
   proxy: { url: null, applies: "unsupported" as const, reason: null },
   downloadsDir: "",
   docGuest: false,
+  profiles: false,
+  signInUserAgent: false,
   policy: { enabled: true, managedRules: [], managedSource: null },
 }
 

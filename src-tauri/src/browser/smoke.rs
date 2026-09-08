@@ -237,6 +237,11 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                         .unwrap_or(false),
                     surface,
                     devtools: cmd.get("devtools").and_then(Value::as_bool).unwrap_or(false),
+                    profile: cmd
+                        .get("profile")
+                        .and_then(Value::as_str)
+                        .unwrap_or(crate::browser::profile::DEFAULT_PROFILE_ID)
+                        .to_string(),
                 },
             )
             .map_err(err_string)?;
@@ -444,9 +449,24 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
         }
         "browser_profile" => Ok(json!({
             "isolatedStorage": crate::browser::profile::isolated_storage(),
+            "profiles": crate::browser::profile::profiles_supported(),
+            "signInUserAgent": crate::browser::profile::sign_in_user_agent_supported(),
+            "signInUserAgentEnabled": crate::browser::profile::sign_in_user_agent_enabled(),
             "proxy": crate::browser::profile::proxy_status(),
             "effectiveProxyUrl": crate::network::proxy::effective_proxy_url(),
         })),
+        "browser_set_sign_in_ua" => {
+            crate::browser::profile::set_sign_in_user_agent(
+                cmd.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+            );
+            Ok(Value::Null)
+        }
+        "browser_remove_profile" => {
+            browser_commands::remove_profile_core(app, &registry, &str_arg(cmd, "profile")?)
+                .await
+                .map_err(err_string)?;
+            Ok(Value::Null)
+        }
         // The per-record path older macOS uses, run against the shared
         // default store here so it can be exercised on a machine that has an
         // isolated profile.
@@ -495,7 +515,11 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
             Ok(Value::Null)
         }
         "browser_clear_data" => {
-            browser_commands::clear_data_core(app, &registry)
+            let profile = cmd
+                .get("profile")
+                .and_then(Value::as_str)
+                .unwrap_or(crate::browser::profile::DEFAULT_PROFILE_ID);
+            browser_commands::clear_data_core(app, &registry, profile)
                 .await
                 .map_err(err_string)?;
             Ok(Value::Null)

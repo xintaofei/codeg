@@ -40,6 +40,8 @@ export type ClosedBrowserTab = {
   url: string
   title: string
   folderId: number | null
+  /** The browser profile the tab lived in; it reopens in the same one. */
+  profile: string
 }
 
 export type ClosedWorkspaceTab =
@@ -184,7 +186,7 @@ export function snapshotFileTab(
  * address the tab was opened with.
  */
 export function snapshotBrowserTab(
-  tab: { id: string; folderId: number | null },
+  tab: { id: string; folderId: number | null; browser: { profile: string } },
   url: string,
   title: string,
   index: number
@@ -196,5 +198,6 @@ export function snapshotBrowserTab(
     url,
     title,
     folderId: tab.folderId,
+    profile: tab.browser.profile,
   }
 }

@@ -19,7 +19,7 @@ use crate::browser::types::{
     Bounds, BrowserCapabilities, BrowserErrorInfo, BrowserErrorKind, BrowserTabState, ChannelKind,
     FrozenFrame, SurfaceChoice, SurfaceKind, TabKind,
 };
-use crate::browser::{events, hooks, policy, tab_label};
+use crate::browser::{events, hooks, policy, profile, tab_label};
 
 #[cfg(all(
     feature = "browser-child",
@@ -76,6 +76,8 @@ pub fn capabilities(policy: &BrowserPolicy) -> BrowserCapabilities {
         downloads_dir: crate::browser::downloads::downloads_dir_display(),
         policy: policy.status(),
         doc_guest: enabled && doc_guest::supported(),
+        profiles: enabled && profile::profiles_supported(),
+        sign_in_user_agent: enabled && profile::sign_in_user_agent_supported(),
     }
 }
 
@@ -153,6 +155,9 @@ pub struct OpenTabParams {
     pub surface: SurfaceChoice,
     /// Build the surface with the web inspector available (user preference).
     pub devtools: bool,
+    /// The browser profile to open the tab in (`default` when the caller has
+    /// no opinion).
+    pub profile: String,
 }
 
 pub fn open_tab_core(
@@ -175,7 +180,8 @@ pub fn open_tab_core(
     }
     let url = parse_web_url(&params.url)?;
     let label = tab_label(&params.tab_id);
-    crate::browser::profile::prepare(app)
+    profile::check(&params.profile).map_err(AppCommandError::invalid_input)?;
+    profile::prepare(app, &params.profile)
         .map_err(|e| window_err("Failed to prepare the browser profile", e))?;
 
     let surface = match pick_surface(params.surface) {
@@ -192,6 +198,7 @@ pub fn open_tab_core(
                 params.bounds,
                 params.background,
                 params.devtools,
+                &params.profile,
             )
             .map_err(|e| window_err("Failed to create browser webview", e))?,
         ),
@@ -204,6 +211,7 @@ pub fn open_tab_core(
                 &origin_title(&url),
                 params.background,
                 params.devtools,
+                &params.profile,
             )
             .map_err(|e| window_err("Failed to create browser window", e))?,
         )),
@@ -227,6 +235,7 @@ pub fn open_tab_core(
         error: None,
         remote_host: None,
         opener_tab_id: None,
+        profile: Some(params.profile.clone()),
     };
     if let Err(err) = registry.insert_reserved(
         BrowserTab::new(
@@ -388,6 +397,7 @@ pub fn doc_open_core(
         error: None,
         remote_host: None,
         opener_tab_id: None,
+        profile: None,
     };
     if let Err(err) = registry.insert_reserved(
         BrowserTab::new(
@@ -501,34 +511,114 @@ pub fn doc_state_core(guests: &DocGuests, tab_id: &str) -> Result<DocGuestState,
         .ok_or_else(|| AppCommandError::not_found(format!("document guest {tab_id} not found")))
 }
 
-/// Wipe cookies, caches and every other kind of stored site data. All tabs
-/// share one persistent store, so this is app-wide; open pages keep running
-/// (nothing is reloaded, as in a browser).
-pub async fn clear_data_core(app: &AppHandle, registry: &BrowserRegistry) -> Result<(), AppCommandError> {
+/// Wipe cookies, caches and every other kind of stored site data of one
+/// profile. Every tab of the profile shares the store, so this is app-wide
+/// for that profile; open pages keep running (nothing is reloaded, as in a
+/// browser).
+pub async fn clear_data_core(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    profile_id: &str,
+) -> Result<(), AppCommandError> {
+    if !profile::valid_profile_id(profile_id) {
+        return Err(AppCommandError::invalid_input(format!(
+            "invalid browser profile id {profile_id:?}"
+        )));
+    }
     #[cfg(target_os = "macos")]
     {
         // Straight at the profile's store: works with no tab open and reports
         // completion, which a surface's `clear_all_browsing_data` cannot.
         let _ = registry;
-        on_main_until_done(app, "Failed to clear browsing data", |done| {
-            crate::browser::shim::macos::clear_profile_store(done)
+        let profile_id = profile_id.to_string();
+        on_main_until_done(app, "Failed to clear browsing data", move |done| {
+            crate::browser::shim::macos::clear_profile_store(&profile_id, done)
         })
         .await
     }
     #[cfg(not(target_os = "macos"))]
     {
         // Until the Windows / Linux shims land, clearing goes through a live
-        // surface (they all share the profile); with none open there is
-        // nothing to call into.
+        // surface of the profile (they all share its store); with none open
+        // there is nothing to call into.
         let _ = app;
-        let Some(state) = registry.list().into_iter().next() else {
+        let Some(state) = registry
+            .list()
+            .into_iter()
+            .find(|state| state.profile.as_deref() == Some(profile_id))
+        else {
             return Err(AppCommandError::invalid_input(
-                "open a page in the built-in browser first, then clear its data",
+                "open a page in this profile first, then clear its data",
             ));
         };
         surface_of(registry, &state.tab_id)?
             .clear_browsing_data()
             .map_err(|e| window_err("Failed to clear browsing data", e))
+    }
+}
+
+/// Delete a profile and everything stored in it. The default profile stays
+/// (clear it instead). The profile's tabs are closed first — every window's,
+/// with the `browser://closed` event that drops their records — because the
+/// engine refuses to remove a store a webview still uses (and would keep
+/// writing into a folder being deleted); WebKit then gets a moment to let go
+/// of the views before the store is asked to go.
+pub async fn remove_profile_core(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    profile_id: &str,
+) -> Result<(), AppCommandError> {
+    if !profile::valid_profile_id(profile_id) {
+        return Err(AppCommandError::invalid_input(format!(
+            "invalid browser profile id {profile_id:?}"
+        )));
+    }
+    if profile_id == profile::DEFAULT_PROFILE_ID {
+        return Err(AppCommandError::invalid_input(
+            "the default browser profile cannot be deleted; clear its data instead",
+        ));
+    }
+    let open: Vec<String> = registry
+        .list()
+        .into_iter()
+        .filter(|state| state.profile.as_deref() == Some(profile_id))
+        .map(|state| state.tab_id)
+        .collect();
+    let had_tabs = !open.is_empty();
+    for tab_id in open {
+        close_core(app, registry, &tab_id)?;
+    }
+    if had_tabs {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Two main-thread turns: the data goes through the store first (that
+        // reaches the network process's session, which removing the store
+        // alone leaves alone — its cookies were seen surviving into a store
+        // created again under the same identifier), then the store itself,
+        // on a later turn so that no reference to it from the first — ours or
+        // an autoreleased one — is still alive when WebKit checks.
+        let what = "Failed to delete the browser profile";
+        let clearing = profile_id.to_string();
+        on_main_until_done(app, what, move |done| {
+            crate::browser::shim::macos::clear_profile_store(&clearing, done)
+        })
+        .await?;
+        let removing = profile_id.to_string();
+        on_main_until_result(app, what, move |done| {
+            crate::browser::shim::macos::remove_profile_store(&removing, done)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        #[cfg(all(feature = "browser-child", target_os = "windows"))]
+        crate::browser::surface_child::forget_profile_context(app, profile_id)
+            .map_err(|e| window_err("Failed to delete the browser profile", e))?;
+        let _ = app;
+        profile::remove_directory(profile_id)
+            .map_err(|e| window_err("Failed to delete the browser profile", e))
     }
 }
 
@@ -541,6 +631,16 @@ pub async fn on_main_until_done(
     what: &str,
     start: impl FnOnce(Box<dyn Fn() + 'static>) -> Result<(), String> + Send + 'static,
 ) -> Result<(), AppCommandError> {
+    on_main_until_result(app, what, move |done| start(Box::new(move || done(Ok(()))))).await
+}
+
+/// `on_main_until_done` for callbacks that carry the platform's verdict.
+#[cfg(target_os = "macos")]
+pub async fn on_main_until_result(
+    app: &AppHandle,
+    what: &str,
+    start: impl FnOnce(Box<dyn Fn(Result<(), String>) + 'static>) -> Result<(), String> + Send + 'static,
+) -> Result<(), AppCommandError> {
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
     let finish = move |result: Result<(), String>| {
@@ -550,7 +650,7 @@ pub async fn on_main_until_done(
     };
     app.run_on_main_thread(move || {
         let on_done = finish.clone();
-        if let Err(err) = start(Box::new(move || on_done(Ok(())))) {
+        if let Err(err) = start(Box::new(on_done)) {
             finish(Err(err));
         }
     })
@@ -909,6 +1009,14 @@ pub async fn browser_set_host_rules(
     Ok(())
 }
 
+/// The "sign-in user agent" preference, pushed by the frontend (which owns
+/// it) at startup and on every change.
+#[tauri::command]
+pub async fn browser_set_sign_in_user_agent(enabled: bool) -> Result<(), AppCommandError> {
+    profile::set_sign_in_user_agent(enabled);
+    Ok(())
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn browser_open_tab(
@@ -922,6 +1030,7 @@ pub async fn browser_open_tab(
     surface: Option<SurfaceChoice>,
     folder_id: Option<i64>,
     devtools: Option<bool>,
+    profile: Option<String>,
 ) -> Result<BrowserTabState, AppCommandError> {
     // Folder scoping is a frontend concern (tab strip grouping); the backend
     // only needs the owner window.
@@ -937,6 +1046,7 @@ pub async fn browser_open_tab(
             background: background.unwrap_or(false),
             surface: surface.unwrap_or_default(),
             devtools: devtools.unwrap_or(false),
+            profile: profile.unwrap_or_else(|| profile::DEFAULT_PROFILE_ID.to_string()),
         },
     )
 }
@@ -994,8 +1104,23 @@ pub async fn browser_doc_state(
 pub async fn browser_clear_data(
     app: AppHandle,
     registry: State<'_, BrowserRegistry>,
+    profile: Option<String>,
 ) -> Result<(), AppCommandError> {
-    clear_data_core(&app, &registry).await
+    clear_data_core(
+        &app,
+        &registry,
+        profile.as_deref().unwrap_or(profile::DEFAULT_PROFILE_ID),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn browser_remove_profile(
+    app: AppHandle,
+    registry: State<'_, BrowserRegistry>,
+    profile: String,
+) -> Result<(), AppCommandError> {
+    remove_profile_core(&app, &registry, &profile).await
 }
 
 #[tauri::command]

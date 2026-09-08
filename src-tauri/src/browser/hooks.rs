@@ -438,6 +438,7 @@ mod tests {
             }),
             remote_host: None,
             opener_tab_id: None,
+            profile: Some("default".into()),
         }
     }
 

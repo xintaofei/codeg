@@ -58,6 +58,8 @@ const AVAILABLE = {
   proxy: { url: null, applies: "live" as const, reason: null },
   downloadsDir: "/Users/dev/Downloads",
   docGuest: false,
+  profiles: false,
+  signInUserAgent: false,
   policy: { enabled: true, managedRules: [], managedSource: null },
 }
 

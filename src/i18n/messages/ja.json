@@ -4797,7 +4797,26 @@
     "terminalMenuHint": "ターミナル内のリンクをクリックすると、すぐに開く代わりに小さなメニュー（内蔵ブラウザ、システムブラウザ、リンクをコピー）を表示します。⌘/Ctrl クリックは引き続き直接開きます。",
     "htmlPreviewTitle": "HTML ファイルのプレビュー",
     "htmlPreviewHint": "HTML ファイルを内蔵ブラウザの制限付きドキュメントビューで表示します。ファイルごとに有効にするまでスクリプトは実行されず、そのフォルダーの外には到達できません。オフにすると、Web 版と同じインラインプレビューを使います。",
-    "managedDisabled": "管理者のポリシーにより内蔵ブラウザは無効です。リンクはシステムブラウザで開きます。"
+    "managedDisabled": "管理者のポリシーにより内蔵ブラウザは無効です。リンクはシステムブラウザで開きます。",
+    "profilesTitle": "プロファイル",
+    "profilesHint": "プロファイルごとに Cookie、サイトデータ、ログイン状態を別々に保持します。新しいタブは下で選んだプロファイルで開きます。タブのツールバーから同じページを別のプロファイルで開けます。",
+    "profileDefault": "デフォルト",
+    "profileNewTabsTitle": "新しいタブで使うプロファイル",
+    "profileNamePlaceholder": "プロファイル名（例: 仕事）",
+    "profileNameLabel": "プロファイル名",
+    "profileAdd": "プロファイルを追加",
+    "profileNameRequired": "プロファイル名を入力してください",
+    "profileNameDuplicate": "同じ名前のプロファイルがすでにあります",
+    "profileClear": "{name} の閲覧データを消去",
+    "profileDelete": "プロファイル {name} を削除",
+    "profileDeleteConfirmTitle": "プロファイル {name} を削除しますか？",
+    "profileDeleteConfirmDescription": "そのタブは閉じられ、Cookie、キャッシュ、サイトデータが削除されます。この操作は元に戻せません。",
+    "profileDeleteConfirmAction": "削除",
+    "profileDeleted": "プロファイルを削除しました",
+    "profileDeleteFailed": "プロファイルを削除できませんでした: {message}",
+    "clearConfirmDescriptionProfile": "プロファイル {name} の Cookie、キャッシュ、サイトデータを削除します。開いているタブはそのままですが、各サイトからログアウトされます。",
+    "signInUaTitle": "Google ログインとの互換性",
+    "signInUaHint": "Google は埋め込みブラウザーからのログインを拒否します。オンにすると、タブは Google のログインページ（accounts.google.com）に対してだけ Firefox として名乗ります。それ以外ではエンジン本来の識別情報を使います。"
   },
   "LogsSettings": {
     "loading": "読み込み中…",
@@ -5864,7 +5883,10 @@
       "copyUrl": "リンクをコピー",
       "copied": "リンクをコピーしました",
       "addressPlaceholder": "アドレスを入力",
-      "invalidUrl": "有効なアドレスではありません"
+      "invalidUrl": "有効なアドレスではありません",
+      "profile": "プロファイル: {name}",
+      "profileMenuLabel": "このページを別のプロファイルで開く",
+      "profileDefault": "デフォルト"
     },
     "status": {
       "popupDenied": "ポップアップをブロックしました: {host}",

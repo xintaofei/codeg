@@ -3,13 +3,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   DEFAULT_BROWSER_PREFS,
+  addBrowserProfile,
+  browserProfileExists,
   getBrowserPrefs,
+  isBrowserProfileId,
   markBrowserFirstOpenSeen,
+  mintBrowserProfileId,
+  removeBrowserProfile,
   resetBrowserPrefsForTests,
   setAllDefaultLinkTargets,
   setBrowserDevtools,
   setBrowserHostRules,
   setBrowserHtmlPreviewEngine,
+  setBrowserNewTabProfile,
+  setBrowserProfiles,
+  setBrowserSignInUserAgent,
   setBrowserSurfaceOverride,
   setBrowserTerminalClickMenu,
   setDefaultLinkTarget,
@@ -171,6 +179,88 @@ describe("browser prefs", () => {
     setBrowserHtmlPreviewEngine("guest")
     expect(localStorage.getItem("browser:html-preview-engine")).toBeNull()
     expect(getBrowserPrefs().htmlPreviewEngine).toBe("guest")
+  })
+
+  it("mints profile ids in the backend's alphabet", () => {
+    const id = mintBrowserProfileId()
+    expect(id).toMatch(/^p-[0-9a-f]{12}$/)
+    expect(isBrowserProfileId(id)).toBe(true)
+    for (const bad of [
+      "",
+      "Default",
+      "-x",
+      "a b",
+      "../x",
+      7,
+      null,
+      "x".repeat(41),
+    ]) {
+      expect(isBrowserProfileId(bad)).toBe(false)
+    }
+    expect(isBrowserProfileId("default")).toBe(true)
+  })
+
+  it("keeps the profile list under one key and drops junk on read", () => {
+    expect(getBrowserPrefs().profiles).toEqual([])
+    const work = addBrowserProfile("  Work ")
+    expect(work.name).toBe("Work")
+    expect(getBrowserPrefs().profiles).toEqual([work])
+    expect(browserProfileExists(getBrowserPrefs(), work.id)).toBe(true)
+    expect(browserProfileExists(getBrowserPrefs(), "default")).toBe(true)
+    expect(browserProfileExists(getBrowserPrefs(), "p-nope")).toBe(false)
+
+    // The default profile is implicit; an entry claiming its id, a nameless
+    // one, a bad id and a repeated id are all dropped, one at a time.
+    localStorage.setItem(
+      "browser:profiles",
+      JSON.stringify([
+        { id: "default", name: "Nope" },
+        { id: "p-ok", name: "OK" },
+        { id: "p-blank", name: "   " },
+        { id: "P-UPPER", name: "Upper" },
+        { id: "p-ok", name: "Again" },
+        "junk",
+      ])
+    )
+    resetCacheOnly()
+    expect(getBrowserPrefs().profiles).toEqual([{ id: "p-ok", name: "OK" }])
+
+    removeBrowserProfile("p-ok")
+    expect(getBrowserPrefs().profiles).toEqual([])
+    expect(localStorage.getItem("browser:profiles")).toBeNull()
+    setBrowserProfiles([{ id: "p-a", name: "A" }])
+    expect(getBrowserPrefs().profiles).toEqual([{ id: "p-a", name: "A" }])
+  })
+
+  it("resolves the new-tab profile against the list, falling back to the default", () => {
+    expect(getBrowserPrefs().newTabProfile).toBe("default")
+    const work = addBrowserProfile("Work")
+    setBrowserNewTabProfile(work.id)
+    expect(localStorage.getItem("browser:new-tab-profile")).toBe(work.id)
+    expect(getBrowserPrefs().newTabProfile).toBe(work.id)
+
+    // Deleting the chosen profile: new tabs go back to the default one,
+    // with no second write needed.
+    removeBrowserProfile(work.id)
+    expect(getBrowserPrefs().newTabProfile).toBe("default")
+
+    // A stored id that names no profile (another window deleted it) reads as
+    // the default too; the default itself removes the key.
+    localStorage.setItem("browser:new-tab-profile", "p-gone")
+    resetCacheOnly()
+    expect(getBrowserPrefs().newTabProfile).toBe("default")
+    setBrowserNewTabProfile("default")
+    expect(localStorage.getItem("browser:new-tab-profile")).toBeNull()
+  })
+
+  it("stores the sign-in user-agent switch only when turned off", () => {
+    expect(getBrowserPrefs().signInUserAgent).toBe(true)
+    setBrowserSignInUserAgent(false)
+    expect(localStorage.getItem("browser:sign-in-user-agent")).toBe("false")
+    expect(getBrowserPrefs().signInUserAgent).toBe(false)
+    setBrowserSignInUserAgent(true)
+    expect(localStorage.getItem("browser:sign-in-user-agent")).toBeNull()
+    expect(getBrowserPrefs().signInUserAgent).toBe(true)
   })
 
   it("useBrowserPrefs re-renders on change", () => {

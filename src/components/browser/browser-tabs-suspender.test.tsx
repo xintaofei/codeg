@@ -40,7 +40,11 @@ function browserTab(id: string): FileWorkspaceTab {
     content: "",
     loading: false,
     readonly: true,
-    browser: { initialUrl: "https://example.com/", openerTabId: null },
+    browser: {
+      initialUrl: "https://example.com/",
+      openerTabId: null,
+      profile: "default",
+    },
   } as FileWorkspaceTab
 }
 
@@ -63,6 +67,7 @@ function loaded(id: string) {
     error: null,
     remoteHost: null,
     openerTabId: null,
+    profile: "default",
   })
 }
 

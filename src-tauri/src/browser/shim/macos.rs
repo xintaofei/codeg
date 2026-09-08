@@ -30,7 +30,7 @@ use tauri_runtime_wry::wry::{self, WebViewExtMacOS};
 
 use super::super::channel::MessageSink;
 use super::super::hooks::{classify_load_error, LoadFailure};
-use super::super::profile::{BrowserProxy, ProxyScheme, DEFAULT_DATA_STORE_IDENTIFIER};
+use super::super::profile::{self, BrowserProxy, ProxyScheme};
 
 pub const WORLD_NAME: &str = "codeg";
 pub const HANDLER_NAME: &str = "codegBrowser";
@@ -510,6 +510,17 @@ define_class!(
             let main_frame = unsafe { action.targetFrame().map(|frame| frame.isMainFrame()) };
             // No target frame = a new window; the strict reading applies.
             CURRENT_ACTION_MAIN_FRAME.with(|flag| flag.set(Some(main_frame.unwrap_or(true))));
+            // The identity this webview presents follows where its main
+            // frame is going (the sign-in exception); a new window's URL is
+            // the new window's business.
+            if main_frame == Some(true) {
+                // SAFETY: live action on the main thread.
+                let url = unsafe { action.request().URL().and_then(|u| u.absoluteString()) }
+                    .map(|s| s.to_string());
+                if let Some(url) = url.and_then(|u| tauri::Url::parse(&u).ok()) {
+                    apply_user_agent(webview, &url);
+                }
+            }
             let inner = &self.ivars().inner;
             // SAFETY: forwarding the exact selector and arguments WebKit gave
             // us to the delegate that implements it.
@@ -628,6 +639,28 @@ impl CodegNavigationDelegate {
     }
 }
 
+/// Give the webview the user agent `profile::user_agent_for` wants for a
+/// main-frame navigation to `url`, when that differs from what it presents
+/// now. Called from the policy decision, i.e. before the engine sends the
+/// request: `customUserAgent` reaches the web process ahead of the policy
+/// answer, so the request being decided already carries it.
+fn apply_user_agent(webview: &WKWebView, url: &tauri::Url) {
+    let wanted = profile::user_agent_for(url);
+    // SAFETY: main thread, live webview.
+    let current = unsafe { webview.customUserAgent() }.map(|s| s.to_string());
+    if current.as_deref() == wanted {
+        return;
+    }
+    tracing::debug!(
+        "[browser] user agent for {}: {}",
+        url.host_str().unwrap_or("?"),
+        if wanted.is_some() { "sign-in identity" } else { "engine's own" }
+    );
+    let value = wanted.map(NSString::from_str);
+    // SAFETY: main thread, live webview; `None` restores the engine's own.
+    unsafe { webview.setCustomUserAgent(value.as_deref()) };
+}
+
 /// Wrap the webview's navigation delegate. Idempotent per webview.
 pub fn install_navigation_delegate(webview: &wry::WebView, sink: NavigationSink) -> Result<(), String> {
     let mtm = mtm()?;
@@ -669,7 +702,11 @@ struct ProfileStore {
 }
 
 thread_local! {
-    static PROFILE: RefCell<Option<ProfileStore>> = const { RefCell::new(None) };
+    /// Stores by profile id, created on first use and kept for the life of
+    /// the main thread. Below macOS 14 an id maps to WebKit's default store
+    /// (`isolated: false`); `profile::prepare` refuses every profile but
+    /// `default` there, so that is the only id this map ever sees then.
+    static PROFILES: RefCell<HashMap<String, ProfileStore>> = RefCell::new(HashMap::new());
 }
 
 fn macos_major_version() -> isize {
@@ -683,18 +720,19 @@ pub fn supports_isolated_profile() -> bool {
     macos_major_version() >= 14
 }
 
-/// The profile's data store, created on first use and kept for the life of
-/// the main thread. WebKit hands back the same store for the same identifier,
-/// so owned windows built by tauri with that identifier share it too.
-fn profile_store(mtm: MainThreadMarker) -> Retained<WKWebsiteDataStore> {
-    PROFILE.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        let entry = slot.get_or_insert_with(|| {
+/// A profile's data store, created on first use and kept for the life of
+/// the main thread. WebKit hands back the same store for the same
+/// identifier, so owned windows built by tauri with that identifier share
+/// it too.
+fn profile_store(mtm: MainThreadMarker, profile_id: &str) -> Retained<WKWebsiteDataStore> {
+    PROFILES.with(|slot| {
+        let mut map = slot.borrow_mut();
+        let entry = map.entry(profile_id.to_string()).or_insert_with(|| {
             let isolated = supports_isolated_profile();
             // SAFETY: main thread; WebKit owns the store.
             let store = unsafe {
                 if isolated {
-                    let identifier = NSUUID::from_bytes(DEFAULT_DATA_STORE_IDENTIFIER);
+                    let identifier = NSUUID::from_bytes(profile::data_store_identifier(profile_id));
                     WKWebsiteDataStore::dataStoreForIdentifier(&identifier, mtm)
                 } else {
                     WKWebsiteDataStore::defaultDataStore(mtm)
@@ -710,14 +748,20 @@ fn profile_store(mtm: MainThreadMarker) -> Retained<WKWebsiteDataStore> {
     })
 }
 
-fn profile_is_isolated() -> bool {
-    PROFILE.with(|slot| slot.borrow().as_ref().map(|entry| entry.isolated).unwrap_or(false))
+fn profile_is_isolated(profile_id: &str) -> bool {
+    PROFILES.with(|slot| {
+        slot.borrow()
+            .get(profile_id)
+            .map(|entry| entry.isolated)
+            .unwrap_or(false)
+    })
 }
 
 /// A `WKWebViewConfiguration` whose data store is the profile's. Every regular
-/// tab is built from one; popups inherit their opener's instead.
-pub fn profile_configuration(mtm: MainThreadMarker) -> Retained<WKWebViewConfiguration> {
-    let store = profile_store(mtm);
+/// tab is built from one; popups inherit their opener's instead (and with it
+/// the opener's profile).
+pub fn profile_configuration(mtm: MainThreadMarker, profile_id: &str) -> Retained<WKWebViewConfiguration> {
+    let store = profile_store(mtm, profile_id);
     // SAFETY: main thread; both objects are live.
     unsafe {
         let configuration = WKWebViewConfiguration::new(mtm);
@@ -742,18 +786,18 @@ pub fn document_configuration(mtm: MainThreadMarker) -> Retained<WKWebViewConfig
 /// Create the profile's store if needed and point it at `proxy` (or at no
 /// proxy). Open tabs use the new value for their next connections; setting the
 /// same value again does nothing, so callers can be liberal.
-pub fn ensure_profile(proxy: Option<BrowserProxy>) -> Result<(), String> {
+pub fn ensure_profile(profile_id: &str, proxy: Option<BrowserProxy>) -> Result<(), String> {
     let mtm = mtm()?;
-    let store = profile_store(mtm);
-    let unchanged = PROFILE.with(|slot| {
+    let store = profile_store(mtm, profile_id);
+    let unchanged = PROFILES.with(|slot| {
         slot.borrow()
-            .as_ref()
+            .get(profile_id)
             .is_some_and(|entry| entry.proxy == proxy)
     });
     if unchanged {
         return Ok(());
     }
-    if !profile_is_isolated() {
+    if !profile_is_isolated(profile_id) {
         return match proxy {
             Some(_) => Err("proxying browser tabs needs macOS 14 or later".to_string()),
             None => Ok(()),
@@ -769,12 +813,26 @@ pub fn ensure_profile(proxy: Option<BrowserProxy>) -> Result<(), String> {
     unsafe {
         let _: () = msg_send![&*store, setValue: &*configurations, forKey: ns_string!("proxyConfigurations")];
     }
-    PROFILE.with(|slot| {
-        if let Some(entry) = slot.borrow_mut().as_mut() {
+    PROFILES.with(|slot| {
+        if let Some(entry) = slot.borrow_mut().get_mut(profile_id) {
             entry.proxy = proxy;
         }
     });
     Ok(())
+}
+
+/// The proxy setting changed: re-point every store that exists. A profile
+/// whose store has not been created yet gets the proxy when it is
+/// (`ensure_profile` from `profile::prepare`).
+pub fn apply_proxy_to_profiles(proxy: Option<BrowserProxy>) -> Result<(), String> {
+    let ids: Vec<String> = PROFILES.with(|slot| slot.borrow().keys().cloned().collect());
+    let mut first_error = None;
+    for id in ids {
+        if let Err(err) = ensure_profile(&id, proxy.clone()) {
+            first_error.get_or_insert(err);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 /// Remove every kind of website data (cookies, caches, storage, …) from the
@@ -782,10 +840,10 @@ pub fn ensure_profile(proxy: Option<BrowserProxy>) -> Result<(), String> {
 /// that is the whole store; when the tabs still share WebKit's default store
 /// with the app, see `clear_shared_store_except_app`. `done` runs on the main
 /// thread once WebKit has finished.
-pub fn clear_profile_store(done: impl Fn() + 'static) -> Result<(), String> {
+pub fn clear_profile_store(profile_id: &str, done: impl Fn() + 'static) -> Result<(), String> {
     let mtm = mtm()?;
-    let store = profile_store(mtm);
-    if !profile_is_isolated() {
+    let store = profile_store(mtm, profile_id);
+    if !profile_is_isolated(profile_id) {
         return clear_shared_store_except_app(done);
     }
     // SAFETY: main thread; WebKit owns every object handed back.
@@ -795,6 +853,41 @@ pub fn clear_profile_store(done: impl Fn() + 'static) -> Result<(), String> {
         let handler = RcBlock::new(done);
         store.removeDataOfTypes_modifiedSince_completionHandler(&types, &since, &handler);
     }
+    Ok(())
+}
+
+/// Delete a profile's store altogether (macOS 14+): its files go, and the
+/// identifier is free to be created anew. WebKit refuses while anything
+/// still holds a `WKWebsiteDataStore` for the identifier — a webview, a
+/// reference of ours, or an autoreleased one from earlier in the same
+/// run-loop turn — so the caller has closed the profile's tabs and runs this
+/// on a turn of its own; the reference kept here is dropped before asking.
+/// `done` runs on the main thread with WebKit's verdict.
+///
+/// Removal alone deletes what is on disk: the network process keeps a
+/// session for a store it recently served, cookies included, and a store
+/// created again under the same identifier right after would find them
+/// still there (seen live). `clear_profile_store` first, then this.
+pub fn remove_profile_store(
+    profile_id: &str,
+    done: impl Fn(Result<(), String>) + 'static,
+) -> Result<(), String> {
+    let mtm = mtm()?;
+    if !supports_isolated_profile() {
+        return Err("browser profiles need macOS 14 or later".to_string());
+    }
+    PROFILES.with(|slot| slot.borrow_mut().remove(profile_id));
+    let identifier = NSUUID::from_bytes(profile::data_store_identifier(profile_id));
+    let handler = RcBlock::new(move |error: *mut NSError| {
+        // SAFETY: WebKit passes nil or a live error, on the main thread.
+        let result = match unsafe { error.as_ref() } {
+            None => Ok(()),
+            Some(error) => Err(error.localizedDescription().to_string()),
+        };
+        done(result);
+    });
+    // SAFETY: main thread; a valid identifier and a live block.
+    unsafe { WKWebsiteDataStore::removeDataStoreForIdentifier_completionHandler(&identifier, &handler, mtm) };
     Ok(())
 }
 

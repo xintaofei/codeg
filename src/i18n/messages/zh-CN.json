@@ -4797,7 +4797,26 @@
     "terminalMenuHint": "点击终端里的链接时先弹出一个小菜单（内置浏览器、系统浏览器、复制链接），而不是直接打开。⌘/Ctrl 点击仍会直接打开。",
     "htmlPreviewTitle": "HTML 文件预览",
     "htmlPreviewHint": "通过内置浏览器以受限的文档视图显示 HTML 文件：在你为某个文件启用之前不运行脚本，且只能访问它自己的文件夹。关闭后使用内联预览，与网页版相同。",
-    "managedDisabled": "管理员策略已关闭内置浏览器；链接将在系统浏览器中打开。"
+    "managedDisabled": "管理员策略已关闭内置浏览器；链接将在系统浏览器中打开。",
+    "profilesTitle": "配置文件",
+    "profilesHint": "每个配置文件有自己的 Cookie、站点存储和登录状态。新标签页在下方选定的配置文件中打开；标签页工具栏可以把当前页面在另一个配置文件里打开。",
+    "profileDefault": "默认",
+    "profileNewTabsTitle": "新标签页使用",
+    "profileNamePlaceholder": "配置文件名称，例如「工作」",
+    "profileNameLabel": "配置文件名称",
+    "profileAdd": "添加配置文件",
+    "profileNameRequired": "请输入配置文件名称",
+    "profileNameDuplicate": "已有同名的配置文件",
+    "profileClear": "清除 {name} 的浏览数据",
+    "profileDelete": "删除配置文件 {name}",
+    "profileDeleteConfirmTitle": "删除配置文件 {name}？",
+    "profileDeleteConfirmDescription": "它的标签页会被关闭，Cookie、缓存和站点存储会被删除。此操作无法撤销。",
+    "profileDeleteConfirmAction": "删除",
+    "profileDeleted": "配置文件已删除",
+    "profileDeleteFailed": "无法删除配置文件：{message}",
+    "clearConfirmDescriptionProfile": "将删除配置文件 {name} 的 Cookie、缓存和站点存储。已打开的标签页会保留，但各网站的登录状态会失效。",
+    "signInUaTitle": "Google 登录兼容",
+    "signInUaHint": "Google 拒绝在内嵌浏览器中登录。开启后，标签页只对 Google 的登录页面（accounts.google.com）呈现 Firefox 身份；其他地方仍使用引擎自己的身份。"
   },
   "LogsSettings": {
     "loading": "加载中…",
@@ -5864,7 +5883,10 @@
       "copyUrl": "复制链接",
       "copied": "链接已复制",
       "addressPlaceholder": "输入地址",
-      "invalidUrl": "不是有效的地址"
+      "invalidUrl": "不是有效的地址",
+      "profile": "配置文件：{name}",
+      "profileMenuLabel": "在其他配置文件中打开此页",
+      "profileDefault": "默认"
     },
     "status": {
       "popupDenied": "已拦截弹窗：{host}",

@@ -97,6 +97,10 @@ pub struct BrowserTabState {
     /// For a tab adopted from a page-initiated new-window request: the tab
     /// whose page opened it (that page keeps a live `window.opener`).
     pub opener_tab_id: Option<String>,
+    /// The browser profile (cookie jar, storage) the tab lives in; a popup
+    /// shares its opener's. `None` for a document guest, whose store dies
+    /// with it.
+    pub profile: Option<String>,
 }
 
 /// Answer to `browser_capabilities`: what this build on this machine can do.
@@ -120,6 +124,12 @@ pub struct BrowserCapabilities {
     /// Local HTML files can be shown through the `codeg-doc:` document guest
     /// (an embedded surface with a handler for that scheme; macOS for now).
     pub doc_guest: bool,
+    /// More than the default browser profile can exist (macOS 14+, Windows,
+    /// Linux); the settings offer to create, clear and delete them.
+    pub profiles: bool,
+    /// Tabs present the sign-in user agent to Google's sign-in hosts when the
+    /// preference is on (needs the navigation delegate: macOS embedded tabs).
+    pub sign_in_user_agent: bool,
 }
 
 /// The last frame of a page, handed back by `browser_set_visible` when the
@@ -260,9 +270,11 @@ mod tests {
             error: None,
             remote_host: None,
             opener_tab_id: None,
+            profile: Some("default".into()),
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(json["tabId"], "t1");
+        assert_eq!(json["profile"], "default");
         assert_eq!(json["ownerWindow"], "main");
         assert_eq!(json["kind"], "page");
         assert_eq!(json["surface"], "child");

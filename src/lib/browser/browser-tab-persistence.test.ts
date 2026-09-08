@@ -30,7 +30,7 @@ function browserTab(
     content: "",
     loading: false,
     readonly: true,
-    browser: { initialUrl, openerTabId: null },
+    browser: { initialUrl, openerTabId: null, profile: "default" },
     ...over,
   } as FileWorkspaceTab
 }
@@ -68,6 +68,7 @@ function state(over: Partial<BrowserTabState> = {}): BrowserTabState {
     error: null,
     remoteHost: null,
     openerTabId: null,
+    profile: "default",
     ...over,
   }
 }
@@ -88,8 +89,18 @@ describe("browser tab persistence", () => {
 
   it("round-trips a list and removes the key when it becomes empty", () => {
     const tabs: PersistedBrowserTab[] = [
-      { url: "https://example.com/a", title: "A", folderId: 2 },
-      { url: "http://localhost:3000/", title: "", folderId: null },
+      {
+        url: "https://example.com/a",
+        title: "A",
+        folderId: 2,
+        profile: "default",
+      },
+      {
+        url: "http://localhost:3000/",
+        title: "",
+        folderId: null,
+        profile: "p-1a2b3c4d5e6f",
+      },
     ]
     writePersistedBrowserTabs(tabs, "main")
     expect(readPersistedBrowserTabs("main")).toEqual(tabs)
@@ -107,10 +118,25 @@ describe("browser tab persistence", () => {
       JSON.stringify({
         version: BROWSER_TABS_STORAGE_VERSION,
         tabs: [
-          { url: "https://ok.example/", title: "ok", folderId: 1 },
-          { url: "file:///etc/passwd", title: "no", folderId: 1 },
-          { url: "javascript:alert(1)", title: "no", folderId: 1 },
-          { url: "not a url", title: "no", folderId: 1 },
+          {
+            url: "https://ok.example/",
+            title: "ok",
+            folderId: 1,
+            profile: "default",
+          },
+          {
+            url: "file:///etc/passwd",
+            title: "no",
+            folderId: 1,
+            profile: "default",
+          },
+          {
+            url: "javascript:alert(1)",
+            title: "no",
+            folderId: 1,
+            profile: "default",
+          },
+          { url: "not a url", title: "no", folderId: 1, profile: "default" },
           null,
           { title: "no url" },
           { url: "https://ok2.example/", title: 42, folderId: "x" },
@@ -118,8 +144,56 @@ describe("browser tab persistence", () => {
       })
     )
     expect(readPersistedBrowserTabs("main")).toEqual([
-      { url: "https://ok.example/", title: "ok", folderId: 1 },
-      { url: "https://ok2.example/", title: "", folderId: null },
+      {
+        url: "https://ok.example/",
+        title: "ok",
+        folderId: 1,
+        profile: "default",
+      },
+      {
+        url: "https://ok2.example/",
+        title: "",
+        folderId: null,
+        profile: "default",
+      },
+    ])
+  })
+
+  // Records written before profiles existed have no profile; a profile id
+  // from another alphabet is not one the backend would accept.
+  it("reads a missing or unusable profile as the default one", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        version: BROWSER_TABS_STORAGE_VERSION,
+        tabs: [
+          { url: "https://old.example/", title: "old", folderId: 1 },
+          {
+            url: "https://p.example/",
+            title: "p",
+            folderId: 1,
+            profile: "p-work",
+          },
+          {
+            url: "https://bad.example/",
+            title: "bad",
+            folderId: 1,
+            profile: "../x",
+          },
+          {
+            url: "https://num.example/",
+            title: "num",
+            folderId: 1,
+            profile: 7,
+          },
+        ],
+      })
+    )
+    expect(readPersistedBrowserTabs("main").map((t) => t.profile)).toEqual([
+      "default",
+      "p-work",
+      "default",
+      "default",
     ])
   })
 
@@ -155,14 +229,25 @@ describe("browser tab persistence", () => {
       ],
     ])
     expect(snapshotBrowserTabs(tabs, (id) => states.get(id) ?? null)).toEqual([
-      { url: "https://example.com/deep", title: "Deep page", folderId: 1 },
+      {
+        url: "https://example.com/deep",
+        title: "Deep page",
+        folderId: 1,
+        profile: "default",
+      },
       // No committed URL yet, no title: the requested address and the record.
       {
         url: "http://localhost:3000/app",
         title: "example.com",
         folderId: null,
+        profile: "default",
       },
-      { url: "https://never.example/", title: "never.example", folderId: 1 },
+      {
+        url: "https://never.example/",
+        title: "never.example",
+        folderId: 1,
+        profile: "default",
+      },
     ])
   })
 
@@ -174,23 +259,53 @@ describe("browser tab persistence", () => {
     // `about:blank` is what a surface shows before its first navigation;
     // restoring it would bring back a blank tab.
     expect(snapshotBrowserTabs(tabs, (id) => states.get(id) ?? null)).toEqual([
-      { url: "https://example.com/", title: "Deep page", folderId: 1 },
+      {
+        url: "https://example.com/",
+        title: "Deep page",
+        folderId: 1,
+        profile: "default",
+      },
     ])
   })
 
   it("compares snapshots field by field", () => {
     const a: PersistedBrowserTab[] = [
-      { url: "https://a.example/", title: "A", folderId: 1 },
+      {
+        url: "https://a.example/",
+        title: "A",
+        folderId: 1,
+        profile: "default",
+      },
     ]
     expect(samePersistedBrowserTabs(a, [...a])).toBe(true)
     expect(
       samePersistedBrowserTabs(a, [
-        { url: "https://a.example/", title: "A2", folderId: 1 },
+        {
+          url: "https://a.example/",
+          title: "A2",
+          folderId: 1,
+          profile: "default",
+        },
       ])
     ).toBe(false)
     expect(
       samePersistedBrowserTabs(a, [
-        { url: "https://a.example/", title: "A", folderId: 2 },
+        {
+          url: "https://a.example/",
+          title: "A",
+          folderId: 2,
+          profile: "default",
+        },
+      ])
+    ).toBe(false)
+    expect(
+      samePersistedBrowserTabs(a, [
+        {
+          url: "https://a.example/",
+          title: "A",
+          folderId: 1,
+          profile: "p-work",
+        },
       ])
     ).toBe(false)
     expect(samePersistedBrowserTabs(a, [])).toBe(false)

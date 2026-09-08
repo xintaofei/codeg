@@ -28,6 +28,8 @@ const UNAVAILABLE: BrowserCapabilities = {
   downloadsDir: "",
   policy: { enabled: false, managedRules: [], managedSource: null },
   docGuest: false,
+  profiles: false,
+  signInUserAgent: false,
 }
 
 let capabilitiesPromise: Promise<BrowserCapabilities> | null = null
@@ -98,6 +100,8 @@ export interface OpenBrowserTabParams {
   folderId?: number | null
   /** Build the surface with the web inspector available. */
   devtools?: boolean
+  /** The browser profile to open in (`default` when omitted). */
+  profile?: string
 }
 
 export function browserOpenTab(
@@ -111,6 +115,7 @@ export function browserOpenTab(
     surface: params.surface ?? "auto",
     folderId: params.folderId ?? null,
     devtools: params.devtools ?? false,
+    profile: params.profile ?? "default",
   })
 }
 
@@ -236,9 +241,23 @@ export function browserListTabs(): Promise<BrowserTabState[]> {
   return getTransport().call<BrowserTabState[]>("browser_list_tabs", {})
 }
 
-/** Wipe cookies, caches and storage shared by every built-in browser tab. */
-export function browserClearData(): Promise<void> {
-  return getTransport().call<void>("browser_clear_data", {})
+/** Wipe cookies, caches and storage shared by every tab of a profile. */
+export function browserClearData(profile = "default"): Promise<void> {
+  return getTransport().call<void>("browser_clear_data", { profile })
+}
+
+/** Delete a profile: its tabs are closed, then its store is removed. The
+ *  default profile cannot be deleted. */
+export function browserRemoveProfile(profile: string): Promise<void> {
+  return getTransport().call<void>("browser_remove_profile", { profile })
+}
+
+/** The "sign-in user agent" preference, for the backend to apply on
+ *  navigations to Google's sign-in hosts. */
+export function browserSetSignInUserAgent(enabled: boolean): Promise<void> {
+  return getTransport().call<void>("browser_set_sign_in_user_agent", {
+    enabled,
+  })
 }
 
 /**

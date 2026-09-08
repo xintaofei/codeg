@@ -54,6 +54,9 @@ export interface BrowserTabState {
   remoteHost: string | null
   /** Set on a tab adopted from a page-initiated new-window request. */
   openerTabId: string | null
+  /** The browser profile (cookie jar, storage) the tab lives in; a popup
+   *  shares its opener's. Null for a document guest. */
+  profile: string | null
 }
 
 /** How the platform takes a change of the app's proxy setting. */
@@ -103,6 +106,12 @@ export interface BrowserCapabilities {
   /** Local HTML files can be shown through the document guest (an embedded
    *  surface with a handler for `codeg-doc:`; macOS for now). */
   docGuest: boolean
+  /** More than the default browser profile can exist (macOS 14+, Windows,
+   *  Linux); the settings offer to create, clear and delete them. */
+  profiles: boolean
+  /** Tabs present the sign-in user agent to Google's sign-in hosts when the
+   *  preference is on (macOS embedded tabs). */
+  signInUserAgent: boolean
 }
 
 /** How a document guest serves its file: as a picture of itself (no script,

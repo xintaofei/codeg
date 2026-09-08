@@ -4797,7 +4797,26 @@
     "terminalMenuHint": "Un clic sur un lien dans le terminal affiche un petit menu (navigateur intégré, navigateur système, copier le lien) au lieu de l'ouvrir immédiatement. ⌘/Ctrl-clic ouvre toujours le lien directement.",
     "htmlPreviewTitle": "Aperçu des fichiers HTML",
     "htmlPreviewHint": "Affiche les fichiers HTML via le navigateur intégré, dans une vue document verrouillée : aucun script tant que vous ne l'activez pas pour un fichier, et seul son propre dossier est accessible. Désactivé : l'aperçu en ligne est utilisé, comme dans l'application web.",
-    "managedDisabled": "La politique de votre administrateur a désactivé le navigateur intégré ; les liens s'ouvrent dans le navigateur système."
+    "managedDisabled": "La politique de votre administrateur a désactivé le navigateur intégré ; les liens s'ouvrent dans le navigateur système.",
+    "profilesTitle": "Profils",
+    "profilesHint": "Chaque profil conserve ses propres cookies, données de site et connexions. Les nouveaux onglets s'ouvrent dans le profil choisi ci-dessous ; la barre d'un onglet peut ouvrir sa page dans un autre.",
+    "profileDefault": "Par défaut",
+    "profileNewTabsTitle": "Les nouveaux onglets s'ouvrent dans",
+    "profileNamePlaceholder": "Nom du profil, p. ex. Travail",
+    "profileNameLabel": "Nom du profil",
+    "profileAdd": "Ajouter un profil",
+    "profileNameRequired": "Saisissez un nom pour le profil",
+    "profileNameDuplicate": "Un profil porte déjà ce nom",
+    "profileClear": "Effacer les données de navigation de {name}",
+    "profileDelete": "Supprimer le profil {name}",
+    "profileDeleteConfirmTitle": "Supprimer le profil {name} ?",
+    "profileDeleteConfirmDescription": "Ses onglets seront fermés et ses cookies, caches et données de site supprimés. Cette action est irréversible.",
+    "profileDeleteConfirmAction": "Supprimer",
+    "profileDeleted": "Profil supprimé",
+    "profileDeleteFailed": "Impossible de supprimer le profil : {message}",
+    "clearConfirmDescriptionProfile": "Les cookies, caches et données de site du profil {name} seront supprimés. Les onglets ouverts restent ouverts, mais vous serez déconnecté des sites.",
+    "signInUaTitle": "Compatibilité avec la connexion Google",
+    "signInUaHint": "Google refuse la connexion depuis les navigateurs intégrés. Si activé, les onglets se présentent comme Firefox uniquement aux pages de connexion de Google (accounts.google.com) ; partout ailleurs, l'identité propre du moteur est utilisée."
   },
   "LogsSettings": {
     "loading": "Chargement…",
@@ -5864,7 +5883,10 @@
       "copyUrl": "Copier le lien",
       "copied": "Lien copié",
       "addressPlaceholder": "Saisir une adresse",
-      "invalidUrl": "Adresse non valide"
+      "invalidUrl": "Adresse non valide",
+      "profile": "Profil : {name}",
+      "profileMenuLabel": "Ouvrir cette page dans un autre profil",
+      "profileDefault": "Par défaut"
     },
     "status": {
       "popupDenied": "Fenêtre contextuelle bloquée : {host}",

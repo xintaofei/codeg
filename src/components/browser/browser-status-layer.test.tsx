@@ -50,7 +50,11 @@ const tab = {
   content: "",
   loading: true,
   readonly: true,
-  browser: { initialUrl: "https://example.com/", openerTabId: null },
+  browser: {
+    initialUrl: "https://example.com/",
+    openerTabId: null,
+    profile: "default",
+  },
 } as unknown as BrowserWorkspaceTab
 
 function renderBar() {

@@ -3,8 +3,9 @@
 /**
  * Built-in browser settings: where links open by default (per source), whether
  * browser tabs get the web inspector, which native surface hosts them, whether
- * background tabs are unloaded after a while, where downloads land, and a
- * one-shot "clear browsing data".
+ * background tabs are unloaded after a while, where downloads land, the
+ * browser profiles (create, clear, delete; which one new tabs open in) and the
+ * sign-in user-agent switch.
  *
  * Preferences live in localStorage (`browser-prefs.ts`): written immediately,
  * mirrored across windows through the storage event, so there is no Save
@@ -21,6 +22,7 @@ import {
   Eraser,
   FileCode2,
   Globe,
+  KeyRound,
   Link2,
   ListFilter,
   Lock,
@@ -29,6 +31,7 @@ import {
   Network,
   Plus,
   Trash2,
+  UserRound,
   Wrench,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -59,17 +62,24 @@ import { toErrorMessage } from "@/lib/app-error"
 import {
   browserCapabilitiesNow,
   browserClearData,
+  browserRemoveProfile,
 } from "@/lib/browser/browser-api"
 import {
+  DEFAULT_BROWSER_PROFILE_ID,
   LINK_SOURCES,
+  addBrowserProfile,
+  removeBrowserProfile,
   setBrowserDevtools,
   setBrowserHostRules,
   setBrowserHtmlPreviewEngine,
+  setBrowserNewTabProfile,
+  setBrowserSignInUserAgent,
   setBrowserSurfaceOverride,
   setBrowserSuspendBackgroundTabs,
   setBrowserTerminalClickMenu,
   setDefaultLinkTarget,
   useBrowserPrefs,
+  type BrowserProfile,
   type LinkSource,
   type LinkTarget,
   type SurfaceOverride,
@@ -318,20 +328,167 @@ function HostRulesEditor({
   )
 }
 
+/** A profile as the settings list shows it: the default one with its
+ *  localized name, or one the user created. */
+interface ProfileRow {
+  id: string
+  name: string
+  isDefault: boolean
+}
+
+/**
+ * The profile list: the default profile first, then the user's, each with
+ * "clear data" and (except the default) "delete", and a line to add one.
+ * Adding writes the preference at once — the backend needs nothing until a
+ * tab is opened in the profile, which is when its store is created. Deleting
+ * goes to the backend first (it closes the profile's tabs and removes the
+ * store) and drops the entry only once that succeeded, so a failure never
+ * leaves data behind that the settings no longer show.
+ */
+function ProfilesEditor({
+  rows,
+  onClear,
+  onDelete,
+}: {
+  rows: readonly ProfileRow[]
+  onClear: (row: ProfileRow) => void
+  onDelete: (row: ProfileRow) => void
+}) {
+  const t = useTranslations("BrowserSettings")
+  const [draft, setDraft] = useState("")
+  const [problem, setProblem] = useState<"required" | "duplicate" | null>(null)
+
+  const add = () => {
+    const name = draft.trim()
+    if (!name) {
+      setProblem("required")
+      return
+    }
+    // Two profiles with one name would be told apart by nothing the user can
+    // see; case and surrounding spaces are not a difference either.
+    const key = name.toLocaleLowerCase()
+    if (rows.some((row) => row.name.trim().toLocaleLowerCase() === key)) {
+      setProblem("duplicate")
+      return
+    }
+    addBrowserProfile(name)
+    setDraft("")
+    setProblem(null)
+  }
+
+  return (
+    <div className="space-y-1.5">
+      {rows.map((row) => (
+        <div
+          key={row.id}
+          className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background px-3 py-2"
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            <UserRound
+              className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <span className="truncate text-sm">{row.name}</span>
+          </span>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              title={t("profileClear", { name: row.name })}
+              aria-label={t("profileClear", { name: row.name })}
+              onClick={() => onClear(row)}
+            >
+              <Eraser className="h-3.5 w-3.5" />
+            </Button>
+            {row.isDefault ? null : (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                title={t("profileDelete", { name: row.name })}
+                aria-label={t("profileDelete", { name: row.name })}
+                onClick={() => onDelete(row)}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            )}
+          </div>
+        </div>
+      ))}
+      <form
+        className="flex items-start gap-2"
+        onSubmit={(event) => {
+          event.preventDefault()
+          add()
+        }}
+      >
+        <div className="min-w-0 flex-1">
+          <Input
+            value={draft}
+            onChange={(event) => {
+              setDraft(event.target.value)
+              if (problem) setProblem(null)
+            }}
+            placeholder={t("profileNamePlaceholder")}
+            aria-label={t("profileNameLabel")}
+            aria-invalid={problem ? true : undefined}
+            className="h-8 bg-background text-xs"
+            autoComplete="off"
+          />
+          {problem ? (
+            <p className="mt-1 text-xs text-destructive">
+              {t(
+                problem === "duplicate"
+                  ? "profileNameDuplicate"
+                  : "profileNameRequired"
+              )}
+            </p>
+          ) : null}
+        </div>
+        <Button
+          type="submit"
+          variant="outline"
+          size="sm"
+          className="bg-background"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          {t("profileAdd")}
+        </Button>
+      </form>
+    </div>
+  )
+}
+
 export function BrowserSettingsSection() {
   const t = useTranslations("BrowserSettings")
   const prefs = useBrowserPrefs()
   // Folded on arrival like its neighbours: the General tab is a stack of
   // sections, and this one is five pickers tall.
   const [expanded, setExpanded] = useState(false)
-  const [confirmClear, setConfirmClear] = useState(false)
+  // Which profile the clear dialog is about (null = closed).
+  const [confirmClear, setConfirmClear] = useState<ProfileRow | null>(null)
   const [clearing, setClearing] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState<ProfileRow | null>(null)
+  const [deleting, setDeleting] = useState(false)
   const [proxy, setProxy] = useState<BrowserProxyStatus | null>(null)
   const [downloadsDir, setDownloadsDir] = useState<string | null>(null)
   const [policy, setPolicy] = useState<BrowserPolicyStatus | null>(null)
   // Whether this build hosts document guests (null until known); the HTML
   // preview switch is inert where there is none to switch to.
   const [docGuest, setDocGuest] = useState<boolean | null>(null)
+  // Whether more than the default profile can exist here (macOS 14+,
+  // Windows, Linux). Until known, or where not, the section shows the one
+  // "clear browsing data" row instead of the profile list.
+  const [profilesSupported, setProfilesSupported] = useState<boolean | null>(
+    null
+  )
+  // Whether the sign-in user agent is applied on this platform at all.
+  const [signInUaSupported, setSignInUaSupported] = useState<boolean | null>(
+    null
+  )
 
   // Fetched when the section opens (not once per app run): the answer follows
   // the proxy setting, which lives on another settings page.
@@ -345,6 +502,8 @@ export function BrowserSettingsSection() {
         setDownloadsDir(caps.downloadsDir || null)
         setPolicy(caps.policy ?? null)
         setDocGuest(caps.docGuest ?? false)
+        setProfilesSupported(caps.profiles ?? false)
+        setSignInUaSupported(caps.signInUserAgent ?? false)
       })
       .catch(() => {
         if (cancelled) return
@@ -352,6 +511,8 @@ export function BrowserSettingsSection() {
         setDownloadsDir(null)
         setPolicy(null)
         setDocGuest(null)
+        setProfilesSupported(null)
+        setSignInUaSupported(null)
       })
     return () => {
       cancelled = true
@@ -360,16 +521,45 @@ export function BrowserSettingsSection() {
 
   if (!isDesktop()) return null
 
-  const clear = async () => {
+  const profileRows: ProfileRow[] = [
+    {
+      id: DEFAULT_BROWSER_PROFILE_ID,
+      name: t("profileDefault"),
+      isDefault: true,
+    },
+    ...prefs.profiles.map((profile: BrowserProfile) => ({
+      id: profile.id,
+      name: profile.name,
+      isDefault: false,
+    })),
+  ]
+
+  const clear = async (row: ProfileRow) => {
     setClearing(true)
     try {
-      await browserClearData()
+      await browserClearData(row.id)
       toast.success(t("cleared"))
-      setConfirmClear(false)
+      setConfirmClear(null)
     } catch (error) {
       toast.error(t("clearFailed", { message: toErrorMessage(error) }))
     } finally {
       setClearing(false)
+    }
+  }
+
+  const remove = async (row: ProfileRow) => {
+    setDeleting(true)
+    try {
+      await browserRemoveProfile(row.id)
+      // Only now: a profile the backend could not delete keeps its entry, so
+      // its data is never orphaned behind a list that no longer names it.
+      removeBrowserProfile(row.id)
+      toast.success(t("profileDeleted"))
+      setConfirmDelete(null)
+    } catch (error) {
+      toast.error(t("profileDeleteFailed", { message: toErrorMessage(error) }))
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -551,35 +741,99 @@ export function BrowserSettingsSection() {
           title={t("downloadsTitle")}
           description={t("downloadsHint", { dir: downloadsDir ?? "…" })}
         />
-        <SettingRow
-          icon={Eraser}
-          title={t("clearTitle")}
-          description={t("clearHint")}
-          control={
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="bg-background"
-              onClick={() => setConfirmClear(true)}
-            >
-              {t("clearAction")}
-            </Button>
-          }
-        />
+        {signInUaSupported ? (
+          <SettingRow
+            icon={KeyRound}
+            title={t("signInUaTitle")}
+            description={t("signInUaHint")}
+            htmlFor="browser-sign-in-ua"
+            control={
+              <Switch
+                id="browser-sign-in-ua"
+                checked={prefs.signInUserAgent}
+                onCheckedChange={(enabled) =>
+                  setBrowserSignInUserAgent(enabled)
+                }
+              />
+            }
+          />
+        ) : null}
+        {profilesSupported ? null : (
+          <SettingRow
+            icon={Eraser}
+            title={t("clearTitle")}
+            description={t("clearHint")}
+            control={
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="bg-background"
+                onClick={() => setConfirmClear(profileRows[0])}
+              >
+                {t("clearAction")}
+              </Button>
+            }
+          />
+        )}
       </SettingCard>
 
+      {profilesSupported ? (
+        <SettingCard>
+          <SettingRow
+            icon={UserRound}
+            title={t("profilesTitle")}
+            description={t("profilesHint")}
+          >
+            <ProfilesEditor
+              rows={profileRows}
+              onClear={(row) => setConfirmClear(row)}
+              onDelete={(row) => setConfirmDelete(row)}
+            />
+          </SettingRow>
+          <SettingRow
+            icon={Plus}
+            title={t("profileNewTabsTitle")}
+            control={
+              <Select
+                value={prefs.newTabProfile}
+                onValueChange={(value) => setBrowserNewTabProfile(value)}
+              >
+                <SelectTrigger
+                  size="sm"
+                  className="w-44 bg-background text-xs"
+                  aria-label={t("profileNewTabsTitle")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  {profileRows.map((row) => (
+                    <SelectItem key={row.id} value={row.id}>
+                      {row.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            }
+          />
+        </SettingCard>
+      ) : null}
+
       <AlertDialog
-        open={confirmClear}
+        open={confirmClear !== null}
         onOpenChange={(open) => {
-          if (!clearing) setConfirmClear(open)
+          if (!clearing && !open) setConfirmClear(null)
         }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t("clearConfirmTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              {t("clearConfirmDescription")}
+              {profilesSupported
+                ? t("clearConfirmDescriptionProfile", {
+                    name: confirmClear?.name ?? "",
+                  })
+                : t("clearConfirmDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -592,10 +846,44 @@ export function BrowserSettingsSection() {
               disabled={clearing}
               onClick={(event) => {
                 event.preventDefault()
-                void clear()
+                if (confirmClear) void clear(confirmClear)
               }}
             >
               {t("clearConfirmAction")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={confirmDelete !== null}
+        onOpenChange={(open) => {
+          if (!deleting && !open) setConfirmDelete(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("profileDeleteConfirmTitle", {
+                name: confirmDelete?.name ?? "",
+              })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("profileDeleteConfirmDescription")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>
+              {t("cancel")}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleting}
+              onClick={(event) => {
+                event.preventDefault()
+                if (confirmDelete) void remove(confirmDelete)
+              }}
+            >
+              {t("profileDeleteConfirmAction")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

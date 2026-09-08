@@ -229,6 +229,7 @@ export function WorkspaceChromeController() {
             openBrowserTab(closed.url, {
               folderId: closed.folderId ?? undefined,
               index: closed.index,
+              profile: closed.profile,
             })
             return
           }

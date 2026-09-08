@@ -13,6 +13,7 @@
 
 import type { FileWorkspaceTab } from "@/contexts/workspace-context"
 
+import { DEFAULT_BROWSER_PROFILE_ID, isBrowserProfileId } from "./browser-prefs"
 import type { BrowserTabState } from "./types"
 import { getCurrentWindowLabel } from "./window-label"
 
@@ -23,6 +24,10 @@ export interface PersistedBrowserTab {
   /** Page title; "" when unknown (the restorer falls back to the host). */
   title: string
   folderId: number | null
+  /** The browser profile the tab lived in. A record written before profiles
+   *  existed has none and comes back in the default one; the restorer maps a
+   *  profile that has since been deleted to the default one as well. */
+  profile: string
 }
 
 const KEY_PREFIX = "browser:tabs:"
@@ -52,7 +57,7 @@ function isWebUrl(url: string): boolean {
  *  thrown on — a corrupt entry must not take the whole list with it. */
 function sanitize(raw: unknown): PersistedBrowserTab | null {
   if (!raw || typeof raw !== "object") return null
-  const { url, title, folderId } = raw as Record<string, unknown>
+  const { url, title, folderId, profile } = raw as Record<string, unknown>
   if (typeof url !== "string" || !isWebUrl(url)) return null
   return {
     url,
@@ -61,6 +66,7 @@ function sanitize(raw: unknown): PersistedBrowserTab | null {
       typeof folderId === "number" && Number.isInteger(folderId)
         ? folderId
         : null,
+    profile: isBrowserProfileId(profile) ? profile : DEFAULT_BROWSER_PROFILE_ID,
   }
 }
 
@@ -110,6 +116,7 @@ export function writePersistedBrowserTabs(
         url: tab.url,
         title: tab.title,
         folderId: tab.folderId,
+        profile: tab.profile,
       })),
     }
     localStorage.setItem(key, JSON.stringify(stored))
@@ -145,6 +152,7 @@ export function snapshotBrowserTabs(
       url,
       title: state?.title || tab.title,
       folderId: tab.folderId,
+      profile: tab.browser.profile,
     })
   }
   return out
@@ -159,7 +167,8 @@ export function samePersistedBrowserTabs(
     if (
       a[i].url !== b[i].url ||
       a[i].title !== b[i].title ||
-      a[i].folderId !== b[i].folderId
+      a[i].folderId !== b[i].folderId ||
+      a[i].profile !== b[i].profile
     ) {
       return false
     }

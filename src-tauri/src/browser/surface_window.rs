@@ -13,6 +13,7 @@ use super::profile;
 use super::registry::BrowserRegistry;
 use super::types::NavigationBlockReason;
 
+#[allow(clippy::too_many_arguments)]
 pub fn create(
     app: &AppHandle,
     owner: &WebviewWindow,
@@ -21,6 +22,7 @@ pub fn create(
     title: &str,
     background: bool,
     devtools: bool,
+    profile: &str,
 ) -> tauri::Result<WebviewWindow> {
     let blank = Url::parse("about:blank").expect("static url");
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(blank))
@@ -91,16 +93,16 @@ pub fn create(
     // wry falls back to the default store below macOS 14, exactly like the
     // shim does for embedded tabs; the proxy is a property of the store and
     // is in place once `profile::prepare` has run.
-    let builder = builder.data_store_identifier(profile::DEFAULT_DATA_STORE_IDENTIFIER);
+    let builder = builder.data_store_identifier(profile::data_store_identifier(profile));
     #[cfg(target_os = "windows")]
     let builder = builder
-        .data_directory(profile::directory(profile::DEFAULT_PROFILE_ID))
+        .data_directory(profile::directory(profile))
         .additional_browser_args(&profile::windows_browser_args(
             profile::frozen_proxy().as_ref(),
         ));
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let builder = {
-        let builder = builder.data_directory(profile::directory(profile::DEFAULT_PROFILE_ID));
+        let builder = builder.data_directory(profile::directory(profile));
         match profile::current_proxy() {
             Ok(Some(proxy)) => match Url::parse(&proxy.to_url_string()) {
                 Ok(url) => builder.proxy_url(url),

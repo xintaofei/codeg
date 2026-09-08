@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
         proxy: { url: null, applies: "live", reason: null },
         downloadsDir: "/Users/dev/Downloads",
         docGuest: false,
+        profiles: false,
+        signInUserAgent: false,
         policy: { enabled: true, managedRules: [], managedSource: null },
       })
   ),
@@ -58,7 +60,7 @@ function browserTab(id: string, initialUrl: string): FileWorkspaceTab {
     content: "",
     loading: false,
     readonly: true,
-    browser: { initialUrl, openerTabId: null },
+    browser: { initialUrl, openerTabId: null, profile: "default" },
   } as FileWorkspaceTab
 }
 
@@ -87,13 +89,25 @@ describe("BrowserTabsPersistence", () => {
 
   it("restores the stored tabs once, then persists what the strip shows", async () => {
     writePersistedBrowserTabs(
-      [{ url: "https://example.com/a", title: "A", folderId: 2 }],
+      [
+        {
+          url: "https://example.com/a",
+          title: "A",
+          folderId: 2,
+          profile: "default",
+        },
+      ],
       "main"
     )
     const { rerender } = render(<BrowserTabsPersistence />)
     await flush()
     expect(mocks.restoreBrowserTabs).toHaveBeenCalledWith([
-      { url: "https://example.com/a", title: "A", folderId: 2 },
+      {
+        url: "https://example.com/a",
+        title: "A",
+        folderId: 2,
+        profile: "default",
+      },
     ])
 
     // The provider adds the record; the page then loads and reports a deeper
@@ -117,13 +131,19 @@ describe("BrowserTabsPersistence", () => {
       error: null,
       remoteHost: null,
       openerTabId: null,
+      profile: "default",
     })
     rerender(<BrowserTabsPersistence />)
     await act(async () => {
       vi.advanceTimersByTime(500)
     })
     expect(readPersistedBrowserTabs("main")).toEqual([
-      { url: "https://example.com/a/deep", title: "Deep", folderId: 1 },
+      {
+        url: "https://example.com/a/deep",
+        title: "Deep",
+        folderId: 1,
+        profile: "default",
+      },
     ])
   })
 
@@ -131,7 +151,14 @@ describe("BrowserTabsPersistence", () => {
   // a write before the restore would erase the previous run's tabs.
   it("does not write before the restore has run", async () => {
     writePersistedBrowserTabs(
-      [{ url: "https://example.com/a", title: "A", folderId: null }],
+      [
+        {
+          url: "https://example.com/a",
+          title: "A",
+          folderId: null,
+          profile: "default",
+        },
+      ],
       "main"
     )
     let resolveCaps: (caps: BrowserCapabilities) => void = () => {}
@@ -146,7 +173,12 @@ describe("BrowserTabsPersistence", () => {
       vi.advanceTimersByTime(2000)
     })
     expect(readPersistedBrowserTabs("main")).toEqual([
-      { url: "https://example.com/a", title: "A", folderId: null },
+      {
+        url: "https://example.com/a",
+        title: "A",
+        folderId: null,
+        profile: "default",
+      },
     ])
 
     await act(async () => {
@@ -160,6 +192,8 @@ describe("BrowserTabsPersistence", () => {
         proxy: { url: null, applies: "live", reason: null },
         downloadsDir: "/Users/dev/Downloads",
         docGuest: false,
+        profiles: false,
+        signInUserAgent: false,
         policy: { enabled: true, managedRules: [], managedSource: null },
       })
       await Promise.resolve()
@@ -169,7 +203,14 @@ describe("BrowserTabsPersistence", () => {
 
   it("clears the stored list once the last browser tab is closed", async () => {
     writePersistedBrowserTabs(
-      [{ url: "https://example.com/a", title: "A", folderId: null }],
+      [
+        {
+          url: "https://example.com/a",
+          title: "A",
+          folderId: null,
+          profile: "default",
+        },
+      ],
       "main"
     )
     mocks.fileTabs = [browserTab("t1", "https://example.com/a")]
@@ -186,7 +227,14 @@ describe("BrowserTabsPersistence", () => {
 
   it("stays out of the way in web mode", async () => {
     writePersistedBrowserTabs(
-      [{ url: "https://example.com/a", title: "A", folderId: null }],
+      [
+        {
+          url: "https://example.com/a",
+          title: "A",
+          folderId: null,
+          profile: "default",
+        },
+      ],
       "main"
     )
     mocks.capabilities.mockResolvedValueOnce({
@@ -199,6 +247,8 @@ describe("BrowserTabsPersistence", () => {
       proxy: { url: null, applies: "unsupported", reason: null },
       downloadsDir: "/Users/dev/Downloads",
       docGuest: false,
+      profiles: false,
+      signInUserAgent: false,
       policy: { enabled: true, managedRules: [], managedSource: null },
     })
     render(<BrowserTabsPersistence />)
@@ -208,7 +258,12 @@ describe("BrowserTabsPersistence", () => {
     expect(mocks.restoreBrowserTabs).not.toHaveBeenCalled()
     // The desktop run's tabs are still there for the next desktop run.
     expect(readPersistedBrowserTabs("main")).toEqual([
-      { url: "https://example.com/a", title: "A", folderId: null },
+      {
+        url: "https://example.com/a",
+        title: "A",
+        folderId: null,
+        profile: "default",
+      },
     ])
   })
 })

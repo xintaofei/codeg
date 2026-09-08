@@ -23,10 +23,13 @@ const mocks = vi.hoisted(() => {
           proxy: { url: null, applies: "live", reason: null },
           downloadsDir: "/Users/dev/Downloads",
           docGuest: false,
+          profiles: false,
+          signInUserAgent: false,
           policy: { enabled: true, managedRules: [], managedSource: null },
         })
     ),
     browserSetHostRules: vi.fn(() => Promise.resolve()),
+    browserSetSignInUserAgent: vi.fn(() => Promise.resolve()),
     subscribe: vi.fn((event: string, handler: Handler) => {
       handlers.set(event, handler)
       return Promise.resolve(() => {
@@ -62,6 +65,7 @@ vi.mock("@/lib/browser/browser-api", () => ({
   browserListTabs: mocks.browserListTabs,
   browserListDownloads: mocks.browserListDownloads,
   browserSetHostRules: mocks.browserSetHostRules,
+  browserSetSignInUserAgent: mocks.browserSetSignInUserAgent,
 }))
 vi.mock("@/lib/transport", () => ({
   getTransport: () => ({ subscribe: mocks.subscribe }),
@@ -78,6 +82,7 @@ vi.mock("@/contexts/workspace-context", () => ({
 import {
   resetBrowserPrefsForTests,
   setBrowserHostRules,
+  setBrowserSignInUserAgent,
 } from "@/lib/browser/browser-prefs"
 import {
   getBrowserTabState,
@@ -118,6 +123,7 @@ describe("BrowserEventsBridge", () => {
     mocks.browserClose.mockClear()
     mocks.browserListDownloads.mockClear()
     mocks.browserSetHostRules.mockClear()
+    mocks.browserSetSignInUserAgent.mockClear()
     resetBrowserTabStoreForTests()
     resetBrowserDownloadsForTests()
     resetBrowserPrefsForTests()
@@ -196,6 +202,7 @@ describe("BrowserEventsBridge", () => {
       ownerWindow: "main",
       kind: "page",
       openerTabId: "abc",
+      profile: "default",
     })
     expect(mocks.openBrowserTab).toHaveBeenCalledTimes(2)
     expect(mocks.openBrowserTab).toHaveBeenLastCalledWith(
@@ -221,12 +228,14 @@ describe("BrowserEventsBridge", () => {
       error: null,
       remoteHost: null,
       openerTabId: null,
+      profile: "default",
     })
     expect(getBrowserTabState("browser:abc")?.title).toBe("Example")
 
     mocks.handlers.get("browser://popup")!({
       presentation: "adopted",
       openerTabId: "abc",
+      profile: "default",
       tabId: "abc-p1",
       url: "https://example.com/popup",
       requestedSize: null,
@@ -240,6 +249,7 @@ describe("BrowserEventsBridge", () => {
     mocks.handlers.get("browser://popup")!({
       presentation: "denied",
       openerTabId: "abc",
+      profile: "default",
       tabId: null,
       url: "https://example.com/blocked",
       requestedSize: null,
@@ -265,6 +275,7 @@ describe("BrowserEventsBridge", () => {
       error: null,
       remoteHost: null,
       openerTabId: "abc",
+      profile: "default",
     })
     mocks.handlers.get("browser://closed")!({
       tabId: "abc-p1",
@@ -298,6 +309,8 @@ describe("BrowserEventsBridge", () => {
       proxy: { url: null, applies: "unsupported", reason: null },
       downloadsDir: "/Users/dev/Downloads",
       docGuest: false,
+      profiles: false,
+      signInUserAgent: false,
       policy: { enabled: true, managedRules: [], managedSource: null },
     })
     render(<BrowserEventsBridge />)
@@ -309,15 +322,22 @@ describe("BrowserEventsBridge", () => {
     const { unmount } = render(<BrowserEventsBridge />)
     await flush()
     expect(mocks.browserSetHostRules).toHaveBeenCalledWith([])
+    // The sign-in user agent travels with them, on by default.
+    expect(mocks.browserSetSignInUserAgent).toHaveBeenCalledWith(true)
     await act(async () => {
       setBrowserHostRules([{ pattern: "blocked.example", action: "block" }])
     })
     expect(mocks.browserSetHostRules).toHaveBeenLastCalledWith([
       { pattern: "blocked.example", action: "block" },
     ])
+    await act(async () => {
+      setBrowserSignInUserAgent(false)
+    })
+    expect(mocks.browserSetSignInUserAgent).toHaveBeenLastCalledWith(false)
     unmount()
     // After unmount the preference subscription is gone with the rest.
     mocks.browserSetHostRules.mockClear()
+    mocks.browserSetSignInUserAgent.mockClear()
     await act(async () => {
       setBrowserHostRules([])
     })
@@ -376,6 +396,8 @@ describe("BrowserEventsBridge", () => {
         proxy: { url: null, applies: "live", reason: null },
         downloadsDir: "/Users/dev/Downloads",
         docGuest: false,
+        profiles: false,
+        signInUserAgent: false,
         policy: { enabled: true, managedRules: [], managedSource: null },
       })
       await Promise.resolve()

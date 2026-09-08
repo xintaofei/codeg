@@ -47,6 +47,7 @@ function state(over: Partial<BrowserTabState> = {}): BrowserTabState {
     error: null,
     remoteHost: null,
     openerTabId: null,
+    profile: "default",
     ...over,
   }
 }

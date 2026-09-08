@@ -47,6 +47,8 @@ const CAPS: BrowserCapabilities = {
   downloadsDir: "/Users/dev/Downloads",
   policy: { enabled: true, managedRules: [], managedSource: null },
   docGuest: true,
+  profiles: true,
+  signInUserAgent: true,
 }
 
 function tab(id = "file:%2Ftmp%2Fa.html"): FileWorkspaceTab {

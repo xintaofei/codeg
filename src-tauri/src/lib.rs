@@ -1215,6 +1215,8 @@ mod tauri_app {
                 browser_commands::browser_list_downloads,
                 browser_commands::browser_clear_downloads,
                 browser_commands::browser_set_host_rules,
+                browser_commands::browser_set_sign_in_user_agent,
+                browser_commands::browser_remove_profile,
                 browser_commands::browser_doc_open,
                 browser_commands::browser_doc_set_mode,
                 browser_commands::browser_doc_state,

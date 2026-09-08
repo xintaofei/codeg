@@ -350,6 +350,7 @@ export function BrowserSurfaceHost({
 }) {
   const backendId = browserTabBackendId(tab.id)
   const initialUrl = tab.browser.initialUrl
+  const profile = tab.browser.profile
   const folderId = tab.folderId
   const create = useCallback(
     (bounds: Bounds) => {
@@ -361,9 +362,10 @@ export function BrowserSurfaceHost({
         folderId,
         surface: prefs.surfaceOverride,
         devtools: prefs.devtools,
+        profile,
       })
     },
-    [backendId, folderId, initialUrl]
+    [backendId, folderId, initialUrl, profile]
   )
   // A browser tab always has a backend id; anything else is not a browser
   // tab and gets no surface.

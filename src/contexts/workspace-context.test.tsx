@@ -16,6 +16,11 @@ import {
   setBrowserTabState,
 } from "@/lib/browser/browser-tab-store"
 import {
+  resetBrowserPrefsForTests,
+  setBrowserNewTabProfile,
+  setBrowserProfiles,
+} from "@/lib/browser/browser-prefs"
+import {
   peekClosedTab,
   popClosedTab,
   resetClosedTabStackForTests,
@@ -3268,6 +3273,7 @@ describe("browser tabs", () => {
   beforeEach(() => {
     resetBrowserTabStoreForTests()
     resetClosedTabStackForTests()
+    resetBrowserPrefsForTests()
   })
 
   function BrowserProbe() {
@@ -3302,6 +3308,15 @@ describe("browser tabs", () => {
           open-bg
         </button>
         <button onClick={() => openBrowserTab("not a url")}>open-bad</button>
+        <button
+          onClick={() =>
+            openBrowserTab("https://example.com/docs#top", {
+              profile: "p-work",
+            })
+          }
+        >
+          open-work
+        </button>
         <button
           onClick={() => {
             const opener = fileTabs.find((t) => t.kind === "browser")
@@ -3363,12 +3378,19 @@ describe("browser tabs", () => {
                 url: "https://restored.example/one",
                 title: "One",
                 folderId: 7,
+                profile: "default",
               },
-              { url: "not a url", title: "bad", folderId: null },
+              {
+                url: "not a url",
+                title: "bad",
+                folderId: null,
+                profile: "default",
+              },
               {
                 url: "https://restored.example/two",
                 title: "",
                 folderId: null,
+                profile: "default",
               },
             ])
           }
@@ -3392,6 +3414,7 @@ describe("browser tabs", () => {
               path: t.path,
               opener: t.kind === "browser" ? t.browser.openerTabId : undefined,
               url: t.kind === "browser" ? t.browser.initialUrl : undefined,
+              profile: t.kind === "browser" ? t.browser.profile : undefined,
             }))
           )}
         </pre>
@@ -3408,6 +3431,7 @@ describe("browser tabs", () => {
     path: string | null
     opener?: string | null
     url?: string
+    profile?: string
   }> {
     return JSON.parse(screen.getByTestId("tabs").textContent ?? "[]")
   }
@@ -3548,6 +3572,54 @@ describe("browser tabs", () => {
     expect(readTabs()).toHaveLength(3)
   })
 
+  // A profile is a separate cookie jar: the same page in two profiles is two
+  // sessions, so it is two tabs; within one profile the one-tab rule holds.
+  it("keeps one tab per URL per profile and inherits the opener's profile", () => {
+    render(
+      <WorkspaceProvider>
+        <BrowserProbe />
+      </WorkspaceProvider>
+    )
+    act(() => screen.getByText("open").click())
+    expect(readTabs().map((t) => t.profile)).toEqual(["default"])
+    act(() => screen.getByText("open-work").click())
+    expect(readTabs().map((t) => t.profile)).toEqual(["default", "p-work"])
+    // Same page, same profile: the existing tab is activated instead.
+    act(() => screen.getByText("open-work").click())
+    expect(readTabs()).toHaveLength(2)
+    expect(screen.getByTestId("active").textContent).toBe(readTabs()[1].id)
+
+    // Opened from the work tab (⌘-click): lands in the work profile too.
+    act(() => screen.getByText("open-work").click())
+    act(() => screen.getByText("open-next").click())
+    const next = readTabs().find((t) => t.url === "https://example.com/next")
+    expect(next?.profile).toBe("default")
+    // `open-next` uses the first browser tab as opener (the default one); a
+    // popup adopted from it says so as well.
+    act(() => screen.getByText("adopt").click())
+    const popup = readTabs().find((t) => t.url === "https://example.com/popup")
+    expect(popup?.profile).toBe("default")
+  })
+
+  it("opens new tabs in the preferred profile when it exists", () => {
+    setBrowserProfiles([{ id: "p-work", name: "Work" }])
+    setBrowserNewTabProfile("p-work")
+    render(
+      <WorkspaceProvider>
+        <BrowserProbe />
+      </WorkspaceProvider>
+    )
+    act(() => screen.getByText("open").click())
+    expect(readTabs().map((t) => t.profile)).toEqual(["p-work"])
+    // Restored records keep the profile they were saved with.
+    act(() => screen.getByText("restore").click())
+    expect(
+      readTabs()
+        .filter((t) => t.url?.startsWith("https://restored.example/"))
+        .map((t) => t.profile)
+    ).toEqual(["default", "default"])
+  })
+
   it("suspending a loaded tab keeps the record at the page it was showing", () => {
     render(
       <WorkspaceProvider>
@@ -3576,6 +3648,7 @@ describe("browser tabs", () => {
         error: null,
         remoteHost: null,
         openerTabId: null,
+        profile: "default",
       })
     )
     // Only a tab that is off screen may be released; the suspender's own
@@ -3625,6 +3698,7 @@ describe("browser tabs", () => {
         error: null,
         remoteHost: null,
         openerTabId: null,
+        profile: "default",
       })
     )
     act(() => screen.getByText("close-active").click())
@@ -3636,6 +3710,7 @@ describe("browser tabs", () => {
       url: "https://example.com/docs/deep",
       title: "Deep",
       folderId: 1,
+      profile: "default",
     })
   })
 

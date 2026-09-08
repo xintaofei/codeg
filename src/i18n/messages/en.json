@@ -4797,7 +4797,26 @@
     "terminalMenuHint": "Clicking a link in the terminal shows a small menu (built-in browser, system browser, copy link) instead of opening it right away. ⌘/Ctrl-click still opens the link directly.",
     "htmlPreviewTitle": "HTML file previews",
     "htmlPreviewHint": "Show HTML files through the built-in browser, in a locked-down document view: no scripts until you enable them for a file, and only its own folder is reachable. Off: the inline preview is used, as in the web app.",
-    "managedDisabled": "The built-in browser is turned off by your administrator's policy; links open in the system browser."
+    "managedDisabled": "The built-in browser is turned off by your administrator's policy; links open in the system browser.",
+    "profilesTitle": "Profiles",
+    "profilesHint": "Each profile keeps its own cookies, site storage and sign-ins. New tabs open in the profile chosen below; a tab's toolbar can open its page in another one.",
+    "profileDefault": "Default",
+    "profileNewTabsTitle": "New tabs open in",
+    "profileNamePlaceholder": "Profile name, e.g. Work",
+    "profileNameLabel": "Profile name",
+    "profileAdd": "Add profile",
+    "profileNameRequired": "Enter a name for the profile",
+    "profileNameDuplicate": "There is already a profile with this name",
+    "profileClear": "Clear browsing data of {name}",
+    "profileDelete": "Delete profile {name}",
+    "profileDeleteConfirmTitle": "Delete profile {name}?",
+    "profileDeleteConfirmDescription": "Its tabs will be closed and its cookies, caches and site storage removed. This cannot be undone.",
+    "profileDeleteConfirmAction": "Delete",
+    "profileDeleted": "Profile deleted",
+    "profileDeleteFailed": "Could not delete the profile: {message}",
+    "clearConfirmDescriptionProfile": "Cookies, caches and site storage of the profile {name} will be removed. Open tabs stay open, but you will be signed out of sites.",
+    "signInUaTitle": "Google sign-in compatibility",
+    "signInUaHint": "Google refuses to sign in from embedded browsers. When on, tabs present a Firefox identity to Google's sign-in pages only (accounts.google.com); everywhere else the engine's own identity is used."
   },
   "LogsSettings": {
     "loading": "Loading…",
@@ -5864,7 +5883,10 @@
       "copyUrl": "Copy link",
       "copied": "Link copied",
       "addressPlaceholder": "Enter an address",
-      "invalidUrl": "Not a valid address"
+      "invalidUrl": "Not a valid address",
+      "profile": "Profile: {name}",
+      "profileMenuLabel": "Open this page in another profile",
+      "profileDefault": "Default"
     },
     "status": {
       "popupDenied": "Pop-up blocked: {host}",
