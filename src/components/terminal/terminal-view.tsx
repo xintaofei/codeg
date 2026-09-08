@@ -23,6 +23,12 @@ import {
   type TermMods,
 } from "@/lib/terminal/keybar"
 import { TermKeybar } from "@/components/terminal/term-keybar"
+import {
+  TerminalLinkMenu,
+  terminalLinkClickOpensMenu,
+  type TerminalLinkClick,
+} from "@/components/terminal/terminal-link-menu"
+import { getBrowserPrefs } from "@/lib/browser/browser-prefs"
 import { useZoomLevel, useTerminalFont } from "@/hooks/use-appearance"
 import {
   isPrimaryModifier,
@@ -126,6 +132,9 @@ export function TerminalView({
   // `window.open`, which the desktop webview turns into a dead click.
   const openUrlTarget = useOpenUrlTarget()
   const openUrlTargetRef = useRef(openUrlTarget)
+  // A link click held for the action menu (optional, off by default): the
+  // user picks the destination instead of the per-source preference.
+  const [linkClick, setLinkClick] = useState<TerminalLinkClick | null>(null)
   const { zoomLevel: appZoomLevel } = useZoomLevel()
   // 100 = 「不缩放」。画布卡片走这条：它已经在自己那套缩放里了。
   const zoomLevel = ignoreAppZoom ? 100 : appZoomLevel
@@ -248,10 +257,12 @@ export function TerminalView({
 
       const fitAddon = new FitAddon()
       const webLinksAddon = new WebLinksAddon((event, uri) => {
-        openUrlTargetRef.current(uri, {
-          source: "terminal",
-          modifier: isPrimaryModifier(event),
-        })
+        const modifier = isPrimaryModifier(event)
+        if (terminalLinkClickOpensMenu(getBrowserPrefs(), modifier, uri)) {
+          setLinkClick({ url: uri, x: event.clientX, y: event.clientY })
+          return
+        }
+        openUrlTargetRef.current(uri, { source: "terminal", modifier })
       })
 
       const term = new Terminal({
@@ -670,6 +681,20 @@ export function TerminalView({
           />
         )}
       </div>
+      <TerminalLinkMenu
+        click={linkClick}
+        onChoose={(url, target) => {
+          setLinkClick(null)
+          openUrlTargetRef.current(url, {
+            source: "terminal",
+            forceTarget: target,
+          })
+        }}
+        onClose={() => {
+          setLinkClick(null)
+          termRef.current?.focus()
+        }}
+      />
       {loading && isActive && (
         <div className="absolute inset-0 flex items-center justify-center bg-background/80">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">

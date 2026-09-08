@@ -10,6 +10,7 @@ import {
   setBrowserDevtools,
   setBrowserHostRules,
   setBrowserSurfaceOverride,
+  setBrowserTerminalClickMenu,
   setDefaultLinkTarget,
   subscribeBrowserPrefs,
   useBrowserPrefs,
@@ -148,6 +149,17 @@ describe("browser prefs", () => {
     // An empty table removes the key rather than storing `[]`.
     setBrowserHostRules([])
     expect(localStorage.getItem("browser:host-rules")).toBeNull()
+  })
+
+  it("stores the terminal link-menu switch under its own key, off by default", () => {
+    expect(getBrowserPrefs().terminalClickMenu).toBe(false)
+    setBrowserTerminalClickMenu(true)
+    expect(localStorage.getItem("browser:terminal-click-menu")).toBe("true")
+    expect(getBrowserPrefs().terminalClickMenu).toBe(true)
+    // Off is the default, so off removes the key rather than storing it.
+    setBrowserTerminalClickMenu(false)
+    expect(localStorage.getItem("browser:terminal-click-menu")).toBeNull()
+    expect(getBrowserPrefs().terminalClickMenu).toBe(false)
   })
 
   it("useBrowserPrefs re-renders on change", () => {

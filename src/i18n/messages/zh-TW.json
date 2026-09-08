@@ -4793,6 +4793,8 @@
     "ruleInvalid": "不是有效的模式",
     "ruleDuplicate": "已有針對該模式的規則",
     "rulesEmpty": "還沒有規則。",
+    "terminalMenuTitle": "終端機連結選單",
+    "terminalMenuHint": "點擊終端機中的連結時先顯示一個小選單（內建瀏覽器、系統瀏覽器、複製連結），而不是直接開啟。⌘/Ctrl 點擊仍會直接開啟。",
     "managedDisabled": "管理員原則已關閉內建瀏覽器；連結將在系統瀏覽器中開啟。"
   },
   "LogsSettings": {

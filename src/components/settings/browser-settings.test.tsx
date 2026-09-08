@@ -170,6 +170,20 @@ describe("BrowserSettingsSection", () => {
     expect(getBrowserPrefs().suspendBackgroundTabs).toBe(false)
   })
 
+  it("persists the terminal link-menu switch, which is off by default", () => {
+    renderSection()
+    expandSection()
+    const toggle = screen.getByLabelText("Terminal link menu")
+    expect(toggle).not.toBeChecked()
+
+    fireEvent.click(toggle)
+    expect(getBrowserPrefs().terminalClickMenu).toBe(true)
+    expect(screen.getByLabelText("Terminal link menu")).toBeChecked()
+
+    fireEvent.click(screen.getByLabelText("Terminal link menu"))
+    expect(getBrowserPrefs().terminalClickMenu).toBe(false)
+  })
+
   it("persists the inspector switch and follows a change made elsewhere", () => {
     renderSection()
     expandSection()

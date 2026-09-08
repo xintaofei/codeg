@@ -4793,6 +4793,8 @@
     "ruleInvalid": "올바른 패턴이 아닙니다",
     "ruleDuplicate": "이 패턴에 대한 규칙이 이미 있습니다",
     "rulesEmpty": "아직 규칙이 없습니다.",
+    "terminalMenuTitle": "터미널 링크 메뉴",
+    "terminalMenuHint": "터미널에서 링크를 클릭하면 바로 열지 않고 작은 메뉴(내장 브라우저, 시스템 브라우저, 링크 복사)를 표시합니다. ⌘/Ctrl 클릭은 여전히 바로 엽니다.",
     "managedDisabled": "관리자 정책으로 내장 브라우저가 꺼져 있습니다. 링크는 시스템 브라우저에서 열립니다."
   },
   "LogsSettings": {

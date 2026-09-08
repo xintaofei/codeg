@@ -4793,6 +4793,8 @@
     "ruleInvalid": "Not a valid pattern",
     "ruleDuplicate": "There is already a rule for this pattern",
     "rulesEmpty": "No rules yet.",
+    "terminalMenuTitle": "Terminal link menu",
+    "terminalMenuHint": "Clicking a link in the terminal shows a small menu (built-in browser, system browser, copy link) instead of opening it right away. ⌘/Ctrl-click still opens the link directly.",
     "managedDisabled": "The built-in browser is turned off by your administrator's policy; links open in the system browser."
   },
   "LogsSettings": {

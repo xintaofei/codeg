@@ -4793,6 +4793,8 @@
     "ruleInvalid": "No es un patrón válido",
     "ruleDuplicate": "Ya existe una regla para este patrón",
     "rulesEmpty": "Aún no hay reglas.",
+    "terminalMenuTitle": "Menú de enlaces del terminal",
+    "terminalMenuHint": "Al hacer clic en un enlace del terminal se muestra un pequeño menú (navegador integrado, navegador del sistema, copiar enlace) en lugar de abrirlo de inmediato. ⌘/Ctrl+clic sigue abriendo el enlace directamente.",
     "managedDisabled": "La política de tu administrador ha desactivado el navegador integrado; los enlaces se abren en el navegador del sistema."
   },
   "LogsSettings": {

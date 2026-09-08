@@ -4793,6 +4793,8 @@
     "ruleInvalid": "Motif non valide",
     "ruleDuplicate": "Une règle existe déjà pour ce motif",
     "rulesEmpty": "Aucune règle pour l'instant.",
+    "terminalMenuTitle": "Menu des liens du terminal",
+    "terminalMenuHint": "Un clic sur un lien dans le terminal affiche un petit menu (navigateur intégré, navigateur système, copier le lien) au lieu de l'ouvrir immédiatement. ⌘/Ctrl-clic ouvre toujours le lien directement.",
     "managedDisabled": "La politique de votre administrateur a désactivé le navigateur intégré ; les liens s'ouvrent dans le navigateur système."
   },
   "LogsSettings": {

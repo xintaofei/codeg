@@ -4793,6 +4793,8 @@
     "ruleInvalid": "Kein gültiges Muster",
     "ruleDuplicate": "Für dieses Muster gibt es bereits eine Regel",
     "rulesEmpty": "Noch keine Regeln.",
+    "terminalMenuTitle": "Link-Menü im Terminal",
+    "terminalMenuHint": "Ein Klick auf einen Link im Terminal zeigt ein kleines Menü (integrierter Browser, Systembrowser, Link kopieren), statt ihn sofort zu öffnen. ⌘/Strg-Klick öffnet den Link weiterhin direkt.",
     "managedDisabled": "Die Richtlinie der Administration hat den integrierten Browser abgeschaltet; Links öffnen sich im Systembrowser."
   },
   "LogsSettings": {

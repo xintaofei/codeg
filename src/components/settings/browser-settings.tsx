@@ -24,6 +24,7 @@ import {
   ListFilter,
   Lock,
   MoonStar,
+  MousePointerClick,
   Network,
   Plus,
   Trash2,
@@ -64,6 +65,7 @@ import {
   setBrowserHostRules,
   setBrowserSurfaceOverride,
   setBrowserSuspendBackgroundTabs,
+  setBrowserTerminalClickMenu,
   setDefaultLinkTarget,
   useBrowserPrefs,
   type LinkSource,
@@ -437,6 +439,21 @@ export function BrowserSettingsSection() {
       </SettingCard>
 
       <SettingCard>
+        <SettingRow
+          icon={MousePointerClick}
+          title={t("terminalMenuTitle")}
+          description={t("terminalMenuHint")}
+          htmlFor="browser-terminal-menu"
+          control={
+            <Switch
+              id="browser-terminal-menu"
+              checked={prefs.terminalClickMenu}
+              onCheckedChange={(enabled) =>
+                setBrowserTerminalClickMenu(enabled)
+              }
+            />
+          }
+        />
         <SettingRow
           icon={Wrench}
           title={t("devtoolsTitle")}

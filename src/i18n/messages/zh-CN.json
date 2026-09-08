@@ -4793,6 +4793,8 @@
     "ruleInvalid": "不是有效的模式",
     "ruleDuplicate": "已有针对该模式的规则",
     "rulesEmpty": "还没有规则。",
+    "terminalMenuTitle": "终端链接菜单",
+    "terminalMenuHint": "点击终端里的链接时先弹出一个小菜单（内置浏览器、系统浏览器、复制链接），而不是直接打开。⌘/Ctrl 点击仍会直接打开。",
     "managedDisabled": "管理员策略已关闭内置浏览器；链接将在系统浏览器中打开。"
   },
   "LogsSettings": {

@@ -4793,6 +4793,8 @@
     "ruleInvalid": "Não é um padrão válido",
     "ruleDuplicate": "Já existe uma regra para este padrão",
     "rulesEmpty": "Ainda não há regras.",
+    "terminalMenuTitle": "Menu de links do terminal",
+    "terminalMenuHint": "Clicar em um link no terminal mostra um pequeno menu (navegador integrado, navegador do sistema, copiar link) em vez de abri-lo imediatamente. ⌘/Ctrl+clique continua abrindo o link diretamente.",
     "managedDisabled": "A política do seu administrador desativou o navegador integrado; os links abrem no navegador do sistema."
   },
   "LogsSettings": {

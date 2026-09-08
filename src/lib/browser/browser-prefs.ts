@@ -44,6 +44,11 @@ export interface BrowserPrefsSnapshot {
   /** Per-site overrides of the default target, and outright blocks. The
    *  administrator's rules (from the backend's policy) are not in here. */
   hostRules: readonly HostRule[]
+  /** A plain click on a terminal link opens a small menu (built-in browser,
+   *  system browser, copy) instead of following the link. Off by default:
+   *  one more click on every link is only worth it to people who switch
+   *  destinations often; a modifier-click already offers the other one. */
+  terminalClickMenu: boolean
 }
 
 export const DEFAULT_BROWSER_PREFS: BrowserPrefsSnapshot = Object.freeze({
@@ -59,6 +64,7 @@ export const DEFAULT_BROWSER_PREFS: BrowserPrefsSnapshot = Object.freeze({
   firstOpenSeen: false,
   suspendBackgroundTabs: false,
   hostRules: Object.freeze([]) as readonly HostRule[],
+  terminalClickMenu: false,
 }) as BrowserPrefsSnapshot
 
 const KEY_PREFIX = "browser:"
@@ -74,6 +80,7 @@ const SUSPEND_KEY = `${KEY_PREFIX}suspend-background-tabs`
 // One key for the whole table: a rule list is one setting, edited in one
 // place, and half a table is not a meaningful state.
 const HOST_RULES_KEY = `${KEY_PREFIX}host-rules`
+const TERMINAL_MENU_KEY = `${KEY_PREFIX}terminal-click-menu`
 
 function readRaw(key: string): string | null {
   if (typeof window === "undefined") return null
@@ -122,6 +129,7 @@ function read(): BrowserPrefsSnapshot {
     firstOpenSeen: readRaw(FIRST_OPEN_KEY) === "true",
     suspendBackgroundTabs: readRaw(SUSPEND_KEY) === "true",
     hostRules: parseHostRules(readRaw(HOST_RULES_KEY)),
+    terminalClickMenu: readRaw(TERMINAL_MENU_KEY) === "true",
   }
 }
 
@@ -181,6 +189,10 @@ export function setBrowserHostRules(rules: readonly HostRule[]): void {
   write(HOST_RULES_KEY, cleaned.length > 0 ? JSON.stringify(cleaned) : null)
 }
 
+export function setBrowserTerminalClickMenu(enabled: boolean): void {
+  write(TERMINAL_MENU_KEY, enabled ? "true" : null)
+}
+
 export function subscribeBrowserPrefs(listener: () => void): () => void {
   if (typeof window === "undefined") return () => {}
   const onChange = () => listener()
@@ -224,6 +236,7 @@ export function resetBrowserPrefsForTests(): void {
     localStorage.removeItem(FIRST_OPEN_KEY)
     localStorage.removeItem(SUSPEND_KEY)
     localStorage.removeItem(HOST_RULES_KEY)
+    localStorage.removeItem(TERMINAL_MENU_KEY)
   } catch {
     /* ignore */
   }
