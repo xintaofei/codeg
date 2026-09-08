@@ -10,6 +10,8 @@ import {
 } from "@/contexts/workspace-context"
 import * as api from "@/lib/api"
 import {
+  claimSurfaceCreation,
+  forgetSurfaceCreation,
   getBrowserTabState,
   markBrowserTabHidden,
   resetBrowserTabStoreForTests,
@@ -3357,7 +3359,9 @@ describe("browser tabs", () => {
         </button>
         <button
           onClick={() => {
-            const opener = fileTabs.find((t) => t.kind === "browser")
+            const opener = fileTabs.find(
+              (t) => t.kind === "browser" && t.browser.profile === "default"
+            )
             if (!opener) return
             adoptBrowserTab({
               backendTabId: "named-p1",
@@ -3443,6 +3447,15 @@ describe("browser tabs", () => {
           }}
         >
           suspend-first
+        </button>
+        <button
+          onClick={() => {
+            const tabs = fileTabs.filter((t) => t.kind === "browser")
+            const tab = tabs[tabs.length - 1]
+            if (tab) suspendBrowserTab(tab.id)
+          }}
+        >
+          suspend-last
         </button>
         <pre data-testid="tabs">
           {JSON.stringify(
@@ -3659,6 +3672,15 @@ describe("browser tabs", () => {
     )
     act(() => screen.getByText("open-work").click())
     expect(readTabs().map((t) => t.profile)).toEqual(["p-work"])
+    // A tab whose surface is being created (claimed, no state yet) is not
+    // dormant either: the backend will close it with the profile.
+    const claimed = readTabs()[0]
+    claimSurfaceCreation(claimed.id.slice("browser:".length))
+    act(() => setBrowserProfiles([]))
+    expect(readTabs().map((t) => t.profile)).toEqual(["p-work"])
+    forgetSurfaceCreation(claimed.id.slice("browser:".length))
+    act(() => setBrowserProfiles([{ id: "p-work", name: "Work" }]))
+
     // A loaded tab keeps naming its profile until the backend closes it
     // (its surface still lives in that store); only dormant records move.
     const loaded = readTabs()[0]
@@ -3692,6 +3714,39 @@ describe("browser tabs", () => {
     act(() => screen.getByText("suspend-first").click())
     expect(readTabs().map((t) => t.profile)).toEqual(["default"])
 
+    // Suspending a loaded tab of a deleted profile whose page the default
+    // profile already shows drops the record instead of duplicating it.
+    act(() => setBrowserProfiles([{ id: "p-work", name: "Work" }]))
+    act(() => screen.getByText("open-work").click())
+    const second = readTabs().find((t) => t.profile === "p-work")!
+    act(() =>
+      setBrowserTabState({
+        tabId: second.id.slice("browser:".length),
+        ownerWindow: "main",
+        kind: "page",
+        surface: "child",
+        channel: "native",
+        url: "https://example.com/docs",
+        requestedUrl: "https://example.com/docs",
+        title: "Docs again",
+        favicon: null,
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        origin: "https://example.com",
+        zoom: 1,
+        error: null,
+        remoteHost: null,
+        openerTabId: null,
+        profile: "p-work",
+      })
+    )
+    act(() => setBrowserProfiles([]))
+    act(() => markBrowserTabHidden(second.id))
+    act(() => screen.getByText("suspend-last").click())
+    expect(readTabs().map((t) => t.profile)).toEqual(["default"])
+    expect(readTabs()).toHaveLength(1)
+
     // A dormant record of a deleted profile whose page the default profile
     // already shows is dropped rather than duplicated.
     act(() => setBrowserProfiles([{ id: "p-work", name: "Work" }]))
@@ -3716,13 +3771,20 @@ describe("browser tabs", () => {
       readTabs().find((t) => t.url === "https://example.com/orphan-popup")
         ?.profile
     ).toBe("p-work")
-    // With an opener present (default profile) the backend's word still wins.
+    // With an opener present IN THE DEFAULT PROFILE the backend's word
+    // (p-work) still wins over the opener's.
     act(() => screen.getByText("open").click())
-    act(() => screen.getByText("adopt-named").click())
     expect(
-      readTabs().find((t) => t.url === "https://example.com/named-popup")
-        ?.profile
-    ).toBe("p-work")
+      readTabs().find((t) => t.url === "https://example.com/docs#top")?.profile
+    ).toBe("default")
+    act(() => screen.getByText("adopt-named").click())
+    const named = readTabs().find(
+      (t) => t.url === "https://example.com/named-popup"
+    )
+    expect(named?.profile).toBe("p-work")
+    expect(named?.opener).toBe(
+      readTabs().find((t) => t.url === "https://example.com/docs#top")?.id
+    )
   })
 
   it("opens new tabs in the preferred profile when it exists", () => {

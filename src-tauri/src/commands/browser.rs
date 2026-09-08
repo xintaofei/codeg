@@ -528,16 +528,22 @@ pub async fn clear_data_core(
     // default has no store of its own, and clearing "it" would clear the
     // shared one.
     profile::check(profile_id).map_err(AppCommandError::invalid_input)?;
-    // Held through the clear: see `open_tab_core`.
-    let _admission = profile::admit(profile_id).map_err(AppCommandError::invalid_input)?;
+    // Held through the clear: see `open_tab_core`. On macOS the engine's
+    // completion callback holds a share, so a wait that gives up (the 15 s
+    // cap) does not end the admission while WebKit is still clearing.
+    let admission = profile::admit(profile_id).map_err(AppCommandError::invalid_input)?;
     #[cfg(target_os = "macos")]
     {
         // Straight at the profile's store: works with no tab open and reports
         // completion, which a surface's `clear_all_browsing_data` cannot.
         let _ = registry;
         let profile_id = profile_id.to_string();
+        let held = admission.share();
         on_main_until_done(app, "Failed to clear browsing data", move |done| {
-            crate::browser::shim::macos::clear_profile_store(&profile_id, done)
+            crate::browser::shim::macos::clear_profile_store(&profile_id, move || {
+                let _held = &held;
+                done()
+            })
         })
         .await
     }
@@ -547,15 +553,21 @@ pub async fn clear_data_core(
         // surface of the profile (they all share its store); with none open
         // there is nothing to call into. Picked under one lock: a tab id
         // looked up separately could by then name a tab of another profile.
+        // The engine reports no completion here, so the admission ends when
+        // the call returns — a deletion that follows at once may find the
+        // engine still writing and fail with a retry, which is the accepted
+        // shape on these platforms until their shims land.
         let _ = app;
         let Some(surface) = registry.surface_in_profile(profile_id) else {
             return Err(AppCommandError::invalid_input(
                 "open a page in this profile first, then clear its data",
             ));
         };
-        surface
+        let result = surface
             .clear_browsing_data()
-            .map_err(|e| window_err("Failed to clear browsing data", e))
+            .map_err(|e| window_err("Failed to clear browsing data", e));
+        drop(admission);
+        result
     }
 }
 

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useSyncExternalStore } from "react"
+import { useEffect, useState, useSyncExternalStore } from "react"
 import { useTranslations } from "next-intl"
 import { PanelRightOpen } from "lucide-react"
 
@@ -33,11 +33,15 @@ import { BrowserTabView } from "./browser-tab-view"
  * its view here, and "open in workspace" leads back to the column.
  */
 
-// Which workspace record each drawer URL was opened as (see
-// `BrowserViewerBody`). Module-level: the drawer is one component, and the
-// value has to be written from an effect and read while rendering.
-const openedTabs = new Map<string, string | null>()
+// Which workspace record each mounted drawer body opened (see
+// `BrowserViewerBody`): keyed by the body instance, so two drawers on one
+// page cannot redirect each other, and forgotten when the body unmounts.
+// Module-level because the value is written from an effect and read while
+// rendering, which neither state nor a ref may do here. `null` = the open
+// was refused (no record); absent = not resolved yet.
+const openedTabs = new Map<number, string | null>()
 const openedListeners = new Set<() => void>()
+let nextBodyKey = 0
 
 function subscribeOpened(listener: () => void): () => void {
   openedListeners.add(listener)
@@ -46,9 +50,14 @@ function subscribeOpened(listener: () => void): () => void {
   }
 }
 
-function rememberOpened(url: string, id: string | null): void {
-  if (openedTabs.get(url) === id) return
-  openedTabs.set(url, id)
+function rememberOpened(key: number, id: string | null): void {
+  if (openedTabs.has(key) && openedTabs.get(key) === id) return
+  openedTabs.set(key, id)
+  for (const listener of [...openedListeners]) listener()
+}
+
+function forgetOpened(key: number): void {
+  if (!openedTabs.delete(key)) return
   for (const listener of [...openedListeners]) listener()
 }
 
@@ -98,33 +107,43 @@ function BrowserViewerBody({
   // profiles, and the one to show is the one this drawer asked for, whatever
   // the preference says later. The id lives in a small store outside React
   // (an effect may not set state, and a ref may not be read while
-  // rendering); it is keyed by URL so a drawer reused for another address
-  // starts over.
+  // rendering), under a key of this body's own; a new URL resolves anew, and
+  // the entry goes with the body.
+  const [bodyKey] = useState(() => {
+    nextBodyKey += 1
+    return nextBodyKey
+  })
   useEffect(() => {
-    rememberOpened(url, openBrowserTab(url, { activate: false }))
-  }, [openBrowserTab, url])
-  const openedId = useSyncExternalStore(
+    rememberOpened(bodyKey, openBrowserTab(url, { activate: false }))
+  }, [bodyKey, openBrowserTab, url])
+  useEffect(() => () => forgetOpened(bodyKey), [bodyKey])
+  const opened = useSyncExternalStore(
     subscribeOpened,
-    () => openedTabs.get(url) ?? null,
-    () => null
+    () =>
+      openedTabs.has(bodyKey) ? (openedTabs.get(bodyKey) ?? null) : undefined,
+    () => undefined
   )
 
-  // Before the effect has run (first paint) the record is found the way
-  // `openBrowserTab` itself resolves an address with no opener: by URL in
-  // the profile new tabs use. Never a tab of another profile.
+  // Only BEFORE the open has resolved (first paint) is the record found the
+  // way `openBrowserTab` itself resolves an address with no opener: by URL
+  // in the profile new tabs use. Once resolved, it is that record or nothing
+  // — never a tab of another profile, not even after the record closes.
   const prefs = useBrowserPrefs()
   const wantedProfile = browserProfileExists(prefs, prefs.newTabProfile)
     ? prefs.newTabProfile
     : DEFAULT_BROWSER_PROFILE_ID
   const wanted = normalizeUrlForDedupe(url)
   const tab =
-    (openedId ? fileTabs.find((it) => it.id === openedId) : undefined) ??
-    fileTabs.find(
-      (it) =>
-        it.kind === "browser" &&
-        it.browser.profile === wantedProfile &&
-        normalizeUrlForDedupe(it.browser.initialUrl) === wanted
-    )
+    opened === undefined
+      ? fileTabs.find(
+          (it) =>
+            it.kind === "browser" &&
+            it.browser.profile === wantedProfile &&
+            normalizeUrlForDedupe(it.browser.initialUrl) === wanted
+        )
+      : opened
+        ? fileTabs.find((it) => it.id === opened)
+        : undefined
   const tabId = tab?.id ?? null
 
   return (

@@ -372,10 +372,15 @@ fn occupancy() -> std::sync::MutexGuard<'static, Option<Occupancy>> {
     OCCUPANCY.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Holds the profile in use for as long as it lives.
-pub struct Admission(String);
+/// Holds the profile in use for as long as the last clone lives. An
+/// operation that hands work to the engine and gets told when it is done
+/// (a clear) gives its native completion callback a `share()`, so a caller
+/// that stops waiting cannot end the admission before the engine is done.
+pub struct Admission(Arc<AdmissionMark>);
 
-impl Drop for Admission {
+struct AdmissionMark(String);
+
+impl Drop for AdmissionMark {
     fn drop(&mut self) {
         if let Some(state) = occupancy().as_mut() {
             if let Some(count) = state.in_flight.get_mut(&self.0) {
@@ -388,6 +393,13 @@ impl Drop for Admission {
     }
 }
 
+impl Admission {
+    /// Another holder of the same admission.
+    pub fn share(&self) -> Admission {
+        Admission(self.0.clone())
+    }
+}
+
 /// Take the profile into use for an operation; refused while the profile is
 /// being deleted.
 pub fn admit(profile_id: &str) -> Result<Admission, String> {
@@ -397,7 +409,7 @@ pub fn admit(profile_id: &str) -> Result<Admission, String> {
         return Err("this browser profile is being deleted".to_string());
     }
     *state.in_flight.entry(profile_id.to_string()).or_insert(0) += 1;
-    Ok(Admission(profile_id.to_string()))
+    Ok(Admission(Arc::new(AdmissionMark(profile_id.to_string()))))
 }
 
 /// Marks a profile as being deleted for as long as the last clone lives —
@@ -712,7 +724,13 @@ mod tests {
         let a = admit("p-busy").unwrap();
         let b = admit("p-busy").unwrap();
         assert_eq!(in_flight("p-busy"), 2);
+        // A share is the same admission, not a second one, and keeps it
+        // alive after the original is gone.
+        let shared = a.share();
+        assert_eq!(in_flight("p-busy"), 2);
         drop(a);
+        assert_eq!(in_flight("p-busy"), 2);
+        drop(shared);
         assert_eq!(in_flight("p-busy"), 1);
         let removal = begin_removal("p-busy").unwrap();
         assert!(admit("p-busy").is_err());

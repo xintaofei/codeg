@@ -13,7 +13,7 @@ import {
 import { useTranslations } from "next-intl"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { buildFileTabId } from "@/lib/file-tab-id"
+import { browserTabBackendId, buildFileTabId } from "@/lib/file-tab-id"
 import {
   gitDiff,
   gitDiffWithBranch,
@@ -70,6 +70,7 @@ import { useOfficeAutoPreview } from "@/lib/office-preview-prefs"
 import {
   browserTabHiddenAt,
   getBrowserTabState,
+  hasSurfaceClaim,
   releaseBrowserTab,
 } from "@/lib/browser/browser-tab-store"
 import { hostnameOf, normalizeUrlForDedupe } from "@/lib/browser/browser-url"
@@ -978,10 +979,15 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       subscribeBrowserPrefs(() => {
         const prefs = getBrowserPrefs()
         setFileTabs((prev) => {
+          // Dormant = no live state AND no surface being created: a tab
+          // whose create is in flight has no state yet but already has a
+          // webview in its profile's store on the way, and the backend will
+          // close it with the rest of the profile.
           const dormantOrphan = (tab: FileWorkspaceTab) =>
             tab.kind === "browser" &&
             !browserProfileExists(prefs, tab.browser.profile) &&
-            getBrowserTabState(tab.id) === null
+            getBrowserTabState(tab.id) === null &&
+            !hasSurfaceClaim(browserTabBackendId(tab.id) ?? "")
           if (!prev.some(dormantOrphan)) return prev
           const inDefault = new Set(
             prev.flatMap((tab) =>
@@ -1031,21 +1037,42 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     // created when the tab is next shown loads that page, not the address
     // the tab was opened with. History and scroll position are lost, as in
     // a browser's discarded tab. A profile deleted while the tab was loaded
-    // is left behind here too: the dormant record must not name it.
+    // is left behind here too: the dormant record must not name it — and if
+    // the default profile already shows that page, the record goes rather
+    // than becoming a duplicate (one tab per page and profile).
     const profile = browserProfileExists(getBrowserPrefs(), tab.browser.profile)
       ? tab.browser.profile
       : DEFAULT_BROWSER_PROFILE_ID
-    setFileTabs((prev) =>
-      prev.map((t) =>
-        t.id === tabId && t.kind === "browser"
-          ? {
-              ...t,
-              title,
-              browser: { ...t.browser, initialUrl: url, profile },
-            }
-          : t
+    // Decided on the mirror rather than inside the updater (updaters run
+    // later, at render time), so the active-tab pointer can be fixed in the
+    // same breath. A suspended tab is off screen and so never the active
+    // one; the pointer update is for form's sake.
+    const normalized = normalizeUrlForDedupe(url)
+    const duplicate =
+      profile !== tab.browser.profile &&
+      fileTabsRef.current.some(
+        (t) =>
+          t.kind === "browser" &&
+          t.id !== tabId &&
+          t.browser.profile === profile &&
+          normalizeUrlForDedupe(t.browser.initialUrl) === normalized
       )
-    )
+    if (duplicate) {
+      setFileTabs((prev) => prev.filter((t) => t.id !== tabId))
+      setActiveFileTabId((current) => (current === tabId ? null : current))
+    } else {
+      setFileTabs((prev) =>
+        prev.map((t) =>
+          t.id === tabId && t.kind === "browser"
+            ? {
+                ...t,
+                title,
+                browser: { ...t.browser, initialUrl: url, profile },
+              }
+            : t
+        )
+      )
+    }
     releaseBrowserTab(tabId)
     return true
   }, [])
