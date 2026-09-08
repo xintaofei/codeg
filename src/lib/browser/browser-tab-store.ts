@@ -18,19 +18,35 @@ type Listener = () => void
 const states = new Map<string, BrowserTabState>()
 const listeners = new Set<Listener>()
 
-// Backend ids whose surface this document has asked the backend to create.
-// The surface host consults it so a StrictMode double effect or a re-mount of
-// the same tab never asks twice: the webview lives as long as the tab record,
-// not as long as the host component. Released together with the state, which
-// is what lets a suspended tab be brought back through the same host.
-const createdSurfaces = new Set<string>()
+// Backend ids whose surface this document has asked the backend to create,
+// each with the token of the claim that asked. The surface host consults it
+// so a StrictMode double effect or a re-mount of the same tab never asks
+// twice: the webview lives as long as the tab record, not as long as the host
+// component. Released together with the state, which is what lets a suspended
+// tab be brought back through the same host.
+//
+// The token exists because `browser_open_tab` is a round trip: by the time it
+// answers, the tab may have been closed (claim released) or shown again
+// (claim re-taken). A holder whose token is no longer the current one owns a
+// surface nobody is going to use, and must close it — otherwise the native
+// webview stays painted over the workspace with no tab behind it.
+const createdSurfaces = new Map<string, number>()
+let nextClaimToken = 0
 
-/** Record that a surface is being created for `backendTabId`; false when it
- *  already was. */
-export function claimSurfaceCreation(backendTabId: string): boolean {
-  if (createdSurfaces.has(backendTabId)) return false
-  createdSurfaces.add(backendTabId)
-  return true
+/** Claim the right to create a surface; null when someone already holds it. */
+export function claimSurfaceCreation(backendTabId: string): number | null {
+  if (createdSurfaces.has(backendTabId)) return null
+  nextClaimToken += 1
+  createdSurfaces.set(backendTabId, nextClaimToken)
+  return nextClaimToken
+}
+
+/** Whether `token` is still the live claim for this tab. */
+export function surfaceClaimIsCurrent(
+  backendTabId: string,
+  token: number
+): boolean {
+  return createdSurfaces.get(backendTabId) === token
 }
 
 export function forgetSurfaceCreation(backendTabId: string): void {

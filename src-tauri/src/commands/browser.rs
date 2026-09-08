@@ -470,11 +470,14 @@ pub async fn find_core(
             }
         })
         .map_err(|e| window_err("Failed to search the page", e))?;
-    // A search that never answers must not hang the caller; "no match" is the
-    // honest thing to show then.
+    // A search that never answers must not hang the caller — but it must not
+    // be reported as "no match" either: the engine may still highlight one a
+    // moment later, and the bar would be saying the opposite of the screen.
+    // An error leaves the bar showing nothing at all.
     match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
         Ok(Ok(found)) => Ok(found),
-        _ => Ok(false),
+        Ok(Err(_)) => Err(window_err("Failed to search the page", "the search was dropped")),
+        Err(_) => Err(window_err("Failed to search the page", "WebKit did not answer")),
     }
 }
 

@@ -127,7 +127,15 @@ fn watch_load(app: AppHandle, tab_id: String, seq: u64) {
                 return;
             }
             let has_document = surface.url().is_ok();
-            let next = registry.update_state(&tab_id, |state| {
+            let next = registry.update(&tab_id, |tab| {
+                // This very navigation turned into a download: it was never
+                // going to commit, so there is nothing to report.
+                if tab.download_seq == Some(seq) {
+                    tab.download_seq = None;
+                    settle_after_download(&mut tab.state);
+                    return tab.state.clone();
+                }
+                let state = &mut tab.state;
                 state.loading = false;
                 // The load ended without the requested page: either nothing
                 // ever committed, or an older document is still showing while
@@ -149,6 +157,7 @@ fn watch_load(app: AppHandle, tab_id: String, seq: u64) {
                         url: Some(url),
                     });
                 }
+                state.clone()
             });
             if let Some(next) = next {
                 events::emit_state(&app, &next);
@@ -159,24 +168,20 @@ fn watch_load(app: AppHandle, tab_id: String, seq: u64) {
 }
 
 /// A navigation turned into a download. Nothing will ever commit for it, so
-/// the load watcher has to stand down: without this it would see "the
-/// requested address never arrived" and paint the error page over the
-/// document the tab is still perfectly happily showing. The tab keeps that
-/// document; the download reports itself through `browser://download`.
+/// the watcher armed for it must not report "the requested address never
+/// arrived" and paint an error page over the document the tab is still
+/// perfectly happily showing.
+///
+/// This only MARKS the generation; the watcher settles when it concludes.
+/// Retiring the watcher here instead would be wrong whenever the download's
+/// callback arrives late: by then the tab may be loading something else, and
+/// clearing that navigation's state would both stop its spinner early and
+/// swallow its real failure.
 pub fn navigation_became_download(app: &AppHandle, tab_id: &str) {
     let Some(registry) = app.try_state::<BrowserRegistry>() else {
         return;
     };
-    let state = registry.update(tab_id, |tab| {
-        // A newer `load_seq` retires the watcher armed for the navigation
-        // that turned out to be this download.
-        tab.load_seq += 1;
-        settle_after_download(&mut tab.state);
-        tab.state.clone()
-    });
-    if let Some(state) = state {
-        events::emit_state(app, &state);
-    }
+    registry.update(tab_id, |tab| tab.download_seq = Some(tab.load_seq));
 }
 
 pub fn title_changed(app: &AppHandle, tab_id: &str, title: String) {

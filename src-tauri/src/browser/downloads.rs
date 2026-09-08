@@ -15,6 +15,7 @@
 //!   limitation), so the destination chosen at request time is remembered here
 //!   and matched back by URL when the transfer ends.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -54,6 +55,12 @@ pub struct BrowserDownload {
 #[derive(Default)]
 pub struct BrowserDownloads {
     entries: Mutex<Vec<BrowserDownload>>,
+    /// Destinations handed to the engine that no transfer has finished with
+    /// yet. `unique_path` cannot reserve a path on disk — the engines require
+    /// a destination that does NOT exist — so two downloads started in the
+    /// same instant would otherwise be handed the same free name and write
+    /// over each other.
+    reserved: Mutex<HashSet<PathBuf>>,
 }
 
 static DOWNLOAD_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -65,12 +72,26 @@ impl BrowserDownloads {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn reserved(&self) -> std::sync::MutexGuard<'_, HashSet<PathBuf>> {
+        self.reserved
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn push(&self, download: BrowserDownload) {
         let mut entries = self.lock();
         entries.push(download);
-        if entries.len() > HISTORY_LIMIT {
-            let overflow = entries.len() - HISTORY_LIMIT;
-            entries.drain(0..overflow);
+        // Only FINISHED records are evictable: dropping a running one would
+        // leave its completion with nothing to update, and the frontend would
+        // show it as downloading for ever.
+        while entries.len() > HISTORY_LIMIT {
+            let Some(oldest_done) = entries
+                .iter()
+                .position(|d| d.state != DownloadState::Started)
+            else {
+                break;
+            };
+            entries.remove(oldest_done);
         }
     }
 
@@ -94,7 +115,10 @@ impl BrowserDownloads {
                 entry.path = path.to_string_lossy().to_string();
             }
         }
-        Some(entry.clone())
+        let done = entry.clone();
+        drop(entries);
+        self.reserved().remove(Path::new(&done.path));
+        Some(done)
     }
 
     pub fn list(&self) -> Vec<BrowserDownload> {
@@ -103,6 +127,15 @@ impl BrowserDownloads {
 
     pub fn clear(&self) {
         self.lock().clear();
+    }
+
+    /// A free destination for `file_name`, remembered so a second download
+    /// started before this one finishes cannot be handed the same path.
+    fn reserve(&self, dir: &Path, file_name: &str) -> PathBuf {
+        let mut reserved = self.reserved();
+        let path = unique_path_excluding(dir, file_name, &reserved);
+        reserved.insert(path.clone());
+        path
     }
 }
 
@@ -144,6 +177,11 @@ pub fn safe_file_name(suggested: &str) -> String {
     if cleaned.is_empty() || cleaned == ".." {
         return "download".to_string();
     }
+    // `CON`, `NUL.txt`, `LPT1`… still name DEVICES on Windows, whatever the
+    // extension: writing there either fails or talks to hardware. Neutralised
+    // on every platform so a profile is portable and the tests are not
+    // per-OS.
+    let cleaned = &prefix_reserved_device_name(cleaned);
     // Long names are a filesystem error, not a security problem; keep the
     // extension by trimming the stem.
     const MAX: usize = 120;
@@ -165,11 +203,38 @@ pub fn safe_file_name(suggested: &str) -> String {
     format!("{stem}{ext}")
 }
 
+const WINDOWS_DEVICE_NAMES: [&str; 22] = [
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+fn prefix_reserved_device_name(name: &str) -> String {
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_lowercase();
+    if WINDOWS_DEVICE_NAMES.contains(&stem.as_str()) {
+        format!("_{name}")
+    } else {
+        name.to_string()
+    }
+}
+
+/// Taken = anything at this path, INCLUDING a symlink (`symlink_metadata`
+/// does not follow it). A dangling link reports "nothing here" to `exists()`,
+/// and handing that path to the engine would write through the link to
+/// wherever it points — outside the downloads directory.
+fn path_is_taken(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
 /// `dir/name`, with ` (1)`, ` (2)`… appended before the extension until the
 /// path is free. A download NEVER replaces a file that is already there.
 pub fn unique_path(dir: &Path, file_name: &str) -> PathBuf {
+    unique_path_excluding(dir, file_name, &HashSet::new())
+}
+
+fn unique_path_excluding(dir: &Path, file_name: &str, taken: &HashSet<PathBuf>) -> PathBuf {
+    let free = |path: &Path| !taken.contains(path) && !path_is_taken(path);
     let candidate = dir.join(file_name);
-    if !candidate.exists() {
+    if free(&candidate) {
         return candidate;
     }
     let path = Path::new(file_name);
@@ -183,7 +248,7 @@ pub fn unique_path(dir: &Path, file_name: &str) -> PathBuf {
         .unwrap_or_default();
     for counter in 1..10_000 {
         let candidate = dir.join(format!("{stem} ({counter}){ext}"));
-        if !candidate.exists() {
+        if free(&candidate) {
             return candidate;
         }
     }
@@ -208,10 +273,13 @@ pub fn requested(app: &AppHandle, tab_id: &str, url: &str, destination: &mut Pat
         );
         return false;
     }
+    let Some(downloads) = app.try_state::<BrowserDownloads>() else {
+        return false;
+    };
     // The engine already suggested a name (and on macOS a whole path); only
     // its last component is used, and only after sanitising.
     let file_name = safe_file_name(&file_name_of(destination));
-    let path = unique_path(&dir, &file_name);
+    let path = downloads.reserve(&dir, &file_name);
     *destination = path.clone();
 
     let seq = DOWNLOAD_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
@@ -223,11 +291,10 @@ pub fn requested(app: &AppHandle, tab_id: &str, url: &str, destination: &mut Pat
         path: path.to_string_lossy().to_string(),
         state: DownloadState::Started,
     };
-    if let Some(downloads) = app.try_state::<BrowserDownloads>() {
-        downloads.push(download.clone());
-    }
-    // A click that turns into a download leaves the tab's navigation
-    // unfinished for ever; tell the tab so its load watcher stands down.
+    downloads.push(download.clone());
+    // The navigation that produced this download will never commit; mark the
+    // generation so its load watcher settles quietly instead of reporting a
+    // page that failed to arrive.
     super::hooks::navigation_became_download(app, tab_id);
     events::emit_download(app, &download);
     true
@@ -315,7 +382,7 @@ mod tests {
             tab_id: "t1".into(),
             url: url.into(),
             file_name: "a.bin".into(),
-            path: "/tmp/a.bin".into(),
+            path: format!("/tmp/{id}.bin"),
             state: DownloadState::Started,
         };
         downloads.push(record("dl-1", "https://example.com/a"));
@@ -334,14 +401,97 @@ mod tests {
         assert_eq!(again.state, DownloadState::Failed);
         assert!(downloads.finish("https://example.com/a", true, None).is_none());
         // A failed download keeps the path it was going to be written to.
-        assert_eq!(again.path, "/tmp/a.bin");
+        assert_eq!(again.path, "/tmp/dl-3.bin");
 
+        // Finished records are the evictable ones (see the cap test below).
         for i in 0..HISTORY_LIMIT + 5 {
-            downloads.push(record(&format!("x-{i}"), "https://example.com/c"));
+            let url = format!("https://example.com/c{i}");
+            downloads.push(record(&format!("x-{i}"), &url));
+            downloads.finish(&url, true, None);
         }
         assert_eq!(downloads.list().len(), HISTORY_LIMIT);
         downloads.clear();
         assert!(downloads.list().is_empty());
+    }
+
+    #[test]
+    fn windows_device_names_cannot_survive() {
+        assert_eq!(safe_file_name("CON"), "_CON");
+        assert_eq!(safe_file_name("nul.txt"), "_nul.txt");
+        assert_eq!(safe_file_name("LPT1.tar.gz"), "_LPT1.tar.gz");
+        // Only the exact stems; a name that merely starts with one is fine.
+        assert_eq!(safe_file_name("console.log"), "console.log");
+        assert_eq!(safe_file_name("com10.txt"), "com10.txt");
+    }
+
+    /// A dangling symlink is "nothing here" to `exists()`, and the engine
+    /// would write through it to wherever it points.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_in_the_way_counts_as_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(dir.path().join("nowhere"), dir.path().join("report.pdf"))
+            .unwrap();
+        assert!(!dir.path().join("report.pdf").exists());
+        assert_eq!(
+            unique_path(dir.path(), "report.pdf"),
+            dir.path().join("report (1).pdf")
+        );
+    }
+
+    #[test]
+    fn two_downloads_started_at_once_get_different_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let downloads = BrowserDownloads::default();
+        // Neither file exists yet: without a reservation both would be told
+        // to write to `report.pdf`.
+        let first = downloads.reserve(dir.path(), "report.pdf");
+        let second = downloads.reserve(dir.path(), "report.pdf");
+        assert_eq!(first, dir.path().join("report.pdf"));
+        assert_eq!(second, dir.path().join("report (1).pdf"));
+
+        // The reservation is released when the transfer ends, so the name is
+        // reusable once the file is gone again.
+        downloads.push(BrowserDownload {
+            id: "dl-1".into(),
+            tab_id: "t1".into(),
+            url: "https://example.com/report.pdf".into(),
+            file_name: "report.pdf".into(),
+            path: first.to_string_lossy().to_string(),
+            state: DownloadState::Started,
+        });
+        downloads.finish("https://example.com/report.pdf", true, None);
+        assert_eq!(downloads.reserve(dir.path(), "report.pdf"), first);
+    }
+
+    /// The cap must never drop a transfer that is still running: its
+    /// completion would find nothing and the UI would say "downloading" for
+    /// ever.
+    #[test]
+    fn the_history_cap_never_evicts_a_running_download() {
+        let downloads = BrowserDownloads::default();
+        let record = |id: &str, state: DownloadState| BrowserDownload {
+            id: id.into(),
+            tab_id: "t1".into(),
+            url: format!("https://example.com/{id}"),
+            file_name: "a.bin".into(),
+            path: format!("/tmp/{id}.bin"),
+            state,
+        };
+        for i in 0..HISTORY_LIMIT + 4 {
+            downloads.push(record(&format!("run-{i}"), DownloadState::Started));
+        }
+        // Nothing finished, so nothing may be evicted, cap or no cap.
+        assert_eq!(downloads.list().len(), HISTORY_LIMIT + 4);
+
+        downloads.finish("https://example.com/run-0", true, None);
+        downloads.finish("https://example.com/run-1", true, None);
+        downloads.push(record("newest", DownloadState::Started));
+        let ids: Vec<String> = downloads.list().into_iter().map(|d| d.id).collect();
+        // The two finished ones went first; every running record survived.
+        assert!(!ids.contains(&"run-0".to_string()));
+        assert!(ids.contains(&"run-2".to_string()));
+        assert!(ids.contains(&"newest".to_string()));
     }
 
     #[test]

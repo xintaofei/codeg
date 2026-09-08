@@ -11,6 +11,7 @@ import {
 import * as api from "@/lib/api"
 import {
   getBrowserTabState,
+  markBrowserTabHidden,
   resetBrowserTabStoreForTests,
   setBrowserTabState,
 } from "@/lib/browser/browser-tab-store"
@@ -3503,7 +3504,10 @@ describe("browser tabs", () => {
     expect(readTabs()).toHaveLength(2)
   })
 
-  it("does not restore over tabs this window already has", () => {
+  // A tab opened before the restore ran (a deep link, an agent request —
+  // the capability probe is a round trip) must not cost the user the stored
+  // set; and a page already open must not be duplicated.
+  it("merges a restore into tabs this window already has", () => {
     render(
       <WorkspaceProvider>
         <BrowserProbe />
@@ -3511,7 +3515,15 @@ describe("browser tabs", () => {
     )
     act(() => screen.getByText("open").click())
     act(() => screen.getByText("restore").click())
-    expect(readTabs()).toHaveLength(1)
+    expect(readTabs().map((t) => t.url)).toEqual([
+      "https://example.com/docs#top",
+      "https://restored.example/one",
+      "https://restored.example/two",
+    ])
+
+    // The one-tab-per-URL rule holds across a repeat restore.
+    act(() => screen.getByText("restore").click())
+    expect(readTabs()).toHaveLength(3)
   })
 
   it("suspending a loaded tab keeps the record at the page it was showing", () => {
@@ -3543,6 +3555,12 @@ describe("browser tabs", () => {
         openerTabId: null,
       })
     )
+    // Only a tab that is off screen may be released; the suspender's own
+    // bookkeeping says so, and the action re-checks it.
+    act(() => screen.getByText("suspend-first").click())
+    expect(readTabs()[0].url).toBe("https://example.com/docs#top")
+    act(() => markBrowserTabHidden(opened.id))
+
     act(() => screen.getByText("suspend-first").click())
     const tabs = readTabs()
     expect(tabs).toHaveLength(1)

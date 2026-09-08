@@ -13,6 +13,7 @@ import {
   browserWorkspaceTabId,
   claimSurfaceCreation,
   forgetSurfaceCreation,
+  surfaceClaimIsCurrent,
   getBrowserTabState,
   markBrowserTabHidden,
   markBrowserTabShown,
@@ -108,10 +109,19 @@ describe("browser tab store", () => {
   // The ledger is what stops a StrictMode double effect (or a re-mounted
   // host) from creating a second webview for one tab.
   it("hands the surface-creation claim to exactly one caller until released", () => {
-    expect(claimSurfaceCreation("abc")).toBe(true)
-    expect(claimSurfaceCreation("abc")).toBe(false)
+    const token = claimSurfaceCreation("abc")
+    expect(token).not.toBeNull()
+    expect(claimSurfaceCreation("abc")).toBeNull()
+    expect(surfaceClaimIsCurrent("abc", token!)).toBe(true)
+
     forgetSurfaceCreation("abc")
-    expect(claimSurfaceCreation("abc")).toBe(true)
+    // The old holder can now tell that the surface it is building is nobody's.
+    expect(surfaceClaimIsCurrent("abc", token!)).toBe(false)
+    const next = claimSurfaceCreation("abc")
+    expect(next).not.toBeNull()
+    expect(next).not.toBe(token)
+    // A claim taken meanwhile does not make the old token current again.
+    expect(surfaceClaimIsCurrent("abc", token!)).toBe(false)
   })
 
   // Releasing a tab returns it to "not loaded": the next host that mounts
@@ -119,9 +129,11 @@ describe("browser tab store", () => {
   // restored) tab resumable through the same code path.
   it("releasing a tab frees its claim", () => {
     setBrowserTabState(state())
-    expect(claimSurfaceCreation("abc")).toBe(true)
+    const token = claimSurfaceCreation("abc")
+    expect(token).not.toBeNull()
     releaseBrowserTab("browser:abc")
-    expect(claimSurfaceCreation("abc")).toBe(true)
+    expect(surfaceClaimIsCurrent("abc", token!)).toBe(false)
+    expect(claimSurfaceCreation("abc")).not.toBeNull()
   })
 
   it("stamps when a tab left the screen", () => {

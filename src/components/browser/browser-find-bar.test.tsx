@@ -26,7 +26,7 @@ const tab = {
 function renderBar(open = true, onClose = vi.fn()) {
   const view = render(
     <NextIntlClientProvider locale="en" messages={enMessages}>
-      <BrowserFindBar tab={tab} open={open} onClose={onClose} />
+      <BrowserFindBar tab={tab} open={open} focusToken={0} onClose={onClose} />
     </NextIntlClientProvider>
   )
   return { ...view, onClose }
@@ -89,6 +89,29 @@ describe("BrowserFindBar", () => {
     expect(mocks.browserFind).toHaveBeenLastCalledWith("abc", "", true)
   })
 
+  // Each search is a round trip; an answer that arrives after a newer search
+  // must not relabel the query on screen now.
+  it("ignores an answer that a newer search has superseded", async () => {
+    let settleFirst: (found: boolean) => void = () => {}
+    mocks.browserFind
+      .mockImplementationOnce(
+        () => new Promise<boolean>((resolve) => (settleFirst = resolve))
+      )
+      .mockResolvedValueOnce(false)
+    renderBar()
+    const input = screen.getByLabelText("Find in page")
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "a" } })
+      fireEvent.change(input, { target: { value: "az" } })
+    })
+    // The newer search already said "no matches".
+    expect(screen.getByText("No matches")).toBeInTheDocument()
+    await act(async () => {
+      settleFirst(true)
+    })
+    expect(screen.getByText("No matches")).toBeInTheDocument()
+  })
+
   it("closes on Escape and drops the highlight when it goes away", async () => {
     const onClose = vi.fn()
     const { rerender } = renderBar(true, onClose)
@@ -99,7 +122,12 @@ describe("BrowserFindBar", () => {
     await act(async () => {
       rerender(
         <NextIntlClientProvider locale="en" messages={enMessages}>
-          <BrowserFindBar tab={tab} open={false} onClose={onClose} />
+          <BrowserFindBar
+            tab={tab}
+            open={false}
+            focusToken={0}
+            onClose={onClose}
+          />
         </NextIntlClientProvider>
       )
     })

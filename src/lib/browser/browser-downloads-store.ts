@@ -12,8 +12,12 @@ import type { BrowserDownload } from "./types"
 
 type Listener = () => void
 
+/** Mirrors the backend's own history cap so a long session cannot accumulate
+ *  records for ever. */
+export const BROWSER_DOWNLOAD_HISTORY_LIMIT = 32
+
 const listeners = new Set<Listener>()
-// Newest first; the backend caps its own history, this mirrors it.
+// Newest first.
 let downloads: BrowserDownload[] = []
 const dismissed = new Set<string>()
 
@@ -43,14 +47,17 @@ export function setBrowserDownload(download: BrowserDownload): void {
     downloads = [...downloads]
     downloads[index] = download
   } else {
-    downloads = [download, ...downloads]
+    downloads = [download, ...downloads].slice(
+      0,
+      BROWSER_DOWNLOAD_HISTORY_LIMIT
+    )
   }
   notify()
 }
 
 /** Initial list from the backend (oldest first there, newest first here). */
 export function hydrateBrowserDownloads(list: BrowserDownload[]): void {
-  downloads = [...list].reverse()
+  downloads = [...list].reverse().slice(0, BROWSER_DOWNLOAD_HISTORY_LIMIT)
   notify()
 }
 

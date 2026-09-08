@@ -114,10 +114,13 @@ pub fn handle_message(app: &AppHandle, tab_id: &str, raw: String, main_frame: bo
         // A browser shortcut the page had focus for. The set is closed here,
         // not in the page: whatever the helper claims, only a name from this
         // list reaches the frontend, and it carries nothing else.
+        //
+        // Deliberately NOT gated on the main frame, unlike `hello` and
+        // `nav-state`: a keystroke is delivered only to the frame that holds
+        // focus, so gating would make ⌘F dead whenever the caret is inside an
+        // iframe. The tab id comes from the source webview, not from the
+        // payload, so a subframe still cannot speak for another tab.
         "shortcut" => {
-            if !(main_frame && envelope.top) {
-                return;
-            }
             let name = envelope.payload.get("name").and_then(Value::as_str);
             if name == Some("find") {
                 events::emit_shortcut(app, tab_id, "find");

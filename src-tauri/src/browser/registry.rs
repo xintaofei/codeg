@@ -39,6 +39,12 @@ pub struct BrowserTab {
     /// Bumped on every navigation start; a load watcher captures it and
     /// stands down when a newer navigation supersedes its own.
     pub load_seq: u64,
+    /// Set to `load_seq` when a navigation turned out to be a download. That
+    /// navigation never commits, so its watcher must settle quietly instead
+    /// of reporting a page that never arrived — and keying on the GENERATION
+    /// rather than on the URL keeps a redirected download working while a
+    /// later, genuinely failing navigation still reports itself.
+    pub download_seq: Option<u64>,
     pub gestures: VecDeque<GestureRecord>,
 }
 
@@ -57,6 +63,7 @@ impl BrowserTab {
             visible,
             devtools,
             load_seq: 0,
+            download_seq: None,
             gestures: VecDeque::with_capacity(GESTURE_RING_CAPACITY),
         }
     }

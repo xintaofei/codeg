@@ -16,7 +16,6 @@ import type { BrowserWorkspaceTab } from "@/contexts/workspace-context"
 import { useOptionalWorkspaceActions } from "@/contexts/workspace-context"
 import { browserReload } from "@/lib/browser/browser-api"
 import {
-  dismissAllBrowserDownloads,
   dismissBrowserDownload,
   useBrowserTabDownloads,
 } from "@/lib/browser/browser-downloads-store"
@@ -237,11 +236,7 @@ export function BrowserDownloadBar({ tab }: { tab: BrowserWorkspaceTab }) {
             className="flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-primary/8"
             title={t("dismiss")}
             aria-label={t("dismiss")}
-            onClick={() =>
-              downloads.length > 1
-                ? dismissBrowserDownload(download.id)
-                : dismissAllBrowserDownloads()
-            }
+            onClick={() => dismissBrowserDownload(download.id)}
           >
             <X className="h-3.5 w-3.5" />
           </button>

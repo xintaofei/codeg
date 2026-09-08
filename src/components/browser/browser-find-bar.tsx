@@ -28,10 +28,13 @@ const ICON_BTN =
 export function BrowserFindBar({
   tab,
   open,
+  focusToken,
   onClose,
 }: {
   tab: BrowserWorkspaceTab
   open: boolean
+  /** Bumped every time the user asks for the bar; re-focuses an open one. */
+  focusToken: number
   onClose: () => void
 }) {
   const t = useTranslations("Browser.find")
@@ -39,18 +42,29 @@ export function BrowserFindBar({
   const [query, setQuery] = useState("")
   const [missing, setMissing] = useState(false)
   const inputRef = useRef<HTMLInputElement | null>(null)
+  // Searches are answered out of order (each is a round trip to the engine):
+  // a stale answer must not relabel the query on screen now.
+  const searchSeq = useRef(0)
 
   const step = useCallback(
     (text: string, forward: boolean) => {
       if (!backendId) return
+      searchSeq.current += 1
+      const seq = searchSeq.current
       if (!text) {
         setMissing(false)
         void browserFind(backendId, "", true).catch(() => {})
         return
       }
       void browserFind(backendId, text, forward)
-        .then((found) => setMissing(!found))
-        .catch(() => setMissing(false))
+        .then((found) => {
+          if (searchSeq.current === seq) setMissing(!found)
+        })
+        .catch(() => {
+          // Includes the host's "WebKit did not answer": say nothing rather
+          // than claim there are no matches.
+          if (searchSeq.current === seq) setMissing(false)
+        })
     },
     [backendId]
   )
@@ -66,17 +80,21 @@ export function BrowserFindBar({
   }
 
   // Opening (or re-pressing ⌘F) selects what is there, the way a browser's
-  // find bar does, so a second search replaces the first by typing.
+  // find bar does, so a second search replaces the first by typing. Keyed on
+  // `focusToken` as well: pressing ⌘F again with the bar already open must
+  // pull focus back out of the page, and `open` alone does not change then.
   useEffect(() => {
     if (!open) return
     inputRef.current?.focus()
     inputRef.current?.select()
-  }, [open])
+  }, [open, focusToken])
 
   // Closing drops the engine's highlight; leaving it behind would look like
-  // a page selection the user cannot get rid of.
+  // a page selection the user cannot get rid of. Counts as a search so any
+  // answer still in flight is ignored when it lands.
   useEffect(() => {
     if (open || !backendId) return
+    searchSeq.current += 1
     void browserFind(backendId, "", true).catch(() => {})
   }, [open, backendId])
 

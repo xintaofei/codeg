@@ -43,11 +43,15 @@ export function BrowserTabView({ tab }: { tab: BrowserWorkspaceTab }) {
   // ⌘F pressed while the focus is in this view's own DOM (address bar, find
   // bar). Bound to the container rather than the window so the shortcut only
   // belongs to the browser when the browser is what the user is in.
+  // ⌘F from this view's own DOM counts the same way, so pressing it twice
+  // re-focuses the bar instead of doing nothing.
+  const [localFindRequest, setLocalFindRequest] = useState(0)
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.altKey || event.key.toLowerCase() !== "f") return
     if (!event.metaKey && !event.ctrlKey) return
     event.preventDefault()
     setFindOpen(true)
+    setLocalFindRequest((n) => n + 1)
   }
   const url = state?.url || state?.requestedUrl || tab.browser.initialUrl
   const error = state?.error ?? null
@@ -59,6 +63,7 @@ export function BrowserTabView({ tab }: { tab: BrowserWorkspaceTab }) {
       <BrowserFindBar
         tab={tab}
         open={findOpen && !ownedWindow}
+        focusToken={findRequest + localFindRequest}
         onClose={() => setFindOpen(false)}
       />
       <BrowserNoticeBar tab={tab} state={state} />

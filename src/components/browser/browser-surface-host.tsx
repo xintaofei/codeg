@@ -12,6 +12,7 @@ import {
   browserSetVisible,
 } from "@/lib/browser/browser-api"
 import { getBrowserPrefs } from "@/lib/browser/browser-prefs"
+import { browserClose } from "@/lib/browser/browser-api"
 import {
   claimSurfaceCreation,
   forgetSurfaceCreation,
@@ -19,6 +20,8 @@ import {
   markBrowserTabHidden,
   markBrowserTabShown,
   setBrowserTabState,
+  surfaceClaimIsCurrent,
+  useBrowserTabState,
 } from "@/lib/browser/browser-tab-store"
 import {
   useFallbackOverlayOpen,
@@ -121,6 +124,13 @@ export function BrowserSurfaceHost({
     }
   }, [backendId, shouldShow, tab.id])
 
+  // Whether this tab currently has a live surface. Also the re-creation
+  // signal: if the state goes away while this host is mounted — the tab was
+  // released by the background unload just as the user switched to it — the
+  // effect below runs again and loads the page instead of leaving a blank
+  // pane behind.
+  const loaded = useBrowserTabState(tab.id) !== null
+
   // Create the surface once per tab record; adopted popups and re-mounts
   // already have one (the store knows about it). A record whose surface was
   // released (background unload) is "not loaded" again and gets a new one
@@ -128,9 +138,14 @@ export function BrowserSurfaceHost({
   useEffect(() => {
     const el = ref.current
     if (!el || !backendId) return
-    if (getBrowserTabState(tab.id) || !claimSurfaceCreation(backendId)) {
+    if (getBrowserTabState(tab.id)) {
       lastBoundsRef.current = null
       lastVisibleRef.current = null
+      sync()
+      return
+    }
+    const token = claimSurfaceCreation(backendId)
+    if (token === null) {
       sync()
       return
     }
@@ -149,17 +164,25 @@ export function BrowserSurfaceHost({
       devtools: prefs.devtools,
     })
       .then((next) => {
+        // The tab was closed (or released and re-claimed) while the backend
+        // was building this webview: nobody owns it, so close it rather than
+        // leave a native view painted over the workspace for ever.
+        if (!surfaceClaimIsCurrent(backendId, token)) {
+          void browserClose(backendId).catch(() => {})
+          return
+        }
         setBrowserTabState(next)
         sync()
       })
       .catch((error: unknown) => {
+        if (!surfaceClaimIsCurrent(backendId, token)) return
         forgetSurfaceCreation(backendId)
         setCreateError(String(error))
       })
     // Intentionally not re-run on `sync` identity changes: creation is a
     // one-shot per mount, the effect below handles every later sync.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backendId, tab.id, tab.browser.initialUrl, tab.folderId])
+  }, [backendId, tab.id, tab.browser.initialUrl, tab.folderId, loaded])
 
   // Geometry and visibility tracking for the life of the mount.
   useEffect(() => {

@@ -67,6 +67,7 @@ import {
 } from "@/hooks/use-open-file-tabs-watch"
 import { useOfficeAutoPreview } from "@/lib/office-preview-prefs"
 import {
+  browserTabHiddenAt,
   getBrowserTabState,
   releaseBrowserTab,
 } from "@/lib/browser/browser-tab-store"
@@ -817,28 +818,37 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   const restoreBrowserTabs = useCallback(
     (entries: RestorableBrowserTab[]) => {
       if (entries.length === 0) return
-      if (fileTabsRef.current.some((tab) => tab.kind === "browser")) return
-      const records = entries.flatMap((entry) =>
-        normalizeUrlForDedupe(entry.url)
-          ? [
-              browserTabRecord(
-                crypto.randomUUID(),
-                entry.url,
-                entry.folderId,
-                null,
-                entry.title
-              ),
-            ]
-          : []
-      )
-      if (records.length === 0) return
-      // Records only; not activated, so no surface is created until the user
-      // switches to one. The pane state is left exactly as it was.
-      setFileTabs((prev) =>
-        prev.some((tab) => tab.kind === "browser")
-          ? prev
-          : [...prev, ...records]
-      )
+      setFileTabs((prev) => {
+        // Merge, never replace: a tab opened before the restore ran (a deep
+        // link, an agent request — the capability probe is a round trip) must
+        // not cost the user the whole stored set. Same one-tab-per-URL rule
+        // as `openBrowserTab`, so a page already open is not duplicated.
+        const open = new Set(
+          prev.flatMap((tab) =>
+            tab.kind === "browser"
+              ? [normalizeUrlForDedupe(tab.browser.initialUrl) ?? ""]
+              : []
+          )
+        )
+        const records: FileWorkspaceTab[] = []
+        for (const entry of entries) {
+          const normalized = normalizeUrlForDedupe(entry.url)
+          if (!normalized || open.has(normalized)) continue
+          open.add(normalized)
+          records.push(
+            browserTabRecord(
+              crypto.randomUUID(),
+              entry.url,
+              entry.folderId,
+              null,
+              entry.title
+            )
+          )
+        }
+        // Records only; not activated, so no surface is created until the
+        // user switches to one. The pane state is left exactly as it was.
+        return records.length === 0 ? prev : [...prev, ...records]
+      })
     },
     [browserTabRecord]
   )
@@ -848,6 +858,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     if (!tab || tab.kind !== "browser") return false
     const state = getBrowserTabState(tabId)
     if (!state) return false
+    // Re-checked here, not just by the caller: the surface host may have
+    // mounted (the user switched to this tab) between the caller picking it
+    // and this call. `null` means "on screen right now", `undefined` "never
+    // shown by this document" — releasing either would blank a live pane.
+    if (typeof browserTabHiddenAt(tabId) !== "number") return false
     const url = state.url || state.requestedUrl || tab.browser.initialUrl
     const title = state.title || tab.title
     // Move the record to where the page got to before letting the surface
