@@ -77,6 +77,15 @@ pub fn begin_load(app: &AppHandle, tab_id: &str) {
     }
 }
 
+/// The tab's state once a navigation became a download: not loading, no
+/// error, and back on the document it is showing (what it "asked for" is no
+/// longer the file being fetched).
+fn settle_after_download(state: &mut crate::browser::types::BrowserTabState) {
+    state.loading = false;
+    state.error = None;
+    state.requested_url = state.url.clone();
+}
+
 const LOAD_POLL: Duration = Duration::from_millis(500);
 const LOAD_FINISH_GRACE: Duration = Duration::from_millis(300);
 
@@ -149,6 +158,27 @@ fn watch_load(app: AppHandle, tab_id: String, seq: u64) {
     });
 }
 
+/// A navigation turned into a download. Nothing will ever commit for it, so
+/// the load watcher has to stand down: without this it would see "the
+/// requested address never arrived" and paint the error page over the
+/// document the tab is still perfectly happily showing. The tab keeps that
+/// document; the download reports itself through `browser://download`.
+pub fn navigation_became_download(app: &AppHandle, tab_id: &str) {
+    let Some(registry) = app.try_state::<BrowserRegistry>() else {
+        return;
+    };
+    let state = registry.update(tab_id, |tab| {
+        // A newer `load_seq` retires the watcher armed for the navigation
+        // that turned out to be this download.
+        tab.load_seq += 1;
+        settle_after_download(&mut tab.state);
+        tab.state.clone()
+    });
+    if let Some(state) = state {
+        events::emit_state(app, &state);
+    }
+}
+
 pub fn title_changed(app: &AppHandle, tab_id: &str, title: String) {
     let Some(registry) = app.try_state::<BrowserRegistry>() else {
         return;
@@ -162,6 +192,57 @@ pub fn title_changed(app: &AppHandle, tab_id: &str, title: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browser::types::{BrowserTabState, ChannelKind, SurfaceKind};
+
+    fn state(url: &str, requested: &str) -> BrowserTabState {
+        BrowserTabState {
+            tab_id: "t1".into(),
+            owner_window: "main".into(),
+            surface: SurfaceKind::Child,
+            channel: ChannelKind::Native,
+            url: url.into(),
+            requested_url: requested.into(),
+            title: "Listing".into(),
+            favicon: None,
+            loading: true,
+            can_go_back: false,
+            can_go_forward: false,
+            origin: None,
+            zoom: 1.0,
+            error: Some(BrowserErrorInfo {
+                kind: BrowserErrorKind::Failed,
+                message: String::new(),
+                url: Some(requested.into()),
+            }),
+            remote_host: None,
+            opener_tab_id: None,
+        }
+    }
+
+    /// Clicking a link that downloads leaves the navigation for ever
+    /// uncommitted. Without this the load watcher's "the requested address
+    /// never arrived" rule paints an error page over a perfectly good page.
+    #[test]
+    fn a_download_leaves_the_tab_on_the_page_it_is_showing() {
+        let mut s = state("http://127.0.0.1:8790/", "http://127.0.0.1:8790/a.bin");
+        settle_after_download(&mut s);
+        assert!(!s.loading);
+        assert!(s.error.is_none());
+        assert_eq!(s.requested_url, "http://127.0.0.1:8790/");
+        assert_eq!(s.url, "http://127.0.0.1:8790/");
+        assert_eq!(s.title, "Listing");
+    }
+
+    /// A tab opened straight on a download URL has no document at all; it
+    /// stays empty rather than claiming a failure.
+    #[test]
+    fn a_download_into_a_fresh_tab_settles_empty() {
+        let mut s = state("", "http://127.0.0.1:8790/a.bin");
+        settle_after_download(&mut s);
+        assert!(!s.loading);
+        assert!(s.error.is_none());
+        assert_eq!(s.requested_url, "");
+    }
 
     #[test]
     fn origin_is_none_for_opaque_urls() {

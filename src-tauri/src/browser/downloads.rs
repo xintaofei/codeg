@@ -226,6 +226,9 @@ pub fn requested(app: &AppHandle, tab_id: &str, url: &str, destination: &mut Pat
     if let Some(downloads) = app.try_state::<BrowserDownloads>() {
         downloads.push(download.clone());
     }
+    // A click that turns into a download leaves the tab's navigation
+    // unfinished for ever; tell the tab so its load watcher stands down.
+    super::hooks::navigation_became_download(app, tab_id);
     events::emit_download(app, &download);
     true
 }
