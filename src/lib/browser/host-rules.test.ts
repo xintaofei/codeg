@@ -23,12 +23,20 @@ describe("host rule patterns", () => {
       "*.corp.example:8443",
       "[::1]:3000",
       "[::1]",
+      "[0:0:0:0:0:0:0:1]",
       "127.0.0.1",
       "10.0.0.1:8080",
       "*:443",
     ]) {
       expect(validateHostRulePattern(ok), ok).toBeNull()
     }
+  })
+
+  it("lower-cases ASCII only, like the Rust side", () => {
+    // U+212A KELVIN SIGN folds to `k` under Unicode lower-casing; a pattern
+    // is ASCII, so it is not a pattern on either side.
+    expect(validateHostRulePattern("\u212A.example")).toBe("invalid")
+    expect(normalizeHostRulePattern("\u212A.example")).toBe("\u212A.example")
   })
 
   it("refuses URLs, paths, bad ports and malformed hosts", () => {
@@ -48,6 +56,8 @@ describe("host rule patterns", () => {
       "example..com",
       "[::1",
       "[::1]x",
+      "[1::2::3]",
+      "[not-an-address]",
       "*.*",
     ]) {
       expect(validateHostRulePattern(bad), bad).toBe("invalid")
@@ -129,6 +139,31 @@ describe("matchHostRule", () => {
     ).toBeNull()
     expect(matchHostRule([], new URL("https://example.com/"))).toBeNull()
     expect(matchHostRule(undefined, new URL("https://example.com/"))).toBeNull()
+  })
+
+  // Mirror of the Rust `host_spellings_that_name_the_same_server_match`.
+  it("matches every spelling of the same server, and nothing without a host", () => {
+    const block: HostRule[] = [{ pattern: "example.com", action: "block" }]
+    expect(matchHostRule(block, new URL("http://example.com./"))).not.toBeNull()
+    expect(matchHostRule(block, new URL("http://EXAMPLE.COM/"))).not.toBeNull()
+    expect(
+      matchHostRule(block, new URL("http://user:pw@example.com:8080/"))
+    ).not.toBeNull()
+    expect(
+      matchHostRule(
+        [{ pattern: "[0:0:0:0:0:0:0:1]:3000", action: "block" }],
+        new URL("http://[::1]:3000/")
+      )
+    ).not.toBeNull()
+    expect(
+      matchHostRule(
+        [{ pattern: "[::1]", action: "block" }],
+        new URL("http://[0:0:0:0:0:0:0:1]/")
+      )
+    ).not.toBeNull()
+    expect(
+      matchHostRule([{ pattern: "*", action: "block" }], new URL("about:blank"))
+    ).toBeNull()
   })
 
   it("picks the most specific rule regardless of order, first listed on a tie", () => {

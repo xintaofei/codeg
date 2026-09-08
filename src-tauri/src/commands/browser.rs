@@ -450,16 +450,26 @@ pub async fn set_visible_core(
     freeze: bool,
 ) -> Result<Option<FrozenFrame>, AppCommandError> {
     let surface = surface_of(registry, tab_id)?;
+    // Arrival order first, then the tab's lock: requests apply one at a
+    // time and in the order they came, and one that a newer request has
+    // overtaken while it waited or captured is dropped rather than applied
+    // late (the newer one carries the state that stands).
     let seq = registry
         .update(tab_id, |tab| {
             tab.visible_seq += 1;
             tab.visible_seq
         })
         .unwrap_or(0);
+    let lock = registry.visibility_lock(tab_id);
+    let _applying = lock.lock().await;
+    let superseded = || registry.update(tab_id, |tab| tab.visible_seq) != Some(seq);
+    if superseded() {
+        return Ok(None);
+    }
     let mut frame = None;
     if !visible && freeze && surface.is_embedded() {
         frame = capture_freeze_frame(&surface).await;
-        if registry.update(tab_id, |tab| tab.visible_seq) != Some(seq) {
+        if superseded() {
             return Ok(None);
         }
     }
@@ -500,13 +510,19 @@ pub fn navigate_core(
     let url = parse_web_url(raw_url)?;
     let surface = surface_of(registry, tab_id)?;
     // Refused by a site rule: the block page takes the place of the page,
-    // as in a browser, and nothing is loaded.
+    // as in a browser, and nothing is loaded. Whatever was loading before
+    // is stopped and its watcher retired, or its commit or failure would
+    // land on top of the block a moment later.
     if blocked_by_policy(app, &url) {
+        let _ = surface.stop();
         let state = registry
-            .update_state(tab_id, |state| {
-                state.requested_url = url.to_string();
-                state.loading = false;
-                state.error = Some(blocked_error(&url));
+            .update(tab_id, |tab| {
+                tab.load_seq += 1;
+                tab.provisional_url = None;
+                tab.state.requested_url = url.to_string();
+                tab.state.loading = false;
+                tab.state.error = Some(blocked_error(&url));
+                tab.state.clone()
             })
             .ok_or_else(|| AppCommandError::not_found(format!("browser tab {tab_id} not found")))?;
         events::emit_state(app, &state);

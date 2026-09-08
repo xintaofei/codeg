@@ -433,6 +433,13 @@ pub fn debug_view(webview: &wry::WebView) -> serde_json::Value {
 pub enum NavigationEvent {
     /// A main-frame navigation started; the URL it is heading for.
     Started(String),
+    /// The provisional navigation was redirected by the server; the URL it
+    /// is heading for now.
+    Redirected(String),
+    /// The provisional navigation was ended by policy — the host refused the
+    /// address it was redirected to, or the response became a download — so
+    /// no page is coming for it, and that is not a failure of the page.
+    Interrupted,
     Failed(LoadFailure),
 }
 
@@ -520,6 +527,17 @@ define_class!(
             }
         }
 
+        #[unsafe(method(webView:didReceiveServerRedirectForProvisionalNavigation:))]
+        fn did_redirect_provisional(&self, webview: &WKWebView, _navigation: Option<&WKNavigation>) {
+            // SAFETY: main thread, live webview; `URL` is the redirect target
+            // by the time WebKit reports the redirect.
+            let url = unsafe { webview.URL().and_then(|u| u.absoluteString()) }.map(|s| s.to_string());
+            tracing::debug!("[browser] navigation redirected: {url:?}");
+            if let Some(url) = url {
+                (self.ivars().sink)(NavigationEvent::Redirected(url));
+            }
+        }
+
         #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
         fn did_fail_provisional(&self, _webview: &WKWebView, _navigation: Option<&WKNavigation>, error: &NSError) {
             self.report_failure(error, true);
@@ -554,6 +572,12 @@ impl CodegNavigationDelegate {
             error.localizedDescription()
         );
         let Some(kind) = kind else {
+            // WebKitErrorFrameLoadInterruptedByPolicyChange on the load in
+            // flight: our own navigation handler cancelled it (a refused
+            // redirect target) or it turned into a download.
+            if provisional && domain == "WebKitErrorDomain" && code == 102 {
+                (self.ivars().sink)(NavigationEvent::Interrupted);
+            }
             return;
         };
         // SAFETY: main thread; the dictionary and its values are live.

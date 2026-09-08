@@ -93,6 +93,14 @@ export function BrowserSurfaceHost({
   // Which hide a frame belongs to: one that lands after a later show or hide
   // is dropped rather than painted over the wrong state.
   const hideSeqRef = useRef(0)
+  // The error page replacing the surface also replaces any frame: a frame
+  // kept through an error would resurface, stale, when the error clears
+  // under a still-open overlay. Adjusted during render on the prop change.
+  const [wasHidden, setWasHidden] = useState(hidden)
+  if (wasHidden !== hidden) {
+    setWasHidden(hidden)
+    if (hidden) setFrozen(null)
+  }
   const occluded = useNativeSurfaceOccluded()
   const fallbackOverlay = useFallbackOverlayOpen()
   const view = useWorkspaceView()
@@ -135,12 +143,18 @@ export function BrowserSurfaceHost({
     if (lastVisibleRef.current !== visible) {
       lastVisibleRef.current = visible
       hideSeqRef.current += 1
+      const seq = hideSeqRef.current
       if (visible) {
+        // The frame goes once the native view is back — and only if this
+        // show is still the latest request: an overlay closed and reopened
+        // at once has a newer hide in flight, whose frame this answer must
+        // not wipe from under it.
         void browserSetVisible(backendId, true, false)
           .catch(() => {})
-          .finally(() => setFrozen(null))
+          .finally(() => {
+            if (hideSeqRef.current === seq) setFrozen(null)
+          })
       } else {
-        const seq = hideSeqRef.current
         const freeze =
           overlayHide &&
           bounds.width > 0 &&

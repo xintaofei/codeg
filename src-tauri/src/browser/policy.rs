@@ -95,7 +95,7 @@ fn parse_pattern(pattern: &str) -> Option<ParsedPattern> {
     if trimmed.is_empty() || trimmed.len() > MAX_PATTERN_LEN {
         return None;
     }
-    let (host, port) = if let Some(rest) = trimmed.strip_prefix('[') {
+    let (host, port, bracketed) = if let Some(rest) = trimmed.strip_prefix('[') {
         // `[::1]:3000` — an IPv6 literal keeps its brackets; the port follows.
         let close = rest.find(']')?;
         let host = &rest[..close];
@@ -105,14 +105,14 @@ fn parse_pattern(pattern: &str) -> Option<ParsedPattern> {
             None if tail.is_empty() => None,
             None => return None,
         };
-        (host.to_string(), port.map(str::to_string))
+        (host.to_string(), port.map(str::to_string), true)
     } else {
         match trimmed.rsplit_once(':') {
             Some((host, digits)) if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) => {
-                (host.to_string(), Some(digits.to_string()))
+                (host.to_string(), Some(digits.to_string()), false)
             }
             Some(_) => return None,
-            None => (trimmed.clone(), None),
+            None => (trimmed.clone(), None, false),
         }
     };
     let port = match port {
@@ -126,12 +126,35 @@ fn parse_pattern(pattern: &str) -> Option<ParsedPattern> {
             return None;
         }
         HostMatcher::Suffix(format!(".{suffix}"))
-    } else if valid_hostname(&host) || valid_ipv6(&host) {
+    } else if bracketed {
+        // Brackets mean an IPv6 literal and nothing else. Stored as typed,
+        // matched in the form URLs carry (`::1`, never `0:0:0:0:0:0:0:1`),
+        // or a rule would look right and never apply.
+        HostMatcher::Exact(canonical_ipv6(&host)?)
+    } else if valid_hostname(&host) {
         HostMatcher::Exact(host)
     } else {
         return None;
     };
     Some(ParsedPattern { host, port })
+}
+
+/// An IPv6 literal (without brackets) in the canonical form the URL parser
+/// produces; `None` for anything that is not one.
+fn canonical_ipv6(host: &str) -> Option<String> {
+    host.contains(':')
+        .then(|| host.parse::<std::net::Ipv6Addr>().ok())
+        .flatten()
+        .map(|address| address.to_string())
+}
+
+/// The URL's host as a rule sees it: lower-case, without IPv6 brackets, and
+/// without a trailing dot — `example.com.` names the same server as
+/// `example.com`, and a block on one must hold for the other.
+fn rule_hostname(url: &Url) -> Option<String> {
+    let host = url.host_str()?.trim_matches(|c| c == '[' || c == ']');
+    let host = host.trim_end_matches('.');
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
 fn valid_hostname(host: &str) -> bool {
@@ -142,10 +165,6 @@ fn valid_hostname(host: &str) -> bool {
         && host
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_')
-}
-
-fn valid_ipv6(host: &str) -> bool {
-    host.contains(':') && host.bytes().all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
 }
 
 /// Whether `pattern` is one the table accepts (the settings UI validates
@@ -184,7 +203,7 @@ impl ParsedPattern {
 /// among equally specific ones the first listed. Unparsable patterns never
 /// match. Same algorithm as `matchHostRule` on the frontend.
 pub fn match_host_rule<'a>(rules: &'a [HostRule], url: &Url) -> Option<&'a HostRule> {
-    let hostname = url.host_str()?.trim_matches(|c| c == '[' || c == ']').to_ascii_lowercase();
+    let hostname = rule_hostname(url)?;
     let port = effective_port(url);
     let mut best: Option<(&HostRule, (u8, usize, u8))> = None;
     for rule in rules {
@@ -493,6 +512,7 @@ mod tests {
             "*.corp.example:8443",
             "[::1]:3000",
             "[::1]",
+            "[0:0:0:0:0:0:0:1]",
             "127.0.0.1",
             "10.0.0.1:8080",
             "*:443",
@@ -515,10 +535,30 @@ mod tests {
             "example..com",
             "[::1",
             "[::1]x",
+            "[1::2::3]",
+            "[not-an-address]",
+            "[fe80::1%25en0]",
             "*.*",
         ] {
             assert!(!valid_pattern(bad), "{bad:?} should not parse");
         }
+    }
+
+    /// The same server under a different spelling of its name must not slip
+    /// past a rule: a trailing dot, a long-form IPv6 literal, upper case.
+    #[test]
+    fn host_spellings_that_name_the_same_server_match() {
+        let block = [rule("example.com", HostRuleAction::Block)];
+        assert!(match_host_rule(&block, &u("http://example.com./")).is_some());
+        assert!(match_host_rule(&block, &u("http://EXAMPLE.COM/")).is_some());
+        assert!(match_host_rule(&block, &u("http://user:pw@example.com:8080/")).is_some());
+        let long = [rule("[0:0:0:0:0:0:0:1]:3000", HostRuleAction::Block)];
+        assert!(match_host_rule(&long, &u("http://[::1]:3000/")).is_some());
+        let short = [rule("[::1]", HostRuleAction::Block)];
+        assert!(match_host_rule(&short, &u("http://[0:0:0:0:0:0:0:1]/")).is_some());
+        // No host at all: nothing to match, not even `*`.
+        let any = [rule("*", HostRuleAction::Block)];
+        assert!(match_host_rule(&any, &u("about:blank")).is_none());
     }
 
     /// Mirror of the frontend's `matchHostRule` table.

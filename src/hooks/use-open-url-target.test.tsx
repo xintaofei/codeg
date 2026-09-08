@@ -1,4 +1,4 @@
-import { renderHook } from "@testing-library/react"
+import { act, renderHook } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const mocks = vi.hoisted(() => ({
@@ -6,11 +6,13 @@ const mocks = vi.hoisted(() => ({
   viewerOpen: vi.fn(),
   openInSystemBrowser: vi.fn(() => Promise.resolve()),
   openWithOsHandler: vi.fn(() => Promise.resolve()),
-  toast: vi.fn(),
+  toast: Object.assign(vi.fn(), { error: vi.fn() }),
   remote: false,
   route: { isConversations: true } as { isConversations: boolean } | null,
   viewerHost: null as { open: (r: unknown) => void } | null,
   actions: null as { openBrowserTab: (url: string) => string | null } | null,
+  /** The backend's answer to `browser_capabilities` for the deferral tests. */
+  transportCall: vi.fn(() => Promise.resolve(undefined as unknown)),
 }))
 
 vi.mock("next-intl", () => ({ useTranslations: () => (key: string) => key }))
@@ -31,10 +33,13 @@ vi.mock("@/lib/link-open", () => ({
 vi.mock("@/lib/transport", () => ({
   isRemoteDesktopMode: () => mocks.remote,
   isDesktop: () => true,
-  getTransport: () => ({ call: vi.fn() }),
+  getTransport: () => ({ call: mocks.transportCall }),
 }))
 
-import { setBrowserCapabilitiesForTests } from "@/lib/browser/browser-api"
+import {
+  resetBrowserCapabilitiesCacheForTests,
+  setBrowserCapabilitiesForTests,
+} from "@/lib/browser/browser-api"
 import { resetBrowserPrefsForTests } from "@/lib/browser/browser-prefs"
 import { isPrimaryModifier, useOpenUrlTarget } from "./use-open-url-target"
 
@@ -53,7 +58,11 @@ const AVAILABLE = {
 describe("useOpenUrlTarget", () => {
   beforeEach(() => {
     resetBrowserPrefsForTests()
+    resetBrowserCapabilitiesCacheForTests()
     setBrowserCapabilitiesForTests(AVAILABLE)
+    mocks.transportCall.mockReset()
+    mocks.transportCall.mockImplementation(() => Promise.resolve(AVAILABLE))
+    mocks.toast.error.mockClear()
     mocks.openBrowserTab.mockClear()
     mocks.viewerOpen.mockClear()
     mocks.openInSystemBrowser.mockClear()
@@ -98,16 +107,52 @@ describe("useOpenUrlTarget", () => {
   })
 
   it("falls back to the system browser when no built-in browser exists", () => {
-    setBrowserCapabilitiesForTests(null) // not resolved yet
-    const { result } = renderHook(() => useOpenUrlTarget())
-    expect(
-      result.current("https://example.com/", { source: "transcript" }).kind
-    ).toBe("system")
     setBrowserCapabilitiesForTests({ ...AVAILABLE, available: false })
+    const { result } = renderHook(() => useOpenUrlTarget())
     expect(
       result.current("https://example.com/", { source: "toolCard" }).kind
     ).toBe("system")
-    expect(mocks.openInSystemBrowser).toHaveBeenCalledTimes(2)
+    expect(mocks.openInSystemBrowser).toHaveBeenCalledTimes(1)
+  })
+
+  // The first moments after launch: the backend has not yet said what it can
+  // do or which hosts the administrator blocks. A click then waits for the
+  // answer instead of being routed on a guess — routed to the system browser
+  // it would slip past a managed block.
+  it("holds a click until the capabilities are known, then routes it — honouring a managed block", async () => {
+    setBrowserCapabilitiesForTests(null)
+    mocks.transportCall.mockImplementation(() =>
+      Promise.resolve({
+        ...AVAILABLE,
+        policy: {
+          enabled: true,
+          managedRules: [{ pattern: "blocked.example", action: "block" }],
+          managedSource: "/etc/codeg/policy.json",
+        },
+      })
+    )
+    const { result } = renderHook(() => useOpenUrlTarget())
+    const outcome = result.current("https://blocked.example/", {
+      source: "transcript",
+    })
+    expect(outcome.kind).toBe("deferred")
+    expect(mocks.openInSystemBrowser).not.toHaveBeenCalled()
+    expect(mocks.openBrowserTab).not.toHaveBeenCalled()
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    // Decided with the managed rules in hand: blocked, and said so.
+    expect(mocks.openInSystemBrowser).not.toHaveBeenCalled()
+    expect(mocks.openBrowserTab).not.toHaveBeenCalled()
+    expect(mocks.toast.error).toHaveBeenCalledWith("blockedHost")
+
+    // An ordinary link, once the answer is in, goes where it always goes.
+    const later = result.current("https://example.com/", {
+      source: "transcript",
+    })
+    expect(later.kind).toBe("builtin")
+    expect(mocks.openBrowserTab).toHaveBeenCalledWith("https://example.com/")
   })
 
   it("uses the viewer drawer under a full-page route", () => {

@@ -68,6 +68,9 @@ import { getCurrentWindowLabel } from "@/lib/browser/window-label"
  * Only subscribes where a built-in browser exists; in web mode there is
  * nothing to hear.
  */
+/** Delay before the one retry of a failed site-rule push. */
+const HOST_RULES_RETRY_MS = 1000
+
 export function BrowserEventsBridge() {
   const { adoptBrowserTab, closeFileTab, openBrowserTab } =
     useWorkspaceActions()
@@ -75,6 +78,34 @@ export function BrowserEventsBridge() {
   useEffect(() => {
     let cancelled = false
     const unsubscribers: Array<() => void> = []
+
+    // The user's site rules go to the backend, which enforces `block` on
+    // every navigation. Subscribed BEFORE the first await: a change written
+    // by the settings window while the capabilities round trip is in flight
+    // must reach this document's cache (the subscription is what installs
+    // the cross-window listener) and then the backend. The first push
+    // happens once capabilities say a browser exists, and carries whatever
+    // is current then. A push that fails is retried once — the command has
+    // no reason to fail except the app shutting down, and a silent
+    // divergence would be an unenforced rule.
+    let ready = false
+    const push = (retry: boolean) => {
+      // Before the backend is known to exist a change only invalidates the
+      // cache (the subscription did that); the first push below picks up
+      // whatever is current by then.
+      if (!ready) return
+      void browserSetHostRules(getBrowserPrefs().hostRules).catch(() => {
+        if (cancelled) return
+        if (retry) {
+          window.setTimeout(() => {
+            if (!cancelled) push(false)
+          }, HOST_RULES_RETRY_MS)
+        } else {
+          console.warn("[browser] site rules could not be sent to the backend")
+        }
+      })
+    }
+    unsubscribers.push(subscribeBrowserPrefs(() => push(true)))
 
     void (async () => {
       const capabilities = await browserCapabilities()
@@ -174,13 +205,10 @@ export function BrowserEventsBridge() {
         return
       }
       unsubscribers.push(...subs)
-      const pushHostRules = () => {
-        void browserSetHostRules(getBrowserPrefs().hostRules).catch(() => {
-          /* the backend keeps its last table */
-        })
-      }
-      pushHostRules()
-      unsubscribers.push(subscribeBrowserPrefs(pushHostRules))
+      ready = true
+      // The first push, whether or not a change arrived meanwhile: the
+      // backend starts with an empty table.
+      push(true)
     })()
 
     return () => {

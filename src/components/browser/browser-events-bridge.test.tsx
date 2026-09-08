@@ -332,4 +332,67 @@ describe("BrowserEventsBridge", () => {
     })
     view.unmount()
   })
+
+  // The settings window can write a rule while this document is still
+  // waiting for the backend's capabilities. The subscription that carries
+  // cross-window changes into this document's cache must already exist
+  // then, and the first push must carry that rule.
+  it("sends a rule written while the capabilities were still pending", async () => {
+    let resolveCapabilities: (caps: BrowserCapabilities) => void = () => {}
+    mocks.capabilities.mockImplementationOnce(
+      () =>
+        new Promise<BrowserCapabilities>((resolve) => {
+          resolveCapabilities = resolve
+        })
+    )
+    render(<BrowserEventsBridge />)
+    await flush()
+    expect(mocks.browserSetHostRules).not.toHaveBeenCalled()
+    // Another window's write arrives as a storage event: only a subscriber
+    // installs the listener that drops this document's cached snapshot.
+    localStorage.setItem(
+      "browser:host-rules",
+      JSON.stringify([{ pattern: "blocked.example", action: "block" }])
+    )
+    window.dispatchEvent(
+      new StorageEvent("storage", { key: "browser:host-rules" })
+    )
+    await act(async () => {
+      resolveCapabilities({
+        available: true,
+        surface: "child",
+        platform: "macos",
+        channel: "native",
+        reasons: [],
+        isolatedStorage: true,
+        proxy: { url: null, applies: "live", reason: null },
+        downloadsDir: "/Users/dev/Downloads",
+        policy: { enabled: true, managedRules: [], managedSource: null },
+      })
+      await Promise.resolve()
+    })
+    await flush()
+    expect(mocks.browserSetHostRules).toHaveBeenLastCalledWith([
+      { pattern: "blocked.example", action: "block" },
+    ])
+  })
+
+  it("retries a failed push once", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] })
+    try {
+      mocks.browserSetHostRules.mockImplementationOnce(() =>
+        Promise.reject(new Error("backend restarting"))
+      )
+      render(<BrowserEventsBridge />)
+      await flush()
+      expect(mocks.browserSetHostRules).toHaveBeenCalledTimes(1)
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+        await Promise.resolve()
+      })
+      expect(mocks.browserSetHostRules).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

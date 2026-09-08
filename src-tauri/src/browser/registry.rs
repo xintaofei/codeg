@@ -3,7 +3,7 @@
 //! for map operations; every surface call happens on a clone taken out of it.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -84,11 +84,29 @@ impl BrowserTab {
 #[derive(Default)]
 pub struct BrowserRegistry {
     tabs: Mutex<HashMap<String, BrowserTab>>,
+    /// One async lock per tab for `set_visible`: a hide that first captures
+    /// a freeze frame spans an await, and the request behind it must not
+    /// apply in between (tokio's mutex hands the lock out in arrival order).
+    visibility: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl BrowserRegistry {
     fn lock(&self) -> MutexGuard<'_, HashMap<String, BrowserTab>> {
         self.tabs.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The visibility lock of a tab (created on first use, dropped with the
+    /// tab). The std mutex guarding the map is released before the caller
+    /// awaits on the returned lock.
+    pub fn visibility_lock(&self, tab_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .visibility
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks
+            .entry(tab_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     pub fn insert(&self, tab: BrowserTab) -> Result<(), AppCommandError> {
@@ -156,6 +174,10 @@ impl BrowserRegistry {
     }
 
     pub fn remove(&self, tab_id: &str) -> Option<BrowserTab> {
+        self.visibility
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(tab_id);
         self.lock().remove(tab_id)
     }
 

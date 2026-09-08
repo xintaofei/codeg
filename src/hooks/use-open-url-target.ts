@@ -7,7 +7,10 @@ import { toast } from "sonner"
 import { useSessionViewerHost } from "@/components/message/session-viewer-host-context"
 import { useOptionalWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useOptionalWorkspaceActions } from "@/contexts/workspace-context"
-import { browserCapabilitiesSnapshot } from "@/lib/browser/browser-api"
+import {
+  browserCapabilities,
+  browserCapabilitiesSnapshot,
+} from "@/lib/browser/browser-api"
 import {
   getBrowserPrefs,
   markBrowserFirstOpenSeen,
@@ -22,7 +25,11 @@ import {
   type LinkAction,
   type LinkSurface,
 } from "@/lib/resolve-link-action"
-import { isRemoteDesktopMode } from "@/lib/transport"
+import { isDesktop, isRemoteDesktopMode } from "@/lib/transport"
+
+/** What a click did — or, on the desktop before the backend has answered
+ *  what it can do, that it will do it as soon as the answer is in. */
+export type OpenUrlOutcome = LinkAction | { kind: "deferred" }
 
 export interface OpenUrlOptions {
   source: LinkSource
@@ -64,7 +71,7 @@ export function useOpenUrlTarget() {
   const viewerHost = useSessionViewerHost()
   const fileColumnVisible = route ? route.isConversations : true
 
-  return useCallback(
+  const run = useCallback(
     (url: string, options: OpenUrlOptions): LinkAction => {
       const capabilities = browserCapabilitiesSnapshot()
       const surface: LinkSurface = {
@@ -129,5 +136,26 @@ export function useOpenUrlTarget() {
       return action
     },
     [fileColumnVisible, openBrowserTab, t, viewerHost]
+  )
+
+  return useCallback(
+    (url: string, options: OpenUrlOptions): OpenUrlOutcome => {
+      // On the desktop the decision needs the backend's answer — whether a
+      // built-in browser exists and which site rules the administrator has
+      // fixed. Before it is in (the first moments after launch) a click is
+      // held until it arrives rather than routed on a guess: routed to the
+      // system browser it would slip past a managed block. Only the desktop
+      // waits; there the system browser is reached through a command, not
+      // through `window.open`, so no user gesture is spent. In the browser
+      // the answer is immediate and this never runs.
+      if (browserCapabilitiesSnapshot() === null && isDesktop()) {
+        void browserCapabilities().then(() => {
+          run(url, options)
+        })
+        return { kind: "deferred" }
+      }
+      return run(url, options)
+    },
+    [run]
   )
 }

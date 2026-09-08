@@ -121,6 +121,24 @@ pub fn navigation_started(app: &AppHandle, tab_id: &str, url: &Url) {
     begin_load(app, tab_id);
 }
 
+/// The server redirected the navigation in flight: the tab is heading for
+/// `url` now, and that is the address an error page must name (and the one
+/// a blank substitution stands in for). The engine asks the navigation
+/// policy again for the new address, so a site rule still applies to it.
+pub fn navigation_redirected(app: &AppHandle, tab_id: &str, url: &Url) {
+    let Some(registry) = app.try_state::<BrowserRegistry>() else {
+        return;
+    };
+    let state = registry.update(tab_id, |tab| {
+        tab.provisional_url = Some(url.to_string());
+        tab.state.requested_url = url.to_string();
+        tab.state.clone()
+    });
+    if let Some(state) = state {
+        events::emit_state(app, &state);
+    }
+}
+
 /// A navigation the engine reported as failed (a platform delegate callback,
 /// where one exists — wry itself never reports failure).
 #[derive(Debug, Clone, PartialEq)]
@@ -219,13 +237,40 @@ pub fn begin_load(app: &AppHandle, tab_id: &str) {
     }
 }
 
-/// The tab's state once a navigation became a download: not loading, no
-/// error, and back on the document it is showing (what it "asked for" is no
-/// longer the file being fetched).
-fn settle_after_download(state: &mut crate::browser::types::BrowserTabState) {
+/// The tab's state once the navigation in flight ended without a page and
+/// without a failure of its own — it became a download, or policy refused
+/// where it was heading: not loading, no error, and back on the document it
+/// is showing (what it "asked for" is no longer coming).
+fn settle_without_page(state: &mut crate::browser::types::BrowserTabState) {
     state.loading = false;
     state.error = None;
     state.requested_url = state.url.clone();
+}
+
+/// The load in flight was ended by policy (WebKit's "frame load interrupted
+/// by policy change"): the host refused the address a redirect led to, or
+/// the response became a download. Either way no page is coming for it and
+/// nothing is wrong with the tab: settle it on the document it shows and
+/// retire the watcher, which would otherwise report the address that never
+/// arrived as a failed load. Only acts while a provisional load is known to
+/// be in flight — the same error also follows a refused NEW navigation, which
+/// never started and needs nothing settled.
+pub fn navigation_interrupted(app: &AppHandle, tab_id: &str) {
+    let Some(registry) = app.try_state::<BrowserRegistry>() else {
+        return;
+    };
+    let state = registry
+        .update(tab_id, |tab| {
+            tab.provisional_url.take()?;
+            tab.load_seq += 1;
+            tab.download_seq = None;
+            settle_without_page(&mut tab.state);
+            Some(tab.state.clone())
+        })
+        .flatten();
+    if let Some(state) = state {
+        events::emit_state(app, &state);
+    }
 }
 
 const LOAD_POLL: Duration = Duration::from_millis(500);
@@ -274,7 +319,7 @@ fn watch_load(app: AppHandle, tab_id: String, seq: u64) {
                 // going to commit, so there is nothing to report.
                 if tab.download_seq == Some(seq) {
                     tab.download_seq = None;
-                    settle_after_download(&mut tab.state);
+                    settle_without_page(&mut tab.state);
                     return tab.state.clone();
                 }
                 let state = &mut tab.state;
@@ -347,7 +392,7 @@ pub fn navigation_became_download(app: &AppHandle, tab_id: &str) {
     }
     let state = registry.update(tab_id, |tab| {
         tab.download_seq = None;
-        settle_after_download(&mut tab.state);
+        settle_without_page(&mut tab.state);
         tab.state.clone()
     });
     if let Some(state) = state {
@@ -401,7 +446,7 @@ mod tests {
     #[test]
     fn a_download_leaves_the_tab_on_the_page_it_is_showing() {
         let mut s = state("http://127.0.0.1:8790/", "http://127.0.0.1:8790/a.bin");
-        settle_after_download(&mut s);
+        settle_without_page(&mut s);
         assert!(!s.loading);
         assert!(s.error.is_none());
         assert_eq!(s.requested_url, "http://127.0.0.1:8790/");
@@ -414,7 +459,7 @@ mod tests {
     #[test]
     fn a_download_into_a_fresh_tab_settles_empty() {
         let mut s = state("", "http://127.0.0.1:8790/a.bin");
-        settle_after_download(&mut s);
+        settle_without_page(&mut s);
         assert!(!s.loading);
         assert!(s.error.is_none());
         assert_eq!(s.requested_url, "");

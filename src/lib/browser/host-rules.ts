@@ -43,8 +43,24 @@ function validHostname(host: string): boolean {
   )
 }
 
-function validIpv6(host: string): boolean {
-  return host.includes(":") && /^[0-9a-f:.]+$/.test(host)
+/**
+ * An IPv6 literal (without brackets) in the canonical form the URL parser
+ * produces (`::1`, never `0:0:0:0:0:0:0:1`), or `null` when it is not one.
+ * The URL parser is the one canonicalizer both sides agree with.
+ */
+function canonicalIpv6(host: string): string | null {
+  if (!host.includes(":") || !/^[0-9a-f:.]+$/.test(host)) return null
+  try {
+    return new URL(`http://[${host}]/`).hostname.replace(/^\[|\]$/g, "")
+  } catch {
+    return null
+  }
+}
+
+/** ASCII-only lower-casing, like the Rust side: a non-ASCII letter is not
+ *  part of a pattern, and Unicode folding (`K` → `k`) must not make one. */
+function asciiLower(text: string): string {
+  return text.replace(/[A-Z]/g, (c) => c.toLowerCase())
 }
 
 /**
@@ -54,11 +70,12 @@ function validIpv6(host: string): boolean {
 export function parseHostRulePattern(
   pattern: string
 ): ParsedHostRulePattern | null {
-  const trimmed = pattern.trim().toLowerCase()
+  const trimmed = asciiLower(pattern.trim())
   if (!trimmed || trimmed.length > MAX_PATTERN_LEN) return null
   let host: string
   let portText: string | null = null
-  if (trimmed.startsWith("[")) {
+  const bracketed = trimmed.startsWith("[")
+  if (bracketed) {
     // `[::1]:3000` — an IPv6 literal keeps its brackets; the port follows.
     const close = trimmed.indexOf("]")
     if (close === -1) return null
@@ -89,7 +106,12 @@ export function parseHostRulePattern(
     const suffix = host.slice(2)
     if (!validHostname(suffix)) return null
     matcher = { kind: "suffix", suffix: `.${suffix}` }
-  } else if (validHostname(host) || validIpv6(host)) {
+  } else if (bracketed) {
+    // Brackets mean an IPv6 literal and nothing else.
+    const canonical = canonicalIpv6(host)
+    if (!canonical) return null
+    matcher = { kind: "exact", host: canonical }
+  } else if (validHostname(host)) {
     matcher = { kind: "exact", host }
   } else {
     return null
@@ -105,9 +127,23 @@ export function validateHostRulePattern(
   return parseHostRulePattern(pattern) ? null : "invalid"
 }
 
-/** The form a pattern is stored in: trimmed and lower-cased. */
+/** The form a pattern is stored in: trimmed and (ASCII) lower-cased. */
 export function normalizeHostRulePattern(pattern: string): string {
-  return pattern.trim().toLowerCase()
+  return asciiLower(pattern.trim())
+}
+
+/**
+ * The URL's host as a rule sees it: lower-case, without IPv6 brackets and
+ * without a trailing dot — `example.com.` names the same server as
+ * `example.com`, and a block on one must hold for the other. Same as the
+ * Rust side's `rule_hostname`.
+ */
+export function ruleHostname(parsed: URL): string | null {
+  const host = parsed.hostname
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.+$/, "")
+    .toLowerCase()
+  return host.length > 0 ? host : null
 }
 
 function effectivePort(parsed: URL): number | null {
@@ -167,7 +203,8 @@ export function matchHostRule(
   parsed: URL
 ): HostRule | null {
   if (!rules || rules.length === 0) return null
-  const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase()
+  const hostname = ruleHostname(parsed)
+  if (!hostname) return null
   const port = effectivePort(parsed)
   let best: { rule: HostRule; score: [number, number, number] } | null = null
   for (const rule of rules) {

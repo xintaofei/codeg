@@ -249,6 +249,98 @@ describe("BrowserSurfaceHost", () => {
     expect(container.querySelector("img[data-browser-frozen-frame]")).toBeNull()
   })
 
+  // Close and reopen an overlay at once: the show issued for the close is
+  // still in flight when the reopen's hide paints a new frame. The show's
+  // answer must not wipe that frame — the native view is hidden again.
+  it("keeps a newer hide's frame when a superseded show answers late", async () => {
+    api.browserOpenTab.mockImplementation(() => Promise.resolve(state("host6")))
+    let resolveShow: () => void = () => {}
+    let frames = 0
+    api.browserSetVisible.mockImplementation(
+      (_id: string, visible: boolean, _handoff: boolean, freeze?: boolean) => {
+        if (visible) {
+          return new Promise<null>((resolve) => {
+            resolveShow = () => resolve(null)
+          })
+        }
+        frames += 1
+        return Promise.resolve(
+          freeze
+            ? { mime: "image/jpeg", data: `F${frames}`, width: 10, height: 10 }
+            : null
+        )
+      }
+    )
+    const { container } = render(<BrowserSurfaceHost tab={tab("host6")} />)
+    await flush()
+    const frameSrc = () =>
+      container
+        .querySelector("img[data-browser-frozen-frame]")
+        ?.getAttribute("src") ?? null
+
+    let release: () => void = () => {}
+    await act(async () => {
+      release = acquireNativeSurfaceOcclusion("dialog")
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(frameSrc()).toBe("data:image/jpeg;base64,F1")
+
+    // Close (show in flight, unresolved) and reopen right away.
+    await act(async () => {
+      release()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    const staleShow = resolveShow
+    await act(async () => {
+      release = acquireNativeSurfaceOcclusion("dialog")
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(frameSrc()).toBe("data:image/jpeg;base64,F2")
+
+    // The superseded show answers now: the newer frame stays.
+    await act(async () => {
+      staleShow()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(frameSrc()).toBe("data:image/jpeg;base64,F2")
+
+    // The real close clears it.
+    await act(async () => {
+      release()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    await act(async () => {
+      resolveShow()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(frameSrc()).toBeNull()
+  })
+
+  it("drops the frame when the error page takes the surface's place", async () => {
+    api.browserOpenTab.mockImplementation(() => Promise.resolve(state("host7")))
+    api.browserSetVisible.mockImplementation(
+      (_id: string, visible: boolean, _handoff: boolean, freeze?: boolean) =>
+        Promise.resolve(
+          !visible && freeze
+            ? { mime: "image/jpeg", data: "QUJD", width: 10, height: 10 }
+            : null
+        )
+    )
+    const { container, rerender } = render(
+      <BrowserSurfaceHost tab={tab("host7")} />
+    )
+    await flush()
+    await act(async () => {
+      acquireNativeSurfaceOcclusion("dialog")
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(
+      container.querySelector("img[data-browser-frozen-frame]")
+    ).not.toBeNull()
+    rerender(<BrowserSurfaceHost tab={tab("host7")} hidden />)
+    expect(container.querySelector("img[data-browser-frozen-frame]")).toBeNull()
+  })
+
   it("does not ask for a frame when the error page hides the surface", async () => {
     api.browserOpenTab.mockImplementation(() => Promise.resolve(state("host5")))
     render(<BrowserSurfaceHost tab={tab("host5")} hidden />)

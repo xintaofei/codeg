@@ -158,7 +158,11 @@ function HostRulesEditor({
       return
     }
     const pattern = normalizeHostRulePattern(draft)
-    if (rules.some((rule) => rule.pattern === pattern)) {
+    // Stored rows are normalized by this editor, but a row written by hand
+    // may not be; compare in the normalized form either way.
+    if (
+      rules.some((rule) => normalizeHostRulePattern(rule.pattern) === pattern)
+    ) {
       setProblem("duplicate")
       return
     }
@@ -173,6 +177,8 @@ function HostRulesEditor({
   }
   const remove = (index: number) => {
     setBrowserHostRules(rules.filter((_, i) => i !== index))
+    // A "duplicate" complaint may have been about this very row.
+    if (problem === "duplicate") setProblem(null)
   }
 
   return (
@@ -197,7 +203,9 @@ function HostRulesEditor({
       ))}
       {rules.map((rule, index) => (
         <div
-          key={rule.pattern}
+          // Position plus pattern: two rows can carry the same pattern when
+          // the table was written by hand, and the key must still be unique.
+          key={`${index}:${rule.pattern}`}
           className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background px-3 py-2"
         >
           <span className="min-w-0 truncate font-mono text-xs">

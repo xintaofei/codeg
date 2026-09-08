@@ -137,6 +137,12 @@ fn navigation_sink(app: &AppHandle, tab_id: &str) -> shim::NavigationSink {
                 hooks::navigation_started(&app, &tab_id, &url);
             }
         }
+        shim::NavigationEvent::Redirected(url) => {
+            if let Ok(url) = Url::parse(&url) {
+                hooks::navigation_redirected(&app, &tab_id, &url);
+            }
+        }
+        shim::NavigationEvent::Interrupted => hooks::navigation_interrupted(&app, &tab_id),
         shim::NavigationEvent::Failed(failure) => hooks::navigation_failed(&app, &tab_id, failure),
     })
 }
@@ -786,8 +792,16 @@ fn new_window_handler(
 
         #[cfg(target_os = "macos")]
         {
-            let seq = POPUP_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
-            let tab_id = format!("{opener_tab_id}-p{seq}");
+            // A fresh id: the counter is process-wide, but an id could still
+            // be taken (the frontend names its own tabs), and inserting over
+            // a live entry would drop that tab's webview from under it.
+            let tab_id = loop {
+                let seq = POPUP_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+                let candidate = format!("{opener_tab_id}-p{seq}");
+                if !registry.contains(&candidate) && !SURFACES.with(|s| s.borrow().contains_key(&candidate)) {
+                    break candidate;
+                }
+            };
             let label = super::tab_label(&tab_id);
             let (bounds, devtools) = registry
                 .update(&opener_tab_id, |tab| (tab.last_bounds, tab.devtools))
