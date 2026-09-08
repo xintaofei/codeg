@@ -14,9 +14,9 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 
-use crate::models::agent::AgentType;
-use crate::db::service::delegation_task_service::ResumeBinding;
 use super::types::DelegationTaskReport;
+use crate::db::service::delegation_task_service::ResumeBinding;
+use crate::models::agent::AgentType;
 
 /// Identifies a delegation call across the broker, the ACP layer, and the DB.
 ///
@@ -56,6 +56,8 @@ pub enum DelegationDispatch {
 pub enum SpawnerError {
     #[error("spawn failed: {0}")]
     Spawn(String),
+    #[error("session busy: {0}")]
+    Busy(String),
     #[error("send prompt failed: {0}")]
     Send(String),
     #[error("disconnect failed: {0}")]
@@ -104,6 +106,7 @@ impl ResumedSpawn {
 /// All methods are `async` because the production impl drives a Tokio runtime
 /// and DB; the mock returns immediately.
 #[async_trait]
+#[allow(clippy::too_many_arguments)]
 pub trait ConnectionSpawner: Send + Sync {
     /// Spawn a fresh child ACP connection of `agent_type` in `working_dir`.
     /// Delegation children are always brand-new sessions (no resume), but the
@@ -176,6 +179,7 @@ pub trait ConnectionSpawner: Send + Sync {
     async fn spawn_for_resume(
         &self,
         parent_connection_id: &str,
+        task_id: &str,
         agent_type: AgentType,
         working_dir: Option<String>,
         external_session_id: &str,
@@ -196,6 +200,7 @@ pub trait ConnectionSpawner: Send + Sync {
         prompt: String,
         folder_id: i32,
         child_conversation_id: i32,
+        link: DelegationLink,
     ) -> Result<(), SpawnerError>;
 
     /// Whether any live connection is currently bound to `conversation_id`.
@@ -271,6 +276,7 @@ pub mod mock {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct ResumeSpawnCallArgs {
         pub parent_connection_id: String,
+        pub task_id: String,
         pub agent_type: AgentType,
         pub working_dir: Option<String>,
         pub external_session_id: String,
@@ -278,12 +284,13 @@ pub mod mock {
         pub preferred_config_values: BTreeMap<String, String>,
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug, Clone)]
     pub struct ResumeSendCallArgs {
         pub conn_id: String,
         pub prompt: String,
         pub folder_id: i32,
         pub child_conversation_id: i32,
+        pub link: DelegationLink,
     }
 
     impl MockSpawner {
@@ -391,27 +398,30 @@ pub mod mock {
         async fn spawn_for_resume(
             &self,
             parent_connection_id: &str,
+            task_id: &str,
             agent_type: AgentType,
             working_dir: Option<String>,
             external_session_id: &str,
             preferred_mode_id: Option<String>,
             preferred_config_values: BTreeMap<String, String>,
         ) -> Result<ResumedSpawn, SpawnerError> {
-            self.resume_spawn_args.lock().await.push(ResumeSpawnCallArgs {
-                parent_connection_id: parent_connection_id.to_string(),
-                agent_type,
-                working_dir,
-                external_session_id: external_session_id.to_string(),
-                preferred_mode_id,
-                preferred_config_values,
-            });
+            self.resume_spawn_args
+                .lock()
+                .await
+                .push(ResumeSpawnCallArgs {
+                    parent_connection_id: parent_connection_id.to_string(),
+                    task_id: task_id.to_string(),
+                    agent_type,
+                    working_dir,
+                    external_session_id: external_session_id.to_string(),
+                    preferred_mode_id,
+                    preferred_config_values,
+                });
             self.resume_spawn_results
                 .lock()
                 .await
                 .pop_front()
-                .unwrap_or_else(|| {
-                    Err(SpawnerError::Spawn("no queued resume spawn result".into()))
-                })
+                .unwrap_or_else(|| Err(SpawnerError::Spawn("no queued resume spawn result".into())))
         }
 
         async fn send_resume_prompt(
@@ -420,12 +430,14 @@ pub mod mock {
             prompt: String,
             folder_id: i32,
             child_conversation_id: i32,
+            link: DelegationLink,
         ) -> Result<(), SpawnerError> {
             self.resume_send_args.lock().await.push(ResumeSendCallArgs {
                 conn_id: conn_id.to_string(),
                 prompt,
                 folder_id,
                 child_conversation_id,
+                link,
             });
             self.resume_send_results
                 .lock()

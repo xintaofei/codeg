@@ -105,8 +105,12 @@ fn strict_resume_never_falls_back_to_new() {
                 "a failed strict recovery must not announce a session"
             );
             let wire = wire_methods(&log);
-            assert!(!wire.iter().any(|message| message["method"] == "session/new"));
-            assert!(!wire.iter().any(|message| message["method"] == "session/prompt"));
+            assert!(!wire
+                .iter()
+                .any(|message| message["method"] == "session/new"));
+            assert!(!wire
+                .iter()
+                .any(|message| message["method"] == "session/prompt"));
         });
     }
 }
@@ -166,6 +170,8 @@ fn immediate_text_is_reduced_before_prompt_response_every_time() {
             );
         }
         assert_eq!(wire[prompt]["params"]["sessionId"], "source-session");
-        assert!(!wire.iter().any(|message| message["method"] == "session/new"));
+        assert!(!wire
+            .iter()
+            .any(|message| message["method"] == "session/new"));
     });
 }

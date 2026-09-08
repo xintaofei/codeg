@@ -1373,6 +1373,80 @@ fn unwrap_code_mode_script(
     )
 }
 
+#[derive(Debug)]
+struct CompletedMcpCall {
+    id: String,
+    server: String,
+    tool: String,
+    input_preview: Option<String>,
+    output_preview: Option<String>,
+    is_error: bool,
+}
+
+fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
+    let item = payload.get("item")?;
+    if item.get("type").and_then(|v| v.as_str()) != Some("McpToolCall") {
+        return None;
+    }
+    let result = item.get("result");
+    let output_preview = result
+        .and_then(|result| result.get("content"))
+        .and_then(crate::parsers::pi::tool_result_content_text)
+        .or_else(|| {
+            result
+                .and_then(|result| result.get("structuredContent"))
+                .and_then(|value| serde_json::to_string(value).ok())
+        });
+    Some(CompletedMcpCall {
+        id: item.get("id")?.as_str()?.to_string(),
+        server: item.get("server")?.as_str()?.to_string(),
+        tool: item.get("tool")?.as_str()?.to_string(),
+        input_preview: value_to_preview(item.get("arguments")),
+        is_error: result
+            .and_then(|result| result.get("isError"))
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+            || infer_tool_call_output_is_error(item, result, output_preview.as_deref()),
+        output_preview,
+    })
+}
+
+fn unwrap_completed_mcp_calls(
+    script: &CodeModeScript,
+    completed: Vec<CompletedMcpCall>,
+) -> Option<(Vec<ContentBlock>, Vec<ContentBlock>)> {
+    let calls = script.calls.as_deref()?;
+    if calls.len() != completed.len() || calls.is_empty() {
+        return None;
+    }
+    let names_match = calls.iter().zip(&completed).all(|(call, item)| {
+        let server = item.server.replace('-', "_");
+        call.tool_name == format!("mcp__{server}__{}", item.tool)
+    });
+    if !names_match {
+        return None;
+    }
+    let mut uses = Vec::with_capacity(calls.len());
+    let mut results = Vec::with_capacity(calls.len());
+    for (call, item) in calls.iter().zip(completed) {
+        uses.push(ContentBlock::ToolUse {
+            tool_use_id: Some(item.id.clone()),
+            tool_name: call.tool_name.clone(),
+            input_preview: item.input_preview,
+            status: Some("completed".into()),
+            meta: None,
+        });
+        results.push(ContentBlock::ToolResult {
+            tool_use_id: Some(item.id),
+            output_preview: item.output_preview,
+            is_error: item.is_error,
+            agent_stats: None,
+            images: Vec::new(),
+        });
+    }
+    Some((uses, results))
+}
+
 /// What the renderer needs to know about a call recovered from a code-mode
 /// script, as facts rather than prose: the backend states them, the frontend
 /// words them in the reader's language.
@@ -2552,6 +2626,11 @@ impl CodexParser {
         // that message's blocks once it knows how many `text()` chunks came
         // back. See `parsers/codex_code_mode.rs`.
         let mut pending_exec_scripts: HashMap<String, (usize, CodeModeScript)> = HashMap::new();
+        // App-server persists each MCP call executed inside a code-mode script
+        // as a semantic `item_completed.McpToolCall`. Keep those authoritative
+        // ids/results with the sole open script; its output can then replace the
+        // wrapper even when several results were printed as one JSON chunk.
+        let mut completed_mcp_by_exec: HashMap<String, Vec<CompletedMcpCall>> = HashMap::new();
         // `exec_command` call_id → the command it ran, and the background shell
         // sessions that command's output announced (`session id → command`).
         // A later `wait` / `write_stdin` carries only the session id, so this is
@@ -2997,6 +3076,22 @@ impl CodexParser {
                                 }
                             }
                             "item_completed" => {
+                                if let Some(call) = completed_mcp_call(payload) {
+                                    if deferred_scripts.is_empty()
+                                        && pending_exec_scripts.len() == 1
+                                    {
+                                        let exec_id = pending_exec_scripts
+                                            .keys()
+                                            .next()
+                                            .expect("one pending exec")
+                                            .clone();
+                                        completed_mcp_by_exec
+                                            .entry(exec_id)
+                                            .or_default()
+                                            .push(call);
+                                    }
+                                    continue;
+                                }
                                 // Plan mode's finished plan document. This is the
                                 // ONLY place a plan turn speaks on the canonical
                                 // event channel — codex publishes the plan here
@@ -3632,14 +3727,24 @@ impl CodexParser {
                                 } else if let Some((message_index, script)) = pending_script {
                                     let call_id = tool_use_id.unwrap_or_default();
                                     let parsed = split_code_mode_output(payload.get("output"));
-                                    let (uses, results) = unwrap_code_mode_script(
-                                        &call_id,
-                                        &script,
-                                        &parsed,
-                                        payload,
-                                        &mut shell_sessions,
-                                        &mut poll_origins,
-                                    );
+                                    let semantic = (parsed.status == ScriptStatus::Completed)
+                                        .then(|| completed_mcp_by_exec.remove(&call_id))
+                                        .flatten();
+                                    let (uses, results) = semantic
+                                        .and_then(|calls| {
+                                            unwrap_completed_mcp_calls(&script, calls)
+                                        })
+                                        .map(|(uses, results)| (Some(uses), results))
+                                        .unwrap_or_else(|| {
+                                            unwrap_code_mode_script(
+                                                &call_id,
+                                                &script,
+                                                &parsed,
+                                                payload,
+                                                &mut shell_sessions,
+                                                &mut poll_origins,
+                                            )
+                                        });
                                     if let Some(uses) = uses {
                                         messages[message_index].content = uses;
                                     }
@@ -9681,6 +9786,122 @@ mod tests {
         );
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn completed_mcp_items_split_a_two_call_one_chunk_script() {
+        let script = concat!(
+            "const [a,b]=await Promise.all([",
+            "tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",task:\"A\"}),",
+            "tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",task:\"B\"})",
+            "]);text(JSON.stringify({a,b}));"
+        );
+        let mut lines = code_mode_rollout(
+            script,
+            serde_json::json!([
+                {"type":"input_text","text":"Script completed\nWall time 0.2 seconds\nOutput:\n"},
+                {"type":"input_text","text":"{\"a\":{},\"b\":{}}"},
+            ]),
+        );
+        for (offset, (id, task_id, task)) in [
+            ("exec-a", "task-a", "A"),
+            ("exec-b", "task-b", "B"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            lines.insert(
+                2 + offset,
+                rollout_line(
+                    "2026-07-20T08:40:01Z",
+                    "event_msg",
+                    serde_json::json!({
+                        "type": "item_completed",
+                        "item": {
+                            "type": "McpToolCall",
+                            "id": id,
+                            "server": "codeg-mcp",
+                            "tool": "delegate_to_agent",
+                            "arguments": {"agent_type":"codex", "task":task},
+                            "status": "completed",
+                            "result": {
+                                "content": [{"type":"text", "text":format!(
+                                    "Delegation successful. task_id={task_id}."
+                                )}],
+                                "structuredContent": {"task_id":task_id, "status":"running"},
+                                "isError": false
+                            }
+                        }
+                    }),
+                ),
+            );
+        }
+
+        let detail = parse_lines(&lines, "code-mode-semantic-mcp");
+        assert_eq!(
+            tool_uses(&detail)
+                .into_iter()
+                .map(|(id, name, _)| (id, name))
+                .collect::<Vec<_>>(),
+            vec![
+                ("exec-a".into(), "mcp__codeg_mcp__delegate_to_agent".into()),
+                ("exec-b".into(), "mcp__codeg_mcp__delegate_to_agent".into()),
+            ],
+            "semantic items replace the outer script with real MCP cards"
+        );
+        assert_eq!(
+            tool_results(&detail)
+                .into_iter()
+                .map(|(id, output, _)| (id, output))
+                .collect::<Vec<_>>(),
+            vec![
+                ("exec-a".into(), Some("Delegation successful. task_id=task-a.".into())),
+                ("exec-b".into(), Some("Delegation successful. task_id=task-b.".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_deferred_scripts_late_mcp_item_cannot_bind_to_the_next_script() {
+        let script = "const r=await tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",task:\"A\"});text(JSON.stringify(r));";
+        let mut lines = code_mode_rollout(
+            script,
+            serde_json::json!("Script running with cell ID 34\nWall time 30.0 seconds\nOutput:\n"),
+        );
+        lines.push(rollout_line(
+            "2026-07-20T08:40:03Z",
+            "response_item",
+            serde_json::json!({
+                "type":"custom_tool_call", "name":"exec", "call_id":"call_b",
+                "input":script.replace("task:\"A\"", "task:\"B\"")
+            }),
+        ));
+        lines.push(rollout_line(
+            "2026-07-20T08:40:04Z",
+            "event_msg",
+            serde_json::json!({
+                "type":"item_completed",
+                "item": {
+                    "type":"McpToolCall", "id":"exec-from-a", "server":"codeg-mcp",
+                    "tool":"delegate_to_agent", "arguments":{"task":"A"},
+                    "status":"completed", "result":{"content":[], "isError":false}
+                }
+            }),
+        ));
+        lines.push(rollout_line(
+            "2026-07-20T08:40:05Z",
+            "response_item",
+            serde_json::json!({
+                "type":"custom_tool_call_output", "call_id":"call_b",
+                "output":"Script completed\nWall time 0.1 seconds\nOutput:\nB"
+            }),
+        ));
+
+        let ids: Vec<String> = tool_uses(&parse_lines(&lines, "deferred-mcp-boundary"))
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        assert_eq!(ids, ["call_1", "call_b"]);
     }
 
     #[test]

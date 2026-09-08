@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, DatabaseConnection, EntityTrait,
-    QueryFilter, Set,
+    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, Condition, ConnectionTrait,
+    DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
 };
 
 use crate::acp::delegation::types::{DelegationTaskReport, TaskStatus};
@@ -89,11 +89,73 @@ pub enum AdmissionResult {
     },
 }
 
+/// Distinguishes a pre-ledger task from a ledger task hidden by parent or
+/// soft-delete authorization. Callers may use legacy storage only for
+/// `Absent`; `Hidden` must remain opaque.
+#[derive(Debug, Clone)]
+// The visible branch intentionally returns the complete immutable ledger
+// snapshot; boxing every scoped read would add allocation to the hot status
+// path solely to shrink the two marker variants.
+#[allow(clippy::large_enum_variant)]
+pub enum ScopedLookup {
+    Visible(TaskLedgerEntry),
+    Hidden,
+    Absent,
+}
+
 /// Insert one durable execution record. A source slot is reserved by the
 /// unique index on `source_task_id`; a loser of that race is reconciled with
 /// the winner and never sends a second prompt for the same source.
 pub async fn admit(
     conn: &DatabaseConnection,
+    input: AdmissionInput,
+) -> Result<AdmissionResult, DbError> {
+    admit_on(conn, input).await
+}
+
+/// Reserve a continuation source slot and advance the child's live routing
+/// pointer in one SQLite transaction. A crash can therefore expose neither a
+/// phantom pointer nor an admitted task whose prompt cannot be routed.
+pub async fn admit_continuation(
+    conn: &DatabaseConnection,
+    input: AdmissionInput,
+) -> Result<AdmissionResult, DbError> {
+    let source_task_id = input.source_task_id.clone().ok_or_else(|| {
+        DbError::Validation("continuation admission requires a source task".into())
+    })?;
+    let txn = conn.begin().await?;
+    let result = admit_on(&txn, input.clone()).await?;
+    let next_task_id = match &result {
+        AdmissionResult::New { entry } => &entry.task_id,
+        AdmissionResult::Existing { .. } | AdmissionResult::Conflict { .. } => {
+            txn.commit().await?;
+            return Ok(result);
+        }
+    };
+    let updated = conversation::Entity::update_many()
+        .col_expr(
+            conversation::Column::DelegationCallId,
+            sea_orm::sea_query::Expr::value(next_task_id.clone()),
+        )
+        .filter(conversation::Column::Id.eq(input.child_conversation_id))
+        .filter(
+            Condition::any()
+                .add(conversation::Column::DelegationCallId.eq(&source_task_id))
+                .add(conversation::Column::DelegationCallId.is_null()),
+        )
+        .exec(&txn)
+        .await?;
+    if updated.rows_affected != 1 {
+        return Err(DbError::Conflict(
+            "child session was taken over during continuation admission".into(),
+        ));
+    }
+    txn.commit().await?;
+    Ok(result)
+}
+
+async fn admit_on<C: ConnectionTrait>(
+    conn: &C,
     input: AdmissionInput,
 ) -> Result<AdmissionResult, DbError> {
     validate_input(&input)?;
@@ -198,6 +260,44 @@ pub async fn lookup(
     load_authorized(conn, parent_conversation_id, task_id).await
 }
 
+pub async fn lookup_scoped(
+    conn: &DatabaseConnection,
+    parent_conversation_id: i32,
+    task_id: &str,
+) -> Result<ScopedLookup, DbError> {
+    let Some(row) = find_raw_by_task_id(conn, task_id).await? else {
+        return Ok(ScopedLookup::Absent);
+    };
+    if row.parent_conversation_id != parent_conversation_id
+        || !conversations_are_live(conn, parent_conversation_id, row.child_conversation_id).await?
+    {
+        return Ok(ScopedLookup::Hidden);
+    }
+    Ok(ScopedLookup::Visible(entry_from_model(row)?))
+}
+
+/// Return every durable task owned by a parent whose parent/child rows and
+/// folders are still visible. A child can execute several continuation rounds,
+/// so this deliberately returns task history rather than its current pointer.
+pub async fn list_for_parent(
+    conn: &DatabaseConnection,
+    parent_conversation_id: i32,
+) -> Result<Vec<TaskLedgerEntry>, DbError> {
+    let rows = delegation_task::Entity::find()
+        .filter(delegation_task::Column::ParentConversationId.eq(parent_conversation_id))
+        .order_by_asc(delegation_task::Column::CreatedAt)
+        .order_by_asc(delegation_task::Column::Id)
+        .all(conn)
+        .await?;
+    let mut entries = Vec::with_capacity(rows.len());
+    for row in rows {
+        if conversations_are_live(conn, parent_conversation_id, row.child_conversation_id).await? {
+            entries.push(entry_from_model(row)?);
+        }
+    }
+    Ok(entries)
+}
+
 /// Return the one successor reserved by `source_task_id`, if it is visible to
 /// the authorized parent.
 pub async fn successor(
@@ -240,7 +340,7 @@ pub async fn finish(
     task_id: &str,
     report: &DelegationTaskReport,
 ) -> Result<bool, DbError> {
-    let Some(row) = load_authorized(conn, parent_conversation_id, task_id).await? else {
+    let Some(row) = load_for_write(conn, parent_conversation_id, task_id).await? else {
         return Err(DbError::NotFound(format!("delegation task {task_id}")));
     };
     validate_terminal_report(task_id, report, &row)?;
@@ -274,7 +374,7 @@ pub async fn mark_released(
     parent_conversation_id: i32,
     task_id: &str,
 ) -> Result<bool, DbError> {
-    let Some(row) = load_authorized(conn, parent_conversation_id, task_id).await? else {
+    let Some(row) = load_for_write(conn, parent_conversation_id, task_id).await? else {
         return Err(DbError::NotFound(format!("delegation task {task_id}")));
     };
     let result = delegation_task::Entity::update_many()
@@ -293,8 +393,8 @@ pub async fn mark_released(
     Ok(result.rows_affected == 1)
 }
 
-async fn reconcile_insert_race(
-    conn: &DatabaseConnection,
+async fn reconcile_insert_race<C: ConnectionTrait>(
+    conn: &C,
     input: &AdmissionInput,
     insert_error: sea_orm::DbErr,
 ) -> Result<AdmissionResult, DbError> {
@@ -326,8 +426,8 @@ async fn reconcile_insert_race(
     })
 }
 
-async fn load_authorized(
-    conn: &DatabaseConnection,
+async fn load_authorized<C: ConnectionTrait>(
+    conn: &C,
     parent_conversation_id: i32,
     task_id: &str,
 ) -> Result<Option<TaskLedgerEntry>, DbError> {
@@ -345,8 +445,21 @@ async fn load_authorized(
     Ok(Some(entry_from_model(row)?))
 }
 
-async fn find_raw_by_task_id(
-    conn: &DatabaseConnection,
+async fn load_for_write<C: ConnectionTrait>(
+    conn: &C,
+    parent_conversation_id: i32,
+    task_id: &str,
+) -> Result<Option<TaskLedgerEntry>, DbError> {
+    let row = delegation_task::Entity::find()
+        .filter(delegation_task::Column::TaskId.eq(task_id))
+        .filter(delegation_task::Column::ParentConversationId.eq(parent_conversation_id))
+        .one(conn)
+        .await?;
+    row.map(entry_from_model).transpose()
+}
+
+async fn find_raw_by_task_id<C: ConnectionTrait>(
+    conn: &C,
     task_id: &str,
 ) -> Result<Option<delegation_task::Model>, DbError> {
     Ok(delegation_task::Entity::find()
@@ -355,8 +468,8 @@ async fn find_raw_by_task_id(
         .await?)
 }
 
-async fn ensure_live_conversation(
-    conn: &DatabaseConnection,
+async fn ensure_live_conversation<C: ConnectionTrait>(
+    conn: &C,
     conversation_id: i32,
     label: &str,
 ) -> Result<(), DbError> {
@@ -368,8 +481,8 @@ async fn ensure_live_conversation(
     )))
 }
 
-async fn conversations_are_live(
-    conn: &DatabaseConnection,
+async fn conversations_are_live<C: ConnectionTrait>(
+    conn: &C,
     parent_conversation_id: i32,
     child_conversation_id: i32,
 ) -> Result<bool, DbError> {
@@ -510,9 +623,7 @@ fn same_admission_key(
     let binding: ResumeBinding = serde_json::from_str(&row.resume_binding).map_err(|e| {
         DbError::Migration(format!("invalid resume binding for {}: {e}", row.task_id))
     })?;
-    Ok(row.task == input.task
-        && row.requested_working_dir == input.requested_working_dir
-        && binding == input.resume_binding)
+    Ok(row.task == input.task && binding == input.resume_binding)
 }
 
 fn is_terminal(status: TaskStatus) -> bool {
@@ -736,6 +847,152 @@ mod tests {
             .await
             .expect("parent-deleted lookup")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn deleted_parent_still_allows_finish_release_before_restore_lookup() {
+        let db = fresh_in_memory_db().await;
+        let (parent, child) = conversations(&db).await;
+        admit(&db.conn, input("t0", parent, child, None, "first"))
+            .await
+            .expect("admit");
+        let folder_id = conversation::Entity::find_by_id(parent)
+            .one(&db.conn)
+            .await
+            .expect("parent row")
+            .expect("parent")
+            .folder_id;
+
+        conversation_service::soft_delete(&db.conn, parent)
+            .await
+            .expect("delete parent");
+        let done = report("t0", child, "done", TaskStatus::Completed);
+        assert!(finish(&db.conn, parent, "t0", &done)
+            .await
+            .expect("finish after parent delete"));
+        assert!(mark_released(&db.conn, parent, "t0")
+            .await
+            .expect("release after parent delete"));
+        assert!(
+            conversation_service::restore_soft_deleted(&db.conn, parent, folder_id)
+                .await
+                .expect("restore parent")
+        );
+
+        let entry = lookup(&db.conn, parent, "t0")
+            .await
+            .expect("cold lookup")
+            .expect("restored entry");
+        assert_eq!(entry.status, TaskStatus::Completed);
+        assert!(entry.released);
+        assert_eq!(
+            serde_json::to_value(&entry.report).expect("stored report"),
+            serde_json::to_value(&done).expect("expected report"),
+        );
+    }
+
+    #[tokio::test]
+    async fn incomplete_or_unreleased_source_rejection_does_not_reserve_slot() {
+        let db = fresh_in_memory_db().await;
+        let (parent, child) = conversations(&db).await;
+        admit(&db.conn, input("t0", parent, child, None, "first"))
+            .await
+            .expect("admit t0");
+        finish(
+            &db.conn,
+            parent,
+            "t0",
+            &report("t0", child, "done", TaskStatus::Completed),
+        )
+        .await
+        .expect("finish t0");
+        assert!(
+            admit(&db.conn, input("t1", parent, child, Some("t0"), "next"))
+                .await
+                .is_err()
+        );
+        mark_released(&db.conn, parent, "t0")
+            .await
+            .expect("release t0");
+        assert!(matches!(
+            admit(&db.conn, input("t1", parent, child, Some("t0"), "next"))
+                .await
+                .expect("admit after release"),
+            AdmissionResult::New { .. }
+        ));
+
+        mark_released(&db.conn, parent, "t1")
+            .await
+            .expect("release running t1");
+        assert!(
+            admit(&db.conn, input("t2", parent, child, Some("t1"), "next"))
+                .await
+                .is_err()
+        );
+        finish(
+            &db.conn,
+            parent,
+            "t1",
+            &report("t1", child, "done", TaskStatus::Completed),
+        )
+        .await
+        .expect("finish t1");
+        assert!(matches!(
+            admit(&db.conn, input("t2", parent, child, Some("t1"), "next"))
+                .await
+                .expect("admit after finish"),
+            AdmissionResult::New { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn continuation_admission_and_child_pointer_commit_or_rollback_together() {
+        let db = fresh_in_memory_db().await;
+        let (parent, child) = conversations(&db).await;
+        admit(&db.conn, input("t0", parent, child, None, "first"))
+            .await
+            .unwrap();
+        finish(
+            &db.conn,
+            parent,
+            "t0",
+            &report("t0", child, "done", TaskStatus::Completed),
+        )
+        .await
+        .unwrap();
+        mark_released(&db.conn, parent, "t0").await.unwrap();
+        conversation_service::advance_delegation_call_id(&db.conn, child, "t0", "taken")
+            .await
+            .unwrap();
+
+        assert!(
+            admit_continuation(&db.conn, input("t1", parent, child, Some("t0"), "next"))
+                .await
+                .is_err()
+        );
+        assert!(successor(&db.conn, parent, "t0").await.unwrap().is_none());
+        let row = conversation::Entity::find_by_id(child)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.delegation_call_id.as_deref(), Some("taken"));
+
+        conversation_service::advance_delegation_call_id(&db.conn, child, "taken", "t0")
+            .await
+            .unwrap();
+        assert!(matches!(
+            admit_continuation(&db.conn, input("t1", parent, child, Some("t0"), "next"))
+                .await
+                .unwrap(),
+            AdmissionResult::New { .. }
+        ));
+        let row = conversation::Entity::find_by_id(child)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.delegation_call_id.as_deref(), Some("t1"));
     }
 
     #[tokio::test]

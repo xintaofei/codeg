@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, DatabaseConnection, EntityTrait,
-    Condition, QueryFilter, QueryOrder, QuerySelect, Set,
+    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, Condition, DatabaseConnection, EntityTrait,
+    QueryFilter, QueryOrder, QuerySelect, Set,
 };
 
 use crate::db::entities::conversation::ConversationKind;
@@ -200,6 +200,29 @@ pub async fn update_status_if(
         .exec(conn)
         .await?;
     Ok(result.rows_affected > 0)
+}
+
+/// Conditional status transition scoped to the immutable identity of the
+/// connection that produced the event. `None` is the human-owned path and may
+/// only update a row whose live delegation pointer is also NULL.
+pub async fn update_status_for_execution_if(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    execution_task_id: Option<&str>,
+    expected: conversation::ConversationStatus,
+    new_status: conversation::ConversationStatus,
+) -> Result<bool, DbError> {
+    use sea_orm::sea_query::Expr;
+    let update = conversation::Entity::update_many()
+        .col_expr(conversation::Column::Status, Expr::value(new_status))
+        .col_expr(conversation::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(conversation::Column::Id.eq(conversation_id))
+        .filter(conversation::Column::Status.eq(expected));
+    let update = match execution_task_id {
+        Some(task_id) => update.filter(conversation::Column::DelegationCallId.eq(task_id)),
+        None => update.filter(conversation::Column::DelegationCallId.is_null()),
+    };
+    Ok(update.exec(conn).await?.rows_affected == 1)
 }
 
 /// Manual rename: set the title AND lock it. Once locked, the per-turn
@@ -861,7 +884,10 @@ pub async fn bind_external_id(
                 }
 
                 let agent_type = carried.agent_type.clone();
-                let preserved = carried.into_active_model(previous.clone()).insert(txn).await?;
+                let preserved = carried
+                    .into_active_model(previous.clone())
+                    .insert(txn)
+                    .await?;
                 // The one signal that this happened at all. Deliberately WARN:
                 // every occurrence means a connection bound to a row while
                 // holding a session unrelated to that row's history, which is
@@ -1637,15 +1663,9 @@ mod tests {
     async fn seed_model_fills_an_empty_column_once_without_bumping_updated_at() {
         let db = fresh_in_memory_db().await;
         let folder = seed_folder(&db, "/tmp/codeg-seed-model").await;
-        let conv = create(
-            &db.conn,
-            folder,
-            AgentType::Codex,
-            Some("c".into()),
-            None,
-        )
-        .await
-        .expect("create");
+        let conv = create(&db.conn, folder, AgentType::Codex, Some("c".into()), None)
+            .await
+            .expect("create");
 
         // The gap this closes: a row created in-app carries no model at all,
         // which is why the sidebar could only ever show one for imported
@@ -1688,26 +1708,18 @@ mod tests {
         );
 
         // A transcript that names no model asks for no write at all.
-        assert!(
-            !seed_model_if_empty(&db.conn, conv.id, "   ")
-                .await
-                .expect("blank seed")
-        );
+        assert!(!seed_model_if_empty(&db.conn, conv.id, "   ")
+            .await
+            .expect("blank seed"));
     }
 
     #[tokio::test]
     async fn seed_model_skips_a_soft_deleted_row() {
         let db = fresh_in_memory_db().await;
         let folder = seed_folder(&db, "/tmp/codeg-seed-model-deleted").await;
-        let conv = create(
-            &db.conn,
-            folder,
-            AgentType::Codex,
-            Some("c".into()),
-            None,
-        )
-        .await
-        .expect("create");
+        let conv = create(&db.conn, folder, AgentType::Codex, Some("c".into()), None)
+            .await
+            .expect("create");
         soft_delete(&db.conn, conv.id).await.expect("delete");
 
         assert!(
@@ -1829,7 +1841,10 @@ mod tests {
     }
 
     /// The single live row (if any) holding `external_id`, whatever its id.
-    async fn rows_holding(conn: &DatabaseConnection, external_id: &str) -> Vec<conversation::Model> {
+    async fn rows_holding(
+        conn: &DatabaseConnection,
+        external_id: &str,
+    ) -> Vec<conversation::Model> {
         conversation::Entity::find()
             .filter(conversation::Column::ExternalId.eq(external_id))
             .filter(conversation::Column::DeletedAt.is_null())
@@ -2139,7 +2154,10 @@ mod tests {
             preserved, None,
             "a row with no session yet has nothing to preserve"
         );
-        assert_eq!(raw_row(&db.conn, row.id).await.external_id.as_deref(), Some("S1"));
+        assert_eq!(
+            raw_row(&db.conn, row.id).await.external_id.as_deref(),
+            Some("S1")
+        );
     }
 
     #[tokio::test]
@@ -2151,7 +2169,9 @@ mod tests {
         let row = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
             .await
             .expect("create");
-        bind_external_id(&db.conn, row.id, "S1", &[]).await.expect("bind");
+        bind_external_id(&db.conn, row.id, "S1", &[])
+            .await
+            .expect("bind");
 
         let preserved = bind_external_id(&db.conn, row.id, "S1", &[])
             .await
@@ -2172,7 +2192,9 @@ mod tests {
         let row = create(&db.conn, folder, AgentType::Codex, None, None)
             .await
             .expect("create");
-        bind_external_id(&db.conn, row.id, "S1", &[]).await.expect("bind");
+        bind_external_id(&db.conn, row.id, "S1", &[])
+            .await
+            .expect("bind");
         // Stand in for fork's sibling insert.
         let sibling = create(&db.conn, folder, AgentType::Codex, None, None)
             .await
@@ -2186,7 +2208,10 @@ mod tests {
         let mut original: conversation::ActiveModel = raw_row(&db.conn, row.id).await.into();
         original.external_id = Set(Some("S2".into()));
         original.update(&db.conn).await.expect("release");
-        active.update(&db.conn).await.expect("hand S1 to the sibling");
+        active
+            .update(&db.conn)
+            .await
+            .expect("hand S1 to the sibling");
 
         // Now the late SessionStarted{S2} arrives for the original row.
         let preserved = bind_external_id(&db.conn, row.id, "S2", &[])
@@ -2227,7 +2252,9 @@ mod tests {
                 .await
                 .expect("create");
             let seed = format!("S1-{original:?}");
-            bind_external_id(&db.conn, row.id, &seed, &[]).await.expect("bind");
+            bind_external_id(&db.conn, row.id, &seed, &[])
+                .await
+                .expect("bind");
             update_status(&db.conn, row.id, original.clone())
                 .await
                 .expect("status");
@@ -2564,11 +2591,9 @@ mod tests {
                 .expect("seed-locked"),
             "a locked title must not be seeded over"
         );
-        assert!(
-            !seed_auto_title_if_empty(&db.conn, row.id, String::new())
-                .await
-                .expect("seed-empty")
-        );
+        assert!(!seed_auto_title_if_empty(&db.conn, row.id, String::new())
+            .await
+            .expect("seed-empty"));
         let summary = get_by_id(&db.conn, row.id).await.expect("get");
         assert_eq!(summary.title.as_deref(), Some("User pick"));
     }
@@ -2605,7 +2630,9 @@ mod tests {
         )
         .await
         .expect("create");
-        soft_delete(&db.conn, refreshed.id).await.expect("soft delete");
+        soft_delete(&db.conn, refreshed.id)
+            .await
+            .expect("soft delete");
         assert!(
             !refresh_auto_title(&db.conn, refreshed.id, "Agent title".into())
                 .await

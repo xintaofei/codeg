@@ -15,20 +15,20 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 
+use crate::acp::chat_authoring::{AuthoringContext, AuthoringOutcome, ChatAuthoringAccess};
 use crate::acp::delegation::broker::{DelegationBroker, StatusWait};
 use crate::acp::delegation::transport::{
     read_frame, write_frame, BrokerAskRequest, BrokerCancelRequest, BrokerCancelTaskRequest,
-    BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerMessage, BrokerRequest,
-    BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerResponse,
-    BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
-    BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
+    BrokerCommitFeedbackRequest, BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest,
+    BrokerFeedbackRequest, BrokerMessage, BrokerRequest, BrokerResponse, BrokerResumeTaskRequest,
+    BrokerSessionRequest, BrokerStatusRequest, BrokerTaskCompleteRequest,
+    BrokerTaskProgressRequest,
 };
 use crate::acp::delegation::types::{
     DelegationRequest, DelegationTaskReport, ResumeDelegationRequest, TaskStatus,
 };
 use crate::acp::feedback::{PendingFeedback, SessionFeedbackAccess};
 use crate::acp::question::{QuestionOutcome, SessionQuestionAccess};
-use crate::acp::chat_authoring::{AuthoringContext, AuthoringOutcome, ChatAuthoringAccess};
 use crate::acp::session_info::{SessionInfo, SessionInfoAccess};
 use crate::acp::work_task_tools::{TaskReportAck, WorkTaskToolAccess};
 use crate::models::AgentType;
@@ -39,7 +39,6 @@ use serde_json::Value;
 /// keeps running past this; the LLM simply re-issues the wait. An explicit
 /// `wait_ms = 0` opts out of the ceiling and blocks until the task is terminal.
 const STATUS_WAIT_MAX_MS: u64 = 60_000;
-
 
 /// The bound-but-not-yet-served socket handed from [`DelegationListener::bind`]
 /// to [`DelegationListener::accept_loop`]. A UDS listener on unix; on Windows,
@@ -242,11 +241,7 @@ impl DelegationListener {
     #[cfg(unix)]
     fn staging_socket_path(socket_path: &Path) -> PathBuf {
         let salt = uuid::Uuid::new_v4().simple().to_string();
-        socket_path.with_file_name(format!(
-            ".stg-{}-{}",
-            std::process::id(),
-            &salt[..8]
-        ))
+        socket_path.with_file_name(format!(".stg-{}-{}", std::process::id(), &salt[..8]))
     }
 
     #[cfg(windows)]
@@ -373,10 +368,7 @@ impl DelegationListener {
                         write_frame(conn, &feedback_response(&[])?).await?;
                     }
                     Some(parent_conn_id) => {
-                        let pending = self
-                            .feedback
-                            .read_pending_feedback(&parent_conn_id)
-                            .await;
+                        let pending = self.feedback.read_pending_feedback(&parent_conn_id).await;
                         // Read-only: the response carries the note ids
                         // (`_commit_ids`); delivery is committed LATER, by the
                         // companion's `CommitFeedback` once it actually returns
@@ -1060,10 +1052,7 @@ mod tests {
     }
     #[async_trait]
     impl SessionFeedbackAccess for StubFeedback {
-        async fn read_pending_feedback(
-            &self,
-            parent_connection_id: &str,
-        ) -> Vec<PendingFeedback> {
+        async fn read_pending_feedback(&self, parent_connection_id: &str) -> Vec<PendingFeedback> {
             *self.read_conn.lock().await = Some(parent_connection_id.to_string());
             self.items.lock().await.clone()
         }
@@ -1083,9 +1072,7 @@ mod tests {
     #[derive(Default)]
     struct StubQuestion {
         pending: tokio::sync::Mutex<HashMap<String, oneshot::Sender<QuestionOutcome>>>,
-        registered: tokio::sync::Mutex<
-            Vec<(String, Vec<crate::acp::question::QuestionSpec>)>,
-        >,
+        registered: tokio::sync::Mutex<Vec<(String, Vec<crate::acp::question::QuestionSpec>)>>,
         canceled: tokio::sync::Mutex<Vec<String>>,
     }
     #[async_trait]
@@ -1917,7 +1904,8 @@ mod tests {
         }
 
         let mock = Arc::new(MockSpawner::new());
-        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("child-conn-2"))).await;
+        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("child-conn-2")))
+            .await;
         mock.queue_resume_send(Ok(())).await;
         let broker = Arc::new(
             DelegationBroker::new(
@@ -2074,6 +2062,37 @@ mod tests {
         assert_eq!(report.error_code.as_deref(), Some("spawn_failed"));
     }
 
+    #[tokio::test]
+    async fn invalid_continuation_id_is_rejected_before_spawn() {
+        let mock = Arc::new(MockSpawner::new());
+        let broker = make_broker(mock.clone()).await;
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let listener = make_listener(broker, tokens, Some(1));
+        for invalid in [serde_json::Value::Null, json!(7), json!("  ")] {
+            let report = listener
+                .process(
+                    make_request(json!({
+                        "agent_type": "codex",
+                        "task": "next",
+                        "continue_from_task_id": invalid,
+                    }))
+                    .await,
+                )
+                .await;
+            assert_eq!(report.error_code.as_deref(), Some("continuation_invalid"));
+        }
+        assert!(mock.spawn_args.lock().await.is_empty());
+    }
+
     // --- check_user_feedback over the listener -----------------------------
 
     use crate::acp::feedback::PendingFeedback;
@@ -2166,7 +2185,10 @@ mod tests {
         let commit_ids = resp.outcome["_commit_ids"].as_array().unwrap();
         assert_eq!(commit_ids, &vec!["f1", "f2"]);
         // Read was scoped to the token's parent connection id.
-        assert_eq!(feedback.read_conn.lock().await.as_deref(), Some("parent-conn"));
+        assert_eq!(
+            feedback.read_conn.lock().await.as_deref(),
+            Some("parent-conn")
+        );
         // The Feedback arm is READ-ONLY — it does NOT commit (delivery is
         // committed later, by the companion's CommitFeedback).
         assert!(feedback.committed.lock().await.is_empty());
@@ -2610,7 +2632,10 @@ mod tests {
             .await
             .expect("serve_one must return after peer close");
         result.unwrap().unwrap();
-        assert_eq!(questions.canceled.lock().await.as_slice(), &["q-1".to_string()]);
+        assert_eq!(
+            questions.canceled.lock().await.as_slice(),
+            &["q-1".to_string()]
+        );
     }
 
     /// An invalid token never registers a question and returns a `declined`
@@ -2618,7 +2643,8 @@ mod tests {
     #[tokio::test]
     async fn ask_invalid_token_declined() {
         let questions = Arc::new(StubQuestion::default());
-        let listener = make_question_listener(Arc::new(TokenRegistry::default()), questions.clone());
+        let listener =
+            make_question_listener(Arc::new(TokenRegistry::default()), questions.clone());
         let (mut client, mut server) = duplex(8 * 1024);
         let server_task = tokio::spawn(async move {
             listener.serve_one(&mut server).await.unwrap();
@@ -2631,5 +2657,4 @@ mod tests {
         assert_eq!(resp.outcome["declined"], true);
         assert!(questions.registered.lock().await.is_empty());
     }
-
 }
