@@ -49,8 +49,49 @@ export function surfaceClaimIsCurrent(
   return createdSurfaces.get(backendTabId) === token
 }
 
+/** Whether anyone currently holds the claim for this tab. */
+export function hasSurfaceClaim(backendTabId: string): boolean {
+  return createdSurfaces.has(backendTabId)
+}
+
 export function forgetSurfaceCreation(backendTabId: string): void {
   createdSurfaces.delete(backendTabId)
+}
+
+// One promise chain per backend tab id, so the create and destroy calls for
+// an id happen in the order they were issued.
+//
+// A backend tab id is reused across generations: a suspended tab is released
+// and, when the user comes back to it, created again under the SAME id. Both
+// commands are round trips, and without this the backend could run them in
+// either order — a close issued for generation 1 arriving after generation 2
+// had registered would destroy the live surface and leave a tab that believes
+// it is loaded showing nothing.
+const surfaceOps = new Map<string, Promise<unknown>>()
+
+export function runSurfaceOp<T>(
+  backendTabId: string,
+  op: () => Promise<T>
+): Promise<T> {
+  const previous = surfaceOps.get(backendTabId)
+  // With nothing in flight the call goes out now — a decision to close a
+  // surface should not wait for a microtask. Otherwise it queues, and runs
+  // whether the previous op resolved or rejected: a failed close must not
+  // stall every later operation on this tab.
+  const next = previous ? previous.then(op, op) : op()
+  const settled = next.then(
+    () => {},
+    () => {}
+  )
+  surfaceOps.set(backendTabId, settled)
+  // Drop the chain once it drains, so a long session does not keep an entry
+  // for every tab id it has ever seen.
+  void settled.then(() => {
+    if (surfaceOps.get(backendTabId) === settled) {
+      surfaceOps.delete(backendTabId)
+    }
+  })
+  return next
 }
 
 // When each tab's surface host last went away (`null` while one is mounted).
@@ -142,7 +183,7 @@ export function releaseBrowserTab(workspaceTabId: string): void {
   if (!backendId) return
   forgetSurfaceCreation(backendId)
   if (isDesktop()) {
-    void browserClose(backendId).catch(() => {
+    void runSurfaceOp(backendId, () => browserClose(backendId)).catch(() => {
       /* already gone */
     })
   }
@@ -205,6 +246,7 @@ export function resetBrowserTabStoreForTests(): void {
   notices.clear()
   listeners.clear()
   createdSurfaces.clear()
+  surfaceOps.clear()
   hiddenAt.clear()
   findRequests.clear()
 }

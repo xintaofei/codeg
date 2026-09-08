@@ -13,6 +13,8 @@ import {
   browserWorkspaceTabId,
   claimSurfaceCreation,
   forgetSurfaceCreation,
+  hasSurfaceClaim,
+  runSurfaceOp,
   surfaceClaimIsCurrent,
   getBrowserTabState,
   markBrowserTabHidden,
@@ -117,6 +119,7 @@ describe("browser tab store", () => {
     forgetSurfaceCreation("abc")
     // The old holder can now tell that the surface it is building is nobody's.
     expect(surfaceClaimIsCurrent("abc", token!)).toBe(false)
+    expect(hasSurfaceClaim("abc")).toBe(false)
     const next = claimSurfaceCreation("abc")
     expect(next).not.toBeNull()
     expect(next).not.toBe(token)
@@ -134,6 +137,58 @@ describe("browser tab store", () => {
     releaseBrowserTab("browser:abc")
     expect(surfaceClaimIsCurrent("abc", token!)).toBe(false)
     expect(claimSurfaceCreation("abc")).not.toBeNull()
+  })
+
+  // A backend tab id is reused across generations (suspend, then show
+  // again). Without ordering, the close issued for the old generation could
+  // reach the backend after the new one registered and destroy it.
+  it("runs the create and destroy calls of one tab id in order", async () => {
+    const order: string[] = []
+    const settle: Array<() => void> = []
+    const op = (name: string) => () =>
+      new Promise<void>((resolve) => {
+        order.push(`${name}:start`)
+        settle.push(() => {
+          order.push(`${name}:done`)
+          resolve()
+        })
+      })
+
+    const first = runSurfaceOp("abc", op("close"))
+    const second = runSurfaceOp("abc", op("open"))
+    // The second has not even started: it is waiting on the first.
+    expect(order).toEqual(["close:start"])
+
+    settle[0]()
+    await first
+    await Promise.resolve()
+    expect(order).toEqual(["close:start", "close:done", "open:start"])
+    settle[1]()
+    await second
+    expect(order).toEqual([
+      "close:start",
+      "close:done",
+      "open:start",
+      "open:done",
+    ])
+
+    // A different tab id is an independent chain.
+    let otherStarted = false
+    void runSurfaceOp("xyz", () => {
+      otherStarted = true
+      return Promise.resolve()
+    })
+    await Promise.resolve()
+    expect(otherStarted).toBe(true)
+  })
+
+  // A failed op must not stall everything queued behind it.
+  it("keeps the chain moving after a failed op", async () => {
+    const failed = runSurfaceOp("abc", () => Promise.reject(new Error("nope")))
+    await expect(failed).rejects.toThrow("nope")
+    await expect(
+      runSurfaceOp("abc", () => Promise.resolve("ok"))
+    ).resolves.toBe("ok")
   })
 
   it("stamps when a tab left the screen", () => {

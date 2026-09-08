@@ -17,8 +17,10 @@ import {
   claimSurfaceCreation,
   forgetSurfaceCreation,
   getBrowserTabState,
+  hasSurfaceClaim,
   markBrowserTabHidden,
   markBrowserTabShown,
+  runSurfaceOp,
   setBrowserTabState,
   surfaceClaimIsCurrent,
   useBrowserTabState,
@@ -155,20 +157,29 @@ export function BrowserSurfaceHost({
     // Preferences are read once, here: a surface cannot change its inspector
     // or its kind after it exists, so a settings change applies to new tabs.
     const prefs = getBrowserPrefs()
-    browserOpenTab({
-      tabId: backendId,
-      url: tab.browser.initialUrl,
-      bounds,
-      folderId: tab.folderId,
-      surface: prefs.surfaceOverride,
-      devtools: prefs.devtools,
-    })
+    // Queued per tab id: a close issued for an earlier generation must reach
+    // the backend before this create, never after it.
+    runSurfaceOp(backendId, () =>
+      browserOpenTab({
+        tabId: backendId,
+        url: tab.browser.initialUrl,
+        bounds,
+        folderId: tab.folderId,
+        surface: prefs.surfaceOverride,
+        devtools: prefs.devtools,
+      })
+    )
       .then((next) => {
-        // The tab was closed (or released and re-claimed) while the backend
-        // was building this webview: nobody owns it, so close it rather than
-        // leave a native view painted over the workspace for ever.
         if (!surfaceClaimIsCurrent(backendId, token)) {
-          void browserClose(backendId).catch(() => {})
+          // Someone else claimed this id meanwhile: their own create is
+          // already queued behind us, and closing here would land after it
+          // and destroy THEIR surface. Only clean up when the id is
+          // ownerless — the tab was closed while this was in flight.
+          if (!hasSurfaceClaim(backendId)) {
+            void runSurfaceOp(backendId, () => browserClose(backendId)).catch(
+              () => {}
+            )
+          }
           return
         }
         setBrowserTabState(next)

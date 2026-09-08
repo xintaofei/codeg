@@ -177,11 +177,40 @@ fn watch_load(app: AppHandle, tab_id: String, seq: u64) {
 /// callback arrives late: by then the tab may be loading something else, and
 /// clearing that navigation's state would both stop its spinner early and
 /// swallow its real failure.
+///
+/// Known limit: the engine does not say which navigation a download came
+/// from, and for a redirected download the reported URL is the FINAL one
+/// (verified on macOS: navigating to a URL that 302s to a file reports the
+/// file's URL), so the address cannot be used to correlate either. A download
+/// callback that arrives after a later navigation has started therefore marks
+/// that navigation's generation, and if it then fails its error is not
+/// reported. The alternative — matching on the URL — would put an error page
+/// over a perfectly good page for every redirected download, which is the
+/// common case.
+///
+/// Owned windows have no load watcher at all (`is_loading` has no handle to
+/// answer from), so nothing would ever consume the mark: they settle here and
+/// now, or the tab would spin for ever.
 pub fn navigation_became_download(app: &AppHandle, tab_id: &str) {
     let Some(registry) = app.try_state::<BrowserRegistry>() else {
         return;
     };
-    registry.update(tab_id, |tab| tab.download_seq = Some(tab.load_seq));
+    let embedded = registry
+        .surface(tab_id)
+        .map(|surface| surface.is_embedded())
+        .unwrap_or(false);
+    if embedded {
+        registry.update(tab_id, |tab| tab.download_seq = Some(tab.load_seq));
+        return;
+    }
+    let state = registry.update(tab_id, |tab| {
+        tab.download_seq = None;
+        settle_after_download(&mut tab.state);
+        tab.state.clone()
+    });
+    if let Some(state) = state {
+        events::emit_state(app, &state);
+    }
 }
 
 pub fn title_changed(app: &AppHandle, tab_id: &str, title: String) {
