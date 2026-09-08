@@ -393,10 +393,15 @@ impl DocGrant {
         if !crate::commands::folders::is_within_workspace(&self.root, &canonical) {
             return Err(StatusCode::FORBIDDEN);
         }
-        let links_changed = newest_link_change(&self.root, &rel);
+        // Every symlink on the way — lexical components and the links their
+        // targets go through — and the file the walk ends at. A path that
+        // cannot be walked (a component gone, a loop) is refused, never
+        // served on the strength of the canonicalization alone.
+        let (walked, links_changed) =
+            walk_links(&self.root, &rel).map_err(|_| StatusCode::NOT_FOUND)?;
         let file = open_beneath(&canonical).map_err(|_| StatusCode::NOT_FOUND)?;
         let metadata = file.metadata().map_err(|_| StatusCode::NOT_FOUND)?;
-        if !metadata.is_file() {
+        if !metadata.is_file() || !same_file(&walked, &metadata) {
             return Err(StatusCode::NOT_FOUND);
         }
         Ok((canonical, rel, links_changed, file, metadata))
@@ -512,26 +517,85 @@ fn open_beneath(canonical: &Path) -> std::io::Result<File> {
     crate::commands::folders::open_no_follow(canonical)
 }
 
-/// The newest change time among the symlinks the requested path traverses
-/// under the root — a leaf link or a directory link at any depth. A link is
-/// recreated when it is retargeted, so its own timestamps say when the path
-/// last changed what it names; plain directories are left out on purpose (a
-/// directory's mtime moves for every unrelated file created next to the
-/// document, which is no reason to distrust the document).
-fn newest_link_change(root: &Path, rel: &Path) -> Option<SystemTime> {
-    let mut newest = None;
-    let mut path = root.to_path_buf();
-    for component in rel.components() {
-        path.push(component);
-        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
-            break;
-        };
-        if metadata.file_type().is_symlink() {
-            let changed = newest_change(&metadata);
-            newest = Some(newest.map_or(changed, |n: SystemTime| n.max(changed)));
+/// Most links a resolution may go through before it counts as a loop
+/// (what the C library allows for `realpath`).
+const MAX_LINK_HOPS: usize = 40;
+
+/// Resolve `rel` under `root` the way the filesystem does — component by
+/// component, following every symlink met on the way, including the links a
+/// link's target goes through — and report where it ends together with the
+/// newest change time of every symlink traversed. A link is recreated when
+/// it is retargeted, so its own timestamps say when the path last changed
+/// what it names; plain directories are left out on purpose (a directory's
+/// mtime moves for every unrelated file created next to the document, which
+/// is no reason to distrust the document). Any component that cannot be
+/// read is an error: the caller refuses rather than serves.
+fn walk_links(root: &Path, rel: &Path) -> std::io::Result<(PathBuf, Option<SystemTime>)> {
+    use std::collections::VecDeque;
+    use std::ffi::OsString;
+    use std::path::Component;
+
+    let mut newest: Option<SystemTime> = None;
+    let mut current = root.to_path_buf();
+    let mut pending: VecDeque<OsString> = rel
+        .components()
+        .map(|c| c.as_os_str().to_os_string())
+        .collect();
+    let mut hops = 0;
+    while let Some(component) = pending.pop_front() {
+        if component == "." {
+            continue;
         }
+        if component == ".." {
+            current.pop();
+            continue;
+        }
+        let candidate = current.join(&component);
+        let metadata = std::fs::symlink_metadata(&candidate)?;
+        if !metadata.file_type().is_symlink() {
+            current = candidate;
+            continue;
+        }
+        hops += 1;
+        if hops > MAX_LINK_HOPS {
+            return Err(std::io::Error::other("too many symbolic links"));
+        }
+        let changed = newest_change(&metadata);
+        newest = Some(newest.map_or(changed, |n| n.max(changed)));
+        let target = std::fs::read_link(&candidate)?;
+        // The target's components go in front of what is left to walk; an
+        // absolute target starts the walk over from its root.
+        let mut spliced: VecDeque<OsString> = VecDeque::new();
+        for part in target.components() {
+            match part {
+                Component::Prefix(prefix) => current = PathBuf::from(prefix.as_os_str()),
+                Component::RootDir => current.push(std::path::MAIN_SEPARATOR.to_string()),
+                Component::CurDir => {}
+                Component::ParentDir => spliced.push_back(OsString::from("..")),
+                Component::Normal(name) => spliced.push_back(name.to_os_string()),
+            }
+        }
+        spliced.extend(pending.drain(..));
+        pending = spliced;
     }
-    newest
+    Ok((current, newest))
+}
+
+/// Whether the walk and the open landed on the same file (device and inode
+/// on unix). A link changed between the two would make them differ, and the
+/// request is refused. Where identity cannot be checked the walk's own
+/// success is what stands.
+#[cfg(unix)]
+fn same_file(walked: &Path, opened: &Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(walked)
+        .map(|m| m.dev() == opened.dev() && m.ino() == opened.ino())
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn same_file(_walked: &Path, _opened: &Metadata) -> bool {
+    true
 }
 
 /// The last time the file changed by any account the filesystem keeps: its
@@ -977,6 +1041,61 @@ mod tests {
         assert_eq!(served.response.status(), StatusCode::FORBIDDEN);
         assert_eq!(served.reset.as_ref().map(|r| r.reason), Some(DocResetReason::Newer));
         assert_eq!(grant.mode(), DocMode::Safe);
+    }
+
+    /// A link reached through another link's target is part of the path as
+    /// much as a lexical component: retargeting it is a change too.
+    #[cfg(unix)]
+    #[test]
+    fn a_retargeted_link_behind_a_link_is_a_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let grant = grant_in(dir.path());
+        let site = dir.path().join("site");
+        write(&site, "v1/lazy.js", b"v1()");
+        write(&site, "v2/lazy.js", b"v2()");
+        for name in ["v1/lazy.js", "v2/lazy.js"] {
+            let file = File::options().write(true).open(site.join(name)).unwrap();
+            file.set_modified(SystemTime::now() - Duration::from_secs(3600)).unwrap();
+        }
+        // `assets -> linked` (relative), `linked -> v1` (absolute).
+        std::os::unix::fs::symlink("linked", site.join("assets")).unwrap();
+        std::os::unix::fs::symlink(site.join("v1"), site.join("linked")).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        grant.set_mode(DocMode::Dynamic);
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(get(&grant, "/assets/lazy.js").response.status(), StatusCode::OK);
+        assert_eq!(get(&grant, "/assets/lazy.js").response.body(), b"v1()");
+        std::fs::remove_file(site.join("linked")).unwrap();
+        std::os::unix::fs::symlink(site.join("v2"), site.join("linked")).unwrap();
+        let served = get(&grant, "/assets/lazy.js");
+        assert_eq!(served.response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(grant.mode(), DocMode::Safe);
+    }
+
+    /// The link walk resolves like the filesystem (relative targets, `..`,
+    /// absolute targets) and refuses what it cannot read.
+    #[cfg(unix)]
+    #[test]
+    fn the_link_walk_resolves_like_realpath_and_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        write(&root, "real/deep/file.txt", b"x");
+        std::os::unix::fs::symlink("../real/deep", root.join("other/hop")).unwrap_or_else(|_| {
+            std::fs::create_dir_all(root.join("other")).unwrap();
+            std::os::unix::fs::symlink("../real/deep", root.join("other/hop")).unwrap();
+        });
+        std::os::unix::fs::symlink(root.join("other"), root.join("abs")).unwrap();
+        let (walked, newest) = walk_links(&root, Path::new("abs/hop/file.txt")).unwrap();
+        assert_eq!(walked, root.join("real/deep/file.txt"));
+        assert!(newest.is_some());
+        let (plain, none) = walk_links(&root, Path::new("real/deep/file.txt")).unwrap();
+        assert_eq!(plain, root.join("real/deep/file.txt"));
+        assert!(none.is_none());
+        assert!(walk_links(&root, Path::new("abs/hop/missing.txt")).is_err());
+        assert!(walk_links(&root, Path::new("gone/file.txt")).is_err());
+        std::os::unix::fs::symlink("loop-b", root.join("loop-a")).unwrap();
+        std::os::unix::fs::symlink("loop-a", root.join("loop-b")).unwrap();
+        assert!(walk_links(&root, Path::new("loop-a")).is_err());
     }
 
     /// The component-wise open refuses a path that goes through a symlink,
