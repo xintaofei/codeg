@@ -7783,10 +7783,9 @@ mod tests {
         let refused = git_delete_branch(repo.clone(), "wt".into(), false)
             .await
             .expect_err("git refuses a branch held by a worktree");
-        let refused = format!("{refused:?}");
         assert!(
-            refused.contains("used by worktree") || refused.contains("checked out at"),
-            "expected git's worktree refusal, got: {refused}"
+            format!("{refused:?}").contains("used by worktree"),
+            "expected git's worktree refusal, got: {refused:?}"
         );
 
         // Resolve ours the way git resolves its own — while the directory is

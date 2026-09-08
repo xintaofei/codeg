@@ -27,17 +27,39 @@ disabled state.
 - A switch shows an in-progress state while the filesystem operation runs.
 - On failure, the authoritative list is reloaded, the switch returns to its
   prior state, and a localized error toast is shown.
-- CLI-owned read-only skills remain visible but cannot be toggled.
+- For non-Codex agents, CLI-owned read-only skills remain visible but cannot be
+  toggled. Codex system skills remain toggleable because Codeg changes only
+  Codex's official availability configuration, not the skill files.
 - A skill whose shared installation cannot be separated without changing
   another configured agent is marked non-toggleable instead of pretending the
   operation succeeded.
 - A new or reconnected agent session is required when an already-running agent
   caches its skill inventory.
 
-## Storage Model
+## Agent-Specific Control Models
 
-No database flag is authoritative. The filesystem remains the source of truth
-because the agent CLIs scan it directly.
+No database flag is authoritative. Codeg changes the native state consumed by
+each agent so its own discovery result remains the source of truth.
+
+### Codex Native Configuration
+
+Codeg does not move Codex skill files. It reads and atomically updates
+`CODEX_HOME/config.toml` using Codex's official `skills.config` entries. Rules
+are evaluated in file order and the last matching `path` or `name` selector
+wins. When a broader or later selector would override the requested state,
+Codeg appends a path-specific rule so the requested state is effective without
+rewriting the user's broader rule. A repeated toggle updates that trailing
+path rule instead of growing the configuration indefinitely.
+
+This applies to project, user, plugin, and system skills, including skill files
+that are read-only. Their files and displayed locations remain unchanged. A
+new Codex session is required because an existing session may have cached its
+skill inventory.
+
+### Filesystem Isolation For Other Agents
+
+Agents without a native availability configuration continue to use filesystem
+isolation because their CLIs scan native skill roots directly.
 
 For each native skill root, Codeg uses a sibling vault that is outside the
 agent's scan path:
@@ -92,9 +114,11 @@ enabled: bool
 can_toggle: bool
 ```
 
-The list command scans active roots first and disabled vaults second. Active
-entries win when the same ID occurs more than once. This means a peer link is
-reported enabled even though its canonical source is held in a shared vault.
+For non-Codex agents, the list command scans active roots first and disabled
+vaults second. Active entries win when the same ID occurs more than once. This
+means a peer link is reported enabled even though its canonical source is held
+in a shared vault. For Codex, the list command overlays the effective native
+configuration state on every discovered skill and keeps its original path.
 
 A new command is available over both Tauri and Axum transports:
 
@@ -122,14 +146,18 @@ and the generic `useAgentSkills` hook returns enabled entries only.
 - Repeated enable or disable requests are idempotent.
 - Symbolic links are moved as links, never followed and copied during private
   disable operations.
-- Built-in system paths retain the existing backend write protection.
+- Built-in system paths retain the existing backend content-write protection.
+  Codex availability remains configurable because toggling writes only the
+  Codex config file.
 
 ## Tests
 
-Rust tests cover private directory and flat-file toggles, disabled discovery,
-idempotency, shared fan-out, peer isolation, collision refusal, rollback, and
-read-only rejection. Existing skill storage tests continue to pin each agent's
-native roots.
+Rust tests cover Codex rule precedence, both supported TOML array forms,
+read-only/system-skill availability, stable paths, atomic config writes, and
+new-session behavior. They also cover private directory and flat-file toggles,
+disabled discovery, idempotency, shared fan-out, peer isolation, collision
+refusal, rollback, and non-Codex read-only rejection. Existing skill storage
+tests continue to pin each agent's native roots.
 
 Frontend tests cover switch state, the exact toggle request, cache invalidation,
 authoritative reload, disabled autocomplete filtering, read-only/non-toggleable

@@ -4,15 +4,15 @@
 
 **Goal:** Add real per-agent availability switches to Settings > Skills without letting a shared skill toggle silently affect another Codeg-managed agent.
 
-**Architecture:** Native skill roots remain authoritative. Disabled entries live in deterministic sibling vaults; shared entries are fanned out into agent-unique roots before the shared source is hidden. The existing list/read/save/delete surface is extended so disabled skills remain manageable, and one new command performs serialized toggles over both transports.
+**Architecture:** Codex uses its official ordered `skills.config` rules, so toggles never move Codex files and can cover read-only system skills. Other agents keep native skill roots authoritative: disabled entries live in deterministic sibling vaults, and shared entries are fanned out into agent-unique roots before the shared source is hidden. The existing list/read/save/delete surface is extended so disabled skills remain manageable, and one new command performs serialized toggles over both transports.
 
 **Tech Stack:** Rust 2021, Tauri 2, Axum, Next.js 16, React 19, TypeScript, next-intl, Vitest.
 
 ## Global Constraints
 
 - The switch is per agent and per scope; turning a shared skill off for one agent must preserve availability for every other Codeg-managed agent that already sees it.
-- A disabled skill must not remain in any native scan root used by the selected agent.
-- Read-only CLI skills cannot be toggled.
+- A disabled skill must be excluded from the selected agent's effective native discovery result. Codex does this through `skills.config`; other agents use filesystem isolation.
+- Read-only CLI skills cannot be moved or edited. Codex system skills can still be toggled because its official configuration controls availability without mutating skill content.
 - Existing user files and unrelated worktree changes must be preserved.
 - Both Tauri desktop and Axum server transports must expose the same behavior.
 
@@ -35,7 +35,7 @@ then exercise the wished-for helpers:
 
 ```rust
 let disabled = disabled_skill_root(&skills);
-set_skill_enabled_in_roots(&peers, AgentType::Codex, AgentSkillScope::Global, "demo", false)?;
+set_skill_enabled_in_roots(&peers, AgentType::Gemini, AgentSkillScope::Global, "demo", false)?;
 assert!(!skills.join("demo").exists());
 assert!(disabled.join("demo").join("SKILL.md").is_file());
 let listed = list_skills_from_roots(AgentSkillScope::Global, &[skills], kind)?;

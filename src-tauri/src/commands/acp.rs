@@ -8846,27 +8846,18 @@ fn parse_codex_skill_config(
 
 impl CodexSkillConfig {
     fn skill_enabled(&self, path: &Path, name: &str) -> bool {
-        if let Some(enabled) = self
-            .entries
-            .iter()
-            .filter(|entry| {
-                entry
-                    .path
-                    .as_deref()
-                    .is_some_and(|configured| same_skill_config_path(configured, path))
-            })
-            .map(|entry| entry.enabled)
-            .next_back()
-        {
-            return enabled;
-        }
-
-        self.entries
-            .iter()
-            .filter(|entry| entry.name.as_deref() == Some(name))
-            .map(|entry| entry.enabled)
-            .next_back()
-            .unwrap_or(true)
+        self.entries.iter().fold(true, |enabled, entry| {
+            let path_matches = entry
+                .path
+                .as_deref()
+                .is_some_and(|configured| same_skill_config_path(configured, path));
+            let name_matches = entry.name.as_deref() == Some(name);
+            if path_matches || name_matches {
+                entry.enabled
+            } else {
+                enabled
+            }
+        })
     }
 }
 
@@ -8885,6 +8876,7 @@ fn codex_skill_entries_enabled(
 fn apply_codex_skill_enabled_config(
     base_toml: &str,
     codex_home: &Path,
+    skill_name: &str,
     paths: &[PathBuf],
     enabled: bool,
 ) -> Result<String, AcpError> {
@@ -8917,22 +8909,30 @@ fn apply_codex_skill_enabled_config(
     let config = skills
         .get_mut("config")
         .ok_or_else(|| AcpError::protocol("invalid codex config.toml: missing skills.config"))?;
+    // Codex applies matching rules in order. Update an existing path rule only
+    // when it is the final match; otherwise append a path-specific override.
     match config {
         toml_edit::Item::ArrayOfTables(config) => {
             for path in unique_paths {
-                let mut matched = false;
-                for entry in config.iter_mut() {
+                let mut last_matching_path = None;
+                for (index, entry) in config.iter().enumerate() {
                     let path_matches = entry
                         .get("path")
                         .and_then(toml_edit::Item::as_str)
                         .map(|configured| resolve_codex_skill_config_path(configured, codex_home))
                         .is_some_and(|configured| same_skill_config_path(&configured, &path));
-                    if path_matches {
-                        entry.insert("enabled", toml_edit::value(enabled));
-                        matched = true;
+                    let name_matches =
+                        entry.get("name").and_then(toml_edit::Item::as_str) == Some(skill_name);
+                    if path_matches || name_matches {
+                        last_matching_path = path_matches.then_some(index);
                     }
                 }
-                if !matched {
+                if let Some(index) = last_matching_path {
+                    config
+                        .get_mut(index)
+                        .expect("matching Codex skill config entry must exist")
+                        .insert("enabled", toml_edit::value(enabled));
+                } else {
                     let mut entry = toml_edit::Table::new();
                     entry.insert("path", toml_edit::value(path.to_string_lossy().as_ref()));
                     entry.insert("enabled", toml_edit::value(enabled));
@@ -8942,9 +8942,9 @@ fn apply_codex_skill_enabled_config(
         }
         toml_edit::Item::Value(toml_edit::Value::Array(config)) => {
             for path in unique_paths {
-                let mut matched = false;
-                for value in config.iter_mut() {
-                    let entry = value.as_inline_table_mut().ok_or_else(|| {
+                let mut last_matching_path = None;
+                for (index, value) in config.iter().enumerate() {
+                    let entry = value.as_inline_table().ok_or_else(|| {
                         AcpError::protocol(
                             "invalid codex config.toml: skills.config entry must be a table",
                         )
@@ -8954,12 +8954,19 @@ fn apply_codex_skill_enabled_config(
                         .and_then(toml_edit::Value::as_str)
                         .map(|configured| resolve_codex_skill_config_path(configured, codex_home))
                         .is_some_and(|configured| same_skill_config_path(&configured, &path));
-                    if path_matches {
-                        entry.insert("enabled", toml_edit::Value::from(enabled));
-                        matched = true;
+                    let name_matches =
+                        entry.get("name").and_then(toml_edit::Value::as_str) == Some(skill_name);
+                    if path_matches || name_matches {
+                        last_matching_path = path_matches.then_some(index);
                     }
                 }
-                if !matched {
+                if let Some(index) = last_matching_path {
+                    config
+                        .get_mut(index)
+                        .and_then(toml_edit::Value::as_inline_table_mut)
+                        .expect("matching Codex skill config entry must be an inline table")
+                        .insert("enabled", toml_edit::Value::from(enabled));
+                } else {
                     let mut entry = toml_edit::InlineTable::new();
                     entry.insert(
                         "path",
@@ -8997,7 +9004,7 @@ fn set_codex_skill_enabled_native(
         .iter()
         .map(absolute_skill_content_path)
         .collect::<Result<Vec<_>, _>>()?;
-    let next = apply_codex_skill_enabled_config(&base, &codex_home, &paths, enabled)?;
+    let next = apply_codex_skill_enabled_config(&base, &codex_home, &listed.id, &paths, enabled)?;
     let updated = parse_codex_skill_config(&next, &codex_home)?;
     if codex_skill_entries_enabled(active, &updated)? != enabled {
         return Err(AcpError::protocol(
@@ -19024,15 +19031,133 @@ wire_api = "chat"
     }
 
     #[test]
-    fn codex_skill_config_path_selector_overrides_later_name_selector() {
-        let config = parse_codex_skill_config(
+    fn codex_skill_config_last_matching_selector_wins() {
+        let path_then_name = parse_codex_skill_config(
             "[[skills.config]]\npath = \"/tmp/demo/SKILL.md\"\nenabled = true\n\
              \n[[skills.config]]\nname = \"demo\"\nenabled = false\n",
             Path::new("/tmp/codex-home"),
         )
         .unwrap();
+        let name_then_path = parse_codex_skill_config(
+            "[[skills.config]]\nname = \"demo\"\nenabled = false\n\
+             \n[[skills.config]]\npath = \"/tmp/demo/SKILL.md\"\nenabled = true\n",
+            Path::new("/tmp/codex-home"),
+        )
+        .unwrap();
 
-        assert!(config.skill_enabled(Path::new("/tmp/demo/SKILL.md"), "demo"));
+        assert!(!path_then_name.skill_enabled(Path::new("/tmp/demo/SKILL.md"), "demo"));
+        assert!(name_then_path.skill_enabled(Path::new("/tmp/demo/SKILL.md"), "demo"));
+    }
+
+    #[test]
+    fn codex_skill_config_appends_path_override_after_later_name_selector() {
+        let path = PathBuf::from("/tmp/demo/SKILL.md");
+        let updated = apply_codex_skill_enabled_config(
+            "[[skills.config]]\npath = \"/tmp/demo/SKILL.md\"\nenabled = false\n\
+             \n[[skills.config]]\nname = \"demo\"\nenabled = false\n",
+            Path::new("/tmp/codex-home"),
+            "demo",
+            std::slice::from_ref(&path),
+            true,
+        )
+        .unwrap();
+        let parsed = updated.parse::<toml::Value>().unwrap();
+        let entries = parsed["skills"]["config"].as_array().unwrap();
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(
+            entries
+                .last()
+                .unwrap()
+                .get("path")
+                .and_then(toml::Value::as_str),
+            path.to_str()
+        );
+        assert_eq!(
+            entries
+                .last()
+                .unwrap()
+                .get("enabled")
+                .and_then(toml::Value::as_bool),
+            Some(true)
+        );
+        assert!(
+            parse_codex_skill_config(&updated, Path::new("/tmp/codex-home"))
+                .unwrap()
+                .skill_enabled(&path, "demo")
+        );
+
+        let updated_again = apply_codex_skill_enabled_config(
+            &updated,
+            Path::new("/tmp/codex-home"),
+            "demo",
+            std::slice::from_ref(&path),
+            false,
+        )
+        .unwrap();
+        let parsed = updated_again.parse::<toml::Value>().unwrap();
+        let entries = parsed["skills"]["config"].as_array().unwrap();
+        assert_eq!(entries.len(), 3, "repeated toggles reuse the path override");
+        assert!(
+            !parse_codex_skill_config(&updated_again, Path::new("/tmp/codex-home"))
+                .unwrap()
+                .skill_enabled(&path, "demo")
+        );
+    }
+
+    #[test]
+    fn codex_skill_config_appends_inline_path_override_after_later_name_selector() {
+        let path = PathBuf::from("/tmp/demo/SKILL.md");
+        let updated = apply_codex_skill_enabled_config(
+            "[skills]\nconfig = [{ path = \"/tmp/demo/SKILL.md\", enabled = false }, { name = \"demo\", enabled = false }]\n",
+            Path::new("/tmp/codex-home"),
+            "demo",
+            std::slice::from_ref(&path),
+            true,
+        )
+        .unwrap();
+        let parsed = updated.parse::<toml::Value>().unwrap();
+        let entries = parsed["skills"]["config"].as_array().unwrap();
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(
+            entries
+                .last()
+                .unwrap()
+                .get("path")
+                .and_then(toml::Value::as_str),
+            path.to_str()
+        );
+        assert_eq!(
+            entries
+                .last()
+                .unwrap()
+                .get("enabled")
+                .and_then(toml::Value::as_bool),
+            Some(true)
+        );
+        assert!(
+            parse_codex_skill_config(&updated, Path::new("/tmp/codex-home"))
+                .unwrap()
+                .skill_enabled(&path, "demo")
+        );
+
+        let updated_again = apply_codex_skill_enabled_config(
+            &updated,
+            Path::new("/tmp/codex-home"),
+            "demo",
+            std::slice::from_ref(&path),
+            false,
+        )
+        .unwrap();
+        let parsed = updated_again.parse::<toml::Value>().unwrap();
+        let entries = parsed["skills"]["config"].as_array().unwrap();
+        assert_eq!(entries.len(), 3, "repeated toggles reuse the path override");
+        assert!(
+            !parse_codex_skill_config(&updated_again, Path::new("/tmp/codex-home"))
+                .unwrap()
+                .skill_enabled(&path, "demo")
+        );
     }
 
     #[test]
