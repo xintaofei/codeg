@@ -8833,6 +8833,11 @@ impl TerminalAuthDiagnostic {
         *self = Self::default();
     }
 
+    fn note_exact_provider_failure(&mut self) {
+        self.matched = Self::UNAUTHORIZED_401.len();
+        self.invalid = false;
+    }
+
     fn is_unauthorized_401(&self) -> bool {
         !self.invalid && self.matched == Self::UNAUTHORIZED_401.len()
     }
@@ -9623,6 +9628,15 @@ async fn run_conversation_loop<'a>(
                                         .await;
                                     }
                                     let raw_reason_str = stop_reason_to_str(reason);
+                                    if raw_reason_str == "refusal"
+                                        && agent_type == AgentType::CodeBuddy
+                                        && crate::parsers::codebuddy::has_terminal_auth_failure(
+                                            &sid.0,
+                                            turn_started_at_ms,
+                                        )
+                                    {
+                                        probe.auth_diagnostic.note_exact_provider_failure();
+                                    }
                                     // Pure: resolves the reason and (for an
                                     // empty turn) its diagnosis. Side effects
                                     // below stay exactly where they were — note
@@ -9836,6 +9850,15 @@ async fn run_conversation_loop<'a>(
                                 .await;
                             }
                             let raw_reason_str = stop_reason_to_str(reason);
+                            if raw_reason_str == "refusal"
+                                && agent_type == AgentType::CodeBuddy
+                                && crate::parsers::codebuddy::has_terminal_auth_failure(
+                                    &sid.0,
+                                    turn_started_at_ms,
+                                )
+                            {
+                                probe.auth_diagnostic.note_exact_provider_failure();
+                            }
                             // Same pure helper as the StopReason-message exit,
                             // so the two can't drift. This exit keeps its own
                             // extra side effect (`record_turn_end` below).

@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -22,6 +22,102 @@ use crate::parsers::{
 /// `~/.codebuddy` (mirrors `resolve_claude_config_dir`).
 pub(crate) fn resolve_codebuddy_config_dir() -> PathBuf {
     resolve_codebuddy_config_dir_from(std::env::var_os("CODEBUDDY_CONFIG_DIR"), dirs::home_dir())
+}
+
+/// Whether CodeBuddy persisted the provider-auth failure that its ACP adapter
+/// deliberately omits from `session/update`.
+pub(crate) fn has_terminal_auth_failure(session_id: &str, turn_started_at_ms: u64) -> bool {
+    has_terminal_auth_failure_in_projects(
+        &resolve_codebuddy_config_dir().join("projects"),
+        session_id,
+        turn_started_at_ms,
+    )
+}
+
+fn has_terminal_auth_failure_in_projects(
+    projects_dir: &Path,
+    session_id: &str,
+    turn_started_at_ms: u64,
+) -> bool {
+    const TAIL_BYTES: u64 = 64 * 1024;
+
+    if session_id.is_empty()
+        || !session_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        return false;
+    }
+    let Ok(project_dirs) = fs::read_dir(projects_dir) else {
+        return false;
+    };
+    for project_dir in project_dirs.flatten() {
+        let path = project_dir.path().join(format!("{session_id}.jsonl"));
+        let Ok(mut file) = fs::File::open(path) else {
+            continue;
+        };
+        let Ok(len) = file.metadata().map(|m| m.len()) else {
+            continue;
+        };
+        let start = len.saturating_sub(TAIL_BYTES);
+        if file.seek(SeekFrom::Start(start)).is_err() {
+            continue;
+        }
+        let mut tail_bytes = Vec::with_capacity(TAIL_BYTES as usize);
+        if file.take(TAIL_BYTES).read_to_end(&mut tail_bytes).is_err() {
+            continue;
+        }
+        if start > 0 {
+            let Some(newline) = tail_bytes.iter().position(|byte| *byte == b'\n') else {
+                continue;
+            };
+            tail_bytes.drain(..=newline);
+        }
+        let Ok(tail) = std::str::from_utf8(&tail_bytes) else {
+            continue;
+        };
+
+        let mut latest_assistant_is_auth = None;
+        for value in tail
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        {
+            let current_assistant = value.get("type").and_then(Value::as_str) == Some("message")
+                && value.get("role").and_then(Value::as_str) == Some("assistant")
+                && value.get("sessionId").and_then(Value::as_str) == Some(session_id)
+                && value
+                    .get("timestamp")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|timestamp| timestamp >= turn_started_at_ms);
+            if !current_assistant {
+                continue;
+            }
+            latest_assistant_is_auth = Some(is_exact_terminal_auth_failure(&value));
+        }
+        if latest_assistant_is_auth == Some(true) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_exact_terminal_auth_failure(value: &Value) -> bool {
+    let provider = value.get("providerData");
+    let error = provider.and_then(|data| data.get("error"));
+    let content = value.get("content").and_then(Value::as_array);
+    value.get("status").and_then(Value::as_str) == Some("incomplete")
+        && provider.and_then(|data| data.get("skipRun")).and_then(Value::as_bool) == Some(true)
+        && error.and_then(|error| error.get("code")).and_then(Value::as_u64) == Some(401)
+        && error.and_then(|error| error.get("status")).and_then(Value::as_u64) == Some(401)
+        && error
+            .and_then(|error| error.get("isRetryable"))
+            .and_then(Value::as_bool)
+            == Some(false)
+        && content.is_some_and(|blocks| {
+            blocks.len() == 1
+                && blocks[0].get("type").and_then(Value::as_str) == Some("output_text")
+                && blocks[0].get("text").and_then(Value::as_str) == Some("401 Unauthorized")
+        })
 }
 
 fn resolve_codebuddy_config_dir_from(
@@ -1040,6 +1136,57 @@ mod tests {
             writeln!(file, "{}", serde_json::to_string(record).expect("serialize"))
                 .expect("write line");
         }
+    }
+
+    #[test]
+    fn detects_real_dropped_provider_401_but_not_stale_or_quoted_text() {
+        let root = std::env::temp_dir().join(format!("codeg-cb-auth-{}", uuid::Uuid::new_v4()));
+        let sid = "01a07fb7-f331-7c50-a9b7-cf380da4a201";
+        write_session(
+            &root,
+            "Users-demo-app",
+            sid,
+            &[
+                json!({"type":"message","role":"user","timestamp":1900i64,"sessionId":sid,
+                    "content":[{"type":"input_text","text":"中文".repeat(40_000)}]}),
+                json!({"type":"message","role":"assistant","status":"incomplete","timestamp":1999i64,"sessionId":sid,
+                    "content":[{"type":"output_text","text":"401 Unauthorized"}],
+                    "providerData":{"skipRun":true,"error":{"code":401,"status":401,"isRetryable":false}}}),
+                json!({"type":"message","role":"assistant","status":"incomplete","timestamp":2001i64,"sessionId":sid,
+                    "content":[{"type":"output_text","text":"401 Unauthorized"}],
+                    "providerData":{"skipRun":true,"error":{"code":401,"status":401,"isRetryable":false}}}),
+            ],
+        );
+        assert!(has_terminal_auth_failure_in_projects(&root, sid, 2000));
+        assert!(!has_terminal_auth_failure_in_projects(&root, sid, 2002));
+
+        let quoted_sid = "quoted";
+        write_session(
+            &root,
+            "Users-demo-app",
+            quoted_sid,
+            &[json!({"type":"message","role":"assistant","status":"incomplete","timestamp":2001i64,"sessionId":quoted_sid,
+                "content":[{"type":"output_text","text":"The log says 401 Unauthorized"}],
+                "providerData":{"skipRun":true,"error":{"code":401,"status":401,"isRetryable":false}}})],
+        );
+        assert!(!has_terminal_auth_failure_in_projects(&root, quoted_sid, 2000));
+
+        let superseded_sid = "superseded";
+        write_session(
+            &root,
+            "Users-demo-app",
+            superseded_sid,
+            &[
+                json!({"type":"message","role":"assistant","status":"incomplete","timestamp":2001i64,"sessionId":superseded_sid,
+                    "content":[{"type":"output_text","text":"401 Unauthorized"}],
+                    "providerData":{"skipRun":true,"error":{"code":401,"status":401,"isRetryable":false}}}),
+                json!({"type":"message","role":"assistant","status":"completed","timestamp":2002i64,"sessionId":superseded_sid,
+                    "content":[{"type":"output_text","text":"ordinary refusal"}]}),
+            ],
+        );
+        assert!(!has_terminal_auth_failure_in_projects(&root, superseded_sid, 2000));
+
+        std::fs::remove_dir_all(root).expect("cleanup auth fixture");
     }
 
     #[test]

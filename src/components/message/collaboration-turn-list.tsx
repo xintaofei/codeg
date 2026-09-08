@@ -257,7 +257,7 @@ export function CollaborationTurnList({
   }
 
   return (
-    <div className="border-b border-border px-4 py-3">
+    <div className="min-h-0 max-h-[40%] overflow-y-auto border-b border-border px-4 py-3">
       <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         {t("collabTitle")}
       </div>
