@@ -981,13 +981,13 @@ export function SkillsSettings() {
                     filteredSkills.map((skill) => {
                       const isActive = skill.id === selectedSkillId
                       const deleting = skillDeletingId === skill.id
-                      const availabilityHint = skill.read_only
-                        ? skillsT("availability.readOnly")
-                        : !skill.can_toggle
-                          ? skillsT("availability.cannotIsolate")
-                          : skill.enabled
-                            ? skillsT("availability.enabled")
-                            : skillsT("availability.disabled")
+                      const availabilityHint = !skill.can_toggle
+                        ? skill.read_only
+                          ? skillsT("availability.readOnly")
+                          : skillsT("availability.cannotIsolate")
+                        : skill.enabled
+                          ? skillsT("availability.enabled")
+                          : skillsT("availability.disabled")
 
                       return (
                         <ContextMenu key={skill.id}>

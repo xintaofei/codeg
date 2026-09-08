@@ -178,6 +178,20 @@ describe("SkillsSettings availability", () => {
     )
   })
 
+  it("keeps a read-only system skill toggleable when availability is configurable", async () => {
+    api.acpListAgentSkills.mockResolvedValue(
+      listResult(skill({ read_only: true, can_toggle: true }))
+    )
+
+    renderSettings()
+
+    const availability = await screen.findByRole("switch", {
+      name: "Toggle Demo Skill for Codex",
+    })
+    expect(availability).toBeEnabled()
+    expect(availability).toHaveAttribute("title", "Enabled")
+  })
+
   it("explains when a shared skill cannot be toggled independently", async () => {
     api.acpListAgentSkills.mockResolvedValue(
       listResult(skill({ read_only: false, can_toggle: false }))

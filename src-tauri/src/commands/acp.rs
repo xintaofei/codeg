@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -2675,6 +2676,14 @@ fn codex_config_toml_path() -> PathBuf {
     codex_home_dir().join("config.toml")
 }
 
+static CODEX_CONFIG_MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_codex_config_mutation() -> Result<std::sync::MutexGuard<'static, ()>, AcpError> {
+    CODEX_CONFIG_MUTATION_LOCK
+        .lock()
+        .map_err(|_| AcpError::protocol("codex config mutation lock poisoned"))
+}
+
 fn codex_auth_json_path() -> PathBuf {
     codex_home_dir().join("auth.json")
 }
@@ -3320,6 +3329,7 @@ fn persist_codex_local_config(config_patch_json: Option<&str>) -> Result<(), Acp
         model,
         env,
     } = runtime;
+    let _config_guard = lock_codex_config_mutation()?;
 
     let config_path = codex_config_toml_path();
     let mut toml_value = if config_path.exists() {
@@ -3412,15 +3422,11 @@ fn persist_codex_local_config(config_patch_json: Option<&str>) -> Result<(), Acp
         }
     }
 
-    let serialized_toml = toml::to_string_pretty(&toml_value)
-        .map_err(|e| AcpError::protocol(format!("serialize codex toml failed: {e}")))?;
-    if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            AcpError::protocol(format!("create codex config directory failed: {e}"))
-        })?;
-    }
-    fs::write(&config_path, format!("{serialized_toml}\n"))
-        .map_err(|e| AcpError::protocol(format!("write codex config failed: {e}")))?;
+    let serialized_toml = format!(
+        "{}\n",
+        toml::to_string_pretty(&toml_value)
+            .map_err(|e| AcpError::protocol(format!("serialize codex toml failed: {e}")))?
+    );
 
     let auth_path = codex_auth_json_path();
     let mut auth_value = if auth_path.exists() {
@@ -3448,34 +3454,58 @@ fn persist_codex_local_config(config_patch_json: Option<&str>) -> Result<(), Acp
             auth_obj.remove("OPENAI_API_KEY");
         }
     }
-    let serialized_auth = serde_json::to_string_pretty(&auth_value)
-        .map_err(|e| AcpError::protocol(format!("serialize codex auth failed: {e}")))?;
-    if let Some(parent) = auth_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| AcpError::protocol(format!("create codex auth directory failed: {e}")))?;
-    }
-    fs::write(&auth_path, format!("{serialized_auth}\n"))
-        .map_err(|e| AcpError::protocol(format!("write codex auth failed: {e}")))?;
+    let serialized_auth = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&auth_value)
+            .map_err(|e| AcpError::protocol(format!("serialize codex auth failed: {e}")))?
+    );
 
+    persist_codex_native_config_files_unlocked(Some(&serialized_auth), Some(&serialized_toml))
+}
+
+fn codex_atomic_write_target(path: &Path) -> std::io::Result<PathBuf> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => fs::canonicalize(path),
+        Ok(_) => Ok(path.to_path_buf()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(error) => Err(error),
+    }
+}
+
+fn write_codex_file_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let target = codex_atomic_write_target(path)?;
+    let parent = target.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("codex file has no parent: {}", target.display()),
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+
+    let permissions = fs::metadata(&target)
+        .ok()
+        .map(|metadata| metadata.permissions());
+    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    staged.write_all(contents.as_bytes())?;
+    if let Some(permissions) = permissions {
+        staged.as_file().set_permissions(permissions)?;
+    }
+    staged.as_file_mut().sync_all()?;
+    staged.persist(&target).map_err(|error| error.error)?;
     Ok(())
 }
 
-fn persist_codex_native_config_files(
+fn persist_codex_native_config_files_unlocked(
     codex_auth_json: Option<&str>,
     codex_config_toml: Option<&str>,
 ) -> Result<(), AcpError> {
     if let Some(raw_toml) = codex_config_toml {
         toml::from_str::<toml::Table>(raw_toml)
             .map_err(|e| AcpError::protocol(format!("invalid codex config.toml: {e}")))?;
-        let path = codex_config_toml_path();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| AcpError::protocol(format!("create codex directory failed: {e}")))?;
-        }
-        fs::write(&path, raw_toml)
-            .map_err(|e| AcpError::protocol(format!("write codex config.toml failed: {e}")))?;
     }
-
     if let Some(raw_auth) = codex_auth_json {
         let parsed = serde_json::from_str::<serde_json::Value>(raw_auth)
             .map_err(|e| AcpError::protocol(format!("invalid codex auth.json: {e}")))?;
@@ -3484,16 +3514,29 @@ fn persist_codex_native_config_files(
                 "invalid codex auth.json: root must be a JSON object",
             ));
         }
+    }
+
+    if let Some(raw_toml) = codex_config_toml {
+        let path = codex_config_toml_path();
+        write_codex_file_atomic(&path, raw_toml)
+            .map_err(|e| AcpError::protocol(format!("write codex config.toml failed: {e}")))?;
+    }
+
+    if let Some(raw_auth) = codex_auth_json {
         let path = codex_auth_json_path();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| AcpError::protocol(format!("create codex directory failed: {e}")))?;
-        }
-        fs::write(&path, raw_auth)
+        write_codex_file_atomic(&path, raw_auth)
             .map_err(|e| AcpError::protocol(format!("write codex auth.json failed: {e}")))?;
     }
 
     Ok(())
+}
+
+fn persist_codex_native_config_files(
+    codex_auth_json: Option<&str>,
+    codex_config_toml: Option<&str>,
+) -> Result<(), AcpError> {
+    let _config_guard = lock_codex_config_mutation()?;
+    persist_codex_native_config_files_unlocked(codex_auth_json, codex_config_toml)
 }
 
 /// Read `~/.codex/config.toml` as the base of a structured sandbox merge.
@@ -3672,12 +3715,18 @@ fn remove_codex_catalog_key(
 /// Drop codeg's own `model_catalog_json` reference from the config.toml on disk,
 /// if it carries one. Reads fresh so it also cleans up a key written by an
 /// earlier codeg version or by another window since the panel opened.
-fn drop_codex_catalog_reference() -> Result<(), AcpError> {
+fn drop_codex_catalog_reference_unlocked() -> Result<(), AcpError> {
     let base = read_codex_config_or_empty()?;
     if let Some(next) = remove_codex_catalog_key(&base, &codex_home_dir())? {
-        persist_codex_native_config_files(None, Some(&next))?;
+        persist_codex_native_config_files_unlocked(None, Some(&next))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn drop_codex_catalog_reference() -> Result<(), AcpError> {
+    let _config_guard = lock_codex_config_mutation()?;
+    drop_codex_catalog_reference_unlocked()
 }
 
 /// Apply the Codex panel's sandbox / approval PATCH to the raw config.toml text,
@@ -8634,6 +8683,359 @@ pub(crate) fn locate_existing_skill_across_dirs(
     None
 }
 
+fn active_skill_entries(
+    roots: &[PathBuf],
+    kind: SkillStorageKind,
+    skill_id: &str,
+    scope: AgentSkillScope,
+) -> Result<Vec<AgentSkillItem>, AcpError> {
+    let mut matches = Vec::new();
+    let mut seen_roots = std::collections::HashSet::new();
+    for root in roots {
+        if !seen_roots.insert(resolved_skill_root(root)?) {
+            continue;
+        }
+        let entries = match fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(AcpError::protocol(format!(
+                    "failed to inspect active skills directory '{}': {error}",
+                    root.display()
+                )))
+            }
+        };
+        for entry in entries {
+            let path = entry
+                .map_err(|error| {
+                    AcpError::protocol(format!("failed to inspect active skill: {error}"))
+                })?
+                .path();
+            let Some(layout) = skill_entry_layout(&path, kind) else {
+                continue;
+            };
+            let id = match layout {
+                AgentSkillLayout::SkillDirectory => path.file_name(),
+                AgentSkillLayout::MarkdownFile => path.file_stem(),
+            }
+            .and_then(|name| name.to_str());
+            if id == Some(skill_id) {
+                matches.push(build_skill_item(
+                    skill_id.to_string(),
+                    scope,
+                    layout,
+                    path,
+                    true,
+                ));
+            }
+        }
+    }
+    Ok(matches)
+}
+
+#[derive(Debug, Default)]
+struct CodexSkillConfig {
+    entries: Vec<CodexSkillConfigEntry>,
+}
+
+#[derive(Debug)]
+struct CodexSkillConfigEntry {
+    path: Option<PathBuf>,
+    name: Option<String>,
+    enabled: bool,
+}
+
+fn resolve_codex_skill_config_path(raw: &str, codex_home: &Path) -> PathBuf {
+    if raw == "~" {
+        return home_dir_or_default();
+    }
+    if let Some(relative) = raw.strip_prefix("~/") {
+        return home_dir_or_default().join(relative);
+    }
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        path
+    } else {
+        codex_home.join(path)
+    }
+}
+
+fn absolute_skill_content_path(skill: &AgentSkillItem) -> Result<PathBuf, AcpError> {
+    let path = skill_content_path(skill.layout, Path::new(&skill.path));
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .map_err(|error| {
+                AcpError::protocol(format!("failed to resolve current directory: {error}"))
+            })
+    }
+}
+
+fn same_skill_config_path(first: &Path, second: &Path) -> bool {
+    first == second
+        || fs::canonicalize(first)
+            .ok()
+            .zip(fs::canonicalize(second).ok())
+            .is_some_and(|(first, second)| first == second)
+}
+
+fn parse_codex_skill_config(
+    raw_toml: &str,
+    codex_home: &Path,
+) -> Result<CodexSkillConfig, AcpError> {
+    let root = raw_toml
+        .parse::<toml::Value>()
+        .map_err(|error| AcpError::protocol(format!("invalid codex config.toml: {error}")))?;
+    let Some(config) = root
+        .get("skills")
+        .and_then(toml::Value::as_table)
+        .and_then(|skills| skills.get("config"))
+    else {
+        return Ok(CodexSkillConfig::default());
+    };
+    let config = config.as_array().ok_or_else(|| {
+        AcpError::protocol("invalid codex config.toml: skills.config must be an array")
+    })?;
+    let mut entries = Vec::with_capacity(config.len());
+    for entry in config {
+        let table = entry.as_table().ok_or_else(|| {
+            AcpError::protocol("invalid codex config.toml: skills.config entry must be a table")
+        })?;
+        let path = match table.get("path") {
+            Some(value) => Some(
+                value
+                    .as_str()
+                    .map(|path| resolve_codex_skill_config_path(path, codex_home))
+                    .ok_or_else(|| {
+                        AcpError::protocol(
+                            "invalid codex config.toml: skills.config path must be a string",
+                        )
+                    })?,
+            ),
+            None => None,
+        };
+        let name = match table.get("name") {
+            Some(value) => Some(value.as_str().map(str::to_string).ok_or_else(|| {
+                AcpError::protocol("invalid codex config.toml: skills.config name must be a string")
+            })?),
+            None => None,
+        };
+        let enabled = table
+            .get("enabled")
+            .ok_or_else(|| {
+                AcpError::protocol(
+                    "invalid codex config.toml: skills.config enabled is required",
+                )
+            })?
+            .as_bool()
+            .ok_or_else(|| {
+                AcpError::protocol(
+                    "invalid codex config.toml: skills.config enabled must be a boolean",
+                )
+            })?;
+        entries.push(CodexSkillConfigEntry {
+            path,
+            name,
+            enabled,
+        });
+    }
+    Ok(CodexSkillConfig { entries })
+}
+
+impl CodexSkillConfig {
+    fn skill_enabled(&self, path: &Path, name: &str) -> bool {
+        if let Some(enabled) = self
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .path
+                    .as_deref()
+                    .is_some_and(|configured| same_skill_config_path(configured, path))
+            })
+            .map(|entry| entry.enabled)
+            .next_back()
+        {
+            return enabled;
+        }
+
+        self.entries
+            .iter()
+            .filter(|entry| entry.name.as_deref() == Some(name))
+            .map(|entry| entry.enabled)
+            .next_back()
+            .unwrap_or(true)
+    }
+}
+
+fn codex_skill_entries_enabled(
+    entries: &[AgentSkillItem],
+    config: &CodexSkillConfig,
+) -> Result<bool, AcpError> {
+    for skill in entries {
+        if config.skill_enabled(&absolute_skill_content_path(skill)?, &skill.id) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn apply_codex_skill_enabled_config(
+    base_toml: &str,
+    codex_home: &Path,
+    paths: &[PathBuf],
+    enabled: bool,
+) -> Result<String, AcpError> {
+    parse_codex_skill_config(base_toml, codex_home)?;
+    let mut doc = base_toml
+        .parse::<toml_edit::Document>()
+        .map_err(|error| AcpError::protocol(format!("invalid codex config.toml: {error}")))?;
+    if doc.get("skills").is_none() {
+        doc["skills"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    let skills = doc
+        .get_mut("skills")
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or_else(|| AcpError::protocol("invalid codex config.toml: skills must be a table"))?;
+    if skills.get("config").is_none() {
+        skills.insert(
+            "config",
+            toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new()),
+        );
+    }
+    // Match Codex's native `skills/config/write`: persist the resolved
+    // SKILL.md target so symlink aliases collapse to one stable rule.
+    let mut unique_paths = paths
+        .iter()
+        .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
+        .collect::<Vec<_>>();
+    unique_paths.sort();
+    unique_paths.dedup();
+
+    let config = skills
+        .get_mut("config")
+        .ok_or_else(|| AcpError::protocol("invalid codex config.toml: missing skills.config"))?;
+    match config {
+        toml_edit::Item::ArrayOfTables(config) => {
+            for path in unique_paths {
+                let mut matched = false;
+                for entry in config.iter_mut() {
+                    let path_matches = entry
+                        .get("path")
+                        .and_then(toml_edit::Item::as_str)
+                        .map(|configured| resolve_codex_skill_config_path(configured, codex_home))
+                        .is_some_and(|configured| same_skill_config_path(&configured, &path));
+                    if path_matches {
+                        entry.insert("enabled", toml_edit::value(enabled));
+                        matched = true;
+                    }
+                }
+                if !matched {
+                    let mut entry = toml_edit::Table::new();
+                    entry.insert("path", toml_edit::value(path.to_string_lossy().as_ref()));
+                    entry.insert("enabled", toml_edit::value(enabled));
+                    config.push(entry);
+                }
+            }
+        }
+        toml_edit::Item::Value(toml_edit::Value::Array(config)) => {
+            for path in unique_paths {
+                let mut matched = false;
+                for value in config.iter_mut() {
+                    let entry = value.as_inline_table_mut().ok_or_else(|| {
+                        AcpError::protocol(
+                            "invalid codex config.toml: skills.config entry must be a table",
+                        )
+                    })?;
+                    let path_matches = entry
+                        .get("path")
+                        .and_then(toml_edit::Value::as_str)
+                        .map(|configured| resolve_codex_skill_config_path(configured, codex_home))
+                        .is_some_and(|configured| same_skill_config_path(&configured, &path));
+                    if path_matches {
+                        entry.insert("enabled", toml_edit::Value::from(enabled));
+                        matched = true;
+                    }
+                }
+                if !matched {
+                    let mut entry = toml_edit::InlineTable::new();
+                    entry.insert(
+                        "path",
+                        toml_edit::Value::from(path.to_string_lossy().as_ref()),
+                    );
+                    entry.insert("enabled", toml_edit::Value::from(enabled));
+                    config.push(toml_edit::Value::InlineTable(entry));
+                }
+            }
+        }
+        _ => {
+            return Err(AcpError::protocol(
+                "invalid codex config.toml: skills.config must be an array of tables",
+            ))
+        }
+    }
+    Ok(doc.to_string())
+}
+
+fn set_codex_skill_enabled_native(
+    mut listed: AgentSkillItem,
+    active: &[AgentSkillItem],
+    enabled: bool,
+) -> Result<AgentSkillItem, AcpError> {
+    let _config_guard = lock_codex_config_mutation()?;
+    let codex_home = codex_home_dir();
+    let base = read_codex_config_or_empty()?;
+    let current = parse_codex_skill_config(&base, &codex_home)?;
+    listed.enabled = codex_skill_entries_enabled(active, &current)?;
+    listed.can_toggle = true;
+    if listed.enabled == enabled {
+        return Ok(listed);
+    }
+    let paths = active
+        .iter()
+        .map(absolute_skill_content_path)
+        .collect::<Result<Vec<_>, _>>()?;
+    let next = apply_codex_skill_enabled_config(&base, &codex_home, &paths, enabled)?;
+    let updated = parse_codex_skill_config(&next, &codex_home)?;
+    if codex_skill_entries_enabled(active, &updated)? != enabled {
+        return Err(AcpError::protocol(
+            "requested Codex skill state was not reached",
+        ));
+    }
+    persist_codex_native_config_files_unlocked(None, Some(&next))?;
+    listed.enabled = enabled;
+    Ok(listed)
+}
+
+fn apply_codex_native_skill_state(
+    agent_type: AgentType,
+    roots: &[PathBuf],
+    kind: SkillStorageKind,
+    skill: &mut AgentSkillItem,
+) {
+    if agent_type != AgentType::Codex || !skill.enabled {
+        return;
+    }
+    let state = active_skill_entries(roots, kind, &skill.id, skill.scope).and_then(|active| {
+        if active.is_empty() {
+            return Err(AcpError::protocol("active Codex skill entry not found"));
+        }
+        let codex_home = codex_home_dir();
+        let raw = read_codex_config_or_empty()?;
+        let config = parse_codex_skill_config(&raw, &codex_home)?;
+        codex_skill_entries_enabled(&active, &config)
+    });
+    match state {
+        Ok(enabled) => {
+            skill.enabled = enabled;
+            skill.can_toggle = true;
+        }
+        Err(_) => skill.can_toggle = false,
+    }
+}
+
 // All settings mutations share this lock so lookup, preflight and mutation
 // observe one state. No guard is held across an await.
 static SKILL_MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -10678,6 +11080,7 @@ fn cascade_update_agent_config(
             // model-provider endpoint to cascade into.
         }
         AgentType::Codex => {
+            let _config_guard = lock_codex_config_mutation()?;
             let auth_path = codex_auth_json_path();
             let mut auth_obj = if auth_path.exists() {
                 fs::read_to_string(&auth_path)
@@ -10789,7 +11192,7 @@ fn cascade_update_agent_config(
             let toml_str = toml::to_string_pretty(&toml_value)
                 .map_err(|e| AcpError::protocol(e.to_string()))?;
 
-            persist_codex_native_config_files(Some(&auth_str), Some(&toml_str))?;
+            persist_codex_native_config_files_unlocked(Some(&auth_str), Some(&toml_str))?;
         }
         AgentType::OpenCode => {
             let auth_path = opencode_auth_json_path();
@@ -12190,6 +12593,7 @@ fn apply_codex_root_model_action(action: &CodexModelAction) -> Result<(), AcpErr
     if matches!(action, CodexModelAction::NoOp) {
         return Ok(());
     }
+    let _config_guard = lock_codex_config_mutation()?;
     let config_path = codex_config_toml_path();
     let mut toml_value = if config_path.exists() {
         fs::read_to_string(&config_path)
@@ -12214,7 +12618,7 @@ fn apply_codex_root_model_action(action: &CodexModelAction) -> Result<(), AcpErr
     }
     let toml_str =
         toml::to_string_pretty(&toml_value).map_err(|e| AcpError::protocol(e.to_string()))?;
-    persist_codex_native_config_files(None, Some(&toml_str))?;
+    persist_codex_native_config_files_unlocked(None, Some(&toml_str))?;
     Ok(())
 }
 
@@ -12229,6 +12633,7 @@ fn apply_codex_root_model_action(action: &CodexModelAction) -> Result<(), AcpErr
 /// asks the backend to (re)write the catalog *files* (see
 /// `acp_update_agent_config_core`).
 fn apply_codex_catalog_and_model(raw: Option<&str>) -> Result<(), AcpError> {
+    let _config_guard = lock_codex_config_mutation()?;
     let snapshot = crate::acp::codex_catalog_source::cached_or_bundled_snapshot();
     let injection = crate::acp::codex_model_catalog::write_catalog_files(
         raw.unwrap_or_default(),
@@ -12272,7 +12677,7 @@ fn apply_codex_catalog_and_model(raw: Option<&str>) -> Result<(), AcpError> {
     }
     let toml_str =
         toml::to_string_pretty(&toml_value).map_err(|e| AcpError::protocol(e.to_string()))?;
-    persist_codex_native_config_files(None, Some(&toml_str))?;
+    persist_codex_native_config_files_unlocked(None, Some(&toml_str))?;
     Ok(())
 }
 
@@ -12372,6 +12777,7 @@ pub(crate) async fn acp_update_agent_config_core(
     }
 
     if agent_type == AgentType::Codex {
+        let _config_guard = lock_codex_config_mutation()?;
         // Mirrors the Grok/Cursor flow. The advanced raw editor sends the whole
         // file (`codex_config_toml = Some(text)`), so that text is the verbatim
         // base; the sandbox/approval controls send only a patch, merged onto the
@@ -12389,7 +12795,10 @@ pub(crate) async fn acp_update_agent_config_core(
                 }
                 None => codex_config_toml,
             };
-            persist_codex_native_config_files(codex_auth_json.as_deref(), merged_toml.as_deref())?;
+            persist_codex_native_config_files_unlocked(
+                codex_auth_json.as_deref(),
+                merged_toml.as_deref(),
+            )?;
         }
         // The frontend has already patched config.toml's `model_catalog_json` +
         // root `model` into `codex_config_toml` (comment-preserving text patch);
@@ -12407,7 +12816,7 @@ pub(crate) async fn acp_update_agent_config_core(
                 // The frontend only patches that key when the user *edits* the
                 // model editor, so a save that merely lets a stale removal
                 // dissolve would otherwise leave the two out of sync.
-                Ok(None) => drop_codex_catalog_reference()?,
+                Ok(None) => drop_codex_catalog_reference_unlocked()?,
                 Ok(Some(_)) => {}
                 Err(e) => {
                     tracing::error!("[acp_update_agent_config] write codex catalog failed: {e}")
@@ -13751,8 +14160,29 @@ pub async fn acp_list_agent_skills(
 
     let mut skills = skills_by_key.into_values().collect::<Vec<_>>();
     let peers = skill_peers(workspace_path.as_deref());
+    let codex_skill_config = if agent_type == AgentType::Codex {
+        let codex_home = codex_home_dir();
+        Some(
+            read_codex_config_or_empty()
+                .and_then(|raw| parse_codex_skill_config(&raw, &codex_home)),
+        )
+    } else {
+        None
+    };
     for skill in &mut skills {
         apply_skill_capabilities(agent_type, skill);
+        if agent_type == AgentType::Codex && skill.enabled {
+            let active = scoped_skill_dirs(agent_type, skill.scope, workspace_path.as_deref())
+                .and_then(|roots| active_skill_entries(&roots, spec.kind, &skill.id, skill.scope));
+            match (active, codex_skill_config.as_ref()) {
+                (Ok(active), Some(Ok(config))) if !active.is_empty() => {
+                    skill.enabled = codex_skill_entries_enabled(&active, config)?;
+                    skill.can_toggle = true;
+                }
+                _ => skill.can_toggle = false,
+            }
+            continue;
+        }
         if skill.can_toggle {
             skill.can_toggle = peers
                 .iter()
@@ -13797,6 +14227,10 @@ pub async fn acp_set_agent_skill_enabled(
     let mut skill = locate_existing_skill_across_dirs(&dirs, spec.kind, &id, scope)
         .ok_or_else(|| AcpError::protocol(format!("skill not found: {id}")))?;
     apply_skill_capabilities(agent_type, &mut skill);
+    if agent_type == AgentType::Codex && skill.enabled {
+        let active = active_skill_entries(&dirs, spec.kind, &id, scope)?;
+        return set_codex_skill_enabled_native(skill, &active, enabled);
+    }
     let parent = Path::new(&skill.path).parent();
     let root = dirs
         .iter()
@@ -13883,6 +14317,7 @@ pub async fn acp_read_agent_skill(
     let mut skill = locate_existing_skill_across_dirs(&dirs, spec.kind, &id, scope)
         .ok_or_else(|| AcpError::protocol(format!("skill not found: {id}")))?;
     apply_skill_capabilities(agent_type, &mut skill);
+    apply_codex_native_skill_state(agent_type, &dirs, spec.kind, &mut skill);
     let content_path = skill_content_path(skill.layout, Path::new(&skill.path));
     let content = fs::read_to_string(&content_path)
         .map_err(|e| AcpError::protocol(format!("failed to read skill content: {e}")))?;
@@ -13954,6 +14389,7 @@ pub async fn acp_save_agent_skill(
         .map_err(|e| AcpError::protocol(format!("failed to write skill content: {e}")))?;
 
     skill.description = read_skill_description(&content_path);
+    apply_codex_native_skill_state(agent_type, &dirs, spec.kind, &mut skill);
 
     Ok(skill)
 }
@@ -16640,7 +17076,7 @@ wire_api = "chat"
     }
 
     #[test]
-    fn skill_state_read_only_builtin_cannot_toggle() {
+    fn codex_system_skill_is_read_only_but_toggleable() {
         let tmp = tempfile::tempdir().expect("tempdir");
         temp_env::with_var("CODEX_HOME", Some(tmp.path()), || {
             let system_skill = tmp.path().join("skills/.system/task1a-system-demo");
@@ -16660,7 +17096,7 @@ wire_api = "chat"
 
             assert!(item.enabled);
             assert!(item.read_only);
-            assert!(!item.can_toggle);
+            assert!(item.can_toggle);
         });
     }
 
@@ -18247,174 +18683,565 @@ wire_api = "chat"
     #[test]
     fn skill_enabled_private_command_unisolatable_shared_roots_are_rejected() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        for (agent, relative) in [
-            (AgentType::Codex, ".agents/skills"),
-            (AgentType::Gemini, ".gemini/skills"),
-        ] {
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let root = tmp.path().join(relative);
-            fs::create_dir_all(root.join("demo")).unwrap();
-            fs::write(root.join("demo/SKILL.md"), "shared").unwrap();
-            let error = runtime
-                .block_on(acp_set_agent_skill_enabled(
-                    agent,
-                    AgentSkillScope::Project,
-                    "demo".to_string(),
-                    Some(tmp.path().to_string_lossy().into_owned()),
-                    false,
-                ))
-                .unwrap_err();
-            assert!(error.to_string().contains("shared skill root"));
-            assert!(root.join("demo/SKILL.md").is_file());
-            assert!(!disabled_skill_root(&root).exists());
-        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join(".gemini/skills");
+        fs::create_dir_all(root.join("demo")).unwrap();
+        fs::write(root.join("demo/SKILL.md"), "shared").unwrap();
+        let error = runtime
+            .block_on(acp_set_agent_skill_enabled(
+                AgentType::Gemini,
+                AgentSkillScope::Project,
+                "demo".to_string(),
+                Some(tmp.path().to_string_lossy().into_owned()),
+                false,
+            ))
+            .unwrap_err();
+        assert!(error.to_string().contains("shared skill root"));
+        assert!(root.join("demo/SKILL.md").is_file());
+        assert!(!disabled_skill_root(&root).exists());
     }
 
     #[test]
     fn skill_enabled_private_concurrent_commands_return_requested_state() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let root = tmp.path().join(".codex/skills");
-        fs::create_dir_all(root.join("demo")).unwrap();
-        fs::write(root.join("demo/SKILL.md"), "body").unwrap();
-        let workspace = tmp.path().to_string_lossy().into_owned();
-        std::thread::scope(|threads| {
-            let handles = (0..8)
-                .map(|_| {
-                    let workspace = &workspace;
-                    threads.spawn(move || {
-                        let runtime = tokio::runtime::Runtime::new().unwrap();
-                        for enabled in [false, false, true, true] {
-                            let item = runtime
-                                .block_on(acp_set_agent_skill_enabled(
-                                    AgentType::Codex,
-                                    AgentSkillScope::Project,
-                                    "demo".to_string(),
-                                    Some(workspace.clone()),
-                                    enabled,
-                                ))
-                                .unwrap();
-                            assert_eq!(item.enabled, enabled);
-                        }
-                    })
-                })
-                .collect::<Vec<_>>();
-            for handle in handles {
-                handle.join().unwrap();
-            }
-        });
-        assert_eq!(
-            fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
-            "body"
-        );
-        assert!(!disabled_skill_root(&root).join("demo").exists());
-    }
-
-    #[test]
-    fn skill_enabled_private_duplicate_active_roots_are_rejected_before_move() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let roots = [
-            tmp.path().join(".codex/skills"),
-            tmp.path().join(".agents/skills"),
-        ];
-        for root in &roots {
+        let codex_home = tmp.path().join("codex-home");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            let root = tmp.path().join(".codex/skills");
             fs::create_dir_all(root.join("demo")).unwrap();
-            fs::write(root.join("demo/SKILL.md"), "original").unwrap();
-        }
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let error = runtime
-            .block_on(acp_set_agent_skill_enabled(
-                AgentType::Codex,
-                AgentSkillScope::Project,
-                "demo".into(),
-                Some(tmp.path().to_string_lossy().into_owned()),
-                false,
-            ))
-            .unwrap_err();
-        assert!(error.to_string().contains("multiple active"));
-        for root in &roots {
+            fs::write(root.join("demo/SKILL.md"), "body").unwrap();
+            let workspace = tmp.path().to_string_lossy().into_owned();
+            std::thread::scope(|threads| {
+                let handles = (0..8)
+                    .map(|_| {
+                        let workspace = &workspace;
+                        threads.spawn(move || {
+                            let runtime = tokio::runtime::Runtime::new().unwrap();
+                            for enabled in [false, false, true, true] {
+                                let item = runtime
+                                    .block_on(acp_set_agent_skill_enabled(
+                                        AgentType::Codex,
+                                        AgentSkillScope::Project,
+                                        "demo".to_string(),
+                                        Some(workspace.clone()),
+                                        enabled,
+                                    ))
+                                    .unwrap();
+                                assert_eq!(item.enabled, enabled);
+                            }
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                for handle in handles {
+                    handle.join().unwrap();
+                }
+            });
             assert_eq!(
                 fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
-                "original"
+                "body"
             );
-            assert!(!disabled_skill_root(root).exists());
-        }
+            assert!(!disabled_skill_root(&root).join("demo").exists());
+        });
     }
 
     #[test]
-    fn skill_enabled_private_duplicate_active_layouts_are_rejected_before_move() {
+    fn codex_native_toggle_disables_duplicate_active_roots_without_moving_them() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let root = tmp.path().join(".codex/skills");
-        fs::create_dir_all(root.join("demo")).unwrap();
-        fs::write(root.join("demo/SKILL.md"), "directory").unwrap();
-        fs::write(root.join("demo.md"), "flat").unwrap();
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let error = runtime
-            .block_on(acp_set_agent_skill_enabled(
-                AgentType::Codex,
-                AgentSkillScope::Project,
-                "demo".into(),
-                Some(tmp.path().to_string_lossy().into_owned()),
-                false,
-            ))
-            .unwrap_err();
-        assert!(error.to_string().contains("multiple active"));
-        assert_eq!(
-            fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
-            "directory"
-        );
-        assert_eq!(fs::read_to_string(root.join("demo.md")).unwrap(), "flat");
-        assert!(!disabled_skill_root(&root).exists());
+        let codex_home = tmp.path().join("codex-home");
+        let workspace = tmp.path().join("workspace");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            fs::create_dir_all(&codex_home).unwrap();
+            fs::write(
+                codex_home.join("config.toml"),
+                "# keep this comment\nmodel = \"test-model\"\n\n[[skills.config]]\npath = \"/unrelated/SKILL.md\"\nenabled = false\n",
+            )
+            .unwrap();
+            let roots = [
+                workspace.join(".codex/skills"),
+                workspace.join(".agents/skills"),
+            ];
+            for root in &roots {
+                fs::create_dir_all(root.join("demo")).unwrap();
+                fs::write(root.join("demo/SKILL.md"), "original").unwrap();
+            }
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let workspace_path = Some(workspace.to_string_lossy().into_owned());
+            let before = runtime
+                .block_on(acp_list_agent_skills(
+                    AgentType::Codex,
+                    workspace_path.clone(),
+                ))
+                .unwrap()
+                .skills
+                .into_iter()
+                .find(|skill| skill.scope == AgentSkillScope::Project && skill.id == "demo")
+                .unwrap();
+            assert!(before.can_toggle, "Codex can disable every visible path");
+
+            let disabled = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    workspace_path.clone(),
+                    false,
+                ))
+                .unwrap();
+            assert!(!disabled.enabled);
+            assert_eq!(
+                disabled.path, before.path,
+                "the displayed path stays stable"
+            );
+
+            for root in &roots {
+                assert_eq!(
+                    fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+                    "original"
+                );
+                assert!(!disabled_skill_root(root).exists());
+            }
+
+            let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+            assert!(config.contains("# keep this comment\nmodel = \"test-model\""));
+            let parsed = config.parse::<toml::Value>().unwrap();
+            let configured = parsed["skills"]["config"].as_array().unwrap();
+            assert_eq!(configured.len(), 3);
+            for root in &roots {
+                let expected_path = fs::canonicalize(root.join("demo/SKILL.md")).unwrap();
+                let expected = expected_path.to_string_lossy();
+                assert!(configured.iter().any(|entry| {
+                    entry.get("path").and_then(toml::Value::as_str) == Some(expected.as_ref())
+                        && entry.get("enabled").and_then(toml::Value::as_bool) == Some(false)
+                }));
+            }
+
+            let listed = runtime
+                .block_on(acp_list_agent_skills(AgentType::Codex, workspace_path))
+                .unwrap()
+                .skills
+                .into_iter()
+                .find(|skill| skill.scope == AgentSkillScope::Project && skill.id == "demo")
+                .unwrap();
+            assert!(!listed.enabled);
+            assert!(listed.can_toggle);
+            assert_eq!(listed.path, before.path);
+
+            let enabled = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    Some(workspace.to_string_lossy().into_owned()),
+                    true,
+                ))
+                .unwrap();
+            assert!(enabled.enabled);
+            assert_eq!(enabled.path, before.path);
+            let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+            let parsed = config.parse::<toml::Value>().unwrap();
+            for root in &roots {
+                let expected_path = fs::canonicalize(root.join("demo/SKILL.md")).unwrap();
+                let expected = expected_path.to_string_lossy();
+                assert!(parsed["skills"]["config"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| {
+                        entry.get("path").and_then(toml::Value::as_str) == Some(expected.as_ref())
+                            && entry.get("enabled").and_then(toml::Value::as_bool) == Some(true)
+                    }));
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_native_toggle_keeps_shared_vault_links_in_place() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        let workspace = tmp.path().join("workspace");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            let canonical = workspace
+                .join(".agents/.skills.codeg-disabled")
+                .join("agent-reach");
+            fs::create_dir_all(&canonical).unwrap();
+            fs::write(canonical.join("SKILL.md"), "shared skill").unwrap();
+
+            let links = [
+                workspace.join(".codex/skills/agent-reach"),
+                workspace.join(".gemini/skills/agent-reach"),
+                workspace.join(".cursor/skills/agent-reach"),
+            ];
+            for link in &links {
+                fs::create_dir_all(link.parent().unwrap()).unwrap();
+                std::os::unix::fs::symlink(&canonical, link).unwrap();
+            }
+
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let workspace_path = Some(workspace.to_string_lossy().into_owned());
+            let before = runtime
+                .block_on(acp_list_agent_skills(
+                    AgentType::Codex,
+                    workspace_path.clone(),
+                ))
+                .unwrap()
+                .skills
+                .into_iter()
+                .find(|skill| skill.scope == AgentSkillScope::Project && skill.id == "agent-reach")
+                .unwrap();
+            assert!(before.enabled);
+            assert!(before.can_toggle);
+            assert_eq!(Path::new(&before.path), links[0]);
+
+            let disabled = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "agent-reach".into(),
+                    workspace_path.clone(),
+                    false,
+                ))
+                .unwrap();
+            assert!(!disabled.enabled);
+            assert_eq!(disabled.path, before.path);
+            assert!(canonical.join("SKILL.md").is_file());
+            for link in &links {
+                assert!(fs::symlink_metadata(link).unwrap().file_type().is_symlink());
+                assert_eq!(fs::read_link(link).unwrap(), canonical);
+            }
+
+            let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+            let parsed = config.parse::<toml::Value>().unwrap();
+            let configured = parsed["skills"]["config"].as_array().unwrap();
+            assert_eq!(configured.len(), 1);
+            let canonical_skill_md = fs::canonicalize(canonical.join("SKILL.md")).unwrap();
+            assert_eq!(
+                configured[0].get("path").and_then(toml::Value::as_str),
+                canonical_skill_md.to_str()
+            );
+            assert_eq!(
+                configured[0].get("enabled").and_then(toml::Value::as_bool),
+                Some(false)
+            );
+
+            let listed = runtime
+                .block_on(acp_list_agent_skills(
+                    AgentType::Codex,
+                    workspace_path.clone(),
+                ))
+                .unwrap()
+                .skills
+                .into_iter()
+                .find(|skill| skill.scope == AgentSkillScope::Project && skill.id == "agent-reach")
+                .unwrap();
+            assert!(!listed.enabled);
+            assert!(listed.can_toggle);
+            assert_eq!(listed.path, before.path);
+
+            let enabled = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "agent-reach".into(),
+                    workspace_path,
+                    true,
+                ))
+                .unwrap();
+            assert!(enabled.enabled);
+            assert_eq!(enabled.path, before.path);
+            for link in &links {
+                assert!(fs::symlink_metadata(link).unwrap().file_type().is_symlink());
+                assert_eq!(fs::read_link(link).unwrap(), canonical);
+            }
+        });
+    }
+
+    #[test]
+    fn codex_native_toggle_honors_name_config_entries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        let workspace = tmp.path().join("workspace");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            fs::create_dir_all(&codex_home).unwrap();
+            fs::write(
+                codex_home.join("config.toml"),
+                "[[skills.config]]\nname = \"demo\"\nenabled = false\n",
+            )
+            .unwrap();
+            let skill = workspace.join(".codex/skills/demo");
+            fs::create_dir_all(&skill).unwrap();
+            fs::write(
+                skill.join("SKILL.md"),
+                "---\nname: demo\ndescription: Demo\n---\n",
+            )
+            .unwrap();
+
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let workspace_path = Some(workspace.to_string_lossy().into_owned());
+            let listed = runtime
+                .block_on(acp_list_agent_skills(
+                    AgentType::Codex,
+                    workspace_path.clone(),
+                ))
+                .unwrap()
+                .skills
+                .into_iter()
+                .find(|skill| skill.scope == AgentSkillScope::Project && skill.id == "demo")
+                .unwrap();
+            assert!(!listed.enabled);
+            assert!(listed.can_toggle);
+
+            let enabled = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    workspace_path,
+                    true,
+                ))
+                .unwrap();
+            assert!(enabled.enabled);
+
+            let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+            let parsed = config.parse::<toml::Value>().unwrap();
+            let configured = parsed["skills"]["config"].as_array().unwrap();
+            assert_eq!(configured.len(), 2);
+            assert_eq!(
+                configured[0].get("name").and_then(toml::Value::as_str),
+                Some("demo")
+            );
+            assert_eq!(
+                configured[0].get("enabled").and_then(toml::Value::as_bool),
+                Some(false),
+                "a path-scoped toggle must not rewrite the broader name selector"
+            );
+            let expected_path = fs::canonicalize(skill.join("SKILL.md")).unwrap();
+            assert!(configured.iter().any(|entry| {
+                entry.get("path").and_then(toml::Value::as_str)
+                    == expected_path.to_str()
+                    && entry.get("enabled").and_then(toml::Value::as_bool) == Some(true)
+            }));
+        });
+    }
+
+    #[test]
+    fn codex_skill_config_path_selector_overrides_later_name_selector() {
+        let config = parse_codex_skill_config(
+            "[[skills.config]]\npath = \"/tmp/demo/SKILL.md\"\nenabled = true\n\
+             \n[[skills.config]]\nname = \"demo\"\nenabled = false\n",
+            Path::new("/tmp/codex-home"),
+        )
+        .unwrap();
+
+        assert!(config.skill_enabled(Path::new("/tmp/demo/SKILL.md"), "demo"));
+    }
+
+    #[test]
+    fn codex_skill_config_selectorless_entry_matches_no_skill() {
+        let config = parse_codex_skill_config(
+            "[[skills.config]]\nenabled = false\n",
+            Path::new("/tmp/codex-home"),
+        )
+        .expect("Codex accepts selectorless entries");
+
+        assert!(config.skill_enabled(Path::new("/tmp/demo/SKILL.md"), "demo"));
+    }
+
+    #[test]
+    fn codex_skill_config_requires_enabled_field() {
+        let error = parse_codex_skill_config(
+            "[[skills.config]]\nname = \"demo\"\n",
+            Path::new("/tmp/codex-home"),
+        )
+        .expect_err("Codex rejects entries without enabled");
+
+        assert!(error.to_string().contains("enabled"));
+    }
+
+    #[test]
+    fn codex_native_toggle_updates_inline_array_config() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        let workspace = tmp.path().join("workspace");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            let skill = workspace.join(".codex/skills/demo");
+            fs::create_dir_all(&skill).unwrap();
+            fs::write(skill.join("SKILL.md"), "inline config").unwrap();
+            fs::create_dir_all(&codex_home).unwrap();
+            let content_path = fs::canonicalize(skill.join("SKILL.md")).unwrap();
+            fs::write(
+                codex_home.join("config.toml"),
+                format!(
+                    "# inline form is valid Codex TOML\n[skills]\nconfig = [{{ path = \"{}\", enabled = true }}]\n",
+                    content_path.display()
+                ),
+            )
+            .unwrap();
+
+            let disabled = tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    Some(workspace.to_string_lossy().into_owned()),
+                    false,
+                ))
+                .expect("inline-array config should remain toggleable");
+            assert!(!disabled.enabled);
+
+            let written = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+            assert!(written.contains("# inline form is valid Codex TOML"));
+            assert!(written.contains("config = ["));
+            let parsed = written.parse::<toml::Value>().unwrap();
+            let entries = parsed["skills"]["config"].as_array().unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(
+                entries[0].get("path").and_then(toml::Value::as_str),
+                content_path.to_str()
+            );
+            assert_eq!(
+                entries[0].get("enabled").and_then(toml::Value::as_bool),
+                Some(false)
+            );
+            assert!(skill.join("SKILL.md").is_file());
+        });
+    }
+
+    #[test]
+    fn codex_config_concurrent_rmw_writes_preserve_both_changes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            fs::create_dir_all(&codex_home).unwrap();
+            let config_path = codex_home.join("config.toml");
+            let padding = "# keep this unrelated config padding\n".repeat(50_000);
+
+            for attempt in 0..4 {
+                fs::write(
+                    &config_path,
+                    format!(
+                        "model = \"old\"\nmodel_catalog_json = \"{}\"\n{padding}",
+                        crate::acp::codex_model_catalog::CATALOG_REL,
+                    ),
+                )
+                .unwrap();
+
+                let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+                std::thread::scope(|threads| {
+                    let first = barrier.clone();
+                    let set_model = threads.spawn(move || {
+                        first.wait();
+                        apply_codex_root_model_action(&CodexModelAction::Set("new".into()))
+                    });
+                    let second = barrier.clone();
+                    let drop_catalog = threads.spawn(move || {
+                        second.wait();
+                        drop_codex_catalog_reference()
+                    });
+                    barrier.wait();
+                    set_model.join().unwrap().unwrap();
+                    drop_catalog.join().unwrap().unwrap();
+                });
+
+                let written = fs::read_to_string(&config_path).unwrap();
+                let parsed = written.parse::<toml::Value>().unwrap();
+                assert_eq!(
+                    parsed.get("model").and_then(toml::Value::as_str),
+                    Some("new"),
+                    "model update was lost on attempt {attempt}",
+                );
+                assert!(
+                    parsed.get("model_catalog_json").is_none(),
+                    "catalog cleanup was lost on attempt {attempt}",
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn codex_native_toggle_disables_duplicate_active_layouts_without_moving_them() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            let root = tmp.path().join("workspace/.codex/skills");
+            fs::create_dir_all(root.join("demo")).unwrap();
+            fs::write(root.join("demo/SKILL.md"), "directory").unwrap();
+            fs::write(root.join("demo.md"), "flat").unwrap();
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let disabled = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    Some(tmp.path().join("workspace").to_string_lossy().into_owned()),
+                    false,
+                ))
+                .unwrap();
+            assert!(!disabled.enabled);
+            assert_eq!(
+                fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+                "directory"
+            );
+            assert_eq!(fs::read_to_string(root.join("demo.md")).unwrap(), "flat");
+            assert!(!disabled_skill_root(&root).exists());
+            let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+            let parsed = config.parse::<toml::Value>().unwrap();
+            assert_eq!(parsed["skills"]["config"].as_array().unwrap().len(), 2);
+        });
     }
 
     #[test]
     fn skill_enabled_private_save_new_then_edit_disabled_and_reenable() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let workspace = Some(tmp.path().to_string_lossy().into_owned());
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let saved = runtime
-            .block_on(acp_save_agent_skill(
-                AgentType::Codex,
-                AgentSkillScope::Project,
-                "demo".into(),
-                "original".into(),
-                workspace.clone(),
-                None,
-            ))
-            .unwrap();
-        assert!(saved.enabled);
-        assert_eq!(saved.layout, AgentSkillLayout::MarkdownFile);
-        runtime
-            .block_on(acp_set_agent_skill_enabled(
-                AgentType::Codex,
-                AgentSkillScope::Project,
-                "demo".into(),
-                workspace.clone(),
-                false,
-            ))
-            .unwrap();
-        let saved = runtime
-            .block_on(acp_save_agent_skill(
-                AgentType::Codex,
-                AgentSkillScope::Project,
-                "demo".into(),
-                "updated".into(),
-                workspace.clone(),
-                Some(AgentSkillLayout::SkillDirectory),
-            ))
-            .unwrap();
-        assert!(!saved.enabled);
-        assert_eq!(saved.layout, AgentSkillLayout::MarkdownFile);
-        let enabled = runtime
-            .block_on(acp_set_agent_skill_enabled(
-                AgentType::Codex,
-                AgentSkillScope::Project,
-                "demo".into(),
-                workspace,
-                true,
-            ))
-            .unwrap();
-        assert!(enabled.enabled);
-        assert_eq!(fs::read_to_string(enabled.path).unwrap(), "updated");
+        let codex_home = tmp.path().join("codex-home");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            let workspace = Some(tmp.path().to_string_lossy().into_owned());
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let saved = runtime
+                .block_on(acp_save_agent_skill(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    "original".into(),
+                    workspace.clone(),
+                    None,
+                ))
+                .unwrap();
+            assert!(saved.enabled);
+            assert_eq!(saved.layout, AgentSkillLayout::MarkdownFile);
+            runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    workspace.clone(),
+                    false,
+                ))
+                .unwrap();
+            let saved = runtime
+                .block_on(acp_save_agent_skill(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    "updated".into(),
+                    workspace.clone(),
+                    Some(AgentSkillLayout::SkillDirectory),
+                ))
+                .unwrap();
+            assert!(!saved.enabled);
+            assert_eq!(saved.layout, AgentSkillLayout::MarkdownFile);
+            let enabled = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    workspace,
+                    true,
+                ))
+                .unwrap();
+            assert!(enabled.enabled);
+            assert_eq!(fs::read_to_string(enabled.path).unwrap(), "updated");
+        });
     }
 
     #[test]
@@ -18513,7 +19340,7 @@ wire_api = "chat"
     fn skill_enabled_private_safety_vault_alias_to_native_root_is_rejected() {
         for destination in [".agents/skills", "skills"] {
             let tmp = tempfile::tempdir().unwrap();
-            let root = tmp.path().join(".codex/skills");
+            let root = tmp.path().join(".gemini/skills");
             let other = tmp.path().join(destination);
             fs::create_dir_all(root.join("demo")).unwrap();
             fs::write(root.join("demo/SKILL.md"), "original").unwrap();
@@ -18523,7 +19350,7 @@ wire_api = "chat"
                 tokio::runtime::Runtime::new()
                     .unwrap()
                     .block_on(acp_set_agent_skill_enabled(
-                        AgentType::Codex,
+                        AgentType::Gemini,
                         AgentSkillScope::Project,
                         "demo".into(),
                         Some(tmp.path().to_string_lossy().into_owned()),
@@ -18638,7 +19465,7 @@ wire_api = "chat"
         };
         let _registry_guard = hydrate_test_guard();
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join(".codex/skills");
+        let root = tmp.path().join(".gemini/skills");
         fs::create_dir_all(root.join("demo")).unwrap();
         fs::write(root.join("demo/SKILL.md"), "shared").unwrap();
         let definition = CustomAgentDef {
@@ -18665,7 +19492,7 @@ wire_api = "chat"
         let result = tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(acp_set_agent_skill_enabled(
-                AgentType::Codex,
+                AgentType::Gemini,
                 AgentSkillScope::Project,
                 "demo".into(),
                 Some(tmp.path().to_string_lossy().into_owned()),
@@ -18843,13 +19670,12 @@ wire_api = "chat"
     }
 
     #[test]
-    fn skill_enabled_private_read_only_skill_cannot_be_toggled() {
+    fn codex_native_toggle_disables_read_only_system_skill_without_editing_it() {
         let tmp = tempfile::tempdir().expect("tempdir");
         temp_env::with_var("CODEX_HOME", Some(tmp.path()), || {
             let system_skill = tmp.path().join("skills/.system/task1-system-demo");
             std::fs::create_dir_all(&system_skill).expect("create system skill");
-            std::fs::write(system_skill.join("SKILL.md"), "system\n")
-                .expect("write system skill");
+            std::fs::write(system_skill.join("SKILL.md"), "system\n").expect("write system skill");
             let runtime = tokio::runtime::Runtime::new().expect("runtime");
 
             let listed = runtime
@@ -18861,9 +19687,9 @@ wire_api = "chat"
                 .find(|item| item.id == "task1-system-demo")
                 .expect("listed system skill");
             assert!(item.read_only);
-            assert!(!item.can_toggle);
+            assert!(item.can_toggle);
 
-            let error = runtime
+            let disabled = runtime
                 .block_on(acp_set_agent_skill_enabled(
                     AgentType::Codex,
                     AgentSkillScope::Global,
@@ -18871,10 +19697,77 @@ wire_api = "chat"
                     None,
                     false,
                 ))
-                .expect_err("system skill toggle must fail");
-            assert!(error.to_string().contains("cannot be toggled"));
+                .expect("system skill availability should be configurable");
+            assert!(!disabled.enabled);
+            assert!(disabled.read_only);
+            assert!(disabled.can_toggle);
+            assert_eq!(disabled.path, item.path);
             assert!(system_skill.join("SKILL.md").is_file());
+
+            let listed = runtime
+                .block_on(acp_list_agent_skills(AgentType::Codex, None))
+                .expect("list disabled system skill");
+            let item = listed
+                .skills
+                .iter()
+                .find(|item| item.id == "task1-system-demo")
+                .expect("disabled system skill remains listed");
+            assert!(!item.enabled);
+            assert!(item.read_only);
+            assert!(item.can_toggle);
         });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_native_toggle_preserves_config_symlink() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        let real_dir = tmp.path().join("real-config");
+        fs::create_dir_all(&codex_home).unwrap();
+        fs::create_dir_all(&real_dir).unwrap();
+        let target = real_dir.join("config.toml");
+        fs::write(&target, "# linked config\nmodel = \"test-model\"\n").unwrap();
+        let relative_target = Path::new("../real-config/config.toml");
+        std::os::unix::fs::symlink(relative_target, codex_home.join("config.toml")).unwrap();
+
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            let system_skill = codex_home.join("skills/.system/task1-linked-config-demo");
+            fs::create_dir_all(&system_skill).unwrap();
+            fs::write(system_skill.join("SKILL.md"), "system\n").unwrap();
+
+            let disabled = tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Global,
+                    "task1-linked-config-demo".into(),
+                    None,
+                    false,
+                ))
+                .expect("toggle through linked config");
+            assert!(!disabled.enabled);
+        });
+
+        let link = codex_home.join("config.toml");
+        assert!(
+            fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+            "atomic replacement must update the target without replacing the link",
+        );
+        assert_eq!(fs::read_link(&link).unwrap(), relative_target);
+        let written = fs::read_to_string(&target).unwrap();
+        assert!(written.contains("# linked config"));
+        let parsed = written.parse::<toml::Value>().unwrap();
+        assert_eq!(
+            parsed.get("model").and_then(toml::Value::as_str),
+            Some("test-model"),
+        );
+        assert_eq!(
+            parsed["skills"]["config"].as_array().unwrap()[0]
+                .get("enabled")
+                .and_then(toml::Value::as_bool),
+            Some(false),
+        );
     }
 
     #[test]
