@@ -15,6 +15,8 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 
 use crate::models::agent::AgentType;
+use crate::db::service::delegation_task_service::ResumeBinding;
+use super::types::DelegationTaskReport;
 
 /// Identifies a delegation call across the broker, the ACP layer, and the DB.
 ///
@@ -28,6 +30,26 @@ pub struct DelegationLink {
     pub parent_conversation_id: i32,
     pub parent_tool_use_id: String,
     pub delegation_call_id: String,
+    /// Present only on the durable production path. Legacy broker tests leave
+    /// this empty and keep exercising the original one-shot mock contract.
+    pub admission: Option<DelegationAdmission>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DelegationAdmission {
+    pub source_task_id: Option<String>,
+    pub task: String,
+    pub requested_working_dir: Option<String>,
+    pub preferred_mode_id: Option<String>,
+    pub preferred_config_values: BTreeMap<String, String>,
+    pub resume_binding: Option<ResumeBinding>,
+}
+
+#[derive(Debug, Clone)]
+pub enum DelegationDispatch {
+    Started(i32),
+    Existing(DelegationTaskReport),
+    Failed(DelegationTaskReport),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -111,6 +133,26 @@ pub trait ConnectionSpawner: Send + Sync {
         preferred_config_values: BTreeMap<String, String>,
     ) -> Result<String, SpawnerError>;
 
+    async fn spawn_for_delegation(
+        &self,
+        parent_connection_id: &str,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+        _task_id: String,
+        _resume_binding: Option<ResumeBinding>,
+    ) -> Result<String, SpawnerError> {
+        self.spawn(
+            parent_connection_id,
+            agent_type,
+            working_dir,
+            preferred_mode_id,
+            preferred_config_values,
+        )
+        .await
+    }
+
     /// Send the delegation task as the child's first prompt. The
     /// `DelegationLink` is persisted onto the new conversation row so the
     /// lifecycle subscriber can later notify the broker on `TurnComplete`.
@@ -121,7 +163,7 @@ pub trait ConnectionSpawner: Send + Sync {
         conn_id: &str,
         task: String,
         link: DelegationLink,
-    ) -> Result<i32, SpawnerError>;
+    ) -> Result<DelegationDispatch, SpawnerError>;
 
     /// Re-spawn a connection for an INTERRUPTED delegation child, resuming the
     /// agent session identified by `external_session_id` (the child row's
@@ -188,7 +230,7 @@ pub mod mock {
     #[derive(Default)]
     pub struct MockSpawner {
         pub spawn_results: Mutex<VecDeque<Result<String, SpawnerError>>>,
-        pub send_results: Mutex<VecDeque<Result<i32, SpawnerError>>>,
+        pub send_results: Mutex<VecDeque<Result<DelegationDispatch, SpawnerError>>>,
         pub cancels: Mutex<Vec<String>>,
         pub disconnects: Mutex<Vec<String>>,
         pub spawn_args: Mutex<Vec<SpawnCallArgs>>,
@@ -254,7 +296,10 @@ pub mod mock {
         }
 
         pub async fn queue_send(&self, r: Result<i32, SpawnerError>) {
-            self.send_results.lock().await.push_back(r);
+            self.send_results
+                .lock()
+                .await
+                .push_back(r.map(DelegationDispatch::Started));
         }
 
         /// Install a one-shot gate that holds the next
@@ -328,7 +373,7 @@ pub mod mock {
             _conn_id: &str,
             _task: String,
             _link: DelegationLink,
-        ) -> Result<i32, SpawnerError> {
+        ) -> Result<DelegationDispatch, SpawnerError> {
             // Honor a test-installed gate: block here (after the broker has
             // reserved the child, before it parks the pending entry) until the
             // test releases it.

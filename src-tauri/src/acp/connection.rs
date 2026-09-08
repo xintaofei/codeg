@@ -1235,18 +1235,92 @@ fn tag_mcp_suspect(
 struct ConnectionCleanupGuard {
     connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
     connection_id: String,
+    runtime: tokio::runtime::Handle,
+    delegation_release: Option<Arc<DelegationReleaseBarrier>>,
 }
 
 impl Drop for ConnectionCleanupGuard {
     fn drop(&mut self) {
+        if let Some(release) = self.delegation_release.take() {
+            release.mark_driver_done();
+            return;
+        }
         if let Ok(mut guard) = self.connections.try_lock() {
             guard.remove(&self.connection_id);
             return;
         }
         let connections = self.connections.clone();
         let connection_id = std::mem::take(&mut self.connection_id);
-        tokio::spawn(async move {
+        self.runtime.spawn(async move {
             connections.lock().await.remove(&connection_id);
+        });
+    }
+}
+
+/// Two-signal release barrier for a broker-owned process. A connection stops
+/// occupying its external session only after the driver has finished and the
+/// child has actually been reaped. Missing exit acknowledgement intentionally
+/// leaves the entry busy.
+struct DelegationReleaseBarrier {
+    driver_done: std::sync::atomic::AtomicBool,
+    reaped: std::sync::atomic::AtomicBool,
+    spawned: std::sync::atomic::AtomicBool,
+    released: std::sync::atomic::AtomicBool,
+    runtime: tokio::runtime::Handle,
+    connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
+    connection_id: String,
+    task_id: Option<String>,
+    requested_session_id: Option<String>,
+    broker: Option<Arc<crate::acp::delegation::broker::DelegationBroker>>,
+}
+
+impl DelegationReleaseBarrier {
+    fn mark_spawned(&self) {
+        self.spawned
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn mark_reaped(&self) {
+        self.reaped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.try_release();
+    }
+
+    fn mark_driver_done(&self) {
+        self.driver_done
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        // If the process never reached `on_spawn`, there is nothing to reap.
+        if !self.spawned.load(std::sync::atomic::Ordering::SeqCst) {
+            self.reaped
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.try_release();
+    }
+
+    fn try_release(&self) {
+        if !self.driver_done.load(std::sync::atomic::Ordering::SeqCst)
+            || !self.reaped.load(std::sync::atomic::Ordering::SeqCst)
+            || self.released.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let connections = Arc::clone(&self.connections);
+        let connection_id = self.connection_id.clone();
+        let task_id = self.task_id.clone();
+        let requested_session_id = self.requested_session_id.clone();
+        let broker = self.broker.clone();
+        self.runtime.spawn(async move {
+            let removed = {
+                let mut map = connections.lock().await;
+                let owns_slot = map.get(&connection_id).is_some_and(|conn| match task_id.as_deref() {
+                    Some(task_id) => conn.delegation_task_id.as_deref() == Some(task_id),
+                    None => conn.requested_session_id == requested_session_id,
+                });
+                owns_slot.then(|| map.remove(&connection_id)).flatten().is_some()
+            };
+            if let (true, Some(broker), Some(task_id)) = (removed, broker, task_id) {
+                broker.connection_released(&task_id).await;
+            }
         });
     }
 }
@@ -1301,6 +1375,17 @@ pub struct AgentConnection {
     /// the tree without waiting, so the agent may still be alive and still
     /// needs the backstop.
     pub child_pid: Arc<std::sync::atomic::AtomicU32>,
+    /// Session id this process was asked to restore. Unlike
+    /// `SessionState::external_id`, this exists throughout the handshake and
+    /// therefore participates in admission before the agent replies.
+    pub requested_session_id: Option<String>,
+    /// Immutable execution identity for a broker-owned connection. Lifecycle
+    /// routing and teardown compare this value instead of trusting the child
+    /// conversation's mutable `delegation_call_id`.
+    pub delegation_task_id: Option<String>,
+    /// Cancels the whole driver future, including initialize/load handshakes
+    /// which have not started consuming `ConnectionCommand` yet.
+    pub driver_cancel: tokio_util::sync::CancellationToken,
 }
 
 impl AgentConnection {
@@ -2100,6 +2185,17 @@ async fn build_agent(
 /// into boxed sub-futures rather than raising it further.
 const ACP_CONNECTION_STACK_SIZE: usize = 8 * 1024 * 1024;
 
+/// How a connection may recover a requested external session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionRecoveryPolicy {
+    /// Existing interactive behaviour: resume, then load, with the established
+    /// per-agent fallback to a fresh session where allowed.
+    BestEffort,
+    /// Broker continuation behaviour: the requested session must be restored;
+    /// no failure or missing capability may cross into `session/new`.
+    Strict,
+}
+
 /// Spawn an ACP agent process and run the connection loop in a background task.
 ///
 /// On success, the newly created `AgentConnection` is inserted into
@@ -2121,6 +2217,8 @@ pub async fn spawn_agent_connection(
     preferred_config_values: BTreeMap<String, String>,
     delegation_injection: Option<DelegationInjection>,
     terminal_shell_config: TerminalShellRuntimeConfig,
+    recovery_policy: SessionRecoveryPolicy,
+    delegation_task_id: Option<String>,
 ) -> Result<tokio::sync::oneshot::Receiver<()>, AcpError> {
     // Create the authoritative session state up front. Subsequent emit_with_state
     // calls write through this state and increment its seq counter so the first
@@ -2169,6 +2267,23 @@ pub async fn spawn_agent_connection(
     // backstop when the connection driver thread is torn down by process exit
     // before `ChildGuard::drop` can run. 0 = not spawned yet / unknown.
     let child_pid = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let connection_runtime = tokio::runtime::Handle::current();
+    let delegation_release = (delegation_task_id.is_some() || session_id.is_some()).then(|| {
+        Arc::new(DelegationReleaseBarrier {
+            driver_done: std::sync::atomic::AtomicBool::new(false),
+            reaped: std::sync::atomic::AtomicBool::new(false),
+            spawned: std::sync::atomic::AtomicBool::new(false),
+            released: std::sync::atomic::AtomicBool::new(false),
+            runtime: connection_runtime.clone(),
+            connections: Arc::clone(&connections),
+            connection_id: connection_id.clone(),
+            task_id: delegation_task_id.clone(),
+            requested_session_id: session_id.clone(),
+            broker: delegation_injection
+                .as_ref()
+                .map(|injection| Arc::clone(&injection.broker)),
+        })
+    });
     // Connection-scoped ring buffer of the agent's stderr, populated by the
     // `with_debug` callback `build_agent` installs and read at turn end when a
     // turn is diagnosed as silently empty. Created here so both the spawn side
@@ -2178,7 +2293,13 @@ pub async fn spawn_agent_connection(
         .await?
         .on_spawn({
             let child_pid = Arc::clone(&child_pid);
-            move |pid| child_pid.store(pid, std::sync::atomic::Ordering::SeqCst)
+            let delegation_release = delegation_release.clone();
+            move |pid| {
+                child_pid.store(pid, std::sync::atomic::Ordering::SeqCst);
+                if let Some(release) = delegation_release.as_ref() {
+                    release.mark_spawned();
+                }
+            }
         })
         // Paired with `on_spawn`: publish 0 again once the process has been
         // reaped, so the shutdown backstop can never `kill_tree` a pid the OS
@@ -2188,7 +2309,13 @@ pub async fn spawn_agent_connection(
         // may still be running.
         .on_exit({
             let child_pid = Arc::clone(&child_pid);
-            move || child_pid.store(0, std::sync::atomic::Ordering::SeqCst)
+            let delegation_release = delegation_release.clone();
+            move || {
+                child_pid.store(0, std::sync::atomic::Ordering::SeqCst);
+                if let Some(release) = delegation_release.as_ref() {
+                    release.mark_reaped();
+                }
+            }
         });
 
     // Path policy for the ACP `fs/*` channel. Built HERE rather than inside
@@ -2222,6 +2349,7 @@ pub async fn spawn_agent_connection(
     prepend_officecli_path(&mut terminal_base_env);
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<ConnectionCommand>(32);
+    let driver_cancel = tokio_util::sync::CancellationToken::new();
     let conn_id = connection_id.clone();
     let emitter_clone = emitter.clone();
     let cleanup_connections = connections.clone();
@@ -2238,6 +2366,7 @@ pub async fn spawn_agent_connection(
     // Insert the entry BEFORE spawning the background task so that a
     // fast-failing `run_connection` can never remove it before it was
     // inserted (would otherwise leak the entry).
+    let requested_session_id = session_id.clone();
     connections.lock().await.insert(
         connection_id.clone(),
         AgentConnection {
@@ -2252,6 +2381,9 @@ pub async fn spawn_agent_connection(
             last_observed_fingerprint: config_fingerprint.clone(),
             config_fingerprint,
             child_pid,
+            requested_session_id,
+            delegation_task_id,
+            driver_cancel: driver_cancel.clone(),
         },
     );
 
@@ -2264,7 +2396,7 @@ pub async fn spawn_agent_connection(
     // The connection is fire-and-forget (torn down from within via `cmd_rx` /
     // process exit; no JoinHandle is awaited), so a thread is behaviorally
     // equivalent to the previous task.
-    let connection_rt = tokio::runtime::Handle::current();
+    let connection_rt = connection_runtime.clone();
     // RAII guard built OUTSIDE the thread body and moved in: on a normal exit
     // or panic unwind its Drop removes the manager map entry, AND if the thread
     // fails to spawn the dropped closure runs the same Drop — so the entry is
@@ -2272,6 +2404,8 @@ pub async fn spawn_agent_connection(
     let cleanup_guard = ConnectionCleanupGuard {
         connections: cleanup_connections,
         connection_id: cleanup_connection_id,
+        runtime: connection_runtime,
+        delegation_release,
     };
     let connection_thread = std::thread::Builder::new()
         .name(format!("acp-conn-{conn_id}"))
@@ -2280,7 +2414,7 @@ pub async fn spawn_agent_connection(
             let _cleanup = cleanup_guard;
             connection_rt.block_on(async move {
         let delegation_for_cleanup = delegation_injection.clone();
-        let result = run_connection(
+        let connection = run_connection(
             agent,
             conn_id.clone(),
             agent_type,
@@ -2297,8 +2431,15 @@ pub async fn spawn_agent_connection(
             fs_policy,
             host_tools,
             stderr_tail,
-        )
-        .await;
+            recovery_policy,
+        );
+        tokio::pin!(connection);
+        let result = tokio::select! {
+            result = &mut connection => result,
+            _ = driver_cancel.cancelled() => {
+                Err(AcpError::protocol("connection driver canceled"))
+            }
+        };
 
         // Revoke the per-launch token + cascade cancel any still-pending
         // delegations AND questions owned by this parent connection. All are
@@ -4892,6 +5033,7 @@ async fn run_connection(
     // callback installed by `build_agent`. Read only when a turn ends without
     // agent output, to attach evidence to the synthesized error.
     stderr_tail: Arc<StderrTail>,
+    recovery_policy: SessionRecoveryPolicy,
 ) -> Result<(), AcpError> {
     let pending_perms: PendingPermissions =
         Arc::new(tokio::sync::Mutex::new(PermissionQueue::default()));
@@ -5846,6 +5988,11 @@ async fn run_connection(
                         .await
                     }
                     Err(e) => {
+                        if recovery_policy == SessionRecoveryPolicy::Strict {
+                            return Err(sacp::util::internal_error(format!(
+                                "strict session recovery failed for {sid}: {e}"
+                            )));
+                        }
                         // session/load failed. Classify it: an unrecoverable
                         // historical session — the agent has no record of it
                         // (ResourceNotFound, -32002) or the agent process/session
@@ -6034,6 +6181,11 @@ async fn run_connection(
                     }
                 }
             } else {
+                if recovery_policy == SessionRecoveryPolicy::Strict {
+                    return Err(sacp::util::internal_error(
+                        "strict session recovery requires an external session id",
+                    ));
+                }
                 // Create new session
                 let (new_resp, grok_models_raw) = send_new_session_capturing_models(
                     &cx,
@@ -9161,6 +9313,12 @@ async fn run_conversation_loop<'a>(
                 // to avoid deadlocking when the agent awaits a permission response.
                 loop {
                     tokio::select! {
+                        // sacp routes wire notifications into `read_update` before
+                        // routing a following prompt response, but both futures
+                        // can be ready by the time this task is polled. Preserve
+                        // that wire order so TurnComplete snapshots every queued
+                        // assistant chunk instead of racing past the final text.
+                        biased;
                         update = session.read_update() => {
                             let update = match update {
                                 Ok(u) => u,
@@ -13610,6 +13768,9 @@ async fn emit_conversation_update(
         }
     }
 }
+
+#[cfg(test)]
+mod continuation_protocol_tests;
 
 #[cfg(test)]
 mod tests {

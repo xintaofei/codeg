@@ -11,7 +11,8 @@ use sea_orm::{
 };
 
 use crate::acp::connection::{
-    spawn_agent_connection, AgentConnection, ConnectionCommand, GoalControlAction, SteerOutcome,
+    spawn_agent_connection, AgentConnection, ConnectionCommand, GoalControlAction,
+    SessionRecoveryPolicy, SteerOutcome,
 };
 use crate::acp::agent_mentions::strip_route_separator_from_prompt;
 use crate::acp::error::AcpError;
@@ -29,7 +30,7 @@ use crate::acp::question::{
 use crate::acp::terminal_runtime::TerminalShellRuntimeConfig;
 use crate::acp::types::{
     AcpEvent, AgentOptionsSnapshot, ConfigStaleKind, ConnectionInfo, ConnectionStatus,
-    ForkResultInfo, PromptCapabilitiesInfo, PromptInputBlock,
+    ForkResultInfo, PromptCapabilitiesInfo, PromptInputBlock, SessionConfigKindInfo,
 };
 use crate::db::entities::conversation::{self, ConversationKind, ConversationStatus};
 use crate::db::service::conversation_service;
@@ -275,13 +276,14 @@ fn delegation_child_title_seed(blocks: &[PromptInputBlock]) -> Option<String> {
 }
 
 /// Composite key identifying a logical agent session for spawn-time dedup.
-/// Two `acp_connect` calls with the same triple race for the same `Mutex`,
+/// The cwd is deliberately not part of the key: it is a binding to validate,
+/// not a namespace that may open two processes for one external session.
+/// Two `acp_connect` calls with the same pair race for the same `Mutex`,
 /// so the second one observes the first's freshly-spawned connection in
 /// `find_connection_for_reuse` instead of starting a duplicate process.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct SpawnDedupKey {
     agent_type: AgentType,
-    working_dir: Option<PathBuf>,
     session_id: String,
 }
 
@@ -623,6 +625,9 @@ impl ConnectionManager {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            requested_session_id: None,
+            delegation_task_id: None,
+            driver_cancel: tokio_util::sync::CancellationToken::new(),
         };
         let mut map = self.connections.lock().await;
         map.insert(id.to_string(), conn);
@@ -666,6 +671,9 @@ impl ConnectionManager {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            requested_session_id: None,
+            delegation_task_id: None,
+            driver_cancel: tokio_util::sync::CancellationToken::new(),
         };
         self.connections.lock().await.insert(id.to_string(), conn);
         rx
@@ -683,12 +691,109 @@ impl ConnectionManager {
         preferred_mode_id: Option<String>,
         preferred_config_values: BTreeMap<String, String>,
     ) -> Result<String, AcpError> {
-        // Held for the whole establishment. A restore writing back to the
-        // agents' own directories takes the write side, so it can never see an
-        // empty connection list and then have one appear underneath it. Not
-        // re-entrant: nothing reachable from here calls `spawn_agent` again.
-        let _restore_guard = self.external_restore_lock.read().await;
+        self.spawn_agent_with_policy(
+            agent_type,
+            working_dir,
+            session_id,
+            runtime_env,
+            owner_window_label,
+            emitter,
+            preferred_mode_id,
+            preferred_config_values,
+            SessionRecoveryPolicy::BestEffort,
+            None,
+        )
+        .await
+    }
 
+    /// Spawn a broker-owned connection with an immutable task identity. A
+    /// continuation passes `Strict`; an initial delegation passes
+    /// `BestEffort` with no requested session.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn spawn_delegation_agent(
+        &self,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        session_id: Option<String>,
+        runtime_env: BTreeMap<String, String>,
+        owner_window_label: String,
+        emitter: EventEmitter,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+        recovery_policy: SessionRecoveryPolicy,
+        task_id: String,
+    ) -> Result<String, AcpError> {
+        let expected_working_dir = working_dir.as_ref().map(PathBuf::from);
+        let expected_session_id = session_id.clone();
+        let expected_mode_id = preferred_mode_id.clone();
+        let expected_config_values = preferred_config_values.clone();
+        let expected_task_id = task_id.clone();
+        let conn_id = self
+            .spawn_agent_with_policy(
+                agent_type,
+                working_dir,
+                session_id,
+                runtime_env,
+                owner_window_label,
+                emitter,
+                preferred_mode_id,
+                preferred_config_values,
+                recovery_policy,
+                Some(task_id),
+            )
+            .await?;
+
+        if recovery_policy == SessionRecoveryPolicy::Strict {
+            let session_id = expected_session_id.as_deref().ok_or_else(|| {
+                AcpError::protocol("strict session recovery requires an external session id")
+            })?;
+            if let Err(error) = self
+                .wait_for_strict_resume_ready(
+                    &conn_id,
+                    expected_task_id.as_str(),
+                    agent_type,
+                    expected_working_dir.as_ref(),
+                    session_id,
+                    expected_mode_id.as_deref(),
+                    &expected_config_values,
+                )
+                .await
+            {
+                let _ = self
+                    .request_delegation_disconnect(&conn_id, &expected_task_id)
+                    .await;
+                return Err(error);
+            }
+        } else if let Err(error) = self
+            .wait_for_delegation_ready(&conn_id, &expected_task_id)
+            .await
+        {
+            let _ = self
+                .request_delegation_disconnect(&conn_id, &expected_task_id)
+                .await;
+            return Err(error);
+        }
+
+        Ok(conn_id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_agent_with_policy(
+        &self,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        session_id: Option<String>,
+        runtime_env: BTreeMap<String, String>,
+        owner_window_label: String,
+        emitter: EventEmitter,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+        recovery_policy: SessionRecoveryPolicy,
+        delegation_task_id: Option<String>,
+    ) -> Result<String, AcpError> {
+        // External state restore takes the write side, so no connection can
+        // appear while it is replacing agent-owned directories.
+        let _restore_guard = self.external_restore_lock.read().await;
         // Connection dedup: when resuming an agent session (session_id is
         // Some), look for a live AgentConnection that already represents
         // the same external session in the same working_dir for the same
@@ -710,7 +815,6 @@ impl ConnectionManager {
         let dedup_lock = if let Some(sid) = session_id.as_deref() {
             let key = SpawnDedupKey {
                 agent_type,
-                working_dir: working_dir_path.clone(),
                 session_id: sid.to_string(),
             };
             let mu = {
@@ -725,16 +829,26 @@ impl ConnectionManager {
             None
         };
 
-        if let Some(existing) = self
-            .find_connection_for_reuse(agent_type, working_dir_path.as_ref(), session_id.as_deref())
-            .await
-        {
-            tracing::info!(
-                "[ACP] reusing connection id={} for session_id={}",
-                existing,
-                session_id.as_deref().unwrap_or("")
-            );
-            return Ok(existing);
+        if let Some(sid) = session_id.as_deref() {
+            if let Some((existing, existing_cwd, status)) =
+                self.find_connection_for_session(agent_type, sid).await
+            {
+                let same_cwd = existing_cwd.as_ref() == working_dir_path.as_ref();
+                if recovery_policy == SessionRecoveryPolicy::BestEffort
+                    && same_cwd
+                    && !matches!(status, ConnectionStatus::Disconnected | ConnectionStatus::Error)
+                {
+                    tracing::info!(
+                        "[ACP] reusing connection id={} for session_id={}",
+                        existing,
+                        sid
+                    );
+                    return Ok(existing);
+                }
+                return Err(AcpError::protocol(format!(
+                    "session {sid} already has connection {existing} ({status:?}); wait for it to be released"
+                )));
+            }
         }
 
         let connection_id = uuid::Uuid::new_v4().to_string();
@@ -760,6 +874,8 @@ impl ConnectionManager {
             preferred_config_values,
             self.delegation_snapshot(),
             self.terminal_shell_config.clone(),
+            recovery_policy,
+            delegation_task_id,
         )
         .await?;
 
@@ -939,25 +1055,31 @@ impl ConnectionManager {
     ) -> Option<String> {
         // No session_id → caller is opening a fresh session; never dedup.
         let session_id = session_id?;
+        let (id, cwd, status) = self.find_connection_for_session(agent_type, session_id).await?;
+        (cwd.as_ref() == working_dir
+            && !matches!(status, ConnectionStatus::Disconnected | ConnectionStatus::Error))
+        .then_some(id)
+    }
+
+    /// Find any map occupant claiming a requested or established external
+    /// session. Requested identity closes the handshake window where
+    /// `SessionState::external_id` is not populated yet.
+    async fn find_connection_for_session(
+        &self,
+        agent_type: AgentType,
+        session_id: &str,
+    ) -> Option<(String, Option<PathBuf>, ConnectionStatus)> {
         let connections = self.connections.lock().await;
         for (id, conn) in connections.iter() {
             if conn.agent_type != agent_type {
                 continue;
             }
             let state = conn.state.read().await;
-            if state.external_id.as_deref() != Some(session_id) {
-                continue;
+            if conn.requested_session_id.as_deref() == Some(session_id)
+                || state.external_id.as_deref() == Some(session_id)
+            {
+                return Some((id.clone(), state.working_dir.clone(), state.status.clone()));
             }
-            if state.working_dir.as_ref() != working_dir {
-                continue;
-            }
-            if matches!(
-                state.status,
-                ConnectionStatus::Disconnected | ConnectionStatus::Error
-            ) {
-                continue;
-            }
-            return Some(id.clone());
         }
         None
     }
@@ -1145,15 +1267,9 @@ impl ConnectionManager {
                 "conversation_id provided without folder_id".to_string(),
             ));
         }
-        // Delegation is only meaningful on the create-new-row branch — adopting
-        // an existing caller-supplied row already has its own (or no) parent
-        // linkage. Reject the combination loudly so a misuse from the broker
-        // doesn't silently drop the linkage.
-        if delegation.is_some() && conversation_id.is_some() {
-            return Err(AcpError::protocol(
-                "delegation link is incompatible with caller-supplied conversation_id".to_string(),
-            ));
-        }
+        // A continuation deliberately adopts its source child row while
+        // carrying a new delegation execution id. The durable ledger owns
+        // history; the row's delegation_call_id is only the current pointer.
 
         // Acquire the per-connection prompt lock for the entire link-check
         // + DB write + emit + cmd_tx.send sequence. Two concurrent prompts
@@ -1484,6 +1600,11 @@ impl ConnectionManager {
         // on the row (touches `updated_at` only).
         let conversation_id_for_status = state_arc.read().await.conversation_id;
         if let Some(cid) = conversation_id_for_status {
+            if delegation.is_none() {
+                conversation_service::clear_delegation_call_id(&db.conn, cid)
+                    .await
+                    .map_err(|e| AcpError::protocol(e.to_string()))?;
+            }
             conversation_service::update_status(&db.conn, cid, ConversationStatus::InProgress)
                 .await
                 .map_err(|e| AcpError::protocol(e.to_string()))?;
@@ -2332,20 +2453,39 @@ impl ConnectionManager {
     }
 
     pub async fn disconnect(&self, conn_id: &str) -> Result<(), AcpError> {
-        let removed = {
-            // The map lock is held ACROSS the handoff into `draining`, and
-            // readers take it in the same order, so an observer can never see
-            // the connection in neither place.
+        let (cmd_tx, driver_cancel, retained) = {
             let mut connections = self.connections.lock().await;
-            let removed = connections.remove(conn_id);
-            if let Some(conn) = &removed {
-                self.park_draining(conn).await;
+            let retained = connections
+                .get(conn_id)
+                .is_some_and(|conn| {
+                    conn.delegation_task_id.is_some() || conn.requested_session_id.is_some()
+                });
+            let cmd_tx = if retained {
+                connections
+                    .get(conn_id)
+                    .map(|conn| (conn.cmd_tx.clone(), conn.driver_cancel.clone()))
+            } else {
+                let removed = connections.remove(conn_id);
+                if let Some(conn) = &removed {
+                    self.park_draining(conn).await;
+                }
+                removed.map(|conn| (conn.cmd_tx, conn.driver_cancel))
+            };
+            match cmd_tx {
+                Some((cmd_tx, cancel)) => (Some(cmd_tx), Some(cancel), retained),
+                None => (None, None, retained),
             }
-            removed
         };
-        if let Some(conn) = removed {
-            tracing::info!("[ACP] disconnect connection={}", conn_id);
-            let _ = conn.cmd_tx.send(ConnectionCommand::Disconnect).await;
+        if let Some(cmd_tx) = cmd_tx {
+            tracing::info!(
+                "[ACP] disconnect connection={} retain_until_reaped={}",
+                conn_id,
+                retained
+            );
+            if let Some(cancel) = driver_cancel {
+                cancel.cancel();
+            }
+            let _ = cmd_tx.send(ConnectionCommand::Disconnect).await;
             Ok(())
         } else {
             Err(AcpError::ConnectionNotFound(conn_id.into()))
@@ -2566,6 +2706,167 @@ impl ConnectionManager {
         }
     }
 
+    /// Wait until strict recovery has published its final selectors, then
+    /// verify every immutable binding before a continuation prompt is allowed
+    /// onto the command channel.
+    #[allow(clippy::too_many_arguments)]
+    async fn wait_for_strict_resume_ready(
+        &self,
+        conn_id: &str,
+        task_id: &str,
+        agent_type: AgentType,
+        working_dir: Option<&PathBuf>,
+        session_id: &str,
+        mode_id: Option<&str>,
+        config_values: &BTreeMap<String, String>,
+    ) -> Result<(), AcpError> {
+        let started = std::time::Instant::now();
+        loop {
+            let (ready, status, actual_session, actual_mode, options) = {
+                let connections = self.connections.lock().await;
+                let conn = connections
+                    .get(conn_id)
+                    .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.into()))?;
+                if conn.agent_type != agent_type
+                    || conn.delegation_task_id.as_deref() != Some(task_id)
+                {
+                    return Err(AcpError::protocol(
+                        "strict resume execution identity changed during startup",
+                    ));
+                }
+                let state = conn.state.read().await;
+                if state.working_dir.as_ref() != working_dir {
+                    return Err(AcpError::protocol(
+                        "strict resume working directory does not match the source task",
+                    ));
+                }
+                (
+                    state.selectors_ready,
+                    state.status.clone(),
+                    state.external_id.clone(),
+                    state.current_mode.clone(),
+                    state.config_options.clone(),
+                )
+            };
+
+            if matches!(status, ConnectionStatus::Error | ConnectionStatus::Disconnected) {
+                return Err(AcpError::protocol(format!(
+                    "strict session recovery ended before it became ready ({status:?})"
+                )));
+            }
+            if ready {
+                if actual_session.as_deref() != Some(session_id) {
+                    return Err(AcpError::protocol(
+                        "strict resume returned a different external session id",
+                    ));
+                }
+                if mode_id.is_some_and(|expected| actual_mode.as_deref() != Some(expected)) {
+                    return Err(AcpError::protocol(
+                        "strict resume could not restore the source task's mode",
+                    ));
+                }
+                let options = options.unwrap_or_default();
+                for (id, expected) in config_values {
+                    let Some(option) = options.iter().find(|option| option.id == *id) else {
+                        return Err(AcpError::protocol(format!(
+                            "strict resume did not expose required config option {id}"
+                        )));
+                    };
+                    let matches = match &option.kind {
+                        SessionConfigKindInfo::Select(select) => {
+                            select.current_value == *expected
+                        }
+                        SessionConfigKindInfo::Boolean(boolean) => {
+                            boolean.current_value == (expected == "true")
+                        }
+                    };
+                    if !matches {
+                        return Err(AcpError::protocol(format!(
+                            "strict resume could not restore config option {id}"
+                        )));
+                    }
+                }
+                return Ok(());
+            }
+            if started.elapsed() >= self.spawn_handshake_timeout {
+                return Err(AcpError::protocol(
+                    "strict session recovery timed out before configuration was ready",
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Initial delegation also needs a durable external session binding before
+    /// the broker may admit and send its first prompt.
+    async fn wait_for_delegation_ready(
+        &self,
+        conn_id: &str,
+        task_id: &str,
+    ) -> Result<(), AcpError> {
+        let started = std::time::Instant::now();
+        loop {
+            let (ready, external_id, status) = {
+                let connections = self.connections.lock().await;
+                let conn = connections
+                    .get(conn_id)
+                    .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.into()))?;
+                if conn.delegation_task_id.as_deref() != Some(task_id) {
+                    return Err(AcpError::protocol(
+                        "delegation execution identity changed during startup",
+                    ));
+                }
+                let state = conn.state.read().await;
+                (
+                    state.selectors_ready,
+                    state.external_id.clone(),
+                    state.status.clone(),
+                )
+            };
+            if matches!(status, ConnectionStatus::Error | ConnectionStatus::Disconnected) {
+                return Err(AcpError::protocol(
+                    "delegation connection ended before its session binding was ready",
+                ));
+            }
+            if ready && external_id.is_some() {
+                return Ok(());
+            }
+            if started.elapsed() >= self.spawn_handshake_timeout {
+                return Err(AcpError::protocol(
+                    "delegation session binding timed out before prompt admission",
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Ask a broker-owned connection to stop without removing its occupancy.
+    /// The fixed task check prevents a failed setup from disconnecting a newer
+    /// execution, and the entry remains busy until the driver/reap barrier
+    /// confirms release.
+    pub(crate) async fn request_delegation_disconnect(
+        &self,
+        conn_id: &str,
+        task_id: &str,
+    ) -> Result<(), AcpError> {
+        let cmd_tx = {
+            let connections = self.connections.lock().await;
+            let conn = connections
+                .get(conn_id)
+                .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.into()))?;
+            if conn.delegation_task_id.as_deref() != Some(task_id) {
+                return Err(AcpError::protocol(
+                    "delegation connection belongs to a different task",
+                ));
+            }
+            conn.cmd_tx.clone()
+        };
+        cmd_tx
+            .send(ConnectionCommand::Disconnect)
+            .await
+            .map_err(|_| AcpError::ProcessExited)
+    }
+
     pub async fn disconnect_by_owner_window(&self, owner_window_label: &str) -> usize {
         let cmd_txs = {
             let mut connections = self.connections.lock().await;
@@ -2582,18 +2883,26 @@ impl ConnectionManager {
 
             let mut txs = Vec::with_capacity(ids.len());
             for id in ids {
-                if let Some(conn) = connections.remove(&id) {
-                    // Same handoff as `disconnect`: closing a window leaves
-                    // the agents exiting, not exited.
+                let retained = connections
+                    .get(&id)
+                    .is_some_and(|conn| {
+                        conn.delegation_task_id.is_some() || conn.requested_session_id.is_some()
+                    });
+                if retained {
+                    if let Some(conn) = connections.get(&id) {
+                        txs.push((conn.cmd_tx.clone(), conn.driver_cancel.clone()));
+                    }
+                } else if let Some(conn) = connections.remove(&id) {
                     self.park_draining(&conn).await;
-                    txs.push(conn.cmd_tx);
+                    txs.push((conn.cmd_tx, conn.driver_cancel));
                 }
             }
             txs
         };
 
         let disconnected = cmd_txs.len();
-        for cmd_tx in cmd_txs {
+        for (cmd_tx, cancel) in cmd_txs {
+            cancel.cancel();
             let _ = cmd_tx.send(ConnectionCommand::Disconnect).await;
         }
         tracing::info!(
@@ -3870,13 +4179,89 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
             .map_err(|e| SpawnerError::Spawn(e.to_string()))
     }
 
+    async fn spawn_for_delegation(
+        &self,
+        parent_connection_id: &str,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+        task_id: String,
+        resume_binding: Option<crate::db::service::delegation_task_service::ResumeBinding>,
+    ) -> Result<String, crate::acp::delegation::spawner::SpawnerError> {
+        use crate::acp::delegation::spawner::SpawnerError;
+        let (emitter, owner_window, parent_working_dir) = {
+            let conns = self.manager.connections.lock().await;
+            let parent = conns.get(parent_connection_id).ok_or_else(|| {
+                SpawnerError::Spawn(format!(
+                    "parent connection {parent_connection_id} not found"
+                ))
+            })?;
+            let pwd = parent
+                .state
+                .read()
+                .await
+                .working_dir
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string());
+            (
+                parent.emitter.clone(),
+                parent.owner_window_label.clone(),
+                pwd,
+            )
+        };
+        let effective_working_dir = working_dir.or(parent_working_dir);
+        let runtime_env = crate::commands::acp::build_session_runtime_env(
+            &self.db,
+            agent_type,
+            None,
+            self.data_dir.as_path(),
+        )
+        .await
+        .map_err(|e| SpawnerError::Spawn(e.to_string()))?;
+        let fingerprint = crate::commands::acp::fingerprint_config(agent_type, &runtime_env);
+        if resume_binding
+            .as_ref()
+            .is_some_and(|binding| binding.config_fingerprint != fingerprint)
+        {
+            return Err(SpawnerError::Spawn(
+                "source task configuration changed; strict continuation refused".into(),
+            ));
+        }
+        let (session_id, policy) = match resume_binding.as_ref() {
+            Some(binding) => (
+                Some(binding.external_session_id.clone()),
+                crate::acp::connection::SessionRecoveryPolicy::Strict,
+            ),
+            None => (
+                None,
+                crate::acp::connection::SessionRecoveryPolicy::BestEffort,
+            ),
+        };
+        self.manager
+            .spawn_delegation_agent(
+                agent_type,
+                effective_working_dir,
+                session_id,
+                runtime_env,
+                owner_window,
+                emitter,
+                preferred_mode_id,
+                preferred_config_values,
+                policy,
+                task_id,
+            )
+            .await
+            .map_err(|e| SpawnerError::Spawn(e.to_string()))
+    }
+
     async fn send_prompt_linked_for_delegation(
         &self,
         conn_id: &str,
         task: String,
         link: crate::acp::delegation::spawner::DelegationLink,
-    ) -> Result<i32, crate::acp::delegation::spawner::SpawnerError> {
-        use crate::acp::delegation::spawner::SpawnerError;
+    ) -> Result<crate::acp::delegation::spawner::DelegationDispatch, crate::acp::delegation::spawner::SpawnerError> {
+        use crate::acp::delegation::spawner::{DelegationDispatch, SpawnerError};
         // The child has no caller-supplied conversation_id (it's brand new).
         // folder_id must be None too — the manager's create-new-row branch
         // requires folder_id, which we resolve from the child's working_dir
@@ -3908,23 +4293,160 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
                 .await
                 .map_err(|e| SpawnerError::Send(format!("ensure_folder_for_path: {e}")))?;
 
-        let result = self
-            .manager
+        let Some(admission) = link.admission.clone() else {
+            let result = self
+                .manager
+                .send_prompt_linked(
+                    &self.db,
+                    conn_id,
+                    vec![PromptInputBlock::Text { text: task }],
+                    Some(folder.id),
+                    None,
+                    Some(link),
+                )
+                .await
+                .map_err(|e| SpawnerError::Send(e.to_string()))?;
+            return result
+                .map(DelegationDispatch::Started)
+                .ok_or_else(|| SpawnerError::Send("delegation did not bind a conversation".into()));
+        };
+
+        let (agent_type, state, fingerprint) = {
+            let conns = self.manager.connections.lock().await;
+            let conn = conns
+                .get(conn_id)
+                .ok_or_else(|| SpawnerError::Send(format!("child {conn_id} not found")))?;
+            (conn.agent_type, conn.state.clone(), conn.config_fingerprint.clone())
+        };
+        let child_conversation_id = if let Some(binding) = admission.resume_binding.as_ref() {
+            if !crate::db::service::conversation_service::advance_delegation_call_id(
+                &self.db.conn,
+                binding.child_conversation_id,
+                admission.source_task_id.as_deref().unwrap_or_default(),
+                &link.delegation_call_id,
+            )
+            .await
+            .map_err(|e| SpawnerError::Send(e.to_string()))?
+            {
+                return Err(SpawnerError::Send(
+                    "child session was taken over before continuation admission".into(),
+                ));
+            }
+            binding.child_conversation_id
+        } else {
+            let title = task
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .map(|line| line.chars().take(80).collect());
+            crate::db::service::conversation_service::create_with_delegation(
+                &self.db.conn,
+                folder.id,
+                agent_type,
+                title,
+                None,
+                Some(link.clone()),
+            )
+            .await
+            .map_err(|e| SpawnerError::Send(e.to_string()))?
+            .id
+        };
+        let resume_binding = match admission.resume_binding.clone() {
+            Some(binding) => binding,
+            None => {
+                let snapshot = state.read().await;
+                let effective_config_values = snapshot
+                    .config_options
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|option| {
+                        let value = match &option.kind {
+                            SessionConfigKindInfo::Select(select) => select.current_value.clone(),
+                            SessionConfigKindInfo::Boolean(boolean) => {
+                                boolean.current_value.to_string()
+                            }
+                        };
+                        (option.id.clone(), value)
+                    })
+                    .collect();
+                crate::db::service::delegation_task_service::ResumeBinding {
+                    agent_type,
+                    external_session_id: snapshot.external_id.clone().ok_or_else(|| {
+                        SpawnerError::Send("child has no external session id".into())
+                    })?,
+                    child_conversation_id,
+                    working_dir: snapshot
+                        .working_dir
+                        .as_ref()
+                        .ok_or_else(|| SpawnerError::Send("child has no working directory".into()))?
+                        .to_string_lossy()
+                        .to_string(),
+                    preferred_mode_id: snapshot.current_mode.clone(),
+                    preferred_config_values: effective_config_values,
+                    config_fingerprint: fingerprint,
+                }
+            }
+        };
+        let input = crate::db::service::delegation_task_service::AdmissionInput {
+            task_id: link.delegation_call_id.clone(),
+            parent_conversation_id: link.parent_conversation_id,
+            child_conversation_id,
+            source_task_id: admission.source_task_id,
+            task: admission.task,
+            requested_working_dir: admission.requested_working_dir,
+            resume_binding,
+        };
+        match crate::db::service::delegation_task_service::admit(&self.db.conn, input)
+            .await
+            .map_err(|e| SpawnerError::Send(e.to_string()))?
+        {
+            crate::db::service::delegation_task_service::AdmissionResult::Existing { entry } => {
+                return Ok(DelegationDispatch::Existing(entry.report));
+            }
+            crate::db::service::delegation_task_service::AdmissionResult::Conflict {
+                next_task_id,
+                reason,
+            } => {
+                return Err(SpawnerError::Send(format!(
+                    "{reason}; existing successor is {next_task_id}"
+                )));
+            }
+            crate::db::service::delegation_task_service::AdmissionResult::New { .. } => {}
+        }
+        let send_result = self.manager
             .send_prompt_linked(
                 &self.db,
                 conn_id,
                 vec![PromptInputBlock::Text { text: task }],
                 Some(folder.id),
-                None,
-                Some(link),
+                Some(child_conversation_id),
+                Some(link.clone()),
+            )
+            .await;
+        if let Err(error) = send_result {
+            let report = crate::acp::delegation::types::DelegationTaskReport {
+                task_id: Some(link.delegation_call_id.clone()),
+                status: crate::acp::delegation::types::TaskStatus::Failed,
+                child_conversation_id: Some(child_conversation_id),
+                agent_type: Some(agent_type),
+                text: None,
+                error_code: Some("spawn_failed".into()),
+                message: Some(error.to_string()),
+                duration_ms: Some(0),
+                blocked_on: None,
+            };
+            crate::db::service::delegation_task_service::finish(
+                &self.db.conn,
+                link.parent_conversation_id,
+                &link.delegation_call_id,
+                &report,
             )
             .await
             .map_err(|e| SpawnerError::Send(e.to_string()))?;
-        result.ok_or_else(|| {
-            SpawnerError::Send(
-                "send_prompt_linked succeeded but no conversation_id was bound".into(),
-            )
-        })
+            return Ok(DelegationDispatch::Failed(report));
+        }
+        Ok(DelegationDispatch::Started(child_conversation_id))
     }
 
     async fn spawn_for_resume(
@@ -4367,6 +4889,9 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            requested_session_id: None,
+            delegation_task_id: None,
+            driver_cancel: tokio_util::sync::CancellationToken::new(),
         }
     }
 
@@ -4822,6 +5347,9 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            requested_session_id: None,
+            delegation_task_id: None,
+            driver_cancel: tokio_util::sync::CancellationToken::new(),
         };
         mgr.connections
             .lock()
@@ -5715,6 +6243,9 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            requested_session_id: None,
+            delegation_task_id: None,
+            driver_cancel: tokio_util::sync::CancellationToken::new(),
         };
         let mgr = ConnectionManager::new();
         mgr.connections
@@ -5967,6 +6498,7 @@ mod tests {
                 parent_conversation_id: parent.id,
                 parent_tool_use_id: "tu-1".into(),
                 delegation_call_id: "call-1".into(),
+                admission: None,
             }),
         )
         .await
@@ -7079,7 +7611,6 @@ mod tests {
         // observe via the other.
         let key = SpawnDedupKey {
             agent_type: AgentType::ClaudeCode,
-            working_dir: Some(PathBuf::from("/tmp/dedup-test")),
             session_id: "ext-shared".into(),
         };
         {
@@ -7356,6 +7887,9 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            requested_session_id: None,
+            delegation_task_id: None,
+            driver_cancel: tokio_util::sync::CancellationToken::new(),
         };
         let mgr = Arc::new(ConnectionManager::new());
         {
@@ -8027,6 +8561,9 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            requested_session_id: None,
+            delegation_task_id: None,
+            driver_cancel: tokio_util::sync::CancellationToken::new(),
         };
         let mgr = ConnectionManager::new();
         {

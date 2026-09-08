@@ -813,6 +813,18 @@ impl DelegationListener {
         let working_dir = requested_working_dir
             .clone()
             .or_else(|| Some(entry.working_dir.to_string_lossy().to_string()));
+        let continue_from_task_id = match req.input.get("continue_from_task_id") {
+            None => None,
+            Some(serde_json::Value::String(value)) if !value.trim().is_empty() => {
+                Some(value.trim().to_string())
+            }
+            Some(_) => {
+                return report_failed(
+                    "continuation_invalid",
+                    "continue_from_task_id must be a non-empty string",
+                );
+            }
+        };
 
         let delegation_req = DelegationRequest {
             parent_connection_id: req.parent_connection_id,
@@ -822,6 +834,7 @@ impl DelegationListener {
             task,
             working_dir,
             requested_working_dir,
+            continue_from_task_id,
             external_handle: req.external_handle,
         };
         self.broker.start_delegation(delegation_req).await
@@ -1522,6 +1535,7 @@ mod tests {
                 task: "do x".into(),
                 working_dir: None,
                 requested_working_dir: None,
+                continue_from_task_id: None,
                 external_handle: None,
             })
             .await;
@@ -1675,6 +1689,7 @@ mod tests {
                         task: "do x".into(),
                         working_dir: None,
                         requested_working_dir: None,
+                        continue_from_task_id: None,
                         external_handle: None,
                     })
                     .await
@@ -1777,6 +1792,7 @@ mod tests {
                 task: "do x".into(),
                 working_dir: None,
                 requested_working_dir: None,
+                continue_from_task_id: None,
                 external_handle: None,
             })
             .await;
@@ -1828,6 +1844,7 @@ mod tests {
                     task: "do x".into(),
                     working_dir: None,
                     requested_working_dir: None,
+                    continue_from_task_id: None,
                     external_handle: Some("h-1".into()),
                 };
                 broker.handle_request(req).await

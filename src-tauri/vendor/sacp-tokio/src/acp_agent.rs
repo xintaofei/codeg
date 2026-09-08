@@ -3,6 +3,7 @@
 //! This module provides [`AcpAgent`], a convenient wrapper around [`sacp::schema::McpServer`]
 //! that can be parsed from either a command string or JSON configuration.
 
+use std::future::Future;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -656,35 +657,42 @@ fn append_limited_utf8(output: &mut String, chunk: &str, limit: usize) -> bool {
 ///
 /// The error message includes any stderr output collected by the background task.
 /// When dropped, the child process is killed.
-async fn monitor_child(
+fn monitor_child(
     child: Child,
     stderr_rx: tokio::sync::oneshot::Receiver<String>,
     exit_callback: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
-) -> Result<(), sacp::Error> {
-    let mut guard = ChildGuard {
+) -> impl Future<Output = Result<(), sacp::Error>> {
+    // Construct the guard before returning the future. `connect_to` races this
+    // future against the protocol driver; when that driver wins before the
+    // child monitor's first poll, dropping the future must still drop a guard
+    // that owns the child and starts the detached reap.
+    let guard = ChildGuard {
         child: Some(child),
         exit_callback,
     };
 
-    // Wait for the child to exit
-    let status = guard
-        .wait()
-        .await
-        .map_err(|e| sacp::util::internal_error(format!("Failed to wait for process: {}", e)))?;
+    async move {
+        let mut guard = guard;
 
-    if status.success() {
-        Ok(())
-    } else {
-        // Get stderr content if available
-        let stderr = stderr_rx.await.unwrap_or_default();
+        // Wait for the child to exit
+        let status = guard.wait().await.map_err(|e| {
+            sacp::util::internal_error(format!("Failed to wait for process: {}", e))
+        })?;
 
-        let message = if stderr.is_empty() {
-            format!("Process exited with {}", status)
+        if status.success() {
+            Ok(())
         } else {
-            format!("Process exited with {}: {}", status, stderr)
-        };
+            // Get stderr content if available
+            let stderr = stderr_rx.await.unwrap_or_default();
 
-        Err(sacp::util::internal_error(message))
+            let message = if stderr.is_empty() {
+                format!("Process exited with {}", status)
+            } else {
+                format!("Process exited with {}: {}", status, stderr)
+            };
+
+            Err(sacp::util::internal_error(message))
+        }
     }
 }
 
@@ -1097,6 +1105,52 @@ mod tests {
             drop(guard);
         });
         // Exactly once, even though `drop` also runs its own notify path.
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// Regression for the select race in `connect_to`: the protocol side may
+    /// finish before the child-monitor future receives its first poll. The
+    /// monitor must already own a `ChildGuard`, otherwise dropping that
+    /// unpolled future bypasses kill/reap and never fires `on_exit`.
+    #[cfg(unix)]
+    #[test]
+    fn dropping_an_unpolled_child_monitor_still_reaps_and_reports_exit() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        rt.block_on(async {
+            let mut command = tokio::process::Command::new("/bin/sh");
+            command.args(["-c", "sleep 30"]);
+            command.stderr(std::process::Stdio::piped());
+            let mut child = command.spawn().expect("spawn sh");
+            let stderr = child.stderr.take().expect("stderr");
+            let (stderr_tx, stderr_rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let mut stderr = stderr;
+                let mut bytes = Vec::new();
+                let _ = stderr.read_to_end(&mut bytes).await;
+                let _ = stderr_tx.send(String::from_utf8_lossy(&bytes).into_owned());
+            });
+
+            let monitor = monitor_child(child, stderr_rx, Some(counting_callback(&calls)));
+            // Deliberately never poll it.
+            drop(monitor);
+
+            let mut reported = false;
+            for _ in 0..200 {
+                if calls.load(Ordering::SeqCst) == 1 {
+                    reported = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            assert!(reported, "unpolled monitor bypassed the reap callback");
+        });
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 

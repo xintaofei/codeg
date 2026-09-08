@@ -34,6 +34,10 @@
         "working_dir": {
           "type": "string",
           "description": "Absolute path the sub-agent runs in. Defaults to this session's working directory."
+        },
+        "continue_from_task_id": {
+          "type": "string",
+          "description": "A terminal task_id from this parent whose exact child agent session should be resumed after its process is fully released. Each source permits one successor: an identical retry returns that successor, while a different retry reports a conflict. The continuation receives a new task_id; use the newer id for another round."
         }
       }
     }

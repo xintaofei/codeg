@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use chrono::Utc;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, DatabaseConnection, EntityTrait,
-    QueryFilter, QueryOrder, QuerySelect, Set,
+    Condition, QueryFilter, QueryOrder, QuerySelect, Set,
 };
 
 use crate::db::entities::conversation::ConversationKind;
@@ -137,6 +137,46 @@ pub async fn update_status(
     active.status = Set(status);
     active.updated_at = Set(Utc::now());
     active.update(conn).await?;
+    Ok(())
+}
+
+/// Move the child row's mutable "currently active delegation" pointer only
+/// when it still names the expected predecessor. Historical linkage lives in
+/// the delegation ledger; this field is solely a live routing guard.
+pub async fn advance_delegation_call_id(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    expected: &str,
+    next: &str,
+) -> Result<bool, DbError> {
+    let result = conversation::Entity::update_many()
+        .col_expr(
+            conversation::Column::DelegationCallId,
+            sea_orm::sea_query::Expr::value(next.to_string()),
+        )
+        .filter(conversation::Column::Id.eq(conversation_id))
+        .filter(
+            Condition::any()
+                .add(conversation::Column::DelegationCallId.eq(expected))
+                .add(conversation::Column::DelegationCallId.is_null()),
+        )
+        .exec(conn)
+        .await?;
+    Ok(result.rows_affected == 1)
+}
+
+pub async fn clear_delegation_call_id(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+) -> Result<(), DbError> {
+    conversation::Entity::update_many()
+        .col_expr(
+            conversation::Column::DelegationCallId,
+            sea_orm::sea_query::Expr::value(Option::<String>::None),
+        )
+        .filter(conversation::Column::Id.eq(conversation_id))
+        .exec(conn)
+        .await?;
     Ok(())
 }
 
@@ -1395,6 +1435,7 @@ mod tests {
             parent_conversation_id: parent.id,
             parent_tool_use_id: "tu-1".into(),
             delegation_call_id: "call-1".into(),
+            admission: None,
         };
         let child = create_with_delegation(
             conn,
@@ -1486,6 +1527,7 @@ mod tests {
                 parent_conversation_id: parent.id,
                 parent_tool_use_id: "tu-1".into(),
                 delegation_call_id: "call-1".into(),
+                admission: None,
             }),
         )
         .await
@@ -1500,6 +1542,7 @@ mod tests {
                 parent_conversation_id: parent.id,
                 parent_tool_use_id: "tu-2".into(),
                 delegation_call_id: "call-2".into(),
+                admission: None,
             }),
         )
         .await
@@ -1548,6 +1591,7 @@ mod tests {
             parent_conversation_id: child,
             parent_tool_use_id: "tu-2".into(),
             delegation_call_id: "call-2".into(),
+            admission: None,
         };
         create_with_delegation(
             &db.conn,
@@ -3233,6 +3277,7 @@ mod tests {
                 parent_conversation_id: parent.id,
                 parent_tool_use_id: "tu-activity".into(),
                 delegation_call_id: "call-activity".into(),
+                admission: None,
             }),
         )
         .await
@@ -3293,6 +3338,7 @@ mod tests {
                 parent_conversation_id: regular.id,
                 parent_tool_use_id: "tu-kind".into(),
                 delegation_call_id: "call-kind".into(),
+                admission: None,
             }),
         )
         .await

@@ -282,6 +282,23 @@ pub(crate) async fn handle_event(
             let Some(cid) = conversation_id else {
                 return Ok(());
             };
+            let delegation_task_id = {
+                let connections = manager.connections.lock().await;
+                connections
+                    .get(&envelope.connection_id)
+                    .and_then(|conn| conn.delegation_task_id.clone())
+            };
+            if let Some(task_id) = delegation_task_id.as_deref() {
+                let row = conversation_service::get_by_id(db_conn, cid).await?;
+                if row.delegation_call_id.as_deref() != Some(task_id) {
+                    tracing::info!(
+                        conversation_id = cid,
+                        task_id,
+                        "[delegation] ignored late terminal event from superseded execution"
+                    );
+                    return Ok(());
+                }
+            }
             if let Some(ts) = target_status.clone() {
                 // DB write before emit so any downstream subscriber that observes
                 // the ConversationStatusChanged event can assume the row is
@@ -306,6 +323,7 @@ pub(crate) async fn handle_event(
                     db_conn,
                     b.as_ref(),
                     cid,
+                    delegation_task_id.as_deref(),
                     stop_reason.as_str(),
                     last_text,
                 )
@@ -368,6 +386,7 @@ async fn forward_turn_complete_to_broker(
     db_conn: &DatabaseConnection,
     broker: &DelegationBroker,
     conversation_id: i32,
+    execution_task_id: Option<&str>,
     stop_reason: &str,
     last_text: Option<String>,
 ) {
@@ -381,9 +400,10 @@ async fn forward_turn_complete_to_broker(
             return;
         }
     };
-    let call_id = match row.delegation_call_id.clone() {
-        Some(id) => id,
+    let call_id = match execution_task_id {
+        Some(id) if row.delegation_call_id.as_deref() == Some(id) => id.to_string(),
         None => return, // not a delegation child; nothing to do.
+        Some(_) => return,
     };
     if row.parent_tool_use_id.is_none() {
         tracing::info!(
@@ -1755,6 +1775,9 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            requested_session_id: None,
+            delegation_task_id: None,
+            driver_cancel: tokio_util::sync::CancellationToken::new(),
         }
     }
 
@@ -2911,6 +2934,7 @@ mod tests {
             task: "do x".into(),
             working_dir: None,
             requested_working_dir: None,
+            continue_from_task_id: None,
             external_handle: None,
         }
     }

@@ -147,7 +147,8 @@ pub fn build_delegation_stack(
         db: db_arc.clone(),
     })
         as Arc<dyn crate::acp::connection::AgentAvailabilityLookup>;
-    let status_lookup = Arc::new(DbChildStatusLookup { db: db_arc }) as Arc<dyn ChildStatusLookup>;
+    let status_lookup =
+        Arc::new(DbChildStatusLookup { db: db_arc.clone() }) as Arc<dyn ChildStatusLookup>;
     let meta_writer = Arc::new(ConnectionManagerMetaWriter {
         manager: cm_arc.clone(),
     }) as Arc<dyn DelegationMetaWriter>;
@@ -159,6 +160,7 @@ pub fn build_delegation_stack(
     let broker = Arc::new(
         DelegationBroker::with_writers(spawner, depth_lookup, meta_writer, event_emitter)
             .with_status_lookup(status_lookup)
+            .with_ledger(db_arc)
             .with_live_reply_lookup(live_reply_lookup),
     );
     let tokens = Arc::new(TokenRegistry::default());

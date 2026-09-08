@@ -3197,6 +3197,7 @@ mod tests {
             parent_conversation_id: parent_id,
             parent_tool_use_id: "tu-historical".into(),
             delegation_call_id: "call-historical".into(),
+            admission: None,
         };
         conversation_service::create_with_delegation(
             &db.conn,
@@ -4646,6 +4647,7 @@ mod tests {
                 parent_conversation_id: parent_id,
                 parent_tool_use_id: (*tool_use).into(),
                 delegation_call_id: format!("call-{i}"),
+                admission: None,
             };
             let child = conversation_service::create_with_delegation(
                 &db.conn,
@@ -5004,6 +5006,7 @@ mod tests {
                 parent_conversation_id: parent_id,
                 parent_tool_use_id: "tu-1".into(),
                 delegation_call_id: "call-1".into(),
+                admission: None,
             }),
         )
         .await
@@ -5048,6 +5051,7 @@ mod tests {
                 parent_conversation_id: parent_id,
                 parent_tool_use_id: "tu-1".into(),
                 delegation_call_id: "call-1".into(),
+                admission: None,
             }),
         )
         .await
