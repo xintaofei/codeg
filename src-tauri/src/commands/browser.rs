@@ -449,40 +449,43 @@ pub async fn set_visible_core(
     handoff_focus: bool,
     freeze: bool,
 ) -> Result<Option<FrozenFrame>, AppCommandError> {
-    let surface = surface_of(registry, tab_id)?;
-    // Arrival order first, then the tab's lock: requests apply one at a
+    // The surface and the request's stamp (its sequence number and the
+    // tab's incarnation) are taken in ONE registry operation: taken apart, a
+    // close-and-reopen of the same id in between would pair the old surface
+    // with the new tab's stamp. Then the tab's lock: requests apply one at a
     // time and in the order they came, and one that a newer request has
     // overtaken while it waited or captured is dropped rather than applied
     // late (the newer one carries the state that stands).
-    let stamp = registry
+    let (surface, stamp) = registry
         .update(tab_id, |tab| {
             tab.visible_seq += 1;
-            (tab.visible_seq, tab.generation)
+            (tab.surface.clone(), (tab.visible_seq, tab.generation))
         })
-        .unwrap_or_default();
+        .ok_or_else(|| AppCommandError::not_found(format!("browser tab {tab_id} not found")))?;
     let lock = registry.visibility_lock(tab_id);
     let _applying = lock.lock().await;
     // Both the sequence and the incarnation: the id may have been closed and
     // reopened while this waited, and the new tab's own counter must not be
     // mistaken for ours.
-    let superseded =
-        || registry.update(tab_id, |tab| (tab.visible_seq, tab.generation)) != Some(stamp);
-    if superseded() {
+    let current = || registry.update(tab_id, |tab| (tab.visible_seq, tab.generation));
+    if current() != Some(stamp) {
         return Ok(None);
     }
     let mut frame = None;
     if !visible && freeze && surface.is_embedded() {
         frame = capture_freeze_frame(&surface).await;
-        if superseded() {
-            return Ok(None);
-        }
     }
-    let bounds = registry
-        .update(tab_id, |tab| {
-            tab.visible = visible;
-            tab.last_bounds
-        })
-        .unwrap_or_default();
+    // Check and record in one operation, so nothing can come between the
+    // last look at the stamp and the state change it guards.
+    let Some(Some(bounds)) = registry.update(tab_id, |tab| {
+        if (tab.visible_seq, tab.generation) != stamp {
+            return None;
+        }
+        tab.visible = visible;
+        Some(tab.last_bounds)
+    }) else {
+        return Ok(None);
+    };
     if visible {
         if surface.is_embedded() {
             surface

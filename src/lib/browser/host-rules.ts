@@ -63,6 +63,13 @@ function asciiLower(text: string): string {
   return text.replace(/[A-Z]/g, (c) => c.toLowerCase())
 }
 
+/** ASCII-only trimming, like the Rust side (`String.prototype.trim` and
+ *  `str::trim` disagree on U+0085, U+00A0 and more; a pattern the two sides
+ *  parse differently is a rule one of them silently ignores). */
+function asciiTrim(text: string): string {
+  return text.replace(/^[\t\n\v\f\r ]+|[\t\n\v\f\r ]+$/g, "")
+}
+
 /**
  * Parse a pattern; `null` for anything that is not one. Case-insensitive,
  * surrounding whitespace ignored. Same grammar as the Rust side.
@@ -70,7 +77,7 @@ function asciiLower(text: string): string {
 export function parseHostRulePattern(
   pattern: string
 ): ParsedHostRulePattern | null {
-  const trimmed = asciiLower(pattern.trim())
+  const trimmed = asciiLower(asciiTrim(pattern))
   if (!trimmed || trimmed.length > MAX_PATTERN_LEN) return null
   let host: string
   let portText: string | null = null
@@ -124,13 +131,13 @@ export function parseHostRulePattern(
 export function validateHostRulePattern(
   pattern: string
 ): "empty" | "invalid" | null {
-  if (!pattern.trim()) return "empty"
+  if (!asciiTrim(pattern)) return "empty"
   return parseHostRulePattern(pattern) ? null : "invalid"
 }
 
-/** The form a pattern is stored in: trimmed and (ASCII) lower-cased. */
+/** The form a pattern is stored in: (ASCII) trimmed and lower-cased. */
 export function normalizeHostRulePattern(pattern: string): string {
-  return asciiLower(pattern.trim())
+  return asciiLower(asciiTrim(pattern))
 }
 
 /**

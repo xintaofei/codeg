@@ -91,7 +91,12 @@ struct ParsedPattern {
 /// Parse a pattern the way the frontend does (`parseHostRulePattern`); `None`
 /// for anything that is not a pattern, which then never matches.
 fn parse_pattern(pattern: &str) -> Option<ParsedPattern> {
-    let trimmed = pattern.trim().to_ascii_lowercase();
+    // ASCII whitespace only, like the frontend: `str::trim` would also eat
+    // U+0085 and friends, and a pattern the two sides parse differently is
+    // a rule one of them silently ignores.
+    let trimmed = pattern
+        .trim_matches(|c: char| c.is_ascii_whitespace())
+        .to_ascii_lowercase();
     if trimmed.is_empty() || trimmed.len() > MAX_PATTERN_LEN {
         return None;
     }
@@ -558,6 +563,8 @@ mod tests {
             "[*.example.com]",
             "[*]:443",
             "*.*",
+            "\u{85}blocked.example",
+            "blocked.example\u{a0}",
         ] {
             assert!(!valid_pattern(bad), "{bad:?} should not parse");
         }

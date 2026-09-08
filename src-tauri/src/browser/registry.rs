@@ -183,25 +183,32 @@ impl BrowserRegistry {
     }
 
     pub fn remove(&self, tab_id: &str) -> Option<BrowserTab> {
-        self.visibility
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(tab_id);
-        self.lock().remove(tab_id)
+        // Lock order everywhere: tabs, then visibility (never the reverse),
+        // and the lock entry goes while the tabs lock is still held — a tab
+        // inserted under the same id in between would otherwise lose its
+        // own, freshly created lock.
+        let mut tabs = self.lock();
+        let removed = tabs.remove(tab_id);
+        if removed.is_some() {
+            self.visibility
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(tab_id);
+        }
+        removed
     }
 
     /// Detach every tab owned by a window (called when that window is
     /// destroyed); the caller closes the returned surfaces.
     pub fn remove_by_owner(&self, owner_window: &str) -> Vec<BrowserTab> {
-        let removed: Vec<BrowserTab> = {
-            let mut tabs = self.lock();
-            let ids: Vec<String> = tabs
-                .values()
-                .filter(|t| t.state.owner_window == owner_window)
-                .map(|t| t.state.tab_id.clone())
-                .collect();
-            ids.into_iter().filter_map(|id| tabs.remove(&id)).collect()
-        };
+        let mut tabs = self.lock();
+        let ids: Vec<String> = tabs
+            .values()
+            .filter(|t| t.state.owner_window == owner_window)
+            .map(|t| t.state.tab_id.clone())
+            .collect();
+        let removed: Vec<BrowserTab> = ids.into_iter().filter_map(|id| tabs.remove(&id)).collect();
+        // Same order and same reason as `remove`: still under the tabs lock.
         let mut locks = self
             .visibility
             .lock()

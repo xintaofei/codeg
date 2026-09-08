@@ -33,6 +33,15 @@ describe("host rule patterns", () => {
     }
   })
 
+  it("trims ASCII whitespace only, like the Rust side", () => {
+    // `String.prototype.trim` and Rust's `str::trim` disagree on these; a
+    // pattern one side accepts and the other rejects is a silently dropped
+    // rule, so neither side accepts them.
+    expect(validateHostRulePattern("\u0085blocked.example")).toBe("invalid")
+    expect(validateHostRulePattern("blocked.example\u00a0")).toBe("invalid")
+    expect(validateHostRulePattern("\tblocked.example \n")).toBeNull()
+  })
+
   it("lower-cases ASCII only, like the Rust side", () => {
     // U+212A KELVIN SIGN folds to `k` under Unicode lower-casing; a pattern
     // is ASCII, so it is not a pattern on either side.
