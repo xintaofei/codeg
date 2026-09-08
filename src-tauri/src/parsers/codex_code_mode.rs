@@ -72,6 +72,11 @@ pub struct CodeModeScript {
     /// `Some` only when EVERY call site in the script resolved. `None` means
     /// the caller must fall back to the script card.
     pub calls: Option<Vec<CodeModeCall>>,
+    /// Tool names found lexically, in execution-source order, even when an
+    /// argument object contains variables and therefore cannot be resolved.
+    /// Semantic app-server items can supply those arguments without evaluating
+    /// the script, while still checking that every detected call is covered.
+    pub tool_names: Vec<String>,
     /// Human title for the script card (best effort, survives resolve failure).
     pub summary: Option<String>,
     /// Number of `tools.*` call sites detected, resolved or not.
@@ -196,6 +201,7 @@ pub fn parse_code_mode_script(src: &str) -> CodeModeScript {
     if let Some(calls) = expand_table_fanout(src, &sites) {
         let summary = best_effort_summary(src, &calls, &sites);
         return CodeModeScript {
+            tool_names: calls.iter().map(|call| call.tool_name.clone()).collect(),
             calls: Some(calls),
             summary,
             call_sites: sites.len(),
@@ -218,6 +224,7 @@ pub fn parse_code_mode_script(src: &str) -> CodeModeScript {
 
     let summary = best_effort_summary(src, if resolved { &calls } else { &[] }, &sites);
     CodeModeScript {
+        tool_names: sites.iter().map(|site| site.tool_name.clone()).collect(),
         calls: if resolved { Some(calls) } else { None },
         summary,
         call_sites: sites.len(),

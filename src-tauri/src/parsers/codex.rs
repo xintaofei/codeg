@@ -1415,23 +1415,26 @@ fn unwrap_completed_mcp_calls(
     script: &CodeModeScript,
     completed: Vec<CompletedMcpCall>,
 ) -> Option<(Vec<ContentBlock>, Vec<ContentBlock>)> {
-    let calls = script.calls.as_deref()?;
-    if calls.len() != completed.len() || calls.is_empty() {
+    if script.tool_names.len() != completed.len() || script.tool_names.is_empty() {
         return None;
     }
-    let names_match = calls.iter().zip(&completed).all(|(call, item)| {
-        let server = item.server.replace('-', "_");
-        call.tool_name == format!("mcp__{server}__{}", item.tool)
-    });
+    let names_match = script
+        .tool_names
+        .iter()
+        .zip(&completed)
+        .all(|(tool_name, item)| {
+            let server = item.server.replace('-', "_");
+            tool_name == &format!("mcp__{server}__{}", item.tool)
+        });
     if !names_match {
         return None;
     }
-    let mut uses = Vec::with_capacity(calls.len());
-    let mut results = Vec::with_capacity(calls.len());
-    for (call, item) in calls.iter().zip(completed) {
+    let mut uses = Vec::with_capacity(completed.len());
+    let mut results = Vec::with_capacity(completed.len());
+    for (index, item) in completed.into_iter().enumerate() {
         uses.push(ContentBlock::ToolUse {
             tool_use_id: Some(item.id.clone()),
-            tool_name: call.tool_name.clone(),
+            tool_name: script.tool_names[index].clone(),
             input_preview: item.input_preview,
             status: Some("completed".into()),
             meta: None,
@@ -9791,10 +9794,17 @@ mod tests {
     #[test]
     fn completed_mcp_items_split_a_two_call_one_chunk_script() {
         let script = concat!(
+            "const wd=\"/tmp\";const taskA=\"A\";const taskB=\"B\";",
             "const [a,b]=await Promise.all([",
-            "tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",task:\"A\"}),",
-            "tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",task:\"B\"})",
+            "tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:wd,task:taskA}),",
+            "tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:wd,task:taskB})",
             "]);text(JSON.stringify({a,b}));"
+        );
+        assert!(
+            crate::parsers::codex_code_mode::parse_code_mode_script(script)
+                .calls
+                .is_none(),
+            "the real variable-argument shape cannot be statically evaluated"
         );
         let mut lines = code_mode_rollout(
             script,
@@ -9804,8 +9814,8 @@ mod tests {
             ]),
         );
         for (offset, (id, task_id, task)) in [
-            ("exec-a", "task-a", "A"),
             ("exec-b", "task-b", "B"),
+            ("exec-a", "task-a", "A"),
         ]
         .into_iter()
         .enumerate()
@@ -9838,16 +9848,24 @@ mod tests {
         }
 
         let detail = parse_lines(&lines, "code-mode-semantic-mcp");
+        let uses = tool_uses(&detail);
         assert_eq!(
-            tool_uses(&detail)
-                .into_iter()
-                .map(|(id, name, _)| (id, name))
+            uses.iter()
+                .map(|(id, name, _)| (id.as_str(), name.as_str()))
                 .collect::<Vec<_>>(),
             vec![
-                ("exec-a".into(), "mcp__codeg_mcp__delegate_to_agent".into()),
-                ("exec-b".into(), "mcp__codeg_mcp__delegate_to_agent".into()),
+                ("exec-b", "mcp__codeg_mcp__delegate_to_agent"),
+                ("exec-a", "mcp__codeg_mcp__delegate_to_agent"),
             ],
             "semantic items replace the outer script with real MCP cards"
+        );
+        assert_eq!(
+            uses[0].2.as_deref(),
+            Some(r#"{"agent_type":"codex","task":"B"}"#)
+        );
+        assert_eq!(
+            uses[1].2.as_deref(),
+            Some(r#"{"agent_type":"codex","task":"A"}"#)
         );
         assert_eq!(
             tool_results(&detail)
@@ -9855,8 +9873,8 @@ mod tests {
                 .map(|(id, output, _)| (id, output))
                 .collect::<Vec<_>>(),
             vec![
-                ("exec-a".into(), Some("Delegation successful. task_id=task-a.".into())),
                 ("exec-b".into(), Some("Delegation successful. task_id=task-b.".into())),
+                ("exec-a".into(), Some("Delegation successful. task_id=task-a.".into())),
             ]
         );
     }
