@@ -218,6 +218,11 @@ impl HostRuleAction {
     }
 }
 
+/// How well a rule fits a URL: specificity (kind, suffix length, pinned
+/// port), then the action's restrictiveness. Higher wins; ties go to the
+/// rule listed first.
+type RuleScore = (u8, usize, u8, u8);
+
 /// The rule that applies to `url`: the most specific matching pattern; among
 /// equally specific ones the most restrictive action, and among those the
 /// first listed. Unparsable patterns never match. Same algorithm as
@@ -225,7 +230,7 @@ impl HostRuleAction {
 pub fn match_host_rule<'a>(rules: &'a [HostRule], url: &Url) -> Option<&'a HostRule> {
     let hostname = rule_hostname(url)?;
     let port = effective_port(url);
-    let mut best: Option<(&HostRule, (u8, usize, u8, u8))> = None;
+    let mut best: Option<(&HostRule, RuleScore)> = None;
     for rule in rules {
         let Some(parsed) = parse_pattern(&rule.pattern) else {
             continue;
@@ -234,7 +239,7 @@ pub fn match_host_rule<'a>(rules: &'a [HostRule], url: &Url) -> Option<&'a HostR
             continue;
         }
         let (kind, len, pinned) = parsed.specificity();
-        let score = (kind, len, pinned, rule.action.restrictiveness());
+        let score: RuleScore = (kind, len, pinned, rule.action.restrictiveness());
         if best.as_ref().is_none_or(|(_, current)| score > *current) {
             best = Some((rule, score));
         }
