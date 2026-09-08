@@ -215,6 +215,7 @@ async fn end_to_end_named_pipe_happy_path() {
         Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
         Arc::new(NoTaskTools) as Arc<dyn codeg_lib::acp::work_task_tools::WorkTaskToolAccess>,
         Arc::new(NoAuthoring) as Arc<dyn codeg_lib::acp::chat_authoring::ChatAuthoringAccess>,
+        None,
     );
 
     let pipe = unique_pipe("happy");
@@ -318,6 +319,7 @@ async fn end_to_end_named_pipe_back_to_back_requests() {
         Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
         Arc::new(NoTaskTools) as Arc<dyn codeg_lib::acp::work_task_tools::WorkTaskToolAccess>,
         Arc::new(NoAuthoring) as Arc<dyn codeg_lib::acp::chat_authoring::ChatAuthoringAccess>,
+        None,
     );
 
     let pipe = unique_pipe("repeat");
