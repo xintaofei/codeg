@@ -1043,26 +1043,23 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     const profile = browserProfileExists(getBrowserPrefs(), tab.browser.profile)
       ? tab.browser.profile
       : DEFAULT_BROWSER_PROFILE_ID
-    // Decided on the mirror rather than inside the updater (updaters run
-    // later, at render time), so the active-tab pointer can be fixed in the
-    // same breath. A suspended tab is off screen and so never the active
-    // one; the pointer update is for form's sake.
+    // Decided inside the updater, against the list as it is when the update
+    // applies (a queued insert may land first); the active pointer moves to
+    // the neighbouring survivor the way `closeFileTab` does — a suspended
+    // tab is off screen, but the file pane may be hidden with it selected.
     const normalized = normalizeUrlForDedupe(url)
-    const duplicate =
-      profile !== tab.browser.profile &&
-      fileTabsRef.current.some(
-        (t) =>
-          t.kind === "browser" &&
-          t.id !== tabId &&
-          t.browser.profile === profile &&
-          normalizeUrlForDedupe(t.browser.initialUrl) === normalized
-      )
-    if (duplicate) {
-      setFileTabs((prev) => prev.filter((t) => t.id !== tabId))
-      setActiveFileTabId((current) => (current === tabId ? null : current))
-    } else {
-      setFileTabs((prev) =>
-        prev.map((t) =>
+    setFileTabs((prev) => {
+      const duplicate =
+        profile !== tab.browser.profile &&
+        prev.some(
+          (t) =>
+            t.kind === "browser" &&
+            t.id !== tabId &&
+            t.browser.profile === profile &&
+            normalizeUrlForDedupe(t.browser.initialUrl) === normalized
+        )
+      if (!duplicate) {
+        return prev.map((t) =>
           t.id === tabId && t.kind === "browser"
             ? {
                 ...t,
@@ -1071,8 +1068,16 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
               }
             : t
         )
-      )
-    }
+      }
+      const idx = prev.findIndex((t) => t.id === tabId)
+      const next = prev.filter((t) => t.id !== tabId)
+      setActiveFileTabId((current) => {
+        if (current !== tabId) return current
+        if (next.length === 0) return null
+        return next[Math.min(Math.max(idx, 0), next.length - 1)].id
+      })
+      return next
+    })
     releaseBrowserTab(tabId)
     return true
   }, [])

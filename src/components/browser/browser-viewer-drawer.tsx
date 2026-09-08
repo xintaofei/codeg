@@ -83,7 +83,10 @@ export function BrowserViewerDrawer({
           {t("description")}
         </DrawerDescription>
         {open ? (
-          <BrowserViewerBody url={url} onOpenChange={onOpenChange} />
+          // Keyed by URL: a drawer handed another address starts a fresh
+          // body, so the record it remembered for the old one never shows
+          // under the new header.
+          <BrowserViewerBody key={url} url={url} onOpenChange={onOpenChange} />
         ) : null}
       </DrawerContent>
     </Drawer>

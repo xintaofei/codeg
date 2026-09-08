@@ -3742,10 +3742,14 @@ describe("browser tabs", () => {
       })
     )
     act(() => setBrowserProfiles([]))
+    // It was the active tab (opened last, activated); the pane may be
+    // hidden with it selected, so the pointer must move to the survivor.
+    expect(screen.getByTestId("active").textContent).toBe(second.id)
     act(() => markBrowserTabHidden(second.id))
     act(() => screen.getByText("suspend-last").click())
     expect(readTabs().map((t) => t.profile)).toEqual(["default"])
     expect(readTabs()).toHaveLength(1)
+    expect(screen.getByTestId("active").textContent).toBe(readTabs()[0].id)
 
     // A dormant record of a deleted profile whose page the default profile
     // already shows is dropped rather than duplicated.
