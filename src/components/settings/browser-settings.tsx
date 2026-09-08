@@ -2,8 +2,9 @@
 
 /**
  * Built-in browser settings: where links open by default (per source), whether
- * browser tabs get the web inspector, which native surface hosts them, and a
- * one-shot "clear browsing data".
+ * browser tabs get the web inspector, which native surface hosts them, whether
+ * background tabs are unloaded after a while, and a one-shot "clear browsing
+ * data".
  *
  * Preferences live in localStorage (`browser-prefs.ts`): written immediately,
  * mirrored across windows through the storage event, so there is no Save
@@ -14,7 +15,15 @@
 
 import { useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
-import { AppWindow, Eraser, Globe, Link2, Network, Wrench } from "lucide-react"
+import {
+  AppWindow,
+  Eraser,
+  Globe,
+  Link2,
+  MoonStar,
+  Network,
+  Wrench,
+} from "lucide-react"
 import { toast } from "sonner"
 
 import { SettingCard, SettingRow } from "@/components/shared/setting-card"
@@ -47,6 +56,7 @@ import {
   LINK_SOURCES,
   setBrowserDevtools,
   setBrowserSurfaceOverride,
+  setBrowserSuspendBackgroundTabs,
   setDefaultLinkTarget,
   useBrowserPrefs,
   type LinkSource,
@@ -236,6 +246,21 @@ export function BrowserSettingsSection() {
                 ))}
               </SelectContent>
             </Select>
+          }
+        />
+        <SettingRow
+          icon={MoonStar}
+          title={t("suspendTitle")}
+          description={t("suspendHint")}
+          htmlFor="browser-suspend"
+          control={
+            <Switch
+              id="browser-suspend"
+              checked={prefs.suspendBackgroundTabs}
+              onCheckedChange={(enabled) =>
+                setBrowserSuspendBackgroundTabs(enabled)
+              }
+            />
           }
         />
         <SettingRow

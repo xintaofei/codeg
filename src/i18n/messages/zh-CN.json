@@ -4760,7 +4760,9 @@
     "proxyNextTab": "代理变更对此后打开的标签页生效。",
     "proxyRestart": "代理已变更，重启 codeg 后浏览器标签页才会使用新代理。",
     "proxyUnsupported": "当前 macOS 版本不支持（需要 macOS 14 或更高）。",
-    "proxyUnusable": "配置的代理不是浏览器标签页能使用的类型（仅支持 http 和 socks5）。"
+    "proxyUnusable": "配置的代理不是浏览器标签页能使用的类型（仅支持 http 和 socks5）。",
+    "suspendTitle": "卸载后台标签页",
+    "suspendHint": "释放在后台停留 30 分钟的浏览器标签页所占的内存。切回时会重新加载；滚动位置和历史记录会丢失。"
   },
   "LogsSettings": {
     "loading": "加载中…",

@@ -22,7 +22,20 @@ export type ClosedFileTab = {
   folderId: number | null
 }
 
-export type ClosedWorkspaceTab = ClosedConversationTab | ClosedFileTab
+export type ClosedBrowserTab = {
+  kind: "browser"
+  /** The closed tab's id. Identity for the repeat-push guard in `pushClosedTab`. */
+  key: string
+  /** The page the tab showed when it was closed (not the one it opened with). */
+  url: string
+  title: string
+  folderId: number | null
+}
+
+export type ClosedWorkspaceTab =
+  | ClosedConversationTab
+  | ClosedFileTab
+  | ClosedBrowserTab
 
 let stack: ClosedWorkspaceTab[] = []
 
@@ -115,4 +128,17 @@ export function snapshotFileTab(tab: {
   if (tab.kind !== "file") return null
   if (!tab.path) return null
   return { kind: "file", key: tab.id, path: tab.path, folderId: tab.folderId }
+}
+
+/**
+ * A browser tab reopens at the page it was showing, which is the live URL
+ * the caller reads from the tab store — the record itself only knows the
+ * address the tab was opened with.
+ */
+export function snapshotBrowserTab(
+  tab: { id: string; folderId: number | null },
+  url: string,
+  title: string
+): ClosedBrowserTab {
+  return { kind: "browser", key: tab.id, url, title, folderId: tab.folderId }
 }

@@ -36,7 +36,11 @@ import {
   splitAbsPath,
 } from "@/lib/file-open-target"
 import { isAbsoluteFilePath } from "@/lib/file-path-display"
-import { pushClosedTab, snapshotFileTab } from "@/lib/closed-tab-stack"
+import {
+  pushClosedTab,
+  snapshotBrowserTab,
+  snapshotFileTab,
+} from "@/lib/closed-tab-stack"
 import {
   isBinaryImageFile,
   isHiddenPath,
@@ -62,10 +66,24 @@ import {
   type WorkspaceExternalConflict,
 } from "@/hooks/use-open-file-tabs-watch"
 import { useOfficeAutoPreview } from "@/lib/office-preview-prefs"
-import { releaseBrowserTab } from "@/lib/browser/browser-tab-store"
+import {
+  getBrowserTabState,
+  releaseBrowserTab,
+} from "@/lib/browser/browser-tab-store"
 import { hostnameOf, normalizeUrlForDedupe } from "@/lib/browser/browser-url"
 
 export type WorkspaceMode = "conversation" | "fusion"
+
+/** The closed-stack entry for a browser tab: the page it was showing, read
+ *  from the live state while that still exists (it is released right after). */
+function closedBrowserTab(tab: BrowserWorkspaceTab) {
+  const state = getBrowserTabState(tab.id)
+  return snapshotBrowserTab(
+    tab,
+    state?.url || state?.requestedUrl || tab.browser.initialUrl,
+    state?.title || tab.title
+  )
+}
 export type WorkspacePane = "conversation" | "files"
 
 type FileLikeTabKind = "file" | "diff" | "rich-diff"
@@ -247,6 +265,24 @@ interface WorkspaceActionsValue {
     url: string
     openerBackendTabId: string
   }) => string
+  // Bring back browser tabs saved by a previous run, as records only: none
+  // is activated, and a native surface is created for one when it is first
+  // shown. Entries are appended in order; nothing happens when the workspace
+  // already has browser tabs (a second document of the same run).
+  restoreBrowserTabs: (entries: RestorableBrowserTab[]) => void
+  // Release a background tab's native surface (memory) while keeping its
+  // record: the record moves to the page the tab was showing, so the next
+  // time it is shown a fresh surface loads that page. No-op for a tab that
+  // has no surface. Returns whether a surface was released.
+  suspendBrowserTab: (tabId: string) => boolean
+}
+
+/** What a browser tab needs to come back after a restart (see
+ *  `lib/browser/browser-tab-persistence`). */
+export interface RestorableBrowserTab {
+  url: string
+  title: string | null
+  folderId: number | null
 }
 
 interface WorkspaceViewValue {
@@ -676,12 +712,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       backendTabId: string,
       url: string,
       folderId: number | null,
-      openerTabId: string | null
+      openerTabId: string | null,
+      title?: string | null
     ): BrowserWorkspaceTab => ({
       id: buildFileTabId({ kind: "browser", id: backendTabId }),
       kind: "browser",
       folderId,
-      title: hostnameOf(url) ?? url,
+      title: title || (hostnameOf(url) ?? url),
       description: null,
       path: null,
       language: "browser",
@@ -776,6 +813,62 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     },
     [activateFilePane, browserTabRecord]
   )
+
+  const restoreBrowserTabs = useCallback(
+    (entries: RestorableBrowserTab[]) => {
+      if (entries.length === 0) return
+      if (fileTabsRef.current.some((tab) => tab.kind === "browser")) return
+      const records = entries.flatMap((entry) =>
+        normalizeUrlForDedupe(entry.url)
+          ? [
+              browserTabRecord(
+                crypto.randomUUID(),
+                entry.url,
+                entry.folderId,
+                null,
+                entry.title
+              ),
+            ]
+          : []
+      )
+      if (records.length === 0) return
+      // Records only; not activated, so no surface is created until the user
+      // switches to one. The pane state is left exactly as it was.
+      setFileTabs((prev) =>
+        prev.some((tab) => tab.kind === "browser")
+          ? prev
+          : [...prev, ...records]
+      )
+    },
+    [browserTabRecord]
+  )
+
+  const suspendBrowserTab = useCallback((tabId: string) => {
+    const tab = fileTabsRef.current.find((t) => t.id === tabId)
+    if (!tab || tab.kind !== "browser") return false
+    const state = getBrowserTabState(tabId)
+    if (!state) return false
+    const url = state.url || state.requestedUrl || tab.browser.initialUrl
+    const title = state.title || tab.title
+    // Move the record to where the page got to before letting the surface
+    // go: the tab strip keeps showing the page's title, and the surface
+    // created when the tab is next shown loads that page, not the address
+    // the tab was opened with. History and scroll position are lost, as in
+    // a browser's discarded tab.
+    setFileTabs((prev) =>
+      prev.map((t) =>
+        t.id === tabId && t.kind === "browser"
+          ? {
+              ...t,
+              title,
+              browser: { ...t.browser, initialUrl: url },
+            }
+          : t
+      )
+    )
+    releaseBrowserTab(tabId)
+    return true
+  }, [])
 
   // Mark an existing tab as refreshing. Preserves content / originalContent /
   // modifiedContent / gitBaseContent / savedContent / etag / mtimeMs /
@@ -2449,7 +2542,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const closed = snapshotFileTab(tab)
         if (closed) pushClosedTab(closed)
         // Idempotent on the backend, so safe under a replayed updater.
-        if (tab.kind === "browser") releaseBrowserTab(tab.id)
+        if (tab.kind === "browser") {
+          pushClosedTab(closedBrowserTab(tab))
+          releaseBrowserTab(tab.id)
+        }
 
         const next = prev.filter((candidate) => candidate.id !== tabId)
 
@@ -2502,7 +2598,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           // safe inside an updater React may invoke more than once.
           const closed = snapshotFileTab(closing)
           if (closed) pushClosedTab(closed)
-          if (closing.kind === "browser") releaseBrowserTab(closing.id)
+          if (closing.kind === "browser") {
+            pushClosedTab(closedBrowserTab(closing))
+            releaseBrowserTab(closing.id)
+          }
           inFlightLoadsRef.current.delete(closing.id)
         }
 
@@ -2524,7 +2623,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       for (const tab of prev) {
         const closed = snapshotFileTab(tab)
         if (closed) pushClosedTab(closed)
-        if (tab.kind === "browser") releaseBrowserTab(tab.id)
+        if (tab.kind === "browser") {
+          pushClosedTab(closedBrowserTab(tab))
+          releaseBrowserTab(tab.id)
+        }
       }
 
       inFlightLoadsRef.current.clear()
@@ -2698,6 +2800,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       toggleFilesMaximized,
       openBrowserTab,
       adoptBrowserTab,
+      restoreBrowserTabs,
+      suspendBrowserTab,
     }),
     [
       setActivePane,
@@ -2728,6 +2832,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       toggleFilesMaximized,
       openBrowserTab,
       adoptBrowserTab,
+      restoreBrowserTabs,
+      suspendBrowserTab,
     ]
   )
 

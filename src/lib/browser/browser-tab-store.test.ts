@@ -9,8 +9,13 @@ vi.mock("./browser-api", () => ({ browserClose: api.browserClose }))
 vi.mock("@/lib/transport", () => ({ isDesktop: api.isDesktop }))
 
 import {
+  browserTabHiddenAt,
   browserWorkspaceTabId,
+  claimSurfaceCreation,
+  forgetSurfaceCreation,
   getBrowserTabState,
+  markBrowserTabHidden,
+  markBrowserTabShown,
   releaseBrowserTab,
   removeBrowserTabState,
   resetBrowserTabStoreForTests,
@@ -98,5 +103,35 @@ describe("browser tab store", () => {
     expect(api.browserClose).toHaveBeenCalledTimes(1)
     releaseBrowserTab("file:%2Fx")
     expect(api.browserClose).toHaveBeenCalledTimes(1)
+  })
+
+  // The ledger is what stops a StrictMode double effect (or a re-mounted
+  // host) from creating a second webview for one tab.
+  it("hands the surface-creation claim to exactly one caller until released", () => {
+    expect(claimSurfaceCreation("abc")).toBe(true)
+    expect(claimSurfaceCreation("abc")).toBe(false)
+    forgetSurfaceCreation("abc")
+    expect(claimSurfaceCreation("abc")).toBe(true)
+  })
+
+  // Releasing a tab returns it to "not loaded": the next host that mounts
+  // for it creates a fresh surface. This is what makes a suspended (or
+  // restored) tab resumable through the same code path.
+  it("releasing a tab frees its claim", () => {
+    setBrowserTabState(state())
+    expect(claimSurfaceCreation("abc")).toBe(true)
+    releaseBrowserTab("browser:abc")
+    expect(claimSurfaceCreation("abc")).toBe(true)
+  })
+
+  it("stamps when a tab left the screen", () => {
+    expect(browserTabHiddenAt("browser:abc")).toBeUndefined()
+    markBrowserTabShown("browser:abc")
+    expect(browserTabHiddenAt("browser:abc")).toBeNull()
+    markBrowserTabHidden("browser:abc")
+    expect(typeof browserTabHiddenAt("browser:abc")).toBe("number")
+    // Forgetting the tab forgets the stamp with it.
+    removeBrowserTabState("browser:abc")
+    expect(browserTabHiddenAt("browser:abc")).toBeUndefined()
   })
 })

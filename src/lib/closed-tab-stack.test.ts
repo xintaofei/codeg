@@ -6,6 +6,7 @@ import {
   popClosedTab,
   pushClosedTab,
   resetClosedTabStackForTests,
+  snapshotBrowserTab,
   snapshotConversationTab,
   snapshotFileTab,
 } from "./closed-tab-stack"
@@ -129,6 +130,24 @@ describe("closed tab stack", () => {
       key: "file:/repo/a.ts",
       path: "/repo/a.ts",
       folderId: 2,
+    })
+  })
+
+  // A browser tab reopens at the page it was showing, not the address it was
+  // opened with — the caller reads that from the live state.
+  it("records a browser tab at its live page", () => {
+    expect(
+      snapshotBrowserTab(
+        { id: "browser:abc", folderId: 3 },
+        "https://example.com/deep",
+        "Deep page"
+      )
+    ).toEqual({
+      kind: "browser",
+      key: "browser:abc",
+      url: "https://example.com/deep",
+      title: "Deep page",
+      folderId: 3,
     })
   })
 

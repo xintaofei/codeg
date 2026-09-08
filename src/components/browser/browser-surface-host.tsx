@@ -13,7 +13,11 @@ import {
 } from "@/lib/browser/browser-api"
 import { getBrowserPrefs } from "@/lib/browser/browser-prefs"
 import {
+  claimSurfaceCreation,
+  forgetSurfaceCreation,
   getBrowserTabState,
+  markBrowserTabHidden,
+  markBrowserTabShown,
   setBrowserTabState,
 } from "@/lib/browser/browser-tab-store"
 import {
@@ -28,11 +32,6 @@ import { cn } from "@/lib/utils"
  *  (a `visibility: hidden` ancestor toggled by the layout). One
  *  `checkVisibility()` call per tick. */
 const VISIBILITY_POLL_MS = 500
-
-// Backend ids whose surface this window has asked to create. Guards the
-// StrictMode double-effect and re-mounts of the same tab: the webview lives
-// as long as the tab record, not as long as this component.
-const created = new Set<string>()
 
 function measure(el: HTMLElement): Bounds {
   const rect = el.getBoundingClientRect()
@@ -123,17 +122,18 @@ export function BrowserSurfaceHost({
   }, [backendId, shouldShow, tab.id])
 
   // Create the surface once per tab record; adopted popups and re-mounts
-  // already have one (the store knows about it).
+  // already have one (the store knows about it). A record whose surface was
+  // released (background unload) is "not loaded" again and gets a new one
+  // here, at the URL the record was updated to.
   useEffect(() => {
     const el = ref.current
     if (!el || !backendId) return
-    if (created.has(backendId) || getBrowserTabState(tab.id)) {
+    if (getBrowserTabState(tab.id) || !claimSurfaceCreation(backendId)) {
       lastBoundsRef.current = null
       lastVisibleRef.current = null
       sync()
       return
     }
-    created.add(backendId)
     const bounds = measure(el)
     lastBoundsRef.current = bounds
     lastVisibleRef.current = true
@@ -153,7 +153,7 @@ export function BrowserSurfaceHost({
         sync()
       })
       .catch((error: unknown) => {
-        created.delete(backendId)
+        forgetSurfaceCreation(backendId)
         setCreateError(String(error))
       })
     // Intentionally not re-run on `sync` identity changes: creation is a
@@ -195,16 +195,19 @@ export function BrowserSurfaceHost({
     sync()
   }, [sync, view.mode, view.activePane, view.filesMaximized, routeVisible])
 
-  // Unmount: the tab is no longer on screen (another tab took the pane, the
-  // drawer closed, the panel went away). Hide, never destroy — the record
-  // owns the surface.
+  // Mount = the tab is on screen; unmount = it is no longer (another tab took
+  // the pane, the drawer closed, the panel went away). Hide, never destroy —
+  // the record owns the surface. The store keeps the timestamps so the
+  // optional background unload knows how long a page has been off screen.
   useEffect(() => {
     if (!backendId) return
+    markBrowserTabShown(tab.id)
     return () => {
       lastVisibleRef.current = null
+      markBrowserTabHidden(tab.id)
       void browserSetVisible(backendId, false, false).catch(() => {})
     }
-  }, [backendId])
+  }, [backendId, tab.id])
 
   return (
     <div

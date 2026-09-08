@@ -9,6 +9,15 @@ import {
   useWorkspaceView,
 } from "@/contexts/workspace-context"
 import * as api from "@/lib/api"
+import {
+  getBrowserTabState,
+  resetBrowserTabStoreForTests,
+  setBrowserTabState,
+} from "@/lib/browser/browser-tab-store"
+import {
+  popClosedTab,
+  resetClosedTabStackForTests,
+} from "@/lib/closed-tab-stack"
 import { resetHomeDirCacheForTests } from "@/lib/file-open-target"
 import {
   resetAppWorkspaceStore,
@@ -3254,9 +3263,19 @@ describe("unified absolute-path file tabs (outside-workspace opens)", () => {
 })
 
 describe("browser tabs", () => {
+  beforeEach(() => {
+    resetBrowserTabStoreForTests()
+    resetClosedTabStackForTests()
+  })
+
   function BrowserProbe() {
-    const { openBrowserTab, adoptBrowserTab, closeFileTab } =
-      useWorkspaceActions()
+    const {
+      openBrowserTab,
+      adoptBrowserTab,
+      closeFileTab,
+      restoreBrowserTabs,
+      suspendBrowserTab,
+    } = useWorkspaceActions()
     const { fileTabs, activeFileTabId } = useWorkspaceFileTabs()
     const { activePane } = useWorkspaceView()
     return (
@@ -3313,6 +3332,33 @@ describe("browser tabs", () => {
           }}
         >
           close-active
+        </button>
+        <button
+          onClick={() =>
+            restoreBrowserTabs([
+              {
+                url: "https://restored.example/one",
+                title: "One",
+                folderId: 7,
+              },
+              { url: "not a url", title: "bad", folderId: null },
+              {
+                url: "https://restored.example/two",
+                title: "",
+                folderId: null,
+              },
+            ])
+          }
+        >
+          restore
+        </button>
+        <button
+          onClick={() => {
+            const tab = fileTabs.find((t) => t.kind === "browser")
+            if (tab) suspendBrowserTab(tab.id)
+          }}
+        >
+          suspend-first
         </button>
         <pre data-testid="tabs">
           {JSON.stringify(
@@ -3429,5 +3475,124 @@ describe("browser tabs", () => {
     expect(tabs[0].url).toBe("http://localhost:3000/")
     expect(screen.getByTestId("active").textContent).toBe(tabs[0].id)
     confirmSpy.mockRestore()
+  })
+
+  // Restored records carry their stored title and folder, are appended in
+  // order, and none is activated: the surface of a restored tab is created
+  // when it is first shown, not at startup.
+  it("restores stored tabs as inactive records, skipping unusable addresses", () => {
+    render(
+      <WorkspaceProvider>
+        <BrowserProbe />
+      </WorkspaceProvider>
+    )
+    act(() => screen.getByText("restore").click())
+    const tabs = readTabs()
+    expect(tabs.map((t) => t.url)).toEqual([
+      "https://restored.example/one",
+      "https://restored.example/two",
+    ])
+    expect(tabs[0].title).toBe("One")
+    // No stored title: the host, as for any freshly opened tab.
+    expect(tabs[1].title).toBe("restored.example")
+    expect(screen.getByTestId("active").textContent).toBe("")
+    expect(screen.getByTestId("pane").textContent).toBe("conversation")
+
+    // A second restore (another document of the same run) is a no-op.
+    act(() => screen.getByText("restore").click())
+    expect(readTabs()).toHaveLength(2)
+  })
+
+  it("does not restore over tabs this window already has", () => {
+    render(
+      <WorkspaceProvider>
+        <BrowserProbe />
+      </WorkspaceProvider>
+    )
+    act(() => screen.getByText("open").click())
+    act(() => screen.getByText("restore").click())
+    expect(readTabs()).toHaveLength(1)
+  })
+
+  it("suspending a loaded tab keeps the record at the page it was showing", () => {
+    render(
+      <WorkspaceProvider>
+        <BrowserProbe />
+      </WorkspaceProvider>
+    )
+    act(() => screen.getByText("open").click())
+    const opened = readTabs()[0]
+    const backendId = opened.id.slice("browser:".length)
+    act(() =>
+      setBrowserTabState({
+        tabId: backendId,
+        ownerWindow: "main",
+        surface: "child",
+        channel: "native",
+        url: "https://example.com/docs/deep",
+        requestedUrl: "https://example.com/docs/deep",
+        title: "Deep",
+        favicon: null,
+        loading: false,
+        canGoBack: true,
+        canGoForward: false,
+        origin: "https://example.com",
+        zoom: 1,
+        error: null,
+        remoteHost: null,
+        openerTabId: null,
+      })
+    )
+    act(() => screen.getByText("suspend-first").click())
+    const tabs = readTabs()
+    expect(tabs).toHaveLength(1)
+    expect(tabs[0].id).toBe(opened.id)
+    expect(tabs[0].url).toBe("https://example.com/docs/deep")
+    expect(tabs[0].title).toBe("Deep")
+    // The native surface is gone; the record is "not loaded" again.
+    expect(getBrowserTabState(opened.id)).toBeNull()
+
+    // Nothing to release the second time.
+    act(() => screen.getByText("suspend-first").click())
+    expect(readTabs()).toHaveLength(1)
+  })
+
+  it("records a closed browser tab so it can be reopened at its page", () => {
+    render(
+      <WorkspaceProvider>
+        <BrowserProbe />
+      </WorkspaceProvider>
+    )
+    act(() => screen.getByText("open").click())
+    const opened = readTabs()[0]
+    act(() =>
+      setBrowserTabState({
+        tabId: opened.id.slice("browser:".length),
+        ownerWindow: "main",
+        surface: "child",
+        channel: "native",
+        url: "https://example.com/docs/deep",
+        requestedUrl: "https://example.com/docs/deep",
+        title: "Deep",
+        favicon: null,
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        origin: "https://example.com",
+        zoom: 1,
+        error: null,
+        remoteHost: null,
+        openerTabId: null,
+      })
+    )
+    act(() => screen.getByText("close-active").click())
+    const closed = popClosedTab()
+    expect(closed).toEqual({
+      kind: "browser",
+      key: opened.id,
+      url: "https://example.com/docs/deep",
+      title: "Deep",
+      folderId: 1,
+    })
   })
 })

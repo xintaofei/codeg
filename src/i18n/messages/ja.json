@@ -4760,7 +4760,9 @@
     "proxyNextTab": "プロキシの変更は、これ以降に開くタブに適用されます。",
     "proxyRestart": "変更したプロキシをブラウザタブで使うには codeg を再起動してください。",
     "proxyUnsupported": "このバージョンの macOS では利用できません（macOS 14 以降が必要です）。",
-    "proxyUnusable": "設定されたプロキシはブラウザタブで使用できない種類です（http と socks5 のみ対応）。"
+    "proxyUnusable": "設定されたプロキシはブラウザタブで使用できない種類です（http と socks5 のみ対応）。",
+    "suspendTitle": "バックグラウンドのタブを解放",
+    "suspendHint": "30 分間バックグラウンドにあるブラウザタブのメモリを解放します。戻ると再読み込みされ、スクロール位置と履歴は失われます。"
   },
   "LogsSettings": {
     "loading": "読み込み中…",

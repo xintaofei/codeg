@@ -4760,7 +4760,9 @@
     "proxyNextTab": "代理變更對此後開啟的分頁生效。",
     "proxyRestart": "代理已變更，重新啟動 codeg 後瀏覽器分頁才會使用新代理。",
     "proxyUnsupported": "目前的 macOS 版本不支援（需要 macOS 14 或更新）。",
-    "proxyUnusable": "設定的代理不是瀏覽器分頁能使用的類型（僅支援 http 與 socks5）。"
+    "proxyUnusable": "設定的代理不是瀏覽器分頁能使用的類型（僅支援 http 與 socks5）。",
+    "suspendTitle": "卸載背景分頁",
+    "suspendHint": "釋放在背景停留 30 分鐘的瀏覽器分頁所佔的記憶體。切回時會重新載入；捲動位置與歷史記錄會遺失。"
   },
   "LogsSettings": {
     "loading": "載入中…",

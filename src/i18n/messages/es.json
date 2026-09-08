@@ -4760,7 +4760,9 @@
     "proxyNextTab": "Un cambio de proxy se aplica a las pestañas que se abran a partir de ahora.",
     "proxyRestart": "Reinicia codeg para que las pestañas del navegador usen el proxy cambiado.",
     "proxyUnsupported": "No disponible en esta versión de macOS (se necesita 14 o posterior).",
-    "proxyUnusable": "El proxy configurado no es de un tipo que las pestañas del navegador puedan usar (solo http y socks5)."
+    "proxyUnusable": "El proxy configurado no es de un tipo que las pestañas del navegador puedan usar (solo http y socks5).",
+    "suspendTitle": "Descargar pestañas en segundo plano",
+    "suspendHint": "Libera la memoria de las pestañas del navegador que llevan 30 minutos en segundo plano. Se vuelven a cargar al regresar; se pierden la posición de desplazamiento y el historial."
   },
   "LogsSettings": {
     "loading": "Cargando…",

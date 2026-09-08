@@ -88,6 +88,20 @@ describe("BrowserSettingsSection", () => {
     ).toHaveTextContent("Automatic")
   })
 
+  it("persists the background-unload switch, which is off by default", () => {
+    renderSection()
+    expandSection()
+    const toggle = screen.getByLabelText("Unload background tabs")
+    expect(toggle).not.toBeChecked()
+
+    fireEvent.click(toggle)
+    expect(getBrowserPrefs().suspendBackgroundTabs).toBe(true)
+    expect(screen.getByLabelText("Unload background tabs")).toBeChecked()
+
+    fireEvent.click(screen.getByLabelText("Unload background tabs"))
+    expect(getBrowserPrefs().suspendBackgroundTabs).toBe(false)
+  })
+
   it("persists the inspector switch and follows a change made elsewhere", () => {
     renderSection()
     expandSection()

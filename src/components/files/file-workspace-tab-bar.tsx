@@ -232,6 +232,10 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
   // A browser tab's title follows the page (document.title); the record only
   // knows the host it was opened with.
   const browserState = useBrowserTabState(isBrowser ? tab.id : null)
+  // No live state = no page behind the tab yet: restored from a previous run
+  // or unloaded in the background; it loads when switched to. Drawn faded,
+  // the way browsers draw a discarded tab.
+  const unloaded = isBrowser && !browserState
   const displayTitle = isBrowser ? browserState?.title || tab.title : tab.title
   const displayHint = isBrowser
     ? browserState?.url || tab.browser.initialUrl
@@ -336,7 +340,10 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
             title={displayHint}
           >
             {isBrowser ? (
-              <Globe className="h-3.5 w-3.5" />
+              <Globe
+                className={cn("h-3.5 w-3.5", unloaded && "opacity-50")}
+                data-unloaded={unloaded ? "true" : undefined}
+              />
             ) : isDiff ? (
               <GitCompare className="h-3.5 w-3.5" />
             ) : (
@@ -350,7 +357,8 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
                 // the full width is used. Standalone: ellipsis cap in the scroll row.
                 embedded
                   ? "min-w-0 flex-1 overflow-hidden whitespace-nowrap browser-tab-label"
-                  : "truncate max-w-[11.25rem]"
+                  : "truncate max-w-[11.25rem]",
+                unloaded && "opacity-60"
               )}
             >
               {displayTitle}

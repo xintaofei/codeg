@@ -18,6 +18,47 @@ type Listener = () => void
 const states = new Map<string, BrowserTabState>()
 const listeners = new Set<Listener>()
 
+// Backend ids whose surface this document has asked the backend to create.
+// The surface host consults it so a StrictMode double effect or a re-mount of
+// the same tab never asks twice: the webview lives as long as the tab record,
+// not as long as the host component. Released together with the state, which
+// is what lets a suspended tab be brought back through the same host.
+const createdSurfaces = new Set<string>()
+
+/** Record that a surface is being created for `backendTabId`; false when it
+ *  already was. */
+export function claimSurfaceCreation(backendTabId: string): boolean {
+  if (createdSurfaces.has(backendTabId)) return false
+  createdSurfaces.add(backendTabId)
+  return true
+}
+
+export function forgetSurfaceCreation(backendTabId: string): void {
+  createdSurfaces.delete(backendTabId)
+}
+
+// When each tab's surface host last went away (`null` while one is mounted).
+// A host is mounted exactly while the tab is on screen — the active tab of a
+// pane or the viewer drawer — so this is "how long has this page been in the
+// background", which the optional background unload is based on.
+const hiddenAt = new Map<string, number | null>()
+
+export function markBrowserTabShown(workspaceTabId: string): void {
+  hiddenAt.set(workspaceTabId, null)
+}
+
+export function markBrowserTabHidden(workspaceTabId: string): void {
+  hiddenAt.set(workspaceTabId, Date.now())
+}
+
+/** Milliseconds-since-epoch the tab left the screen; `null` while it is on
+ *  screen; `undefined` for a tab that was never shown in this document. */
+export function browserTabHiddenAt(
+  workspaceTabId: string
+): number | null | undefined {
+  return hiddenAt.get(workspaceTabId)
+}
+
 function notify(): void {
   for (const listener of [...listeners]) listener()
 }
@@ -44,6 +85,7 @@ export function setBrowserTabState(state: BrowserTabState): void {
 
 export function removeBrowserTabState(workspaceTabId: string): void {
   const hadNotice = notices.delete(workspaceTabId)
+  hiddenAt.delete(workspaceTabId)
   if (states.delete(workspaceTabId) || hadNotice) notify()
 }
 
@@ -72,13 +114,17 @@ export function useBrowserTabState(
 /**
  * Tear down a tab's native surface and forget its state. Idempotent on the
  * backend side, so calling it for a tab that never got a surface is fine.
+ * Afterwards the tab record is back to "not loaded": a surface host mounting
+ * for it creates a fresh surface (that is how a suspended tab resumes).
  */
 export function releaseBrowserTab(workspaceTabId: string): void {
   removeBrowserTabState(workspaceTabId)
   const backendId = workspaceTabId.startsWith("browser:")
     ? decodeURIComponent(workspaceTabId.slice("browser:".length))
     : null
-  if (backendId && isDesktop()) {
+  if (!backendId) return
+  forgetSurfaceCreation(backendId)
+  if (isDesktop()) {
     void browserClose(backendId).catch(() => {
       /* already gone */
     })
@@ -117,6 +163,8 @@ export function resetBrowserTabStoreForTests(): void {
   states.clear()
   notices.clear()
   listeners.clear()
+  createdSurfaces.clear()
+  hiddenAt.clear()
 }
 
 function shallowEqualState(a: BrowserTabState, b: BrowserTabState): boolean {

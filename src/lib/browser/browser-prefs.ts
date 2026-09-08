@@ -35,6 +35,10 @@ export interface BrowserPrefsSnapshot {
   devtools: boolean
   surfaceOverride: SurfaceOverride
   firstOpenSeen: boolean
+  /** Release the native surface of tabs that stay in the background for a
+   *  while (they reload when shown again). Off by default: a page's state
+   *  is worth more than its memory unless the user says otherwise. */
+  suspendBackgroundTabs: boolean
 }
 
 export const DEFAULT_BROWSER_PREFS: BrowserPrefsSnapshot = Object.freeze({
@@ -48,6 +52,7 @@ export const DEFAULT_BROWSER_PREFS: BrowserPrefsSnapshot = Object.freeze({
   devtools: false,
   surfaceOverride: "auto",
   firstOpenSeen: false,
+  suspendBackgroundTabs: false,
 }) as BrowserPrefsSnapshot
 
 const KEY_PREFIX = "browser:"
@@ -59,6 +64,7 @@ function targetKey(source: LinkSource): string {
 const DEVTOOLS_KEY = `${KEY_PREFIX}devtools`
 const SURFACE_KEY = `${KEY_PREFIX}surface-override`
 const FIRST_OPEN_KEY = `${KEY_PREFIX}first-open-seen`
+const SUSPEND_KEY = `${KEY_PREFIX}suspend-background-tabs`
 
 function readRaw(key: string): string | null {
   if (typeof window === "undefined") return null
@@ -91,6 +97,7 @@ function read(): BrowserPrefsSnapshot {
       parseSurface(readRaw(SURFACE_KEY)) ??
       DEFAULT_BROWSER_PREFS.surfaceOverride,
     firstOpenSeen: readRaw(FIRST_OPEN_KEY) === "true",
+    suspendBackgroundTabs: readRaw(SUSPEND_KEY) === "true",
   }
 }
 
@@ -138,6 +145,10 @@ export function markBrowserFirstOpenSeen(): void {
   write(FIRST_OPEN_KEY, "true")
 }
 
+export function setBrowserSuspendBackgroundTabs(enabled: boolean): void {
+  write(SUSPEND_KEY, enabled ? "true" : null)
+}
+
 export function subscribeBrowserPrefs(listener: () => void): () => void {
   if (typeof window === "undefined") return () => {}
   const onChange = () => listener()
@@ -179,6 +190,7 @@ export function resetBrowserPrefsForTests(): void {
     localStorage.removeItem(DEVTOOLS_KEY)
     localStorage.removeItem(SURFACE_KEY)
     localStorage.removeItem(FIRST_OPEN_KEY)
+    localStorage.removeItem(SUSPEND_KEY)
   } catch {
     /* ignore */
   }

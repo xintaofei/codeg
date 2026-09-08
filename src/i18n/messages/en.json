@@ -4760,7 +4760,9 @@
     "proxyNextTab": "A changed proxy applies to tabs opened from now on.",
     "proxyRestart": "Restart codeg for browser tabs to use the changed proxy.",
     "proxyUnsupported": "Not available on this version of macOS (14 or later is needed).",
-    "proxyUnusable": "The configured proxy is not one browser tabs can use (http and socks5 only)."
+    "proxyUnusable": "The configured proxy is not one browser tabs can use (http and socks5 only).",
+    "suspendTitle": "Unload background tabs",
+    "suspendHint": "Release the memory of browser tabs that stay in the background for 30 minutes. They load again when you switch back; scroll position and history are lost."
   },
   "LogsSettings": {
     "loading": "Loading…",

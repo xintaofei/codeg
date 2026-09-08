@@ -4760,7 +4760,9 @@
     "proxyNextTab": "Uma alteração de proxy aplica-se aos separadores abertos a partir de agora.",
     "proxyRestart": "Reinicie o codeg para os separadores do navegador usarem o proxy alterado.",
     "proxyUnsupported": "Indisponível nesta versão do macOS (é necessária a 14 ou posterior).",
-    "proxyUnusable": "O proxy configurado não é de um tipo que os separadores do navegador possam usar (apenas http e socks5)."
+    "proxyUnusable": "O proxy configurado não é de um tipo que os separadores do navegador possam usar (apenas http e socks5).",
+    "suspendTitle": "Descarregar abas em segundo plano",
+    "suspendHint": "Libera a memória das abas do navegador que ficam 30 minutos em segundo plano. Elas recarregam quando você volta; a posição de rolagem e o histórico são perdidos."
   },
   "LogsSettings": {
     "loading": "Carregando…",

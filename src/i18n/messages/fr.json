@@ -4760,7 +4760,9 @@
     "proxyNextTab": "Un changement de proxy s’applique aux onglets ouverts à partir de maintenant.",
     "proxyRestart": "Redémarrez codeg pour que les onglets du navigateur utilisent le proxy modifié.",
     "proxyUnsupported": "Indisponible sur cette version de macOS (14 ou ultérieure requise).",
-    "proxyUnusable": "Le proxy configuré n’est pas d’un type utilisable par les onglets du navigateur (http et socks5 uniquement)."
+    "proxyUnusable": "Le proxy configuré n’est pas d’un type utilisable par les onglets du navigateur (http et socks5 uniquement).",
+    "suspendTitle": "Décharger les onglets en arrière-plan",
+    "suspendHint": "Libère la mémoire des onglets du navigateur restés 30 minutes en arrière-plan. Ils se rechargent quand vous y revenez ; la position de défilement et l’historique sont perdus."
   },
   "LogsSettings": {
     "loading": "Chargement…",
