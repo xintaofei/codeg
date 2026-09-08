@@ -9074,6 +9074,24 @@ fn finish_turn_reason<'a>(
     ("empty", Some(EmptyTurnReport { cause, details }))
 }
 
+/// Apply the prompt-response path's AIR exception around the shared turn
+/// classifier. Kept pure so the decision can be tested without moving the
+/// surrounding SessionFailure → Error → TurnComplete emission order.
+fn finish_prompt_response_reason<'a>(
+    probe: &TurnOutputProbe,
+    raw_reason_str: &'a str,
+    terminal_failure: Option<&SessionFailureRecord>,
+    stderr_tail: &StderrTail,
+) -> (&'a str, Option<EmptyTurnReport>) {
+    if raw_reason_str == "end_turn"
+        && terminal_failure.is_some_and(|record| record.severity == "error")
+    {
+        (raw_reason_str, None)
+    } else {
+        finish_turn_reason(probe, raw_reason_str, stderr_tail)
+    }
+}
+
 /// Build an `AcpEvent::Error` for a non-success stop reason so the user gets a
 /// toast instead of a silent transition to `PendingReview`. Returns `None` for
 /// `end_turn` (success) and `cancelled` (already user-driven).
@@ -9828,14 +9846,12 @@ async fn run_conversation_loop<'a>(
                             // explained by the AIR banner, so synthesizing an
                             // "empty" toast on top would misdiagnose a dead
                             // connection as "the agent produced nothing".
-                            let (reason_str, empty_report) = if terminal_failure
-                                .as_ref()
-                                .is_some_and(|record| record.severity == "error")
-                            {
-                                (raw_reason_str, None)
-                            } else {
-                                finish_turn_reason(&probe, raw_reason_str, stderr_tail)
-                            };
+                            let (reason_str, empty_report) = finish_prompt_response_reason(
+                                &probe,
+                                raw_reason_str,
+                                terminal_failure.as_ref(),
+                                stderr_tail,
+                            );
                             if let Some(err_event) =
                                 turn_failure_error_event(reason_str, agent_type, empty_report.as_ref())
                             {
@@ -18125,6 +18141,63 @@ mod tests {
 
         let (reason, report) = finish_turn_reason(&probe, "refusal", &tail);
         assert_eq!(reason, "auth_required");
+        assert!(report.is_none());
+    }
+
+    /// Prompt-response AIR metadata must not bypass refusal normalization. The
+    /// old broad severity-error exception returned the raw `refusal` here.
+    #[test]
+    fn prompt_response_air_error_still_promotes_terminal_401_refusal() {
+        let meta = meta_map(serde_json::json!({"jetbrains": {"air": {
+            "version": 1,
+            "sessionFailure": {
+                "id": "prompt-401:error",
+                "revision": 1,
+                "category": "auth",
+                "severity": "error",
+                "title": "Provider request failed"
+            }
+        }}}));
+        let terminal_failure = response_session_failure(Some(&meta)).expect("AIR error record");
+        let tail = StderrTail::new();
+        let mut probe = TurnOutputProbe::new(0);
+        for text in ["401 Unau", "thorized"] {
+            probe.note_update(AgentType::CodeBuddy, &agent_text_update(text), false);
+        }
+
+        let (reason, report) = finish_prompt_response_reason(
+            &probe,
+            "refusal",
+            Some(&terminal_failure),
+            &tail,
+        );
+        assert_eq!(reason, "auth_required");
+        assert!(report.is_none());
+    }
+
+    /// The AIR exception still suppresses a duplicate synthetic-empty error for
+    /// the disguised successful stop reason it was introduced to handle.
+    #[test]
+    fn prompt_response_air_error_keeps_raw_end_turn_without_empty_report() {
+        let meta = meta_map(serde_json::json!({"jetbrains": {"air": {
+            "version": 1,
+            "sessionFailure": {
+                "id": "prompt-end:error",
+                "revision": 1,
+                "severity": "error"
+            }
+        }}}));
+        let terminal_failure = response_session_failure(Some(&meta)).expect("AIR error record");
+        let tail = StderrTail::new();
+        let probe = TurnOutputProbe::new(0);
+
+        let (reason, report) = finish_prompt_response_reason(
+            &probe,
+            "end_turn",
+            Some(&terminal_failure),
+            &tail,
+        );
+        assert_eq!(reason, "end_turn");
         assert!(report.is_none());
     }
 
