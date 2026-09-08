@@ -63,11 +63,13 @@ function asciiLower(text: string): string {
   return text.replace(/[A-Z]/g, (c) => c.toLowerCase())
 }
 
-/** ASCII-only trimming, like the Rust side (`String.prototype.trim` and
- *  `str::trim` disagree on U+0085, U+00A0 and more; a pattern the two sides
- *  parse differently is a rule one of them silently ignores). */
+/** Trimming of exactly the characters the Rust side trims
+ *  (`char::is_ascii_whitespace`: space, tab, line feed, form feed, carriage
+ *  return — and NOT vertical tab). `String.prototype.trim` and `str::trim`
+ *  disagree on U+0085, U+00A0 and more; a pattern the two sides parse
+ *  differently is a rule one of them silently ignores. */
 function asciiTrim(text: string): string {
-  return text.replace(/^[\t\n\v\f\r ]+|[\t\n\v\f\r ]+$/g, "")
+  return text.replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, "")
 }
 
 /**

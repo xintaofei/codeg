@@ -39,7 +39,11 @@ describe("host rule patterns", () => {
     // rule, so neither side accepts them.
     expect(validateHostRulePattern("\u0085blocked.example")).toBe("invalid")
     expect(validateHostRulePattern("blocked.example\u00a0")).toBe("invalid")
+    // Vertical tab is not in Rust's `is_ascii_whitespace` either.
+    expect(validateHostRulePattern("\u000bblocked.example")).toBe("invalid")
+    expect(validateHostRulePattern("\u000b")).toBe("invalid")
     expect(validateHostRulePattern("\tblocked.example \n")).toBeNull()
+    expect(validateHostRulePattern("\fblocked.example\r")).toBeNull()
   })
 
   it("lower-cases ASCII only, like the Rust side", () => {
