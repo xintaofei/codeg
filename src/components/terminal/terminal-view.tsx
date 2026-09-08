@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { subscribe } from "@/lib/platform"
 import {
   terminalSpawn,
+  terminalSnapshot,
   terminalWrite,
   terminalResize,
   terminalKill,
@@ -81,6 +82,23 @@ interface TerminalViewProps {
    * 永远为 false。
    */
   keybarVisible?: boolean
+  /**
+   * 重新接管一个可能已经存在的 PTY，而不是「必然新建」。
+   *
+   * 终端面板的 tab 与它的 xterm 同生共死，所以那条路径永远是新建；而画布上的
+   * 终端卡片不是——整个画布路由在切到别的页面时会真卸载，PTY 却应该继续跑
+   * （`pnpm dev` 不该因为用户瞄了一眼待办看板就被杀掉）。此模式下先问后端要
+   * 快照：拿到就把最近输出重放进新开的 xterm 并跳过 spawn，没拿到才新建。
+   *
+   * 一并改掉卸载语义：attach 模式下**永不**在卸载/取消时 kill——PTY 属于卡片，
+   * 不属于这一次挂载。
+   */
+  attach?: boolean
+  /**
+   * 让字号无视应用缩放（`useZoomLevel`）。画布用自己的一套缩放，卡片内容一律
+   * 以「board units」绘制，再乘一次应用缩放就会和它所在的盒子对不上。
+   */
+  ignoreAppZoom?: boolean
   onProcessExited?: (terminalId: string) => void
 }
 
@@ -92,6 +110,8 @@ export function TerminalView({
   isActive,
   isVisible,
   keybarVisible = false,
+  attach = false,
+  ignoreAppZoom = false,
   onProcessExited,
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -106,7 +126,9 @@ export function TerminalView({
   // `window.open`, which the desktop webview turns into a dead click.
   const openUrlTarget = useOpenUrlTarget()
   const openUrlTargetRef = useRef(openUrlTarget)
-  const { zoomLevel } = useZoomLevel()
+  const { zoomLevel: appZoomLevel } = useZoomLevel()
+  // 100 = 「不缩放」。画布卡片走这条：它已经在自己那套缩放里了。
+  const zoomLevel = ignoreAppZoom ? 100 : appZoomLevel
   const { terminalFontStack, terminalFontSize, terminalLigatures } =
     useTerminalFont()
   const zoomLevelRef = useRef(zoomLevel)
@@ -359,13 +381,50 @@ export function TerminalView({
         }
       )
 
+      // attach 模式下，订阅到「快照应用完」之间到达的输出先攒着：快照是一次
+      // 往返，中间到的 chunk 既可能已经在快照里（重复），也可能不在（丢失）。
+      // 两者靠 seq 区分——见下面的 writeEvent 与 `TerminalEvent.seq`。
+      let replayBuffer: TerminalEvent[] | null = attach ? [] : null
+
+      // 已被快照画进这块屏幕的最高游标。缓冲**不足以**当闸门：事件走的通道
+      // （Tauri IPC / WebSocket）和快照那次请求-响应之间没有任何顺序保证，
+      // 所以一个已经被快照收录的 chunk 完全可能在快照应用之后才到达回调，
+      // 那时缓冲已经放行、拦不住它。地板因此是永久的：seq 在一个终端内单调，
+      // 所以「不高于快照游标」在这块 xterm 的整个生命周期都成立。
+      // 只由快照抬高，不由实时事件抬高——实时事件本来就有序且各到一次，拿它们
+      // 抬地板只会在万一乱序时白白吞掉输出。
+      let snapshotSeqFloor = 0
+
+      /** 写一个输出事件，丢弃已经画过的那一段。 */
+      const writeEvent = (event: TerminalEvent) => {
+        // seq 为 0/缺失 = 后端没能给出可比较的游标（旧后端、锁中毒）。此时
+        // 宁可重复也不能丢：多打一行远比吞掉一行输出容易发现和容忍。
+        const seq = event.seq ?? 0
+        if (seq > 0 && seq <= snapshotSeqFloor) return
+        term.write(event.data)
+      }
+
       // Subscribe to events BEFORE spawning so no initial output is lost
       const unlisten = await subscribe<TerminalEvent>(
         `terminal://output/${terminalId}`,
         (payload) => {
-          term.write(payload.data)
+          if (replayBuffer) {
+            replayBuffer.push(payload)
+            return
+          }
+          writeEvent(payload)
         }
       )
+
+      /** 放行攒着的事件，跳过快照里已经有的那一段。 */
+      const flushReplay = (snapshotSeq: number | null) => {
+        const buffered = replayBuffer ?? []
+        replayBuffer = null
+        if (snapshotSeq != null && snapshotSeq > snapshotSeqFloor) {
+          snapshotSeqFloor = snapshotSeq
+        }
+        for (const event of buffered) writeEvent(event)
+      }
 
       const unlistenExit = await subscribe<TerminalEvent>(
         `terminal://exit/${terminalId}`,
@@ -389,26 +448,87 @@ export function TerminalView({
         return
       }
 
-      // Spawn the terminal AFTER subscribing to events
-      try {
-        await terminalSpawn(workingDir, shell, initialCommand, terminalId)
-      } catch (err) {
-        onProcessExitedRef.current?.(terminalId)
-        term.write(`\r\n\x1b[31m[Failed to start terminal: ${err}]\x1b[0m\r\n`)
-      } finally {
-        if (!cancelled) setLoading(false)
+      /** 把快照写进这个全新的 xterm，并放行不在快照里的那段缓冲输出。 */
+      const applySnapshot = (snapshot: { data: string; seq: number }) => {
+        if (snapshot.data) term.write(snapshot.data)
+        flushReplay(snapshot.seq)
+        setLoading(false)
       }
 
-      // If unmounted while spawn was in flight, clean up the spawned PTY
-      if (cancelled) {
+      /** 卸载已经发生：拆掉这次挂载建立的一切。attach 模式下 PTY 不归这次挂载，
+       *  所以调用方各自决定要不要 kill。 */
+      const teardown = () => {
         writeQueue.dispose()
-        terminalKill(terminalId).catch(() => {})
         themeObserver.disconnect()
         onDataDisposable.dispose()
         onResizeDisposable.dispose()
         unlisten()
         unlistenExit()
         term.dispose()
+      }
+
+      // attach 模式：先看这个 id 上有没有活着的 PTY。有就把最近输出重放进这个
+      // 全新的 xterm 并跳过 spawn（spawn 会因 id 重复而失败，而那个失败恰好长得
+      // 像「终端起不来」——实际上进程好好的，只是屏幕是空的）。
+      let attached = false
+      if (attach) {
+        const snapshot = await terminalSnapshot(terminalId).catch(() => null)
+        if (cancelled) {
+          teardown()
+          return
+        }
+        if (snapshot?.alive) {
+          attached = true
+          applySnapshot(snapshot)
+        }
+        // 没活着时**不**在这里放行缓冲：spawn 还有一次往返，而那段窗口里到达的
+        // 输出可能属于「别的窗口刚 spawn 成功的那个 PTY」。现在写进屏幕，等下面
+        // 的重试快照再把同一段重放一遍，就会重复且顺序错乱（控制序列尤其致命）。
+        // 缓冲一直留到 spawn 有了结果为止。
+      }
+
+      // Spawn the terminal AFTER subscribing to events
+      if (!attached) {
+        try {
+          await terminalSpawn(workingDir, shell, initialCommand, terminalId)
+          // spawn 成功 ⇒ 这个 id 上此前没有 PTY，缓冲里只可能是我们刚起的这个
+          // 进程的头几个字节，没有任何东西需要去重。
+          flushReplay(null)
+        } catch (err) {
+          // 在 attach 模式下，「这个 id 已存在」不是失败而是竞态：两个窗口（或
+          // StrictMode 的双跑 effect）同时看到「没活着」并同时 spawn，只有一个
+          // 会赢。输者此刻其实有一个健康的终端可以接管——再问一次快照，拿到就
+          // 当作 attach 走完，而不是在一个正常运行的 shell 上打红字并把卡片
+          // 切到「已退出」。只有再问也没有时才是真失败。
+          const retry = attach
+            ? await terminalSnapshot(terminalId).catch(() => null)
+            : null
+          if (cancelled) {
+            teardown()
+            return
+          }
+          if (retry?.alive) {
+            attached = true
+            applySnapshot(retry)
+          } else {
+            flushReplay(null)
+            onProcessExitedRef.current?.(terminalId)
+            term.write(
+              `\r\n\x1b[31m[Failed to start terminal: ${err}]\x1b[0m\r\n`
+            )
+          }
+        } finally {
+          if (!cancelled) setLoading(false)
+        }
+      }
+
+      // If unmounted while spawn was in flight, clean up the spawned PTY.
+      // NOT in attach mode: there the PTY belongs to the card that placed it,
+      // not to this mount — that is the whole point of attaching, and killing
+      // here would take a running command down with a view switch.
+      if (cancelled) {
+        if (!attach) terminalKill(terminalId).catch(() => {})
+        teardown()
         return
       }
 
@@ -460,7 +580,7 @@ export function TerminalView({
       cancelled = true
       cleanup?.()
     }
-  }, [terminalId, workingDir, shell, initialCommand])
+  }, [terminalId, workingDir, shell, initialCommand, attach])
 
   // Refit and focus when becoming active or panel becomes visible
   useEffect(() => {

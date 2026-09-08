@@ -961,6 +961,13 @@
         "failed": "Sign-in did not complete.",
         "startFailed": "Could not start the sign-in",
         "credentialHint": "The token is cached here. Copy this file to another machine with no desktop to sign that one in too."
+      },
+      "signOut": {
+        "title": "Signed in as the wrong account?",
+        "description": "Antigravity caches the Google account it signed in as and reuses it silently, so signing in again cannot reach a different one. Signing out discards the stored credential; any running Antigravity sessions end first, because they would otherwise write the old account back.",
+        "action": "Sign out",
+        "done": "Signed out. Sign in again to pick a different account.",
+        "failed": "Could not sign out"
       }
     },
     "deepseek": {
@@ -1601,6 +1608,8 @@
     "terminalShellNotInstalled": "not installed",
     "terminalShellNotFoundWarning": "This path doesn't exist on this host.",
     "terminalCurrentShell": "Currently using: {path}",
+    "colorizeCommandOutput": "Colorize command output",
+    "colorizeCommandOutputDescription": "Force ANSI color out of the commands agents run, so their output renders in color in the transcript instead of as plain text. Takes effect on new sessions.",
     "renderingDescription": "Disable hardware acceleration if the app shows a black screen or rendering glitches (common on certain AMD GPUs or Intel integrated GPUs on Windows, and with the proprietary NVIDIA driver on Linux). Only takes effect on the Windows and Linux desktop builds.",
     "disableHardwareAcceleration": "Disable hardware acceleration",
     "renderingSaveFailed": "Failed to save rendering settings: {message}",
@@ -2963,6 +2972,9 @@
         "cut": "Cut",
         "copy": "Copy",
         "selectAll": "Select all",
+        "openLink": "Open link",
+        "openFile": "Open file",
+        "sendEmail": "Send email",
         "pasteUnavailable": "Couldn't read the clipboard. Press Ctrl/⌘V to paste instead.",
         "clipboardWriteFailed": "Couldn't write to the clipboard. Use the keyboard shortcut instead.",
         "quickMessageUntitled": "Untitled",
@@ -3236,9 +3248,12 @@
         "openInFileManager": "Open in file manager",
         "copyRelativePath": "Copy relative path",
         "copyAbsolutePath": "Copy absolute path",
+        "download": "Download file",
         "pathCopied": "Path copied",
         "copyPathFailed": "Failed to copy path",
-        "openFailed": "Failed to open local file"
+        "openFailed": "Failed to open local file",
+        "downloadSaved": "Downloaded {name}",
+        "downloadFailed": "Failed to download {name}"
       },
       "messageList": {
         "attachedResources": "Attached resources",
@@ -5088,6 +5103,7 @@
     "phaseRetry": "Retry run",
     "phaseReturn": "Follow-up",
     "phaseMerge": "Merge",
+    "phaseCompact": "Context compaction",
     "titleLabel": "Title",
     "titlePlaceholder": "What needs to be done?",
     "promptLabel": "Task description",
@@ -5118,6 +5134,7 @@
     "mergeDeleteWorktree": "Delete worktree after merge",
     "mergeSubmit": "Merge",
     "mergeSubmitQueue": "Add to merge queue",
+    "mergeSubmitting": "Starting…",
     "mergeQueuedToast": "Added to the merge queue — it starts as soon as the current merge finishes.",
     "completeTitle": "Complete task",
     "completeDescription": "This task changed no files, so there is nothing to merge — it is marked as done directly.",
@@ -5139,6 +5156,7 @@
     "settingsMaxConcurrentHint": "0 = unlimited",
     "settingsAutoCompact": "Auto-compact threshold",
     "settingsAutoCompactHint": "Before a follow-up, retry or merge round, compact the session when its context window is at least this full. 0 = off.",
+    "compactingNote": "Compacting the session context…",
     "settingsCompactCommand": "Compact command",
     "settingsCompactCommandHint": "Leave blank to use what the agent offers, or its known default.",
     "settingsCompactCommandPlaceholder": "/compact",
@@ -5813,7 +5831,24 @@
     "confirmDeleteCancel": "Cancel",
     "confirmDeleteConfirm": "Delete",
     "canvasActions": "Canvas actions",
-    "mergeIntoNewRegion": "New region"
+    "mergeIntoNewRegion": "New region",
+    "addFileCard": "File card",
+    "addTerminalCard": "Terminal card",
+    "searchFiles": "Search files…",
+    "searchFilesIn": "Search in {folder}…",
+    "searchingFiles": "Searching…",
+    "noFiles": "No files found",
+    "noOpenFiles": "No files open — type to search",
+    "browseForFile": "Browse…",
+    "filePreview": "Preview",
+    "fileSource": "Source",
+    "reloadFile": "Reload",
+    "removeFileCard": "Remove file card",
+    "restartTerminal": "Restart terminal",
+    "removeTerminalCard": "Remove terminal card",
+    "terminalNoDirectory": "This card has no working directory",
+    "confirmDeleteTerminals": "{count} running terminal(s) will be closed and their processes stopped.",
+    "confirmDeleteNotesAndTerminals": "{notes} note(s) you wrote will be permanently deleted, and {terminals} running terminal(s) will be stopped."
   },
   "Browser": {
     "toolbar": {

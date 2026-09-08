@@ -961,6 +961,13 @@
         "failed": "Die Anmeldung wurde nicht abgeschlossen.",
         "startFailed": "Anmeldung konnte nicht gestartet werden",
         "credentialHint": "Das Token liegt hier. Kopiere diese Datei auf weitere Rechner ohne Desktop, um sie ebenfalls anzumelden."
+      },
+      "signOut": {
+        "title": "Mit dem falschen Konto angemeldet?",
+        "description": "Antigravity speichert das angemeldete Google-Konto zwischen und verwendet es stillschweigend weiter, sodass eine erneute Anmeldung kein anderes Konto erreicht. Beim Abmelden werden die gespeicherten Anmeldedaten verworfen; laufende Antigravity-Sitzungen werden zuvor beendet, da sie sonst das alte Konto zurückschreiben würden.",
+        "action": "Abmelden",
+        "done": "Abgemeldet. Melde dich erneut an, um ein anderes Konto zu wählen.",
+        "failed": "Abmelden fehlgeschlagen"
       }
     },
     "deepseek": {
@@ -1601,6 +1608,8 @@
     "terminalShellNotInstalled": "nicht installiert",
     "terminalShellNotFoundWarning": "Dieser Pfad existiert auf diesem Host nicht.",
     "terminalCurrentShell": "Aktuell verwendet: {path}",
+    "colorizeCommandOutput": "Befehlsausgabe einfärben",
+    "colorizeCommandOutputDescription": "Erzwingt ANSI-Farben in den Befehlen, die Agenten ausführen, sodass deren Ausgabe im Verlauf farbig statt als reiner Text erscheint. Gilt ab neuen Sitzungen.",
     "renderingDescription": "Deaktivieren Sie die Hardwarebeschleunigung, wenn die App einen schwarzen Bildschirm oder Render-Fehler zeigt (häufig bei bestimmten AMD-GPUs oder integrierten Intel-GPUs unter Windows sowie beim proprietären NVIDIA-Treiber unter Linux). Wirkt sich nur auf die Windows- und Linux-Desktop-Versionen aus.",
     "disableHardwareAcceleration": "Hardwarebeschleunigung deaktivieren",
     "renderingSaveFailed": "Render-Einstellungen konnten nicht gespeichert werden: {message}",
@@ -2961,6 +2970,9 @@
         "cut": "Ausschneiden",
         "copy": "Kopieren",
         "selectAll": "Alles auswählen",
+        "openLink": "Link öffnen",
+        "openFile": "Datei öffnen",
+        "sendEmail": "E-Mail senden",
         "pasteUnavailable": "Zwischenablage konnte nicht gelesen werden. Mit Strg/⌘V einfügen.",
         "clipboardWriteFailed": "Schreiben in die Zwischenablage fehlgeschlagen. Bitte das Tastenkürzel verwenden.",
         "quickMessageUntitled": "Ohne Titel",
@@ -3236,9 +3248,12 @@
         "openInFileManager": "Im Dateimanager öffnen",
         "copyRelativePath": "Relativen Pfad kopieren",
         "copyAbsolutePath": "Absoluten Pfad kopieren",
+        "download": "Datei herunterladen",
         "pathCopied": "Pfad kopiert",
         "copyPathFailed": "Pfad konnte nicht kopiert werden",
-        "openFailed": "Lokale Datei konnte nicht geöffnet werden"
+        "openFailed": "Lokale Datei konnte nicht geöffnet werden",
+        "downloadSaved": "{name} heruntergeladen",
+        "downloadFailed": "Herunterladen von {name} fehlgeschlagen"
       },
       "messageList": {
         "attachedResources": "Angehängte Ressourcen",
@@ -5088,6 +5103,7 @@
     "phaseRetry": "Neuversuch",
     "phaseReturn": "Nachfassen",
     "phaseMerge": "Merge",
+    "phaseCompact": "Kontextverdichtung",
     "titleLabel": "Titel",
     "titlePlaceholder": "Was ist zu tun?",
     "promptLabel": "Aufgabenbeschreibung",
@@ -5118,6 +5134,7 @@
     "mergeDeleteWorktree": "Worktree nach dem Merge löschen",
     "mergeSubmit": "Mergen",
     "mergeSubmitQueue": "In die Warteschlange",
+    "mergeSubmitting": "Wird gestartet …",
     "mergeQueuedToast": "Zur Merge-Warteschlange hinzugefügt – startet, sobald der laufende Merge fertig ist.",
     "completeTitle": "Aufgabe abschließen",
     "completeDescription": "Diese Aufgabe hat keine Dateien geändert – es gibt nichts zu mergen, sie wird direkt als fertig markiert.",
@@ -5139,6 +5156,7 @@
     "settingsMaxConcurrentHint": "0 = unbegrenzt",
     "settingsAutoCompact": "Schwelle für automatisches Komprimieren",
     "settingsAutoCompactHint": "Vor einer Folge-, Wiederholungs- oder Merge-Runde die Sitzung komprimieren, wenn das Kontextfenster mindestens so voll ist. 0 = aus.",
+    "compactingNote": "Sitzungskontext wird verdichtet …",
     "settingsCompactCommand": "Komprimierungsbefehl",
     "settingsCompactCommandHint": "Leer lassen, um den vom Agenten angebotenen Befehl bzw. dessen bekannten Standard zu verwenden.",
     "settingsCompactCommandPlaceholder": "/compact",
@@ -5813,7 +5831,24 @@
     "confirmDeleteCancel": "Abbrechen",
     "confirmDeleteConfirm": "Löschen",
     "canvasActions": "Leinwand-Aktionen",
-    "mergeIntoNewRegion": "Neuer Bereich"
+    "mergeIntoNewRegion": "Neuer Bereich",
+    "addFileCard": "Dateikarte",
+    "addTerminalCard": "Terminalkarte",
+    "searchFiles": "Dateien suchen…",
+    "searchFilesIn": "In {folder} suchen…",
+    "searchingFiles": "Wird gesucht…",
+    "noFiles": "Keine Dateien gefunden",
+    "noOpenFiles": "Keine Dateien geöffnet – tippen zum Suchen",
+    "browseForFile": "Durchsuchen…",
+    "filePreview": "Vorschau",
+    "fileSource": "Quelltext",
+    "reloadFile": "Neu laden",
+    "removeFileCard": "Dateikarte entfernen",
+    "restartTerminal": "Terminal neu starten",
+    "removeTerminalCard": "Terminalkarte entfernen",
+    "terminalNoDirectory": "Diese Karte hat kein Arbeitsverzeichnis",
+    "confirmDeleteTerminals": "{count} laufende Terminal(s) werden geschlossen und ihre Prozesse beendet.",
+    "confirmDeleteNotesAndTerminals": "{notes} von dir geschriebene Notiz(en) werden endgültig gelöscht und {terminals} laufende Terminal(s) beendet."
   },
   "Browser": {
     "toolbar": {

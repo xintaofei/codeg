@@ -1,15 +1,13 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import { ArrowLeft, Code, Eye, ExternalLink } from "lucide-react"
-import type { BundledLanguage } from "shiki"
 
-import { CodeBlockContent } from "@/components/ai-elements/code-block"
-import { HtmlPreview } from "@/components/files/html-preview"
-import { ImagePreview } from "@/components/files/image-preview"
-import { MarkdownDocumentPreview } from "@/components/files/markdown-document-preview"
-import { OfficePreview } from "@/components/files/office-preview"
+import {
+  CenteredNotice,
+  FileDocumentView,
+} from "@/components/files/file-document-view"
 import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
 import {
   Drawer,
@@ -56,39 +54,6 @@ function baseName(path: string): string {
     normalized.lastIndexOf("\\")
   )
   return (index >= 0 ? normalized.slice(index + 1) : normalized) || path
-}
-
-/**
- * Ceilings for the read-only source view.
- *
- * `CodeBlockContent` builds one DOM node per line and hands the whole text to
- * shiki, with no virtualization anywhere — a multi-MB generated file would lock
- * the page up for seconds and keep the tokens cached afterwards. The file
- * column can afford such a file because Monaco virtualizes; this panel cannot,
- * so past these bounds it says so and points at the column instead. Markdown
- * and HTML previews are deliberately not capped here: they run the same
- * renderer the file column runs, with the same exposure.
- */
-const SOURCE_VIEW_MAX_BYTES = 512 * 1024
-const SOURCE_VIEW_MAX_LINES = 5_000
-
-/**
- * Monaco language ids (what `languageFromPath` speaks, and therefore what a
- * file tab carries) that shiki does not know under that name. Anything absent
- * is passed through — shiki either knows it or falls back to unhighlighted
- * text on its own, which is the same outcome, just noisier in the console.
- */
-const SHIKI_LANGUAGE_ALIASES: Record<string, string> = {
-  plaintext: "text",
-  restructuredtext: "text",
-  "objective-c": "objc",
-  bat: "batch",
-  shell: "bash",
-  mdx: "markdown",
-}
-
-function toShikiLanguage(language: string): BundledLanguage {
-  return (SHIKI_LANGUAGE_ALIASES[language] ?? language) as BundledLanguage
 }
 
 /**
@@ -433,130 +398,20 @@ function FileViewerContent({
   if (entry.resolved && !entry.absPath) {
     return <CenteredNotice>{t("cannotResolve")}</CenteredNotice>
   }
-  // Cold load — no bytes yet. A refresh of an already-loaded tab keeps the
-  // previous content on screen (the file column's "non-destructive refresh").
-  if (!tab || (tab.loading && tab.content === "")) {
-    return <CenteredNotice>{t("loading")}</CenteredNotice>
-  }
-  // Deliberately NO `saveState === "error"` branch. A LOAD failure and a SAVE
-  // failure share that one flag, and nothing on the tab tells them apart:
-  // `rejectTab` puts the localized "unable to load <message>" sentence in
-  // `content` on a clean tab, while a failed save leaves `content` as the
-  // user's buffer — and that buffer is clean too whenever they happened to
-  // revert it while the save was in flight (`updateFileTabContent` recomputes
-  // `isDirty` against `savedContent`). Guessing wrong prints the whole document
-  // as an error notice. So this panel does what the file column does: render
-  // whatever the tab holds. A load failure surfaces as its own message in the
-  // document body, which is exactly where the column shows it.
-  //
-  // `openFilePreview` stamps the synthetic "image" / "office" languages onto
-  // the tab it seeds — branch on those, exactly as the file column does, so
-  // the two surfaces can never disagree about what a tab holds.
-  if (tab.language === "image") {
-    return <ImagePreview key={tab.id} tab={tab} />
-  }
-  if (tab.language === "office") {
-    return (
-      <OfficePreview
-        key={tab.id}
-        rootPath={io?.rootPath ?? null}
-        relPath={io?.ioPath ?? null}
-      />
-    )
-  }
-  if (isPreview && isHtmlPreviewable(tab.path)) {
-    return <HtmlPreview key={tab.id} tab={tab} rootPath={previewRoot} />
-  }
-  if (isPreview && tab.language === "markdown") {
-    return (
-      <MarkdownDocumentPreview
-        content={tab.content}
-        fileDir={io?.rootPath ?? null}
-        previewRoot={previewRoot}
-        openFilePreview={onOpenMarkdownLink}
-      />
-    )
-  }
 
+  // Everything below is the shared read-only renderer — the same one the
+  // canvas's file card uses, so the two can never disagree about what a tab
+  // holds.
   return (
-    <SourceView
-      // A different file (or a re-open at a different line) must re-run the
-      // scroll effect, and the DOM it measures belongs to this file's render.
-      key={`${tab.id}:${entry.request.line ?? ""}`}
-      code={tab.content}
-      language={tab.language}
+    <FileDocumentView
+      tab={tab}
+      io={io}
+      previewRoot={previewRoot}
+      isPreview={isPreview}
       line={entry.request.line}
+      onOpenMarkdownLink={onOpenMarkdownLink}
     />
   )
-}
-
-function CenteredNotice({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex h-full items-center justify-center px-6 text-center text-xs text-muted-foreground">
-      {children}
-    </div>
-  )
-}
-
-/**
- * Read-only source view. Shiki-highlighted like every other code block in a
- * transcript rather than a second Monaco: this panel never edits, and Monaco's
- * models/undo stacks are the file column's business.
- */
-function SourceView({
-  code,
-  language,
-  line,
-}: {
-  code: string
-  language: string
-  line: number | null
-}) {
-  const t = useTranslations("Folder.fileViewer")
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const tooLarge =
-    code.length > SOURCE_VIEW_MAX_BYTES ||
-    countLines(code) > SOURCE_VIEW_MAX_LINES
-
-  // Reveal the requested line once the tokens have rendered. `CodeBlockBody`
-  // emits exactly one element per source line, so the line number indexes
-  // straight into `<code>`'s children. Re-run on `code` because the first
-  // paint uses raw tokens and shiki swaps in highlighted ones a tick later.
-  useEffect(() => {
-    if (!line || tooLarge) return
-    const target = containerRef.current
-      ?.querySelector("code")
-      ?.children.item(line - 1)
-    target?.scrollIntoView({ block: "center" })
-  }, [code, line, tooLarge])
-
-  if (tooLarge) {
-    return <CenteredNotice>{t("tooLargeToPreview")}</CenteredNotice>
-  }
-
-  return (
-    <div ref={containerRef} className="h-full overflow-auto">
-      <CodeBlockContent
-        code={code}
-        language={toShikiLanguage(language)}
-        showLineNumbers
-      />
-    </div>
-  )
-}
-
-/** Line count without allocating an array of every line. */
-function countLines(text: string): number {
-  let lines = 1
-  for (
-    let index = text.indexOf("\n");
-    index >= 0;
-    index = text.indexOf("\n", index + 1)
-  ) {
-    lines += 1
-    if (lines > SOURCE_VIEW_MAX_LINES) return lines
-  }
-  return lines
 }
 
 /**

@@ -20,6 +20,7 @@ import {
   acpAntigravityLoginCancel,
   acpAntigravityLoginFinish,
   acpAntigravityLoginStart,
+  acpAntigravitySignOut,
   acpSyncAntigravitySettings,
   type AntigravityLoginOutcome,
   type AntigravityLoginStart,
@@ -570,6 +571,84 @@ function HeadlessSignIn({
 }
 
 /**
+ * Discard the account Antigravity is signed in as.
+ *
+ * The other half of signing in, and not an optional one. Antigravity refreshes
+ * its cached token by itself, so once a credential exists `authenticate` returns
+ * without opening anything and the sign-in above can only report "already signed
+ * in" — the first Google account a user picks is the last one they get. Nothing
+ * they can reach from outside fixes it either: the credential is a login-keychain
+ * item on macOS and a file under `GEMINI_HOME` elsewhere, so it survives
+ * uninstalling the Antigravity CLI and reinstalling codeg.
+ *
+ * Only for the two OAuth methods. The API-key methods read their credential from
+ * the environment on every request, so there is nothing stored to discard — and
+ * the agent's `logout` would clear the saved `auth.type` for no gain.
+ */
+function SignOut({
+  disabled,
+  onSignedOut,
+}: {
+  disabled: boolean
+  /** Hands back the settings.json report the sign-out produced, so the panel
+   *  can raise its standing notice when that file could not be rewritten. */
+  onSignedOut: (report: AntigravitySyncReport) => void
+}) {
+  const t = useTranslations("AcpAgentSettings")
+  const [busy, setBusy] = useState(false)
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  const signOut = useCallback(async () => {
+    setBusy(true)
+    try {
+      const report = await acpAntigravitySignOut()
+      if (!mountedRef.current) return
+      onSignedOut(report)
+      if (report.status === "skipped") {
+        toast.warning(t("toasts.antigravitySyncSkipped"))
+      } else {
+        toast.success(t("antigravity.signOut.done"))
+      }
+    } catch (e) {
+      // NOT `String(e)`: the web transport throws the backend's `{code,
+      // message}` JSON verbatim, and this is the deployment where the
+      // actionable text ("Google Antigravity is not installed") matters most.
+      toast.error(`${t("antigravity.signOut.failed")}: ${toErrorMessage(e)}`)
+    } finally {
+      if (mountedRef.current) setBusy(false)
+    }
+  }, [onSignedOut, t])
+
+  return (
+    <div className="flex items-start justify-between gap-2 rounded-md border border-dashed p-2.5">
+      <div className="min-w-0">
+        <p className="text-2xs font-medium">{t("antigravity.signOut.title")}</p>
+        <p className="mt-0.5 text-3xs text-muted-foreground">
+          {t("antigravity.signOut.description")}
+        </p>
+      </div>
+      <Button
+        className="h-7 shrink-0 gap-1.5 px-2.5 text-xs"
+        disabled={disabled || busy}
+        onClick={() => void signOut()}
+        size="sm"
+        type="button"
+        variant="outline"
+      >
+        {busy ? <Loader2 className="size-3.5 animate-spin" /> : null}
+        {t("antigravity.signOut.action")}
+      </Button>
+    </div>
+  )
+}
+
+/**
  * Dedicated settings panel for Google Antigravity (`agy_acp_server`).
  *
  * This panel is load-bearing, not cosmetic. Antigravity's `session/new` fails
@@ -742,6 +821,14 @@ export function AntigravityConfigPanel({
       if (mountedRef.current) setSavingForm(false)
     }
   }, [agent.enabled, agent.env, onSaveEnv, onSaved, t])
+
+  // A sign-out clears `auth.type` on its way out and the backend writes the
+  // saved method straight back, so its report lands in the same standing notice
+  // a save's does — and matters more here: if that write was refused the file
+  // now names no method at all, and every session fails until someone edits it.
+  const onSignedOut = useCallback((report: AntigravitySyncReport) => {
+    setSyncSkip(report.status === "skipped" ? report : null)
+  }, [])
 
   const busy = saving || savingForm
   const markDirty = () => {
@@ -932,6 +1019,14 @@ export function AntigravityConfigPanel({
             method={method}
             needsSave={persistedIncomplete !== null && incomplete === null}
           />
+        ) : null}
+
+        {/* Not gated on `persistedIncomplete`, unlike the sign-in beside it:
+            discarding a credential needs no project, no location and no key,
+            and a user whose stored row is half-filled is exactly the one who
+            may need to get out of the account it belongs to. */}
+        {usesBrowserSignIn(method) ? (
+          <SignOut disabled={busy} onSignedOut={onSignedOut} />
         ) : null}
 
         {/* The save landed in the database but not in the file the server

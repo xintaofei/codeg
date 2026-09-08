@@ -16,6 +16,7 @@ import {
   setBrowserTabState,
 } from "@/lib/browser/browser-tab-store"
 import {
+  peekClosedTab,
   popClosedTab,
   resetClosedTabStackForTests,
 } from "@/lib/closed-tab-stack"
@@ -3335,6 +3336,27 @@ describe("browser tabs", () => {
           close-active
         </button>
         <button
+          onClick={() => {
+            const tab = fileTabs[1]
+            if (tab) closeFileTab(tab.id)
+          }}
+        >
+          close-second
+        </button>
+        {/* What the reopen shortcut does with a browser entry it pops. */}
+        <button
+          onClick={() => {
+            const closed = popClosedTab()
+            if (closed?.kind !== "browser") return
+            openBrowserTab(closed.url, {
+              folderId: closed.folderId ?? undefined,
+              index: closed.index,
+            })
+          }}
+        >
+          reopen-closed
+        </button>
+        <button
           onClick={() =>
             restoreBrowserTabs([
               {
@@ -3608,9 +3630,222 @@ describe("browser tabs", () => {
     expect(closed).toEqual({
       kind: "browser",
       key: opened.id,
+      index: 0,
       url: "https://example.com/docs/deep",
       title: "Deep",
       folderId: 1,
     })
+  })
+
+  // A browser tab shares the file strip with the file tabs, so it obeys the
+  // same reopen rule: back at the slot it was closed from, not appended.
+  it("puts a reopened browser tab back at the slot it was closed from", () => {
+    render(
+      <WorkspaceProvider>
+        <BrowserProbe />
+      </WorkspaceProvider>
+    )
+    act(() => screen.getByText("open").click())
+    act(() => screen.getByText("open-bg").click())
+    // Lands right after its opener, i.e. in the middle.
+    act(() => screen.getByText("open-next").click())
+    expect(readTabs().map((t) => t.url)).toEqual([
+      "https://example.com/docs#top",
+      "https://example.com/next",
+      "http://localhost:3000/",
+    ])
+
+    act(() => screen.getByText("close-second").click())
+    expect(readTabs().map((t) => t.url)).toEqual([
+      "https://example.com/docs#top",
+      "http://localhost:3000/",
+    ])
+
+    act(() => screen.getByText("reopen-closed").click())
+    expect(readTabs().map((t) => t.url)).toEqual([
+      "https://example.com/docs#top",
+      "https://example.com/next",
+      "http://localhost:3000/",
+    ])
+  })
+})
+
+describe("reopening a closed file tab", () => {
+  beforeEach(() => {
+    resetClosedTabStackForTests()
+    mockedApi.readFileForEdit.mockReset()
+    mockedApi.gitIsTracked.mockReset()
+    mockedApi.gitIsTracked.mockResolvedValue(false)
+    mockedApi.readFileForEdit.mockImplementation(
+      async (_rootPath: string, ioPath: string) => ({
+        path: ioPath,
+        content: `${ioPath}-v1`,
+        etag: `e-${ioPath}`,
+        mtime_ms: 1,
+        readonly: false,
+        line_ending: "lf",
+      })
+    )
+  })
+
+  function Probe({ onCapture }: { onCapture: (ids: string[]) => void }) {
+    const {
+      openFilePreview,
+      fileTabs,
+      closeFileTab,
+      closeOtherFileTabs,
+      closeAllFileTabs,
+    } = useWorkspaceContext()
+    onCapture(fileTabs.map((tab) => tab.id))
+    // What the reopen shortcut does with the entry it pops: hand the opener
+    // the path AND the slot the tab was closed from.
+    const restoreLast = () => {
+      const closed = popClosedTab()
+      if (closed?.kind !== "file") return
+      void openFilePreview(closed.path, {
+        folderId: closed.folderId ?? undefined,
+        index: closed.index,
+      })
+    }
+    return (
+      <div>
+        <button onClick={() => void openFilePreview("a.ts")}>open-a</button>
+        <button onClick={() => void openFilePreview("b.ts")}>open-b</button>
+        <button onClick={() => void openFilePreview("c.ts")}>open-c</button>
+        <button onClick={() => void openFilePreview("d.ts")}>open-d</button>
+        <button onClick={() => closeFileTab(fileTabId("/repo/b.ts"))}>
+          close-b
+        </button>
+        <button onClick={() => closeOtherFileTabs(fileTabId("/repo/c.ts"))}>
+          close-others-c
+        </button>
+        <button onClick={closeAllFileTabs}>close-all</button>
+        <button onClick={restoreLast}>restore</button>
+        <button onClick={() => void openFilePreview("b.ts", { index: 1 })}>
+          reopen-b
+        </button>
+        <button onClick={() => void openFilePreview("b.ts", { index: 9 })}>
+          reopen-b-far
+        </button>
+        <button onClick={() => void openFilePreview("c.ts", { index: 0 })}>
+          front-c
+        </button>
+      </div>
+    )
+  }
+
+  async function click(label: string) {
+    await act(async () => {
+      screen.getByText(label).click()
+    })
+  }
+
+  function mount() {
+    let ids: string[] = []
+    render(
+      <WorkspaceProvider>
+        <Probe onCapture={(next) => (ids = next)} />
+      </WorkspaceProvider>
+    )
+    return () => ids
+  }
+
+  it("puts the tab back at the slot it was closed from", async () => {
+    const ids = mount()
+    await click("open-a")
+    await click("open-b")
+    await click("open-c")
+    expect(ids()).toEqual([
+      fileTabId("/repo/a.ts"),
+      fileTabId("/repo/b.ts"),
+      fileTabId("/repo/c.ts"),
+    ])
+
+    await click("close-b")
+    expect(ids()).toEqual([fileTabId("/repo/a.ts"), fileTabId("/repo/c.ts")])
+    expect(peekClosedTab()).toMatchObject({
+      kind: "file",
+      path: "/repo/b.ts",
+      index: 1,
+    })
+
+    await click("reopen-b")
+    expect(ids()).toEqual([
+      fileTabId("/repo/a.ts"),
+      fileTabId("/repo/b.ts"),
+      fileTabId("/repo/c.ts"),
+    ])
+
+    // A tab that is already open is activated where it is, never moved.
+    await click("front-c")
+    expect(ids()).toEqual([
+      fileTabId("/repo/a.ts"),
+      fileTabId("/repo/b.ts"),
+      fileTabId("/repo/c.ts"),
+    ])
+  })
+
+  it("clamps the slot to the strip", async () => {
+    const ids = mount()
+    await click("open-a")
+    await click("open-b")
+    await click("open-c")
+    await click("close-b")
+
+    await click("reopen-b-far")
+    expect(ids()).toEqual([
+      fileTabId("/repo/a.ts"),
+      fileTabId("/repo/c.ts"),
+      fileTabId("/repo/b.ts"),
+    ])
+  })
+
+  // "Close others" records every tab against the same strip, but the stack is
+  // popped newest-first — so each entry carries the slot it would have had if
+  // the batch had closed one tab at a time.
+  it("walks a close-others batch back into its original order", async () => {
+    const ids = mount()
+    await click("open-a")
+    await click("open-b")
+    await click("open-c")
+    await click("open-d")
+
+    await click("close-others-c")
+    expect(ids()).toEqual([fileTabId("/repo/c.ts")])
+
+    await click("restore")
+    expect(ids()).toEqual([fileTabId("/repo/c.ts"), fileTabId("/repo/d.ts")])
+    await click("restore")
+    expect(ids()).toEqual([
+      fileTabId("/repo/b.ts"),
+      fileTabId("/repo/c.ts"),
+      fileTabId("/repo/d.ts"),
+    ])
+    await click("restore")
+    expect(ids()).toEqual([
+      fileTabId("/repo/a.ts"),
+      fileTabId("/repo/b.ts"),
+      fileTabId("/repo/c.ts"),
+      fileTabId("/repo/d.ts"),
+    ])
+  })
+
+  it("rebuilds a closed-all strip in its original order", async () => {
+    const ids = mount()
+    await click("open-a")
+    await click("open-b")
+    await click("open-c")
+
+    await click("close-all")
+    expect(ids()).toEqual([])
+
+    await click("restore")
+    await click("restore")
+    await click("restore")
+    expect(ids()).toEqual([
+      fileTabId("/repo/a.ts"),
+      fileTabId("/repo/b.ts"),
+      fileTabId("/repo/c.ts"),
+    ])
   })
 })

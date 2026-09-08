@@ -64,7 +64,7 @@ Codeg（Code Generation）是一個多智慧體編碼工作台：把所有 AI �
       <a href="https://console.lqapi.xyz/sign-up?aff=KPy9" target="_blank"><img src="../images/lq-router.png" alt="LQ router" width="160" /></a><br/>
       <strong><a href="https://console.lqapi.xyz/sign-up?aff=KPy9">LQ router</a></strong>
     </td>
-    <td>感謝 LQ router 中轉站對本專案的贊助！LQ router 是面向獨立開發者與技術團隊的企業級 API 聚合閘道。接入 GPT、Claude、Grok、Gemini 等主流模型，相容現有用戶端與 OpenAI SDK，透過動態帳戶池進行智慧路由，一個入口即可完成多模型呼叫。<a href="https://console.lqapi.xyz/sign-up?aff=KPy9">官網進群贈送 1 美元體驗金</a>。</td>
+    <td>感謝 LQ router 中轉站對本專案的贊助！LQ router 是一家專業的企業級 AI 中轉站，為企業與個人開發者提供穩定、高效、低成本的 AI 模型 API 接入服務。平台支援 GPT、Claude、Grok、Gemini 等主流模型，GPT Pro 倍率低至 0.1。<a href="https://console.lqapi.xyz/sign-up?aff=KPy9">官網進群贈送 1 美元體驗金</a>。</td>
   </tr>
   <tr>
     <td align="center" width="220">
@@ -72,6 +72,17 @@ Codeg（Code Generation）是一個多智慧體編碼工作台：把所有 AI �
       <strong><a href="https://go.apimart.ai/gh-codeg">APIMart</a></strong>
     </td>
     <td>感謝 APIMart 贊助了本專案！APIMart 是專注 AI 圖片／影片生成的低價 API 平台，GPT-Image-2 低至 $0.006／張，1 美元可產出 160+ 張圖。圖片、影片共用一套非同步 API，提交任務拿 ID、以回呼取結果，批次跑上萬張不逾時、換模型不改程式碼。按量計費、無月費，透過<a href="https://go.apimart.ai/gh-codeg">此註冊連結</a>註冊即可開用。</td>
+  </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg" target="_blank"><img src="../images/astraflow.png" alt="UCloud ·星圖AstraFlow" width="120" /></a><br/>
+      <strong><a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg">UCloud ·星图AstraFlow</a></strong>
+    </td>
+    <td>
+      <a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg">UCloud ·星图AstraFlow</a><br/>
+      優刻得星圖 astraflow 大模型，支援 200+ 模型一鍵呼叫：內建 Kimi K3、DeepSeek V4/V3、Qwen 3、GLM5.2、happyhorse 等全球領先開源大模型，無需自行訓練，開箱即用。<br/>
+      透過上面連結以<strong>電子郵件</strong>註冊並完成實名後<a href="https://f.howxm.com/xs/u/HVFW5X8EIYV1">領取 50 元算力金</a>。
+    </td>
   </tr>
 </table>
 

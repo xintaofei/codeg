@@ -870,6 +870,10 @@ pub fn build_router(
             post(handlers::acp::acp_antigravity_login_cancel),
         )
         .route(
+            "/acp_antigravity_sign_out",
+            post(handlers::acp::acp_antigravity_sign_out),
+        )
+        .route(
             "/acp_pi_project_trust_state",
             post(handlers::acp::acp_pi_project_trust_state),
         )
@@ -1658,6 +1662,10 @@ pub fn build_router(
         .route(
             "/terminal_resize",
             post(handlers::terminal::terminal_resize),
+        )
+        .route(
+            "/terminal_snapshot",
+            post(handlers::terminal::terminal_snapshot),
         )
         .route("/terminal_kill", post(handlers::terminal::terminal_kill))
         .route("/terminal_list", post(handlers::terminal::terminal_list))

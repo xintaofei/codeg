@@ -41,6 +41,25 @@ pub struct SystemLanguageSettings {
 #[serde(default)]
 pub struct SystemTerminalSettings {
     pub default_shell: Option<String>,
+    /// Force ANSI color out of the commands an agent runs, so its output
+    /// renders colored in the transcript's terminal card rather than as plain
+    /// text.
+    ///
+    /// Off by default, and deliberately so: the only lever codeg has is the
+    /// AGENT process's env (the agent runs its own bash tool in-process — codeg
+    /// never spawns those commands), which every descendant inherits. What it
+    /// injects there — `CLICOLOR` + `CLICOLOR_FORCE` for the BSD/Go/Rust
+    /// toolchain, `FORCE_COLOR` for the npm one, and a pinned `TERM` for the
+    /// terminfo lookup both need — colors the output codeg renders AND the
+    /// output the agent pipes into `jq`, and the force flags outrank `NO_COLOR`,
+    /// so nothing downstream can opt back out. See
+    /// [`crate::acp::connection::force_command_color_enabled`].
+    ///
+    /// Carried in the terminal settings row rather than a key of its own
+    /// because it is read on the same startup load and written by the same save
+    /// path; `#[serde(default)]` on the struct means rows stored before this
+    /// field existed parse as `false` with no migration.
+    pub colorize_command_output: bool,
 }
 
 /// One row in the "default shell" picker. Backend owns the option list so the

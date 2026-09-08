@@ -64,7 +64,7 @@ Il regroupe les sessions de toutes les CLI d'agents supportées dans un espace d
       <a href="https://console.lqapi.xyz/sign-up?aff=KPy9" target="_blank"><img src="../images/lq-router.png" alt="LQ router" width="160" /></a><br/>
       <strong><a href="https://console.lqapi.xyz/sign-up?aff=KPy9">LQ router</a></strong>
     </td>
-    <td>Merci au service de relais LQ router pour son parrainage de ce projet ! LQ router est une passerelle d'agrégation d'API de niveau entreprise destinée aux développeurs indépendants et aux équipes techniques. Elle donne accès aux principaux modèles, notamment GPT, Claude, Grok et Gemini, reste compatible avec les clients existants et le SDK OpenAI, et s'appuie sur un pool de comptes dynamique pour un routage intelligent : un seul point d'entrée pour tous les appels de modèles. <a href="https://console.lqapi.xyz/sign-up?aff=KPy9">Inscrivez-vous sur le site officiel et recevez 1 USD de crédit d'essai</a>.</td>
+    <td>Merci au service de relais LQ router pour son parrainage de ce projet ! LQ router est un service de relais IA professionnel de niveau entreprise qui offre aux entreprises comme aux développeurs indépendants un accès stable, performant et économique aux API de modèles d'IA. La plateforme prend en charge les principaux modèles, notamment GPT, Claude, Grok et Gemini, avec des coefficients de facturation GPT Pro descendant jusqu'à 0,1×. <a href="https://console.lqapi.xyz/sign-up?aff=KPy9">Rejoignez le groupe depuis le site officiel et recevez 1 USD de crédit d'essai</a>.</td>
   </tr>
   <tr>
     <td align="center" width="220">
@@ -72,6 +72,17 @@ Il regroupe les sessions de toutes les CLI d'agents supportées dans un espace d
       <strong><a href="https://go.apimart.ai/gh-codeg">APIMart</a></strong>
     </td>
     <td>Merci à APIMart pour son parrainage de ce projet ! APIMart est une plateforme d'API à bas prix dédiée à la génération d'images et de vidéos par IA : GPT-Image-2 à partir de 0,006 USD l'image, soit plus de 160 images par dollar. Une seule API asynchrone couvre l'image et la vidéo : soumettez une tâche, récupérez un ID, puis obtenez les résultats par interrogation ou par callback. Traitez des dizaines de milliers d'images par lots sans expiration de délai et changez de modèle sans modifier votre code. Paiement à l'usage, sans abonnement mensuel — <a href="https://go.apimart.ai/gh-codeg">inscrivez-vous ici</a> pour commencer.</td>
+  </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg" target="_blank"><img src="../images/astraflow.png" alt="UCloud ·星图AstraFlow" width="120" /></a><br/>
+      <strong><a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg">UCloud ·星图AstraFlow</a></strong>
+    </td>
+    <td>
+      <a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg">UCloud ·星图AstraFlow</a><br/>
+      AstraFlow, la plateforme de grands modèles d'UCloud, donne accès à plus de 200 modèles en un clic : les meilleurs modèles open source — Kimi K3, DeepSeek V4/V3, Qwen 3, GLM5.2, happyhorse — sont intégrés, sans entraînement de votre part et prêts à l'emploi.<br/>
+      Inscrivez-vous par <strong>e-mail</strong> via le lien ci-dessus, effectuez la vérification d'identité, puis <a href="https://f.howxm.com/xs/u/HVFW5X8EIYV1">recevez 50 ¥ de crédits de calcul</a>.
+    </td>
   </tr>
 </table>
 

@@ -86,12 +86,29 @@ vi.mock("@/components/chat/conversation-context-bar", () => ({
   ConversationFolderBranchPicker: () => null,
   useConversationFolderBranchPickerVisible: () => false,
 }))
+// The platform opener is the DESKTOP arm of the shared opener; this suite runs
+// in web mode, where a system-browser target lands on `window.open` instead.
+const platform = vi.hoisted(() => ({ openUrl: vi.fn(async () => {}) }))
 vi.mock("@/lib/platform", () => ({
   isDesktop: () => false,
   openFileDialog: vi.fn(),
+  openUrl: platform.openUrl,
 }))
 vi.mock("@/lib/transport", () => ({
   getActiveRemoteConnectionId: () => null,
+  isDesktop: () => false,
+  isRemoteDesktopMode: () => false,
+}))
+// A local-file link target routes to the workspace file column, whose provider
+// this suite deliberately renders without.
+vi.mock("@/hooks/use-open-file-target", () => ({
+  useOpenFileTarget: () => async () => {},
+}))
+// The right-click menu refreshes the quick-message list as it opens; keep that
+// off the backend so the menu tests exercise only the menu.
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
+  quickMessagesList: vi.fn(async () => []),
 }))
 // Real classifier only recognizes actual backend NoActiveTurn payloads; the
 // steering tests flip this per-case to drive the enqueue fallback.
@@ -1402,5 +1419,139 @@ describe("MessageInput mid-turn send (live-feedback channel)", () => {
         "check the tests"
       )
     )
+  })
+})
+
+describe("MessageInput right-click token selection", () => {
+  afterEach(() => {
+    cleanup()
+    composerHandle.current = null
+  })
+
+  /**
+   * The custom radix menu only replaces the browser's own where the async
+   * clipboard read exists (a secure context). jsdom has neither, so each mode is
+   * set up here rather than inherited from whatever ran before.
+   */
+  function setClipboardRead(supported: boolean) {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: supported
+        ? { readText: async () => "", writeText: async () => {} }
+        : undefined,
+    })
+  }
+
+  async function mountWithEditor({ clipboardRead = true } = {}) {
+    setClipboardRead(clipboardRead)
+    renderInput({})
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    const editor = composerHandle.current?.getEditor()
+    if (!editor) throw new Error("composer editor not mounted")
+    return editor
+  }
+
+  /** Seed the draft and drop a collapsed caret at `caret`. */
+  function seed(editor: Editor, text: string, caret: number) {
+    act(() => {
+      editor.commands.setContent(text)
+      editor.commands.setTextSelection(caret)
+    })
+  }
+
+  /** The editing surface the right click lands on. jsdom has no layout, so
+   *  hit-testing declines and the caret above is what the menu resolves. */
+  function editingSurface(): HTMLElement {
+    const surface = document.querySelector<HTMLElement>(".ProseMirror")
+    if (!surface) throw new Error("composer editing surface not mounted")
+    return surface
+  }
+
+  function selectedText(editor: Editor): string {
+    const { from, to } = editor.state.selection
+    return editor.state.doc.textBetween(from, to)
+  }
+
+  it("selects the address under the pointer and offers to write to it", async () => {
+    const editor = await mountWithEditor()
+    seed(editor, "ping adam@example.com today", 8)
+
+    fireEvent.contextMenu(editingSurface(), { clientX: 40, clientY: 12 })
+
+    await screen.findByRole("menuitem", { name: "Send email" })
+    expect(selectedText(editor)).toBe("adam@example.com")
+    // Copy is live off the same right click — before this it needed the user to
+    // highlight the address by hand.
+    expect(screen.getByRole("menuitem", { name: "Copy" })).not.toHaveAttribute(
+      "data-disabled"
+    )
+  })
+
+  it("opens a schemeless link through the shared opener", async () => {
+    const editor = await mountWithEditor()
+    seed(editor, "see example.com/docs later", 8)
+
+    fireEvent.contextMenu(editingSurface(), { clientX: 40, clientY: 12 })
+
+    const open = await screen.findByRole("menuitem", { name: "Open link" })
+    expect(selectedText(editor)).toBe("example.com/docs")
+
+    // No built-in browser here (web mode, no capability answer), so the link
+    // decision resolves to the system browser — `window.open` in web mode.
+    const windowOpen = vi.spyOn(window, "open").mockReturnValue(null)
+    try {
+      fireEvent.click(open)
+      await waitFor(() =>
+        expect(windowOpen).toHaveBeenCalledWith(
+          "https://example.com/docs",
+          "_blank",
+          "noreferrer"
+        )
+      )
+    } finally {
+      windowOpen.mockRestore()
+    }
+  })
+
+  it("selects a plain word without inventing an action for it", async () => {
+    const editor = await mountWithEditor()
+    seed(editor, "refactor the parser today", 16)
+
+    fireEvent.contextMenu(editingSurface(), { clientX: 40, clientY: 12 })
+
+    await screen.findByRole("menuitem", { name: "Copy" })
+    expect(selectedText(editor)).toBe("parser")
+    expect(screen.queryByRole("menuitem", { name: "Open link" })).toBeNull()
+    expect(screen.queryByRole("menuitem", { name: "Send email" })).toBeNull()
+  })
+
+  it("leaves a hand-made selection alone and acts on that", async () => {
+    const editor = await mountWithEditor()
+    seed(editor, "ping adam@example.com today", 1)
+    act(() => {
+      editor.commands.setTextSelection({ from: 6, to: 22 })
+    })
+
+    fireEvent.contextMenu(editingSurface(), { clientX: 40, clientY: 12 })
+
+    // A click inside a live selection neither re-selects nor collapses it, and
+    // the address it holds still gets its own row.
+    await screen.findByRole("menuitem", { name: "Send email" })
+    expect(selectedText(editor)).toBe("adam@example.com")
+  })
+
+  it("still picks the token up where the native menu takes over", async () => {
+    const editor = await mountWithEditor({ clipboardRead: false })
+    seed(editor, "ping adam@example.com today", 8)
+
+    fireEvent.contextMenu(editingSurface(), { clientX: 40, clientY: 12 })
+
+    // No custom menu in a non-secure context — the browser's own is left to
+    // appear — but it now opens over a selected address instead of a caret.
+    expect(screen.queryByRole("menuitem", { name: "Copy" })).toBeNull()
+    expect(selectedText(editor)).toBe("adam@example.com")
   })
 })

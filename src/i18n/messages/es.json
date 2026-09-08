@@ -961,6 +961,13 @@
         "failed": "El inicio de sesión no se completó.",
         "startFailed": "No se pudo iniciar el acceso",
         "credentialHint": "El token se guarda aquí. Copia este archivo a otra máquina sin escritorio para dejarla también con la sesión iniciada."
+      },
+      "signOut": {
+        "title": "¿Iniciaste sesión con la cuenta equivocada?",
+        "description": "Antigravity guarda en caché la cuenta de Google con la que inició sesión y la reutiliza en silencio, así que volver a iniciar sesión no llega a otra cuenta. Cerrar sesión descarta la credencial guardada; las sesiones de Antigravity en curso terminan primero, porque de lo contrario volverían a escribir la cuenta anterior.",
+        "action": "Cerrar sesión",
+        "done": "Sesión cerrada. Vuelve a iniciar sesión para elegir otra cuenta.",
+        "failed": "No se pudo cerrar la sesión"
       }
     },
     "deepseek": {
@@ -1601,6 +1608,8 @@
     "terminalShellNotInstalled": "no instalado",
     "terminalShellNotFoundWarning": "Esta ruta no existe en este host.",
     "terminalCurrentShell": "En uso actualmente: {path}",
+    "colorizeCommandOutput": "Colorear la salida de los comandos",
+    "colorizeCommandOutputDescription": "Fuerza el color ANSI en los comandos que ejecutan los agentes, para que su salida se muestre en color en la transcripción en lugar de como texto plano. Se aplica a las sesiones nuevas.",
     "renderingDescription": "Desactiva la aceleración por hardware si la aplicación muestra pantalla negra o fallos de renderizado (común en algunas GPU AMD o Intel integradas en Windows, y con el controlador propietario de NVIDIA en Linux). Solo afecta a las versiones de escritorio de Windows y Linux.",
     "disableHardwareAcceleration": "Desactivar aceleración por hardware",
     "renderingSaveFailed": "No se pudo guardar la configuración de renderizado: {message}",
@@ -2961,6 +2970,9 @@
         "cut": "Cortar",
         "copy": "Copiar",
         "selectAll": "Seleccionar todo",
+        "openLink": "Abrir enlace",
+        "openFile": "Abrir archivo",
+        "sendEmail": "Enviar correo",
         "pasteUnavailable": "No se pudo leer el portapapeles. Pulsa Ctrl/⌘V para pegar.",
         "clipboardWriteFailed": "No se pudo escribir en el portapapeles. Usa el atajo de teclado.",
         "quickMessageUntitled": "Sin título",
@@ -3236,9 +3248,12 @@
         "openInFileManager": "Abrir en el gestor de archivos",
         "copyRelativePath": "Copiar ruta relativa",
         "copyAbsolutePath": "Copiar ruta absoluta",
+        "download": "Descargar archivo",
         "pathCopied": "Ruta copiada",
         "copyPathFailed": "No se pudo copiar la ruta",
-        "openFailed": "Error al abrir el archivo local"
+        "openFailed": "Error al abrir el archivo local",
+        "downloadSaved": "{name} descargado",
+        "downloadFailed": "No se pudo descargar {name}"
       },
       "messageList": {
         "attachedResources": "Recursos adjuntos",
@@ -5088,6 +5103,7 @@
     "phaseRetry": "Reintento",
     "phaseReturn": "Continuación",
     "phaseMerge": "Fusión",
+    "phaseCompact": "Compactación de contexto",
     "titleLabel": "Título",
     "titlePlaceholder": "¿Qué hay que hacer?",
     "promptLabel": "Descripción de la tarea",
@@ -5118,6 +5134,7 @@
     "mergeDeleteWorktree": "Eliminar el worktree tras fusionar",
     "mergeSubmit": "Fusionar",
     "mergeSubmitQueue": "Añadir a la cola",
+    "mergeSubmitting": "Iniciando…",
     "mergeQueuedToast": "Añadida a la cola de fusión: empezará en cuanto termine la fusión actual.",
     "completeTitle": "Completar tarea",
     "completeDescription": "Esta tarea no cambió ningún archivo, así que no hay nada que fusionar: se marca como completada directamente.",
@@ -5139,6 +5156,7 @@
     "settingsMaxConcurrentHint": "0 = sin límite",
     "settingsAutoCompact": "Umbral de compactación automática",
     "settingsAutoCompactHint": "Antes de una ronda de seguimiento, reintento o fusión, compacta la sesión si su ventana de contexto está al menos así de llena. 0 = desactivado.",
+    "compactingNote": "Compactando el contexto de la sesión…",
     "settingsCompactCommand": "Comando de compactación",
     "settingsCompactCommandHint": "Déjalo en blanco para usar lo que ofrezca el agente, o su valor predeterminado conocido.",
     "settingsCompactCommandPlaceholder": "/compact",
@@ -5813,7 +5831,24 @@
     "confirmDeleteCancel": "Cancelar",
     "confirmDeleteConfirm": "Eliminar",
     "canvasActions": "Acciones del lienzo",
-    "mergeIntoNewRegion": "Nueva región"
+    "mergeIntoNewRegion": "Nueva región",
+    "addFileCard": "Tarjeta de archivo",
+    "addTerminalCard": "Tarjeta de terminal",
+    "searchFiles": "Buscar archivos…",
+    "searchFilesIn": "Buscar en {folder}…",
+    "searchingFiles": "Buscando…",
+    "noFiles": "No se encontraron archivos",
+    "noOpenFiles": "No hay archivos abiertos: escribe para buscar",
+    "browseForFile": "Examinar…",
+    "filePreview": "Vista previa",
+    "fileSource": "Código",
+    "reloadFile": "Recargar",
+    "removeFileCard": "Quitar tarjeta de archivo",
+    "restartTerminal": "Reiniciar terminal",
+    "removeTerminalCard": "Quitar tarjeta de terminal",
+    "terminalNoDirectory": "Esta tarjeta no tiene directorio de trabajo",
+    "confirmDeleteTerminals": "Se cerrarán {count} terminal(es) en ejecución y se detendrán sus procesos.",
+    "confirmDeleteNotesAndTerminals": "Se eliminarán permanentemente {notes} nota(s) que escribiste y se detendrán {terminals} terminal(es) en ejecución."
   },
   "Browser": {
     "toolbar": {

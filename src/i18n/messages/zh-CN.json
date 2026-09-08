@@ -961,6 +961,13 @@
         "failed": "登录未完成。",
         "startFailed": "无法开始登录",
         "credentialHint": "令牌缓存在这里。把这个文件复制到其他无桌面机器，那台也就登录好了。"
+      },
+      "signOut": {
+        "title": "登录了错误的账号？",
+        "description": "Antigravity 会缓存登录时使用的 Google 账号并静默复用，所以再次登录也换不到别的账号。退出登录会清除已保存的凭据；正在运行的 Antigravity 会话会先被结束，否则它们会把旧账号写回去。",
+        "action": "退出登录",
+        "done": "已退出登录。重新登录即可选择其他账号。",
+        "failed": "退出登录失败"
       }
     },
     "deepseek": {
@@ -1601,6 +1608,8 @@
     "terminalShellNotInstalled": "未安装",
     "terminalShellNotFoundWarning": "当前主机上不存在此路径。",
     "terminalCurrentShell": "当前使用：{path}",
+    "colorizeCommandOutput": "为命令输出着色",
+    "colorizeCommandOutputDescription": "强制智能体运行的命令输出 ANSI 颜色，使其在会话记录中以彩色而非纯文本呈现。对新建会话生效。",
     "renderingDescription": "如果应用出现黑屏或渲染异常（Windows 上常见于 AMD 显卡或部分 Intel 集成显卡，Linux 上常见于 NVIDIA 闭源驱动），可关闭硬件加速。仅 Windows 与 Linux 桌面端生效。",
     "disableHardwareAcceleration": "禁用硬件加速",
     "renderingSaveFailed": "渲染设置保存失败：{message}",
@@ -2963,6 +2972,9 @@
         "cut": "剪切",
         "copy": "复制",
         "selectAll": "全选",
+        "openLink": "打开链接",
+        "openFile": "打开文件",
+        "sendEmail": "发送邮件",
         "pasteUnavailable": "无法读取剪贴板，请改用 Ctrl/⌘V 粘贴。",
         "clipboardWriteFailed": "无法写入剪贴板，请改用键盘快捷键。",
         "quickMessageUntitled": "未命名",
@@ -3236,9 +3248,12 @@
         "openInFileManager": "在文件管理器打开",
         "copyRelativePath": "复制相对路径",
         "copyAbsolutePath": "复制绝对路径",
+        "download": "下载文件",
         "pathCopied": "已复制路径",
         "copyPathFailed": "复制路径失败",
-        "openFailed": "打开本地文件失败"
+        "openFailed": "打开本地文件失败",
+        "downloadSaved": "已下载 {name}",
+        "downloadFailed": "下载 {name} 失败"
       },
       "messageList": {
         "attachedResources": "附加资源",
@@ -5088,6 +5103,7 @@
     "phaseRetry": "重试执行",
     "phaseReturn": "继续处理",
     "phaseMerge": "合并变更",
+    "phaseCompact": "压缩上下文",
     "titleLabel": "标题",
     "titlePlaceholder": "要做什么？",
     "promptLabel": "任务描述",
@@ -5118,6 +5134,7 @@
     "mergeDeleteWorktree": "合并后删除 worktree",
     "mergeSubmit": "合并",
     "mergeSubmitQueue": "加入合并队列",
+    "mergeSubmitting": "启动中…",
     "mergeQueuedToast": "已加入合并队列，等当前合并完成后自动开始。",
     "completeTitle": "完成任务",
     "completeDescription": "该任务没有改动任何文件，无需合并，将直接标记为已完成。",
@@ -5139,6 +5156,7 @@
     "settingsMaxConcurrentHint": "0 表示不限制",
     "settingsAutoCompact": "自动压缩上下文阈值",
     "settingsAutoCompactHint": "继续处理、重试或合并前，若会话上下文占用达到该比例，先压缩再发送任务消息。0 表示关闭。",
+    "compactingNote": "正在压缩会话上下文…",
     "settingsCompactCommand": "压缩命令",
     "settingsCompactCommandHint": "留空则按智能体自身提供的命令（或已知默认值）自动选择。",
     "settingsCompactCommandPlaceholder": "/compact",
@@ -5813,7 +5831,24 @@
     "confirmDeleteCancel": "取消",
     "confirmDeleteConfirm": "删除",
     "canvasActions": "画布操作",
-    "mergeIntoNewRegion": "新建区域"
+    "mergeIntoNewRegion": "新建区域",
+    "addFileCard": "文件卡片",
+    "addTerminalCard": "终端卡片",
+    "searchFiles": "搜索文件…",
+    "searchFilesIn": "在 {folder} 中搜索…",
+    "searchingFiles": "搜索中…",
+    "noFiles": "未找到文件",
+    "noOpenFiles": "没有已打开的文件——输入以搜索",
+    "browseForFile": "浏览…",
+    "filePreview": "预览",
+    "fileSource": "源码",
+    "reloadFile": "重新加载",
+    "removeFileCard": "移除文件卡片",
+    "restartTerminal": "重启终端",
+    "removeTerminalCard": "移除终端卡片",
+    "terminalNoDirectory": "这张卡片没有工作目录",
+    "confirmDeleteTerminals": "{count} 个正在运行的终端会被关闭，其中的进程也会一并结束。",
+    "confirmDeleteNotesAndTerminals": "你写下的 {notes} 条便签将被永久删除，另有 {terminals} 个正在运行的终端会被结束。"
   },
   "Browser": {
     "toolbar": {

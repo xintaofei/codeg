@@ -5,6 +5,7 @@ import {
   Cpu,
   FolderCog,
   Loader2,
+  Palette,
   RefreshCw,
   SquareTerminal,
 } from "lucide-react"
@@ -101,6 +102,19 @@ export function GeneralSettings() {
   )
   const [customShellPath, setCustomShellPath] = useState<string>("")
   const [customPathExists, setCustomPathExists] = useState<boolean | null>(null)
+  // The last persisted `default_shell`, kept verbatim. Both terminal settings
+  // share one stored row, so saving the color toggle has to send the shell
+  // back unchanged — and `selectedShellId`/`customShellPath` can't reconstruct
+  // it (the custom row is cleared until the user presses Save).
+  //
+  // Tri-state, and the third state carries weight: `undefined` means the load
+  // never landed, which is NOT the same as `null` ("use the system shell").
+  // Sending `null` for an unknown shell would persist "system" over whatever
+  // the user had chosen, so the color toggle stays inert until this is known.
+  const [storedDefaultShell, setStoredDefaultShell] = useState<
+    string | null | undefined
+  >(undefined)
+  const [colorizeCommandOutput, setColorizeCommandOutput] = useState(false)
 
   const [disableHwAccel, setDisableHwAccel] = useState(false)
   const [savingRendering, setSavingRendering] = useState(false)
@@ -126,6 +140,8 @@ export function GeneralSettings() {
         ])
 
       setAvailableShells(terminalShells)
+      setStoredDefaultShell(terminalSettings.default_shell)
+      setColorizeCommandOutput(terminalSettings.colorize_command_output)
       const initialId = resolveSelectedShellId(
         terminalSettings.default_shell,
         terminalShells.options
@@ -173,7 +189,16 @@ export function GeneralSettings() {
       try {
         const result = await updateSystemTerminalSettings({
           default_shell: defaultShell,
+          // Sent back unchanged — the save replaces the whole stored row, so
+          // omitting it would silently reset the color opt-in.
+          colorize_command_output: colorizeCommandOutput,
         })
+        // Record the persisted shell BEFORE anything else that can throw. The
+        // row is already written at this point, so every later failure in this
+        // block is cosmetic — except leaving this stale, which would have the
+        // color toggle send the superseded shell back and undo the save that
+        // just succeeded.
+        setStoredDefaultShell(result.default_shell)
         // Re-fetch options to refresh `exists` flags (e.g. user just installed
         // pwsh, or backend filter dropped a cross-platform stale value).
         const refreshedShells = await getAvailableTerminalShells()
@@ -201,7 +226,37 @@ export function GeneralSettings() {
         setSavingTerminal(false)
       }
     },
-    [t]
+    [colorizeCommandOutput, t]
+  )
+
+  // Persist the command-color opt-in, sending the current shell back
+  // unchanged. Reverts the switch on failure so it never shows a state the
+  // backend rejected.
+  const persistColorizeCommandOutput = useCallback(
+    async (next: boolean, prev: boolean) => {
+      // The switch is disabled in this state; the guard is here too because a
+      // save that guessed at `default_shell` would overwrite a setting the
+      // user never touched, and that is not something to leave to one prop.
+      if (storedDefaultShell === undefined) {
+        setColorizeCommandOutput(prev)
+        return
+      }
+      setSavingTerminal(true)
+      try {
+        const result = await updateSystemTerminalSettings({
+          default_shell: storedDefaultShell,
+          colorize_command_output: next,
+        })
+        setColorizeCommandOutput(result.colorize_command_output)
+      } catch (err) {
+        setColorizeCommandOutput(prev)
+        const message = toErrorMessage(err)
+        toast.error(t("terminalSaveFailed", { message }))
+      } finally {
+        setSavingTerminal(false)
+      }
+    },
+    [storedDefaultShell, t]
   )
 
   const onShellSelectChange = useCallback(
@@ -369,6 +424,32 @@ export function GeneralSettings() {
             </SettingCard>
           )}
         </SettingsSection>
+
+        {/* Titled by the option rather than by "Color": the switch forces color
+            ON for every command an agent runs, so the heading has to say what
+            it does, not which category it files under. */}
+        <SettingsSection
+          icon={Palette}
+          title={t("colorizeCommandOutput")}
+          description={t("colorizeCommandOutputDescription")}
+          htmlFor="colorize-command-output"
+          control={
+            <Switch
+              id="colorize-command-output"
+              checked={colorizeCommandOutput}
+              // Inert until the persisted row has been read: the save replaces
+              // the whole row, so toggling on a failed load would write the
+              // shell field back as "system" and silently drop the user's
+              // choice. The shell picker above is gated the same way.
+              disabled={savingTerminal || storedDefaultShell === undefined}
+              onCheckedChange={(next) => {
+                const prev = colorizeCommandOutput
+                setColorizeCommandOutput(next)
+                void persistColorizeCommandOutput(next, prev)
+              }}
+            />
+          }
+        />
 
         {renderingSectionVisible && (
           // Titled by the option, not by the category it belongs to: the switch

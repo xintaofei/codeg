@@ -67,6 +67,17 @@
 //! so even a compromised upstream cannot redirect codeg off the loopback. The
 //! request also bypasses any configured proxy: a loopback address must never
 //! leave the machine.
+//!
+//! # Signing out
+//!
+//! Signing in is only half an account: once a credential exists the agent
+//! refreshes it silently and `authenticate` returns without opening anything,
+//! so the sign-in above can never reach a second Google account. [`sign_out`]
+//! is the other half, and it drives the agent's own ACP `logout` for the same
+//! reason [`start`] drives its `authenticate` — where the credential lives
+//! (a macOS login-keychain item, or a file under `GEMINI_HOME`) is decided by
+//! rules inside the agent, so deleting it from here would be codeg guessing at
+//! someone else's storage layout.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -114,14 +125,22 @@ const AUTHENTICATE_WAIT: Duration = Duration::from_secs(180);
 /// answers with a static page, so anything slower is a wedged agent.
 const REDIRECT_WAIT: Duration = Duration::from_secs(20);
 
+/// How long to wait for `logout` to answer. Everything it does is local — drop
+/// a keychain item or unlink a file, then rewrite `settings.json` — so the only
+/// part that can take real time is the agent reaching it.
+const LOGOUT_WAIT: Duration = Duration::from_secs(60);
+
 /// After this a pending sign-in is stale: the agent's own
 /// `_LOGIN_TIMEOUT_SECONDS` has expired, the one-shot listener is closed, and
 /// delivering a redirect would only fail with "connection refused".
 const PENDING_TTL: Duration = Duration::from_secs(300);
 
-/// JSON-RPC ids for the two requests this module ever sends.
+/// JSON-RPC ids for the three requests this module ever sends. `authenticate`
+/// and `logout` never share a child, so their ids only have to differ from
+/// `initialize`'s.
 const ID_INITIALIZE: i64 = 1;
 const ID_AUTHENTICATE: i64 = 2;
+const ID_LOGOUT: i64 = 3;
 
 /// What the panel needs to render step one of the sign-in.
 ///
@@ -260,6 +279,16 @@ fn pending_slot() -> &'static Mutex<Slot> {
 /// credential, and letting a second agent start now is the one overlap that can
 /// leave the wrong account signed in.
 async fn claim_slot() -> Result<u64, AcpError> {
+    claim_slot_as(SlotState::Starting).await
+}
+
+/// [`claim_slot`], parking the slot in `next` instead of [`SlotState::Starting`].
+///
+/// A sign-out needs the exclusive state from the instant it is granted: unlike
+/// a `start`, whose unlocked stretch only produces a link, it is already on its
+/// way to erasing the credential. Installing that state here rather than in a
+/// second lock acquisition is what keeps a `start` from slipping in between.
+async fn claim_slot_as(next: SlotState) -> Result<u64, AcpError> {
     let mut slot = pending_slot().lock().await;
     if let SlotState::Finishing { until } = slot.state {
         if Instant::now() < until {
@@ -272,7 +301,7 @@ async fn claim_slot() -> Result<u64, AcpError> {
         // disconnected and the future was dropped), so the slot is ours.
     }
     slot.generation += 1;
-    let displaced = match std::mem::replace(&mut slot.state, SlotState::Starting) {
+    let displaced = match std::mem::replace(&mut slot.state, next) {
         SlotState::Waiting(pending) => Some(pending),
         _ => None,
     };
@@ -361,12 +390,11 @@ async fn start_claimed(
     method_id: &str,
     generation: u64,
 ) -> Result<AntigravityLoginStart, AcpError> {
-    let binary = resolve_binary()?;
-    let mut env = crate::acp::connection::antigravity_launch_env(runtime_env);
+    let mut sign_in_env = Vec::new();
     // Without this the agent's `print` of the authorization URL sits in
     // CPython's block buffer for a piped stdout and never reaches us — see the
     // module docs. It is the whole reason this flow can see the link at all.
-    env.push(("PYTHONUNBUFFERED".to_string(), "1".to_string()));
+    sign_in_env.push(("PYTHONUNBUFFERED".to_string(), "1".to_string()));
     // Point `webbrowser` at a no-op so it cannot do something worse than
     // nothing. On a server with a TEXT browser installed (`lynx`, `w3m`,
     // `links`) CPython picks a `GenericBrowser` and **`wait()`s on it**, so the
@@ -374,79 +402,22 @@ async fn start_claimed(
     // value is not an option: the spawn layer reads that as "remove the
     // variable" and the search runs anyway.
     if let Some(noop) = noop_browser() {
-        env.push(("BROWSER".to_string(), noop));
+        sign_in_env.push(("BROWSER".to_string(), noop));
     }
 
-    let mut command = crate::process::tokio_command(&binary);
-    command
-        .args(antigravity_launch_args())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // Backstop for every path that drops a `Pending` without going through
-        // `kill()`. Dropping a tokio `Child` detaches by default, and a
-        // detached agent here is not merely a stray process: it holds a
-        // loopback listener open for the rest of its 300 s wait, so the port
-        // and the attempt both linger with nothing able to reach them.
-        .kill_on_drop(true);
-    for (key, value) in &env {
-        // Mirrors the spawn layer's convention (vendored sacp-tokio): an empty
-        // value means "do not let the child inherit this one".
-        if value.is_empty() {
-            command.env_remove(key);
-        } else {
-            command.env(key, value);
-        }
-    }
-
-    let mut child = crate::process::spawn_retrying_exec_busy(|| command.spawn())
-        .await
-        .map_err(|e| AcpError::SpawnFailed(e.to_string()))?;
-
-    let mut stdin = child.stdin.take().ok_or_else(|| {
-        AcpError::SpawnFailed("the Antigravity sign-in process has no stdin".to_string())
-    })?;
-    let stdout = child.stdout.take().ok_or_else(|| {
-        AcpError::SpawnFailed("the Antigravity sign-in process has no stdout".to_string())
-    })?;
-    let stderr = child.stderr.take().ok_or_else(|| {
-        AcpError::SpawnFailed("the Antigravity sign-in process has no stderr".to_string())
-    })?;
-
-    let (response_tx, mut responses) = mpsc::unbounded_channel::<serde_json::Value>();
-    let (url_tx, mut url_rx) = oneshot::channel::<String>();
-    tokio::spawn(read_agent_stdout(stdout, response_tx, url_tx));
-
-    // Redacted on write and bounded, so it is safe to put in an error message.
-    let tail = Arc::new(StderrTail::new());
-    tokio::spawn({
-        let tail = Arc::clone(&tail);
-        async move {
-            let reader = BufReader::new(stderr);
-            crate::process::collect_lines_lossy(reader, |line| tail.push(line)).await;
-        }
-    });
+    let AgentChild {
+        mut child,
+        mut stdin,
+        mut responses,
+        url: mut url_rx,
+        stderr: tail,
+    } = spawn_agent(runtime_env, sign_in_env).await?;
 
     // `initialize` first, and its answer awaited before `authenticate` goes
     // out. Not just protocol politeness: it keeps the URL `print` — which the
     // agent emits during `authenticate`, onto the same fd as the JSON-RPC
     // frames — from racing a response codeg still has to parse.
-    let init = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": ID_INITIALIZE,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": 1,
-            "clientCapabilities": { "fs": { "readTextFile": false, "writeTextFile": false } },
-            "clientInfo": { "name": "codeg", "version": env!("CARGO_PKG_VERSION") },
-        },
-    });
-    write_frame(&mut stdin, &init).await?;
-    await_response(&mut responses, ID_INITIALIZE, INITIALIZE_WAIT, &tail)
-        .await
-        .map_err(|reason| {
-            AcpError::protocol(format!("Antigravity did not accept `initialize`: {reason}"))
-        })?;
+    initialize(&mut stdin, &mut responses, &tail).await?;
 
     let authenticate = serde_json::json!({
         "jsonrpc": "2.0",
@@ -571,6 +542,126 @@ async fn start_claimed(
         method_id: method_id.to_string(),
         expires_in_secs: PENDING_TTL.as_secs(),
     })
+}
+
+/// A short-lived Antigravity process driven over raw JSON-RPC, with its three
+/// streams already split apart.
+struct AgentChild {
+    child: tokio::process::Child,
+    /// Must stay open for the child's whole life: the ACP server reads stdin
+    /// EOF as "the client is gone" and shuts down — which would abort whatever
+    /// request is in flight.
+    stdin: tokio::process::ChildStdin,
+    responses: mpsc::UnboundedReceiver<serde_json::Value>,
+    /// Resolves with the authorization URL the agent prints during an OAuth
+    /// `authenticate`. Nothing else it does produces one.
+    url: oneshot::Receiver<String>,
+    stderr: Arc<StderrTail>,
+}
+
+/// Spawn the installed Antigravity binary with a launch-identical environment.
+///
+/// Shared by the two flows that reach the agent outside a session, and the
+/// environment is why: `GEMINI_HOME` decides WHICH credential store the child
+/// touches and `AGY_ACP_FORCE_FILE_STORAGE` decides whether that store is a
+/// file or the macOS keychain. A child built any other way would faithfully
+/// sign the user in — or out — of something no session ever reads.
+///
+/// `extra_env` is layered on top afterwards, so a caller can add the variables
+/// only its own flow needs.
+async fn spawn_agent(
+    runtime_env: &BTreeMap<String, String>,
+    extra_env: Vec<(String, String)>,
+) -> Result<AgentChild, AcpError> {
+    let binary = resolve_binary()?;
+    let mut env = crate::acp::connection::antigravity_launch_env(runtime_env);
+    env.extend(extra_env);
+
+    let mut command = crate::process::tokio_command(&binary);
+    command
+        .args(antigravity_launch_args())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // Backstop for every path that drops a child without going through
+        // `kill()`. Dropping a tokio `Child` detaches by default, and a
+        // detached agent here is not merely a stray process: mid-sign-in it
+        // holds a loopback listener open for the rest of its 300 s wait, so
+        // the port and the attempt both linger with nothing able to reach them.
+        .kill_on_drop(true);
+    for (key, value) in &env {
+        // Mirrors the spawn layer's convention (vendored sacp-tokio): an empty
+        // value means "do not let the child inherit this one".
+        if value.is_empty() {
+            command.env_remove(key);
+        } else {
+            command.env(key, value);
+        }
+    }
+
+    let mut child = crate::process::spawn_retrying_exec_busy(|| command.spawn())
+        .await
+        .map_err(|e| AcpError::SpawnFailed(e.to_string()))?;
+
+    let stdin = child.stdin.take().ok_or_else(|| {
+        AcpError::SpawnFailed("the Antigravity process has no stdin".to_string())
+    })?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        AcpError::SpawnFailed("the Antigravity process has no stdout".to_string())
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        AcpError::SpawnFailed("the Antigravity process has no stderr".to_string())
+    })?;
+
+    let (response_tx, responses) = mpsc::unbounded_channel::<serde_json::Value>();
+    let (url_tx, url) = oneshot::channel::<String>();
+    tokio::spawn(read_agent_stdout(stdout, response_tx, url_tx));
+
+    // Redacted on write and bounded, so it is safe to put in an error message.
+    let tail = Arc::new(StderrTail::new());
+    tokio::spawn({
+        let tail = Arc::clone(&tail);
+        async move {
+            let reader = BufReader::new(stderr);
+            crate::process::collect_lines_lossy(reader, |line| tail.push(line)).await;
+        }
+    });
+
+    Ok(AgentChild {
+        child,
+        stdin,
+        responses,
+        url,
+        stderr: tail,
+    })
+}
+
+/// Send `initialize` and hand back the agent's answer.
+///
+/// Takes the three streams rather than the whole [`AgentChild`] because both
+/// callers destructure it on the way in — a sign-in has to hold `url` and
+/// `child` across the same await.
+async fn initialize(
+    stdin: &mut tokio::process::ChildStdin,
+    responses: &mut mpsc::UnboundedReceiver<serde_json::Value>,
+    stderr: &StderrTail,
+) -> Result<serde_json::Value, AcpError> {
+    let init = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": ID_INITIALIZE,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": 1,
+            "clientCapabilities": { "fs": { "readTextFile": false, "writeTextFile": false } },
+            "clientInfo": { "name": "codeg", "version": env!("CARGO_PKG_VERSION") },
+        },
+    });
+    write_frame(stdin, &init).await?;
+    await_response(responses, ID_INITIALIZE, INITIALIZE_WAIT, stderr)
+        .await
+        .map_err(|reason| {
+            AcpError::protocol(format!("Antigravity did not accept `initialize`: {reason}"))
+        })
 }
 
 /// The first thing the agent does after `authenticate` that codeg can act on.
@@ -723,7 +814,7 @@ async fn finish_delivering(target: String, pending: Pending) -> AntigravityLogin
     let _ = child.kill().await;
 
     match outcome {
-        Ok(()) => {
+        Ok(_) => {
             tracing::info!("[ACP][Antigravity] browser-free sign-in succeeded for {method_id}");
             AntigravityLoginOutcome {
                 signed_in: true,
@@ -794,6 +885,108 @@ pub async fn cancel(handle: &str) -> Result<(), AcpError> {
     };
     abandoned.kill().await;
     Ok(())
+}
+
+/// Ceiling on how long a sign-out may hold the slot exclusively.
+///
+/// Its own two waits bound the work, and the slack covers the code around them.
+/// It exists for the same reason [`FINISH_BUDGET`] does: in server mode a
+/// client disconnect drops the handler future mid-`await`, and an exclusive
+/// state nothing ever clears would refuse every later sign-in for the life of
+/// the process.
+const SIGN_OUT_BUDGET: Duration =
+    Duration::from_secs(INITIALIZE_WAIT.as_secs() + LOGOUT_WAIT.as_secs() + 30);
+
+/// Discard the credential Antigravity is holding, so the next sign-in can reach
+/// a different Google account.
+///
+/// This is what makes [`start`] usable more than once. The agent refreshes a
+/// cached token silently, so a second `authenticate` for an account that is
+/// already signed in returns immediately and prints no link — the panel can
+/// only report `already_signed_in`, and the first account a user picks is the
+/// last one they ever get. Nothing the user can reasonably reach fixes that
+/// either: the credential is a login-keychain item on macOS and a file under
+/// `GEMINI_HOME` elsewhere, so it outlives uninstalling the Antigravity CLI and
+/// reinstalling codeg.
+///
+/// Driven through the agent's own ACP `logout` rather than by deleting the
+/// store from here. Which backend holds the credential is decided inside the
+/// agent (`credential_store.py::create_default_store` probes for a usable
+/// keychain and falls back to the file), and its `clear` deliberately wipes
+/// BOTH so an older plaintext token cannot survive — rules codeg would have to
+/// copy, and re-copy whenever they change.
+///
+/// `logout` also removes `auth.type` from the server's `settings.json`, which
+/// is codeg's business: a session whose `auth.type` is missing fails outright
+/// with `Authentication required`. The caller puts the saved method back (see
+/// `acp_antigravity_sign_out_core`).
+pub async fn sign_out(runtime_env: &BTreeMap<String, String>) -> Result<(), AcpError> {
+    // Exclusive from the instant it is granted, unlike a `start`: this call is
+    // already on its way to erasing the credential, and a sign-in overlapping
+    // it would race the same store. Any published attempt is displaced and
+    // reaped — the user asking to sign out has abandoned the link on screen.
+    let generation = claim_slot_as(SlotState::Finishing {
+        until: Instant::now() + SIGN_OUT_BUDGET,
+    })
+    .await?;
+    let outcome = sign_out_claimed(runtime_env).await;
+    release_finishing(generation).await;
+    outcome
+}
+
+/// [`sign_out`] with the slot already held.
+async fn sign_out_claimed(runtime_env: &BTreeMap<String, String>) -> Result<(), AcpError> {
+    let mut agent = spawn_agent(runtime_env, Vec::new()).await?;
+    let outcome = request_logout(&mut agent).await;
+    // Reaped once here rather than on each early return inside: unlike a
+    // sign-in, `logout` opens no listener and holds no port, so the only thing
+    // a failure leaves behind is the process.
+    let _ = agent.child.kill().await;
+    match &outcome {
+        Ok(()) => tracing::info!("[ACP][Antigravity] signed out; the stored credential is gone"),
+        Err(e) => tracing::warn!("[ACP][Antigravity] sign-out failed: {e}"),
+    }
+    outcome
+}
+
+/// Handshake, check the capability, ask the agent to sign out.
+async fn request_logout(agent: &mut AgentChild) -> Result<(), AcpError> {
+    let handshake = initialize(&mut agent.stdin, &mut agent.responses, &agent.stderr).await?;
+    if !advertises_logout(&handshake) {
+        return Err(AcpError::protocol(
+            "this version of Google Antigravity cannot sign out. Update it in Agent Settings, \
+             or delete its stored credential yourself.",
+        ));
+    }
+
+    let logout = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": ID_LOGOUT,
+        "method": "logout",
+        "params": {},
+    });
+    write_frame(&mut agent.stdin, &logout).await?;
+    await_response(
+        &mut agent.responses,
+        ID_LOGOUT,
+        LOGOUT_WAIT,
+        &agent.stderr,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|reason| AcpError::protocol(format!("Antigravity refused to sign out: {reason}")))
+}
+
+/// Whether the agent's `initialize` answer offers the ACP `logout` method.
+///
+/// Checked rather than assumed because the protocol says to — the agent's own
+/// comment beside the capability reads "Clients MUST NOT call `logout` unless
+/// this is advertised" — and because the alternative is a bare `-32601` where
+/// the actionable answer is "your Antigravity is too old to sign out".
+fn advertises_logout(handshake: &serde_json::Value) -> bool {
+    handshake
+        .pointer("/result/agentCapabilities/auth/logout")
+        .is_some_and(|value| !value.is_null())
 }
 
 /// The bits of a pasted redirect codeg is willing to act on.
@@ -928,16 +1121,20 @@ async fn deliver_redirect(target: &str) -> Result<(), String> {
     }
 }
 
-/// Wait for the JSON-RPC response with `id`, translating it into ok-or-why-not.
+/// Wait for the JSON-RPC response with `id`, translating it into
+/// the-message-or-why-not.
 ///
 /// Anything that is not that response is dropped: the only other traffic on
-/// this connection is notifications the sign-in has no use for.
+/// this connection is notifications these flows have no use for. `Ok` carries
+/// the whole message rather than `()` because `initialize`'s answer is where
+/// the agent's capabilities are, and a sign-out has to read one before it may
+/// ask for it.
 async fn await_response(
     responses: &mut mpsc::UnboundedReceiver<serde_json::Value>,
     id: i64,
     wait: Duration,
     stderr: &StderrTail,
-) -> Result<(), String> {
+) -> Result<serde_json::Value, String> {
     let deadline = tokio::time::Instant::now() + wait;
     loop {
         let message = match tokio::time::timeout_at(deadline, responses.recv()).await {
@@ -962,7 +1159,7 @@ async fn await_response(
         }
         return match error_message(&message) {
             Some(reason) => Err(reason),
-            None => Ok(()),
+            None => Ok(message),
         };
     }
 }
@@ -1366,6 +1563,67 @@ mod tests {
             pending_slot().lock().await.state,
             SlotState::Idle
         ));
+
+        // A sign-out takes the same exclusive state, and takes it in ONE lock
+        // acquisition. It is about to erase the credential from the moment it
+        // is granted, so unlike a `start` there is no window in which another
+        // agent may be put on the same store — and any link already on screen
+        // belongs to a sign-in the user has just abandoned, so it is displaced
+        // and its child reaped.
+        let before_sign_out = claim_slot().await.expect("idle again");
+        let (p3, out3) = fake_pending("h3").await;
+        assert!(install(before_sign_out, p3).await.is_ok());
+        let sign_out = claim_slot_as(SlotState::Finishing {
+            until: Instant::now() + SIGN_OUT_BUDGET,
+        })
+        .await
+        .expect("a published attempt is displaceable by a sign-out");
+        assert_reaped(out3, "the attempt a sign-out displaced").await;
+        assert!(
+            claim_slot().await.is_err(),
+            "a sign-in during a sign-out must be refused"
+        );
+        release_finishing(sign_out).await;
+        assert!(matches!(
+            pending_slot().lock().await.state,
+            SlotState::Idle
+        ));
+    }
+
+    /// The protocol requires the check ("Clients MUST NOT call `logout` unless
+    /// this is advertised"), and without it an Antigravity too old to sign out
+    /// answers `-32601` instead of saying so.
+    #[test]
+    fn reads_the_logout_capability_out_of_the_handshake() {
+        let advertised = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "protocolVersion": 1,
+                "agentCapabilities": { "loadSession": true, "auth": { "logout": {} } },
+            },
+        });
+        assert!(advertises_logout(&advertised));
+
+        // An older build: same handshake, no `auth` block at all.
+        let older = serde_json::json!({
+            "id": 1,
+            "result": { "agentCapabilities": { "loadSession": true } },
+        });
+        assert!(!advertises_logout(&older));
+        // An `auth` block that offers other things but not this one.
+        let no_logout = serde_json::json!({
+            "id": 1,
+            "result": { "agentCapabilities": { "auth": {} } },
+        });
+        assert!(!advertises_logout(&no_logout));
+        // Present-but-null is the same as absent: `pointer` finds a value
+        // either way, so the emptiness has to be tested separately.
+        let nulled = serde_json::json!({
+            "id": 1,
+            "result": { "agentCapabilities": { "auth": { "logout": null } } },
+        });
+        assert!(!advertises_logout(&nulled));
     }
 
     #[test]

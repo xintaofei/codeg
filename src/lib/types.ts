@@ -724,12 +724,14 @@ export type CanvasNodeKind =
   | "conversation"
   | "custom"
   | "note"
+  | "file"
+  | "terminal"
 
 /** One element on the conversation canvas. Mirrors the Rust `CanvasNode`:
  *  a binding region (folder / folder group / agent / single conversation), a
- *  hand-curated `custom` region, or a sticky `note`. `folder_id` /
- *  `folder_group_id` / `conversation_id` are soft references — a binding whose
- *  target is gone renders as unresolved. */
+ *  hand-curated `custom` region, a sticky `note`, a read-only `file` card or a
+ *  `terminal`. `folder_id` / `folder_group_id` / `conversation_id` / `path` are
+ *  soft references — a binding whose target is gone renders as unresolved. */
 export interface CanvasNode {
   id: number
   kind: CanvasNodeKind
@@ -742,6 +744,9 @@ export interface CanvasNode {
   member_ids: number[]
   title: string | null
   content: string | null
+  /** kind=file: the document's absolute path. kind=terminal: the working
+   *  directory its shell runs in. `null` for every other kind. */
+  path: string | null
   color: string | null
   collapsed: boolean
   /**
@@ -1654,8 +1659,14 @@ export interface WorkTask {
   source_key?: string | null
   /** Source snapshot (url, title, numbers …); shape mirrors ForgeSourceMeta. */
   source_meta?: ForgeSourceMeta | null
-  /** Latest agent_progress milestone — present on live (running/awaiting/merging) rows only. */
+  /** Latest agent_progress milestone OF THIS GENERATION — present on live
+   *  (preparing/running/awaiting/merging) rows only. Scoped by run_seq, so a
+   *  merge in flight never narrates the work round it is landing. */
   latest_progress?: string | null
+  /** This generation is parked on its pre-prompt context compaction: the agent
+   *  is working, but on shrinking the session rather than on the task. The one
+   *  thing that explains a card sitting in 准备中 / 合并中 for minutes. */
+  compacting?: boolean
   created_at: string
   updated_at: string
   started_at: string | null
@@ -3677,6 +3688,15 @@ export interface SystemLanguageSettings {
 
 export interface SystemTerminalSettings {
   default_shell: string | null
+  /**
+   * Force ANSI color out of agent-run commands (`CLICOLOR=1`,
+   * `CLICOLOR_FORCE=1`, `FORCE_COLOR=1` and `TERM=xterm-256color` on the agent
+   * process) so their output renders colored in the transcript's terminal card.
+   * Off by default: those are inherited by every command the agent runs, the
+   * force flags outrank `NO_COLOR`, and so they break machine parsing of things
+   * like `gh … --json`.
+   */
+  colorize_command_output: boolean
 }
 
 export interface TerminalShellOption {
@@ -4278,6 +4298,20 @@ export interface TerminalInfo {
 export interface TerminalEvent {
   terminal_id: string
   data: string
+  /** Cumulative chunk counter, this chunk included. A viewer that subscribes
+   *  before asking for a `TerminalSnapshot` uses it to drop the events the
+   *  snapshot already contains (`seq <= snapshot.seq`). Absent on the exit
+   *  event, which carries no output. */
+  seq?: number
+}
+
+/** Recent output of a live terminal plus the cursor it was read at. `alive`
+ *  false means no such terminal is running — the caller should spawn one
+ *  rather than attach. */
+export interface TerminalSnapshot {
+  alive: boolean
+  data: string
+  seq: number
 }
 
 export interface TokenBreakdown {

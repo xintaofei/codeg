@@ -76,10 +76,18 @@ pub struct WorkTaskInfo {
     /// Source snapshot (URL, title, account id …), parsed from the row's JSON.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_meta: Option<serde_json::Value>,
-    /// Latest `agent_progress` milestone (filled by `list` for live tasks only
-    /// — the card's realtime progress line).
+    /// Latest `agent_progress` milestone OF THIS GENERATION (filled by `list`
+    /// for live tasks only — the card's realtime progress line). Scoped by
+    /// `run_seq`: a retry, a follow-up and a merge each start a new one, and
+    /// the previous round's last milestone is not this round's news.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_progress: Option<String>,
+    /// This generation is parked on its pre-prompt context compaction — the
+    /// agent is working, but on shrinking the session rather than on the task.
+    /// Filled by `list` alongside `latest_progress`, and the only thing that
+    /// explains a card sitting in `preparing`/`merging` for minutes.
+    #[serde(default)]
+    pub compacting: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,

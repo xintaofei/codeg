@@ -961,6 +961,13 @@
         "failed": "로그인이 완료되지 않았습니다.",
         "startFailed": "로그인을 시작할 수 없습니다",
         "credentialHint": "토큰이 여기에 캐시됩니다. 이 파일을 데스크톱이 없는 다른 컴퓨터로 복사하면 그쪽도 로그인됩니다."
+      },
+      "signOut": {
+        "title": "잘못된 계정으로 로그인했나요?",
+        "description": "Antigravity는 로그인한 Google 계정을 캐시해 조용히 재사용하므로, 다시 로그인해도 다른 계정으로 바뀌지 않습니다. 로그아웃하면 저장된 자격 증명이 지워집니다. 실행 중인 Antigravity 세션은 먼저 종료됩니다. 그대로 두면 이전 계정을 다시 기록하기 때문입니다.",
+        "action": "로그아웃",
+        "done": "로그아웃했습니다. 다시 로그인하면 다른 계정을 선택할 수 있습니다.",
+        "failed": "로그아웃하지 못했습니다"
       }
     },
     "deepseek": {
@@ -1601,6 +1608,8 @@
     "terminalShellNotInstalled": "설치되지 않음",
     "terminalShellNotFoundWarning": "이 경로는 현재 호스트에 존재하지 않습니다.",
     "terminalCurrentShell": "현재 사용 중: {path}",
+    "colorizeCommandOutput": "명령 출력에 색 입히기",
+    "colorizeCommandOutputDescription": "에이전트가 실행하는 명령에 ANSI 색상을 강제해, 그 출력이 대화 기록에서 일반 텍스트가 아닌 컬러로 표시되게 합니다. 새 세션부터 적용됩니다.",
     "renderingDescription": "앱이 검은 화면이 되거나 렌더링 문제가 발생하면(Windows에서는 일부 AMD GPU 또는 Intel 내장 GPU, Linux에서는 NVIDIA 독점 드라이버에서 보고됨) 하드웨어 가속을 끄세요. Windows 및 Linux 데스크톱에서만 적용됩니다.",
     "disableHardwareAcceleration": "하드웨어 가속 비활성화",
     "renderingSaveFailed": "렌더링 설정 저장 실패: {message}",
@@ -2961,6 +2970,9 @@
         "cut": "잘라내기",
         "copy": "복사",
         "selectAll": "모두 선택",
+        "openLink": "링크 열기",
+        "openFile": "파일 열기",
+        "sendEmail": "메일 보내기",
         "pasteUnavailable": "클립보드를 읽을 수 없습니다. Ctrl/⌘V로 붙여넣으세요.",
         "clipboardWriteFailed": "클립보드에 쓸 수 없습니다. 키보드 단축키를 사용하세요.",
         "quickMessageUntitled": "제목 없음",
@@ -3236,9 +3248,12 @@
         "openInFileManager": "파일 관리자에서 열기",
         "copyRelativePath": "상대 경로 복사",
         "copyAbsolutePath": "절대 경로 복사",
+        "download": "파일 다운로드",
         "pathCopied": "경로가 복사되었습니다",
         "copyPathFailed": "경로 복사에 실패했습니다",
-        "openFailed": "로컬 파일 열기 실패"
+        "openFailed": "로컬 파일 열기 실패",
+        "downloadSaved": "{name} 다운로드 완료",
+        "downloadFailed": "{name} 다운로드 실패"
       },
       "messageList": {
         "attachedResources": "첨부된 리소스",
@@ -5088,6 +5103,7 @@
     "phaseRetry": "다시 실행",
     "phaseReturn": "이어서 요청",
     "phaseMerge": "병합",
+    "phaseCompact": "컨텍스트 압축",
     "titleLabel": "제목",
     "titlePlaceholder": "무엇을 해야 하나요?",
     "promptLabel": "작업 설명",
@@ -5118,6 +5134,7 @@
     "mergeDeleteWorktree": "병합 후 worktree 삭제",
     "mergeSubmit": "병합",
     "mergeSubmitQueue": "병합 대기열에 추가",
+    "mergeSubmitting": "시작 중…",
     "mergeQueuedToast": "병합 대기열에 추가했습니다. 현재 병합이 끝나는 대로 시작합니다.",
     "completeTitle": "작업 완료",
     "completeDescription": "이 작업은 파일을 변경하지 않아 병합할 것이 없습니다. 그대로 완료로 표시합니다.",
@@ -5139,6 +5156,7 @@
     "settingsMaxConcurrentHint": "0 = 무제한",
     "settingsAutoCompact": "자동 압축 임계값",
     "settingsAutoCompactHint": "후속 작업·재시도·병합 전에 컨텍스트 사용률이 이 값 이상이면 세션을 먼저 압축합니다. 0이면 사용 안 함.",
+    "compactingNote": "세션 컨텍스트를 압축하는 중…",
     "settingsCompactCommand": "압축 명령",
     "settingsCompactCommandHint": "비워 두면 에이전트가 제공하는 명령(또는 알려진 기본값)을 자동으로 사용합니다.",
     "settingsCompactCommandPlaceholder": "/compact",
@@ -5813,7 +5831,24 @@
     "confirmDeleteCancel": "취소",
     "confirmDeleteConfirm": "삭제",
     "canvasActions": "캔버스 작업",
-    "mergeIntoNewRegion": "새 영역"
+    "mergeIntoNewRegion": "새 영역",
+    "addFileCard": "파일 카드",
+    "addTerminalCard": "터미널 카드",
+    "searchFiles": "파일 검색…",
+    "searchFilesIn": "{folder}에서 검색…",
+    "searchingFiles": "검색 중…",
+    "noFiles": "파일을 찾을 수 없습니다",
+    "noOpenFiles": "열린 파일이 없습니다 — 입력해서 검색하세요",
+    "browseForFile": "찾아보기…",
+    "filePreview": "미리보기",
+    "fileSource": "소스",
+    "reloadFile": "다시 불러오기",
+    "removeFileCard": "파일 카드 제거",
+    "restartTerminal": "터미널 다시 시작",
+    "removeTerminalCard": "터미널 카드 제거",
+    "terminalNoDirectory": "이 카드에는 작업 디렉터리가 없습니다",
+    "confirmDeleteTerminals": "실행 중인 터미널 {count}개가 닫히고 해당 프로세스도 종료됩니다.",
+    "confirmDeleteNotesAndTerminals": "직접 작성한 메모 {notes}개가 영구 삭제되고, 실행 중인 터미널 {terminals}개도 종료됩니다."
   },
   "Browser": {
     "toolbar": {

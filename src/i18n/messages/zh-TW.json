@@ -961,6 +961,13 @@
         "failed": "登入未完成。",
         "startFailed": "無法開始登入",
         "credentialHint": "權杖快取在這裡。把這個檔案複製到其他無桌面機器，那台也就登入好了。"
+      },
+      "signOut": {
+        "title": "登入了錯誤的帳號？",
+        "description": "Antigravity 會快取登入時使用的 Google 帳號並靜默重複使用，所以再次登入也換不到別的帳號。登出會清除已儲存的憑證；正在執行的 Antigravity 工作階段會先被結束，否則它們會把舊帳號寫回去。",
+        "action": "登出",
+        "done": "已登出。重新登入即可選擇其他帳號。",
+        "failed": "登出失敗"
       }
     },
     "deepseek": {
@@ -1601,6 +1608,8 @@
     "terminalShellNotInstalled": "未安裝",
     "terminalShellNotFoundWarning": "目前主機上不存在此路徑。",
     "terminalCurrentShell": "目前使用：{path}",
+    "colorizeCommandOutput": "為命令輸出著色",
+    "colorizeCommandOutputDescription": "強制智慧代理執行的命令輸出 ANSI 色彩，使其在對話記錄中以彩色而非純文字呈現。對新建工作階段生效。",
     "renderingDescription": "若應用出現黑屏或渲染異常（Windows 上常見於 AMD 顯示卡或部分 Intel 內顯，Linux 上常見於 NVIDIA 閉源驅動），可關閉硬體加速。僅 Windows 與 Linux 桌面端生效。",
     "disableHardwareAcceleration": "停用硬體加速",
     "renderingSaveFailed": "渲染設定儲存失敗：{message}",
@@ -2961,6 +2970,9 @@
         "cut": "剪下",
         "copy": "複製",
         "selectAll": "全選",
+        "openLink": "開啟連結",
+        "openFile": "開啟檔案",
+        "sendEmail": "傳送郵件",
         "pasteUnavailable": "無法讀取剪貼簿，請改用 Ctrl/⌘V 貼上。",
         "clipboardWriteFailed": "無法寫入剪貼簿，請改用鍵盤快速鍵。",
         "quickMessageUntitled": "未命名",
@@ -3236,9 +3248,12 @@
         "openInFileManager": "在檔案管理器開啟",
         "copyRelativePath": "複製相對路徑",
         "copyAbsolutePath": "複製絕對路徑",
+        "download": "下載檔案",
         "pathCopied": "已複製路徑",
         "copyPathFailed": "複製路徑失敗",
-        "openFailed": "開啟本地檔案失敗"
+        "openFailed": "開啟本地檔案失敗",
+        "downloadSaved": "已下載 {name}",
+        "downloadFailed": "下載 {name} 失敗"
       },
       "messageList": {
         "attachedResources": "附加資源",
@@ -5088,6 +5103,7 @@
     "phaseRetry": "重試執行",
     "phaseReturn": "繼續處理",
     "phaseMerge": "合併變更",
+    "phaseCompact": "壓縮脈絡",
     "titleLabel": "標題",
     "titlePlaceholder": "要做什麼？",
     "promptLabel": "任務描述",
@@ -5118,6 +5134,7 @@
     "mergeDeleteWorktree": "合併後刪除 worktree",
     "mergeSubmit": "合併",
     "mergeSubmitQueue": "加入合併佇列",
+    "mergeSubmitting": "啟動中…",
     "mergeQueuedToast": "已加入合併佇列，等目前的合併完成後自動開始。",
     "completeTitle": "完成任務",
     "completeDescription": "此任務沒有變更任何檔案，無須合併，將直接標記為已完成。",
@@ -5139,6 +5156,7 @@
     "settingsMaxConcurrentHint": "0 表示不限制",
     "settingsAutoCompact": "自動壓縮上下文閾值",
     "settingsAutoCompactHint": "繼續處理、重試或合併前，若工作階段上下文佔用達到該比例，先壓縮再傳送任務訊息。0 表示關閉。",
+    "compactingNote": "正在壓縮工作階段脈絡…",
     "settingsCompactCommand": "壓縮指令",
     "settingsCompactCommandHint": "留空則依代理自身提供的指令（或已知預設值）自動選擇。",
     "settingsCompactCommandPlaceholder": "/compact",
@@ -5813,7 +5831,24 @@
     "confirmDeleteCancel": "取消",
     "confirmDeleteConfirm": "刪除",
     "canvasActions": "畫布操作",
-    "mergeIntoNewRegion": "新增區域"
+    "mergeIntoNewRegion": "新增區域",
+    "addFileCard": "檔案卡片",
+    "addTerminalCard": "終端機卡片",
+    "searchFiles": "搜尋檔案…",
+    "searchFilesIn": "在 {folder} 中搜尋…",
+    "searchingFiles": "搜尋中…",
+    "noFiles": "找不到檔案",
+    "noOpenFiles": "沒有已開啟的檔案——輸入以搜尋",
+    "browseForFile": "瀏覽…",
+    "filePreview": "預覽",
+    "fileSource": "原始碼",
+    "reloadFile": "重新載入",
+    "removeFileCard": "移除檔案卡片",
+    "restartTerminal": "重新啟動終端機",
+    "removeTerminalCard": "移除終端機卡片",
+    "terminalNoDirectory": "這張卡片沒有工作目錄",
+    "confirmDeleteTerminals": "{count} 個執行中的終端機會被關閉，其中的處理程序也會一併結束。",
+    "confirmDeleteNotesAndTerminals": "你寫下的 {notes} 則便條將被永久刪除，另有 {terminals} 個執行中的終端機會被結束。"
   },
   "Browser": {
     "toolbar": {

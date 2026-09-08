@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use sea_orm::{ActiveModelTrait, EntityTrait, IntoActiveModel, Set};
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{oneshot, Mutex, Notify};
 use tokio::time::MissedTickBehavior;
 
 use crate::acp::manager::ConnectionManager;
@@ -1048,7 +1048,7 @@ impl TaskEngine {
             // while a slow setup is still unwinding, and failing the row by its
             // *current* sequence would kill the fresh run instead.
             let launched_seq = LaunchSeq::default();
-            let result = engine.launch(task_id, mode, &launched_seq).await;
+            let result = engine.launch(task_id, mode, &launched_seq, None).await;
             let errored = result.is_err();
             if let Err(e) = result {
                 tracing::info!("[work_task] launch {task_id}: {e}");
@@ -1083,11 +1083,18 @@ impl TaskEngine {
 
     // ── launch ──────────────────────────────────────────────────────────────
 
+    /// `dispatched` is fired once the generation is LIVE — the agent answered,
+    /// the conversation is bound and the row carries both coordinates — which
+    /// is the point a caller that only wanted to start the run can stop
+    /// waiting. Everything after it (the pre-prompt compaction turn, the
+    /// prompt itself) belongs to the run, not to the click that asked for it.
+    /// See [`DispatchSignal`]; `None` for the launches nobody awaits.
     async fn launch(
         self: &Arc<Self>,
         task_id: i32,
         mode: LaunchMode,
         launched_seq: &LaunchSeq,
+        dispatched: Option<&DispatchSignal>,
     ) -> Result<(), String> {
         let lock = self.task_lock(task_id).await;
         let _guard = lock.lock().await;
@@ -1315,6 +1322,61 @@ impl TaskEngine {
             id
         };
         emit_conversation_upsert(&self.emitter, &self.db.conn, conversation_id).await;
+
+        // Publish the run's live coordinates NOW, while the status stays what
+        // it was (`preparing`, or `merging` for a merge round).
+        //
+        // A resumed launch may spend minutes on the pre-prompt compaction just
+        // below, and until this write the row named the previous generation's
+        // dead connection or nothing at all — so every surface that streams a
+        // task's session (the board's 查看会话 drawer above all) showed the
+        // LAST round's finished transcript while this one's agent was visibly
+        // working. Only for a resume: a fresh session cannot compact, reaches
+        // `mark_running` in the next breath, and would only gain a row pointing
+        // at a conversation its own failure path may still cancel.
+        //
+        // Losing the CAS means a cancel or a newer generation got here first,
+        // and the rest of this launch is that generation's to skip — unwound
+        // exactly like the `mark_running` loss below.
+        if resumed {
+            let bound = if matches!(mode, LaunchMode::Merge { .. }) {
+                work_task_service::mark_merging_live(
+                    &self.db.conn,
+                    task_id,
+                    run_seq,
+                    conversation_id,
+                    &conn_id,
+                )
+                .await
+            } else {
+                work_task_service::mark_preparing_live(
+                    &self.db.conn,
+                    task_id,
+                    run_seq,
+                    conversation_id,
+                    &conn_id,
+                )
+                .await
+            };
+            match bound {
+                Ok(true) => self.emit_upsert(task_id),
+                Ok(false) => {
+                    let _ = self.manager.disconnect(&conn_id).await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    let _ = self.manager.disconnect(&conn_id).await;
+                    return Err(e.to_string());
+                }
+            }
+        }
+
+        // The generation is live: whoever was only waiting for the dispatch to
+        // START (the merge click) is released here, before the compaction turn
+        // that would otherwise hold their dialog open for its whole duration.
+        if let Some(dispatched) = dispatched {
+            dispatched.fire(Ok(()));
+        }
 
         // A resumed session carries every earlier round's context. Give the
         // folder's threshold (when set) a chance to shrink it BEFORE this
@@ -1974,6 +2036,12 @@ impl TaskEngine {
     /// turn, and the alternative (indexing it) trades a rare stall for a
     /// systematic mis-settle of every task that compacts.
     ///
+    /// Out of `index` is NOT out of sight, though. The launch publishes the
+    /// run's connection on the row before calling this (see `mark_preparing_live`
+    /// / `mark_merging_live`), and this records a `started` timeline entry once
+    /// the turn is away, so a wait that can run for minutes is watchable rather
+    /// than a card that has apparently stopped.
+    ///
     /// Never fails the launch. A compaction that could not be measured, has no
     /// command to run, or ends badly records itself on the timeline and lets
     /// the round proceed: an over-full context makes the next prompt likely to
@@ -2003,6 +2071,7 @@ impl TaskEngine {
             // result the user needs an explanation for.
             self.record_compact_event(
                 task_id,
+                run_seq,
                 serde_json::json!({
                     "status": "skipped",
                     "reason": "usage_unknown",
@@ -2027,6 +2096,7 @@ impl TaskEngine {
         ) else {
             self.record_compact_event(
                 task_id,
+                run_seq,
                 serde_json::json!({
                     "status": "skipped",
                     "reason": "no_command",
@@ -2082,6 +2152,7 @@ impl TaskEngine {
             self.release_compact_slot(task_id, run_seq).await;
             self.record_compact_event(
                 task_id,
+                run_seq,
                 serde_json::json!({
                     "status": "failed",
                     "command": command,
@@ -2093,6 +2164,25 @@ impl TaskEngine {
             .await;
             return;
         }
+        // The turn is away and the wait below is unbounded, so this is the only
+        // thing that can explain the gap while it runs: a round that sits for
+        // minutes between its dispatch and its prompt is otherwise a timeline
+        // with nothing in it, and a compaction that never returns leaves no
+        // trace at all. Recorded AFTER the send so it never claims a turn that
+        // was refused, and paired with the outcome event below.
+        self.record_compact_event(
+            task_id,
+            run_seq,
+            serde_json::json!({
+                "status": "started",
+                "command": command,
+                "threshold_percent": threshold,
+                "before_percent": round1(before.percent),
+                "before_source": before.source,
+            }),
+        )
+        .await;
+        self.emit_upsert(task_id);
 
         let outcome = self.await_compaction_turn(&mut rx, conn_id).await;
         self.release_compact_slot(task_id, run_seq).await;
@@ -2125,7 +2215,7 @@ impl TaskEngine {
                 map.insert("detail".into(), detail.into());
             }
         }
-        self.record_compact_event(task_id, payload).await;
+        self.record_compact_event(task_id, run_seq, payload).await;
     }
 
     /// Wait out the compaction turn on `conn_id`.
@@ -2329,7 +2419,22 @@ impl TaskEngine {
         }
     }
 
-    async fn record_compact_event(&self, task_id: i32, payload: serde_json::Value) {
+    /// Record one step of a compaction on the timeline, stamped with the
+    /// generation it belongs to.
+    ///
+    /// The stamp is load-bearing, not decoration: the board decides "this card
+    /// is compacting right now" from the LAST `context_compact` of the current
+    /// generation being a `started` with no outcome after it, and an unstamped
+    /// event from an earlier round would answer for a round that has moved on.
+    async fn record_compact_event(
+        &self,
+        task_id: i32,
+        run_seq: i32,
+        mut payload: serde_json::Value,
+    ) {
+        if let Some(map) = payload.as_object_mut() {
+            map.insert("run_seq".into(), run_seq.into());
+        }
         let _ = work_task_service::record_event(
             &self.db.conn,
             task_id,
@@ -2929,7 +3034,11 @@ impl TaskEngine {
             task_id,
             "agent_progress",
             "agent",
-            Some(serde_json::json!({ "message": message })),
+            // Stamped with the generation that reported it: the card's progress
+            // line is a claim about what the run is doing NOW, and a merge (or
+            // a retry, or a follow-up) that inherited the previous round's last
+            // milestone was narrating work it is not doing.
+            Some(serde_json::json!({ "message": message, "run_seq": run_seq })),
         )
         .await
         {
@@ -3368,6 +3477,14 @@ impl TaskEngine {
     /// review column is one pass of clicks instead of a wait per landing. An
     /// unattended dispatch never queues — the sweep runs its own train.
     ///
+    /// Returns as soon as the generation is LIVE — the CAS committed and the
+    /// agent answered — not when the merge lands, and not when the round's
+    /// prompt goes in either: a resumed session may compact first, and that
+    /// turn is the run's own work (see [`Self::spawn_merge_launch`]). So the
+    /// errors this reports are the ones a caller can act on — a refusal that
+    /// left the task untouched, or a dispatch that could not get an agent up —
+    /// while anything after that reaches the user on the card.
+    ///
     /// `claim` is set only when the pump is spending a merge the user queued
     /// earlier; it binds every write here to that exact parked intent (see
     /// [`QueuedMergeClaim`]). A click passes `None` and always wins.
@@ -3531,7 +3648,7 @@ impl TaskEngine {
         // dispatch to that exact generation, so waiting out the lock behind an
         // attempt that failed (and bannered the row) misses instead of
         // redispatching — the auto path's no-retry latch depends on this.
-        let result = match work_task_service::begin_merge(
+        let began = work_task_service::begin_merge(
             &self.db.conn,
             task_id,
             &state,
@@ -3539,8 +3656,13 @@ impl TaskEngine {
             auto,
             claim.map(|c| c.raw.as_str()),
         )
-        .await
-        {
+        .await;
+        // The folder lock covered what it is for: validating the base state and
+        // committing the CAS as one step. The row now reads `merging`, which is
+        // what makes the next dispatch queue, and the launch below wants the
+        // TASK lock — which `remove_worktree_locked` takes before this one.
+        drop(_guard);
+        let result = match began {
             Err(e) => Err(e.to_string()),
             Ok(None) => Err(match claim {
                 Some(_) => missed_queue_cas(claim),
@@ -3548,13 +3670,12 @@ impl TaskEngine {
             }),
             Ok(Some(_run_seq)) => {
                 self.emit_upsert(task_id);
-                // A merge generation never transitions out of `merging` here,
-                // so the sequence sink stays unused — the failure is handled by
-                // the match below (residue cleanup + back to review).
-                let merge_seq = LaunchSeq::default();
-                match self
-                    .launch(
+                // The claim goes with it: from here the launch owns this
+                // generation, and it is the only thing that releases it.
+                return self
+                    .spawn_merge_launch(
                         task_id,
+                        task.folder_id,
                         LaunchMode::Merge {
                             root_path: root.path.clone(),
                             base_branch: base_branch.clone(),
@@ -3563,22 +3684,79 @@ impl TaskEngine {
                             message,
                             instructions,
                         },
-                        &merge_seq,
+                        in_flight,
                     )
-                    .await
-                {
-                    Ok(()) => Ok(MergeDispatch::Dispatched),
-                    Err(e) => {
-                        self.back_to_review(task_id, format!("merge dispatch failed: {e}"), None)
-                            .await;
-                        Err(e)
-                    }
-                }
+                    .await;
             }
         };
+        // Only a dispatch that never spent the CAS gets here, so the claim is
+        // still this call's to give back.
         self.release_in_flight(task_id, in_flight).await;
         self.emit_upsert(task_id);
         result
+    }
+
+    /// Run a merge generation's launch off-thread and wait only for it to
+    /// become LIVE (see [`Self::launch`]'s `dispatched`).
+    ///
+    /// The caller is a click on the merge dialog's button, and everything past
+    /// the live agent — the pre-prompt context compaction above all, which is
+    /// deliberately unbounded in time — is the run's own work, reported on the
+    /// card through `task://changed` like every other round. Awaiting it here
+    /// is what used to hold that dialog open, spinner and all, for the whole
+    /// compaction of a full context window.
+    ///
+    /// Inherits the in-flight claim: it must outlive the WHOLE launch (it is
+    /// what keeps `recover_merging` off a generation that is still setting up),
+    /// so releasing it at dispatch would hand a compacting merge to the very
+    /// recovery pass this registry exists to hold back.
+    ///
+    /// A launch that fails before going live is reported to the caller AND
+    /// settled here, so the two never disagree about a merge that never ran.
+    async fn spawn_merge_launch(
+        self: &Arc<Self>,
+        task_id: i32,
+        folder_id: i32,
+        mode: LaunchMode,
+        in_flight: u64,
+    ) -> Result<MergeDispatch, String> {
+        let (dispatched, live) = DispatchSignal::new();
+        let engine = self.clone();
+        tokio::spawn(async move {
+            // A merge generation never transitions out of `merging` here, so
+            // the sequence sink stays unused — a failure goes back to review
+            // through `back_to_review` below.
+            let merge_seq = LaunchSeq::default();
+            let result = engine
+                .launch(task_id, mode, &merge_seq, Some(&dispatched))
+                .await;
+            if let Err(e) = &result {
+                engine
+                    .back_to_review(task_id, format!("merge dispatch failed: {e}"), None)
+                    .await;
+            }
+            // Settle first, THEN release, and only then let the caller go: a
+            // dispatch that returns an error has to leave a task nothing is
+            // holding — otherwise the click's next act (re-merging, say) races
+            // this generation's own teardown.
+            engine.release_in_flight(task_id, in_flight).await;
+            // Whatever happened, the caller stops waiting: `fire` is a no-op
+            // once the launch has already reported itself live, so a failure
+            // AFTER the dispatch (the round's own prompt refused, say) is left
+            // to the card rather than replayed into a dialog that has closed.
+            dispatched.fire(result.clone());
+            engine.emit_upsert(task_id);
+            if result.is_err() {
+                // The folder's merge slot never really got spent — let the next
+                // queued landing (or the auto-merge train) have it.
+                engine.spawn_merge_pump(folder_id);
+            }
+        });
+        // A sender dropped without firing means the launch returned early
+        // without dispatching (a cancel gate, a lost CAS): the row is still
+        // `merging` and nobody failed it, exactly as before this ran off-thread
+        // — `recover_merging` settles it from git truth on the next tick.
+        live.await.unwrap_or(Ok(())).map(|()| MergeDispatch::Dispatched)
     }
 
     /// Settle a finished merge generation from git truth: landed ⟺ the base
@@ -4978,8 +5156,9 @@ impl TaskEngine {
 
     // ── auto-merge (unattended landing) ─────────────────────────────────────
 
-    /// Fire-and-forget [`Self::merge_pump`] — a dispatch holds the folder's git
-    /// lock for the whole launch, which must not stall the engine's event loop.
+    /// Fire-and-forget [`Self::merge_pump`] — a dispatch takes the folder's git
+    /// lock to validate and commit its CAS, and waits on the agent coming up
+    /// after that, neither of which may stall the engine's event loop.
     fn spawn_merge_pump(self: &Arc<Self>, folder_id: i32) {
         let engine = self.clone();
         tokio::spawn(async move {
@@ -6607,6 +6786,32 @@ impl LaunchSeq {
 
     fn get(&self) -> Option<i32> {
         *self.0.lock().expect("launch seq mutex")
+    }
+}
+
+/// One-shot "this generation is live" report from a launch to whoever asked
+/// for it — today the merge click, which must not sit on the rest of the run.
+///
+/// Fire-once by construction, and callable from either side of the launch: the
+/// launch itself fires `Ok` the moment the agent is up and the row carries its
+/// coordinates, while the task that drives it fires the launch's error for
+/// every way of failing before that point. Whichever comes first wins; the
+/// other is a no-op, so a failure AFTER a successful dispatch stays on the card
+/// instead of being reported to a caller that has already been told the merge
+/// started.
+struct DispatchSignal(std::sync::Mutex<Option<oneshot::Sender<Result<(), String>>>>);
+
+impl DispatchSignal {
+    fn new() -> (Self, oneshot::Receiver<Result<(), String>>) {
+        let (tx, rx) = oneshot::channel();
+        (Self(std::sync::Mutex::new(Some(tx))), rx)
+    }
+
+    fn fire(&self, result: Result<(), String>) {
+        let sender = self.0.lock().expect("dispatch signal mutex").take();
+        if let Some(sender) = sender {
+            let _ = sender.send(result);
+        }
     }
 }
 
@@ -11638,6 +11843,70 @@ mod tests {
         assert_eq!(row(&f.engine, f.task_id).await.status, WorkTaskStatus::Review);
     }
 
+    /// The merge dispatch runs its launch off-thread so the click is not held
+    /// for the run (a resumed session may compact first — an unbounded turn).
+    /// What must NOT change with it: a launch that never gets an agent up still
+    /// reports its reason to the caller, and leaves the row settled and unowned
+    /// by the time it does. Anything less and the dialog would close on a merge
+    /// that silently never started.
+    #[tokio::test]
+    async fn a_merge_whose_launch_never_goes_live_still_reports_and_settles() {
+        let f = delivery_fixture(FakeForge::default()).await;
+        // Neither the task nor its folder names an agent, so the launch fails
+        // where every launch checks first — before any connection exists.
+        let err = f
+            .engine
+            .merge_task(f.task_id, None, false, None, false)
+            .await
+            .expect_err("a launch that cannot start must not read as dispatched");
+        assert!(err.contains("no agent configured"), "{err}");
+
+        let task = row(&f.engine, f.task_id).await;
+        assert_eq!(task.status, WorkTaskStatus::Review, "settled before we returned");
+        assert!(
+            task.last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("merge dispatch failed"),
+            "{:?}",
+            task.last_error
+        );
+        assert!(
+            f.engine.merging.lock().await.is_empty(),
+            "the generation must own nothing once its failure is reported"
+        );
+    }
+
+    /// Fire-once, from either side. The launch reports itself live; the task
+    /// driving it reports every way of failing before that point. A second
+    /// report — a launch that fails AFTER going live — must not overwrite the
+    /// first, or a dispatch the user was told succeeded would come back as an
+    /// error into a dialog that has already closed.
+    #[tokio::test]
+    async fn the_dispatch_signal_reports_exactly_once() {
+        let (signal, live) = DispatchSignal::new();
+        signal.fire(Ok(()));
+        signal.fire(Err("the round's prompt was refused".to_string()));
+        assert_eq!(live.await.expect("sender fired"), Ok(()));
+
+        // …and the other way round: nothing went live, so the failure is what
+        // the caller gets.
+        let (signal, live) = DispatchSignal::new();
+        signal.fire(Err("no agent configured".to_string()));
+        signal.fire(Ok(()));
+        assert_eq!(
+            live.await.expect("sender fired"),
+            Err("no agent configured".to_string())
+        );
+
+        // A sender dropped without firing is the launch returning early without
+        // dispatching (a cancel gate, a lost CAS) — the caller has to notice
+        // rather than hang.
+        let (signal, live) = DispatchSignal::new();
+        drop(signal);
+        assert!(live.await.is_err());
+    }
+
     /// Recovery of an interrupted push-back settles on ONE piece of evidence:
     /// the pull request's head IS the commit this delivery was pushing.
     #[tokio::test]
@@ -11851,11 +12120,17 @@ mod tests {
 
         assert_eq!(sent.as_deref(), Some("/compact"));
         let events = compact_events(&f.engine, f.task_id).await;
-        assert_eq!(events.len(), 1, "{events:?}");
-        assert_eq!(events[0]["status"], "ok");
+        // A pair: the turn is announced when it goes out (the wait after it is
+        // unbounded, and a card with nothing on its timeline is how a compaction
+        // that never returns used to look) and again when it lands.
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0]["status"], "started");
         assert_eq!(events[0]["before_percent"], 90.0);
-        assert_eq!(events[0]["before_source"], "live");
         assert_eq!(events[0]["command"], "/compact");
+        assert_eq!(events[1]["status"], "ok");
+        assert_eq!(events[1]["before_percent"], 90.0);
+        assert_eq!(events[1]["before_source"], "live");
+        assert_eq!(events[1]["command"], "/compact");
         // The slot the canceller reaches through must not outlive the turn.
         assert!(f.engine.compacting.lock().await.is_empty());
     }
@@ -11925,7 +12200,8 @@ mod tests {
 
         assert_eq!(sent.as_deref(), Some("/compact"));
         let events = compact_events(&f.engine, f.task_id).await;
-        assert_eq!(events[0]["status"], "canceled");
+        assert_eq!(events[0]["status"], "started");
+        assert_eq!(events[1]["status"], "canceled");
         assert!(f.engine.compacting.lock().await.is_empty());
     }
 

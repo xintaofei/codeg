@@ -961,6 +961,13 @@
         "failed": "サインインが完了しませんでした。",
         "startFailed": "サインインを開始できませんでした",
         "credentialHint": "トークンはここにキャッシュされます。このファイルを別のデスクトップなしマシンにコピーすれば、そちらもサインイン済みになります。"
+      },
+      "signOut": {
+        "title": "間違ったアカウントでサインインしましたか？",
+        "description": "Antigravity はサインインした Google アカウントをキャッシュして黙って再利用するため、再度サインインしても別のアカウントには切り替わりません。サインアウトすると保存された認証情報が破棄されます。実行中の Antigravity セッションは先に終了します。そのままだと古いアカウントが書き戻されるためです。",
+        "action": "サインアウト",
+        "done": "サインアウトしました。サインインし直すと別のアカウントを選べます。",
+        "failed": "サインアウトできませんでした"
       }
     },
     "deepseek": {
@@ -1601,6 +1608,8 @@
     "terminalShellNotInstalled": "未インストール",
     "terminalShellNotFoundWarning": "このパスはホスト上に存在しません。",
     "terminalCurrentShell": "現在使用中: {path}",
+    "colorizeCommandOutput": "コマンド出力に色を付ける",
+    "colorizeCommandOutputDescription": "エージェントが実行するコマンドに ANSI カラーを強制し、その出力をトランスクリプト上でプレーンテキストではなくカラーで表示します。新しいセッションから有効になります。",
     "renderingDescription": "アプリで黒画面や描画不具合が発生する場合（Windows では一部の AMD GPU や Intel 内蔵 GPU、Linux では NVIDIA プロプライエタリドライバーで報告あり）、ハードウェアアクセラレーションを無効化してください。Windows と Linux のデスクトップ版のみ有効です。",
     "disableHardwareAcceleration": "ハードウェアアクセラレーションを無効化",
     "renderingSaveFailed": "レンダリング設定の保存に失敗しました: {message}",
@@ -2961,6 +2970,9 @@
         "cut": "切り取り",
         "copy": "コピー",
         "selectAll": "すべて選択",
+        "openLink": "リンクを開く",
+        "openFile": "ファイルを開く",
+        "sendEmail": "メールを送信",
         "pasteUnavailable": "クリップボードを読み取れませんでした。Ctrl/⌘V で貼り付けてください。",
         "clipboardWriteFailed": "クリップボードに書き込めませんでした。キーボードショートカットをご利用ください。",
         "quickMessageUntitled": "無題",
@@ -3236,9 +3248,12 @@
         "openInFileManager": "ファイルマネージャーで開く",
         "copyRelativePath": "相対パスをコピー",
         "copyAbsolutePath": "絶対パスをコピー",
+        "download": "ファイルをダウンロード",
         "pathCopied": "パスをコピーしました",
         "copyPathFailed": "パスのコピーに失敗しました",
-        "openFailed": "ローカルファイルを開けませんでした"
+        "openFailed": "ローカルファイルを開けませんでした",
+        "downloadSaved": "{name} をダウンロードしました",
+        "downloadFailed": "{name} のダウンロードに失敗しました"
       },
       "messageList": {
         "attachedResources": "添付リソース",
@@ -5088,6 +5103,7 @@
     "phaseRetry": "再実行",
     "phaseReturn": "追加指示",
     "phaseMerge": "マージ",
+    "phaseCompact": "コンテキスト圧縮",
     "titleLabel": "タイトル",
     "titlePlaceholder": "何をしますか？",
     "promptLabel": "タスクの説明",
@@ -5118,6 +5134,7 @@
     "mergeDeleteWorktree": "マージ後に worktree を削除",
     "mergeSubmit": "マージ",
     "mergeSubmitQueue": "マージ待ちに追加",
+    "mergeSubmitting": "開始中…",
     "mergeQueuedToast": "マージ待ちに追加しました。実行中のマージが終わり次第開始します。",
     "completeTitle": "タスクを完了",
     "completeDescription": "このタスクはファイルを変更していないため、マージするものはありません。そのまま完了にします。",
@@ -5139,6 +5156,7 @@
     "settingsMaxConcurrentHint": "0 = 無制限",
     "settingsAutoCompact": "自動コンパクトのしきい値",
     "settingsAutoCompactHint": "フォローアップ・再試行・マージの前に、コンテキストウィンドウの使用率がこの値以上ならセッションを圧縮してから送信します。0 で無効。",
+    "compactingNote": "セッションのコンテキストを圧縮中…",
     "settingsCompactCommand": "コンパクトコマンド",
     "settingsCompactCommandHint": "空欄ならエージェントが提供するコマンド（または既知の既定値）を自動で使います。",
     "settingsCompactCommandPlaceholder": "/compact",
@@ -5813,7 +5831,24 @@
     "confirmDeleteCancel": "キャンセル",
     "confirmDeleteConfirm": "削除",
     "canvasActions": "キャンバス操作",
-    "mergeIntoNewRegion": "新しい領域"
+    "mergeIntoNewRegion": "新しい領域",
+    "addFileCard": "ファイルカード",
+    "addTerminalCard": "ターミナルカード",
+    "searchFiles": "ファイルを検索…",
+    "searchFilesIn": "{folder} 内を検索…",
+    "searchingFiles": "検索中…",
+    "noFiles": "ファイルが見つかりません",
+    "noOpenFiles": "開いているファイルはありません — 入力して検索",
+    "browseForFile": "参照…",
+    "filePreview": "プレビュー",
+    "fileSource": "ソース",
+    "reloadFile": "再読み込み",
+    "removeFileCard": "ファイルカードを削除",
+    "restartTerminal": "ターミナルを再起動",
+    "removeTerminalCard": "ターミナルカードを削除",
+    "terminalNoDirectory": "このカードには作業ディレクトリがありません",
+    "confirmDeleteTerminals": "実行中のターミナル {count} 個が閉じられ、そのプロセスも終了します。",
+    "confirmDeleteNotesAndTerminals": "書き込んだメモ {notes} 件が完全に削除され、実行中のターミナル {terminals} 個も終了します。"
   },
   "Browser": {
     "toolbar": {

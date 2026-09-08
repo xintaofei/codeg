@@ -52,6 +52,161 @@ const USER_PROMPT_PREVIEW_MAX_CHARS: usize = 500;
 /// `kill_tree`.
 const DISCONNECT_ALL_GRACE: Duration = Duration::from_millis(500);
 
+/// How long the polite signal gets before [`kill_tree_and_wait`] escalates to
+/// `SIGKILL`. Counted from the first signal, which itself only lands after
+/// [`DISCONNECT_ALL_GRACE`] of graceful shutdown, so anything still here has
+/// already had a second to leave of its own accord.
+const ESCALATE_TO_SIGKILL_AFTER: Duration = Duration::from_millis(500);
+
+/// How often that sweep re-checks while it waits.
+const CONFIRM_GONE_POLL: Duration = Duration::from_millis(50);
+
+/// How long that sweep waits after `SIGKILL` for the reap to land. `kill(2)`
+/// returns once the signal is queued, not once the target has been descheduled,
+/// so on another core it can still be executing — briefly. Bounded tightly
+/// because the wait can also end in no answer at all: a child that has already
+/// exited but that nobody has reaped yet never zeroes its cell.
+const SIGKILL_SETTLE: Duration = Duration::from_millis(200);
+
+/// What one pass of [`kill_tree_pass`] established about the target itself.
+#[derive(Debug, PartialEq, Eq)]
+enum KillPass {
+    /// The OS says there is no such process — the only report that positively
+    /// means "not running".
+    AlreadyGone,
+    /// The signal was delivered to the target.
+    Signalled,
+    /// Neither could be established.
+    Failed,
+}
+
+/// One signal pass over the process tree rooted at `pid`, reporting what
+/// happened to the target itself (its descendants are killed either way).
+///
+/// `signal` is a `kill_tree` signal name; Windows ignores it and terminates
+/// unconditionally. Blocking — call from `spawn_blocking`.
+fn kill_tree_pass(pid: u32, signal: &str) -> KillPass {
+    let config = kill_tree::Config {
+        signal: signal.to_string(),
+        ..Default::default()
+    };
+    match kill_tree::blocking::kill_tree_with_config(pid, &config) {
+        Ok(outputs) => outputs
+            .iter()
+            .find_map(|o| match o {
+                kill_tree::Output::MaybeAlreadyTerminated { process_id, .. }
+                    if *process_id == pid =>
+                {
+                    Some(KillPass::AlreadyGone)
+                }
+                kill_tree::Output::Killed { process_id, .. } if *process_id == pid => {
+                    Some(KillPass::Signalled)
+                }
+                _ => None,
+            })
+            .unwrap_or(KillPass::Failed),
+        Err(e) => {
+            tracing::debug!("[ACP] kill_tree pid={pid} signal={signal}: {e}");
+            KillPass::Failed
+        }
+    }
+}
+
+/// Wait for `on_exit` to zero a connection's pid cell. `true` if it did within
+/// roughly `budget` — the check follows the sleep, so the transition it sees
+/// can be up to one poll late. Costs nothing per poll: no signal, no
+/// process-table walk.
+fn wait_for_reap(cell: &std::sync::atomic::AtomicU32, budget: Duration) -> bool {
+    let started = std::time::Instant::now();
+    while started.elapsed() < budget {
+        std::thread::sleep(CONFIRM_GONE_POLL);
+        if cell.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Kill the process tree behind a connection's live pid cell and wait for the
+/// target to stop running. Two signals at most: `SIGTERM`, then `SIGKILL` if
+/// that was not enough.
+///
+/// `kill_tree` returns as soon as the signal is delivered, and its default
+/// `SIGTERM` is both catchable and ignorable, so "the call returned" is not
+/// "the agent is finished". That does not matter at quit — the OS cleans up
+/// whatever is left — but it does for a caller that is about to touch state the
+/// agent also writes (see [`ConnectionManager::disconnect_by_agent_type`]). So:
+/// signal, give it the grace it deserves, then escalate.
+///
+/// Between the signals it waits on the pid CELL rather than re-signalling.
+/// A second `SIGTERM` buys nothing — the first was delivered — while each extra
+/// pass re-walks the whole process table and re-aims at a pid NUMBER that, once
+/// the target exits, the OS is free to hand to something else.
+///
+/// The pid is loaded from the cell HERE, at the last possible moment, for the
+/// reasons [`ConnectionManager::disconnect_all`] spells out. A cell reading
+/// zero needs nothing: `on_exit` only zeroes it on a real reap, and a child
+/// that never spawned has nothing to kill.
+///
+/// What `true` means, exactly, weakest case first:
+/// - `SIGKILL` was delivered and [`SIGKILL_SETTLE`] passed without the reap
+///   landing. `SIGKILL` cannot be caught, ignored or blocked, so the process
+///   cannot run userspace code again; it is either unreaped, or stuck in an
+///   uninterruptible syscall and will die on the way out of it. An in-flight
+///   write already issued to the kernel may still complete.
+/// - Or the reap landed, or the OS reported no such process. Then it is gone
+///   outright.
+///
+/// `false` means the ESCALATION did not land: the `SIGKILL` pass came back with
+/// neither a delivery nor a no-such-process. An earlier `SIGTERM` may well have
+/// been delivered — see the call site for what is done about it.
+///
+/// One hazard survives all of this, and cannot be closed from here: between the
+/// target exiting and its cell being zeroed, the pid NUMBER may be recycled, and
+/// the escalation would then signal whatever now holds it. It is the same
+/// exposure `disconnect_all` accepts — narrowed here to a single signal, where
+/// re-probing in the wait loop would have spent one per poll — and closing it
+/// properly needs a handle rather than a number: a pidfd, a process group, a job
+/// object, all of them decided at spawn time.
+///
+/// Note the asymmetry: "the pid is out of the process table" is deliberately
+/// NOT the bar, because it is not waitable. A child that has already exited but
+/// has not been reaped yet answers signals exactly like a live one, so a
+/// wait-for-the-pid-to-vanish loop would burn its whole window on a process
+/// that died instantly.
+///
+/// Scope: this tracks the ROOT. Each pass re-walks and signals the whole tree,
+/// but a descendant that ignores `SIGTERM` and outlives its parent is
+/// reparented out of that tree and left to the OS — the same limit
+/// `disconnect_all` has always had. Fine for the sign-out this exists for: the
+/// credential lives in the agent process itself, not in the MCP servers it
+/// starts. Closing it properly would mean giving every agent a process group or
+/// a job object at spawn time.
+///
+/// Blocking — call from `spawn_blocking`.
+fn kill_tree_and_wait(cell: &std::sync::atomic::AtomicU32) -> bool {
+    let pid = cell.load(std::sync::atomic::Ordering::SeqCst);
+    if pid == 0 {
+        return true;
+    }
+    if kill_tree_pass(pid, "SIGTERM") == KillPass::AlreadyGone {
+        return true;
+    }
+    if wait_for_reap(cell, ESCALATE_TO_SIGKILL_AFTER) {
+        return true;
+    }
+
+    if kill_tree_pass(pid, "SIGKILL") == KillPass::Failed {
+        // Neither gone nor reachable: someone else owns that pid now (recycled
+        // onto another user's process, say), so it is not ours to wait for.
+        // Reported, not acted on — retrying would not change the answer.
+        tracing::warn!("[ACP] pid={pid} could not be signalled or confirmed gone");
+        return false;
+    }
+    wait_for_reap(cell, SIGKILL_SETTLE);
+    true
+}
+
 /// True for ids in the parsers' turn-id namespace (`turn-<digits>`), which every
 /// parser assigns via `format!("turn-{}", n)`. A broadcast `message_id` must
 /// never land here: it would collide with a persisted transcript turn id and let
@@ -2448,6 +2603,134 @@ impl ConnectionManager {
         disconnected
     }
 
+    /// End every live connection running `agent_type` and report how many there
+    /// were, not returning until this agent's processes — the ones just ended
+    /// AND any it already had exiting — have been put past running, as far as
+    /// the OS lets that be established ([`kill_tree_and_wait`] is precise about
+    /// where that stops).
+    ///
+    /// Added for the Antigravity sign-out, and the reason is the shape of that
+    /// agent's credential store rather than anything about connections. An
+    /// Antigravity process caches its OAuth credentials in memory and writes
+    /// them back to the keychain (or token file) on every silent refresh,
+    /// behind a lock that is per-PROCESS. So a connection still running while
+    /// the credential is cleared will, at its next token expiry, helpfully
+    /// restore the account the user just signed out of — or overwrite the one
+    /// they signed in as afterwards.
+    ///
+    /// That is why this borrows [`Self::disconnect_all`]'s shape rather than
+    /// [`Self::disconnect_by_owner_window`]'s, despite reading like the latter.
+    /// The caller needs "those processes are gone", not "those processes were
+    /// asked to go", and it differs from the shutdown backstop in the two ways
+    /// that follow from exactly that:
+    ///
+    /// - It sweeps the `draining` list, not just the map. A connection an
+    ///   earlier `disconnect` (or a closed window) already removed is invisible
+    ///   in the map while its process is still exiting — and that process holds
+    ///   the same in-memory credential. Only `draining` knows about it, and
+    ///   nothing else would ever kill it.
+    /// - It waits for each process to be past acting, escalating to `SIGKILL`;
+    ///   see [`kill_tree_and_wait`] for what that does and does not establish.
+    ///   `kill_tree` on its own returns as soon as `SIGTERM` is delivered, and
+    ///   `SIGTERM` can be caught or ignored, so its return says nothing about
+    ///   whether the agent is still there to write the credential back.
+    ///
+    /// Everything `disconnect_all` says about `try_send`, about sleeping the
+    /// WHOLE grace window, and about loading each pid only afterwards applies
+    /// verbatim. In particular the pid must not be read early: a connection
+    /// still `Connecting` reads zero now and publishes a live pid moments later,
+    /// and that is exactly the child that would go on to rewrite the credential.
+    ///
+    /// The return value counts the LIVE connections ended, not the processes
+    /// swept — a drainer was disconnected by whoever parked it, and counting it
+    /// again here would report a teardown that did not happen. A pid the sweep
+    /// could not settle is logged, not raised. On unix that means `kill(2)`
+    /// answered something other than `ESRCH` — in practice `EPERM`, i.e. that
+    /// pid is not ours to signal, which points at a recycled number rather than
+    /// a surviving agent, though it does not prove either. Weighed against
+    /// refusing to return on it, which would strand the sign-out in exactly the
+    /// dead end it exists to undo: the agent restoring a credential costs the
+    /// user another press of the button, and never signing out costs them the
+    /// account.
+    ///
+    /// Callers that need no new connection to appear behind them must hold
+    /// [`Self::lock_out_new_connections`] BEFORE calling, as `disconnect_all`'s
+    /// shutdown caller does by construction.
+    pub async fn disconnect_by_agent_type(&self, agent_type: AgentType) -> usize {
+        let cmd_txs: Vec<tokio::sync::mpsc::Sender<ConnectionCommand>> = {
+            let mut connections = self.connections.lock().await;
+            let ids: Vec<String> = connections
+                .iter()
+                .filter(|(_, conn)| conn.agent_type == agent_type)
+                .map(|(id, _)| id.clone())
+                .collect();
+
+            let mut txs = Vec::with_capacity(ids.len());
+            for id in ids {
+                if let Some(conn) = connections.remove(&id) {
+                    // Same handoff as every other teardown: the entry goes
+                    // immediately, so the child is parked as draining to stay
+                    // visible while it exits — and, here, to be swept below.
+                    self.park_draining(&conn).await;
+                    txs.push(conn.cmd_tx);
+                }
+            }
+            txs
+        };
+
+        let disconnected = cmd_txs.len();
+        for cmd_tx in &cmd_txs {
+            let _ = cmd_tx.try_send(ConnectionCommand::Disconnect);
+        }
+        tracing::info!(
+            "[ACP] disconnect by agent type agent={:?} count={}",
+            agent_type, disconnected
+        );
+
+        // Every child that could still be running as this agent: the ones just
+        // parked above AND the ones an earlier teardown left draining. Cells,
+        // not pids — each pid is loaded at the last possible moment, inside the
+        // sweep.
+        let pid_cells: Vec<Arc<std::sync::atomic::AtomicU32>> = {
+            let mut draining = self.draining.lock().await;
+            prune_reaped(&mut draining);
+            draining
+                .iter()
+                .filter(|c| c.agent == agent_type)
+                .map(|c| c.pid.clone())
+                .collect()
+        };
+        if pid_cells.is_empty() {
+            return disconnected;
+        }
+
+        tokio::time::sleep(DISCONNECT_ALL_GRACE).await;
+
+        match tokio::task::spawn_blocking(move || {
+            pid_cells
+                .iter()
+                .filter(|cell| !kill_tree_and_wait(cell))
+                .count()
+        })
+        .await
+        {
+            Ok(0) => {}
+            Ok(unconfirmed) => tracing::warn!(
+                "[ACP] disconnect by agent type agent={:?}: {} process(es) could not be confirmed gone",
+                agent_type, unconfirmed
+            ),
+            // Only reachable if the sweep panicked or the runtime is shutting
+            // down under it. Nothing to retry against — but it must not pass
+            // silently for "everything was confirmed".
+            Err(e) => tracing::warn!(
+                "[ACP] disconnect by agent type agent={:?}: sweep did not finish: {e}",
+                agent_type
+            ),
+        }
+
+        disconnected
+    }
+
     /// Disconnect every connection, then hard-kill any surviving agent process
     /// trees as a shutdown backstop.
     ///
@@ -3947,6 +4230,48 @@ mod tests {
         );
     }
 
+    /// The Antigravity sign-out ends that agent's connections and nobody
+    /// else's. Precision is the point: their processes would write the cleared
+    /// credential back on their next refresh, while an unrelated agent's
+    /// session has nothing to do with it and must survive.
+    #[tokio::test]
+    async fn disconnecting_one_agent_type_leaves_the_others_running() {
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("agy1", AgentType::Antigravity, None, EventEmitter::Noop)
+            .await;
+        mgr.insert_test_connection("agy2", AgentType::Antigravity, None, EventEmitter::Noop)
+            .await;
+        mgr.insert_test_connection("cdx", AgentType::Codex, None, EventEmitter::Noop)
+            .await;
+
+        assert_eq!(
+            mgr.disconnect_by_agent_type(AgentType::Antigravity).await,
+            2
+        );
+        let left: Vec<String> = mgr
+            .list_connections()
+            .await
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(left, vec!["cdx".to_string()]);
+
+        // And they leave exiting, not exited — the same handoff every other
+        // teardown makes, so the shutdown backstop can still reach them. They
+        // are out of the map yet still named here, alongside the live Codex.
+        assert_eq!(
+            mgr.live_or_draining_agent_names().await,
+            vec!["Codex CLI".to_string(), "Google Antigravity".to_string()]
+        );
+
+        // Nothing of that type left: a second pass is a no-op rather than an
+        // error, which is what makes the sign-out safe to retry.
+        assert_eq!(
+            mgr.disconnect_by_agent_type(AgentType::Antigravity).await,
+            0
+        );
+    }
+
     /// A pid of zero means BOTH "reaped" and "not spawned yet", so a
     /// connection torn down mid-spawn — which can publish a live pid moments
     /// later — must not be dismissed. It ages out instead.
@@ -4200,6 +4525,131 @@ mod tests {
 
         let _ = kill_tree::blocking::kill_tree(child.id());
         let _ = child.wait();
+    }
+
+    /// The Antigravity sign-out needs "no process of this agent is running",
+    /// and a child an earlier `disconnect` left draining is exactly the one the
+    /// map cannot see. It was asked to go — `disconnect` sends and returns —
+    /// but nothing ever checked that it went, and while it lives it still holds
+    /// the credential the sign-out is about to clear.
+    ///
+    /// The test connection's command receiver is dropped, so the graceful path
+    /// is unavailable: this process can only die from the sweep.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn disconnect_by_agent_type_sweeps_a_child_left_draining_by_an_earlier_teardown() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut child, gpid) = spawn_process_tree(&dir.path().join("g.pid")).await;
+
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("agy-old", AgentType::Antigravity, None, EventEmitter::Noop)
+            .await;
+        mgr.connections
+            .lock()
+            .await
+            .get("agy-old")
+            .unwrap()
+            .child_pid
+            .store(child.id(), std::sync::atomic::Ordering::SeqCst);
+
+        // Out of the map, into `draining` — a closed tab, say.
+        mgr.disconnect("agy-old").await.unwrap();
+        assert!(mgr.list_connections().await.is_empty());
+
+        // Nothing live to end, so nothing to report — but its process is still
+        // there, and that is what has to be gone.
+        assert_eq!(
+            mgr.disconnect_by_agent_type(AgentType::Antigravity).await,
+            0
+        );
+        assert!(
+            wait_until_dead(gpid).await,
+            "grandchild {gpid} survived — a draining child of the same agent was never swept"
+        );
+        let _ = child.wait();
+    }
+
+    /// `kill_tree` sends `SIGTERM` and returns; `SIGTERM` can be caught or
+    /// ignored. So "the kill call returned" is not "the agent is gone", and the
+    /// sign-out's whole premise is that it IS gone before the credential goes.
+    /// A process that ignores `SIGTERM` must still end up dead, via `SIGKILL`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn disconnect_by_agent_type_escalates_to_sigkill_for_a_child_that_ignores_sigterm() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut child, gpid) = spawn_sigterm_proof_tree(&dir.path().join("g.pid")).await;
+
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("agy", AgentType::Antigravity, None, EventEmitter::Noop)
+            .await;
+        mgr.connections
+            .lock()
+            .await
+            .get("agy")
+            .unwrap()
+            .child_pid
+            .store(child.id(), std::sync::atomic::Ordering::SeqCst);
+
+        assert_eq!(
+            mgr.disconnect_by_agent_type(AgentType::Antigravity).await,
+            1
+        );
+
+        // The target is this test's own child, so how it died is readable, and
+        // signal 9 is the escalation: it ignores SIGTERM, so nothing softer did
+        // this. `try_wait` rather than `wait` because it does not block — a
+        // status from it means the process was dead by the time the sweep
+        // returned, not merely that it died eventually. (Strictly it means
+        // "dead a few microseconds after", which is as close to the ordering as
+        // a caller outside the process can observe.)
+        use std::os::unix::process::ExitStatusExt;
+        let status = child
+            .try_wait()
+            .expect("read the target's status")
+            .expect("target was still running when the sweep returned");
+        assert_eq!(
+            status.signal(),
+            Some(libc::SIGKILL),
+            "target survived SIGTERM and was never SIGKILLed"
+        );
+        assert!(
+            wait_until_dead(gpid).await,
+            "grandchild {gpid} survived — the escalation reached the target but not its tree"
+        );
+    }
+
+    /// Like [`spawn_process_tree`], but both levels ignore `SIGTERM`: the shell
+    /// sets it to `SIG_IGN`, which `sleep` then inherits across `exec`. Stands
+    /// in for an agent that traps it and takes its time — or never leaves.
+    #[cfg(unix)]
+    async fn spawn_sigterm_proof_tree(pidfile: &std::path::Path) -> (std::process::Child, i32) {
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "trap '' TERM; sleep 30 & echo $! > '{}'; wait",
+                pidfile.display()
+            ))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn sh");
+        for _ in 0..150 {
+            if let Ok(raw) = std::fs::read_to_string(pidfile) {
+                if let Ok(pid) = raw.trim().parse::<i32>() {
+                    return (child, pid);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // SIGTERM would bounce off, so the bail-out path has to use SIGKILL.
+        let config = kill_tree::Config {
+            signal: "SIGKILL".to_string(),
+            ..Default::default()
+        };
+        let _ = kill_tree::blocking::kill_tree_with_config(child.id(), &config);
+        let _ = child.wait();
+        panic!("grandchild never recorded its pid");
     }
 
     /// Build a broadcaster + subscribed receiver. Subscribing here (not lazily

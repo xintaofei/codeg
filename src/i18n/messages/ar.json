@@ -961,6 +961,13 @@
         "failed": "لم يكتمل تسجيل الدخول.",
         "startFailed": "تعذّر بدء تسجيل الدخول",
         "credentialHint": "يُخزَّن الرمز هنا. انسخ هذا الملف إلى جهاز آخر بلا سطح مكتب لتسجيل دخوله أيضاً."
+      },
+      "signOut": {
+        "title": "هل سجّلت الدخول بحساب خاطئ؟",
+        "description": "يحتفظ Antigravity بحساب Google الذي سجّل الدخول به ويعيد استخدامه بصمت، لذا فإن تسجيل الدخول مرة أخرى لا يصل إلى حساب آخر. يؤدي تسجيل الخروج إلى حذف بيانات الاعتماد المخزّنة، وتُنهى جلسات Antigravity الجارية أولاً، وإلا فإنها ستعيد كتابة الحساب القديم.",
+        "action": "تسجيل الخروج",
+        "done": "تم تسجيل الخروج. سجّل الدخول مرة أخرى لاختيار حساب آخر.",
+        "failed": "تعذّر تسجيل الخروج"
       }
     },
     "deepseek": {
@@ -1601,6 +1608,8 @@
     "terminalShellNotInstalled": "غير مثبّت",
     "terminalShellNotFoundWarning": "هذا المسار غير موجود على هذا المضيف.",
     "terminalCurrentShell": "قيد الاستخدام: {path}",
+    "colorizeCommandOutput": "تلوين مُخرجات الأوامر",
+    "colorizeCommandOutputDescription": "فرض ألوان ANSI على الأوامر التي تنفّذها الوكلاء، بحيث تظهر مخرجاتها ملوّنة في السجل بدلاً من نص عادي. يسري على الجلسات الجديدة.",
     "renderingDescription": "أوقف تشغيل تسريع الأجهزة إذا ظهرت شاشة سوداء أو أخطاء في العرض (شائع على بعض كروت AMD أو كروت Intel المدمجة على ويندوز، وعلى تعريف NVIDIA المغلق على لينكس). يسري على إصدارات سطح المكتب لويندوز ولينكس فقط.",
     "disableHardwareAcceleration": "تعطيل تسريع الأجهزة",
     "renderingSaveFailed": "فشل حفظ إعدادات العرض: {message}",
@@ -2961,6 +2970,9 @@
         "cut": "قص",
         "copy": "نسخ",
         "selectAll": "تحديد الكل",
+        "openLink": "فتح الرابط",
+        "openFile": "فتح الملف",
+        "sendEmail": "إرسال بريد",
         "pasteUnavailable": "تعذّر قراءة الحافظة. استخدم Ctrl/⌘V للصق.",
         "clipboardWriteFailed": "تعذّرت الكتابة إلى الحافظة. استخدم اختصار لوحة المفاتيح.",
         "quickMessageUntitled": "بدون عنوان",
@@ -3236,9 +3248,12 @@
         "openInFileManager": "فتح في مدير الملفات",
         "copyRelativePath": "نسخ المسار النسبي",
         "copyAbsolutePath": "نسخ المسار المطلق",
+        "download": "تنزيل ملف",
         "pathCopied": "تم نسخ المسار",
         "copyPathFailed": "فشل نسخ المسار",
-        "openFailed": "فشل فتح الملف المحلي"
+        "openFailed": "فشل فتح الملف المحلي",
+        "downloadSaved": "تم تنزيل {name}",
+        "downloadFailed": "فشل تنزيل {name}"
       },
       "messageList": {
         "attachedResources": "الموارد المرفقة",
@@ -5088,6 +5103,7 @@
     "phaseRetry": "إعادة التنفيذ",
     "phaseReturn": "متابعة",
     "phaseMerge": "الدمج",
+    "phaseCompact": "ضغط السياق",
     "titleLabel": "العنوان",
     "titlePlaceholder": "ما الذي يجب إنجازه؟",
     "promptLabel": "وصف المهمة",
@@ -5118,6 +5134,7 @@
     "mergeDeleteWorktree": "حذف worktree بعد الدمج",
     "mergeSubmit": "دمج",
     "mergeSubmitQueue": "إضافة إلى طابور الدمج",
+    "mergeSubmitting": "جارٍ البدء…",
     "mergeQueuedToast": "تمت الإضافة إلى طابور الدمج — سيبدأ فور انتهاء الدمج الحالي.",
     "completeTitle": "إنهاء المهمة",
     "completeDescription": "لم تغيّر هذه المهمة أي ملف، لذا لا يوجد ما يُدمج — سيتم وضع علامة مكتملة عليها مباشرة.",
@@ -5139,6 +5156,7 @@
     "settingsMaxConcurrentHint": "0 = بلا حد",
     "settingsAutoCompact": "عتبة الضغط التلقائي",
     "settingsAutoCompactHint": "قبل جولة متابعة أو إعادة محاولة أو دمج، اضغط الجلسة إذا بلغ امتلاء نافذة السياق هذه النسبة. 0 يعني إيقاف.",
+    "compactingNote": "جارٍ ضغط سياق الجلسة…",
     "settingsCompactCommand": "أمر الضغط",
     "settingsCompactCommandHint": "اتركه فارغًا لاستخدام الأمر الذي يوفّره الوكيل أو قيمته الافتراضية المعروفة.",
     "settingsCompactCommandPlaceholder": "/compact",
@@ -5813,7 +5831,24 @@
     "confirmDeleteCancel": "إلغاء",
     "confirmDeleteConfirm": "حذف",
     "canvasActions": "إجراءات اللوحة",
-    "mergeIntoNewRegion": "منطقة جديدة"
+    "mergeIntoNewRegion": "منطقة جديدة",
+    "addFileCard": "بطاقة ملف",
+    "addTerminalCard": "بطاقة طرفية",
+    "searchFiles": "البحث عن الملفات…",
+    "searchFilesIn": "البحث في {folder}…",
+    "searchingFiles": "جارٍ البحث…",
+    "noFiles": "لم يتم العثور على ملفات",
+    "noOpenFiles": "لا توجد ملفات مفتوحة — اكتب للبحث",
+    "browseForFile": "استعراض…",
+    "filePreview": "معاينة",
+    "fileSource": "المصدر",
+    "reloadFile": "إعادة التحميل",
+    "removeFileCard": "إزالة بطاقة الملف",
+    "restartTerminal": "إعادة تشغيل الطرفية",
+    "removeTerminalCard": "إزالة بطاقة الطرفية",
+    "terminalNoDirectory": "لا يوجد دليل عمل لهذه البطاقة",
+    "confirmDeleteTerminals": "سيتم إغلاق {count} من الطرفيات قيد التشغيل وإنهاء عملياتها.",
+    "confirmDeleteNotesAndTerminals": "سيتم حذف {notes} من الملاحظات التي كتبتها نهائيًا، وإنهاء {terminals} من الطرفيات قيد التشغيل."
   },
   "Browser": {
     "toolbar": {

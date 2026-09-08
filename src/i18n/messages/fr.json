@@ -961,6 +961,13 @@
         "failed": "La connexion n'a pas abouti.",
         "startFailed": "Impossible de démarrer la connexion",
         "credentialHint": "Le jeton est mis en cache ici. Copiez ce fichier sur une autre machine sans bureau pour la connecter aussi."
+      },
+      "signOut": {
+        "title": "Connecté avec le mauvais compte ?",
+        "description": "Antigravity met en cache le compte Google utilisé pour se connecter et le réutilise silencieusement : se reconnecter ne permet donc pas d'en atteindre un autre. La déconnexion supprime les identifiants enregistrés ; les sessions Antigravity en cours sont d'abord fermées, sans quoi elles réécriraient l'ancien compte.",
+        "action": "Se déconnecter",
+        "done": "Déconnecté. Reconnectez-vous pour choisir un autre compte.",
+        "failed": "Impossible de se déconnecter"
       }
     },
     "deepseek": {
@@ -1601,6 +1608,8 @@
     "terminalShellNotInstalled": "non installé",
     "terminalShellNotFoundWarning": "Ce chemin n’existe pas sur cet hôte.",
     "terminalCurrentShell": "Actuellement utilisé : {path}",
+    "colorizeCommandOutput": "Coloriser la sortie des commandes",
+    "colorizeCommandOutputDescription": "Force la couleur ANSI dans les commandes exécutées par les agents, afin que leur sortie s'affiche en couleur dans la transcription plutôt qu'en texte brut. S'applique aux nouvelles sessions.",
     "renderingDescription": "Désactivez l’accélération matérielle si l’application affiche un écran noir ou des défauts de rendu (fréquent sur certaines GPU AMD ou GPU Intel intégrées sous Windows, et avec le pilote propriétaire NVIDIA sous Linux). N’a d’effet que sur les versions de bureau Windows et Linux.",
     "disableHardwareAcceleration": "Désactiver l’accélération matérielle",
     "renderingSaveFailed": "Échec de l’enregistrement des paramètres de rendu : {message}",
@@ -2961,6 +2970,9 @@
         "cut": "Couper",
         "copy": "Copier",
         "selectAll": "Tout sélectionner",
+        "openLink": "Ouvrir le lien",
+        "openFile": "Ouvrir le fichier",
+        "sendEmail": "Envoyer un e-mail",
         "pasteUnavailable": "Impossible de lire le presse-papiers. Utilisez Ctrl/⌘V pour coller.",
         "clipboardWriteFailed": "Impossible d'écrire dans le presse-papiers. Utilisez le raccourci clavier.",
         "quickMessageUntitled": "Sans titre",
@@ -3236,9 +3248,12 @@
         "openInFileManager": "Ouvrir dans le gestionnaire de fichiers",
         "copyRelativePath": "Copier le chemin relatif",
         "copyAbsolutePath": "Copier le chemin absolu",
+        "download": "Télécharger le fichier",
         "pathCopied": "Chemin copié",
         "copyPathFailed": "Échec de la copie du chemin",
-        "openFailed": "Échec de l'ouverture du fichier local"
+        "openFailed": "Échec de l'ouverture du fichier local",
+        "downloadSaved": "{name} téléchargé",
+        "downloadFailed": "Échec du téléchargement de {name}"
       },
       "messageList": {
         "attachedResources": "Ressources jointes",
@@ -5088,6 +5103,7 @@
     "phaseRetry": "Nouvel essai",
     "phaseReturn": "Relance",
     "phaseMerge": "Fusion",
+    "phaseCompact": "Compactage du contexte",
     "titleLabel": "Titre",
     "titlePlaceholder": "Que faut-il faire ?",
     "promptLabel": "Description de la tâche",
@@ -5118,6 +5134,7 @@
     "mergeDeleteWorktree": "Supprimer le worktree après la fusion",
     "mergeSubmit": "Fusionner",
     "mergeSubmitQueue": "Ajouter à la file",
+    "mergeSubmitting": "Démarrage…",
     "mergeQueuedToast": "Ajoutée à la file de fusion — elle démarrera dès la fin de la fusion en cours.",
     "completeTitle": "Terminer la tâche",
     "completeDescription": "Cette tâche n'a modifié aucun fichier : il n'y a rien à fusionner, elle est marquée comme terminée directement.",
@@ -5139,6 +5156,7 @@
     "settingsMaxConcurrentHint": "0 = illimité",
     "settingsAutoCompact": "Seuil de compactage automatique",
     "settingsAutoCompactHint": "Avant une relance, une nouvelle tentative ou une fusion, compacte la session si sa fenêtre de contexte est au moins aussi remplie. 0 = désactivé.",
+    "compactingNote": "Compactage du contexte de la session…",
     "settingsCompactCommand": "Commande de compactage",
     "settingsCompactCommandHint": "Laissez vide pour utiliser la commande proposée par l'agent, ou sa valeur par défaut connue.",
     "settingsCompactCommandPlaceholder": "/compact",
@@ -5813,7 +5831,24 @@
     "confirmDeleteCancel": "Annuler",
     "confirmDeleteConfirm": "Supprimer",
     "canvasActions": "Actions du canevas",
-    "mergeIntoNewRegion": "Nouvelle région"
+    "mergeIntoNewRegion": "Nouvelle région",
+    "addFileCard": "Carte fichier",
+    "addTerminalCard": "Carte terminal",
+    "searchFiles": "Rechercher des fichiers…",
+    "searchFilesIn": "Rechercher dans {folder}…",
+    "searchingFiles": "Recherche…",
+    "noFiles": "Aucun fichier trouvé",
+    "noOpenFiles": "Aucun fichier ouvert — saisissez pour rechercher",
+    "browseForFile": "Parcourir…",
+    "filePreview": "Aperçu",
+    "fileSource": "Source",
+    "reloadFile": "Recharger",
+    "removeFileCard": "Retirer la carte fichier",
+    "restartTerminal": "Redémarrer le terminal",
+    "removeTerminalCard": "Retirer la carte terminal",
+    "terminalNoDirectory": "Cette carte n'a pas de répertoire de travail",
+    "confirmDeleteTerminals": "{count} terminal(aux) en cours seront fermés et leurs processus arrêtés.",
+    "confirmDeleteNotesAndTerminals": "{notes} note(s) que vous avez écrites seront définitivement supprimées, et {terminals} terminal(aux) en cours seront arrêtés."
   },
   "Browser": {
     "toolbar": {

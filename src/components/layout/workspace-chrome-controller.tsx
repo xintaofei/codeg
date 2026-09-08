@@ -210,12 +210,16 @@ export function WorkspaceChromeController() {
 
       if (matchShortcutEvent(e, shortcuts.reopen_last_closed_tab)) {
         e.preventDefault()
+        // Every entry carries the slot it was closed from, and each opener
+        // puts the tab back there (clamped to the strip) rather than at the
+        // end.
         while (true) {
           const closed = popClosedTab()
           if (!closed) return
           if (closed.kind === "file") {
             void openFilePreview(closed.path, {
               folderId: closed.folderId ?? undefined,
+              index: closed.index,
             })
             return
           }
@@ -224,6 +228,7 @@ export function WorkspaceChromeController() {
             // activated instead (the usual one-tab-per-URL rule).
             openBrowserTab(closed.url, {
               folderId: closed.folderId ?? undefined,
+              index: closed.index,
             })
             return
           }
@@ -239,7 +244,8 @@ export function WorkspaceChromeController() {
               closed.conversationId,
               closed.agentType,
               closed.isPinned,
-              closed.title
+              closed.title,
+              { index: closed.index }
             )
             return
           }
@@ -249,7 +255,9 @@ export function WorkspaceChromeController() {
           const workingDir = closed.workingDir ?? folder?.path
           if (!workingDir) continue
           openConversations()
-          openNewConversationTab(closed.folderId, workingDir)
+          openNewConversationTab(closed.folderId, workingDir, {
+            index: closed.index,
+          })
           return
         }
       }

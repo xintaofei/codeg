@@ -463,6 +463,15 @@ fn collect_text_parts(content: &serde_json::Value) -> Vec<String> {
     }
 }
 
+/// Markers Cline wraps around the parts of a user message.
+const ENV_OPEN: &str = "<environment_details>";
+const ENV_CLOSE: &str = "</environment_details>";
+const TASK_OPEN: &str = "<task>";
+const TASK_CLOSE: &str = "</task>";
+const FEEDBACK_OPEN: &str = "<feedback>";
+const FEEDBACK_CLOSE: &str = "</feedback>";
+const TASK_PROGRESS_MARKER: &str = "# task_progress RECOMMENDED";
+
 /// Check if text looks like a Cline tool result: `[tool_name ...] Result:`
 fn is_tool_result_text(text: &str) -> bool {
     let trimmed = text.trim_start();
@@ -518,10 +527,14 @@ fn strip_automated_bridging(text: &str) -> String {
 }
 
 /// Extract text from `<feedback>...</feedback>` tags.
+///
+/// The closing tag is searched from after the opening one, for the reason
+/// spelled out on [`strip_environment_details`]: a message that quotes
+/// `</feedback>` ahead of the real block would otherwise drop the feedback.
 fn extract_feedback(text: &str) -> Option<String> {
-    let start = text.find("<feedback>")?;
-    let inner_start = start + "<feedback>".len();
-    let end = text.find("</feedback>")?;
+    let start = text.find(FEEDBACK_OPEN)?;
+    let inner_start = start + FEEDBACK_OPEN.len();
+    let end = inner_start + text[inner_start..].find(FEEDBACK_CLOSE)?;
     if end > inner_start {
         Some(text[inner_start..end].to_string())
     } else {
@@ -612,41 +625,67 @@ fn parse_content_blocks(content: &serde_json::Value) -> Vec<ContentBlock> {
 
 /// Strip Cline's `<environment_details>...</environment_details>` blocks and
 /// `<task>...</task>` wrappers from user messages to keep content clean.
+///
+/// Every closing tag is searched from after the opening tag it belongs to, not
+/// from the start of the message. Cline wraps what the user typed, so the
+/// user's own words land in the same string as these markers, and a message
+/// that quotes `</environment_details>` or `</task>` (asking about the wrapper,
+/// or pasting a transcript) puts a closing tag ahead of the block it appears to
+/// close. Rebuilding the message around that earlier tag splices the opening
+/// tag back in and makes the string longer every pass, and reads a reversed
+/// byte range.
 fn strip_environment_details(text: &str) -> String {
     let mut result = text.to_string();
 
     // Remove <environment_details>...</environment_details>
-    while let Some(start) = result.find("<environment_details>") {
-        if let Some(end) = result.find("</environment_details>") {
-            let end = end + "</environment_details>".len();
+    while let Some(start) = result.find(ENV_OPEN) {
+        let before = result.len();
+        let inner_start = start + ENV_OPEN.len();
+        if let Some(close) = result[inner_start..].find(ENV_CLOSE) {
+            let end = inner_start + close + ENV_CLOSE.len();
             result = format!("{}{}", &result[..start], &result[end..]);
         } else {
             // Unclosed tag — remove from start to end
             result = result[..start].to_string();
         }
+        // Searching the closing tag from `inner_start` is what keeps every
+        // pass strictly shorter, and a pass that does not shrink is a pass
+        // this loop repeats forever. Asserted rather than left implied
+        // because the regression it guards grew the string exponentially: a
+        // test that trips it again would hang the run and exhaust memory
+        // instead of failing, and this fails it on the first pass.
+        debug_assert!(
+            result.len() < before,
+            "environment strip must shrink the message on every pass"
+        );
     }
 
     // Remove <task>...</task> wrappers, keeping inner content
-    while let Some(start) = result.find("<task>") {
-        let tag_end = start + "<task>".len();
-        if let Some(close) = result.find("</task>") {
-            let inner = result[tag_end..close].to_string();
-            let after = &result[close + "</task>".len()..];
-            result = format!("{}{}{}", &result[..start], inner, after);
-        } else {
+    while let Some(start) = result.find(TASK_OPEN) {
+        let inner_start = start + TASK_OPEN.len();
+        let Some(close) = result[inner_start..]
+            .find(TASK_CLOSE)
+            .map(|i| inner_start + i)
+        else {
             break;
-        }
+        };
+        let inner = result[inner_start..close].to_string();
+        let after = &result[close + TASK_CLOSE.len()..];
+        result = format!("{}{}{}", &result[..start], inner, after);
     }
 
     // Remove task_progress RECOMMENDED blocks
-    while let Some(start) = result.find("# task_progress RECOMMENDED") {
-        // Find the end: next section or end of string
+    while let Some(start) = result.find(TASK_PROGRESS_MARKER) {
+        // Find the end: whichever section boundary comes first, or end of
+        // string. A `\n#` heading between the block and the next `\n<` tag
+        // starts its own section, so it ends this one.
         let rest = &result[start..];
-        let end = rest
-            .find("\n<")
-            .or_else(|| rest.find("\n#"))
-            .map(|i| start + i)
-            .unwrap_or(result.len());
+        let end = match (rest.find("\n<"), rest.find("\n#")) {
+            (Some(tag), Some(heading)) => Some(tag.min(heading)),
+            (tag, heading) => tag.or(heading),
+        }
+        .map(|i| start + i)
+        .unwrap_or(result.len());
         result = format!("{}{}", &result[..start], &result[end..]);
     }
 
@@ -656,4 +695,158 @@ fn strip_environment_details(text: &str) -> String {
     }
 
     result.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole message Cline writes for one user turn: the wrapper, then the
+    /// environment block it appends. Everything here reaches
+    /// `strip_environment_details` as a single string.
+    fn cline_user_message(task: &str) -> String {
+        format!(
+            "<task>\n{task}\n</task>\n\n<environment_details>\n# VSCode Visible Files\nsrc/main.rs\n\n# Current Time\n2026-03-01T08:00:00Z\n</environment_details>"
+        )
+    }
+
+    #[test]
+    fn strips_the_wrapper_and_the_environment_block() {
+        assert_eq!(
+            strip_environment_details(&cline_user_message("Fix the parser")),
+            "Fix the parser"
+        );
+    }
+
+    /// A user asking about the wrapper puts `</environment_details>` in their
+    /// own text, ahead of the block Cline appends. Closing the block at that
+    /// earlier tag re-splices the opening tag into the result and makes the
+    /// string longer on every pass, so the loop never ends: opening the
+    /// conversation used to hang the parse and grow memory without bound.
+    #[test]
+    fn a_quoted_closing_tag_does_not_hang_the_environment_strip() {
+        let quoted = "Why do I see </environment_details> in my logs?";
+        let cleaned = strip_environment_details(&cline_user_message(quoted));
+        assert_eq!(cleaned, quoted);
+    }
+
+    /// Same slip in the `<task>` loop reads a reversed byte range instead of
+    /// looping, because the close tag ends up before the open tag's inner
+    /// start. `&result[23..0]` panics.
+    #[test]
+    fn a_leading_closing_task_tag_does_not_panic() {
+        assert_eq!(
+            strip_environment_details("</task> leftover\n<task>real work</task>"),
+            "</task> leftover\nreal work"
+        );
+    }
+
+    /// Nested wrappers must still collapse to their innermost content, which is
+    /// the behaviour the first closing tag after the opening one already gave.
+    #[test]
+    fn nested_task_wrappers_collapse() {
+        assert_eq!(
+            strip_environment_details("<task>outer <task>inner</task> tail</task>"),
+            "outer inner tail"
+        );
+    }
+
+    /// An unclosed opening tag still truncates at it, and an unclosed `<task>`
+    /// still leaves the message alone rather than dropping the rest of it.
+    #[test]
+    fn unclosed_openers_keep_their_old_behaviour() {
+        assert_eq!(
+            strip_environment_details("kept\n<environment_details>\nnoise"),
+            "kept"
+        );
+        assert_eq!(
+            strip_environment_details("<task>no close"),
+            "<task>no close"
+        );
+    }
+
+    /// `# task_progress RECOMMENDED` runs to the next section. A markdown
+    /// heading is a section, so a heading between the block and the next tag
+    /// ends it. Preferring `\n<` regardless of position swallowed everything
+    /// in between, here the whole `# Notes` section. The tag has to be one the
+    /// earlier loops leave alone, which is every Cline tool tag.
+    #[test]
+    fn the_task_progress_block_ends_at_the_first_boundary() {
+        let text = "intro\n# task_progress RECOMMENDED\n- [ ] step one\n# Notes\nkeep this\n<read_file>\n<path>src/main.rs</path>\n</read_file>";
+        assert_eq!(
+            strip_environment_details(text),
+            "intro\n\n# Notes\nkeep this\n<read_file>\n<path>src/main.rs</path>\n</read_file>"
+        );
+    }
+
+    /// The block Cline really sends, so the boundary above is pinned against
+    /// the shape it exists for and not only against the synthetic one. Cline
+    /// pushes the focus-chain instructions as their own content part
+    /// (`FocusChainManager.generateFocusChainInstructions` →
+    /// `userContent.push`), and no line inside them opens with `#` or `<`, so
+    /// both searches come back empty and the whole block runs off the end of
+    /// the string. Ending at the first boundary therefore changes nothing for
+    /// a real transcript. Text mirrors cline's
+    /// `src/core/task/focus-chain/prompts.ts`.
+    #[test]
+    fn the_real_task_progress_block_is_removed_whole() {
+        let recommended = "\n\
+             # task_progress RECOMMENDED\n\
+             \n\
+             When starting a new task, it is recommended to include a todo list \
+             using the task_progress parameter.\n\
+             \n\
+             \n\
+             1. Include a todo list using the task_progress parameter in your next tool call\n\
+             2. Create a comprehensive checklist of all steps needed\n\
+             3. Use markdown format: - [ ] for incomplete, - [x] for complete\n\
+             \n\
+             **Benefits of creating a todo/task_progress list now:**\n\
+             \t- Clear roadmap for implementation\n\
+             \t- Progress tracking throughout the task\n\
+             \t- Nothing gets forgotten or missed\n\
+             \t- Users can see, monitor, and edit the plan\n\
+             \n\
+             **Example structure:**```\n\
+             - [ ] Analyze requirements\n\
+             - [ ] Set up necessary files\n\
+             - [ ] Implement main functionality\n\
+             - [ ] Handle edge cases\n\
+             - [ ] Test the implementation\n\
+             - [ ] Verify results```\n\
+             \n\
+             Keeping the task_progress list updated helps track progress and \
+             ensures nothing is missed.\n";
+        assert!(recommended.starts_with("\n# task_progress RECOMMENDED\n"));
+        assert_eq!(strip_environment_details(recommended), "");
+    }
+
+    /// Every index this file splices on comes from `str::find` and is a byte
+    /// offset, so a message in a non-ASCII script has to come through intact:
+    /// an offset that lands inside a multi-byte character panics with `byte
+    /// index is not a char boundary` on the very next slice.
+    #[test]
+    fn multibyte_text_around_the_markers_survives() {
+        let quoted = "环境说明 </environment_details> 是什么？🎉";
+        assert_eq!(
+            strip_environment_details(&cline_user_message(quoted)),
+            quoted
+        );
+    }
+
+    /// Feedback quoted ahead of the real block used to come back as `None`,
+    /// because the closing tag found first sat before the opening one.
+    #[test]
+    fn feedback_is_read_from_its_own_closing_tag() {
+        assert_eq!(
+            extract_feedback("the </feedback> tag: <feedback>looks good</feedback>"),
+            Some("looks good".to_string())
+        );
+        assert_eq!(
+            extract_feedback("<feedback>plain</feedback>"),
+            Some("plain".to_string())
+        );
+        assert_eq!(extract_feedback("no tags here"), None);
+        assert_eq!(extract_feedback("<feedback>unclosed"), None);
+    }
 }
