@@ -177,7 +177,11 @@ impl ForgeScenario {
             return Err(AppCommandError::invalid_input(format!(
                 "scenario \"{}\" does not apply to {} — refresh the workbench and try again",
                 scenario.as_str(),
-                if is_pr { "a proposed change" } else { "an issue" }
+                if is_pr {
+                    "a proposed change"
+                } else {
+                    "an issue"
+                }
             )));
         }
         Ok(scenario)
@@ -487,8 +491,7 @@ pub async fn forge_list_issues_core(
     folder_id: i32,
     filters: ListFilters,
 ) -> Result<ForgeIssueList, AppCommandError> {
-    let (remote, auth) =
-        resolve_folder_repo(db, folder_id, filters.account_id.as_deref()).await?;
+    let (remote, auth) = resolve_folder_repo(db, folder_id, filters.account_id.as_deref()).await?;
     // The repository is an ARGUMENT here, never a field of `filters`: it is
     // derived from the folder's own remote, so there is nothing for a client to
     // claim. Paging is clamped inside each client (`ListIssuesRequest::clamped`)
@@ -817,8 +820,7 @@ pub async fn work_task_create_from_forge_core(
     let source = &draft.source;
     let item_kind = ForgeItemKind::parse(&source.kind).map_err(AppCommandError::from)?;
     let is_pr = item_kind == ForgeItemKind::Change;
-    let claimed_provider =
-        ForgeProvider::parse(&source.provider).map_err(AppCommandError::from)?;
+    let claimed_provider = ForgeProvider::parse(&source.provider).map_err(AppCommandError::from)?;
 
     let server_host = source.server_host.trim().to_ascii_lowercase();
     let owner_repo = forge::normalize_repo(&source.owner_repo).ok_or_else(|| {
@@ -851,9 +853,13 @@ pub async fn work_task_create_from_forge_core(
 
     // Account resolution pins the identity the task will keep using (writeback
     // and delivery read it from source_meta — never "the current default").
-    let auth =
-        forge::resolve_forge_auth(&db.conn, provider, &server_host, source.account_id.as_deref())
-            .await?;
+    let auth = forge::resolve_forge_auth(
+        &db.conn,
+        provider,
+        &server_host,
+        source.account_id.as_deref(),
+    )
+    .await?;
 
     // A proposed change has to be hydrated before a card can exist: the list
     // rows carry no refs at all, and without head/base there is nothing to
@@ -1000,9 +1006,7 @@ pub async fn work_task_create_from_forge_core(
             crate::commands::work_task::nudge_pump(task.folder_id);
             Ok(ForgeCreateResult::Created { task })
         }
-        ForgeCreateOutcome::Duplicate(existing) => {
-            Ok(ForgeCreateResult::Duplicate { existing })
-        }
+        ForgeCreateOutcome::Duplicate(existing) => Ok(ForgeCreateResult::Duplicate { existing }),
     }
 }
 
@@ -1337,7 +1341,10 @@ mod tests {
                     !text.contains("task_progress") && !text.contains("task_complete"),
                     "{s:?} duplicates the engine's reporting instructions"
                 );
-                assert!(text.contains("#7") && text.contains(URL), "{s:?} lost its anchor");
+                assert!(
+                    text.contains("#7") && text.contains(URL),
+                    "{s:?} lost its anchor"
+                );
                 assert!(
                     text.contains("fenced external content"),
                     "{s:?} must point at the envelope"
@@ -1357,7 +1364,10 @@ mod tests {
         for s in [ForgeScenario::Fix, ForgeScenario::PlanFirst] {
             for provider in [ForgeProvider::GitHub, ForgeProvider::GitLab] {
                 let text = forge_instruction(s, provider, 7, URL);
-                assert!(text.contains("confirm it is real"), "{s:?} buries the check");
+                assert!(
+                    text.contains("confirm it is real"),
+                    "{s:?} buries the check"
+                );
                 assert!(
                     text.contains("required, not a formality"),
                     "{s:?} leaves the check optional"
@@ -1387,7 +1397,9 @@ mod tests {
                 assert!(text[branch..].contains("stop"), "{s:?} never ends the task");
                 // Before the work, not after it: an instruction that arrives
                 // once the fix is written is a retraction, not a gate.
-                let work = text.find("Once it is confirmed").expect("the work paragraph");
+                let work = text
+                    .find("Once it is confirmed")
+                    .expect("the work paragraph");
                 assert!(branch < work, "{s:?} states the gate after the work");
 
                 // …and that ending is a SUCCESS. An agent that files it as a
@@ -1463,7 +1475,10 @@ mod tests {
         for provider in [ForgeProvider::GitHub, ForgeProvider::GitLab] {
             for s in [ForgeScenario::ReviewFix, ForgeScenario::ReviewOnly] {
                 let text = forge_instruction(s, provider, 7, URL);
-                assert!(text.contains("Judge the approach, not just the diff"), "{s:?}");
+                assert!(
+                    text.contains("Judge the approach, not just the diff"),
+                    "{s:?}"
+                );
                 assert!(text.contains("warranted at all"), "{s:?}");
                 assert!(text.contains("best way to solve it"), "{s:?}");
                 assert!(text.contains("production-ready as it stands"), "{s:?}");
@@ -1490,7 +1505,10 @@ mod tests {
         for s in all_scenarios() {
             for provider in [ForgeProvider::GitHub, ForgeProvider::GitLab] {
                 let text = forge_instruction(s, provider, 7, URL);
-                assert!(text.contains("\n\n"), "{s:?} runs together as one paragraph");
+                assert!(
+                    text.contains("\n\n"),
+                    "{s:?} runs together as one paragraph"
+                );
                 assert!(
                     !text.replace("\n\n", "").contains('\n'),
                     "{s:?} still breaks a paragraph with a bare newline"
@@ -1524,7 +1542,10 @@ mod tests {
             None,
             Some("  also update the docs  "),
         );
-        assert_eq!(noted, format!("{plain}\n\n{USER_NOTE_HEADER}\nalso update the docs"));
+        assert_eq!(
+            noted,
+            format!("{plain}\n\n{USER_NOTE_HEADER}\nalso update the docs")
+        );
         // A blank line before the header, and the note on its own line under
         // it — the two breaks the old wording was missing.
         assert!(noted.contains(&format!("\n\n{USER_NOTE_HEADER}\n")));
@@ -1538,9 +1559,18 @@ mod tests {
         let gh = ForgeProvider::GitHub;
         let plain = instruction_block(ForgeScenario::ReviewFix, gh, 7, URL, None, None);
 
-        let standing =
-            instruction_block(ForgeScenario::ReviewFix, gh, 7, URL, Some("  Reply in zh.  "), None);
-        assert_eq!(standing, format!("{plain}\n\n{STANDING_HEADER}\nReply in zh."));
+        let standing = instruction_block(
+            ForgeScenario::ReviewFix,
+            gh,
+            7,
+            URL,
+            Some("  Reply in zh.  "),
+            None,
+        );
+        assert_eq!(
+            standing,
+            format!("{plain}\n\n{STANDING_HEADER}\nReply in zh.")
+        );
 
         let both = instruction_block(
             ForgeScenario::ReviewFix,
@@ -1559,7 +1589,10 @@ mod tests {
         );
         let standing_at = both.find(STANDING_HEADER).expect("standing section");
         let note_at = both.find(USER_NOTE_HEADER).expect("note section");
-        assert!(standing_at < note_at, "the per-item note must have the last word");
+        assert!(
+            standing_at < note_at,
+            "the per-item note must have the last word"
+        );
     }
 
     /// The envelope is a separate prompt block appended right after the
@@ -1585,8 +1618,15 @@ mod tests {
             },
         );
         let glued = format!("{instruction}{envelope}");
-        let note_line = glued.lines().find(|l| l.contains("do X")).expect("the note's line");
-        assert_eq!(note_line.trim(), "do X", "the envelope ran onto the user's note");
+        let note_line = glued
+            .lines()
+            .find(|l| l.contains("do X"))
+            .expect("the note's line");
+        assert_eq!(
+            note_line.trim(),
+            "do X",
+            "the envelope ran onto the user's note"
+        );
     }
 
     /// The settings blob keys its standing instructions by SCENARIO WIRE NAME
@@ -1672,7 +1712,11 @@ mod tests {
             let round: ForgeSourceMeta =
                 serde_json::from_str(&serde_json::to_string(&meta).expect("encode"))
                     .expect("decode");
-            assert_eq!(round.writeback.unwrap_or(false), expected, "gate flipped for {sent}");
+            assert_eq!(
+                round.writeback.unwrap_or(false),
+                expected,
+                "gate flipped for {sent}"
+            );
         }
     }
 

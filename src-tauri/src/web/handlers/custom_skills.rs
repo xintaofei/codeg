@@ -126,10 +126,9 @@ pub async fn custom_import_skill(
 pub async fn custom_import_from_agent(
     Json(params): Json<CustomImportFromAgentParams>,
 ) -> Result<Json<Vec<CustomImportResult>>, AppCommandError> {
-    let result =
-        custom_skills_commands::custom_import_from_agent(params.agent_type, params.ids)
-            .await
-            .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    let result = custom_skills_commands::custom_import_from_agent(params.agent_type, params.ids)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))
 }
 

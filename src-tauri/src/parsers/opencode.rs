@@ -28,9 +28,15 @@ impl OpenCodeParser {
         Self { base_dir }
     }
 
-    /// Test-only constructor that lets callers point the parser at a fixture
-    /// directory containing an `opencode.db` SQLite file.
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
+    /// Read-only access to the session store directory this parser reads from.
+    pub(crate) fn base_dir(&self) -> &std::path::Path {
+        &self.base_dir
+    }
+
+    /// Point the parser at an explicit opencode data dir (parent of
+    /// `opencode.db`) instead of the env-resolved `$XDG_DATA_HOME/opencode` —
+    /// the provider workspace's `data/opencode/` or a test fixture.
     pub fn with_base_dir(base_dir: PathBuf) -> Self {
         Self { base_dir }
     }
@@ -337,7 +343,7 @@ impl OpenCodeParser {
                 duration_ms,
                 model: msg_model,
                 completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
         }
 
@@ -793,7 +799,8 @@ fn pick_str<'a>(value: Option<&'a serde_json::Value>, keys: &[&str]) -> Option<&
 /// as-is (an empty `oldString` is OpenCode's create-file form of `edit`).
 fn pick_str_verbatim<'a>(value: Option<&'a serde_json::Value>, keys: &[&str]) -> Option<&'a str> {
     let obj = value?;
-    keys.iter().find_map(|key| obj.get(*key).and_then(|v| v.as_str()))
+    keys.iter()
+        .find_map(|key| obj.get(*key).and_then(|v| v.as_str()))
 }
 
 /// Copy `value[from]` into `out[to]` verbatim when present and not null.
@@ -811,7 +818,10 @@ fn copy_field(
 }
 
 fn insert_str(out: &mut serde_json::Map<String, serde_json::Value>, key: &str, value: &str) {
-    out.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+    out.insert(
+        key.to_string(),
+        serde_json::Value::String(value.to_string()),
+    );
 }
 
 /// Start line of the first hunk in a unified diff (`@@ -12,7 +12,8 @@` → 12).
@@ -1057,10 +1067,7 @@ fn structure_read_output(metadata: Option<&serde_json::Value>) -> Option<String>
                 .and_then(|v| v.as_u64())
                 .filter(|n| *n > 0)
                 .unwrap_or(1);
-            Some(
-                serde_json::json!({ "start_line": start_line, "content": text })
-                    .to_string(),
-            )
+            Some(serde_json::json!({ "start_line": start_line, "content": text }).to_string())
         }
         "directory" => {
             let entries: Vec<&str> = display
@@ -1139,7 +1146,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms: None,
                 model: None,
                 completed_at: msg.completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
             i += 1;
         } else if matches!(msg.role, MessageRole::System) {
@@ -1152,7 +1159,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms: None,
                 model: None,
                 completed_at: msg.completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
             i += 1;
         } else {
@@ -1192,7 +1199,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms,
                 model: turn_model,
                 completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
         }
     }

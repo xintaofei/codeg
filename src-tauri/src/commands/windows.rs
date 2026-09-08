@@ -782,10 +782,7 @@ pub async fn open_import_sessions_window(
             );
             let target_path = format!("/{route}");
             let target_json = serde_json::to_string(&target_path).map_err(|e| {
-                AppCommandError::window(
-                    "Failed to build import navigation target",
-                    e.to_string(),
-                )
+                AppCommandError::window("Failed to build import navigation target", e.to_string())
             })?;
             existing
                 .eval(format!("window.location.replace({target_json});"))
@@ -1697,7 +1694,16 @@ pub async fn resize_pet_panel(app: AppHandle, height: f64) -> Result<(), AppComm
     let panel_h = height.clamp(PET_PANEL_MIN_HEIGHT, max_h);
 
     let (panel_x, panel_y) = compute_pet_panel_origin(
-        px, py, pw, ph, mon_x, mon_y, mon_w, mon_h, PET_PANEL_WIDTH, panel_h,
+        px,
+        py,
+        pw,
+        ph,
+        mon_x,
+        mon_y,
+        mon_w,
+        mon_h,
+        PET_PANEL_WIDTH,
+        panel_h,
     );
 
     // Size before reposition so the re-anchor uses the final height. Errors are
@@ -1729,9 +1735,7 @@ pub async fn focus_conversation(
         "agent": agent,
     });
     app.emit_to("main", "workspace://focus-conversation", payload)
-        .map_err(|e| {
-            AppCommandError::window("Failed to signal main window", e.to_string())
-        })?;
+        .map_err(|e| AppCommandError::window("Failed to signal main window", e.to_string()))?;
     Ok(())
 }
 
@@ -2178,7 +2182,10 @@ mod owner_window_tests {
         state.set_owner("settings".to_string(), "main".to_string());
         state.set_owner("settings".to_string(), "remote-workspace-3".to_string());
 
-        assert_eq!(state.take_owner("settings").as_deref(), Some("remote-workspace-3"));
+        assert_eq!(
+            state.take_owner("settings").as_deref(),
+            Some("remote-workspace-3")
+        );
     }
 }
 
@@ -2211,7 +2218,11 @@ mod pet_panel_geometry_tests {
     fn places_above_and_aligns_right_edge() {
         // Pet low on screen: the panel sits above it, gap included.
         let (x, y) = origin(1000.0, 900.0, 380.0);
-        assert_eq!(y, 900.0 - 380.0 - PET_PANEL_GAP, "panel bottom hugs pet top");
+        assert_eq!(
+            y,
+            900.0 - 380.0 - PET_PANEL_GAP,
+            "panel bottom hugs pet top"
+        );
         // Right edges align: panel_x = pet_right - panel_w.
         assert_eq!(x, (1000.0 + PET_W) - PET_PANEL_WIDTH);
     }

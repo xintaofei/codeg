@@ -49,6 +49,7 @@ import { useAdvertisedGoalActions } from "@/hooks/use-goal-actions"
 import { ConversationShell } from "@/components/chat/conversation-shell"
 import { SessionConfigStaleBanner } from "@/components/chat/session-config-stale-banner"
 import { PiProjectTrustBanner } from "@/components/chat/pi-project-trust-banner"
+import { useContextMenuPointerGuard } from "@/hooks/use-context-menu-pointer-guard"
 import { FeedbackNotesDisplay } from "@/components/chat/feedback-notes-display"
 import { FeedbackDialog } from "@/components/chat/feedback-dialog"
 import { AgentDiagnosticsDialog } from "@/components/settings/agent-diagnostics-dialog"
@@ -83,6 +84,8 @@ import {
   openSettingsWindow,
 } from "@/lib/api"
 import { isWindowedDetail } from "@/lib/turn-window"
+import { applyDraftModelSelection } from "@/lib/apply-conversation-model-selection"
+import { clearModelProviderDraftSelection } from "@/stores/model-provider-selection-store"
 import {
   flushRetryDelayMs,
   isConnectionReady,
@@ -240,6 +243,7 @@ const ConversationTabView = memo(function ConversationTabView({
 }: ConversationTabViewProps) {
   const t = useTranslations("Folder.conversation")
   const tWelcome = useTranslations("Folder.chat.welcomeInputPanel")
+  const tModelProviderPicker = useTranslations("ModelProviderPicker")
   const tDiag = useTranslations("DiagnosticsSettings")
   const sharedT = useTranslations("Folder.chat.shared")
   const tMessageList = useTranslations("Folder.chat.messageList")
@@ -1072,17 +1076,39 @@ const ConversationTabView = memo(function ConversationTabView({
       if (persistedId) {
         // Existing-tab path: row already exists, send immediately with the
         // conversation_id pinned so the backend reuses our row instead of
-        // creating a duplicate.
-        lifecycleSend(draft, selectedModeIdArg, {
-          folderId,
-          conversationId: persistedId,
-          // The backend echoes this as the broadcast UserMessage's message_id,
-          // so viewers' synthesized user turn dedups against our own optimistic
-          // turn by exact id (and never suppresses a different sender's prompt).
-          clientMessageId: optimisticTurn.id,
-          onTurnInProgress,
-          onSendFailed,
-        })
+        // creating a duplicate. A draft selection that missed its save window
+        // is applied first; it must not launch the prompt on native config.
+        void (async () => {
+          try {
+            await applyDraftModelSelection({
+              tabId,
+              agentType: draftAgentType,
+              conversationId: persistedId,
+              connection: {
+                isViewer: conn.isViewer,
+                status: conn.status,
+                reapplyConfig: conn.reapplyConfig,
+              },
+            })
+            lifecycleSend(draft, selectedModeIdArg, {
+              folderId,
+              conversationId: persistedId,
+              // The backend echoes this as the broadcast UserMessage's
+              // message_id, so viewers' synthesized user turn dedups against
+              // our own optimistic turn by exact id (and never suppresses a
+              // different sender's prompt).
+              clientMessageId: optimisticTurn.id,
+              onTurnInProgress,
+              onSendFailed,
+            })
+          } catch (error) {
+            console.error(
+              "[ConversationTabView] apply draft model selection:",
+              error
+            )
+            onSendFailed()
+          }
+        })()
         return
       }
 
@@ -1105,6 +1131,7 @@ const ConversationTabView = memo(function ConversationTabView({
       const chatExistingDir = sendOwnTab?.workingDir
 
       void (async () => {
+        let isApplyingModelSelection = false
         try {
           let newConversationId: number
           // The send's folderId defaults to the active folder; a chat send
@@ -1174,12 +1201,25 @@ const ConversationTabView = memo(function ConversationTabView({
               effectiveConversationId
             )
           }
+          isApplyingModelSelection = true
+          await applyDraftModelSelection({
+            tabId,
+            agentType: draftAgentType,
+            conversationId: newConversationId,
+            connection: {
+              isViewer: conn.isViewer,
+              status: conn.status,
+              reapplyConfig: conn.reapplyConfig,
+            },
+            freshSession: true,
+          })
+          isApplyingModelSelection = false
           clearMessageInputDraft(buildNewConversationDraftStorageKey(tabId))
           refreshConversations()
 
-          // Now that the row exists, kick off the actual prompt with the
-          // conversation_id pinned so the backend adopts our row instead of
-          // creating a duplicate one.
+          // Now that the row exists and the provider config is live, kick off
+          // the actual prompt with the conversation_id pinned so the backend
+          // adopts our row instead of creating a duplicate one.
           lifecycleSend(draft, selectedModeIdArg, {
             folderId: sendFolderId,
             conversationId: newConversationId,
@@ -1208,7 +1248,9 @@ const ConversationTabView = memo(function ConversationTabView({
               draftText
             )
           }
-          if (mountedRef.current) {
+          if (mountedRef.current && isApplyingModelSelection) {
+            setAgentConnectError(tModelProviderPicker("saveFailed"))
+          } else if (mountedRef.current) {
             setAgentConnectError(tWelcome("createConversationFailed"))
           }
         } finally {
@@ -1232,13 +1274,18 @@ const ConversationTabView = memo(function ConversationTabView({
       pinTab,
       refreshConversations,
       selectedAgent,
+      draftAgentType,
       setDbConversationId,
       setExternalId,
+      conn.isViewer,
+      conn.reapplyConfig,
+      conn.status,
       setPendingCleanup,
       setSyncState,
       sharedT,
       ownTab,
       tWelcome,
+      tModelProviderPicker,
       tabId,
       upsertFolder,
     ]
@@ -1393,6 +1440,7 @@ const ConversationTabView = memo(function ConversationTabView({
       if (nextAgentType === selectedAgentRef.current) return
       if (dbConvIdRef.current) return
 
+      clearModelProviderDraftSelection(tabId)
       setDraftAgentType(nextAgentType)
       setModeId(getSavedModeId(nextAgentType))
       setAgentConnectError(null)
@@ -1414,6 +1462,7 @@ const ConversationTabView = memo(function ConversationTabView({
       if (nextAgentType === selectedAgentRef.current) return
       if (dbConvIdRef.current) return
 
+      clearModelProviderDraftSelection(tabId)
       setDraftAgentType(nextAgentType)
       setModeId(getSavedModeId(nextAgentType))
       setAgentConnectError(null)
@@ -2378,6 +2427,7 @@ export function ConversationDetailPanel() {
   const [detailsOpen, setDetailsOpen] = useState(false)
 
   const exportLabels = useExportLabels()
+  const contextMenuPointerGuard = useContextMenuPointerGuard()
 
   // Release the old connection as soon as a preview tab is replaced (the next
   // single-click in the sidebar takes its slot) instead of waiting for a sweep.
@@ -2865,6 +2915,7 @@ export function ConversationDetailPanel() {
             <div
               ref={groupContainerRef}
               className="relative min-h-0 flex-1 overflow-hidden"
+              {...contextMenuPointerGuard.triggerProps}
             >
               {/* Flat sibling shells keyed by stable group id + divider
                   overlays — stable across every split/tile flip, otherwise

@@ -285,7 +285,10 @@ fn content_delta_envelope_serializes_to_expected_shape() {
     let env = EventEnvelope {
         seq: 7,
         connection_id: "c".into(),
-        payload: AcpEvent::ContentDelta { text: "x".into(), parent_tool_use_id: None },
+        payload: AcpEvent::ContentDelta {
+            text: "x".into(),
+            parent_tool_use_id: None,
+        },
     };
     let v = serde_json::to_value(&env).unwrap();
     assert_eq!(v["seq"], 7);

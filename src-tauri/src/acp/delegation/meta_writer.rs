@@ -412,7 +412,16 @@ mod tests {
 
     #[test]
     fn build_meta_with_error_code() {
-        let v = build_delegation_meta("failed", None, Some(7), Some("timeout"), None, None, None, None);
+        let v = build_delegation_meta(
+            "failed",
+            None,
+            Some(7),
+            Some("timeout"),
+            None,
+            None,
+            None,
+            None,
+        );
         let inner = v.get(DELEGATION_META_KEY).unwrap().as_object().unwrap();
         assert_eq!(inner.get("status").unwrap().as_str().unwrap(), "failed");
         assert_eq!(
@@ -467,7 +476,10 @@ mod tests {
         let writer = ConnectionManagerMetaWriter {
             manager: manager.clone(),
         };
-        let state = manager.get_state("p1").await.expect("test connection state");
+        let state = manager
+            .get_state("p1")
+            .await
+            .expect("test connection state");
 
         // While the parent's `delegate_to_agent` call is live, the write lands.
         state.write().await.apply_event(&AcpEvent::ToolCall {

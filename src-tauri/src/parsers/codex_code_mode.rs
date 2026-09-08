@@ -267,7 +267,9 @@ fn find_separators(src: &str) -> Vec<Separator> {
 /// The first line of a template literal that reads as `<text>${hole}<text>`.
 fn separator_from_template(inner: &str) -> Option<Separator> {
     for line in template_lines(inner) {
-        let Some(open) = line.find("${") else { continue };
+        let Some(open) = line.find("${") else {
+            continue;
+        };
         let Some(close) = scan_balanced(line.as_bytes(), open + 1) else {
             continue;
         };
@@ -363,9 +365,7 @@ impl RowPattern {
     /// shadow one of them (see `is_fresh_declarator`).
     fn names(&self) -> Vec<&str> {
         match self {
-            RowPattern::Positional(names) => {
-                names.iter().flatten().map(String::as_str).collect()
-            }
+            RowPattern::Positional(names) => names.iter().flatten().map(String::as_str).collect(),
             RowPattern::Named(pairs) => pairs.iter().map(|(_, bind)| bind.as_str()).collect(),
             RowPattern::Whole(name) => vec![name.as_str()],
         }
@@ -475,7 +475,10 @@ fn find_map_call(src: &str, name: &str, from: usize) -> Option<(usize, usize)> {
             continue;
         }
         let method = skip_ws_and_comments(b, dot + 1);
-        if !src.get(method..).is_some_and(|rest| rest.starts_with("map")) {
+        if !src
+            .get(method..)
+            .is_some_and(|rest| rest.starts_with("map"))
+        {
             continue;
         }
         let after = method + "map".len();
@@ -884,8 +887,10 @@ fn row_label(row: &Value, command: &str) -> Option<String> {
 /// `const results = await Promise.all(` — the binding every parallel script
 /// opens with, and the only handle on the results array the loop can walk.
 static RESULTS_BINDING: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*await\s+Promise\s*\.\s*all\s*\(")
-        .expect("static regex")
+    Regex::new(
+        r"\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*await\s+Promise\s*\.\s*all\s*\(",
+    )
+    .expect("static regex")
 });
 
 /// See `CodeModeScript::text_run`.
@@ -1160,9 +1165,13 @@ fn nothing_else_in_script(src: &str, first: &Range<usize>, second: &Range<usize>
     if first.end > second.start {
         return false;
     }
-    [0..first.start, first.end..second.start, second.end..src.len()]
-        .into_iter()
-        .all(|gap| is_filler(src, gap))
+    [
+        0..first.start,
+        first.end..second.start,
+        second.end..src.len(),
+    ]
+    .into_iter()
+    .all(|gap| is_filler(src, gap))
 }
 
 fn is_filler(src: &str, gap: Range<usize>) -> bool {
@@ -1214,7 +1223,12 @@ struct BodyGrammar<'a> {
 /// Inside a `text(…)` argument the grammar opens up to exactly what a value can
 /// be: the names the loop binds, property reads, `results[counter]`, literals,
 /// `JSON.stringify(…)`, and the operators that appear in real scripts.
-fn scan_body(src: &str, range: Range<usize>, start_depth: usize, ctx: &BodyGrammar) -> Option<usize> {
+fn scan_body(
+    src: &str,
+    range: Range<usize>,
+    start_depth: usize,
+    ctx: &BodyGrammar,
+) -> Option<usize> {
     let b = src.as_bytes();
     let mut calls = 0usize;
     let mut depth = start_depth;
@@ -1244,8 +1258,7 @@ fn scan_body(src: &str, range: Range<usize>, start_depth: usize, ctx: &BodyGramm
                 // `text` and then its `(`, with nothing in between. `text;` and
                 // `text\n(…)` are the same program to JavaScript but not to a
                 // reader, and the second is a call to whatever `(…)` builds.
-                if word != "text" || after_dot || b.get(skip_ws_and_comments(b, j)) != Some(&b'(')
-                {
+                if word != "text" || after_dot || b.get(skip_ws_and_comments(b, j)) != Some(&b'(') {
                     return None;
                 }
                 calls += 1;
@@ -2263,10 +2276,7 @@ impl<'a> LiteralParser<'a> {
             self.i += 1;
         }
         let digits_start = self.i;
-        while self
-            .peek()
-            .is_some_and(|c| c.is_ascii_digit() || c == b'.')
-        {
+        while self.peek().is_some_and(|c| c.is_ascii_digit() || c == b'.') {
             self.i += 1;
         }
         if self.i == digits_start {
@@ -2344,8 +2354,7 @@ fn decode_js_string(raw: &str, quote: u8) -> Option<String> {
                         if let Some(low) = hex_value(&chars, i + 2, 4) {
                             if (0xdc00..0xe000).contains(&low) {
                                 i += 6;
-                                let combined =
-                                    0x10000 + ((value - 0xd800) << 10) + (low - 0xdc00);
+                                let combined = 0x10000 + ((value - 0xd800) << 10) + (low - 0xdc00);
                                 out.push(char::from_u32(combined).unwrap_or('\u{fffd}'));
                                 continue;
                             }
@@ -2412,7 +2421,9 @@ mod tests {
         let src = "const rs = await Promise.all([\n  tools.exec_command({cmd:\"one\"}),\n  tools.exec_command({cmd:\"two\"}),\n  tools.exec_command({cmd:\"three\"})\n]);\nrs.forEach(r => text(r.output));";
         let got = calls(src);
         assert_eq!(
-            got.iter().map(|c| c.input_preview.as_str()).collect::<Vec<_>>(),
+            got.iter()
+                .map(|c| c.input_preview.as_str())
+                .collect::<Vec<_>>(),
             vec!["one", "two", "three"]
         );
     }
@@ -2457,7 +2468,9 @@ mod tests {
 
     #[test]
     fn a_foreach_body_counts_the_same_way() {
-        let src = format!("{TWO_CALLS}r.forEach((x, i) => {{ text(`---RESULT ${{i}}---`); text(x.output); }});\n");
+        let src = format!(
+            "{TWO_CALLS}r.forEach((x, i) => {{ text(`---RESULT ${{i}}---`); text(x.output); }});\n"
+        );
         assert_eq!(parse_code_mode_script(&src).text_run, Some(2));
     }
 
@@ -2732,7 +2745,10 @@ mod tests {
         ]);
         let parsed = split_code_mode_output(Some(&output));
         assert_eq!(parsed.status, ScriptStatus::Running);
-        assert_eq!(parsed.note.as_deref(), Some("Script running with cell ID 56"));
+        assert_eq!(
+            parsed.note.as_deref(),
+            Some("Script running with cell ID 56")
+        );
         assert_eq!(parsed.chunks, vec!["building…"]);
     }
 
@@ -2924,7 +2940,10 @@ mod tests {
         let got = calls(FANOUT);
         assert_eq!(got.len(), 3);
         assert!(got.iter().all(|c| c.tool_name == "exec_command"));
-        assert_eq!(got[0].input_preview, "nl -ba Util.java | sed -n '1160,1345p'");
+        assert_eq!(
+            got[0].input_preview,
+            "nl -ba Util.java | sed -n '1160,1345p'"
+        );
         assert_eq!(
             got[1].input_preview,
             "rg -n \"getAll.*Formula\" src | head -220"

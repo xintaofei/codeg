@@ -170,10 +170,7 @@ impl TerminalInstance {
     }
 
     async fn kill_command(&self) -> Result<(), TerminalRuntimeError> {
-        if matches!(
-            *self.completion.borrow(),
-            TerminalCompletion::Exited(_)
-        ) {
+        if matches!(*self.completion.borrow(), TerminalCompletion::Exited(_)) {
             return Ok(());
         }
 
@@ -473,10 +470,7 @@ impl TerminalRuntime {
     /// Use a shared General Settings shell value for ACP terminal fallbacks.
     /// The config is read at command creation time so existing connections pick
     /// up setting changes without being restarted.
-    pub fn with_default_shell_config(
-        mut self,
-        default_shell: TerminalShellRuntimeConfig,
-    ) -> Self {
+    pub fn with_default_shell_config(mut self, default_shell: TerminalShellRuntimeConfig) -> Self {
         self.default_shell = default_shell;
         self
     }
@@ -1178,9 +1172,7 @@ mod tests {
         let config = TerminalShellRuntimeConfig::new();
         let runtime = TerminalRuntime::with_base_env(BTreeMap::new())
             .with_default_shell_config(config.clone());
-        config
-            .set(Some(shell.to_string_lossy().to_string()))
-            .await;
+        config.set(Some(shell.to_string_lossy().to_string())).await;
 
         let session_id = SessionId::new("selected-shell".to_string());
         let request = CreateTerminalRequest::new(
@@ -1282,8 +1274,7 @@ mod tests {
 
         // Genuine shell operators must evaluate, not be passed as literal args.
         let session_id = SessionId::new("shell-ops".to_string());
-        let request =
-            CreateTerminalRequest::new(session_id.clone(), "true && echo OK".to_string());
+        let request = CreateTerminalRequest::new(session_id.clone(), "true && echo OK".to_string());
         let output = run_and_capture(&runtime, &session_id, request).await;
         assert!(
             output.contains("OK"),
@@ -1304,8 +1295,7 @@ mod tests {
 
         let session_id = SessionId::new("overlong-cmd".to_string());
         let marker = "x".repeat(5000);
-        let request =
-            CreateTerminalRequest::new(session_id.clone(), format!("echo {marker}"));
+        let request = CreateTerminalRequest::new(session_id.clone(), format!("echo {marker}"));
         let output = run_and_capture(&runtime, &session_id, request).await;
         assert!(
             output.contains(&marker),
@@ -1341,8 +1331,7 @@ mod tests {
         let runtime = TerminalRuntime::with_base_env(BTreeMap::new());
 
         let session_id = SessionId::new("direct-exec".to_string());
-        let mut request =
-            CreateTerminalRequest::new(session_id.clone(), "/bin/echo".to_string());
+        let mut request = CreateTerminalRequest::new(session_id.clone(), "/bin/echo".to_string());
         request.args = vec!["hello world".into()];
         let output = run_and_capture(&runtime, &session_id, request).await;
         assert!(
@@ -1550,7 +1539,8 @@ mod tests {
             async move {
                 runtime
                     .wait_for_terminal_exit(WaitForTerminalExitRequest::new(
-                        session_id, terminal_id,
+                        session_id,
+                        terminal_id,
                     ))
                     .await
             }
@@ -1602,7 +1592,8 @@ mod tests {
                 tokio::spawn(async move {
                     runtime
                         .wait_for_terminal_exit(WaitForTerminalExitRequest::new(
-                            session_id, terminal_id,
+                            session_id,
+                            terminal_id,
                         ))
                         .await
                 })

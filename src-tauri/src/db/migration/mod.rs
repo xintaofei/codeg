@@ -44,6 +44,8 @@ mod m20260825_000001_remote_workspace_connection_headers;
 mod m20260829_000001_folder_group;
 mod m20260830_000001_canvas_node;
 mod m20260831_000001_canvas_node_group_grid;
+mod m20260906_000001_agent_setting_model_source;
+mod m20260906_000002_conversation_model_selection;
 mod m20260907_000001_canvas_node_path;
 pub struct Migrator;
 
@@ -95,6 +97,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20260829_000001_folder_group::Migration),
             Box::new(m20260830_000001_canvas_node::Migration),
             Box::new(m20260831_000001_canvas_node_group_grid::Migration),
+            Box::new(m20260906_000001_agent_setting_model_source::Migration),
+            Box::new(m20260906_000002_conversation_model_selection::Migration),
             Box::new(m20260907_000001_canvas_node_path::Migration),
         ]
     }

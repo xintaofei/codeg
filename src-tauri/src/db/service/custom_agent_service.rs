@@ -249,7 +249,10 @@ mod tests {
         let mut def = npx_def("no-version");
         def.version = "   ".into();
         upsert(&db.conn, &def).await.unwrap();
-        assert_eq!(get(&db.conn, "no-version").await.unwrap().unwrap().version, FALLBACK_VERSION);
+        assert_eq!(
+            get(&db.conn, "no-version").await.unwrap().unwrap().version,
+            FALLBACK_VERSION
+        );
     }
 
     #[tokio::test]
@@ -266,7 +269,13 @@ mod tests {
         // appear to save and silently do nothing.
         def.supports_mcp = true;
         upsert(&db.conn, &def).await.unwrap();
-        assert!(get(&db.conn, "mcp-row").await.unwrap().unwrap().supports_mcp);
+        assert!(
+            get(&db.conn, "mcp-row")
+                .await
+                .unwrap()
+                .unwrap()
+                .supports_mcp
+        );
     }
 
     #[tokio::test]
@@ -317,7 +326,9 @@ mod tests {
     async fn hydrate_registry_publishes_rows_to_the_launch_registry() {
         let _guard = custom_registry::hydrate_test_guard();
         let db = fresh_in_memory_db().await;
-        upsert(&db.conn, &npx_def("hydrate-svc-agent")).await.unwrap();
+        upsert(&db.conn, &npx_def("hydrate-svc-agent"))
+            .await
+            .unwrap();
         hydrate_registry(&db.conn).await.unwrap();
         assert!(custom_registry::is_registered("hydrate-svc-agent"));
         let meta = custom_registry::get("hydrate-svc-agent").unwrap();

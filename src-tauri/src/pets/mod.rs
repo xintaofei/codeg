@@ -597,8 +597,11 @@ mod tests {
 
     #[test]
     fn check_sprite_dimensions_rejects_too_many_rows() {
-        let err = check_sprite_dimensions(SPRITE_SHEET_WIDTH, (MAX_SPRITE_ROWS + 1) * SPRITE_FRAME_HEIGHT)
-            .unwrap_err();
+        let err = check_sprite_dimensions(
+            SPRITE_SHEET_WIDTH,
+            (MAX_SPRITE_ROWS + 1) * SPRITE_FRAME_HEIGHT,
+        )
+        .unwrap_err();
         assert!(err.message.contains("too many"), "got: {}", err.message);
     }
 
@@ -615,7 +618,10 @@ mod tests {
         let raw = r#"{"id":"cat","displayName":"Cat","spritesheetPath":"spritesheet.webp","spriteVersionNumber":2,"kind":"creature"}"#;
         let manifest: PetManifest = serde_json::from_str(raw).unwrap();
         assert_eq!(
-            manifest.extra.get("spriteVersionNumber").and_then(|v| v.as_u64()),
+            manifest
+                .extra
+                .get("spriteVersionNumber")
+                .and_then(|v| v.as_u64()),
             Some(2)
         );
         assert_eq!(

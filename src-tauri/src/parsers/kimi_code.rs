@@ -87,11 +87,17 @@ impl KimiCodeParser {
         }
     }
 
-    /// Construct a parser pointed at an explicit `sessions` directory (test
-    /// fixtures).
-    #[cfg(any(test, feature = "test-utils"))]
+    /// Construct a parser pointed at an explicit `sessions` directory instead
+    /// of the env-resolved `$KIMI_CODE_HOME/sessions` — the provider
+    /// workspace's `sessions/` or a test fixture.
     pub fn with_base_dir(base_dir: PathBuf) -> Self {
         Self { base_dir }
+    }
+
+    #[cfg(test)]
+    /// Read-only access to the sessions directory this parser reads from.
+    pub(crate) fn base_dir(&self) -> &Path {
+        &self.base_dir
     }
 
     /// Load `session_index.jsonl` (sibling of `sessions/`) into a
@@ -361,7 +367,11 @@ fn parse_wire(path: &Path, agents_dir: Option<&Path>) -> WireParse {
                 }
             }
             "turn.prompt" => {
-                flush_usage(&mut wp.messages, &mut pending_usage, &mut last_assistant_idx);
+                flush_usage(
+                    &mut wp.messages,
+                    &mut pending_usage,
+                    &mut last_assistant_idx,
+                );
                 let text = collect_prompt_text(&value);
                 if text.trim().is_empty() {
                     continue;
@@ -516,7 +526,11 @@ fn parse_wire(path: &Path, agents_dir: Option<&Path>) -> WireParse {
         }
     }
 
-    flush_usage(&mut wp.messages, &mut pending_usage, &mut last_assistant_idx);
+    flush_usage(
+        &mut wp.messages,
+        &mut pending_usage,
+        &mut last_assistant_idx,
+    );
     wp
 }
 
@@ -684,8 +698,9 @@ fn parse_kimi_subagent_tool_calls(path: &Path) -> Vec<AgentToolCall> {
             "tool.result" => {
                 if let Some(id) = event.get("toolCallId").and_then(Value::as_str) {
                     let result = event.get("result");
-                    let output =
-                        result.and_then(tool_result_preview).map(|s| truncate_str(&s, 500));
+                    let output = result
+                        .and_then(tool_result_preview)
+                        .map(|s| truncate_str(&s, 500));
                     let is_error = result
                         .and_then(|r| r.get("isError"))
                         .and_then(Value::as_bool)
@@ -811,12 +826,7 @@ fn kimi_context_window_used_tokens_from_usage(usage: &TurnUsage) -> Option<u64> 
     (used > 0).then_some(used)
 }
 
-fn text_message(
-    id: String,
-    role: MessageRole,
-    text: String,
-    ts: DateTime<Utc>,
-) -> UnifiedMessage {
+fn text_message(id: String, role: MessageRole, text: String, ts: DateTime<Utc>) -> UnifiedMessage {
     block_message(id, role, ContentBlock::Text { text }, ts)
 }
 
@@ -835,7 +845,7 @@ fn block_message(
         duration_ms: None,
         model: None,
         completed_at: Some(ts),
-    agent_message_id: None,
+        agent_message_id: None,
     }
 }
 
@@ -929,7 +939,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms: None,
                 model: None,
                 completed_at: msg.completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
             i += 1;
         } else if matches!(msg.role, MessageRole::System) {
@@ -942,7 +952,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms: None,
                 model: None,
                 completed_at: msg.completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
             i += 1;
         } else {
@@ -981,7 +991,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms,
                 model: turn_model,
                 completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
         }
     }
@@ -1047,8 +1057,12 @@ mod tests {
         .expect("write state.json");
         let mut file = std::fs::File::create(main.join("wire.jsonl")).expect("create wire.jsonl");
         for record in wire {
-            writeln!(file, "{}", serde_json::to_string(record).expect("serialize"))
-                .expect("write line");
+            writeln!(
+                file,
+                "{}",
+                serde_json::to_string(record).expect("serialize")
+            )
+            .expect("write line");
         }
     }
 
@@ -1107,10 +1121,7 @@ mod tests {
             &json!({"title":"执行一下pnpm build","createdAt":"2026-06-24T04:50:44.154Z"}),
             &sample_wire(),
         );
-        write_session_index(
-            &root,
-            &[(sid, "ignored", "/Users/demo/my-app")],
-        );
+        write_session_index(&root, &[(sid, "ignored", "/Users/demo/my-app")]);
 
         let parser = KimiCodeParser::with_base_dir(root.clone());
 
@@ -1128,9 +1139,9 @@ mod tests {
 
         let has_user = detail.turns.iter().any(|t| {
             matches!(t.role, TurnRole::User)
-                && t.blocks
-                    .iter()
-                    .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("pnpm build")))
+                && t.blocks.iter().any(
+                    |b| matches!(b, ContentBlock::Text { text } if text.contains("pnpm build")),
+                )
         });
         assert!(has_user, "turn.prompt becomes a User turn");
 
@@ -1153,13 +1164,19 @@ mod tests {
             t.blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { tool_name, input_preview, .. }
                 if tool_name == "Bash" && input_preview.as_deref().unwrap_or_default().contains("pnpm build")))
         });
-        assert!(has_tool_use, "tool.call becomes ToolUse with serialized args");
+        assert!(
+            has_tool_use,
+            "tool.call becomes ToolUse with serialized args"
+        );
 
         let has_tool_result = detail.turns.iter().any(|t| {
             t.blocks.iter().any(|b| matches!(b, ContentBlock::ToolResult { output_preview, is_error, .. }
                 if !*is_error && output_preview.as_deref().unwrap_or_default().contains("Compiled successfully")))
         });
-        assert!(has_tool_result, "tool.result becomes a successful ToolResult");
+        assert!(
+            has_tool_result,
+            "tool.result becomes a successful ToolResult"
+        );
 
         let has_assistant_text = detail.turns.iter().any(|t| {
             matches!(t.role, TurnRole::Assistant)
@@ -1167,7 +1184,10 @@ mod tests {
                     .iter()
                     .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("构建完成")))
         });
-        assert!(has_assistant_text, "content.part type=text becomes assistant Text");
+        assert!(
+            has_assistant_text,
+            "content.part type=text becomes assistant Text"
+        );
 
         // Per-step usage records are summed across the turn (37+36 output, etc.).
         let usage = detail
@@ -1263,9 +1283,11 @@ mod tests {
 
         let parser = KimiCodeParser::with_base_dir(root.clone());
         let detail = parser.get_conversation(sid).expect("detail");
-        let errored = detail.turns.iter().flat_map(|t| &t.blocks).any(
-            |b| matches!(b, ContentBlock::ToolResult { is_error, .. } if *is_error),
-        );
+        let errored = detail
+            .turns
+            .iter()
+            .flat_map(|t| &t.blocks)
+            .any(|b| matches!(b, ContentBlock::ToolResult { is_error, .. } if *is_error));
         assert!(errored, "result.isError=true must set is_error");
 
         // "New Session" placeholder title falls back to the first user prompt.
@@ -1350,8 +1372,12 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create subagent dir");
         let mut file = std::fs::File::create(dir.join("wire.jsonl")).expect("create wire.jsonl");
         for record in wire {
-            writeln!(file, "{}", serde_json::to_string(record).expect("serialize"))
-                .expect("write line");
+            writeln!(
+                file,
+                "{}",
+                serde_json::to_string(record).expect("serialize")
+            )
+            .expect("write line");
         }
     }
 
@@ -1447,7 +1473,10 @@ mod tests {
 
         let read = &stats.tool_calls[1];
         assert_eq!(read.tool_name, "Read");
-        assert!(read.is_error, "result.isError=true marks the nested Read failed");
+        assert!(
+            read.is_error,
+            "result.isError=true marks the nested Read failed"
+        );
 
         // A delegation whose transcript directory is missing degrades to no stats.
         let missing = results
@@ -1464,7 +1493,10 @@ mod tests {
             .iter()
             .find(|(id, _)| id.as_deref() == Some("Bash_0"))
             .expect("plain tool result");
-        assert!(plain.1.is_none(), "non-Agent results never carry agent_stats");
+        assert!(
+            plain.1.is_none(),
+            "non-Agent results never carry agent_stats"
+        );
 
         // A non-Agent result with a real `agent_id:` header is still gated out by
         // the call-side classification.

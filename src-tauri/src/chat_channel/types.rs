@@ -104,8 +104,7 @@ impl ChannelMessageTarget {
     }
 
     pub fn is_telegram_forum_topic(&self) -> bool {
-        self.thread_kind.as_deref() == Some(TELEGRAM_FORUM_THREAD_KIND)
-            && self.thread_key.is_some()
+        self.thread_kind.as_deref() == Some(TELEGRAM_FORUM_THREAD_KIND) && self.thread_key.is_some()
     }
 
     pub fn is_telegram_general_topic(&self) -> bool {

@@ -18,6 +18,7 @@ import { TurnBusyError, isTurnInProgressRejection } from "./turn-busy"
 import type { FolderThemeColor } from "./theme-presets"
 import type { FollowUpIntent } from "./task-follow-up"
 import type {
+  AgentModelSource,
   AgentType,
   AgentDelegationDefaults,
   AgentOptionsSnapshot,
@@ -222,7 +223,8 @@ export async function acpConnect(
   workingDir?: string,
   sessionId?: string,
   preferredModeId?: string | null,
-  preferredConfigValues?: Record<string, string> | null
+  preferredConfigValues?: Record<string, string> | null,
+  conversationId?: number | null
 ): Promise<string> {
   return getTransport().call("acp_connect", {
     agentType,
@@ -230,6 +232,7 @@ export async function acpConnect(
     sessionId: sessionId ?? null,
     preferredModeId: preferredModeId ?? null,
     preferredConfigValues: preferredConfigValues ?? null,
+    conversationId: conversationId ?? null,
   })
 }
 
@@ -577,6 +580,16 @@ export async function acpUpdateAgentPreferences(
 
 /** Returns the number of running sessions left on stale config by this save
  *  (for the settings-side "N sessions need restart" toast). */
+export async function acpUpdateAgentModelSource(
+  agentType: AgentType,
+  modelSource: AgentModelSource
+): Promise<number> {
+  return getTransport().call("acp_update_agent_model_source", {
+    agentType,
+    modelSource,
+  })
+}
+
 export async function acpUpdateAgentEnv(
   agentType: AgentType,
   params: {
@@ -3290,6 +3303,20 @@ export async function updateConversationPinned(
   return getTransport().call("update_conversation_pinned", {
     conversationId,
     pinned,
+  })
+}
+
+/** Save or clear the shared Model Provider model selected for one conversation.
+ *  Passing both ids saves it; passing both as null restores native selection. */
+export async function updateConversationModelSelection(
+  conversationId: number,
+  providerId: string | null,
+  modelId: string | null
+): Promise<void> {
+  return getTransport().call("update_conversation_model_selection", {
+    conversationId,
+    providerId,
+    modelId,
   })
 }
 

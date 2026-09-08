@@ -232,10 +232,7 @@ fn next_run_for(
 
 // ── CRUD ───────────────────────────────────────────────────────────────────
 
-async fn find_active(
-    conn: &DatabaseConnection,
-    id: i32,
-) -> Result<automation::Model, DbError> {
+async fn find_active(conn: &DatabaseConnection, id: i32) -> Result<automation::Model, DbError> {
     let row = automation::Entity::find_by_id(id)
         .one(conn)
         .await?
@@ -429,7 +426,10 @@ pub async fn start_run(
     let run = active.insert(conn).await?;
     // Reflect the in-flight state on the parent so the list view shows "running"
     // (settle_run overwrites this with the terminal outcome).
-    if let Some(auto) = automation::Entity::find_by_id(automation_id).one(conn).await? {
+    if let Some(auto) = automation::Entity::find_by_id(automation_id)
+        .one(conn)
+        .await?
+    {
         let mut am = auto.into_active_model();
         am.last_run_status = Set(Some("running".to_string()));
         am.last_run_at = Set(Some(now));
@@ -596,10 +596,7 @@ pub async fn boot_reconcile_interrupted(conn: &DatabaseConnection) -> Result<u64
 
 /// Ids of enabled, scheduled automations whose next fire is due (`next_run_at <=
 /// now`). NULL `next_run_at` (disabled/manual/exhausted) is excluded.
-pub async fn list_due(
-    conn: &DatabaseConnection,
-    now: DateTime<Utc>,
-) -> Result<Vec<i32>, DbError> {
+pub async fn list_due(conn: &DatabaseConnection, now: DateTime<Utc>) -> Result<Vec<i32>, DbError> {
     let rows = automation::Entity::find()
         .filter(automation::Column::Enabled.eq(true))
         .filter(automation::Column::DeletedAt.is_null())
@@ -627,7 +624,10 @@ pub async fn claim_due(
     use sea_orm::TransactionTrait;
     let txn = conn.begin().await?;
 
-    let Some(row) = automation::Entity::find_by_id(automation_id).one(&txn).await? else {
+    let Some(row) = automation::Entity::find_by_id(automation_id)
+        .one(&txn)
+        .await?
+    else {
         txn.rollback().await?;
         return Ok(None);
     };
@@ -661,10 +661,7 @@ pub async fn claim_due(
 
 /// Best-effort retention: delete run rows older than `keep_days`. Spawned
 /// conversations / worktrees are the user's artifacts and are NOT touched.
-pub async fn prune_old_runs(
-    conn: &DatabaseConnection,
-    keep_days: i64,
-) -> Result<u64, DbError> {
+pub async fn prune_old_runs(conn: &DatabaseConnection, keep_days: i64) -> Result<u64, DbError> {
     let cutoff = Utc::now() - chrono::Duration::days(keep_days);
     // Only prune terminal rows. A still-`running` row must survive regardless of
     // age: deleting it would defeat the one-active-run unique index (letting a
@@ -715,7 +712,10 @@ mod tests {
             .await
             .expect("create");
         assert_eq!(created.name, "nightly");
-        assert!(created.next_run_at.is_some(), "scheduled+enabled has next_run");
+        assert!(
+            created.next_run_at.is_some(),
+            "scheduled+enabled has next_run"
+        );
 
         let listed = list(&db.conn).await.expect("list");
         assert_eq!(listed.len(), 1);
@@ -742,7 +742,9 @@ mod tests {
     #[tokio::test]
     async fn manual_has_no_next_run() {
         let db = fresh_in_memory_db().await;
-        let created = create(&db.conn, draft("on demand", None)).await.expect("create");
+        let created = create(&db.conn, draft("on demand", None))
+            .await
+            .expect("create");
         assert!(created.next_run_at.is_none());
     }
 
@@ -772,7 +774,9 @@ mod tests {
     #[tokio::test]
     async fn validation_rejects_bad_input() {
         let db = fresh_in_memory_db().await;
-        assert!(create(&db.conn, draft("", Some("0 0 * * *"))).await.is_err());
+        assert!(create(&db.conn, draft("", Some("0 0 * * *")))
+            .await
+            .is_err());
         let mut no_prompt = draft("x", Some("0 0 * * *"));
         no_prompt.config = serde_json::json!({ "display_text": "", "prompt_blocks": [] });
         assert!(create(&db.conn, no_prompt).await.is_err());
@@ -821,7 +825,7 @@ mod tests {
         assert_eq!(remap_dow_field("1").unwrap(), "2"); // Mon
         assert_eq!(remap_dow_field("6").unwrap(), "7"); // Sat
         assert_eq!(remap_dow_field("7").unwrap(), "1"); // Sun alias
-        // Ranges expand + re-emit as a sorted list (no wrap-around output).
+                                                        // Ranges expand + re-emit as a sorted list (no wrap-around output).
         assert_eq!(remap_dow_field("1-5").unwrap(), "2,3,4,5,6"); // weekdays preset
         assert_eq!(remap_dow_field("6-7").unwrap(), "1,7"); // Sat,Sun
         assert_eq!(remap_dow_field("0-7").unwrap(), "1,2,3,4,5,6,7");
@@ -958,7 +962,9 @@ mod tests {
     #[tokio::test]
     async fn failed_run_bumps_unseen_until_marked() {
         let db = fresh_in_memory_db().await;
-        let a = create(&db.conn, draft("x", Some("0 0 * * *"))).await.unwrap();
+        let a = create(&db.conn, draft("x", Some("0 0 * * *")))
+            .await
+            .unwrap();
         let run = start_run(&db.conn, a.id, "schedule", None).await.unwrap();
         settle_run(
             &db.conn,
@@ -978,7 +984,9 @@ mod tests {
     #[tokio::test]
     async fn boot_reconcile_fails_active_runs() {
         let db = fresh_in_memory_db().await;
-        let a = create(&db.conn, draft("x", Some("0 0 * * *"))).await.unwrap();
+        let a = create(&db.conn, draft("x", Some("0 0 * * *")))
+            .await
+            .unwrap();
         let _ = start_run(&db.conn, a.id, "schedule", None).await.unwrap();
         assert_eq!(boot_reconcile_interrupted(&db.conn).await.unwrap(), 1);
         assert!(!has_active_run(&db.conn, a.id).await.unwrap());
@@ -990,7 +998,9 @@ mod tests {
     #[tokio::test]
     async fn skipped_run_recorded() {
         let db = fresh_in_memory_db().await;
-        let a = create(&db.conn, draft("x", Some("0 0 * * *"))).await.unwrap();
+        let a = create(&db.conn, draft("x", Some("0 0 * * *")))
+            .await
+            .unwrap();
         record_skipped_run(&db.conn, a.id, "schedule", None)
             .await
             .unwrap();
@@ -1012,16 +1022,24 @@ mod tests {
     #[tokio::test]
     async fn claim_due_is_exclusive_and_advances() {
         let db = fresh_in_memory_db().await;
-        let a = create(&db.conn, draft("min", Some("* * * * *"))).await.unwrap();
+        let a = create(&db.conn, draft("min", Some("* * * * *")))
+            .await
+            .unwrap();
         let past = Utc::now() - chrono::Duration::minutes(5);
         force_next_run_at(&db, a.id, past).await;
 
         assert_eq!(list_due(&db.conn, Utc::now()).await.unwrap(), vec![a.id]);
 
         // First claim wins and returns the slot it consumed.
-        assert_eq!(claim_due(&db.conn, a.id, Utc::now()).await.unwrap(), Some(past));
+        assert_eq!(
+            claim_due(&db.conn, a.id, Utc::now()).await.unwrap(),
+            Some(past)
+        );
         // Second claim of the same slot loses (next_run_at already advanced).
-        assert!(claim_due(&db.conn, a.id, Utc::now()).await.unwrap().is_none());
+        assert!(claim_due(&db.conn, a.id, Utc::now())
+            .await
+            .unwrap()
+            .is_none());
         // next_run_at jumped to a future slot — no replay of missed minutes.
         assert!(get(&db.conn, a.id).await.unwrap().next_run_at.unwrap() > Utc::now());
         // No longer due.
@@ -1031,18 +1049,25 @@ mod tests {
     #[tokio::test]
     async fn disabled_automation_not_due() {
         let db = fresh_in_memory_db().await;
-        let a = create(&db.conn, draft("x", Some("* * * * *"))).await.unwrap();
+        let a = create(&db.conn, draft("x", Some("* * * * *")))
+            .await
+            .unwrap();
         force_next_run_at(&db, a.id, Utc::now() - chrono::Duration::minutes(1)).await;
         set_enabled(&db.conn, a.id, false).await.unwrap();
         // Disable clears next_run_at, so it's not due and claim is a no-op.
         assert!(list_due(&db.conn, Utc::now()).await.unwrap().is_empty());
-        assert!(claim_due(&db.conn, a.id, Utc::now()).await.unwrap().is_none());
+        assert!(claim_due(&db.conn, a.id, Utc::now())
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
     async fn prune_removes_old_runs() {
         let db = fresh_in_memory_db().await;
-        let a = create(&db.conn, draft("x", Some("0 0 * * *"))).await.unwrap();
+        let a = create(&db.conn, draft("x", Some("0 0 * * *")))
+            .await
+            .unwrap();
         let run = start_run(&db.conn, a.id, "schedule", None).await.unwrap();
         let mut rm = automation_run::Entity::find_by_id(run.id)
             .one(&db.conn)

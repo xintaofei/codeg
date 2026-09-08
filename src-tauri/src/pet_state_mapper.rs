@@ -1239,8 +1239,14 @@ mod tests {
 
         // High-volume / streaming variants — must NOT trigger the filter.
         let ignored: Vec<AcpEvent> = vec![
-            AcpEvent::ContentDelta { text: "x".into(), parent_tool_use_id: None },
-            AcpEvent::Thinking { text: "x".into(), parent_tool_use_id: None },
+            AcpEvent::ContentDelta {
+                text: "x".into(),
+                parent_tool_use_id: None,
+            },
+            AcpEvent::Thinking {
+                text: "x".into(),
+                parent_tool_use_id: None,
+            },
             AcpEvent::UsageUpdate { used: 1, size: 1 },
             AcpEvent::SessionStarted {
                 session_id: "ext".into(),

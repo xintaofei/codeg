@@ -1420,10 +1420,7 @@ async fn remote_error_from_response(
 /// request that carries the connection's custom headers with no bearer token
 /// gating them: a remote free to name any host is a remote free to choose who
 /// receives those credentials.
-fn absolute_remote_ticket_url(
-    base_url: &str,
-    ticket_url: &str,
-) -> Result<String, AppCommandError> {
+fn absolute_remote_ticket_url(base_url: &str, ticket_url: &str) -> Result<String, AppCommandError> {
     let resolved = if ticket_url.starts_with("http://") || ticket_url.starts_with("https://") {
         ticket_url.to_string()
     } else if ticket_url.starts_with('/') {
@@ -1781,7 +1778,9 @@ async fn run_ws_task(
         let mut socket = match connect_result {
             Ok(s) => s,
             Err(err) => {
-                tracing::error!("[RemoteProxy] WS connect failed for connection {connection_id}: {err}");
+                tracing::error!(
+                    "[RemoteProxy] WS connect failed for connection {connection_id}: {err}"
+                );
                 fail_count += 1;
                 if fail_count >= WS_RECONNECT_FAIL_THRESHOLD {
                     emit_internal(&app, &entry, &event_name, WS_UNAUTHORIZED_CHANNEL).await;

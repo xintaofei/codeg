@@ -242,7 +242,10 @@ mod question_request_tests {
         assert_eq!(msg.title.as_deref(), Some("Agent Question"));
         let text = msg.to_plain_text();
         assert!(text.contains("Approach"), "got {text}");
-        assert!(text.contains("Which approach should we take?"), "got {text}");
+        assert!(
+            text.contains("Which approach should we take?"),
+            "got {text}"
+        );
         assert!(text.contains("MVP first"), "got {text}");
         assert!(text.contains("Risk first"), "got {text}");
     }

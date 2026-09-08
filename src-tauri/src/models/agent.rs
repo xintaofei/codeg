@@ -6,6 +6,32 @@ use std::fmt;
 /// form is `custom:<registry-id>`, e.g. `custom:goose`.
 pub const CUSTOM_AGENT_WIRE_PREFIX: &str = "custom:";
 
+/// Whether an agent's model/catalog configuration comes from its native
+/// config files or codeg's shared Model Provider catalog (`models.json`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentModelSource {
+    Native,
+    Provider,
+}
+
+impl AgentModelSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Provider => "provider",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "native" => Some(Self::Native),
+            "provider" => Some(Self::Provider),
+            _ => None,
+        }
+    }
+}
+
 /// Which agent backs a conversation.
 ///
 /// The fifteen named variants are compile-time built-ins with hand-written
@@ -247,7 +273,10 @@ mod tests {
             assert_eq!(agent.as_wire(), wire);
             assert_eq!(AgentType::from_wire(wire), Some(agent));
             // The JSON form is what `serde_json::to_string` writes to the DB.
-            assert_eq!(serde_json::to_string(&agent).unwrap(), format!("\"{wire}\""));
+            assert_eq!(
+                serde_json::to_string(&agent).unwrap(),
+                format!("\"{wire}\"")
+            );
             assert_eq!(
                 serde_json::from_str::<AgentType>(&format!("\"{wire}\"")).unwrap(),
                 agent

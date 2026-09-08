@@ -72,6 +72,8 @@ pub struct AcpConnectParams {
     pub preferred_mode_id: Option<String>,
     #[serde(default)]
     pub preferred_config_values: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub conversation_id: Option<i32>,
 }
 
 pub async fn acp_connect(
@@ -81,11 +83,12 @@ pub async fn acp_connect(
     let db = &state.db;
     let manager = &state.connection_manager;
 
-    let runtime_env = acp_commands::build_session_runtime_env(
+    let runtime_env = acp_commands::build_session_runtime_env_with_conversation(
         db,
         params.agent_type,
         params.session_id.as_deref(),
         &state.data_dir,
+        params.conversation_id,
     )
     .await
     .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
@@ -915,8 +918,8 @@ pub async fn acp_update_pi_config(
     Ok(Json(()))
 }
 
-pub async fn acp_load_pi_config(
-) -> Result<Json<acp_commands::PiConfigProjection>, AppCommandError> {
+pub async fn acp_load_pi_config() -> Result<Json<acp_commands::PiConfigProjection>, AppCommandError>
+{
     Ok(Json(acp_commands::load_pi_config_core()))
 }
 
@@ -1454,4 +1457,28 @@ mod tests {
         assert!(text.contains(r#"{"agentType":"antigravity"}"#));
         assert!(!text.contains("codex"));
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpUpdateAgentModelSourceParams {
+    pub agent_type: AgentType,
+    pub model_source: crate::models::agent::AgentModelSource,
+}
+
+pub async fn acp_update_agent_model_source(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpUpdateAgentModelSourceParams>,
+) -> Result<Json<usize>, AppCommandError> {
+    let affected = acp_commands::acp_update_agent_model_source_and_refresh(
+        params.agent_type,
+        params.model_source,
+        &state.db,
+        &state.connection_manager,
+        &state.data_dir,
+        &state.emitter,
+    )
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(affected))
 }

@@ -462,7 +462,8 @@ impl TerminalManager {
                 Err(err) => {
                     tracing::error!(
                         "[TERM] failed to query child status for terminal {}: {}",
-                        id, err
+                        id,
+                        err
                     );
                     exited_terminal_ids.push(id.clone());
                 }

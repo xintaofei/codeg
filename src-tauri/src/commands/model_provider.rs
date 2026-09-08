@@ -280,12 +280,13 @@ pub async fn update_model_provider_and_refresh(
 
     // Every agent bound to this provider may now be on stale config (the cascade
     // rewrote their env_json + native config files). Recompute and notify.
-    let agent_types: Vec<AgentType> = agent_setting_service::find_by_model_provider_id(&db.conn, id)
-        .await
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|setting| serde_json::from_str(&setting.agent_type).ok())
-        .collect();
+    let agent_types: Vec<AgentType> =
+        agent_setting_service::find_by_model_provider_id(&db.conn, id)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|setting| serde_json::from_str(&setting.agent_type).ok())
+            .collect();
     let affected_running_sessions = acp::refresh_config_staleness(
         manager,
         db,
@@ -512,6 +513,7 @@ mod tests {
             installed_version: Set(None),
             env_json: Set(Some("{}".to_string())),
             model_provider_id: Set(Some(provider.id)),
+            model_source: Set("native".to_string()),
             created_at: Set(now),
             updated_at: Set(now),
         }

@@ -223,7 +223,9 @@ pub async fn run_automation_engine(engine: Arc<AutomationEngine>) {
     // holding the exclusive data-dir lock (see `build_engine`), so a process
     // sharing the data dir never reaches this point against another's live runs.
     match automation_service::boot_reconcile_interrupted(&engine.db.conn).await {
-        Ok(n) if n > 0 => tracing::info!("[automation] boot reconcile failed {n} interrupted run(s)"),
+        Ok(n) if n > 0 => {
+            tracing::info!("[automation] boot reconcile failed {n} interrupted run(s)")
+        }
         Ok(_) => {}
         Err(e) => tracing::warn!("[automation] boot reconcile error: {e}"),
     }
@@ -319,16 +321,21 @@ impl AutomationEngine {
             .await
             .map_err(|e| e.to_string())?
         {
-            let _ =
-                automation_service::record_skipped_run(&self.db.conn, automation_id, trigger, scheduled_for)
-                    .await;
+            let _ = automation_service::record_skipped_run(
+                &self.db.conn,
+                automation_id,
+                trigger,
+                scheduled_for,
+            )
+            .await;
             self.emit(AutomationChange::Upsert { id: automation_id });
             return Err("previous run still active".to_string());
         }
 
-        let run = automation_service::start_run(&self.db.conn, automation_id, trigger, scheduled_for)
-            .await
-            .map_err(|e| e.to_string())?;
+        let run =
+            automation_service::start_run(&self.db.conn, automation_id, trigger, scheduled_for)
+                .await
+                .map_err(|e| e.to_string())?;
         // Broadcast the running row immediately so every client sees it the
         // instant it exists — `launch` can take seconds (worktree add + agent
         // spawn) before it re-emits RunStarted with the live "View conversation"
@@ -391,9 +398,10 @@ impl AutomationEngine {
         };
         // The command core (not the bare service) so the task board gets its
         // `task://changed` broadcast and the work-task pump its nudge for free.
-        let info = crate::commands::work_task::work_task_create_core(&self.emitter, &self.db, draft)
-            .await
-            .map_err(|e| e.to_string())?;
+        let info =
+            crate::commands::work_task::work_task_create_core(&self.emitter, &self.db, draft)
+                .await
+                .map_err(|e| e.to_string())?;
 
         let settled = automation_service::settle_run(
             &self.db.conn,
@@ -504,7 +512,8 @@ impl AutomationEngine {
         // every run of an automation carried the identical one.
         let title = first_chars(&auto.name, 80);
         let conversation_id =
-            match create_conversation_core(&self.db.conn, cwd.folder_id, agent_type, Some(title)).await
+            match create_conversation_core(&self.db.conn, cwd.folder_id, agent_type, Some(title))
+                .await
             {
                 Ok(id) => id,
                 Err(e) => {
@@ -1152,7 +1161,10 @@ mod tests {
     fn worktree_names_carry_ids() {
         assert_eq!(basename("/home/me/repo"), "repo");
         assert_eq!(basename("/home/me/repo/"), "repo");
-        assert_eq!(sibling_path("/home/me/repo", "repo-automation-3-run-7"), "/home/me/repo-automation-3-run-7");
+        assert_eq!(
+            sibling_path("/home/me/repo", "repo-automation-3-run-7"),
+            "/home/me/repo-automation-3-run-7"
+        );
     }
 
     // Windows folders are registered with backslashes, so a `/`-only split

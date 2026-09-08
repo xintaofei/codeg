@@ -240,7 +240,10 @@ pub struct CustomAgentDef {
     /// Defaults ON, and is skipped when serializing at that default, so
     /// definitions stored before this field existed keep both their behaviour
     /// and their fingerprint.
-    #[serde(default = "default_supports_mcp", skip_serializing_if = "is_default_supports_mcp")]
+    #[serde(
+        default = "default_supports_mcp",
+        skip_serializing_if = "is_default_supports_mcp"
+    )]
     pub supports_mcp: bool,
 }
 
@@ -958,10 +961,16 @@ mod tests {
 
     #[test]
     fn derives_command_names_from_package_specs() {
-        assert_eq!(derive_command_name("@qwen-code/qwen-code@0.21.0"), "qwen-code");
+        assert_eq!(
+            derive_command_name("@qwen-code/qwen-code@0.21.0"),
+            "qwen-code"
+        );
         assert_eq!(derive_command_name("@github/copilot@1.0.75"), "copilot");
         assert_eq!(derive_command_name("cline@3.0.46"), "cline");
-        assert_eq!(derive_command_name("fast-agent-acp==0.9.24"), "fast-agent-acp");
+        assert_eq!(
+            derive_command_name("fast-agent-acp==0.9.24"),
+            "fast-agent-acp"
+        );
         assert_eq!(
             derive_command_name("hermes-agent[acp,mcp]==0.19.0"),
             "hermes-agent"
@@ -1037,7 +1046,10 @@ mod tests {
 
         let mut empty_name = npx_def("qwen-code");
         empty_name.name = "   ".into();
-        assert_eq!(build_meta(&empty_name).unwrap_err(), CustomAgentError::EmptyName);
+        assert_eq!(
+            build_meta(&empty_name).unwrap_err(),
+            CustomAgentError::EmptyName
+        );
 
         let mut wrong_channel = npx_def("qwen-code");
         wrong_channel.distribution_kind = CustomDistributionKind::Uvx;
@@ -1126,9 +1138,7 @@ mod tests {
     fn nested_archive_entry_switches_to_dir_tree_extraction() {
         let meta = build_meta(&binary_def("dist-package/agent", None)).expect("valid");
         match meta.distribution {
-            AgentDistribution::Binary {
-                cmd, dir_entry, ..
-            } => {
+            AgentDistribution::Binary { cmd, dir_entry, .. } => {
                 assert_eq!(cmd, "agent");
                 let entry = dir_entry.expect("nested entry must extract the whole tree");
                 assert_eq!(entry.unix, "dist-package/agent");
@@ -1195,7 +1205,13 @@ mod tests {
             );
         }
         // The registry's real spellings still work.
-        for ok in ["./goose", "goose", "dist-package/cursor-agent", "amp-acp.exe", ""] {
+        for ok in [
+            "./goose",
+            "goose",
+            "dist-package/cursor-agent",
+            "amp-acp.exe",
+            "",
+        ] {
             let def = binary_def(ok, None);
             assert!(
                 validate(&def).is_ok(),
@@ -1318,7 +1334,10 @@ mod tests {
         // Re-hydrating an unchanged definition must reuse the SAME leak.
         assert!(hydrate(std::slice::from_ref(&def)).is_empty());
         let second = get("hydrate-test-agent").expect("still registered");
-        assert!(std::ptr::eq(first, second), "unchanged def must not re-leak");
+        assert!(
+            std::ptr::eq(first, second),
+            "unchanged def must not re-leak"
+        );
 
         // Hydrating an empty set unregisters everything.
         assert!(hydrate(&[]).is_empty());
@@ -1355,7 +1374,10 @@ mod tests {
         // An unregistered (deleted) id reads as all-off — a phantom column
         // must not survive its agent.
         assert!(hydrate(&[]).is_empty());
-        assert_eq!(skills_decl("skills-flag-agent"), CustomSkillsDecl::default());
+        assert_eq!(
+            skills_decl("skills-flag-agent"),
+            CustomSkillsDecl::default()
+        );
     }
 
     #[test]

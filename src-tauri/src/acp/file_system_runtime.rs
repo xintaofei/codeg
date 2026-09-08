@@ -365,7 +365,10 @@ fn resolve_root_slot(slot: &RootSlot, runtime_env: &BTreeMap<String, String>) ->
         // all, which `child_home_dir` has already warned about — treat the slot
         // as unresolvable rather than substituting codeg's answer for it.
         let base = if *expands {
-            expand_home_prefix(&value.to_string_lossy(), child_home_dir(runtime_env).as_ref())
+            expand_home_prefix(
+                &value.to_string_lossy(),
+                child_home_dir(runtime_env).as_ref(),
+            )
         } else {
             PathBuf::from(value)
         };
@@ -628,7 +631,10 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
         // `resolve_cursor_config_from` prefers CURSOR_CONFIG_DIR verbatim and
         // only then `<XDG_CONFIG_HOME>/cursor` — order matters.
         AgentType::Cursor => &[RootSlot {
-            candidates: &[("CURSOR_CONFIG_DIR", "", VERBATIM), ("XDG_CONFIG_HOME", "cursor", VERBATIM)],
+            candidates: &[
+                ("CURSOR_CONFIG_DIR", "", VERBATIM),
+                ("XDG_CONFIG_HOME", "cursor", VERBATIM),
+            ],
             trims: false,
             default_rel: &[".cursor"],
         }],
@@ -1636,7 +1642,10 @@ mod tests {
             return; // no real subdirectory to build the alias from
         };
 
-        for value in [format!("~/{subdir}/.."), format!("{}/{subdir}/..", home.display())] {
+        for value in [
+            format!("~/{subdir}/.."),
+            format!("{}/{subdir}/..", home.display()),
+        ] {
             let runtime_env = BTreeMap::from([("GEMINI_HOME".to_string(), value.clone())]);
             let roots = agent_data_roots(AgentType::Antigravity, &runtime_env);
             for root in &roots {

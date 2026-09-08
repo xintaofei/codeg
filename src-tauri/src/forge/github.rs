@@ -179,10 +179,7 @@ fn label_qualifier(name: &str) -> String {
 /// what a filter box is expected to do).
 fn search_terms(raw: &str) -> String {
     raw.split_whitespace()
-        .map(|word| {
-            word.trim_start_matches(['-', '+'])
-                .replace([':', '"'], "")
-        })
+        .map(|word| word.trim_start_matches(['-', '+']).replace([':', '"'], ""))
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
@@ -306,7 +303,10 @@ pub async fn list_labels(
 ) -> Result<ForgeLabelList, ForgeError> {
     let repo = super::normalize_repo(owner_repo)
         .ok_or_else(|| ForgeError::Invalid(format!("bad repository path: {owner_repo}")))?;
-    let url = format!("{}/repos/{repo}/labels?per_page={LABEL_PAGE_SIZE}", auth.api_base);
+    let url = format!(
+        "{}/repos/{repo}/labels?per_page={LABEL_PAGE_SIZE}",
+        auth.api_base
+    );
     let raw: Vec<RawLabel> = api_get(auth, &url)
         .await?
         .json()
@@ -347,7 +347,9 @@ pub async fn list_comments(
     let repo = super::normalize_repo(owner_repo)
         .ok_or_else(|| ForgeError::Invalid(format!("bad repository path: {owner_repo}")))?;
     if number <= 0 {
-        return Err(ForgeError::Invalid(format!("bad work item number: {number}")));
+        return Err(ForgeError::Invalid(format!(
+            "bad work item number: {number}"
+        )));
     }
     // Oldest first, which is this endpoint's own default and the only order a
     // conversation reads in. It takes no `sort` parameter, so there is nothing
@@ -436,7 +438,9 @@ pub async fn create_comment(
     let repo = super::normalize_repo(owner_repo)
         .ok_or_else(|| ForgeError::Invalid(format!("bad repository path: {owner_repo}")))?;
     if number <= 0 {
-        return Err(ForgeError::Invalid(format!("bad work item number: {number}")));
+        return Err(ForgeError::Invalid(format!(
+            "bad work item number: {number}"
+        )));
     }
     let url = format!("{}/repos/{repo}/issues/{number}/comments", auth.api_base);
     let raw: RawComment = api_post(auth, &url, &serde_json::json!({ "body": body }))
@@ -469,7 +473,9 @@ pub async fn set_item_state(
     let repo = super::normalize_repo(owner_repo)
         .ok_or_else(|| ForgeError::Invalid(format!("bad repository path: {owner_repo}")))?;
     if number <= 0 {
-        return Err(ForgeError::Invalid(format!("bad work item number: {number}")));
+        return Err(ForgeError::Invalid(format!(
+            "bad work item number: {number}"
+        )));
     }
     let collection = match kind {
         ForgeItemKind::Issue => "issues",
@@ -582,7 +588,9 @@ pub async fn change_detail(
     let repo = super::normalize_repo(owner_repo)
         .ok_or_else(|| ForgeError::Invalid(format!("bad repository path: {owner_repo}")))?;
     if number <= 0 {
-        return Err(ForgeError::Invalid(format!("bad work item number: {number}")));
+        return Err(ForgeError::Invalid(format!(
+            "bad work item number: {number}"
+        )));
     }
     let url = format!("{}/repos/{repo}/pulls/{number}", auth.api_base);
     let raw: RawPull = api_get(auth, &url)
@@ -611,8 +619,16 @@ pub async fn change_detail(
 
     Ok(ForgeChangeDetail {
         number: if raw.number > 0 { raw.number } else { number },
-        base_ref: raw.base.as_ref().map(|b| b.ref_name.clone()).unwrap_or_default(),
-        head_ref: raw.head.as_ref().map(|h| h.ref_name.clone()).unwrap_or_default(),
+        base_ref: raw
+            .base
+            .as_ref()
+            .map(|b| b.ref_name.clone())
+            .unwrap_or_default(),
+        head_ref: raw
+            .head
+            .as_ref()
+            .map(|h| h.ref_name.clone())
+            .unwrap_or_default(),
         head_repo,
         head_sha,
         draft: raw.draft,
@@ -846,7 +862,9 @@ pub async fn list_change_files(
     let repo = super::normalize_repo(owner_repo)
         .ok_or_else(|| ForgeError::Invalid(format!("bad repository path: {owner_repo}")))?;
     if number <= 0 {
-        return Err(ForgeError::Invalid(format!("bad work item number: {number}")));
+        return Err(ForgeError::Invalid(format!(
+            "bad work item number: {number}"
+        )));
     }
     let url = format!(
         "{}/repos/{repo}/pulls/{number}/files?page={page}&per_page={per_page}",
@@ -998,7 +1016,9 @@ pub async fn merge_change(
     let repo = super::normalize_repo(owner_repo)
         .ok_or_else(|| ForgeError::Invalid(format!("bad repository path: {owner_repo}")))?;
     if number <= 0 {
-        return Err(ForgeError::Invalid(format!("bad work item number: {number}")));
+        return Err(ForgeError::Invalid(format!(
+            "bad work item number: {number}"
+        )));
     }
     let url = format!("{}/repos/{repo}/pulls/{number}/merge", auth.api_base);
     let mut payload = serde_json::json!({ "merge_method": method.github_method() });
@@ -1046,7 +1066,11 @@ static LOGIN_CACHE: LazyLock<RwLock<HashMap<String, String>>> =
 
 async fn current_login(auth: &ResolvedAuth) -> Result<String, ForgeError> {
     let cache_key = format!("{}\n{}", auth.api_base, auth.account_id);
-    if let Some(hit) = LOGIN_CACHE.read().ok().and_then(|c| c.get(&cache_key).cloned()) {
+    if let Some(hit) = LOGIN_CACHE
+        .read()
+        .ok()
+        .and_then(|c| c.get(&cache_key).cloned())
+    {
         return Ok(hit);
     }
     #[derive(Deserialize)]
@@ -1236,8 +1260,7 @@ mod tests {
             }
             Kind::MergedPr => {
                 v["state"] = serde_json::json!("closed");
-                v["pull_request"] =
-                    serde_json::json!({ "merged_at": "2026-08-16T00:00:00Z" });
+                v["pull_request"] = serde_json::json!({ "merged_at": "2026-08-16T00:00:00Z" });
             }
             Kind::ClosedPr => {
                 v["state"] = serde_json::json!("closed");
@@ -1456,7 +1479,14 @@ mod tests {
             "repo:acme/app is:issue state:open"
         );
         assert_eq!(
-            search_query("acme/app", ForgeTab::Prs, "closed", Some("alice"), &[], None),
+            search_query(
+                "acme/app",
+                ForgeTab::Prs,
+                "closed",
+                Some("alice"),
+                &[],
+                None
+            ),
             "repo:acme/app is:pr state:closed assignee:alice"
         );
         // "all" is the ABSENCE of a state qualifier — `state:all` matches
@@ -1489,7 +1519,10 @@ mod tests {
             "repo:acme/app is:issue state:open label:\"bug\" label:\"help wanted\""
         );
         // A name carrying the two characters that END a quoted string.
-        assert_eq!(label_qualifier(r#"say "hi"\ok"#), r#"label:"say \"hi\"\\ok""#);
+        assert_eq!(
+            label_qualifier(r#"say "hi"\ok"#),
+            r#"label:"say \"hi\"\\ok""#
+        );
     }
 
     /// The box says "search title and description", so it must not double as a
@@ -1498,7 +1531,10 @@ mod tests {
     #[test]
     fn free_text_is_stripped_of_query_syntax() {
         assert_eq!(search_terms("  login   timeout "), "login timeout");
-        assert_eq!(search_terms("is:closed -bug \"exact\""), "isclosed bug exact");
+        assert_eq!(
+            search_terms("is:closed -bug \"exact\""),
+            "isclosed bug exact"
+        );
         // Nothing but syntax is nothing at all — an empty tail must not leave a
         // trailing space on `q`.
         assert_eq!(search_terms(" : \" "), "");
@@ -1526,13 +1562,19 @@ mod tests {
     /// title+description, so this is what makes the two forges agree.
     #[test]
     fn free_text_searches_only_the_title_and_the_body() {
-        let q = search_query("acme/app", ForgeTab::Issues, "open", None, &[], Some("boom"));
+        let q = search_query(
+            "acme/app",
+            ForgeTab::Issues,
+            "open",
+            None,
+            &[],
+            Some("boom"),
+        );
         assert!(q.contains("in:title,body"), "{q}");
         // The qualifier belongs to the TEXT: with nothing to search it would be
         // a lone qualifier narrowing a query that has no keywords to narrow.
         assert!(
-            !search_query("acme/app", ForgeTab::Issues, "open", None, &[], None)
-                .contains("in:"),
+            !search_query("acme/app", ForgeTab::Issues, "open", None, &[], None).contains("in:"),
             "no text, no scope qualifier"
         );
         assert!(
@@ -1551,16 +1593,26 @@ mod tests {
 
         let issues = list_issues(
             &auth,
-            &ListIssuesRequest { page: 2, per_page: 20, ..req(ForgeTab::Issues) },
+            &ListIssuesRequest {
+                page: 2,
+                per_page: 20,
+                ..req(ForgeTab::Issues)
+            },
         )
         .await
         .unwrap();
-        assert_eq!(issues.rows.iter().map(|r| r.number).collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(
+            issues.rows.iter().map(|r| r.number).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
         assert!(issues.rows.iter().all(|r| !r.is_pr));
         // Empty label dropped; the colour rides along, hashed and lowercased.
         assert_eq!(
             issues.rows[0].labels,
-            vec![ForgeLabel { name: "bug".into(), color: Some("#d73a4a".into()) }]
+            vec![ForgeLabel {
+                name: "bug".into(),
+                color: Some("#d73a4a".into())
+            }]
         );
         assert_eq!(issues.rows[0].author.as_deref(), Some("alice"));
         // Rides along with the list row — the panel's author avatar costs no
@@ -1576,7 +1628,11 @@ mod tests {
         assert_eq!(issues.reachable_count, None);
         assert!(issues.has_next, "40 of 57 shown");
         assert!(!issues.incomplete);
-        assert_eq!(issues.trustworthy_count(), Some(57), "a badge may show this");
+        assert_eq!(
+            issues.trustworthy_count(),
+            Some(57),
+            "a badge may show this"
+        );
 
         {
             let sent = seen.read().unwrap();
@@ -1584,7 +1640,10 @@ mod tests {
             assert_eq!((sent.page.as_str(), sent.per_page.as_str()), ("2", "20"));
             assert_eq!(sent.advanced_search, "true");
             // The default order, and the one github.com's own list opens on.
-            assert_eq!((sent.sort.as_str(), sent.order.as_str()), ("created", "desc"));
+            assert_eq!(
+                (sent.sort.as_str(), sent.order.as_str()),
+                ("created", "desc")
+            );
         }
         // The comment count rides along on the same payload.
         assert_eq!(issues.rows[0].comments, 1);
@@ -1592,7 +1651,11 @@ mod tests {
         // Last page: 57 matches, 20 per page → page 3 ends the list.
         let last = list_issues(
             &auth,
-            &ListIssuesRequest { page: 3, per_page: 20, ..req(ForgeTab::Issues) },
+            &ListIssuesRequest {
+                page: 3,
+                per_page: 20,
+                ..req(ForgeTab::Issues)
+            },
         )
         .await
         .unwrap();
@@ -1608,7 +1671,11 @@ mod tests {
 
         let list = list_issues(
             &auth,
-            &ListIssuesRequest { page: 0, per_page: 9_999, ..req(ForgeTab::Issues) },
+            &ListIssuesRequest {
+                page: 0,
+                per_page: 9_999,
+                ..req(ForgeTab::Issues)
+            },
         )
         .await
         .unwrap();
@@ -1629,10 +1696,22 @@ mod tests {
         let prs = list_issues(&auth, &req(ForgeTab::Prs)).await.unwrap();
         let by_number = |n: i64| prs.rows.iter().find(|r| r.number == n).expect("row");
         assert!(prs.rows.iter().all(|r| r.is_pr));
-        assert_eq!((by_number(2).state.as_str(), by_number(2).draft), ("open", false));
-        assert_eq!((by_number(4).state.as_str(), by_number(4).draft), ("open", true));
-        assert_eq!((by_number(6).state.as_str(), by_number(6).draft), ("merged", false));
-        assert_eq!((by_number(8).state.as_str(), by_number(8).draft), ("closed", false));
+        assert_eq!(
+            (by_number(2).state.as_str(), by_number(2).draft),
+            ("open", false)
+        );
+        assert_eq!(
+            (by_number(4).state.as_str(), by_number(4).draft),
+            ("open", true)
+        );
+        assert_eq!(
+            (by_number(6).state.as_str(), by_number(6).draft),
+            ("merged", false)
+        );
+        assert_eq!(
+            (by_number(8).state.as_str(), by_number(8).draft),
+            ("closed", false)
+        );
 
         // `draft` on an ISSUE hit is meaningless; it must never leak through.
         let issues = list_issues(&auth, &req(ForgeTab::Issues)).await.unwrap();
@@ -1649,11 +1728,19 @@ mod tests {
 
         let mid = list_issues(
             &auth,
-            &ListIssuesRequest { page: 9, per_page: 100, ..req(ForgeTab::Issues) },
+            &ListIssuesRequest {
+                page: 9,
+                per_page: 100,
+                ..req(ForgeTab::Issues)
+            },
         )
         .await
         .unwrap();
-        assert_eq!(mid.total_count, Some(24_000), "the true count is still told");
+        assert_eq!(
+            mid.total_count,
+            Some(24_000),
+            "the true count is still told"
+        );
         // …and the ceiling is told SEPARATELY, because page numbers are built
         // from it. Without this the footer would offer page 1200 of a
         // 20-per-page list, and clicking it is a 422.
@@ -1667,7 +1754,11 @@ mod tests {
         // Page 10 × 100 lands exactly on the cap: there is no reachable page 11.
         let at_cap = list_issues(
             &auth,
-            &ListIssuesRequest { page: 10, per_page: 100, ..req(ForgeTab::Issues) },
+            &ListIssuesRequest {
+                page: 10,
+                per_page: 100,
+                ..req(ForgeTab::Issues)
+            },
         )
         .await
         .unwrap();
@@ -1680,14 +1771,24 @@ mod tests {
     async fn assigned_me_resolves_login_once() {
         let (api_base, user_hits, seen) = mock_api().await;
         let auth = auth_for(api_base);
-        let request = ListIssuesRequest { assigned_me: true, ..req(ForgeTab::Issues) };
+        let request = ListIssuesRequest {
+            assigned_me: true,
+            ..req(ForgeTab::Issues)
+        };
 
         let first = list_issues(&auth, &request).await.unwrap();
-        assert_eq!(first.rows.iter().map(|r| r.number).collect::<Vec<_>>(), vec![9]);
+        assert_eq!(
+            first.rows.iter().map(|r| r.number).collect::<Vec<_>>(),
+            vec![9]
+        );
         assert!(seen.read().unwrap().q.contains("assignee:alice"));
         let second = list_issues(&auth, &request).await.unwrap();
         assert_eq!(second.rows.len(), 1);
-        assert_eq!(user_hits.load(Ordering::SeqCst), 1, "login cached after first use");
+        assert_eq!(
+            user_hits.load(Ordering::SeqCst),
+            1,
+            "login cached after first use"
+        );
     }
 
     /// 403 + exhausted quota is a rate limit (with its retry hint), NOT an
@@ -1716,9 +1817,15 @@ mod tests {
             (ForgeSort::RecentlyUpdated, "updated", "desc"),
             (ForgeSort::LeastRecentlyUpdated, "updated", "asc"),
         ] {
-            list_issues(&auth, &ListIssuesRequest { sort, ..req(ForgeTab::Issues) })
-                .await
-                .unwrap();
+            list_issues(
+                &auth,
+                &ListIssuesRequest {
+                    sort,
+                    ..req(ForgeTab::Issues)
+                },
+            )
+            .await
+            .unwrap();
             let sent = seen.read().unwrap();
             assert_eq!(
                 (sent.sort.as_str(), sent.order.as_str()),
@@ -1762,10 +1869,16 @@ mod tests {
         assert_eq!(
             list.labels,
             vec![
-                ForgeLabel { name: "bug".into(), color: Some("#d73a4a".into()) },
+                ForgeLabel {
+                    name: "bug".into(),
+                    color: Some("#d73a4a".into())
+                },
                 // Unrecognized colour → no colour, NOT a dropped label: the
                 // name is what the filter needs, the swatch is decoration.
-                ForgeLabel { name: "help wanted".into(), color: None },
+                ForgeLabel {
+                    name: "help wanted".into(),
+                    color: None
+                },
             ],
             "empty name dropped"
         );
@@ -1789,7 +1902,9 @@ mod tests {
         let (api_base, _, _) = mock_api().await;
         let auth = auth_for(api_base);
 
-        let page = list_comments(&auth, "Acme/App", 42, 1, 20).await.expect("comments");
+        let page = list_comments(&auth, "Acme/App", 42, 1, 20)
+            .await
+            .expect("comments");
         assert_eq!((page.page, page.per_page), (1, 20));
         let ids: Vec<&str> = page.comments.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, vec!["1", "2"]);
@@ -1825,7 +1940,9 @@ mod tests {
         let row_for = |user: serde_json::Value| {
             let mut raw = hit(1, Kind::Issue);
             raw["user"] = user;
-            serde_json::from_value::<RawIssue>(raw).expect("issue").into_row(false)
+            serde_json::from_value::<RawIssue>(raw)
+                .expect("issue")
+                .into_row(false)
         };
 
         let ok = row_for(serde_json::json!({ "login": "alice", "avatar_url": "https://a.test/1" }));
@@ -1834,11 +1951,18 @@ mod tests {
 
         let hostile =
             row_for(serde_json::json!({ "login": "alice", "avatar_url": "javascript:alert(1)" }));
-        assert_eq!(hostile.author.as_deref(), Some("alice"), "the name still stands");
+        assert_eq!(
+            hostile.author.as_deref(),
+            Some("alice"),
+            "the name still stands"
+        );
         assert_eq!(hostile.author_avatar, None);
 
         // A picture GitHub did not send, and an account it no longer has.
-        assert_eq!(row_for(serde_json::json!({ "login": "alice" })).author_avatar, None);
+        assert_eq!(
+            row_for(serde_json::json!({ "login": "alice" })).author_avatar,
+            None
+        );
         let gone = row_for(serde_json::Value::Null);
         assert_eq!((gone.author, gone.author_avatar), (None, None));
     }
@@ -1851,10 +1975,14 @@ mod tests {
         let (api_base, _, _) = mock_api().await;
         let auth = auth_for(api_base);
 
-        let first = list_comments(&auth, "acme/app", 42, 1, 20).await.expect("page 1");
+        let first = list_comments(&auth, "acme/app", 42, 1, 20)
+            .await
+            .expect("page 1");
         assert!(first.has_next);
 
-        let second = list_comments(&auth, "acme/app", 42, 2, 20).await.expect("page 2");
+        let second = list_comments(&auth, "acme/app", 42, 2, 20)
+            .await
+            .expect("page 2");
         assert!(!second.has_next, "no rel=next on the last page");
         assert_eq!(second.comments.len(), 1);
         // The `javascript:` avatar is refused rather than forwarded into the
@@ -1869,8 +1997,12 @@ mod tests {
             has_next_link(&headers)
         };
         assert!(link("<http://x?page=2>; rel=\"next\""));
-        assert!(link("<http://x?page=9>; rel=\"last\", <http://x?page=2>; rel=\"next\""));
-        assert!(!link("<http://x?page=1>; rel=\"prev\", <http://x?page=1>; rel=\"first\""));
+        assert!(link(
+            "<http://x?page=9>; rel=\"last\", <http://x?page=2>; rel=\"next\""
+        ));
+        assert!(!link(
+            "<http://x?page=1>; rel=\"prev\", <http://x?page=1>; rel=\"first\""
+        ));
         // A URL that merely CONTAINS the word must not count as the relation.
         assert!(!link("<http://x?q=rel=\"next\">; rel=\"last\""));
         assert!(!has_next_link(&reqwest::header::HeaderMap::new()));
@@ -1922,9 +2054,13 @@ mod tests {
         use axum::routing::{patch, post, put};
         let writes: Writes = Arc::new(std::sync::Mutex::new(Vec::new()));
 
-        let record = |writes: Writes, method: &'static str, path: String, body: serde_json::Value| {
-            writes.lock().unwrap().push((method.to_string(), path, body));
-        };
+        let record =
+            |writes: Writes, method: &'static str, path: String, body: serde_json::Value| {
+                writes
+                    .lock()
+                    .unwrap()
+                    .push((method.to_string(), path, body));
+            };
 
         let w = writes.clone();
         let comments = post(
@@ -2057,7 +2193,10 @@ mod tests {
             )
             // An instance old enough to omit the keys entirely. Every one of
             // them defaults to ON, so silence must not read as "forbidden".
-            .route("/repos/acme/legacy", get(|| async { Json(serde_json::json!({})) }))
+            .route(
+                "/repos/acme/legacy",
+                get(|| async { Json(serde_json::json!({})) }),
+            )
             .route(
                 "/repos/acme/blocked/pulls/{number}/merge",
                 put(|| async {
@@ -2271,15 +2410,25 @@ mod tests {
         use axum::routing::get;
         let app = axum::Router::new().route(
             "/search/issues",
-            get(|| async { (axum::http::StatusCode::GONE, "{\"message\":\"Issues are disabled\"}") }),
+            get(|| async {
+                (
+                    axum::http::StatusCode::GONE,
+                    "{\"message\":\"Issues are disabled\"}",
+                )
+            }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let auth = auth_for(format!("http://localhost:{port}"));
-        let err = list_issues(&auth, &req(ForgeTab::Issues)).await.expect_err("410");
-        assert!(matches!(err, ForgeError::Api { status: 410, .. }), "got {err:?}");
+        let err = list_issues(&auth, &req(ForgeTab::Issues))
+            .await
+            .expect_err("410");
+        assert!(
+            matches!(err, ForgeError::Api { status: 410, .. }),
+            "got {err:?}"
+        );
         assert_eq!(super::super::auth::recall_forge("localhost"), None);
     }
 
@@ -2350,9 +2499,15 @@ mod tests {
         assert_eq!(sent[1].1, "pulls/7");
         assert_eq!(sent[1].0, "PATCH", "GitHub edits with PATCH, not PUT");
 
-        assert!(set_item_state(&auth, "acme/app", ForgeItemKind::Issue, 0, ForgeStateAction::Reopen)
-            .await
-            .is_err());
+        assert!(set_item_state(
+            &auth,
+            "acme/app",
+            ForgeItemKind::Issue,
+            0,
+            ForgeStateAction::Reopen
+        )
+        .await
+        .is_err());
     }
 
     /// The menu is what the REPOSITORY permits. A method it has turned off
@@ -2398,10 +2553,16 @@ mod tests {
         let (api_base, writes) = mock_write_api().await;
         let auth = auth_for(api_base);
 
-        let row = merge_change(&auth, "Acme/App", 7, ForgeMergeMethod::Squash, Some("abc123"))
-            .await
-            .expect("merge")
-            .expect("a row came back");
+        let row = merge_change(
+            &auth,
+            "Acme/App",
+            7,
+            ForgeMergeMethod::Squash,
+            Some("abc123"),
+        )
+        .await
+        .expect("merge")
+        .expect("a row came back");
         assert!(row.is_pr);
         // The whole reason for the second request: GitHub has no merged STATE,
         // and the re-read's top-level `merged_at` is what turns `closed` into
@@ -2496,7 +2657,10 @@ mod tests {
         )
         .await
         .expect("issue");
-        assert_eq!((row.number, row.is_pr, row.state.as_str()), (123, false, "open"));
+        assert_eq!(
+            (row.number, row.is_pr, row.state.as_str()),
+            (123, false, "open")
+        );
         assert_eq!(row.title, "Login times out");
         let sent = writes.lock().unwrap().clone();
         assert_eq!(sent[0].2["title"], "Login times out");
@@ -2512,7 +2676,11 @@ mod tests {
         create_issue(
             &auth,
             "acme/app",
-            &ResolvedNewIssue { title: "t".into(), body: None, labels: vec![] },
+            &ResolvedNewIssue {
+                title: "t".into(),
+                body: None,
+                labels: vec![],
+            },
         )
         .await
         .expect("issue");
@@ -2530,14 +2698,22 @@ mod tests {
         let auth = auth_for(format!("{api_base}/detail"));
         let detail = change_detail(&auth, "Acme/App", 7).await.expect("detail");
 
-        assert_eq!((detail.base_ref.as_str(), detail.head_ref.as_str()), ("main", "fix/timeout"));
+        assert_eq!(
+            (detail.base_ref.as_str(), detail.head_ref.as_str()),
+            ("main", "fix/timeout")
+        );
         // The fork is named; a same-repository head would be `None` and draw
         // no second coordinate at all.
         assert_eq!(detail.head_repo.as_deref(), Some("contributor/App"));
         assert_eq!(detail.head_sha.as_deref(), Some("abc123"));
         assert!(detail.draft);
         assert_eq!(
-            (detail.additions, detail.deletions, detail.changed_files, detail.commits),
+            (
+                detail.additions,
+                detail.deletions,
+                detail.changed_files,
+                detail.commits
+            ),
             (Some(120), Some(8), Some(3), Some(2))
         );
         // Null, not false: GitHub computes this asynchronously, and "cannot be
@@ -2556,15 +2732,37 @@ mod tests {
         };
         assert_eq!(by_name("build"), ForgeCheckState::Success);
         assert_eq!(by_name("e2e"), ForgeCheckState::Queued);
-        assert_eq!(by_name("deploy"), ForgeCheckState::Neutral, "skipped is not a pass");
+        assert_eq!(
+            by_name("deploy"),
+            ForgeCheckState::Neutral,
+            "skipped is not a pass"
+        );
         assert_eq!(by_name("lint"), ForgeCheckState::Failure);
-        assert_eq!(by_name("codecov"), ForgeCheckState::Failure, "`error` is a failure");
+        assert_eq!(
+            by_name("codecov"),
+            ForgeCheckState::Failure,
+            "`error` is a failure"
+        );
         // One `build`, not two: the Action and the commit status report the
         // same name and would otherwise appear as checks that can disagree.
-        assert_eq!(detail.checks.checks.iter().filter(|c| c.name == "build").count(), 1);
+        assert_eq!(
+            detail
+                .checks
+                .checks
+                .iter()
+                .filter(|c| c.name == "build")
+                .count(),
+            1
+        );
         // A URL the instance made up does not reach an `href`.
         assert_eq!(
-            detail.checks.checks.iter().find(|c| c.name == "e2e").unwrap().url,
+            detail
+                .checks
+                .checks
+                .iter()
+                .find(|c| c.name == "e2e")
+                .unwrap()
+                .url,
             None
         );
     }
@@ -2624,7 +2822,10 @@ mod tests {
             .expect("files");
         assert_eq!(page.files.len(), 5);
         assert_eq!(page.files[0].status, ForgeFileStatus::Modified);
-        assert_eq!((page.files[0].additions, page.files[0].deletions), (Some(10), Some(2)));
+        assert_eq!(
+            (page.files[0].additions, page.files[0].deletions),
+            (Some(10), Some(2))
+        );
         // The diff rides along with the page and is kept, which is what a file
         // row opens onto.
         assert_eq!(page.files[0].patch.as_deref(), Some("@@ -1 +1 @@"));
@@ -2634,8 +2835,14 @@ mod tests {
         // it has a patch, so it is not binary.
         assert!(!page.files[1].binary);
         assert!(page.files[2].binary);
-        assert_eq!((page.files[2].additions, page.files[2].deletions), (None, None));
-        assert!(page.files[2].patch.is_none(), "binary: nothing to open onto");
+        assert_eq!(
+            (page.files[2].additions, page.files[2].deletions),
+            (None, None)
+        );
+        assert!(
+            page.files[2].patch.is_none(),
+            "binary: nothing to open onto"
+        );
         assert_eq!(page.files[3].status, ForgeFileStatus::Removed);
         // Counted on both sides, so NOT binary — and still no diff, because
         // GitHub withheld it. The two must stay tellable apart: one is a file
@@ -2649,8 +2856,12 @@ mod tests {
         // The mock sends no `Link`, so there is no next page to offer.
         assert!(!page.has_next);
 
-        assert!(list_change_files(&auth, "not-a-repo", 7, 1, 50).await.is_err());
-        assert!(list_change_files(&auth, "acme/app", 0, 1, 50).await.is_err());
+        assert!(list_change_files(&auth, "not-a-repo", 7, 1, 50)
+            .await
+            .is_err());
+        assert!(list_change_files(&auth, "acme/app", 0, 1, 50)
+            .await
+            .is_err());
     }
 
     /// The four vocabularies folded into one. `conclusion` is meaningless
@@ -2660,7 +2871,10 @@ mod tests {
     fn check_vocabularies_fold_into_five_states() {
         assert_eq!(check_run_state("queued", None), ForgeCheckState::Queued);
         assert_eq!(check_run_state("waiting", None), ForgeCheckState::Queued);
-        assert_eq!(check_run_state("in_progress", None), ForgeCheckState::Running);
+        assert_eq!(
+            check_run_state("in_progress", None),
+            ForgeCheckState::Running
+        );
         assert_eq!(
             check_run_state("completed", Some("success")),
             ForgeCheckState::Success

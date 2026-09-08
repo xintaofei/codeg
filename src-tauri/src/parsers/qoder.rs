@@ -396,8 +396,7 @@ fn active_branch(records: &[Value]) -> Vec<usize> {
                     .get("logicalParentUuid")
                     .and_then(Value::as_str)
                     .filter(|parent| !parent.is_empty())
-            })
-        {
+            }) {
             // `null`, absent or empty on BOTH: this record starts the session.
             None => {
                 reached_root = true;
@@ -623,7 +622,7 @@ fn parse_transcript(bytes: &[u8]) -> Transcript {
                     duration_ms: None,
                     model: None,
                     completed_at: Some(timestamp),
-                agent_message_id: None,
+                    agent_message_id: None,
                 });
                 pending_assistant_chat_id = None;
             }
@@ -693,7 +692,7 @@ fn parse_transcript(bytes: &[u8]) -> Transcript {
                         duration_ms: None,
                         model: entry_model,
                         completed_at: Some(timestamp),
-                    agent_message_id: None,
+                        agent_message_id: None,
                     });
                 }
                 pending_assistant_chat_id = message_id;
@@ -936,7 +935,8 @@ mod tests {
     const TOOL_RESULT_LINE: &str = r#"{"type":"user","uuid":"u2","timestamp":"2026-08-16T15:45:33.200Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"1\tthe secret number is 42\n2\t"}]},"sourceToolAssistantUUID":"a2","promptId":"s1","toolUseResult":{"type":"text","file":{"filePath":"NOTES.md","content":"the secret number is 42\n","numLines":2,"startLine":1,"totalLines":2}},"parentUuid":"a2","isSidechain":false,"cwd":"/private/tmp/probe","sessionId":"s1","userType":"external","entrypoint":"cli","version":"1.1.23","gitBranch":"main"}"#;
     const ANSWER_LINE: &str = r#"{"type":"assistant","uuid":"a3","timestamp":"2026-08-16T15:45:34.000Z","message":{"id":"chatcmpl-1","type":"message","role":"assistant","model":"qmodel_38max","stop_reason":"end_turn","content":[{"type":"text","text":"42","citations":null}],"usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":5,"output_tokens":2,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0}}},"parentUuid":"u2","isSidechain":false,"cwd":"/private/tmp/probe","sessionId":"s1","userType":"external","entrypoint":"cli","version":"1.1.23","gitBranch":"main"}"#;
     const ACTIVE_LEAF_LINE: &str = r#"{"type":"active-leaf","sessionId":"s1","leafUuid":"a3","explicit":false,"timestamp":1786895133089}"#;
-    const LAST_PROMPT_LINE: &str = r#"{"type":"last-prompt","sessionId":"s1","lastPrompt":"read NOTES.md and reply"}"#;
+    const LAST_PROMPT_LINE: &str =
+        r#"{"type":"last-prompt","sessionId":"s1","lastPrompt":"read NOTES.md and reply"}"#;
     const SIDECHAIN_LINE: &str = r#"{"type":"assistant","uuid":"sc1","timestamp":"2026-08-16T15:45:35.000Z","message":{"role":"assistant","model":"qmodel_38max","content":[{"type":"text","text":"sub-agent internal output"}]},"parentUuid":null,"isSidechain":true,"cwd":"/private/tmp/probe","sessionId":"s1","userType":"external","entrypoint":"cli","version":"1.1.23","gitBranch":"main"}"#;
 
     // The shape a REAL ACP-entrypoint session writes (captured from
@@ -1017,7 +1017,10 @@ mod tests {
         // paired tool result is absorbed, and the end-turn answer (which lands
         // after that tool-result boundary) forms the next turn.
         assert_eq!(detail.turns.len(), 3);
-        assert!(matches!(detail.turns[0].role, crate::models::TurnRole::User));
+        assert!(matches!(
+            detail.turns[0].role,
+            crate::models::TurnRole::User
+        ));
         assert!(matches!(
             detail.turns[1].role,
             crate::models::TurnRole::Assistant
@@ -1207,8 +1210,12 @@ mod tests {
             "the absolute override wins over both of the other two"
         );
         // Empty is the same as unset, everywhere — never an empty path segment.
-        let resolved =
-            resolve_qoder_config_dir_from(Some("".into()), Some("".into()), Some("".into()), home());
+        let resolved = resolve_qoder_config_dir_from(
+            Some("".into()),
+            Some("".into()),
+            Some("".into()),
+            home(),
+        );
         assert_eq!(resolved, PathBuf::from("/Users/default/.qoder"));
         let resolved = resolve_qoder_config_dir_from(None, None, None, home());
         assert_eq!(resolved, PathBuf::from("/Users/default/.qoder"));
@@ -1217,7 +1224,8 @@ mod tests {
             resolve_qoder_config_dir_from(None, Some("/sandbox/home".into()), None, home());
         assert_eq!(resolved, PathBuf::from("/sandbox/home/.qoder"));
         // …and `QODER_CONFIG_DIR_NAME` renames the dir itself, independently.
-        let resolved = resolve_qoder_config_dir_from(None, None, Some(".qoder-work".into()), home());
+        let resolved =
+            resolve_qoder_config_dir_from(None, None, Some(".qoder-work".into()), home());
         assert_eq!(resolved, PathBuf::from("/Users/default/.qoder-work"));
         let resolved = resolve_qoder_config_dir_from(
             None,
@@ -1274,7 +1282,10 @@ mod tests {
             r#"{"type":"active-leaf","sessionId":"s1","explicit":true,"timestamp":1786895140000}"#;
         write_session(tmp.path(), "s2", &[USER_LINE, ANSWER_LINE, malformed]);
         let detail = parser_in(tmp.path()).get_conversation("s2").unwrap();
-        assert!(!detail.turns.is_empty(), "missing key is not an empty branch");
+        assert!(
+            !detail.turns.is_empty(),
+            "missing key is not an empty branch"
+        );
     }
 
     // The ACP entrypoint — the one codeg itself drives — writes the human
@@ -1293,10 +1304,16 @@ mod tests {
 
         let detail = parser_in(tmp.path()).get_conversation("s2").unwrap();
         assert_eq!(detail.turns.len(), 1);
-        assert!(matches!(detail.turns[0].role, crate::models::TurnRole::User));
+        assert!(matches!(
+            detail.turns[0].role,
+            crate::models::TurnRole::User
+        ));
         assert_eq!(text_of(&detail.turns[0]), "hi");
         assert!(
-            !detail.turns.iter().any(|t| text_of(t).contains("pricingUrl")),
+            !detail
+                .turns
+                .iter()
+                .any(|t| text_of(t).contains("pricingUrl")),
             "a failed API turn must not render as the assistant's answer"
         );
     }
@@ -1309,11 +1326,9 @@ mod tests {
 
         let detail = parser_in(tmp.path()).get_conversation("s3").unwrap();
         assert_eq!(detail.turns.len(), 1);
-        assert!(detail
-            .turns[0]
-            .blocks
-            .iter()
-            .any(|b| matches!(b, ContentBlock::Image { mime_type, .. } if mime_type == "image/png")));
+        assert!(detail.turns[0].blocks.iter().any(
+            |b| matches!(b, ContentBlock::Image { mime_type, .. } if mime_type == "image/png")
+        ));
         assert_eq!(detail.summary.title.as_deref(), Some("what is this"));
     }
 
@@ -1334,7 +1349,10 @@ mod tests {
                 .any(|t| text_of(t).contains("Continue from where")),
             "meta injections are addressed to the model"
         );
-        assert_eq!(detail.summary.title.as_deref(), Some("read NOTES.md and reply"));
+        assert_eq!(
+            detail.summary.title.as_deref(),
+            Some("read NOTES.md and reply")
+        );
     }
 
     // A rewind leaves the abandoned branch in the file forever. Replaying in
@@ -1517,10 +1535,7 @@ mod tests {
             .iter()
             .find(|t| text_of(t).contains("SUMMARY OF EARLIER WORK"))
             .expect("summary rendered");
-        assert!(matches!(
-            summary_turn.role,
-            crate::models::TurnRole::System
-        ));
+        assert!(matches!(summary_turn.role, crate::models::TurnRole::System));
         assert_eq!(
             detail.summary.title.as_deref(),
             Some("read NOTES.md and reply")

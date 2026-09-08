@@ -201,10 +201,7 @@ async fn perform_impl(state: Arc<AppState>) -> Result<AppUpdateState, AppCommand
 /// (losing it). Dropping first makes the lock free the instant the state
 /// becomes claimable.
 #[cfg(not(feature = "tauri-runtime"))]
-fn publish_after_releasing<F: FnOnce()>(
-    guard: tokio::sync::OwnedMutexGuard<()>,
-    publish: F,
-) {
+fn publish_after_releasing<F: FnOnce()>(guard: tokio::sync::OwnedMutexGuard<()>, publish: F) {
     drop(guard);
     publish();
 }
@@ -226,18 +223,14 @@ fn restart_impl(state: Arc<AppState>) -> Result<UpdateActionResult, AppCommandEr
     // window and gets killed by the restart. Free after a successful claim; on
     // the unreachable failure path restore a terminal error rather than leaving
     // the snapshot stuck "restarting".
-    let guard = state
-        .system_op_lock
-        .clone()
-        .try_lock_owned()
-        .map_err(|_| {
-            crate::update::state::set_error(
-                &state.update_state,
-                &state.emitter,
-                "Another system operation is in progress",
-            );
-            busy()
-        })?;
+    let guard = state.system_op_lock.clone().try_lock_owned().map_err(|_| {
+        crate::update::state::set_error(
+            &state.update_state,
+            &state.emitter,
+            "Another system operation is in progress",
+        );
+        busy()
+    })?;
     let restart_delay_ms = crate::update::runtime::restart_delay_ms();
     crate::update::schedule_restart(guard);
     Ok(UpdateActionResult {
@@ -264,18 +257,14 @@ async fn rollback_impl(state: Arc<AppState>) -> Result<UpdateActionResult, AppCo
         ));
     }
     // Hold the lock until the process exits so nothing races the revert+relaunch.
-    let guard = state
-        .system_op_lock
-        .clone()
-        .try_lock_owned()
-        .map_err(|_| {
-            crate::update::state::set_error(
-                &state.update_state,
-                &state.emitter,
-                "Another system operation is in progress",
-            );
-            busy()
-        })?;
+    let guard = state.system_op_lock.clone().try_lock_owned().map_err(|_| {
+        crate::update::state::set_error(
+            &state.update_state,
+            &state.emitter,
+            "Another system operation is in progress",
+        );
+        busy()
+    })?;
     let restart_delay_ms = crate::update::runtime::restart_delay_ms();
     if let Err(e) = crate::update::install::rollback() {
         let msg = e.to_string();

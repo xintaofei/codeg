@@ -44,7 +44,10 @@ async fn run_git_with_index(
 pub async fn git_dir(path: &str) -> Result<std::path::PathBuf, AppCommandError> {
     let out = run_git(path, &["rev-parse", "--absolute-git-dir"]).await?;
     if !out.status.success() {
-        return Err(git_command_error("rev-parse --absolute-git-dir", &out.stderr));
+        return Err(git_command_error(
+            "rev-parse --absolute-git-dir",
+            &out.stderr,
+        ));
     }
     let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if dir.is_empty() {
@@ -58,7 +61,11 @@ pub async fn git_dir(path: &str) -> Result<std::path::PathBuf, AppCommandError> 
 
 /// Resolve a revision to a full sha.
 pub async fn rev_parse(path: &str, rev: &str) -> Result<String, AppCommandError> {
-    let out = run_git(path, &["rev-parse", "--verify", &format!("{rev}^{{commit}}")]).await?;
+    let out = run_git(
+        path,
+        &["rev-parse", "--verify", &format!("{rev}^{{commit}}")],
+    )
+    .await?;
     if !out.status.success() {
         return Err(git_command_error("rev-parse", &out.stderr));
     }
@@ -456,7 +463,11 @@ pub async fn local_branch_tip(
     let refname = format!("refs/heads/{branch}");
     let out = run_git(
         repo_path,
-        &["for-each-ref", "--format=%(refname)\t%(objectname)", &refname],
+        &[
+            "for-each-ref",
+            "--format=%(refname)\t%(objectname)",
+            &refname,
+        ],
     )
     .await?;
     if !out.status.success() {
@@ -869,7 +880,11 @@ mod tests {
             .await
             .expect("acceptance diff");
         let names: Vec<&str> = seen.iter().map(|f| f.file.as_str()).collect();
-        assert_eq!(names, ["a.txt", "new.txt"], "ignored files stay out: {seen:?}");
+        assert_eq!(
+            names,
+            ["a.txt", "new.txt"],
+            "ignored files stay out: {seen:?}"
+        );
         let new_file = seen.iter().find(|f| f.file == "new.txt").expect("new file");
         assert_eq!(
             (new_file.additions, new_file.deletions),
@@ -903,7 +918,10 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| n.starts_with("codeg-diff-index"))
             .collect();
-        assert!(leftovers.is_empty(), "scratch index left behind: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "scratch index left behind: {leftovers:?}"
+        );
     }
 
     /// A file the ignore rules exclude but that is TRACKED anyway (`git add
@@ -1030,7 +1048,10 @@ mod tests {
         git_run(dir.path(), &["commit", "-qm", "more work"]);
         git_run(dir.path(), &["checkout", "-q", "main"]);
         assert!(branch_holds_unlanded_work(path, "task/1", Some("main"), Some(&base_sha)).await);
-        git_run(dir.path(), &["merge", "-q", "--no-ff", "-m", "land", "task/1"]);
+        git_run(
+            dir.path(),
+            &["merge", "-q", "--no-ff", "-m", "land", "task/1"],
+        );
         assert!(!branch_holds_unlanded_work(path, "task/1", Some("main"), Some(&base_sha)).await);
     }
 
@@ -1175,7 +1196,10 @@ mod tests {
         // ── the tip moved: the branch (and its commit) must survive ──
         let moved = dir.path().join("wt-moved");
         let moved_path = moved.to_str().expect("utf-8 path");
-        git_run(&repo, &["worktree", "add", "-q", "-b", "task/moved", moved_path]);
+        git_run(
+            &repo,
+            &["worktree", "add", "-q", "-b", "task/moved", moved_path],
+        );
         std::fs::write(moved.join("a.txt"), "one\ntwo\n").expect("write");
         git_run(&moved, &["commit", "-qam", "published"]);
         let published = rev_parse(moved_path, "HEAD").await.expect("published tip");
@@ -1188,7 +1212,9 @@ mod tests {
             .await
             .expect_err("a branch that outran the published tip is not deletable");
         assert_eq!(
-            rev_parse(repo_path, "refs/heads/task/moved").await.expect("branch alive"),
+            rev_parse(repo_path, "refs/heads/task/moved")
+                .await
+                .expect("branch alive"),
             outran,
             "the commit nobody published is still reachable"
         );
@@ -1196,7 +1222,10 @@ mod tests {
         // ── the tip is exactly what was published: the branch goes ──
         let same = dir.path().join("wt-same");
         let same_path = same.to_str().expect("utf-8 path");
-        git_run(&repo, &["worktree", "add", "-q", "-b", "task/same", same_path]);
+        git_run(
+            &repo,
+            &["worktree", "add", "-q", "-b", "task/same", same_path],
+        );
         std::fs::write(same.join("a.txt"), "one\nagain\n").expect("write");
         git_run(&same, &["commit", "-qam", "published"]);
         let tip = rev_parse(same_path, "HEAD").await.expect("tip");
@@ -1215,7 +1244,10 @@ mod tests {
         // finish rather than flag the same failure forever.
         let gone = dir.path().join("wt-gone");
         let gone_path = gone.to_str().expect("utf-8 path");
-        git_run(&repo, &["worktree", "add", "-q", "-b", "task/gone", gone_path]);
+        git_run(
+            &repo,
+            &["worktree", "add", "-q", "-b", "task/gone", gone_path],
+        );
         let gone_tip = rev_parse(gone_path, "HEAD").await.expect("tip");
         remove_worktree_and_branch(repo_path, gone_path, Some("task/gone"), Some(&gone_tip))
             .await
@@ -1373,10 +1405,7 @@ mod tests {
             "not yours\n",
             "the unrelated checkout keeps its uncommitted work"
         );
-        assert!(
-            elsewhere.join("a.txt").exists(),
-            "and the rest of its tree"
-        );
+        assert!(elsewhere.join("a.txt").exists(), "and the rest of its tree");
         // Asked OF git rather than matched against `worktree list`: that
         // listing prints forward slashes on Windows while the fixture path
         // holds backslashes, and a temp directory can come back short-named,

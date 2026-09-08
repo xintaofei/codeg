@@ -239,8 +239,7 @@ mod tests {
         assert_eq!(plan, "");
         assert_eq!(tc, "call-42");
         // Missing planContent + toolCallId → empty strings, still Ok.
-        let (plan, tc) =
-            parse_grok_exit_plan_request(&json!({ "sessionId": "s-1" })).unwrap();
+        let (plan, tc) = parse_grok_exit_plan_request(&json!({ "sessionId": "s-1" })).unwrap();
         assert!(plan.is_empty());
         assert!(tc.is_empty());
     }
@@ -266,7 +265,10 @@ mod tests {
             decision: PlanApprovalDecision::Approve,
             feedback: None,
         };
-        assert_eq!(build_grok_exit_plan_response(&approve)["outcome"], "approved");
+        assert_eq!(
+            build_grok_exit_plan_response(&approve)["outcome"],
+            "approved"
+        );
         assert_eq!(build_grok_exit_plan_response(&approve)["feedback"], "");
         // The obsolete `decision` field must be gone (it was silently defaulted).
         assert!(build_grok_exit_plan_response(&approve)

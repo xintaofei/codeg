@@ -62,24 +62,20 @@ mod tauri_app {
     use crate::acp::manager::ConnectionManager;
     use crate::chat_channel::manager::ChatChannelManager;
     use crate::commands::{
-        acp as acp_commands, app_update as app_update_commands,
-        automation as automation_commands, background as background_commands, backup,
-        canvas as canvas_commands,
+        acp as acp_commands, app_update as app_update_commands, automation as automation_commands,
+        background as background_commands, backup, canvas as canvas_commands,
         chat_authoring as chat_authoring_commands, chat_channel as chat_channel_commands,
-        conversations,
-        custom_skills as custom_skills_commands, delegation as delegation_commands,
+        conversations, custom_skills as custom_skills_commands, delegation as delegation_commands,
         experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
-        folder_links, office_tools as office_tools_commands, open_in,
-        folders, logging as logging_commands, mcp as mcp_commands,
-        model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
+        folder_links, folders, forge as forge_commands, logging as logging_commands,
+        mcp as mcp_commands, model_provider as model_provider_commands,
+        model_provider_file as model_provider_file_commands, notification,
+        office_tools as office_tools_commands, open_in, pet as pet_commands, project_boot,
         question as question_commands, quick_messages as quick_messages_commands,
-        remote_proxy as remote_proxy_commands,
-        remote_workspace as remote_workspace_commands, science as science_commands,
-        session_info as session_info_commands,
-        system_settings, terminal as terminal_commands,
-        token_usage as token_usage_commands,
-        forge as forge_commands, version_control, windows, work_task as work_task_commands,
-        workspace_state as workspace_state_commands,
+        remote_proxy as remote_proxy_commands, remote_workspace as remote_workspace_commands,
+        science as science_commands, session_info as session_info_commands, system_settings,
+        terminal as terminal_commands, token_usage as token_usage_commands, version_control,
+        windows, work_task as work_task_commands, workspace_state as workspace_state_commands,
     };
     use crate::terminal::manager::TerminalManager;
     use crate::{db, git_credential, network, paths, process, web};
@@ -836,10 +832,11 @@ mod tauri_app {
                             },
                         ),
                         std::sync::Arc::new(
-                            crate::commands::session_info::DbSessionInfoLookup::new(
+                            crate::commands::session_info::DbSessionInfoLookup::with_data_dir(
                                 std::sync::Arc::new(db::AppDatabase {
                                     conn: db_conn.clone(),
                                 }),
+                                Some(effective_data_dir.clone()),
                             ),
                         ),
                         std::sync::Arc::new(crate::work_task::EngineWorkTaskTools),
@@ -1196,6 +1193,7 @@ mod tauri_app {
                 conversations::update_conversation_status,
                 conversations::update_conversation_title,
                 conversations::update_conversation_pinned,
+                conversations::update_conversation_model_selection,
                 conversations::delete_conversation,
                 folders::load_folder_history,
                 folders::get_folder,
@@ -1659,6 +1657,16 @@ mod tauri_app {
                 model_provider_commands::create_model_provider,
                 model_provider_commands::update_model_provider,
                 model_provider_commands::delete_model_provider,
+                model_provider_file_commands::model_provider_list,
+                model_provider_file_commands::model_provider_builtin_list,
+                model_provider_file_commands::model_provider_create,
+                model_provider_file_commands::model_provider_update,
+                model_provider_file_commands::model_provider_delete,
+                model_provider_file_commands::model_provider_set_enabled,
+                model_provider_file_commands::model_provider_reorder,
+                model_provider_file_commands::model_provider_clone_builtin,
+                model_provider_file_commands::model_provider_probe,
+                model_provider_file_commands::model_provider_test,
                 web::start_web_server,
                 web::stop_web_server,
                 web::get_web_server_status,

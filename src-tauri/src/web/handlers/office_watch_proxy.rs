@@ -221,7 +221,10 @@ async fn proxy_inner(
     note_proxy_request(port);
 
     // 2. Build the upstream URL, stripping `cap` so it never reaches officecli.
-    let upstream = format!("http://127.0.0.1:{port}/{rest}{}", query_without(&raw, "cap"));
+    let upstream = format!(
+        "http://127.0.0.1:{port}/{rest}{}",
+        query_without(&raw, "cap")
+    );
 
     // 3. Forward method + curated request headers + body.
     let mut req = OFFICE_PROXY_CLIENT.request(method, &upstream);
@@ -262,7 +265,9 @@ async fn proxy_inner(
     if is_html {
         let bytes = match upstream_resp.bytes().await {
             Ok(b) => b,
-            Err(_) => return (StatusCode::BAD_GATEWAY, "watch upstream read error").into_response(),
+            Err(_) => {
+                return (StatusCode::BAD_GATEWAY, "watch upstream read error").into_response()
+            }
         };
         let prefix = format!("/api/office-watch-proxy/{port}");
         let shim = SHIM_TEMPLATE

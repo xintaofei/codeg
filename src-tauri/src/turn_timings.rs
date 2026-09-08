@@ -245,7 +245,9 @@ pub fn append_turn_timing_in(
     timing: &TurnTiming,
 ) {
     let Some(path) = journal_path_in(root, agent, session_id) else {
-        tracing::debug!("[turn-timings] skipping journal append: unsafe id agent={agent} session={session_id}");
+        tracing::debug!(
+            "[turn-timings] skipping journal append: unsafe id agent={agent} session={session_id}"
+        );
         return;
     };
     let Ok(line) = serde_json::to_string(timing) else {
@@ -264,7 +266,10 @@ pub fn append_turn_timing_in(
         f.write_all(format!("{line}\n").as_bytes())
     };
     if let Err(e) = write() {
-        tracing::debug!("[turn-timings] journal append failed for {}: {e}", path.display());
+        tracing::debug!(
+            "[turn-timings] journal append failed for {}: {e}",
+            path.display()
+        );
     }
 }
 

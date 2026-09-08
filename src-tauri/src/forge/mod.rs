@@ -204,7 +204,10 @@ pub enum ForgeError {
     /// pinned-id miss, a missing keyring token or a rejected token stay
     /// [`ForgeError::Auth`]: adding another account fixes none of them.
     #[error("no {} account for host {host}", provider.display_name())]
-    NoAccount { provider: ForgeProvider, host: String },
+    NoAccount {
+        provider: ForgeProvider,
+        host: String,
+    },
     /// The host is not one codeg can read: nothing is configured for it and its
     /// name claims none of the forges. Distinct from [`ForgeError::NoAccount`]
     /// because the advice differs — "add a GitHub account for bitbucket.org"
@@ -218,7 +221,10 @@ pub enum ForgeError {
     /// detection cache has already been corrected by the time this is
     /// returned, so repeating the request routes it to the right client.
     #[error("{host} is a {}, not the forge it was addressed as", detected.display_name())]
-    WrongForge { host: String, detected: ForgeProvider },
+    WrongForge {
+        host: String,
+        detected: ForgeProvider,
+    },
     /// Primary or secondary rate limit; honor `retry_after` when present.
     #[error("forge rate limited")]
     RateLimited { retry_after: Option<u64> },
@@ -237,21 +243,19 @@ impl From<ForgeError> for crate::app_error::AppCommandError {
     fn from(err: ForgeError) -> Self {
         use crate::app_error::AppCommandError as E;
         match &err {
-            ForgeError::Auth(msg) => E::configuration_invalid(
-                "the account for this repository's host is not usable",
-            )
-            .with_detail(msg.clone()),
+            ForgeError::Auth(msg) => {
+                E::configuration_invalid("the account for this repository's host is not usable")
+                    .with_detail(msg.clone())
+            }
             ForgeError::NoAccount { provider, host } => {
                 let params = std::collections::BTreeMap::from([
                     ("host".to_string(), host.clone()),
                     ("provider".to_string(), provider.display_name().to_string()),
                 ]);
-                E::configuration_missing(err.to_string())
-                    .with_i18n(NO_ACCOUNT_I18N_KEY, params)
+                E::configuration_missing(err.to_string()).with_i18n(NO_ACCOUNT_I18N_KEY, params)
             }
             ForgeError::UnsupportedHost { host } => {
-                let params =
-                    std::collections::BTreeMap::from([("host".to_string(), host.clone())]);
+                let params = std::collections::BTreeMap::from([("host".to_string(), host.clone())]);
                 E::configuration_invalid(err.to_string())
                     .with_i18n(UNSUPPORTED_HOST_I18N_KEY, params)
             }
@@ -307,12 +311,16 @@ pub fn source_key(
     }
     let host = server_host.trim().to_ascii_lowercase();
     if host.is_empty() || host.contains('/') || host.contains(':') {
-        return Err(ForgeError::Invalid(format!("bad server host: {server_host}")));
+        return Err(ForgeError::Invalid(format!(
+            "bad server host: {server_host}"
+        )));
     }
     let repo = normalize_repo(owner_repo)
         .ok_or_else(|| ForgeError::Invalid(format!("bad repository path: {owner_repo}")))?;
     if number <= 0 {
-        return Err(ForgeError::Invalid(format!("bad work item number: {number}")));
+        return Err(ForgeError::Invalid(format!(
+            "bad work item number: {number}"
+        )));
     }
     Ok(format!("{provider}:{host}:{repo}:{kind}:{number}"))
 }
@@ -367,7 +375,11 @@ pub fn parse_remote_url(url: &str) -> Option<(String, String)> {
     // scp-like SSH: git@host:owner/repo(.git) — no scheme, single colon.
     if !trimmed.contains("://") {
         if let Some((user_host, path)) = trimmed.split_once(':') {
-            let host = user_host.split('@').next_back()?.trim().to_ascii_lowercase();
+            let host = user_host
+                .split('@')
+                .next_back()?
+                .trim()
+                .to_ascii_lowercase();
             if host.is_empty() || host.contains('/') {
                 return None;
             }
@@ -880,7 +892,8 @@ impl ForgeComment {
     /// string in that slot is a blank line where the author goes, not an
     /// anonymous author.
     pub fn author_name(raw: Option<String>) -> Option<String> {
-        raw.map(|name| name.trim().to_string()).filter(|name| !name.is_empty())
+        raw.map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
     }
 }
 
@@ -1259,7 +1272,11 @@ impl NewIssueDraft {
                 "issue title exceeds {MAX_TITLE_CHARS} characters"
             )));
         }
-        let body = self.body.as_deref().map(str::trim).filter(|b| !b.is_empty());
+        let body = self
+            .body
+            .as_deref()
+            .map(str::trim)
+            .filter(|b| !b.is_empty());
         if body.is_some_and(|b| b.chars().count() > MAX_COMMENT_CHARS) {
             return Err(ForgeError::Invalid(format!(
                 "issue body exceeds {MAX_COMMENT_CHARS} characters"
@@ -1742,7 +1759,10 @@ mod tests {
         // of them, so the UI must not offer it.
         let dead_token: crate::app_error::AppCommandError =
             ForgeError::Auth("no stored token for account acc-1".into()).into();
-        assert!(serde_json::to_value(&dead_token).unwrap().get("i18n_key").is_none());
+        assert!(serde_json::to_value(&dead_token)
+            .unwrap()
+            .get("i18n_key")
+            .is_none());
     }
 
     #[test]
@@ -1785,18 +1805,36 @@ mod tests {
     #[test]
     fn remote_url_parsing_covers_all_three_shapes() {
         let cases = [
-            ("https://github.com/Acme/App.git", ("github.com", "acme/app")),
-            ("https://ghe.corp.com/team/tool", ("ghe.corp.com", "team/tool")),
+            (
+                "https://github.com/Acme/App.git",
+                ("github.com", "acme/app"),
+            ),
+            (
+                "https://ghe.corp.com/team/tool",
+                ("ghe.corp.com", "team/tool"),
+            ),
             ("git@github.com:Acme/App.git", ("github.com", "acme/app")),
-            ("ssh://git@ghe.corp.com:2222/team/tool.git", ("ghe.corp.com", "team/tool")),
-            ("ssh://git@gitlab.corp.com/group/sub/proj.git", ("gitlab.corp.com", "group/sub/proj")),
+            (
+                "ssh://git@ghe.corp.com:2222/team/tool.git",
+                ("ghe.corp.com", "team/tool"),
+            ),
+            (
+                "ssh://git@gitlab.corp.com/group/sub/proj.git",
+                ("gitlab.corp.com", "group/sub/proj"),
+            ),
             ("http://user@ghe.corp.com/a/b", ("ghe.corp.com", "a/b")),
         ];
         for (input, (host, repo)) in cases {
             let (h, r) = parse_remote_url(input).unwrap_or_else(|| panic!("parse {input}"));
             assert_eq!((h.as_str(), r.as_str()), (host, repo), "{input}");
         }
-        for bad in ["", "not-a-url", "https://", "/local/path/repo", "file:///x/y"] {
+        for bad in [
+            "",
+            "not-a-url",
+            "https://",
+            "/local/path/repo",
+            "file:///x/y",
+        ] {
             assert!(parse_remote_url(bad).is_none(), "{bad} must not parse");
         }
     }
@@ -1806,8 +1844,14 @@ mod tests {
     /// wrong API with the wrong credentials.
     #[test]
     fn provider_parsing_refuses_what_it_does_not_know() {
-        assert_eq!(ForgeProvider::parse("GitHub").unwrap(), ForgeProvider::GitHub);
-        assert_eq!(ForgeProvider::parse(" gitlab ").unwrap(), ForgeProvider::GitLab);
+        assert_eq!(
+            ForgeProvider::parse("GitHub").unwrap(),
+            ForgeProvider::GitHub
+        );
+        assert_eq!(
+            ForgeProvider::parse(" gitlab ").unwrap(),
+            ForgeProvider::GitLab
+        );
         assert_eq!(ForgeProvider::parse("Gitea").unwrap(), ForgeProvider::Gitea);
         assert!(ForgeProvider::parse("bitbucket").is_err());
         assert!(ForgeProvider::parse("").is_err());
@@ -1842,11 +1886,21 @@ mod tests {
             "https://github.com/acme/app/issues/7"
         );
         assert_eq!(
-            gl.item_url("https://gitlab.com", "group/sub/proj", ForgeItemKind::Change, 7),
+            gl.item_url(
+                "https://gitlab.com",
+                "group/sub/proj",
+                ForgeItemKind::Change,
+                7
+            ),
             "https://gitlab.com/group/sub/proj/-/merge_requests/7"
         );
         assert_eq!(
-            gl.item_url("https://gitlab.com", "group/sub/proj", ForgeItemKind::Issue, 7),
+            gl.item_url(
+                "https://gitlab.com",
+                "group/sub/proj",
+                ForgeItemKind::Issue,
+                7
+            ),
             "https://gitlab.com/group/sub/proj/-/issues/7"
         );
         assert_eq!(gh.change_head_ref(7), "refs/pull/7/head");
@@ -1855,7 +1909,12 @@ mod tests {
         assert_eq!(gl.change_head_ref(7), "refs/merge-requests/7/head");
         // A self-hosted instance keeps its scheme and port in the link.
         assert_eq!(
-            gl.item_url("http://gitlab.corp.com:8929/", "a/b", ForgeItemKind::Issue, 7),
+            gl.item_url(
+                "http://gitlab.corp.com:8929/",
+                "a/b",
+                ForgeItemKind::Issue,
+                7
+            ),
             "http://gitlab.corp.com:8929/a/b/-/issues/7"
         );
         assert_eq!(gh.change_noun(), "pull request");
@@ -1870,11 +1929,21 @@ mod tests {
         // Gitea change without adding a remote.
         let gt = ForgeProvider::Gitea;
         assert_eq!(
-            gt.item_url("https://gitea.corp.com", "acme/app", ForgeItemKind::Change, 7),
+            gt.item_url(
+                "https://gitea.corp.com",
+                "acme/app",
+                ForgeItemKind::Change,
+                7
+            ),
             "https://gitea.corp.com/acme/app/pulls/7"
         );
         assert_eq!(
-            gt.item_url("https://gitea.corp.com", "acme/app", ForgeItemKind::Issue, 7),
+            gt.item_url(
+                "https://gitea.corp.com",
+                "acme/app",
+                ForgeItemKind::Issue,
+                7
+            ),
             "https://gitea.corp.com/acme/app/issues/7"
         );
         assert_eq!(gt.change_head_ref(7), "refs/pull/7/head");
@@ -1929,7 +1998,10 @@ mod tests {
 
         let identity = ForgeIdentity::of(&auth);
         assert_eq!(identity.username, "alice");
-        assert_eq!(identity.avatar_url.as_deref(), Some("https://avatars.test/u/1"));
+        assert_eq!(
+            identity.avatar_url.as_deref(),
+            Some("https://avatars.test/u/1")
+        );
 
         // Whatever the account was stored with, it still has to survive the
         // gate every other avatar goes through before reaching an `<img src>`.
@@ -1941,7 +2013,12 @@ mod tests {
         // The shape on the wire, not just the fields we happened to read: a
         // key added here later would ship whatever it holds to the panel.
         let json = serde_json::to_value(ForgeIdentity::of(&auth)).expect("serialize");
-        let mut keys: Vec<&str> = json.as_object().expect("object").keys().map(String::as_str).collect();
+        let mut keys: Vec<&str> = json
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
         keys.sort_unstable();
         assert_eq!(keys, ["avatar_url", "username"]);
         assert!(!json.to_string().contains("ghp_secret"));
@@ -1997,12 +2074,22 @@ mod tests {
             },
         );
         assert_eq!(built.owner_repo, "acme/app");
-        assert_eq!(built.labels, vec!["bug", "docs"], "trimmed and de-duplicated");
+        assert_eq!(
+            built.labels,
+            vec!["bug", "docs"],
+            "trimmed and de-duplicated"
+        );
         assert_eq!(built.search.as_deref(), Some("login timeout"));
         // Whitespace-only is no filter at all, not a search for nothing.
-        assert!(ListIssuesRequest::new("a/b".into(), ListFilters { search: Some("  ".into()), ..filters() })
-            .search
-            .is_none());
+        assert!(ListIssuesRequest::new(
+            "a/b".into(),
+            ListFilters {
+                search: Some("  ".into()),
+                ..filters()
+            }
+        )
+        .search
+        .is_none());
     }
 
     /// Both caps are real API limits, not taste: GitHub rejects a `q` over 256
@@ -2016,7 +2103,9 @@ mod tests {
         assert_eq!(normalize_search(Some("\t\n ")), None);
         assert_eq!(normalize_search(None), None);
 
-        let many: Vec<String> = (0..MAX_LABEL_FILTERS + 5).map(|i| format!("l{i}")).collect();
+        let many: Vec<String> = (0..MAX_LABEL_FILTERS + 5)
+            .map(|i| format!("l{i}"))
+            .collect();
         assert_eq!(normalize_labels(many).len(), MAX_LABEL_FILTERS);
         // Case-sensitive de-dup: GitHub treats `Bug` and `bug` as two labels.
         assert_eq!(
@@ -2033,14 +2122,22 @@ mod tests {
     #[test]
     fn label_colours_are_normalized_and_non_hex_is_refused() {
         for (raw, want) in [
-            ("d73a4a", "#d73a4a"),   // GitHub
-            ("#d9534f", "#d9534f"),  // GitLab
+            ("d73a4a", "#d73a4a"),     // GitHub
+            ("#d9534f", "#d9534f"),    // GitLab
             ("  #D73A4A ", "#d73a4a"), // padded and upper-cased
-            ("#0f0", "#00ff00"),     // the three-digit shorthand
+            ("#0f0", "#00ff00"),       // the three-digit shorthand
         ] {
             assert_eq!(normalize_hex_color(raw).as_deref(), Some(want), "{raw}");
         }
-        for raw in ["", "#", "rebeccapurple", "#12345", "#1234567", "#12345g", "var(--x)"] {
+        for raw in [
+            "",
+            "#",
+            "rebeccapurple",
+            "#12345",
+            "#1234567",
+            "#12345g",
+            "var(--x)",
+        ] {
             assert_eq!(normalize_hex_color(raw), None, "{raw}");
         }
 
@@ -2049,7 +2146,10 @@ mod tests {
         // nothing to show and nothing to filter by.
         assert_eq!(
             ForgeLabel::parse("bug".into(), Some("red")),
-            Some(ForgeLabel { name: "bug".into(), color: None })
+            Some(ForgeLabel {
+                name: "bug".into(),
+                color: None
+            })
         );
         assert_eq!(ForgeLabel::parse(String::new(), Some("#fff")), None);
     }
@@ -2134,7 +2234,11 @@ mod tests {
             (ForgeSort::RecentlyUpdated, "updated", "desc"),
             (ForgeSort::LeastRecentlyUpdated, "updated", "asc"),
         ] {
-            assert_eq!((sort.field(), sort.direction()), (field, direction), "{sort:?}");
+            assert_eq!(
+                (sort.field(), sort.direction()),
+                (field, direction),
+                "{sort:?}"
+            );
             assert_eq!(sort.ascending(), direction == "asc");
         }
         // The wire spelling the frontend sends.
@@ -2168,9 +2272,20 @@ mod tests {
             filters(" PR ", 7, 1, 20).resolve().unwrap().0,
             ForgeItemKind::Change
         );
-        assert_eq!(filters("issue", 7, 0, 0).resolve().unwrap(), (ForgeItemKind::Issue, 7, 1, MIN_PER_PAGE));
-        assert_eq!(filters("issue", 7, 1, 5_000).resolve().unwrap().3, MAX_PER_PAGE);
-        for bad in [filters("mr", 7, 1, 20), filters("", 7, 1, 20), filters("issue", 0, 1, 20), filters("issue", -3, 1, 20)] {
+        assert_eq!(
+            filters("issue", 7, 0, 0).resolve().unwrap(),
+            (ForgeItemKind::Issue, 7, 1, MIN_PER_PAGE)
+        );
+        assert_eq!(
+            filters("issue", 7, 1, 5_000).resolve().unwrap().3,
+            MAX_PER_PAGE
+        );
+        for bad in [
+            filters("mr", 7, 1, 20),
+            filters("", 7, 1, 20),
+            filters("issue", 0, 1, 20),
+            filters("issue", -3, 1, 20),
+        ] {
             assert!(bad.resolve().is_err(), "{} #{}", bad.kind, bad.number);
         }
         // The wire default is the one the frontend mirrors.
@@ -2188,7 +2303,10 @@ mod tests {
             ForgeComment::edited_at(Some("2026-08-20T00:00:00Z"), Some(updated.to_string()))
         };
         assert_eq!(at("2026-08-20T00:00:00Z"), None, "the creation stamp");
-        assert_eq!(at("2026-08-20T09:00:00Z").as_deref(), Some("2026-08-20T09:00:00Z"));
+        assert_eq!(
+            at("2026-08-20T09:00:00Z").as_deref(),
+            Some("2026-08-20T09:00:00Z")
+        );
         // Nothing to compare against: an item with no creation time cannot be
         // shown to be unedited, and the timestamp is the only fact there is.
         assert_eq!(
@@ -2199,7 +2317,10 @@ mod tests {
 
         // An author slot the forge filled with nothing is no author — a blank
         // line where the name goes, not an anonymous one.
-        assert_eq!(ForgeComment::author_name(Some("  alice ".into())).as_deref(), Some("alice"));
+        assert_eq!(
+            ForgeComment::author_name(Some("  alice ".into())).as_deref(),
+            Some("alice")
+        );
         assert_eq!(ForgeComment::author_name(Some("   ".into())), None);
         assert_eq!(ForgeComment::author_name(None), None);
     }
@@ -2279,22 +2400,31 @@ mod tests {
             account_id: None,
         };
         assert_eq!(
-            draft("  Login times out  ", Some("  steps  "), vec![" bug ", "", "bug", "docs"])
-                .resolve()
-                .unwrap(),
+            draft(
+                "  Login times out  ",
+                Some("  steps  "),
+                vec![" bug ", "", "bug", "docs"]
+            )
+            .resolve()
+            .unwrap(),
             ResolvedNewIssue {
                 title: "Login times out".into(),
                 body: Some("steps".into()),
                 labels: vec!["bug".into(), "docs".into()],
             }
         );
-        assert_eq!(draft("t", Some("  \n "), vec![]).resolve().unwrap().body, None);
+        assert_eq!(
+            draft("t", Some("  \n "), vec![]).resolve().unwrap().body,
+            None
+        );
         assert_eq!(draft("t", None, vec![]).resolve().unwrap().body, None);
 
         // NOT the filter's cap. Ten is how narrow a QUERY may get (each label
         // lengthens GitHub's `q`); silently dropping the eleventh label
         // somebody picked in the dialog would be losing what they wrote.
-        let distinct: Vec<String> = (0..MAX_LABEL_FILTERS + 5).map(|i| format!("l{i}")).collect();
+        let distinct: Vec<String> = (0..MAX_LABEL_FILTERS + 5)
+            .map(|i| format!("l{i}"))
+            .collect();
         let resolved = NewIssueDraft {
             title: "t".into(),
             body: None,
@@ -2306,7 +2436,9 @@ mod tests {
         assert_eq!(resolved.labels.len(), distinct.len());
         // There is still a ceiling — this is a payload bound, not a promise to
         // forward anything at all.
-        let absurd: Vec<String> = (0..MAX_ISSUE_LABELS + 10).map(|i| format!("l{i}")).collect();
+        let absurd: Vec<String> = (0..MAX_ISSUE_LABELS + 10)
+            .map(|i| format!("l{i}"))
+            .collect();
         assert_eq!(
             NewIssueDraft {
                 title: "t".into(),
@@ -2323,8 +2455,12 @@ mod tests {
         for bad in [draft("", None, vec![]), draft("   ", None, vec![])] {
             assert!(bad.resolve().is_err());
         }
-        assert!(draft(&"t".repeat(MAX_TITLE_CHARS + 1), None, vec![]).resolve().is_err());
-        assert!(draft(&"t".repeat(MAX_TITLE_CHARS), None, vec![]).resolve().is_ok());
+        assert!(draft(&"t".repeat(MAX_TITLE_CHARS + 1), None, vec![])
+            .resolve()
+            .is_err());
+        assert!(draft(&"t".repeat(MAX_TITLE_CHARS), None, vec![])
+            .resolve()
+            .is_ok());
     }
 
     /// GitLab ships a diff and no counters, so the `+12 −3` beside each file is
@@ -2385,8 +2521,21 @@ mod tests {
     /// request gets, and a change is addressed by a real number.
     #[test]
     fn change_queries_validate_their_item_and_clamp_their_paging() {
-        assert_eq!(ChangeQuery { number: 7, account_id: None }.resolve().unwrap(), 7);
-        assert!(ChangeQuery { number: 0, account_id: None }.resolve().is_err());
+        assert_eq!(
+            ChangeQuery {
+                number: 7,
+                account_id: None
+            }
+            .resolve()
+            .unwrap(),
+            7
+        );
+        assert!(ChangeQuery {
+            number: 0,
+            account_id: None
+        }
+        .resolve()
+        .is_err());
         let files = |number: i64, page: u32, per_page: u32| ChangeFilesQuery {
             number,
             page,
@@ -2410,7 +2559,11 @@ mod tests {
             "http://gitlab.corp.com:8929/a/b/-/issues/7#note_1",
             "HTTPS://avatars.example/u/1",
         ] {
-            assert_eq!(sanitize_web_url(good).as_deref(), Some(good.trim()), "{good}");
+            assert_eq!(
+                sanitize_web_url(good).as_deref(),
+                Some(good.trim()),
+                "{good}"
+            );
         }
         for bad in [
             "javascript:alert(1)",

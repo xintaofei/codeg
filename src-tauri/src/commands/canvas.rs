@@ -171,14 +171,12 @@ fn region_geometry(
     input: &GroupIntoRegionInput,
 ) -> Result<Option<canvas_service::RegionGeometry>, AppCommandError> {
     match (input.x, input.y, input.width, input.height) {
-        (Some(x), Some(y), Some(width), Some(height)) => {
-            Ok(Some(canvas_service::RegionGeometry {
-                x,
-                y,
-                width,
-                height,
-            }))
-        }
+        (Some(x), Some(y), Some(width), Some(height)) => Ok(Some(canvas_service::RegionGeometry {
+            x,
+            y,
+            width,
+            height,
+        })),
         (None, None, None, None) => Ok(None),
         _ => Err(AppCommandError::invalid_input(
             "a region frame needs x, y, width and height together",
@@ -675,8 +673,15 @@ pub async fn canvas_detach_member(
     x: f64,
     y: f64,
 ) -> Result<CanvasMutation<CanvasNode>, AppCommandError> {
-    canvas_detach_member_core(&EventEmitter::Tauri(app), &db, region_id, conversation_id, x, y)
-        .await
+    canvas_detach_member_core(
+        &EventEmitter::Tauri(app),
+        &db,
+        region_id,
+        conversation_id,
+        x,
+        y,
+    )
+    .await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -829,7 +834,10 @@ mod tests {
     async fn a_mutation_that_changes_nothing_consumes_no_revision() {
         let db = fresh_in_memory_db().await;
         let region = seed_region(&db, CanvasNodeKind::Custom).await;
-        let after_create = canvas_list_nodes_core(&db).await.expect("snapshot").revision;
+        let after_create = canvas_list_nodes_core(&db)
+            .await
+            .expect("snapshot")
+            .revision;
         assert_eq!(after_create, 1, "the one real mutation so far");
 
         let moved = canvas_move_nodes_core(
@@ -857,7 +865,10 @@ mod tests {
         let next = seed_region(&db, CanvasNodeKind::Custom).await;
         assert_ne!(next, region);
         assert_eq!(
-            canvas_list_nodes_core(&db).await.expect("snapshot").revision,
+            canvas_list_nodes_core(&db)
+                .await
+                .expect("snapshot")
+                .revision,
             after_create + 1
         );
     }
@@ -898,7 +909,10 @@ mod tests {
             },
         )
         .await;
-        assert!(dead.is_err(), "conversation node for a deleted conversation");
+        assert!(
+            dead.is_err(),
+            "conversation node for a deleted conversation"
+        );
     }
 
     #[tokio::test]
@@ -974,11 +988,10 @@ mod tests {
         let folder_id = seed_folder(&db, "/tmp/canvas-d").await;
         let conv = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
 
-        let custom =
-            canvas_create_node_core(&emitter(), &db, region_input(CanvasNodeKind::Custom))
-                .await
-                .expect("custom")
-                .value;
+        let custom = canvas_create_node_core(&emitter(), &db, region_input(CanvasNodeKind::Custom))
+            .await
+            .expect("custom")
+            .value;
         canvas_update_node_core(
             &emitter(),
             &db,
@@ -1020,10 +1033,9 @@ mod tests {
         .await
         .expect("folder region")
         .value;
-        let copied =
-            canvas_detach_member_core(&emitter(), &db, folder_region.id, conv, 12.0, 24.0)
-                .await
-                .expect("copy detach");
+        let copied = canvas_detach_member_core(&emitter(), &db, folder_region.id, conv, 12.0, 24.0)
+            .await
+            .expect("copy detach");
         assert_eq!(copied.value.conversation_id, Some(conv));
     }
 
@@ -1086,8 +1098,7 @@ mod tests {
         .await
         .expect("move batch");
         assert_eq!(moved.revision, 3, "one bump for the whole batch");
-        let applied: Vec<(i32, f64, f64)> =
-            moved.value.iter().map(|m| (m.id, m.x, m.y)).collect();
+        let applied: Vec<(i32, f64, f64)> = moved.value.iter().map(|m| (m.id, m.x, m.y)).collect();
         assert_eq!(
             applied,
             vec![(a.id, 5.0, 6.0), (b.id, 7.0, 1_000_000.0)],
@@ -1203,9 +1214,15 @@ mod tests {
             },
         )
         .await;
-        assert!(missing.is_err(), "unknown group id must not create a region");
+        assert!(
+            missing.is_err(),
+            "unknown group id must not create a region"
+        );
         assert_eq!(
-            canvas_list_nodes_core(&db).await.expect("snapshot").revision,
+            canvas_list_nodes_core(&db)
+                .await
+                .expect("snapshot")
+                .revision,
             0,
             "a rejected create must not bump the revision"
         );
@@ -1325,7 +1342,10 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_err(), "a deleted conversation cannot be collected");
+        assert!(
+            result.is_err(),
+            "a deleted conversation cannot be collected"
+        );
         let snapshot = canvas_list_nodes_core(&db).await.expect("snapshot");
         assert_eq!(snapshot.revision, 0);
         assert!(
@@ -1366,7 +1386,10 @@ mod tests {
         .await
         .expect("create pin");
 
-        let before = canvas_list_nodes_core(&db).await.expect("snapshot").revision;
+        let before = canvas_list_nodes_core(&db)
+            .await
+            .expect("snapshot")
+            .revision;
         let merged = canvas_group_into_region_core(
             &emitter(),
             &db,
@@ -1430,7 +1453,10 @@ mod tests {
 
         assert!(rejected.is_err());
         assert_eq!(
-            canvas_list_nodes_core(&db).await.expect("snapshot").revision,
+            canvas_list_nodes_core(&db)
+                .await
+                .expect("snapshot")
+                .revision,
             0
         );
     }
@@ -1451,7 +1477,10 @@ mod tests {
         .await
         .expect("create folder region");
 
-        let before = canvas_list_nodes_core(&db).await.expect("snapshot").revision;
+        let before = canvas_list_nodes_core(&db)
+            .await
+            .expect("snapshot")
+            .revision;
         let rejected = canvas_group_into_region_core(
             &emitter(),
             &db,
@@ -1476,7 +1505,10 @@ mod tests {
             "a folder region's members are a live binding"
         );
         assert_eq!(
-            canvas_list_nodes_core(&db).await.expect("snapshot").revision,
+            canvas_list_nodes_core(&db)
+                .await
+                .expect("snapshot")
+                .revision,
             before,
             "a rejected merge does not bump"
         );
@@ -1492,7 +1524,10 @@ mod tests {
         let folder_id = seed_folder(&db, "/tmp/canvas-merge-half-frame").await;
         let conv = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
         let region = seed_region(&db, CanvasNodeKind::Custom).await;
-        let before = canvas_list_nodes_core(&db).await.expect("snapshot").revision;
+        let before = canvas_list_nodes_core(&db)
+            .await
+            .expect("snapshot")
+            .revision;
 
         let rejected = canvas_group_into_region_core(
             &emitter(),
@@ -1515,7 +1550,10 @@ mod tests {
 
         assert!(rejected.is_err());
         assert_eq!(
-            canvas_list_nodes_core(&db).await.expect("snapshot").revision,
+            canvas_list_nodes_core(&db)
+                .await
+                .expect("snapshot")
+                .revision,
             before,
             "a rejected merge does not bump"
         );
@@ -1540,7 +1578,10 @@ mod tests {
         )
         .await
         .expect("create pin");
-        let before = canvas_list_nodes_core(&db).await.expect("snapshot").revision;
+        let before = canvas_list_nodes_core(&db)
+            .await
+            .expect("snapshot")
+            .revision;
 
         let rejected = canvas_group_into_region_core(
             &emitter(),
@@ -1576,7 +1617,10 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let first = seed_region(&db, CanvasNodeKind::Custom).await;
         let second = seed_region(&db, CanvasNodeKind::Custom).await;
-        let before = canvas_list_nodes_core(&db).await.expect("snapshot").revision;
+        let before = canvas_list_nodes_core(&db)
+            .await
+            .expect("snapshot")
+            .revision;
 
         let deleted = canvas_delete_nodes_core(&emitter(), &db, &TerminalManager::new(), vec![first, second, 4242])
             .await

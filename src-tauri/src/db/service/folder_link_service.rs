@@ -95,6 +95,8 @@ pub async fn delete(
     let Some(existing) = folder_link::Entity::find_by_id(link_id).one(conn).await? else {
         return Ok(None);
     };
-    folder_link::Entity::delete_by_id(link_id).exec(conn).await?;
+    folder_link::Entity::delete_by_id(link_id)
+        .exec(conn)
+        .await?;
     Ok(Some(existing))
 }

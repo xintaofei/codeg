@@ -13,9 +13,9 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::app_error::AppCommandError;
+use crate::db::service::app_metadata_service;
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
-use crate::db::service::app_metadata_service;
 use crate::logging::hub::{level_rank, log_hub, LogRecord};
 use crate::logging::{
     LogLevel, LogSettings, TargetDirective, LOGGING_LEVEL_KEY, LOG_SETTINGS_CHANGED_EVENT,
@@ -332,14 +332,19 @@ mod tests {
             rec("INFO", "web", "world"),
             rec("INFO", "ACP", "other"),
         ];
-        assert_eq!(filter_recent(recs.clone(), 100, None, Some("HELLO")).len(), 1);
+        assert_eq!(
+            filter_recent(recs.clone(), 100, None, Some("HELLO")).len(),
+            1
+        );
         // Both "acp" and "ACP" targets match (case-insensitive).
         assert_eq!(filter_recent(recs, 100, None, Some("acp")).len(), 2);
     }
 
     #[test]
     fn filter_recent_keeps_newest_limit() {
-        let recs: Vec<LogRecord> = (0..10).map(|i| rec("INFO", "a", &format!("m{i}"))).collect();
+        let recs: Vec<LogRecord> = (0..10)
+            .map(|i| rec("INFO", "a", &format!("m{i}")))
+            .collect();
         let out = filter_recent(recs, 3, None, None);
         let msgs: Vec<String> = out.iter().map(|r| r.message.clone()).collect();
         assert_eq!(msgs, vec!["m7", "m8", "m9"]);

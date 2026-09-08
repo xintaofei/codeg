@@ -48,7 +48,9 @@ fn with_links<R>(f: impl FnOnce(&mut Vec<LinkEntry>) -> R) -> R {
 /// Load every persisted link into the registry, replacing whatever was there.
 /// Called once per process right after migrations, on the single chokepoint
 /// both runtimes go through.
-pub async fn hydrate(conn: &sea_orm::DatabaseConnection) -> Result<usize, crate::db::error::DbError> {
+pub async fn hydrate(
+    conn: &sea_orm::DatabaseConnection,
+) -> Result<usize, crate::db::error::DbError> {
     let rows = crate::db::service::folder_link_service::list_all_with_root(conn).await?;
     let entries: Vec<LinkEntry> = rows
         .into_iter()

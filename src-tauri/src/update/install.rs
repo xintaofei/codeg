@@ -867,8 +867,7 @@ fn swap_dir_via_copy(target: &Path, staged: &Path, bak: &Path) -> Result<(), App
     }
     std::fs::rename(&bak_tmp, bak).map_err(AppCommandError::io)?;
 
-    let swap =
-        std::fs::remove_dir_all(target).and_then(|_| std::fs::rename(staged, target));
+    let swap = std::fs::remove_dir_all(target).and_then(|_| std::fs::rename(staged, target));
     if let Err(e) = swap {
         // Best-effort restore from the backup made above (pure upper, so its
         // rename is permitted even on overlayfs). Consumes `.bak`, matching
@@ -1057,7 +1056,10 @@ mod tests {
         swap_dir_via_copy(&target, &staged, &bak).unwrap();
 
         assert_eq!(std::fs::read(target.join("index.html")).unwrap(), b"new");
-        assert_eq!(std::fs::read(target.join("assets/app.js")).unwrap(), b"new-js");
+        assert_eq!(
+            std::fs::read(target.join("assets/app.js")).unwrap(),
+            b"new-js"
+        );
         assert_eq!(std::fs::read(bak.join("index.html")).unwrap(), b"old");
         assert!(!staged.exists());
         // The backup staging dir must not survive (it became `.bak`).
@@ -1081,7 +1083,9 @@ mod tests {
         assert!(is_exdev(&std::io::Error::from(
             std::io::ErrorKind::CrossesDevices
         )));
-        assert!(!is_exdev(&std::io::Error::from(std::io::ErrorKind::NotFound)));
+        assert!(!is_exdev(&std::io::Error::from(
+            std::io::ErrorKind::NotFound
+        )));
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

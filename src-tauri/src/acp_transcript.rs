@@ -564,7 +564,10 @@ impl SessionWriter {
                 self.pending.len()
             );
         } else {
-            tracing::debug!("[acp-transcript] deferring write to {}: {e}", self.path.display());
+            tracing::debug!(
+                "[acp-transcript] deferring write to {}: {e}",
+                self.path.display()
+            );
         }
     }
 }
@@ -618,7 +621,9 @@ fn mergeable_chunk_kind(payload: &serde_json::Value) -> Option<&'static str> {
     };
     let content = payload.get("content")?;
     (content.get("type").and_then(|v| v.as_str()) == Some("text")
-        && content.get("text").is_some_and(serde_json::Value::is_string))
+        && content
+            .get("text")
+            .is_some_and(serde_json::Value::is_string))
     .then_some(kind)
 }
 
@@ -834,7 +839,11 @@ pub fn record_header(
     agent_dir: &str,
     header: &TranscriptHeader,
 ) -> tokio::sync::oneshot::Receiver<()> {
-    record_header_in(&crate::paths::codeg_acp_transcripts_root(), agent_dir, header)
+    record_header_in(
+        &crate::paths::codeg_acp_transcripts_root(),
+        agent_dir,
+        header,
+    )
 }
 
 /// Root-injectable core of [`record_header`].
@@ -846,7 +855,12 @@ pub fn record_header_in(
     // Idempotence is decided on the writer thread, which is the only party that
     // knows about a header still sitting in its buffer — and which, being the
     // only writer, cannot race the file it checks.
-    queue_for(root, agent_dir, &header.session_id, PendingRecord::Header(header.clone()))
+    queue_for(
+        root,
+        agent_dir,
+        &header.session_id,
+        PendingRecord::Header(header.clone()),
+    )
 }
 
 /// Record one prompt or update.
@@ -926,10 +940,7 @@ pub fn append_line_in(root: &Path, agent_dir: &str, session_id: &str, line: &str
         f.write_all(format!("{line}\n").as_bytes())
     };
     if let Err(e) = write() {
-        tracing::debug!(
-            "[acp-transcript] append failed for {}: {e}",
-            path.display()
-        );
+        tracing::debug!("[acp-transcript] append failed for {}: {e}", path.display());
     }
 }
 
@@ -1295,7 +1306,10 @@ mod tests {
             &root,
             "goose",
             "s1",
-            &entry_line(EntryKind::Prompt, serde_json::json!([{"type":"text","text":"hi"}])),
+            &entry_line(
+                EntryKind::Prompt,
+                serde_json::json!([{"type":"text","text":"hi"}]),
+            ),
         );
         append_line_in(
             &root,
@@ -1384,22 +1398,32 @@ mod tests {
             &root,
             "goose",
             "s0",
-            &entry_line(EntryKind::Prompt, serde_json::json!([{"type":"text","text":"first"}])),
+            &entry_line(
+                EntryKind::Prompt,
+                serde_json::json!([{"type":"text","text":"first"}]),
+            ),
         );
         for (id, prev, text) in [("s1", "s0", "second"), ("s2", "s1", "third")] {
-            let header = TranscriptHeader::new("custom:goose", id, "/elsewhere", 9_999)
-                .continuing(prev);
+            let header =
+                TranscriptHeader::new("custom:goose", id, "/elsewhere", 9_999).continuing(prev);
             append_line_in(&root, "goose", id, &serde_json::to_string(&header).unwrap());
             append_line_in(
                 &root,
                 "goose",
                 id,
-                &entry_line(EntryKind::Prompt, serde_json::json!([{"type":"text","text":text}])),
+                &entry_line(
+                    EntryKind::Prompt,
+                    serde_json::json!([{"type":"text","text":text}]),
+                ),
             );
         }
 
         let merged = read_chain_in(&root, "goose", "s2");
-        assert_eq!(merged.entries.len(), 3, "every link contributes its entries");
+        assert_eq!(
+            merged.entries.len(),
+            3,
+            "every link contributes its entries"
+        );
         let header = merged.header.expect("oldest header survives");
         assert_eq!(header.session_id, "s0", "the root header wins");
         assert_eq!(
@@ -1430,8 +1454,8 @@ mod tests {
         let root = temp_root();
         append_line_in(&root, "goose", "s0", &header_line("s0"));
         for (id, prev) in [("s1", "s0"), ("s2", "s1")] {
-            let header = TranscriptHeader::new("custom:goose", id, "/elsewhere", 9_999)
-                .continuing(prev);
+            let header =
+                TranscriptHeader::new("custom:goose", id, "/elsewhere", 9_999).continuing(prev);
             append_line_in(&root, "goose", id, &serde_json::to_string(&header).unwrap());
         }
 
@@ -1462,8 +1486,7 @@ mod tests {
         // headers must not hang the bind path.
         let root = temp_root();
         for (id, prev) in [("a", "b"), ("b", "a")] {
-            let header =
-                TranscriptHeader::new("custom:goose", id, "/repo", 1).continuing(prev);
+            let header = TranscriptHeader::new("custom:goose", id, "/repo", 1).continuing(prev);
             append_line_in(&root, "goose", id, &serde_json::to_string(&header).unwrap());
         }
         assert_eq!(
@@ -1479,7 +1502,12 @@ mod tests {
         let root = temp_root();
         // A hand-edited file pointing at itself must not hang the reader.
         let looped = TranscriptHeader::new("custom:goose", "loop", "/repo", 1).continuing("loop");
-        append_line_in(&root, "goose", "loop", &serde_json::to_string(&looped).unwrap());
+        append_line_in(
+            &root,
+            "goose",
+            "loop",
+            &serde_json::to_string(&looped).unwrap(),
+        );
         append_line_in(
             &root,
             "goose",
@@ -1492,7 +1520,12 @@ mod tests {
         // never to an error or an empty result.
         let orphan =
             TranscriptHeader::new("custom:goose", "orphan", "/repo", 2).continuing("deleted");
-        append_line_in(&root, "goose", "orphan", &serde_json::to_string(&orphan).unwrap());
+        append_line_in(
+            &root,
+            "goose",
+            "orphan",
+            &serde_json::to_string(&orphan).unwrap(),
+        );
         append_line_in(
             &root,
             "goose",
@@ -1560,7 +1593,10 @@ mod tests {
             &root,
             "goose",
             "e1",
-            &entry_line(EntryKind::Prompt, serde_json::json!([{"type":"text","text":"hi"}])),
+            &entry_line(
+                EntryKind::Prompt,
+                serde_json::json!([{"type":"text","text":"hi"}]),
+            ),
         );
         assert!(has_entries_in(&root, "goose", "e1"));
 
@@ -1594,12 +1630,18 @@ mod tests {
         raw.extend_from_slice(header_line("torn").as_bytes());
         raw.push(b'\n');
         raw.extend_from_slice(
-            entry_line(EntryKind::Prompt, serde_json::json!([{"type":"text","text":"你好"}]))
-                .as_bytes(),
+            entry_line(
+                EntryKind::Prompt,
+                serde_json::json!([{"type":"text","text":"你好"}]),
+            )
+            .as_bytes(),
         );
         raw.push(b'\n');
         // A prompt line cut in the middle of a 3-byte character.
-        let torn = entry_line(EntryKind::Prompt, serde_json::json!([{"type":"text","text":"世界"}]));
+        let torn = entry_line(
+            EntryKind::Prompt,
+            serde_json::json!([{"type":"text","text":"世界"}]),
+        );
         let cut = torn.find('世').unwrap() + 2;
         raw.extend_from_slice(&torn.as_bytes()[..cut]);
         std::fs::write(&path, &raw).unwrap();
@@ -1638,9 +1680,10 @@ mod tests {
         let root = temp_root();
         let path = transcript_path_in(&root, "goose", "new").unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let header =
-            serde_json::to_string(&TranscriptHeader::new("custom:goose", "new", "/repo", 1).continuing("old"))
-                .unwrap();
+        let header = serde_json::to_string(
+            &TranscriptHeader::new("custom:goose", "new", "/repo", 1).continuing("old"),
+        )
+        .unwrap();
         let mut raw = Vec::from(header.as_bytes());
         raw.push(b'\n');
         raw.extend_from_slice(&[0xff, 0xfe, b'\n']);
@@ -1651,7 +1694,10 @@ mod tests {
             &root,
             "goose",
             "old",
-            &entry_line(EntryKind::Prompt, serde_json::json!([{"type":"text","text":"hi"}])),
+            &entry_line(
+                EntryKind::Prompt,
+                serde_json::json!([{"type":"text","text":"hi"}]),
+            ),
         );
 
         // `new` is readable despite the garbage line, so `old` is legitimately
@@ -1689,10 +1735,12 @@ mod tests {
         a.await.unwrap();
         b.await.unwrap();
 
-        let raw = std::fs::read_to_string(transcript_path_in(&root, "goose", "s3").unwrap())
-            .unwrap();
+        let raw =
+            std::fs::read_to_string(transcript_path_in(&root, "goose", "s3").unwrap()).unwrap();
         assert_eq!(
-            raw.lines().filter(|l| parse_header_line(l).is_some()).count(),
+            raw.lines()
+                .filter(|l| parse_header_line(l).is_some())
+                .count(),
             1,
             "exactly one header, no matter how many reconnects raced"
         );
@@ -2120,10 +2168,15 @@ mod tests {
         }
 
         let entries = read_transcript_in(&root, "goose", "wedged").entries;
-        assert_eq!(entries.len(), 4, "every buffered record landed exactly once");
+        assert_eq!(
+            entries.len(),
+            4,
+            "every buffered record landed exactly once"
+        );
         for (i, entry) in entries.iter().enumerate() {
             assert_eq!(
-                entry.p[0]["text"], format!("p{i}"),
+                entry.p[0]["text"],
+                format!("p{i}"),
                 "and in the order they were recorded"
             );
         }

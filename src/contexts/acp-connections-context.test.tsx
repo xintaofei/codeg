@@ -72,6 +72,7 @@ vi.mock("next-intl", () => ({
 vi.mock("@/lib/platform", () => ({
   subscribe: vi.fn(async () => () => {}),
   getEventStream: () => h.eventStreamValue,
+  onTransportReconnect: vi.fn(async () => () => {}),
 }))
 
 vi.mock("@/lib/delegation-seed", () => ({
@@ -937,7 +938,8 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       "/tmp/x",
       "sess-1",
       undefined,
-      {}
+      {},
+      42
     )
     expect(h.store!.getConnection(TAB)?.connectionId).toBe("respawned-conn")
   })
@@ -961,7 +963,8 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       "/tmp/x",
       "sess-1",
       undefined,
-      {}
+      {},
+      42
     )
     expect(h.store!.getConnection(TAB)?.connectionId).toBe("respawned-conn")
   })
@@ -988,7 +991,8 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       "/tmp/x",
       "sess-1",
       undefined,
-      {}
+      {},
+      42
     )
   })
 
@@ -1034,7 +1038,8 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       "/tmp/x",
       "sess-1",
       undefined,
-      {}
+      {},
+      42
     )
   })
 
@@ -1153,7 +1158,8 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       "/tmp/x",
       "sess-1",
       undefined,
-      {}
+      {},
+      42
     )
     expect(h.store!.getConnection(TAB)?.connectionId).toBe("respawned-conn")
   })
@@ -1242,7 +1248,8 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       "/tmp/x",
       "snapshot-session",
       undefined,
-      {}
+      {},
+      42
     )
   })
 
@@ -1282,7 +1289,8 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       "/tmp/x",
       "minted-1",
       undefined,
-      {}
+      {},
+      42
     )
   })
 })
@@ -1339,7 +1347,8 @@ describe("AcpConnectionsProvider disconnect teardown confirmation", () => {
       "/tmp/x",
       "sess-1",
       undefined,
-      {}
+      {},
+      42
     )
     // ...but the caller must not show an "applied" confirmation for a restart
     // that may have landed right back on the process it meant to replace.
@@ -1356,6 +1365,97 @@ describe("AcpConnectionsProvider disconnect teardown confirmation", () => {
 
     expect(confirmed).toBe(true)
     expect(h.acpDisconnect).toHaveBeenCalledWith("spawned-conn")
+  })
+})
+
+describe("AcpConnectionsProvider reapplyConfig conversation identity", () => {
+  async function connectOwner() {
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    h.acpConnect.mockClear()
+  }
+
+  it("keeps the conversation id when reapplying config", async () => {
+    await connectOwner()
+
+    await act(async () => {
+      await h.actions!.reapplyConfig(TAB)
+    })
+
+    expect(h.acpConnect).toHaveBeenLastCalledWith(
+      "claude_code",
+      "/tmp/x",
+      "sess-1",
+      undefined,
+      {},
+      42
+    )
+  })
+
+  it("uses the conversation id learned from conversation_linked", async () => {
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+    })
+    emitAcpEvent(latestAttachHandlers(), {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "conversation_linked",
+      conversation_id: 42,
+      folder_id: 1,
+    } as EventEnvelope)
+    h.acpConnect.mockClear()
+
+    await act(async () => {
+      await h.actions!.reapplyConfig(TAB)
+    })
+
+    expect(h.acpConnect).toHaveBeenLastCalledWith(
+      "claude_code",
+      "/tmp/x",
+      "sess-1",
+      undefined,
+      {},
+      42
+    )
+  })
+
+  it("lets an explicit override supply the conversation id", async () => {
+    await connectOwner()
+
+    await act(async () => {
+      await h.actions!.reapplyConfig(TAB, 43)
+    })
+
+    expect(h.acpConnect).toHaveBeenLastCalledWith(
+      "claude_code",
+      "/tmp/x",
+      "sess-1",
+      undefined,
+      {},
+      43
+    )
+  })
+
+  it("starts an unused session fresh when asked to apply draft provider config", async () => {
+    await connectOwner()
+
+    await act(async () => {
+      await h.actions!.reapplyConfig(TAB, 43, { freshSession: true })
+    })
+
+    expect(h.acpConnect).toHaveBeenLastCalledWith(
+      "claude_code",
+      "/tmp/x",
+      undefined,
+      undefined,
+      {},
+      43
+    )
   })
 })
 

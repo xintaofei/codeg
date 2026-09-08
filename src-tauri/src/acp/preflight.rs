@@ -465,12 +465,18 @@ async fn run_uv_version(uvx_path: &std::path::Path) -> Option<String> {
 /// `Warn` (not `Fail`): recent uv releases are backward compatible for the
 /// `uvx --from <pkg>==<ver>` invocation, so an old uv should not hard-block.
 fn build_uv_version_check(current: Option<&str>, required: &str) -> CheckItem {
-    match (current.and_then(parse_node_version), parse_node_version(required)) {
+    match (
+        current.and_then(parse_node_version),
+        parse_node_version(required),
+    ) {
         (Some(cur), Some(req)) if cur >= req => CheckItem {
             check_id: "uv_version".into(),
             label: "uv version".into(),
             status: CheckStatus::Pass,
-            message: format!("uv {} meets the minimum requirement (>={required})", current.unwrap_or("")),
+            message: format!(
+                "uv {} meets the minimum requirement (>={required})",
+                current.unwrap_or("")
+            ),
             fixes: vec![],
         },
         (Some(_), Some(_)) => CheckItem {
@@ -704,12 +710,7 @@ mod adapter_tests {
         let meta = registry::get_agent_meta(agent_type);
         let relation = registry::acp_adapter_relation(agent_type)
             .expect("agent under test must be an adapter agent");
-        build_adapter_info(
-            &meta,
-            &relation,
-            installed,
-            native_path.map(str::to_string),
-        )
+        build_adapter_info(&meta, &relation, installed, native_path.map(str::to_string))
     }
 
     // The card's whole argument rests on these four fields being concrete: the
@@ -730,7 +731,10 @@ mod adapter_tests {
         assert!(!info.adapter_installed);
         assert_eq!(info.native_cmd, "claude");
         assert_eq!(info.native_label, "Claude Code CLI");
-        assert_eq!(info.native_path.as_deref(), Some("/opt/homebrew/bin/claude"));
+        assert_eq!(
+            info.native_path.as_deref(),
+            Some("/opt/homebrew/bin/claude")
+        );
         assert_eq!(info.shared_config_dir, "~/.claude");
         assert!(info.docs_url.ends_with("#acp-adapters"));
     }
@@ -738,7 +742,10 @@ mod adapter_tests {
     #[test]
     fn codex_adapter_info_uses_codex_home() {
         let info = info_for(AgentType::Codex, None, true);
-        assert_eq!(info.adapter_package, "@agentclientprotocol/codex-acp@1.10.0");
+        assert_eq!(
+            info.adapter_package,
+            "@agentclientprotocol/codex-acp@1.10.0"
+        );
         assert_eq!(info.adapter_cmd, "codex-acp");
         assert!(info.adapter_installed);
         assert_eq!(info.native_cmd, "codex");

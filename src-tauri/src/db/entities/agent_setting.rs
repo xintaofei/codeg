@@ -12,6 +12,7 @@ pub struct Model {
     pub installed_version: Option<String>,
     pub env_json: Option<String>,
     pub model_provider_id: Option<i32>,
+    pub model_source: String,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
 }

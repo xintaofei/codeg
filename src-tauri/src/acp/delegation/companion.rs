@@ -52,8 +52,8 @@ use crate::acp::delegation::transport::{
     client_task_progress_round_trip, BrokerAskRequest, BrokerCancelRequest,
     BrokerCancelTaskRequest, BrokerCommitFeedbackRequest, BrokerCreateAutomationRequest,
     BrokerCreateWorkTaskRequest, BrokerFeedbackRequest, BrokerRequest, BrokerResponse,
-    BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
-    BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
+    BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest, BrokerTaskCompleteRequest,
+    BrokerTaskProgressRequest,
 };
 use crate::acp::question::parse_questions;
 use crate::acp::session_info::MAX_SESSION_MESSAGES;
@@ -207,7 +207,9 @@ impl CompanionFeatures {
             "task_progress" | "task_complete" => self.tasks,
             "create_automation" => self.automations,
             "create_work_task" => self.taskboard,
-            "delegate_to_agent" | "get_delegation_status" | "cancel_delegation"
+            "delegate_to_agent"
+            | "get_delegation_status"
+            | "cancel_delegation"
             | "resume_delegation" => self.delegation,
             _ => false,
         }
@@ -2336,7 +2338,10 @@ mod tests {
                 "params": { "name": "resume_delegation", "arguments": arguments }
             })
             .to_string();
-            assert!(matches!(dispatch_for_test(&line).await, LineAction::Spawn(_)));
+            assert!(matches!(
+                dispatch_for_test(&line).await,
+                LineAction::Spawn(_)
+            ));
         }
     }
 

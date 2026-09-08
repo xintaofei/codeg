@@ -203,7 +203,10 @@ mod tests {
 
     #[test]
     fn a_transcript_only_counts_for_the_session_actually_connected() {
-        assert!(transcript_describes_live_session(Some("sess-a"), Some("sess-a")));
+        assert!(transcript_describes_live_session(
+            Some("sess-a"),
+            Some("sess-a")
+        ));
         // The row still names the session the launch asked to resume while the
         // connection is holding a fresh one — measuring the first and
         // compacting the second is the failure this guard exists for.

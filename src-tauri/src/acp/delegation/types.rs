@@ -341,7 +341,8 @@ mod tests {
         ];
         for (err, expected) in cases {
             let display = err.to_string();
-            let DelegationOutcome::Err { code, message, .. } = DelegationOutcome::from_err(err, None)
+            let DelegationOutcome::Err { code, message, .. } =
+                DelegationOutcome::from_err(err, None)
             else {
                 panic!("from_err must produce an Err outcome");
             };

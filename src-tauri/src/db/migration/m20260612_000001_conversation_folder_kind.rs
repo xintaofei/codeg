@@ -238,8 +238,10 @@ mod tests {
 
         // is_chat is gone from folder
         let row = conn
-            .query_one(sql("SELECT COUNT(*) AS n FROM pragma_table_info('folder') \
-                            WHERE name = 'is_chat'"))
+            .query_one(sql(
+                "SELECT COUNT(*) AS n FROM pragma_table_info('folder') \
+                            WHERE name = 'is_chat'",
+            ))
             .await
             .expect("pragma")
             .expect("row");

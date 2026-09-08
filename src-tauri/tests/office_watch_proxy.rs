@@ -46,38 +46,34 @@ async fn spawn_fake_upstream() -> (u16, Arc<AtomicBool>, Arc<Mutex<String>>) {
     let last_query = Arc::new(Mutex::new(String::new()));
     let leaked_h = leaked.clone();
     let last_q_h = last_query.clone();
-    let app = axum::Router::new().fallback(
-        move |uri: axum::http::Uri, RawQuery(q): RawQuery| {
-            let leaked = leaked_h.clone();
-            let last_q = last_q_h.clone();
-            async move {
-                let query = q.unwrap_or_default();
-                if query.split('&').any(|s| s.split('=').next() == Some("cap")) {
-                    leaked.store(true, Ordering::SeqCst);
-                }
-                *last_q.lock().unwrap() = query;
-                if uri.path().ends_with("/page") {
-                    axum::response::Response::builder()
-                        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-                        .body(axum::body::Body::from(
-                            "<html><head><title>doc</title></head><body>hi</body></html>",
-                        ))
-                        .unwrap()
-                } else if uri.path().ends_with("/events") {
-                    axum::response::Response::builder()
-                        .header(header::CONTENT_TYPE, "text/event-stream")
-                        .body(axum::body::Body::from(
-                            "data: refresh\n\n".repeat(16),
-                        ))
-                        .unwrap()
-                } else {
-                    axum::response::Response::builder()
-                        .body(axum::body::Body::from("upstream-body"))
-                        .unwrap()
-                }
+    let app = axum::Router::new().fallback(move |uri: axum::http::Uri, RawQuery(q): RawQuery| {
+        let leaked = leaked_h.clone();
+        let last_q = last_q_h.clone();
+        async move {
+            let query = q.unwrap_or_default();
+            if query.split('&').any(|s| s.split('=').next() == Some("cap")) {
+                leaked.store(true, Ordering::SeqCst);
             }
-        },
-    );
+            *last_q.lock().unwrap() = query;
+            if uri.path().ends_with("/page") {
+                axum::response::Response::builder()
+                    .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                    .body(axum::body::Body::from(
+                        "<html><head><title>doc</title></head><body>hi</body></html>",
+                    ))
+                    .unwrap()
+            } else if uri.path().ends_with("/events") {
+                axum::response::Response::builder()
+                    .header(header::CONTENT_TYPE, "text/event-stream")
+                    .body(axum::body::Body::from("data: refresh\n\n".repeat(16)))
+                    .unwrap()
+            } else {
+                axum::response::Response::builder()
+                    .body(axum::body::Body::from("upstream-body"))
+                    .unwrap()
+            }
+        }
+    });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
@@ -155,7 +151,9 @@ async fn sse_stream_is_never_compressed() {
     codeg_lib::office_watch::insert_known_port_for_test(port, TEST_CAP);
 
     let resp = server
-        .get(&format!("/api/office-watch-proxy/{port}/events?cap={TEST_CAP}"))
+        .get(&format!(
+            "/api/office-watch-proxy/{port}/events?cap={TEST_CAP}"
+        ))
         .add_header("accept-encoding", "gzip, br")
         .await;
 
@@ -175,7 +173,9 @@ async fn proxy_injects_path_rewriting_shim_into_html() {
     codeg_lib::office_watch::insert_known_port_for_test(port, TEST_CAP);
 
     let resp = server
-        .get(&format!("/api/office-watch-proxy/{port}/page?cap={TEST_CAP}"))
+        .get(&format!(
+            "/api/office-watch-proxy/{port}/page?cap={TEST_CAP}"
+        ))
         .await;
 
     codeg_lib::office_watch::remove_known_port_for_test(port);
