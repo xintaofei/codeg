@@ -7,7 +7,6 @@ import { Button } from "@/components/ui/button"
 import {
   BookOpenText,
   Check,
-  ChevronUp,
   ClipboardPaste,
   Clock,
   Cog,
@@ -20,12 +19,6 @@ import {
   X,
   Zap,
 } from "lucide-react"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import {
   Popover,
   PopoverContent,
@@ -1692,9 +1685,9 @@ export function MessageInput({
   ) : isPrompting && onCancel ? (
     onSteer && onEnqueue && hasSendableContent ? (
       // Sessions with a working live-feedback channel surface the mid-turn
-      // actions that already exist but were keyboard-only/invisible: the
-      // primary half of the split queues the draft (what Enter has always
-      // done here), the dropdown sends it over the channel — a native push
+      // supplemental action that was hidden in a dropdown. Queue
+      // remains the primary action (and what Enter has always done here); the
+      // separate supplemental action sends over the channel — a native push
       // inserts into the RUNNING turn, a pull-tool session records a waiting
       // note for the agent's next check (label keyed on `steerChannel`).
       // Without `onSteer` this branch stays pixel-identical to the
@@ -1709,47 +1702,33 @@ export function MessageInput({
         >
           <Square className="size-4" />
         </Button>
-        <div className="flex items-center">
-          <Button
-            onClick={handleSend}
-            disabled={steering}
-            size="icon"
-            className="h-8 w-8 rounded-r-none"
-            title={t("queueMessage")}
-          >
-            <Send className="size-4" />
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                disabled={steering}
-                size="icon"
-                className="h-8 w-5 rounded-l-none border-l border-primary-foreground/20"
-                aria-label={t(
-                  steerChannel === "pull" ? "steerAsNote" : "steerIntoTurn"
-                )}
-              >
-                <ChevronUp className="size-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" side="top">
-              <DropdownMenuItem
-                onSelect={() => void handleSteerClick()}
-                disabled={steering}
-              >
-                {/* Icon carries the same promise as the label: the bolt is
-                    the instant insert, the clock is the note that waits —
-                    the very glyph the notes strip uses for `pending`. */}
-                {steerChannel === "pull" ? (
-                  <Clock className="h-4 w-4" />
-                ) : (
-                  <Zap className="h-4 w-4" />
-                )}
-                {t(steerChannel === "pull" ? "steerAsNote" : "steerIntoTurn")}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+        <Button
+          onClick={handleSend}
+          disabled={steering}
+          size="icon"
+          className="h-8 w-8"
+          title={t("queueMessage")}
+        >
+          <Send className="size-4" />
+        </Button>
+        <Button
+          onClick={() => void handleSteerClick()}
+          disabled={steering}
+          variant="outline"
+          size="icon"
+          className="h-8 w-8"
+          title={t(steerChannel === "pull" ? "steerAsNote" : "steerIntoTurn")}
+          aria-label={t(
+            steerChannel === "pull" ? "steerAsNote" : "steerIntoTurn"
+          )}
+        >
+          {/* The bolt is an instant insert; the clock is a waiting note. */}
+          {steerChannel === "pull" ? (
+            <Clock className="size-4" />
+          ) : (
+            <Zap className="size-4" />
+          )}
+        </Button>
       </div>
     ) : (
       <Button
