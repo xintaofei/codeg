@@ -3378,6 +3378,7 @@
             "child_max_turn_requests": "Subagent: Anfragelimit",
             "child_empty": "Subagent ohne Ausgabe",
             "child_auth_required": "Subagent braucht Anmeldung",
+            "interrupted": "unterbrochen; Ergebnis unbekannt",
             "child_unknown": "Subagent: Fehler",
             "unknown": "unbekannte Aufgabe"
           }

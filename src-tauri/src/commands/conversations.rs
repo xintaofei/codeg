@@ -1000,9 +1000,17 @@ fn build_ledger_delegation_meta(
 ) -> serde_json::Value {
     let mut value = serde_json::to_value(&entry.report).unwrap_or_default();
     if let Some(obj) = value.as_object_mut() {
-        if entry.status == crate::acp::delegation::types::TaskStatus::Canceled {
+        let interrupted = entry.report.status
+            == crate::acp::delegation::types::TaskStatus::Unknown
+            && entry.report.error_code.as_deref() == Some("interrupted");
+        if entry.report.status == crate::acp::delegation::types::TaskStatus::Canceled
+            || interrupted
+        {
             // Delegation-card metadata has a closed status vocabulary; its
-            // failure detail still distinguishes cancellation by error_code.
+            // failure detail still distinguishes cancellation/interruption by
+            // error_code. The broker uses `unknown` for an orphaned durable
+            // run, but the card parser deliberately has no `unknown` lifecycle
+            // state, so render that known interruption as a closed failure.
             obj.insert("status".into(), serde_json::Value::String("failed".into()));
         }
         obj.insert(
@@ -1232,6 +1240,14 @@ pub async fn get_folder_conversation_core(
     conn: &sea_orm::DatabaseConnection,
     conversation_id: i32,
 ) -> Result<(DbConversationDetail, Option<String>), AppCommandError> {
+    get_folder_conversation_core_with_broker(conn, conversation_id, None).await
+}
+
+async fn get_folder_conversation_core_with_broker(
+    conn: &sea_orm::DatabaseConnection,
+    conversation_id: i32,
+    broker: Option<&crate::acp::delegation::broker::DelegationBroker>,
+) -> Result<(DbConversationDetail, Option<String>), AppCommandError> {
     let summary = conversation_service::get_by_id(conn, conversation_id)
         .await
         .map_err(AppCommandError::from)?;
@@ -1370,12 +1386,18 @@ pub async fn get_folder_conversation_core(
     let children = conversation_service::list_children(conn, conversation_id)
         .await
         .unwrap_or_default();
-    let ledger = crate::db::service::delegation_task_service::list_for_parent(
+    let mut ledger = crate::db::service::delegation_task_service::list_for_parent(
         conn,
         conversation_id,
     )
     .await
     .unwrap_or_default();
+    if let Some(broker) = broker {
+        for entry in &mut ledger {
+            let projected = broker.project_ledger_report(entry).await;
+            entry.report = projected;
+        }
+    }
     inject_delegation_meta(&mut turns, &children, &ledger);
 
     Ok((
@@ -1597,12 +1619,14 @@ fn apply_turn_window(
 pub async fn get_folder_conversation_with_live_core(
     conn: &sea_orm::DatabaseConnection,
     manager: &crate::acp::manager::ConnectionManager,
+    broker: &crate::acp::delegation::broker::DelegationBroker,
     chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
     emitter: &EventEmitter,
     conversation_id: i32,
     window: Option<crate::commands::turn_window::TurnWindowReq>,
 ) -> Result<DbConversationDetail, AppCommandError> {
-    let (mut detail, parsed_title) = get_folder_conversation_core(conn, conversation_id).await?;
+    let (mut detail, parsed_title) =
+        get_folder_conversation_core_with_broker(conn, conversation_id, Some(broker)).await?;
 
     // Per-turn auto-title backfill. The parse `get_folder_conversation_core`
     // just did already produced the session-file title; adopt it (and broadcast
@@ -1679,12 +1703,14 @@ pub async fn get_folder_conversation_with_live_core(
 /// auto-title refresh, no live correlation, no sidebar events.
 pub async fn get_folder_conversation_turns_core(
     conn: &sea_orm::DatabaseConnection,
+    broker: Option<&crate::acp::delegation::broker::DelegationBroker>,
     conversation_id: i32,
     before_index: usize,
     limit: usize,
 ) -> Result<ConversationTurnsPage, AppCommandError> {
     use crate::commands::turn_window;
-    let (detail, _parsed_title) = get_folder_conversation_core(conn, conversation_id).await?;
+    let (detail, _parsed_title) =
+        get_folder_conversation_core_with_broker(conn, conversation_id, broker).await?;
     let turns = detail.turns;
     let (start, end) = turn_window::resolve_page_bounds(&turns, before_index, limit);
     let meta = turn_window::window_meta(&turns, start);
@@ -1706,6 +1732,7 @@ pub async fn get_folder_conversation(
     app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     manager: tauri::State<'_, crate::acp::manager::ConnectionManager>,
+    broker: tauri::State<'_, std::sync::Arc<crate::acp::delegation::broker::DelegationBroker>>,
     chat_channel_manager: tauri::State<'_, crate::chat_channel::manager::ChatChannelManager>,
     conversation_id: i32,
     tail_turns: Option<usize>,
@@ -1715,6 +1742,7 @@ pub async fn get_folder_conversation(
     get_folder_conversation_with_live_core(
         &db.conn,
         &manager,
+        &broker,
         &chat_channel_manager,
         &EventEmitter::Tauri(app),
         conversation_id,
@@ -1727,11 +1755,19 @@ pub async fn get_folder_conversation(
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn get_folder_conversation_turns(
     db: tauri::State<'_, AppDatabase>,
+    broker: tauri::State<'_, std::sync::Arc<crate::acp::delegation::broker::DelegationBroker>>,
     conversation_id: i32,
     before_index: usize,
     limit: usize,
 ) -> Result<ConversationTurnsPage, AppCommandError> {
-    get_folder_conversation_turns_core(&db.conn, conversation_id, before_index, limit).await
+    get_folder_conversation_turns_core(
+        &db.conn,
+        Some(&broker),
+        conversation_id,
+        before_index,
+        limit,
+    )
+    .await
 }
 
 /// Emit a `conversation://changed` Upsert for `conversation_id` so every
@@ -3023,6 +3059,69 @@ mod tests {
             first_block_meta(&turns[2]).is_none(),
             "status polling remains a status card"
         );
+    }
+
+    #[test]
+    fn interrupted_ledger_report_closes_the_history_card_truthfully() {
+        use crate::acp::delegation::types::{DelegationTaskReport, TaskStatus};
+        use crate::db::service::delegation_task_service::{ResumeBinding, TaskLedgerEntry};
+
+        let mut turns = vec![
+            tool_use_turn(Some("call-orphan"), "mcp__codeg_mcp__delegate_to_agent"),
+            tool_result_turn(
+                "call-orphan",
+                "Delegation successful. task_id=task-orphan.",
+            ),
+        ];
+        let now = chrono::Utc::now();
+        let ledger = TaskLedgerEntry {
+            id: 1,
+            task_id: "task-orphan".into(),
+            parent_conversation_id: 1,
+            child_conversation_id: 42,
+            source_task_id: None,
+            task: "work interrupted by restart".into(),
+            requested_working_dir: None,
+            resume_binding: ResumeBinding {
+                agent_type: AgentType::Codex,
+                external_session_id: "session-1".into(),
+                child_conversation_id: 42,
+                working_dir: "/tmp".into(),
+                preferred_mode_id: None,
+                preferred_config_values: Default::default(),
+                config_fingerprint: "fp".into(),
+            },
+            // The durable row remains running; only the broker-projected report
+            // says the process disappeared and its outcome is unknown.
+            status: TaskStatus::Running,
+            released: false,
+            report: DelegationTaskReport {
+                task_id: Some("task-orphan".into()),
+                status: TaskStatus::Unknown,
+                child_conversation_id: Some(42),
+                agent_type: Some(AgentType::Codex),
+                text: None,
+                error_code: Some("interrupted".into()),
+                message: Some(
+                    "The application stopped while this delegation was running; its outcome is unknown."
+                        .into(),
+                ),
+                duration_ms: None,
+                blocked_on: None,
+            },
+            created_at: now,
+            updated_at: now,
+        };
+
+        inject_delegation_meta(&mut turns, &[], &[ledger]);
+
+        let meta = first_block_meta(&turns[0])
+            .and_then(|value| value.get("codeg.delegation"))
+            .expect("orphaned ledger row should still restore its card");
+        assert_eq!(meta["status"], "failed");
+        assert_eq!(meta["error_code"], "interrupted");
+        assert_eq!(meta["task_preview"], "work interrupted by restart");
+        assert_eq!(meta["child_conversation_id"], 42);
     }
 
     #[test]
@@ -5961,7 +6060,7 @@ mod tests {
         let conv_id = create_conversation_core(&db.conn, folder_id, AgentType::ClaudeCode, None)
             .await
             .expect("create conversation");
-        let page = get_folder_conversation_turns_core(&db.conn, conv_id, 10, 5)
+        let page = get_folder_conversation_turns_core(&db.conn, None, conv_id, 10, 5)
             .await
             .expect("page fetch");
         assert_eq!(page.turns_total, 0);

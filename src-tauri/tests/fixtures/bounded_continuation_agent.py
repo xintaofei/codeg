@@ -25,7 +25,13 @@ for line in sys.stdin:
                     "method": method,
                     "params": {
                         key: params[key]
-                        for key in ("sessionId", "modeId", "configId", "value")
+                        for key in (
+                            "sessionId",
+                            "modeId",
+                            "configId",
+                            "value",
+                            "prompt",
+                        )
                         if key in params
                     },
                 }

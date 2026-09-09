@@ -1502,6 +1502,34 @@ struct ReleaseState {
 }
 
 impl DelegationBroker {
+    /// Project one durable ledger row through the broker's live task tables.
+    ///
+    /// A `running` row can mean either a task this broker still owns or a task
+    /// whose process disappeared before a terminal snapshot reached SQLite.
+    /// Historical readers must make the same distinction as status queries:
+    /// preserve genuinely active work, prefer a terminal in-memory result if
+    /// it won a narrow persistence race, and describe an orphan as interrupted
+    /// without rewriting the durable row.
+    pub(crate) async fn project_ledger_report(
+        &self,
+        entry: &crate::db::service::delegation_task_service::TaskLedgerEntry,
+    ) -> DelegationTaskReport {
+        if entry.status != TaskStatus::Running {
+            return entry.report.clone();
+        }
+        let inner = self.pending.inner.lock().await;
+        if let Some(completed) = inner.completed.get(&entry.task_id) {
+            return completed_report(&entry.task_id, completed);
+        }
+        if let Some(running) = inner.running.get(&entry.task_id) {
+            return running_report(&entry.task_id, running);
+        }
+        if inner.setups.contains_key(&entry.task_id) {
+            return entry.report.clone();
+        }
+        interrupted_ledger_report(entry)
+    }
+
     /// Called by the connection's driver/reap barrier. Persistence is wired by
     /// the continuation ledger; keeping the notification on the broker avoids
     /// making the ACP process layer depend on database services.
@@ -2643,15 +2671,7 @@ impl DelegationBroker {
                             &existing.resume_binding.working_dir,
                         );
                     if same {
-                        let active = {
-                            let inner = self.pending.inner.lock().await;
-                            inner.running.contains_key(&existing.task_id)
-                                || inner.setups.contains_key(&existing.task_id)
-                        };
-                        if existing.status == TaskStatus::Running && !active {
-                            return interrupted_ledger_report(&existing);
-                        }
-                        return existing.report;
+                        return self.project_ledger_report(&existing).await;
                     }
                     return report_err(
                         req.agent_type,
@@ -4159,11 +4179,7 @@ impl DelegationBroker {
             .await
             {
                 Ok(crate::db::service::delegation_task_service::ScopedLookup::Visible(entry)) => {
-                    return if entry.status == TaskStatus::Running {
-                        interrupted_ledger_report(&entry)
-                    } else {
-                        entry.report
-                    };
+                    return self.project_ledger_report(&entry).await;
                 }
                 Ok(crate::db::service::delegation_task_service::ScopedLookup::Hidden) | Err(_) => {
                     return unknown_report(task_id);
@@ -5702,6 +5718,13 @@ mod tests {
         assert_eq!(interrupted.task_id.as_deref(), Some("durable-running"));
         assert_eq!(interrupted.status, TaskStatus::Unknown);
         assert_eq!(interrupted.error_code.as_deref(), Some("interrupted"));
+        let running_entry = ledger::lookup(&db.conn, parent.id, "durable-running")
+            .await
+            .unwrap()
+            .unwrap();
+        let history = broker.project_ledger_report(&running_entry).await;
+        assert_eq!(history.status, TaskStatus::Unknown);
+        assert_eq!(history.error_code.as_deref(), Some("interrupted"));
 
         let terminal = DelegationTaskReport {
             task_id: Some("durable-running".into()),
@@ -5811,6 +5834,18 @@ mod tests {
         )
         .await
         .unwrap();
+
+        let running_entry = ledger::lookup(&db.conn, parent.id, &task_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let history = broker.project_ledger_report(&running_entry).await;
+        assert_eq!(
+            history.status,
+            TaskStatus::Running,
+            "history must not mislabel a task still owned by this broker"
+        );
+        assert_eq!(history.error_code, None);
 
         assert_eq!(
             broker

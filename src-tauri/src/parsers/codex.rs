@@ -10601,6 +10601,220 @@ mod tests {
     }
 
     #[test]
+    fn mixed_native_collaboration_and_semantic_delegation_keep_their_identities() {
+        // Keep the upstream native team wire in the same rollout as both the
+        // initial MCP delegation and its continuation delegation. The records are
+        // deliberately interleaved: each semantic item must stay with its
+        // own code-mode script while the native spawn keeps its child session.
+        let sealed = format!("gAAAAAB{}", "qgWsi0g7nV3UTzqL".repeat(30));
+        let native = native_team_0153_lines("FINAL_ANSWER", &sealed);
+        let initial_script =
+            "const r = await tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:\"/tmp/mcp-worker\",task:\"semantic initial\"});text(JSON.stringify(r));";
+        let continuation_script =
+            "const r = await tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:\"/tmp/mcp-worker\",task:\"semantic followup\",continue_from_task_id:\"task-semantic-initial\"});text(JSON.stringify(r));";
+        let initial_status = serde_json::json!({
+            "task_id": "task-semantic-initial",
+            "child_conversation_id": 901,
+            "status": "running",
+        });
+        let continuation_status = serde_json::json!({
+            "task_id": "task-semantic-next",
+            "child_conversation_id": 901,
+            "status": "running",
+        });
+        let lines = vec![
+            native[0].clone(), // session_meta
+            rollout_line(
+                "2026-09-08T06:44:10Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "custom_tool_call",
+                    "name": "exec",
+                    "call_id": "exec-semantic-initial",
+                    "input": initial_script,
+                }),
+            ),
+            rollout_line(
+                "2026-09-08T06:44:11Z",
+                "event_msg",
+                serde_json::json!({
+                    "type": "item_completed",
+                    "item": {
+                        "type": "McpToolCall",
+                        "id": "mcp-semantic-initial",
+                        "server": "codeg-mcp",
+                        "tool": "delegate_to_agent",
+                        "arguments": {
+                            "agent_type": "codex",
+                            "working_dir": "/tmp/mcp-worker",
+                            "task": "semantic initial",
+                        },
+                        "status": "completed",
+                        "result": {
+                            "content": [{
+                                "type": "text",
+                                "text": format!(
+                                    "Delegation successful. task_id={}. child_conversation_id=901.",
+                                    initial_status["task_id"]
+                                        .as_str()
+                                        .expect("initial task id"),
+                                ),
+                            }],
+                            "structuredContent": initial_status,
+                            "isError": false,
+                        },
+                    },
+                }),
+            ),
+            native[1].clone(), // native spawn_agent
+            native[2].clone(), // native SubAgentActivity started
+            native[3].clone(), // native spawn result
+            rollout_line(
+                "2026-09-08T06:44:33Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "custom_tool_call_output",
+                    "call_id": "exec-semantic-initial",
+                    "output": [
+                        {"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"},
+                        {"type": "input_text", "text": initial_status.to_string()},
+                    ],
+                }),
+            ),
+            rollout_line(
+                "2026-09-08T06:44:34Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "custom_tool_call",
+                    "name": "exec",
+                    "call_id": "exec-semantic-continuation",
+                    "input": continuation_script,
+                }),
+            ),
+            rollout_line(
+                "2026-09-08T06:44:35Z",
+                "event_msg",
+                serde_json::json!({
+                    "type": "item_completed",
+                    "item": {
+                        "type": "McpToolCall",
+                        "id": "mcp-semantic-continuation",
+                        "server": "codeg-mcp",
+                        "tool": "delegate_to_agent",
+                        "arguments": {
+                            "agent_type": "codex",
+                            "working_dir": "/tmp/mcp-worker",
+                            "task": "semantic followup",
+                            "continue_from_task_id": "task-semantic-initial",
+                        },
+                        "status": "completed",
+                        "result": {
+                            "content": [{
+                                "type": "text",
+                                "text": format!(
+                                    "Delegation successful. task_id={}. child_conversation_id=901.",
+                                    continuation_status["task_id"]
+                                        .as_str()
+                                        .expect("continuation task id"),
+                                ),
+                            }],
+                            "structuredContent": continuation_status,
+                            "isError": false,
+                        },
+                    },
+                }),
+            ),
+            native[4].clone(), // native agent_message result
+            rollout_line(
+                "2026-09-08T06:44:36Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "custom_tool_call_output",
+                    "call_id": "exec-semantic-continuation",
+                    "output": [
+                        {"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"},
+                        {"type": "input_text", "text": continuation_status.to_string()},
+                    ],
+                }),
+            ),
+            native[5].clone(), // native SubAgentActivity completed
+        ];
+
+        let detail = parse_lines(&lines, "mixed-native-semantic-delegation");
+        let uses = tool_uses(&detail);
+        let semantic_uses: Vec<_> = uses
+            .iter()
+            .filter(|(id, _, _)| id.starts_with("mcp-semantic-"))
+            .map(|(id, name, input)| (id.as_str(), name.as_str(), input.as_deref()))
+            .collect();
+        assert_eq!(
+            semantic_uses,
+            vec![
+                (
+                    "mcp-semantic-initial",
+                    "mcp__codeg_mcp__delegate_to_agent",
+                    Some(
+                        r#"{"agent_type":"codex","task":"semantic initial","working_dir":"/tmp/mcp-worker"}"#,
+                    ),
+                ),
+                (
+                    "mcp-semantic-continuation",
+                    "mcp__codeg_mcp__delegate_to_agent",
+                    Some(
+                        r#"{"agent_type":"codex","continue_from_task_id":"task-semantic-initial","task":"semantic followup","working_dir":"/tmp/mcp-worker"}"#,
+                    ),
+                ),
+            ],
+            "semantic MCP cards keep their own item ids, tool names, and inputs"
+        );
+        assert!(
+            !uses
+                .iter()
+                .any(|(id, name, _)| id.starts_with("exec-semantic-") || name == "exec"),
+            "completed semantic scripts must not remain as generic exec cards: {uses:?}"
+        );
+
+        let semantic_results: Vec<_> = tool_results(&detail)
+            .into_iter()
+            .filter(|(id, _, _)| id.starts_with("mcp-semantic-"))
+            .collect();
+        assert_eq!(
+            semantic_results,
+            vec![
+                (
+                    "mcp-semantic-initial".to_string(),
+                    Some(
+                        "Delegation successful. task_id=task-semantic-initial. child_conversation_id=901."
+                            .to_string(),
+                    ),
+                    false,
+                ),
+                (
+                    "mcp-semantic-continuation".to_string(),
+                    Some(
+                        "Delegation successful. task_id=task-semantic-next. child_conversation_id=901."
+                            .to_string(),
+                    ),
+                    false,
+                ),
+            ],
+            "each semantic result stays on its matching MCP card"
+        );
+
+        let (native_input, native_result) = spawn_capsule(&detail);
+        assert_eq!(
+            native_input.get("agent_id").and_then(|value| value.as_str()),
+            Some("01a07fc2-db62-78b3-9762-9cb2540216c2"),
+            "native activity must keep its own child session id"
+        );
+        assert_eq!(
+            native_result.as_deref(),
+            Some("历史与运行预算增强已完成。"),
+            "native agent_message must stay attached to the native spawn"
+        );
+    }
+
+    #[test]
     fn a_deferred_scripts_late_mcp_item_cannot_bind_to_the_next_script() {
         let script = "const r=await tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",task:\"A\"});text(JSON.stringify(r));";
         let mut lines = code_mode_rollout(

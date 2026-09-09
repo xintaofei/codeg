@@ -3378,6 +3378,7 @@
             "child_max_turn_requests": "subagente: limite de solicitações",
             "child_empty": "subagente sem saída",
             "child_auth_required": "subagente exige login",
+            "interrupted": "interrompido; resultado desconhecido",
             "child_unknown": "subagente: erro",
             "unknown": "tarefa desconhecida"
           }

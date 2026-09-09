@@ -4,6 +4,7 @@ import { NextIntlClientProvider } from "next-intl"
 import { describe, expect, it, vi } from "vitest"
 
 import { DelegationStatusCard } from "./delegation-status-card"
+import { StatusBadge } from "./delegation-status-badge"
 import enMessages from "@/i18n/messages/en.json"
 
 // MessageResponse (Streamdown) pulls in the link-safety hook (workspace
@@ -40,6 +41,13 @@ function envelope(report: Record<string, unknown>, isError = false): string {
 }
 
 describe("DelegationStatusCard", () => {
+  it("labels an interrupted task as having an unknown outcome", () => {
+    renderWithIntl(<StatusBadge status="err" errorCode="interrupted" />)
+
+    expect(screen.getByText("Interrupted; outcome unknown")).toBeInTheDocument()
+    expect(screen.queryByText("failed")).not.toBeInTheDocument()
+  })
+
   it("shows a single-line waiting label + spinner while the poll is in flight", () => {
     const { container } = renderWithIntl(
       <DelegationStatusCard
