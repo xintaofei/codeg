@@ -40,6 +40,7 @@ const SKILL: AgentSkillItem = {
   read_only: false,
   enabled: true,
   can_toggle: true,
+  toggle_reason: null,
 }
 // The "+" menu's data sources all hit the transport; none of them is what
 // these tests exercise.

@@ -1482,7 +1482,7 @@ pub struct AgentDiagnosticsReport {
     pub plain_text: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSkillScope {
     Global,
@@ -1494,6 +1494,20 @@ pub enum AgentSkillScope {
 pub enum AgentSkillLayout {
     MarkdownFile,
     SkillDirectory,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSkillToggleReason {
+    ReadOnly,
+    SharedRoot,
+    ManagedElsewhere,
+    StorageConflict,
+    UnsafeLink,
+    CrossFilesystem,
+    LegacyState,
+    BundledDisabled,
+    ConfigError,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1512,9 +1526,10 @@ pub struct AgentSkillItem {
     pub path: String,
     /// Whether the skill currently lives in an agent-visible skills root.
     pub enabled: bool,
-    /// Whether codeg may move the skill between its active root and disabled
-    /// vault. Built-in CLI skills are visible but cannot be toggled.
+    /// Whether Codeg can change this skill's availability for this agent.
     pub can_toggle: bool,
+    /// Machine-readable explanation when `can_toggle` is false.
+    pub toggle_reason: Option<AgentSkillToggleReason>,
     /// Best-effort `description:` extracted from the SKILL.md YAML
     /// frontmatter. `None` when there is no frontmatter or no key.
     pub description: Option<String>,
@@ -1568,6 +1583,18 @@ pub struct ForkResultInfo {
 #[cfg(test)]
 mod envelope_tests {
     use super::*;
+
+    #[test]
+    fn agent_skill_toggle_reason_serializes_as_snake_case() {
+        assert_eq!(
+            serde_json::to_value(AgentSkillToggleReason::ManagedElsewhere).unwrap(),
+            serde_json::json!("managed_elsewhere")
+        );
+        assert_eq!(
+            serde_json::to_value(AgentSkillToggleReason::CrossFilesystem).unwrap(),
+            serde_json::json!("cross_filesystem")
+        );
+    }
 
     #[test]
     fn event_envelope_serializes_with_flat_payload() {

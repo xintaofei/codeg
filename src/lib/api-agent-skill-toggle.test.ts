@@ -32,6 +32,7 @@ const TOGGLE_RESULT: AgentSkillItem = {
   read_only: false,
   enabled: false,
   can_toggle: true,
+  toggle_reason: null,
 }
 
 describe("acpSetAgentSkillEnabled", () => {

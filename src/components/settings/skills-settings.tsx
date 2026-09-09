@@ -152,6 +152,15 @@ function skillDirectoryPath(skill: AgentSkillItem): string {
   return dirname(skill.path)
 }
 
+function skillContentMutationBlocked(skill: AgentSkillItem | null): boolean {
+  return Boolean(
+    skill &&
+    (skill.read_only ||
+      skill.toggle_reason === "managed_elsewhere" ||
+      skill.toggle_reason === "legacy_state")
+  )
+}
+
 const SKILLS_LEFT_MIN_WIDTH = 300
 const SKILLS_RIGHT_MIN_WIDTH = 420
 
@@ -255,6 +264,8 @@ export function SkillsSettings() {
     () => skillItems.find((item) => item.id === selectedSkillId) ?? null,
     [selectedSkillId, skillItems]
   )
+  const selectedSkillMutationBlocked =
+    skillContentMutationBlocked(selectedSkill)
 
   const isEditingExisting = Boolean(
     selectedSkill && skillDraftId.trim() === selectedSkill.id
@@ -988,13 +999,38 @@ export function SkillsSettings() {
                     filteredSkills.map((skill) => {
                       const isActive = skill.id === selectedSkillId
                       const deleting = skillDeletingId === skill.id
-                      const availabilityHint = !skill.can_toggle
-                        ? skill.read_only
-                          ? skillsT("availability.readOnly")
-                          : skillsT("availability.cannotIsolate")
-                        : skill.enabled
+                      const mutationBlocked = skillContentMutationBlocked(skill)
+                      const unavailableHint = (() => {
+                        switch (skill.toggle_reason) {
+                          case "read_only":
+                            return skillsT("availability.readOnly")
+                          case "shared_root":
+                            return skillsT("availability.sharedRoot")
+                          case "managed_elsewhere":
+                            return skillsT("availability.managedElsewhere")
+                          case "storage_conflict":
+                            return skillsT("availability.storageConflict")
+                          case "unsafe_link":
+                            return skillsT("availability.unsafeLink")
+                          case "cross_filesystem":
+                            return skillsT("availability.crossFilesystem")
+                          case "legacy_state":
+                            return skillsT("availability.legacyState")
+                          case "bundled_disabled":
+                            return skillsT("availability.bundledDisabled")
+                          case "config_error":
+                            return skillsT("availability.configError")
+                          default:
+                            return skill.read_only
+                              ? skillsT("availability.readOnly")
+                              : skillsT("availability.unavailable")
+                        }
+                      })()
+                      const availabilityHint = skill.can_toggle
+                        ? skill.enabled
                           ? skillsT("availability.enabled")
                           : skillsT("availability.disabled")
+                        : unavailableHint
 
                       return (
                         <ContextMenu key={skill.id}>
@@ -1092,7 +1128,7 @@ export function SkillsSettings() {
                               {t("actions.preview")}
                             </ContextMenuItem>
                             <ContextMenuItem
-                              disabled={skill.read_only}
+                              disabled={mutationBlocked}
                               onSelect={() => {
                                 handleEditSkill(skill).catch((err) => {
                                   console.error(
@@ -1121,7 +1157,7 @@ export function SkillsSettings() {
                                 skillSaving ||
                                 skillReading ||
                                 deleting ||
-                                skill.read_only
+                                mutationBlocked
                               }
                               onSelect={() => {
                                 handleRequestDeleteSkill(skill)
@@ -1223,7 +1259,7 @@ export function SkillsSettings() {
                             disabled={
                               skillSaving ||
                               skillReading ||
-                              Boolean(selectedSkill?.read_only)
+                              selectedSkillMutationBlocked
                             }
                           >
                             {skillSaving ? (
@@ -1297,8 +1333,7 @@ export function SkillsSettings() {
                                   setIsContentEditing((prev) => !prev)
                                 }}
                                 disabled={
-                                  skillReading ||
-                                  Boolean(selectedSkill?.read_only)
+                                  skillReading || selectedSkillMutationBlocked
                                 }
                               >
                                 {isContentEditing ? (
@@ -1319,6 +1354,7 @@ export function SkillsSettings() {
                           {isContentEditing ? (
                             <Textarea
                               value={skillDraftContent}
+                              disabled={selectedSkillMutationBlocked}
                               onChange={(event) => {
                                 setSkillDraftContent(event.target.value)
                               }}

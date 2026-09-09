@@ -22,6 +22,7 @@ function skill(id: string, enabled: boolean): AgentSkillItem {
     read_only: false,
     enabled,
     can_toggle: true,
+    toggle_reason: null,
   }
 }
 

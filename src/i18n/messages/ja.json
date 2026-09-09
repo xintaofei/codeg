@@ -548,8 +548,16 @@
       "enabled": "有効",
       "disabled": "無効",
       "toggleAria": "{agent} で {skill} の有効状態を切り替える",
-      "readOnly": "組み込みの Skill は常に利用できます。",
-      "cannotIsolate": "この共有 Skill は個別に切り替えできません。"
+      "readOnly": "この Skill のファイルは読み取り専用のため、ここでは切り替えられません。",
+      "sharedRoot": "この Skill は複数の Agent が共有するディレクトリにあるため、この Agent だけ無効にはできません。",
+      "managedElsewhere": "この Skill はエキスパート、Office、Science、またはカスタム Skill ページで管理されています。",
+      "storageConflict": "切り替える前に、重複した Skill または保存先の競合を解消してください。",
+      "unsafeLink": "この Skill には、移動すると壊れるか参照先が変わるリンクが含まれています。",
+      "crossFilesystem": "Skill と無効化用ストレージが別のファイルシステムにあるため、安全に移動できません。",
+      "legacyState": "この Skill は旧形式の無効化レイアウトを使用しています。切り替える前に手動で復元してください。",
+      "bundledDisabled": "Codex のグローバル設定で組み込み Skills が無効になっています。",
+      "configError": "Agent の Skill 可用性設定を安全に読み取れませんでした。",
+      "unavailable": "この Skill は切り替えられません。"
     },
     "scope": {
       "global": "グローバル",

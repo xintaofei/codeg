@@ -40,7 +40,23 @@ const messages = {
       disabled: "Disabled",
       toggleAria: "Toggle {skill} for {agent}",
       readOnly: "Built-in skills are always available.",
-      cannotIsolate: "This shared skill cannot be toggled independently.",
+      sharedRoot:
+        "This skill is installed in a directory shared by multiple agents, so it cannot be disabled for only this agent.",
+      managedElsewhere:
+        "This skill is managed from another Codeg settings page.",
+      storageConflict:
+        "Multiple skill entries or a destination conflict must be resolved before toggling.",
+      unsafeLink:
+        "This skill contains a link that would change or break if moved.",
+      crossFilesystem:
+        "This skill cannot be moved safely because its vault is on another filesystem.",
+      legacyState:
+        "This skill uses an older disabled layout and must be recovered manually.",
+      bundledDisabled:
+        "Codex bundled skills are disabled by the global Codex configuration.",
+      configError:
+        "The agent availability configuration could not be read safely.",
+      unavailable: "This skill cannot be toggled.",
     },
     toasts: {
       ...enMessages.SkillsSettings.toasts,
@@ -86,6 +102,7 @@ function skill(overrides: Partial<AgentSkillItem> = {}): AgentSkillItem {
     read_only: false,
     enabled: true,
     can_toggle: true,
+    toggle_reason: null,
     ...overrides,
   }
 }
@@ -235,7 +252,13 @@ describe("SkillsSettings availability", () => {
 
   it("explains when a shared skill cannot be toggled independently", async () => {
     api.acpListAgentSkills.mockResolvedValue(
-      listResult(skill({ read_only: false, can_toggle: false }))
+      listResult(
+        skill({
+          read_only: false,
+          can_toggle: false,
+          toggle_reason: "shared_root",
+        })
+      )
     )
 
     renderSettings()
@@ -246,9 +269,34 @@ describe("SkillsSettings availability", () => {
     expect(availability).toBeDisabled()
     expect(availability).toHaveAttribute(
       "title",
-      "This shared skill cannot be toggled independently."
+      "This skill is installed in a directory shared by multiple agents, so it cannot be disabled for only this agent."
     )
   })
+
+  it.each(["managed_elsewhere", "legacy_state"] as const)(
+    "disables edit and delete for %s skills that the backend refuses to mutate",
+    async (toggleReason) => {
+      api.acpListAgentSkills.mockResolvedValue(
+        listResult(
+          skill({
+            can_toggle: false,
+            toggle_reason: toggleReason,
+          })
+        )
+      )
+
+      renderSettings()
+
+      fireEvent.contextMenu(await screen.findByText("Demo Skill"))
+
+      expect(screen.getByRole("menuitem", { name: "Edit" })).toHaveAttribute(
+        "data-disabled"
+      )
+      expect(screen.getByRole("menuitem", { name: "Delete" })).toHaveAttribute(
+        "data-disabled"
+      )
+    }
+  )
 
   it("reloads authoritative state and reports a localized error after failure", async () => {
     const reload = deferred<AgentSkillsListResult>()

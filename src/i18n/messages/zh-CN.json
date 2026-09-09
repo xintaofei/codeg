@@ -548,8 +548,16 @@
       "enabled": "已启用",
       "disabled": "已禁用",
       "toggleAria": "为 {agent} 切换 {skill} 的启用状态",
-      "readOnly": "内置 Skill 始终可用。",
-      "cannotIsolate": "此共享 Skill 无法单独切换。"
+      "readOnly": "此 Skill 的文件为只读，无法在这里切换。",
+      "sharedRoot": "此 Skill 安装在多个 Agent 共用的目录中，无法只对当前 Agent 禁用。",
+      "managedElsewhere": "此 Skill 由专家、办公、科研或自定义技能页面管理。",
+      "storageConflict": "检测到同名 Skill 或目标位置冲突，请先处理冲突。",
+      "unsafeLink": "此 Skill 包含移动后会失效或改变指向的链接，无法安全切换。",
+      "crossFilesystem": "Skill 与禁用存储位于不同文件系统，无法安全移动。",
+      "legacyState": "此 Skill 使用旧版禁用布局，需要手动恢复后才能切换。",
+      "bundledDisabled": "Codex 全局配置已禁用内置 Skills。",
+      "configError": "无法安全读取 Agent 的技能可用性配置。",
+      "unavailable": "此 Skill 当前无法切换。"
     },
     "scope": {
       "global": "全局",

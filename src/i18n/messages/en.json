@@ -548,8 +548,16 @@
       "enabled": "Enabled",
       "disabled": "Disabled",
       "toggleAria": "Toggle {skill} for {agent}",
-      "readOnly": "Built-in skills are always available.",
-      "cannotIsolate": "This shared skill cannot be toggled independently."
+      "readOnly": "This skill's files are read-only and cannot be toggled here.",
+      "sharedRoot": "This skill is installed in a directory shared by multiple agents, so it cannot be disabled for only this agent.",
+      "managedElsewhere": "This skill is managed from the Experts, Office, Science, or Custom Skills page.",
+      "storageConflict": "Resolve the duplicate skill or destination conflict before toggling.",
+      "unsafeLink": "This skill contains a link that would change or break if moved.",
+      "crossFilesystem": "This skill and its disabled vault are on different filesystems, so it cannot be moved safely.",
+      "legacyState": "This skill uses an older disabled layout and must be recovered manually before toggling.",
+      "bundledDisabled": "Bundled skills are disabled by the global Codex configuration.",
+      "configError": "The agent's skill availability configuration could not be read safely.",
+      "unavailable": "This skill cannot be toggled."
     },
     "scope": {
       "global": "Global",

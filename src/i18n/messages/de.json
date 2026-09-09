@@ -548,8 +548,16 @@
       "enabled": "Aktiviert",
       "disabled": "Deaktiviert",
       "toggleAria": "{skill} für {agent} umschalten",
-      "readOnly": "Integrierte Skills sind immer verfügbar.",
-      "cannotIsolate": "Dieser gemeinsam genutzte Skill kann nicht separat umgeschaltet werden."
+      "readOnly": "Die Dateien dieses Skills sind schreibgeschützt und können hier nicht umgeschaltet werden.",
+      "sharedRoot": "Dieser Skill liegt in einem von mehreren Agents gemeinsam genutzten Verzeichnis und kann daher nicht nur für diesen Agent deaktiviert werden.",
+      "managedElsewhere": "Dieser Skill wird auf der Seite Experten, Office, Wissenschaft oder Benutzerdefinierte Skills verwaltet.",
+      "storageConflict": "Beheben Sie den doppelten Skill oder den Zielkonflikt vor dem Umschalten.",
+      "unsafeLink": "Dieser Skill enthält einen Link, der sich beim Verschieben ändern oder ungültig werden würde.",
+      "crossFilesystem": "Skill und Deaktivierungsspeicher liegen auf verschiedenen Dateisystemen und können nicht sicher verschoben werden.",
+      "legacyState": "Dieser Skill verwendet ein älteres Deaktivierungslayout und muss vor dem Umschalten manuell wiederhergestellt werden.",
+      "bundledDisabled": "Gebündelte Skills sind durch die globale Codex-Konfiguration deaktiviert.",
+      "configError": "Die Skill-Verfügbarkeitskonfiguration des Agents konnte nicht sicher gelesen werden.",
+      "unavailable": "Dieser Skill kann nicht umgeschaltet werden."
     },
     "scope": {
       "global": "Global",

@@ -548,8 +548,16 @@
       "enabled": "Activée",
       "disabled": "Désactivée",
       "toggleAria": "Activer ou désactiver {skill} pour {agent}",
-      "readOnly": "Les Skills intégrées sont toujours disponibles.",
-      "cannotIsolate": "Cette Skill partagée ne peut pas être activée ou désactivée indépendamment."
+      "readOnly": "Les fichiers de ce Skill sont en lecture seule et ne peuvent pas être modifiés ici.",
+      "sharedRoot": "Ce Skill est installé dans un répertoire partagé par plusieurs agents et ne peut donc pas être désactivé uniquement pour cet agent.",
+      "managedElsewhere": "Ce Skill est géré depuis la page Experts, Office, Science ou Skills personnalisés.",
+      "storageConflict": "Résolvez le Skill en double ou le conflit de destination avant de le modifier.",
+      "unsafeLink": "Ce Skill contient un lien qui changerait ou serait rompu lors du déplacement.",
+      "crossFilesystem": "Le Skill et son stockage désactivé se trouvent sur des systèmes de fichiers différents et ne peuvent pas être déplacés en toute sécurité.",
+      "legacyState": "Ce Skill utilise une ancienne disposition de désactivation et doit être restauré manuellement avant d'être modifié.",
+      "bundledDisabled": "Les Skills intégrés sont désactivés par la configuration globale de Codex.",
+      "configError": "La configuration de disponibilité des Skills de l'agent n'a pas pu être lue en toute sécurité.",
+      "unavailable": "Ce Skill ne peut pas être modifié."
     },
     "scope": {
       "global": "Global",

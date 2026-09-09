@@ -1,5 +1,11 @@
 # Per-Agent Skill Switches Implementation Plan
 
+> **Superseded:** The shared-root fan-out design in this document must not be
+> implemented or restored. It was replaced by
+> `2026-09-09-agent-skill-switch-hardening.md`: shared roots are non-toggleable,
+> only private roots may use identity-scoped vaults, and project vaults live in
+> Codeg's data directory.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add real per-agent availability switches to Settings > Skills without letting a shared skill toggle silently affect another Codeg-managed agent.
@@ -272,8 +278,8 @@ Expected: each command exits 0 with no failing tests.
 - [ ] **Step 4: Review the diff and commit**
 
 Run `git diff --check`, inspect `git diff --stat` and `git status --short`, then
-commit only the task files on `task/1` without merging, rebasing, or pushing
-`main`.
+commit only the task files on the current feature branch without merging,
+rebasing, or pushing `main`.
 
 ### Task 6: Review Fixes For Incoming Links And Cursor Vaults
 
@@ -282,8 +288,9 @@ commit only the task files on `task/1` without merging, rebasing, or pushing
 
 **Interfaces:**
 - Produces: a preflight that enumerates every supported entry in peer active
-  roots and disabled vaults, then rejects a canonical move if an alias or
-  same-name entry directly links to that canonical Skill
+  roots and disabled vaults, follows each link chain through intermediate
+  targets, then rejects a canonical move if an alias or same-name entry points
+  into that canonical Skill
 - Produces: a distinct deterministic vault only for Cursor's exact builtin
   `~/.cursor/skills-cursor` root, while preserving the legacy vault for
   `~/.cursor/skills` and custom roots that happen to use the same basename
@@ -328,11 +335,14 @@ sibling roots resolve to one vault.
 - [x] **Step 3: Implement the minimal preflight and vault compatibility fix**
 
 Add an entry-level preflight that scans every peer's supported entries in both
-active roots and disabled vaults, then uses `skill_link_targets` to identify
-direct incoming links. Allow only the exact same-name active links that the
-shared restore plan will remove itself; reject aliases, case variants, and
-links in a peer's other roots before moving the canonical entry. Invoke the
-same preflight from capability calculation and command execution.
+active roots and disabled vaults. Index the lexical and resolved identities of
+each intermediate and final link target, resolving relative targets from the
+link's resolved physical parent and bounding traversal at 40 links. Reject
+aliases, case variants, absolute backreferences through the active entry, and
+any incomplete link scan before moving the canonical entry. Invoke the same
+preflight from capability calculation and command execution. Preserve safe
+relative links that remain inside the physical Skill bundle even when the outer
+Skill entry is itself a symlink.
 
 Keep `.cursor/skills` and all unrelated custom roots on their existing
 `.skills.codeg-disabled` vaults so disabled entries remain discoverable. Map
@@ -359,9 +369,12 @@ Expected: all focused regressions and existing Skill isolation tests pass.
 Run the frontend checks and every desktop, server, and `codeg-mcp` Rust command
 listed in `AGENTS.md`, followed by `git diff --check`. Request an independent
 read-only review of the final commit range, resolve all Critical or Important
-findings, and commit the fixes on `task/1`.
+findings, and commit the fixes on the current feature branch.
 
 The first review found alias/case-variant links outside the exact Skill ID and
 custom roots named `skills-cursor` were still unsafe. Those cases now have
 RED/GREEN regressions, and the follow-up review reported no remaining Critical
-or Important findings.
+or Important findings. The final review also found a two-hop alias blind spot
+and incorrect relative-target resolution below symlinked Skill directories;
+both cases now have RED/GREEN regressions alongside an unsafe absolute
+backreference control.

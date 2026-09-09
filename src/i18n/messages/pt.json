@@ -548,8 +548,16 @@
       "enabled": "Ativada",
       "disabled": "Desativada",
       "toggleAria": "Alternar {skill} para {agent}",
-      "readOnly": "As Skills integradas estão sempre disponíveis.",
-      "cannotIsolate": "Esta Skill compartilhada não pode ser alternada de forma independente."
+      "readOnly": "Os arquivos desta Skill são somente leitura e não podem ser alternados aqui.",
+      "sharedRoot": "Esta Skill está instalada em um diretório compartilhado por vários agentes e não pode ser desativada apenas para este agente.",
+      "managedElsewhere": "Esta Skill é gerenciada na página Especialistas, Office, Ciência ou Skills personalizadas.",
+      "storageConflict": "Resolva a Skill duplicada ou o conflito de destino antes de alternar.",
+      "unsafeLink": "Esta Skill contém um link que mudaria ou quebraria ao ser movida.",
+      "crossFilesystem": "A Skill e seu armazenamento desativado estão em sistemas de arquivos diferentes e não podem ser movidos com segurança.",
+      "legacyState": "Esta Skill usa um layout de desativação antigo e deve ser recuperada manualmente antes de alternar.",
+      "bundledDisabled": "As Skills incluídas estão desativadas pela configuração global do Codex.",
+      "configError": "Não foi possível ler com segurança a configuração de disponibilidade de Skills do agente.",
+      "unavailable": "Esta Skill não pode ser alternada."
     },
     "scope": {
       "global": "Global",
