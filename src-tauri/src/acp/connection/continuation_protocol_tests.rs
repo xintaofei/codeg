@@ -15,6 +15,11 @@ use crate::db::service::delegation_task_service as ledger;
 use crate::db::service::{conversation_service, folder_service};
 use crate::db::test_helpers::fresh_disk_db;
 
+// Process creation and strict session recovery can approach five seconds on a
+// saturated Windows CI runner. Keep protocol-response assertions at five
+// seconds, but give process-bound phases a separate, still-bounded budget.
+const FIXTURE_PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn run_on_large_stack<T: Send + 'static>(future: impl Future<Output = T> + Send + 'static) -> T {
     std::thread::Builder::new()
         .name("continuation-protocol-test".into())
@@ -189,10 +194,22 @@ impl ConnectionSpawner for FixtureContinuationSpawner {
             )
             .await
         });
-        tokio::time::timeout(Duration::from_secs(5), started)
-            .await
-            .map_err(|_| SpawnerError::Spawn("fixture resume timed out".into()))?
-            .map_err(|_| SpawnerError::Spawn("fixture resume stopped early".into()))?;
+        match tokio::time::timeout(FIXTURE_PROCESS_TIMEOUT, started).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                driver.abort();
+                return Err(SpawnerError::Spawn(
+                    "fixture resume stopped before announcing its session".into(),
+                ));
+            }
+            Err(_) => {
+                driver.abort();
+                return Err(SpawnerError::Spawn(format!(
+                    "fixture resume timed out after {FIXTURE_PROCESS_TIMEOUT:?}; wire={:?}",
+                    wire_methods(&self.log)
+                )));
+            }
+        }
         *self.connection.lock().await = Some(FixtureConnection { tx, state, driver });
         Ok(connection_id)
     }
@@ -312,9 +329,18 @@ impl ConnectionSpawner for FixtureContinuationSpawner {
             .send(ConnectionCommand::Disconnect)
             .await
             .map_err(|error| SpawnerError::Disconnect(error.to_string()))?;
-        tokio::time::timeout(Duration::from_secs(5), connection.driver)
-            .await
-            .map_err(|_| SpawnerError::Disconnect("fixture disconnect timed out".into()))?
+        let mut driver = connection.driver;
+        let joined = match tokio::time::timeout(FIXTURE_PROCESS_TIMEOUT, &mut driver).await {
+            Ok(joined) => joined,
+            Err(_) => {
+                driver.abort();
+                return Err(SpawnerError::Disconnect(format!(
+                    "fixture disconnect timed out after {FIXTURE_PROCESS_TIMEOUT:?}; wire={:?}",
+                    wire_methods(&self.log)
+                )));
+            }
+        };
+        joined
             .map_err(|error| SpawnerError::Disconnect(error.to_string()))?
             .map_err(|error| SpawnerError::Disconnect(error.to_string()))?;
         Ok(())
@@ -325,12 +351,19 @@ impl ConnectionSpawner for FixtureContinuationSpawner {
 fn strict_resume_never_falls_back_to_new() {
     for mode in ["unsupported", "load_fail"] {
         run_on_large_stack(async move {
-            let (_dir, log, state, _tx, driver, _started) = run_driver(mode).await;
-            let error = tokio::time::timeout(Duration::from_secs(5), driver)
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap_err();
+            let (_dir, log, state, _tx, mut driver, _started) = run_driver(mode).await;
+            let error = match tokio::time::timeout(FIXTURE_PROCESS_TIMEOUT, &mut driver).await {
+                Ok(joined) => joined
+                    .expect("strict-recovery fixture driver panicked")
+                    .expect_err("strict recovery unexpectedly succeeded"),
+                Err(_) => {
+                    driver.abort();
+                    panic!(
+                        "strict-recovery fixture timed out after {FIXTURE_PROCESS_TIMEOUT:?}; mode={mode}; wire={:?}",
+                        wire_methods(&log)
+                    );
+                }
+            };
             assert!(error.to_string().contains("strict session recovery failed"));
             assert!(
                 state.read().await.external_id.is_none(),
@@ -350,11 +383,18 @@ fn strict_resume_never_falls_back_to_new() {
 #[test]
 fn immediate_text_is_reduced_before_prompt_response_every_time() {
     run_on_large_stack(async {
-        let (_dir, log, state, tx, driver, started) = run_driver("resume_ok").await;
-        tokio::time::timeout(Duration::from_secs(5), started)
-            .await
-            .unwrap()
-            .unwrap();
+        let (_dir, log, state, tx, mut driver, started) = run_driver("resume_ok").await;
+        match tokio::time::timeout(FIXTURE_PROCESS_TIMEOUT, started).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => panic!("fixture stopped before announcing its session"),
+            Err(_) => {
+                driver.abort();
+                panic!(
+                    "fixture session startup timed out after {FIXTURE_PROCESS_TIMEOUT:?}; wire={:?}",
+                    wire_methods(&log)
+                );
+            }
+        }
 
         for turn in 1..=50 {
             tx.send(ConnectionCommand::Prompt {
@@ -383,11 +423,18 @@ fn immediate_text_is_reduced_before_prompt_response_every_time() {
         }
 
         tx.send(ConnectionCommand::Disconnect).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(5), driver)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        match tokio::time::timeout(FIXTURE_PROCESS_TIMEOUT, &mut driver).await {
+            Ok(joined) => joined
+                .expect("fixture driver panicked during disconnect")
+                .expect("fixture driver failed during disconnect"),
+            Err(_) => {
+                driver.abort();
+                panic!(
+                    "fixture disconnect timed out after {FIXTURE_PROCESS_TIMEOUT:?}; wire={:?}",
+                    wire_methods(&log)
+                );
+            }
+        }
         let wire = wire_methods(&log);
         let prompt = wire
             .iter()
