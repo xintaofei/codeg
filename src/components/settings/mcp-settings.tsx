@@ -103,13 +103,19 @@ const APP_OPTIONS: { value: McpAppType; label: string }[] = [
   { value: "deepseek", label: "DeepSeek Harness" },
   { value: "qoder", label: "Qoder" },
   { value: "antigravity", label: "Google Antigravity" },
+  // pi 同理不作为可分配目标：读写的 ~/.pi/agent/mcp.json 属于第三方 pi 扩展，
+  // pi 自身没有 MCP，pi-acp 也不转发线缆上的 mcpServers。给没装该扩展的用户
+  // 写这个文件只会造出一个没人读的配置。存量 "pi" 条目照样能改能删——
+  // saveLocalServer 会保留既有分配，后端 ALL_MCP_APPS 也包含 Pi。
 ]
 
-// The backend SCANS one more agent than it lets you assign to: OpenClaw is read
-// back so existing entries survive, but is not an assignable target (see the
-// note in APP_OPTIONS). A scan warning can still name it, so it needs a label.
+// The backend SCANS more agents than it lets you assign to: OpenClaw and pi are
+// read back so existing entries survive (see each one's note in APP_OPTIONS),
+// but neither is an assignable target in any of the three checkbox grids. A
+// scan warning can still name them, so they need a label.
 const SCAN_ONLY_APP_LABELS: Partial<Record<McpAppType, string>> = {
   open_claw: "OpenClaw",
+  pi: "pi",
 }
 
 function appLabel(app: McpAppType): string {
@@ -287,6 +293,7 @@ function appsToDraft(apps: McpAppType[]): Record<McpAppType, boolean> {
     deepseek: appSet.has("deepseek"),
     qoder: appSet.has("qoder"),
     antigravity: appSet.has("antigravity"),
+    pi: appSet.has("pi"),
   }
 }
 
@@ -637,11 +644,13 @@ export function McpSettings() {
 
     // Apps the user can see and toggle in the UI.
     const visibleApps = selectedAppsFromDraft(localAppsDraft)
-    // Carry forward assignments for agents no longer offered in the UI (e.g.
-    // OpenClaw, which no longer accepts MCP over the ACP wire). We never add
-    // these, but must not silently strip a legacy assignment from a server the
-    // user is editing — that would destroy existing on-disk config and could
-    // wedge an OpenClaw-only server into an unsavable "no apps" state.
+    // Carry forward assignments for agents not offered in the UI (OpenClaw,
+    // which no longer accepts MCP over the ACP wire, and pi, whose config
+    // belongs to a third-party extension). We never add these, but must not
+    // silently strip such an assignment from a server the user is editing —
+    // the backend save means "these agents and no others", so dropping one
+    // here DELETES that agent's on-disk entry, and it could also wedge an
+    // OpenClaw- or pi-only server into an unsavable "no apps" state.
     const hiddenLegacyApps = selectedLocal.apps.filter(
       (app) => !APP_OPTIONS.some((option) => option.value === app)
     )

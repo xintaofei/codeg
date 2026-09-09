@@ -56,7 +56,7 @@ use crate::acp::types::{
 use crate::logging::throttle::LeadingEdgeThrottle;
 use crate::models::agent::AgentType;
 use crate::network::proxy;
-use crate::web::event_bridge::{emit_with_state, EventEmitter};
+use crate::web::event_bridge::{emit_with_state, emit_with_state_gated, EventEmitter};
 
 /// Injected into the agent process only when the user has opted in — see
 /// [`force_command_color_enabled`] for why it is not a default.
@@ -11305,14 +11305,23 @@ const CODEX_SUBAGENT_FALLBACK_NAME: &str = "subagent";
 /// for a spawn any more, so dropping this left a codex sub-agent completely
 /// invisible while it ran — nothing appeared in the timeline until the session
 /// was reopened and the rollout re-parsed.
+#[derive(Debug)]
 enum CodexSubagentActivity {
     /// Not a codex sub-agent activity — handle the call normally.
     None,
     /// A sub-agent was launched. Carries the Agent-card input to render it with.
-    Started(String),
-    /// A later lifecycle marker (`interacted` / `interrupted`). Still dropped:
-    /// they carry no content of their own and would each open a SECOND capsule
-    /// with the same name and no way to tell it apart from the launch.
+    Started {
+        thread_id: Option<String>,
+        input: String,
+    },
+    /// The child reached a terminal state (`completed` / `interrupted`). Carries
+    /// no card of its own — its `toolCallId` is a synthetic id codeg has never
+    /// seen (`subagent-completed-<uuid>`), so rendering it would open a SECOND
+    /// capsule with the same name and no way to tell it from the launch. It is
+    /// forwarded onto the LAUNCH capsule instead, keyed by `threadId`.
+    Terminal { thread_id: String, kind: String },
+    /// A mid-life marker (`interacted`). Still dropped: it carries no content of
+    /// its own and says nothing the launch capsule does not already say.
     Other,
 }
 
@@ -11324,9 +11333,10 @@ enum CodexSubagentActivity {
 /// the task text is encrypted on this wire.
 ///
 /// The capsule settles as soon as codex acknowledges the launch, NOT when the
-/// child finishes: the activity item's own lifecycle is the spawn's, and codex
-/// forwards nothing else about the child over ACP. A child's eventual result
-/// reaches the timeline as the parent's next message.
+/// child finishes: the activity item's own lifecycle is the spawn's. codex DOES
+/// say so later, with a `completed` / `interrupted` activity of its own — see
+/// [`CodexSubagentActivity::Terminal`], which is routed back onto the launch
+/// capsule rather than rendered.
 fn classify_codex_subagent_activity(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -11340,10 +11350,26 @@ fn classify_codex_subagent_activity(
     else {
         return CodexSubagentActivity::None;
     };
+    let thread_id = subagent
+        .get("threadId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
     // A status-only follow-up carries the same meta with the same `activity`,
     // so this classification is stable across the call's whole lifetime.
-    if subagent.get("activity").and_then(|v| v.as_str()) != Some("started") {
-        return CodexSubagentActivity::Other;
+    match subagent.get("activity").and_then(|v| v.as_str()) {
+        Some("started") => {}
+        // Without a thread id there is no capsule to attribute the outcome to,
+        // so it degrades to the old drop rather than opening a stray card.
+        Some(kind @ ("completed" | "interrupted")) => {
+            return match thread_id {
+                Some(thread_id) => CodexSubagentActivity::Terminal {
+                    thread_id: thread_id.to_string(),
+                    kind: kind.to_string(),
+                },
+                None => CodexSubagentActivity::Other,
+            };
+        }
+        _ => return CodexSubagentActivity::Other,
     }
     let name = subagent
         .get("path")
@@ -11357,11 +11383,7 @@ fn classify_codex_subagent_activity(
         "subagent_type".to_string(),
         serde_json::Value::String(name.to_string()),
     );
-    if let Some(thread_id) = subagent
-        .get("threadId")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
+    if let Some(thread_id) = thread_id {
         input.insert(
             "agent_id".to_string(),
             serde_json::Value::String(thread_id.to_string()),
@@ -11373,7 +11395,74 @@ fn classify_codex_subagent_activity(
         crate::parsers::codex::CODEX_SUBAGENT_LAUNCH_KEY.to_string(),
         serde_json::Value::Bool(true),
     );
-    CodexSubagentActivity::Started(serde_json::Value::Object(input).to_string())
+    CodexSubagentActivity::Started {
+        thread_id: thread_id.map(str::to_string),
+        input: serde_json::Value::Object(input).to_string(),
+    }
+}
+
+/// Re-stamp a launch capsule's input with the child's terminal state.
+///
+/// The card's whole meaning lives in its `rawInput` — that is where both the
+/// live path and the rollout parser put `agent_id` and the launch marker — so
+/// the outcome is delivered the same way, by re-sending the input it already
+/// has plus one key. Deliberately NOT `_meta`: that field is replace-on-update
+/// (`SessionState::upsert_tool_call`), so a meta-only patch would drop whatever
+/// codex-acp had put there, whereas `rawInput` is parsed and swapped in whole.
+fn codex_subagent_terminal_input(launch_input: &str, kind: &str) -> String {
+    let mut obj = serde_json::from_str::<serde_json::Value>(launch_input)
+        .ok()
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    obj.insert(
+        crate::parsers::codex::CODEX_SUBAGENT_STATE_KEY.to_string(),
+        serde_json::Value::String(kind.to_string()),
+    );
+    serde_json::Value::Object(obj).to_string()
+}
+
+/// Deliver a codex sub-agent's terminal state onto the capsule that launched it.
+///
+/// GATED on that capsule still being live, and the gate must be a gate: a child
+/// can outlive the turn that spawned it, and once `TurnComplete` has cleared
+/// `active_tool_calls` an update naming the launch id would be materialized from
+/// nothing by `upsert_tool_call`'s insert-on-miss — a card that exists only in
+/// memory, disappears on refresh, and says nothing. Probing with a read lock
+/// first would not help: the turn can complete in the window before the write
+/// lock is taken, which is why `emit_with_state_gated` evaluates the predicate
+/// under the same lock as the apply.
+///
+/// Nothing is lost when the gate refuses: the rollout carries the same
+/// `SubAgentActivity`, and the parser stamps the same key on reload.
+async fn settle_codex_subagent_launch(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    cb_state: &CodeBuddyLiveState,
+    thread_id: &str,
+    kind: &str,
+) {
+    let Some((launch_id, launch_input)) = cb_state.codex_subagent_launches.get(thread_id) else {
+        return;
+    };
+    let launch_id = launch_id.clone();
+    emit_with_state_gated(
+        state,
+        emitter,
+        AcpEvent::ToolCallUpdate {
+            tool_call_id: launch_id.clone(),
+            title: None,
+            status: None,
+            content: None,
+            raw_input: Some(codex_subagent_terminal_input(launch_input, kind)),
+            raw_output: None,
+            raw_output_append: None,
+            locations: None,
+            meta: None,
+            images: None,
+        },
+        |s| s.active_tool_calls.contains_key(&launch_id),
+    )
+    .await;
 }
 
 /// True when a `session/request_permission` is codex's Plan-mode review gate
@@ -11954,6 +12043,19 @@ struct CodeBuddyLiveState {
     /// dropped so the card doesn't double-render; tracked by id because a later
     /// status-only update may drop the `x.ai/tool` meta that first identified it.
     grok_ask_tool_ids: HashSet<String>,
+    /// Codex sub-agent thread id → the launch capsule that spawned it, paired
+    /// with the `rawInput` that capsule was announced with.
+    ///
+    /// codex reports a child's completion as a `subAgentActivity` of its own,
+    /// under a synthetic tool-call id (`subagent-completed-<uuid>`) that shares
+    /// nothing with the launch except the thread id — so this is the only way
+    /// back to the card that should carry the outcome. Keeping the input too
+    /// avoids reconstructing it: the outcome is delivered by re-sending it with
+    /// one key added (`codex_subagent_terminal_input`).
+    ///
+    /// NOT cleared per turn, for the same reason the grok sub-agent map is not:
+    /// a child legitimately outlives the turn that launched it.
+    codex_subagent_launches: HashMap<String, (String, String)>,
     /// Grok `spawn_subagent` tool_call ids ever announced on this connection
     /// (dedupe for the pending queue + status tracking on meta-less updates).
     grok_spawn_seen: HashSet<String>,
@@ -13098,16 +13200,33 @@ async fn emit_conversation_update(
         SessionUpdate::ToolCall(tc) => {
             // codex-acp #304 surfaces codex `subAgentActivity` as a live
             // `tool_call`. A launch becomes an Agent capsule (its own rawInput
-            // is orchestration bookkeeping, so it is replaced wholesale); the
-            // other lifecycle markers stay dropped. See
-            // `classify_codex_subagent_activity`.
+            // is orchestration bookkeeping, so it is replaced wholesale); a
+            // terminal marker is folded back onto that capsule; the rest stay
+            // dropped. See `classify_codex_subagent_activity`.
+            let mut codex_subagent_thread = None;
             let codex_subagent = match classify_codex_subagent_activity(agent_type, tc.meta.as_ref())
             {
                 CodexSubagentActivity::None => None,
-                CodexSubagentActivity::Started(input) => Some(input),
+                CodexSubagentActivity::Started { thread_id, input } => {
+                    codex_subagent_thread = thread_id;
+                    Some(input)
+                }
+                CodexSubagentActivity::Terminal { thread_id, kind } => {
+                    settle_codex_subagent_launch(state, emitter, cb_state, &thread_id, &kind).await;
+                    return;
+                }
                 CodexSubagentActivity::Other => return,
             };
             let tool_call_id = tc.tool_call_id.to_string();
+            // Remember which capsule owns this child, so its eventual
+            // `completed` / `interrupted` (announced under a synthetic id of its
+            // own) can be routed back here.
+            if let (Some(thread_id), Some(input)) = (codex_subagent_thread, codex_subagent.as_ref())
+            {
+                cb_state
+                    .codex_subagent_launches
+                    .insert(thread_id, (tool_call_id.clone(), input.clone()));
+            }
             // Grok emits a redundant `tool_call` for its native ask_user_question
             // alongside the blocking `_x.ai/ask_user_question` ext request codeg
             // answers with the interactive card; drop it here (remembering the id so
@@ -13306,14 +13425,30 @@ async fn emit_conversation_update(
             // Symmetric with the `ToolCall` arm: the follow-up carries the same
             // `_meta.codex.subagent`, so it classifies identically — a launch's
             // completion is forwarded (settling its capsule), any other
-            // lifecycle marker's is dropped like its opening frame was.
+            // lifecycle marker's is dropped like its opening frame was. A
+            // terminal marker can arrive on either frame, so both route it.
+            let mut codex_subagent_thread = None;
             let codex_subagent =
                 match classify_codex_subagent_activity(agent_type, tcu.meta.as_ref()) {
                     CodexSubagentActivity::None => None,
-                    CodexSubagentActivity::Started(input) => Some(input),
+                    CodexSubagentActivity::Started { thread_id, input } => {
+                        codex_subagent_thread = thread_id;
+                        Some(input)
+                    }
+                    CodexSubagentActivity::Terminal { thread_id, kind } => {
+                        settle_codex_subagent_launch(state, emitter, cb_state, &thread_id, &kind)
+                            .await;
+                        return;
+                    }
                     CodexSubagentActivity::Other => return,
                 };
             let tool_call_id = tcu.tool_call_id.to_string();
+            if let (Some(thread_id), Some(input)) = (codex_subagent_thread, codex_subagent.as_ref())
+            {
+                cb_state
+                    .codex_subagent_launches
+                    .insert(thread_id, (tool_call_id.clone(), input.clone()));
+            }
             // Suppress the redundant update stream for grok's ask_user_question
             // (see the ToolCall arm): match the tracked id, or the meta on a late
             // update that still carries it.
@@ -14259,7 +14394,7 @@ mod tests {
         meta: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> Option<serde_json::Value> {
         match classify_codex_subagent_activity(agent_type, meta) {
-            CodexSubagentActivity::Started(input) => {
+            CodexSubagentActivity::Started { input, .. } => {
                 Some(serde_json::from_str(&input).expect("valid JSON"))
             }
             _ => None,
@@ -14315,14 +14450,40 @@ mod tests {
             classify_codex_subagent_activity(AgentType::ClaudeCode, Some(&started)),
             CodexSubagentActivity::None
         ));
-        // Later lifecycle markers stay dropped: they carry no content and would
-        // open a second, indistinguishable capsule for the same sub-agent.
-        for kind in ["interacted", "interrupted"] {
-            let other = meta_map(serde_json::json!({
+        // A mid-life marker stays dropped: it carries no content and would open
+        // a second, indistinguishable capsule for the same sub-agent.
+        let interacted = meta_map(serde_json::json!({
+            "codex": { "subagent": { "threadId": "t1", "path": "/root/x", "activity": "interacted" } }
+        }));
+        assert!(matches!(
+            classify_codex_subagent_activity(AgentType::Codex, Some(&interacted)),
+            CodexSubagentActivity::Other
+        ));
+        // A terminal marker is not dropped — it is the only live signal that the
+        // child stopped working, and it is routed onto the LAUNCH capsule (its
+        // own `toolCallId` is a synthetic `subagent-completed-<uuid>` codeg has
+        // never seen), keyed by the thread id.
+        for kind in ["completed", "interrupted"] {
+            let terminal = meta_map(serde_json::json!({
                 "codex": { "subagent": { "threadId": "t1", "path": "/root/x", "activity": kind } }
             }));
+            match classify_codex_subagent_activity(AgentType::Codex, Some(&terminal)) {
+                CodexSubagentActivity::Terminal {
+                    thread_id,
+                    kind: got,
+                } => {
+                    assert_eq!(thread_id, "t1");
+                    assert_eq!(got, kind);
+                }
+                other => panic!("{kind} should be terminal, got {other:?}"),
+            }
+            // Without a thread id there is no capsule to attribute it to, so it
+            // degrades to the old drop rather than opening a stray card.
+            let anonymous = meta_map(serde_json::json!({
+                "codex": { "subagent": { "path": "/root/x", "activity": kind } }
+            }));
             assert!(matches!(
-                classify_codex_subagent_activity(AgentType::Codex, Some(&other)),
+                classify_codex_subagent_activity(AgentType::Codex, Some(&anonymous)),
                 CodexSubagentActivity::Other
             ));
         }
@@ -14344,6 +14505,45 @@ mod tests {
             classify_codex_subagent_activity(AgentType::Codex, Some(&collab)),
             CodexSubagentActivity::None
         ));
+    }
+
+    #[test]
+    fn codex_subagent_terminal_state_is_added_to_the_launch_input() {
+        // The outcome rides `rawInput`, not `_meta`: `upsert_tool_call` replaces
+        // meta wholesale but parses and swaps in a fresh raw_input, so re-sending
+        // the launch's own input plus one key is the only patch that cannot drop
+        // what codex-acp already put on the card.
+        let launch = serde_json::json!({
+            "subagent_type": "history_limits",
+            "agent_id": "01a07fc2-db62",
+            crate::parsers::codex::CODEX_SUBAGENT_LAUNCH_KEY: true,
+        })
+        .to_string();
+        let settled: serde_json::Value =
+            serde_json::from_str(&codex_subagent_terminal_input(&launch, "completed"))
+                .expect("valid JSON");
+        assert_eq!(
+            settled,
+            serde_json::json!({
+                "subagent_type": "history_limits",
+                "agent_id": "01a07fc2-db62",
+                crate::parsers::codex::CODEX_SUBAGENT_LAUNCH_KEY: true,
+                // The parser stamps the same key on reload, so the card reads
+                // identically live and after a refresh.
+                crate::parsers::codex::CODEX_SUBAGENT_STATE_KEY: "completed",
+            })
+        );
+        // A launch whose input never parsed still yields a usable card rather
+        // than propagating the damage.
+        let recovered: serde_json::Value =
+            serde_json::from_str(&codex_subagent_terminal_input("not json", "interrupted"))
+                .expect("valid JSON");
+        assert_eq!(
+            recovered,
+            serde_json::json!({
+                crate::parsers::codex::CODEX_SUBAGENT_STATE_KEY: "interrupted",
+            })
+        );
     }
 
     #[test]

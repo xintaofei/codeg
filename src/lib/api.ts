@@ -24,6 +24,8 @@ import type {
   Automation,
   AutomationRun,
   AutomationDraft,
+  DeepSeekCatalogModel,
+  DeepSeekModelCatalog,
   ForgeChangeDetail,
   ForgeChangedFileList,
   ForgeComment,
@@ -811,6 +813,31 @@ export async function loadPiConfig(): Promise<{
   }[]
 }> {
   return getTransport().call("acp_load_pi_config", {})
+}
+
+/**
+ * Read the DeepSeek Harness model catalog — `llm-deepseek.models` in
+ * `$DSH_HOME/settings.yaml` — for the settings panel. A missing document is
+ * "inheriting the agent's built-in list", not an error; an unreadable one
+ * arrives as `error` so the panel can refuse to edit it.
+ */
+export async function loadDeepSeekModelCatalog(): Promise<DeepSeekModelCatalog> {
+  return getTransport().call("acp_load_deepseek_model_catalog", {})
+}
+
+/**
+ * Store the DeepSeek Harness model catalog, replacing `llm-deepseek.models`
+ * and leaving every other key (and every comment) in the document alone.
+ *
+ * `null` — and an empty list — REMOVE the key, so the agent's built-in catalog
+ * is inherited again. Invalid entries are rejected before anything is written.
+ * The agent reads the document at launch, so a save reaches sessions started
+ * after it, not the ones already running.
+ */
+export async function updateDeepSeekModelCatalog(
+  models: DeepSeekCatalogModel[] | null
+): Promise<void> {
+  return getTransport().call("acp_update_deepseek_model_catalog", { models })
 }
 
 /**

@@ -71,7 +71,40 @@ pub enum McpAppType {
     Qoder,
     /// Serializes as `antigravity`, matching `AgentType::as_wire`.
     Antigravity,
+    /// Serializes as `pi`, matching `AgentType::as_wire`. Scan-only: codeg
+    /// reads and round-trips the pi MCP EXTENSION's config, but pi is not an
+    /// assignable target and gets no MCP over the ACP wire. See the pi section
+    /// below.
+    Pi,
 }
+
+/// Every app the local-MCP write paths walk, in the order they walk it.
+///
+/// `mcp_upsert_local_server` means "these agents and NO others": it upserts into
+/// each targeted app and REMOVES the server from each of the rest, so an app
+/// missing here silently keeps a stale entry that the next scan reports as a
+/// live assignment. `mcp_remove_server`'s "remove from everywhere" branch has
+/// the same requirement, and missing an app there is what makes an uninstalled
+/// server come back on the next refresh. Both used to keep their own hand-typed
+/// copy of this list; one shared constant plus [`tests::all_mcp_apps_is_exhaustive`]
+/// (which fails to compile when a variant is added) is what keeps them honest.
+const ALL_MCP_APPS: [McpAppType; 15] = [
+    McpAppType::ClaudeCode,
+    McpAppType::Codex,
+    McpAppType::Gemini,
+    McpAppType::OpenClaw,
+    McpAppType::OpenCode,
+    McpAppType::Cline,
+    McpAppType::Hermes,
+    McpAppType::CodeBuddy,
+    McpAppType::KimiCode,
+    McpAppType::Grok,
+    McpAppType::Cursor,
+    McpAppType::DeepSeek,
+    McpAppType::Qoder,
+    McpAppType::Antigravity,
+    McpAppType::Pi,
+];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LocalMcpServer {
@@ -436,29 +469,13 @@ pub async fn mcp_upsert_local_server(
             "none of the selected agents can host this MCP server's transport (e.g. Codex does not support SSE)",
         ));
     }
-    let all_apps = [
-        McpAppType::ClaudeCode,
-        McpAppType::Codex,
-        McpAppType::Gemini,
-        McpAppType::OpenClaw,
-        McpAppType::OpenCode,
-        McpAppType::Cline,
-        McpAppType::Hermes,
-        McpAppType::CodeBuddy,
-        McpAppType::KimiCode,
-        McpAppType::Grok,
-        McpAppType::Cursor,
-        McpAppType::DeepSeek,
-        McpAppType::Qoder,
-        McpAppType::Antigravity,
-    ];
 
     // Nothing below is reversible, and the walk REMOVES the server from every
     // non-target agent, so a target whose config cannot take it has to be
     // caught before the first write rather than halfway through.
     require_complete_scan(&scan_local_servers())?;
     with_upsert_preflight(&target_set, || {
-        for app in all_apps {
+        for app in ALL_MCP_APPS {
             if target_set.contains(&app) {
                 upsert_server_for_app(app, &server_id, &canonical_spec)?;
             } else {
@@ -532,22 +549,7 @@ pub async fn mcp_remove_server(
 ) -> Result<bool, AppCommandError> {
     let target_apps = match apps {
         Some(selected) => normalize_apps(selected),
-        None => vec![
-            McpAppType::ClaudeCode,
-            McpAppType::Codex,
-            McpAppType::Gemini,
-            McpAppType::OpenClaw,
-            McpAppType::OpenCode,
-            McpAppType::Cline,
-            McpAppType::Hermes,
-            McpAppType::CodeBuddy,
-            McpAppType::KimiCode,
-            McpAppType::Grok,
-            McpAppType::Cursor,
-            McpAppType::DeepSeek,
-            McpAppType::Qoder,
-            McpAppType::Antigravity,
-        ],
+        None => ALL_MCP_APPS.to_vec(),
     };
 
     if target_apps.is_empty() {
@@ -2615,6 +2617,125 @@ fn remove_deepseek_server_at(path: &Path, id: &str) -> Result<bool, AppCommandEr
 }
 
 // ---------------------------------------------------------------------------
+// pi  (<PI_CODING_AGENT_DIR|~/.pi/agent>/mcp.json  →  top-level `mcpServers`)
+//
+// The odd one out: this file belongs to neither pi nor codeg but to a
+// THIRD-PARTY pi extension — pi itself has no MCP support, and the extension is
+// what reads `mcpServers` and mounts the servers. The schema it accepts is
+// Claude Code's (`command`/`args`/`env` | `url`/`headers`), which is codeg's
+// canonical shape, so no translation layer is needed (issue #653).
+//
+// SCAN-ONLY, in both directions:
+//
+//   - Not an assignable target. `APP_OPTIONS` in `mcp-settings.tsx` omits pi, so
+//     no checkbox can add a server here; the settings page carries an existing
+//     `pi` assignment forward on save instead (`hiddenLegacyApps`), exactly as
+//     it does for OpenClaw. Writing here for a user without the extension would
+//     create a file nothing on the machine reads.
+//   - Still fully round-trippable. `Pi` IS in `ALL_MCP_APPS`, so editing an
+//     entry rewrites it in place and "uninstall" clears it — without that, a
+//     removed server would reappear at the next scan.
+//   - Nothing reaches pi over the wire. `read_servers_for_agent_type` returns an
+//     empty map for `AgentType::Pi` on purpose (pi-acp drops `session/new`'s
+//     `mcpServers`); do NOT wire it to `read_pi_servers` to "fix" the asymmetry.
+//
+// Registered LAST in `local_mcp_readers`, so on an id shared with an assignable
+// agent that agent's spec wins the merge — and a later save writes THAT spec
+// into this file. Any extension-specific key on the losing pi entry is lost
+// (Kimi has a `KIMI_SHARED_KEYS` carve-out for the same hazard; pi gets none
+// because the extension's schema beyond `mcpServers` is not pinned anywhere).
+//
+// Resolves the agent dir from the PROCESS env, like pi's `settings.json` /
+// `auth.json` / `models.json` writers in `commands::acp` — a per-agent BYO
+// `PI_CODING_AGENT_DIR` override is not visible here, the same known limitation
+// those three already have.
+// ---------------------------------------------------------------------------
+
+fn pi_mcp_path() -> PathBuf {
+    super::acp::pi_agent_dir().join("mcp.json")
+}
+
+fn read_pi_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+    read_pi_servers_at(&pi_mcp_path())
+}
+
+fn read_pi_servers_at(path: &Path) -> Result<BTreeMap<String, Value>, AppCommandError> {
+    let root = read_json_file(path)?;
+    let mut out = BTreeMap::new();
+
+    let Some(servers) = root.get("mcpServers").and_then(Value::as_object) else {
+        return Ok(out);
+    };
+
+    for (id, spec) in servers {
+        match canonicalize_spec(spec, "pi config") {
+            Ok(normalized) => {
+                out.insert(id.to_string(), normalized);
+            }
+            Err(err) => {
+                tracing::warn!("[MCP] skip invalid pi MCP entry id={id}: {err}");
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn upsert_pi_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    upsert_pi_server_at(&pi_mcp_path(), id, spec)
+}
+
+fn upsert_pi_server_at(path: &Path, id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    let mut root = read_json_file(path)?;
+    if !root.is_object() {
+        root = json!({});
+    }
+
+    let canonical = canonicalize_spec(spec, "pi write")?;
+
+    let obj = root.as_object_mut().ok_or_else(|| {
+        mcp_configuration_invalid(format!("invalid JSON root in {}", path.display()))
+    })?;
+    if !obj.get("mcpServers").map(Value::is_object).unwrap_or(false) {
+        obj.insert("mcpServers".to_string(), Value::Object(Map::new()));
+    }
+
+    let map = obj
+        .get_mut("mcpServers")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            mcp_configuration_invalid(format!("invalid mcpServers in {}", path.display()))
+        })?;
+    map.insert(id.to_string(), canonical);
+
+    write_json_file(path, &root)
+}
+
+fn remove_pi_server(id: &str) -> Result<bool, AppCommandError> {
+    remove_pi_server_at(&pi_mcp_path(), id)
+}
+
+fn remove_pi_server_at(path: &Path, id: &str) -> Result<bool, AppCommandError> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let mut root = read_json_file(path)?;
+    let Some(obj) = root.as_object_mut() else {
+        return Ok(false);
+    };
+    let Some(servers) = obj.get_mut("mcpServers").and_then(Value::as_object_mut) else {
+        return Ok(false);
+    };
+
+    let removed = servers.remove(id).is_some();
+    if removed {
+        write_json_file(path, &root)?;
+    }
+    Ok(removed)
+}
+
+// ---------------------------------------------------------------------------
 // Qoder  (~/.qoder/settings.json  →  top-level `mcpServers`)
 //
 // Qoder inherits gemini-cli's settings schema: user-global MCP servers live in
@@ -2953,7 +3074,7 @@ impl LocalMcpReader {
     }
 }
 
-fn local_mcp_readers() -> [LocalMcpReader; 14] {
+fn local_mcp_readers() -> [LocalMcpReader; 15] {
     [
         LocalMcpReader::new("Claude Code", McpAppType::ClaudeCode, read_claude_servers),
         LocalMcpReader::new("Codex", McpAppType::Codex, read_codex_servers),
@@ -2973,6 +3094,7 @@ fn local_mcp_readers() -> [LocalMcpReader; 14] {
             read_antigravity_servers,
         ),
         LocalMcpReader::new("Qoder", McpAppType::Qoder, read_qoder_servers),
+        LocalMcpReader::new("pi", McpAppType::Pi, read_pi_servers),
     ]
 }
 
@@ -3116,6 +3238,7 @@ fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), 
         McpAppType::DeepSeek => upsert_deepseek_server(id, spec),
         McpAppType::Qoder => upsert_qoder_server(id, spec),
         McpAppType::Antigravity => upsert_antigravity_server(id, spec),
+        McpAppType::Pi => upsert_pi_server(id, spec),
     }
 }
 
@@ -3136,7 +3259,8 @@ pub fn read_servers_for_agent_type(
         AgentType::Grok => read_grok_servers(),
         AgentType::Cursor => read_cursor_servers(),
         // pi-acp drops ACP-wire MCP and pi has no native MCP (it needs a
-        // third-party extension), so codeg manages no MCP servers for pi (v1).
+        // third-party extension). Scanning its extension config must not
+        // change the servers forwarded to a pi ACP session.
         AgentType::Pi => Ok(BTreeMap::new()),
         // deepseek-acp has no native MCP config file: it takes servers only
         // as `session/new`'s `mcpServers`. `$DSH_HOME/mcp.json` is codeg's own
@@ -4217,6 +4341,7 @@ fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, AppCommandEr
         McpAppType::DeepSeek => remove_deepseek_server(id),
         McpAppType::Qoder => remove_qoder_server(id),
         McpAppType::Antigravity => remove_antigravity_server(id),
+        McpAppType::Pi => remove_pi_server(id),
     }
 }
 
@@ -6026,6 +6151,131 @@ mod tests {
     }
 
     #[test]
+    fn pi_mcp_source_is_registered() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        let raw = json!({"mcpServers": {
+            "shared": {"command": "pi-shared"},
+            "pi-only": {"command": "npx", "args": ["-y", "test-mcp"],
+                        "env": {"TEST_KEY": "fixture"}},
+            "remote": {"url": "https://example.test/mcp", "headers": {"X-Test": "fixture"}},
+            "invalid": {"command": ""}
+        }})
+        .to_string();
+        fs::write(&path, &raw).unwrap();
+        temp_env::with_var("PI_CODING_AGENT_DIR", Some(dir.path()), || {
+            let pi = local_mcp_readers()
+                .into_iter()
+                .find(|reader| serde_json::to_value(reader.app).unwrap() == json!("pi"))
+                .expect("pi must be a registered scan source");
+            let scan = scan_local_servers_from_readers(&[
+                LocalMcpReader::new("Claude Code", McpAppType::ClaudeCode, test_claude_servers),
+                pi,
+            ]);
+            assert!(scan.warnings.is_empty());
+            assert_eq!(scan.servers.len(), 4);
+            let shared = scan
+                .servers
+                .iter()
+                .find(|server| server.id == "shared")
+                .unwrap();
+            assert_eq!(shared.apps, [McpAppType::ClaudeCode, McpAppType::Pi]);
+            assert_eq!(shared.spec["command"], "claude-wins");
+            let local = scan
+                .servers
+                .iter()
+                .find(|server| server.id == "pi-only")
+                .unwrap();
+            assert_eq!(local.apps, [McpAppType::Pi]);
+            assert_eq!(local.spec["type"], "stdio");
+            assert_eq!(local.spec["args"], json!(["-y", "test-mcp"]));
+            assert_eq!(local.spec["env"]["TEST_KEY"], "fixture");
+            let remote = scan
+                .servers
+                .iter()
+                .find(|server| server.id == "remote")
+                .unwrap();
+            assert_eq!(remote.spec["type"], "http");
+            assert_eq!(remote.spec["headers"]["X-Test"], "fixture");
+            // Discovery must neither rewrite the extension's file nor change ACP forwarding.
+            assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+            assert!(
+                read_servers_for_agent_type(crate::models::agent::AgentType::Pi)
+                    .unwrap()
+                    .is_empty()
+            );
+        });
+    }
+
+    #[test]
+    fn pi_mcp_missing_empty_and_invalid_configs_follow_scan_policy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        assert!(read_pi_servers_at(&path).unwrap().is_empty());
+        assert!(!remove_pi_server_at(&path, "missing").unwrap());
+        assert!(!path.exists());
+        for raw in ["", "  \n", "{}", r#"{"mcpServers":{}}"#] {
+            fs::write(&path, raw).unwrap();
+            assert!(read_pi_servers_at(&path).unwrap().is_empty());
+        }
+        fs::write(&path, "{broken").unwrap();
+        temp_env::with_var("PI_CODING_AGENT_DIR", Some(dir.path()), || {
+            let scan = scan_local_servers_from_readers(&[
+                LocalMcpReader::new("pi", McpAppType::Pi, read_pi_servers),
+                LocalMcpReader::new("Claude Code", McpAppType::ClaudeCode, test_claude_servers),
+            ]);
+            assert_eq!(scan.servers.len(), 2);
+            assert_eq!(scan.warnings.len(), 1);
+            assert_eq!(scan.warnings[0].app, McpAppType::Pi);
+            assert!(scan.warnings[0].message.contains(path.to_str().unwrap()));
+            assert!(require_complete_scan(&scan).is_err());
+            assert!(
+                upsert_server_for_app(McpAppType::Pi, "test", &json!({"command": "test"})).is_err()
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), "{broken");
+        });
+    }
+
+    #[test]
+    fn pi_mcp_edit_and_remove_preserve_other_extension_settings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        let original = json!({
+            "settings": {"toolPrefix": "mcp"},
+            "mcpServers": {
+                "existing": {"command": "keep-me", "extensionOption": true},
+                "editable": {"command": "before", "extensionOption": {"enabled": true}}
+            }
+        });
+        fs::write(&path, original.to_string()).unwrap();
+        temp_env::with_var("PI_CODING_AGENT_DIR", Some(dir.path()), || {
+            let mut spec = read_pi_servers().unwrap().remove("editable").unwrap();
+            spec["command"] = json!("after");
+            upsert_server_for_app(McpAppType::Pi, "editable", &spec).unwrap();
+            let edited = read_json_file(&path).unwrap();
+            assert_eq!(edited["settings"], original["settings"]);
+            assert_eq!(
+                edited["mcpServers"]["existing"],
+                original["mcpServers"]["existing"]
+            );
+            assert_eq!(edited["mcpServers"]["editable"]["command"], "after");
+            assert_eq!(
+                edited["mcpServers"]["editable"]["extensionOption"],
+                json!({"enabled": true})
+            );
+            assert!(remove_server_for_app(McpAppType::Pi, "editable").unwrap());
+            assert!(!remove_server_for_app(McpAppType::Pi, "editable").unwrap());
+            let removed = read_json_file(&path).unwrap();
+            assert_eq!(removed["settings"], original["settings"]);
+            assert_eq!(
+                removed["mcpServers"]["existing"],
+                original["mcpServers"]["existing"]
+            );
+            assert!(removed["mcpServers"].get("editable").is_none());
+        });
+    }
+
+    #[test]
     fn best_effort_scan_keeps_valid_sources_around_a_failed_source() {
         let readers = [
             LocalMcpReader::new("Claude Code", McpAppType::ClaudeCode, test_claude_servers),
@@ -6898,6 +7148,64 @@ mod tests {
     }
 
     #[test]
+    fn all_mcp_apps_is_exhaustive() {
+        // `ALL_MCP_APPS` drives BOTH write paths' "and no others" semantics:
+        // `mcp_upsert_local_server` removes the server from every app it lists
+        // but was not handed, and `mcp_remove_server`'s `apps: None` branch
+        // deletes it from every app it lists. An app missing from it fails
+        // SILENTLY — the stale entry stays on disk and the very next scan
+        // reports it as a live assignment, so an "uninstalled" server reappears
+        // on refresh. Nothing else catches that: the per-app dispatchers are
+        // exhaustive `match`es, but a constant is just data.
+        //
+        // The `match` below is the guard. It has no `_` arm, so adding a
+        // variant to `McpAppType` stops COMPILING here until whoever added it
+        // decides — deliberately — whether the write paths must reach it.
+        for app in ALL_MCP_APPS {
+            match app {
+                McpAppType::ClaudeCode
+                | McpAppType::Codex
+                | McpAppType::OpenCode
+                | McpAppType::Gemini
+                | McpAppType::OpenClaw
+                | McpAppType::Cline
+                | McpAppType::Hermes
+                | McpAppType::CodeBuddy
+                | McpAppType::KimiCode
+                | McpAppType::Grok
+                | McpAppType::Cursor
+                | McpAppType::DeepSeek
+                | McpAppType::Qoder
+                | McpAppType::Antigravity
+                | McpAppType::Pi => {}
+            }
+        }
+
+        // No duplicates: `mcp_upsert_local_server` walks this list once per app,
+        // so a repeat would upsert (or remove) the same file twice per save.
+        let unique = ALL_MCP_APPS.iter().copied().collect::<BTreeSet<_>>();
+        assert_eq!(
+            unique.len(),
+            ALL_MCP_APPS.len(),
+            "ALL_MCP_APPS must not repeat an app"
+        );
+
+        // Every app the scan can ATTRIBUTE a server to must also be one the
+        // write paths can reach; otherwise the UI shows an assignment codeg can
+        // neither edit nor clear. (The reverse is allowed: a write-only target
+        // with no reader would just never show up.)
+        let scannable = local_mcp_readers()
+            .iter()
+            .map(|reader| reader.app)
+            .collect::<BTreeSet<_>>();
+        assert!(
+            scannable.is_subset(&unique),
+            "every scanned source must be writable: {:?}",
+            scannable.difference(&unique).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn mcp_app_type_wire_names_match_the_agent_type_they_name() {
         use crate::models::agent::AgentType;
 
@@ -6922,6 +7230,8 @@ mod tests {
             (McpAppType::Cursor, AgentType::Cursor),
             (McpAppType::DeepSeek, AgentType::DeepSeek),
             (McpAppType::Qoder, AgentType::Qoder),
+            (McpAppType::Antigravity, AgentType::Antigravity),
+            (McpAppType::Pi, AgentType::Pi),
         ] {
             let wire = serde_json::to_value(app).expect("serialize app type");
             assert_eq!(

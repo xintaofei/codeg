@@ -850,6 +850,14 @@ pub fn build_router(
             post(handlers::acp::acp_load_pi_config),
         )
         .route(
+            "/acp_load_deepseek_model_catalog",
+            post(handlers::acp::acp_load_deepseek_model_catalog),
+        )
+        .route(
+            "/acp_update_deepseek_model_catalog",
+            post(handlers::acp::acp_update_deepseek_model_catalog),
+        )
+        .route(
             "/acp_validate_pi_command",
             post(handlers::acp::acp_validate_pi_command),
         )

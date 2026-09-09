@@ -46,6 +46,77 @@ fn codex_line_ordinal(line: &str) -> Option<u64> {
         .as_u64()
 }
 
+/// Drop the parent history a sub-agent rollout opens with, keeping the child's
+/// own header and everything it did itself.
+///
+/// A codex sub-agent runs as a full rollout of its own, but codex seeds the file
+/// with however much of the parent's thread the spawn asked to carry
+/// (`fork_turns`). Those records are the PARENT's, and at the record level they
+/// are indistinguishable from the child's — reading the file whole is what puts
+/// somebody else's conversation at the top of the child's transcript.
+///
+/// `subagent_history_start_ordinal` is codex's own declaration of where the seed
+/// ends, so the cut is exact rather than inferred. It is REQUIRED: rollouts
+/// without it (codex ≤ 0.147, `history_mode: "legacy"`) are returned untouched.
+/// Guessing a boundary there would be a bad trade — the obvious candidate, the
+/// first inter-agent message addressed to this child, also appears inside the
+/// replayed prefix whenever the parent had already talked to an earlier
+/// sub-agent of the same name.
+///
+/// Independent of the by-reference fork splice in `rollout_lines_inner`, and the
+/// two never fire on one file: a by-reference fork is identified by
+/// `forked_from_ordinal_exclusive`, which no sub-agent rollout carries.
+fn trim_subagent_replay_prefix(own: Vec<String>) -> Vec<String> {
+    let Some((header_idx, cut)) = own
+        .iter()
+        .enumerate()
+        .take_while(|(idx, _)| *idx < FORK_HEADER_SCAN_LINES)
+        .find_map(|(idx, line)| {
+            let value: serde_json::Value = serde_json::from_str(line).ok()?;
+            if value.get("type").and_then(serde_json::Value::as_str) != Some("session_meta") {
+                return None;
+            }
+            let payload = value.get("payload")?;
+            // Both are required: the ordinal alone would let an ordinary thread
+            // that happens to carry the field lose its opening records.
+            codex_parent_thread_id(payload)?;
+            let cut = payload
+                .get("subagent_history_start_ordinal")
+                .and_then(serde_json::Value::as_u64)?;
+            Some((idx, cut))
+        })
+    else {
+        return own;
+    };
+
+    // The seed is a PREFIX of the stream — `subagent_history_start_ordinal` is
+    // an index into it, not a predicate — so scan for the boundary and keep the
+    // rest verbatim. That costs one JSON parse per SEEDED record (ten or so in
+    // practice) instead of one per line: the session viewer re-reads a running
+    // child every couple of seconds, and these files run past a thousand lines.
+    //
+    // A record with no ordinal ends the scan too. It cannot be placed on either
+    // side, and stopping there can only keep more than necessary — never drop
+    // work the child did.
+    let boundary = own
+        .iter()
+        .position(|line| codex_line_ordinal(line).is_none_or(|ord| ord >= cut))
+        .unwrap_or(own.len());
+    // Nothing was seeded ahead of the child's own stream (a `cut` of 0, or a
+    // header that is already at or past it) — there is nothing to drop, and
+    // splicing the header back in would duplicate it.
+    if boundary <= header_idx {
+        return own;
+    }
+
+    // The header declares the lineage the parser latches identity from, and
+    // sits below the cut itself.
+    let mut kept = Vec::with_capacity(own.len() - boundary + 1);
+    kept.push(own[header_idx].clone());
+    kept.extend(own.into_iter().skip(boundary));
+    kept
+}
+
 impl Default for CodexParser {
     fn default() -> Self {
         Self::new()
@@ -100,6 +171,7 @@ impl CodexParser {
             .lines()
             .map_while(Result::ok)
             .collect();
+        let own = trim_subagent_replay_prefix(own);
 
         // The fork pointer rides the first header; anything past it is content.
         let Some((header_idx, parent_id, cut)) = own
@@ -2058,6 +2130,120 @@ fn is_native_team_spawn(args: Option<&serde_json::Value>) -> bool {
     args.is_some_and(|a| a.get("agent_type").is_none() && a.get("task_name").is_some())
 }
 
+/// Synthetic input key naming the sub-agent's TERMINAL state, when codex
+/// reported one. Absent while the child is still working (or was never heard
+/// from again), which is the state [`CODEX_SUBAGENT_LAUNCH_KEY`] describes.
+///
+/// Written by both the rollout parser and the live path
+/// (`acp/connection.rs`), so a reload cannot disagree with the stream about
+/// whether the child finished.
+pub const CODEX_SUBAGENT_STATE_KEY: &str = "__codegCodexSubagentState";
+
+/// One `SubAgentActivity` record, normalized across the two on-disk shapes.
+///
+/// `call_id` is the SPAWN's own `call_id` for a `started` record — the key that
+/// ties a child thread back to the capsule that launched it. A terminal record
+/// carries a synthetic id of its own (`subagent-completed-<uuid>`) instead, so
+/// only `thread_id` correlates there.
+struct CodexSubagentActivityRecord<'a> {
+    call_id: Option<&'a str>,
+    thread_id: &'a str,
+    agent_path: Option<&'a str>,
+    kind: &'a str,
+}
+
+/// Read one `event_msg` payload as a `SubAgentActivity`, whichever shape codex
+/// wrote it in.
+///
+/// TWO shapes are live on disk and neither may be dropped:
+///
+/// * `event_msg.sub_agent_activity` with flat
+///   `{event_id, agent_thread_id, agent_path, kind}` — codex ≤ 0.147.
+/// * `event_msg.item_completed.item` with
+///   `{type: "SubAgentActivity", id, agent_thread_id, agent_path, kind}` —
+///   codex 0.153.4, which retired the flat event entirely (measured on a real
+///   0.153.4 parent rollout: flat 0 records, nested 26).
+///
+/// Reading only the flat one — as this did before — meant every 0.153.4
+/// sub-agent capsule reloaded with no `agent_id` at all, so the badge the live
+/// stream showed disappeared on refresh and nothing could resolve the child's
+/// own rollout. `item.id` is the same spawn `call_id` the flat `event_id`
+/// carried, so the two normalize onto one record with no correlation loss.
+fn codex_subagent_activity_record<'a>(
+    payload_type: &str,
+    payload: &'a serde_json::Value,
+) -> Option<CodexSubagentActivityRecord<'a>> {
+    let source = match payload_type {
+        "sub_agent_activity" => payload,
+        "item_completed" => {
+            let item = payload.get("item")?;
+            if item.get("type").and_then(serde_json::Value::as_str) != Some("SubAgentActivity") {
+                return None;
+            }
+            item
+        }
+        _ => return None,
+    };
+    let str_field = |key: &str| {
+        source
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    Some(CodexSubagentActivityRecord {
+        // `event_id` on the flat shape, `id` on the nested item.
+        call_id: str_field("event_id").or_else(|| str_field("id")),
+        thread_id: str_field("agent_thread_id")?,
+        agent_path: str_field("agent_path"),
+        kind: str_field("kind").unwrap_or(""),
+    })
+}
+
+/// The envelope header codex puts on an inter-agent `agent_message`, and the
+/// only message type whose payload is readable.
+const CODEX_FINAL_ANSWER_HEADER: &str = "Message Type: FINAL_ANSWER";
+
+/// Where the envelope's own preamble ends and the sender's text begins.
+const CODEX_INTER_AGENT_PAYLOAD_MARKER: &str = "Payload:\n";
+
+/// A sub-agent's finished report, read off a `response_item.agent_message` in
+/// the PARENT's rollout: `(author path, body)`.
+///
+/// This is the one piece of a codex team-of-agents exchange that is not sealed.
+/// Every inter-agent message rides the same envelope, but only the terminal one
+/// carries plaintext — measured across every such record on disk for two
+/// months: `FINAL_ANSWER` 8/8 plaintext with a body, `MESSAGE` and `NEW_TASK`
+/// 0/82 (both are Fernet blobs in a sibling `encrypted_content` part, in the
+/// child's own rollout too, so there is nothing to recover for those).
+///
+/// The header match is anchored at the start of the text rather than a
+/// substring search: a sub-agent that merely writes ABOUT the protocol — which
+/// one reviewing this repository will — must not have its `MESSAGE` mistaken
+/// for a report.
+fn codex_inter_agent_final_answer(payload: &serde_json::Value) -> Option<(&str, String)> {
+    let author = payload
+        .get("author")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let text: String = payload
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter(|part| part.get("type").and_then(serde_json::Value::as_str) == Some("input_text"))
+        .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+        .collect();
+    if !text.starts_with(CODEX_FINAL_ANSWER_HEADER) {
+        return None;
+    }
+    let body = text
+        .split_once(CODEX_INTER_AGENT_PAYLOAD_MARKER)
+        .map(|(_, body)| body)?
+        .trim();
+    (!body.is_empty()).then(|| (author, body.to_string()))
+}
+
 /// Replace every encrypted envelope inside a parsed argument tree with
 /// [`CODEX_ENCRYPTED_PLACEHOLDER`], returning whether anything was replaced.
 ///
@@ -2100,10 +2286,16 @@ fn redact_encrypted_children<'a>(
     changed
 }
 
-/// Add `agent_id` to a spawn execution capsule's input JSON (the
+/// Add `agent_id` — and the child's terminal state, once codex has reported one
+/// — to a spawn execution capsule's input JSON (the
 /// `{subagent_type,prompt,description}` object), so the card can show the
-/// sub-agent UUID. Tolerates a missing/!object input by starting fresh.
-fn inject_agent_id_into_input(input: Option<&str>, agent_id: &str) -> String {
+/// sub-agent UUID and stop claiming the child's fate is unknowable. Tolerates a
+/// missing/!object input by starting fresh.
+fn inject_agent_id_into_input(
+    input: Option<&str>,
+    agent_id: &str,
+    terminal_kind: Option<&str>,
+) -> String {
     let mut obj = input
         .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
         .and_then(|v| v.as_object().cloned())
@@ -2112,6 +2304,12 @@ fn inject_agent_id_into_input(input: Option<&str>, agent_id: &str) -> String {
         "agent_id".to_string(),
         serde_json::Value::String(agent_id.to_string()),
     );
+    if let Some(kind) = terminal_kind {
+        obj.insert(
+            CODEX_SUBAGENT_STATE_KEY.to_string(),
+            serde_json::Value::String(kind.to_string()),
+        );
+    }
     serde_json::Value::Object(obj).to_string()
 }
 
@@ -2196,6 +2394,66 @@ fn build_collab_wait_input(status: &serde_json::Map<String, serde_json::Value>) 
         COLLAB_OP_KEY: "wait",
     });
     (input.to_string(), any_error)
+}
+
+/// The primary agent's own path in codex's team-of-agents tree. Every other
+/// path under it is a sub-agent.
+const CODEX_ROOT_AGENT_PATH: &str = "/root";
+
+/// Build a `collab_agent` capsule for `list_agents`, whose output is a roster:
+/// `{"agents":[{"agent_name","agent_status"}]}` where `agent_status` is either a
+/// bare state string (`"running"`) or the same terminal map a wait returns
+/// (`{"completed": "<full report>"}`).
+///
+/// Worth a capsule of its own because a finished child's ENTIRE report is in
+/// there: with the native team-of-agents there is no `close_agent`, and the wait
+/// carries only `{"message":"Wait completed.","timed_out":false}`, so a roster
+/// taken after a child finished is one of the few places its text survives in a
+/// readable form. It rendered as a wall of raw JSON on the generic tool card
+/// before this.
+///
+/// The root row is dropped: codex reports the parent through the same roster,
+/// and listing the conversation you are already reading as one of its own
+/// sub-agents is noise. `None` when nothing is left to show.
+fn build_collab_list_input(output: &serde_json::Value) -> Option<(String, bool)> {
+    let mut receiver_ids: Vec<serde_json::Value> = Vec::new();
+    let mut agents_states = serde_json::Map::new();
+    let mut any_error = false;
+    for entry in output.get("agents")?.as_array()? {
+        // `continue`, never `?`: the root row is present in every roster, so
+        // bailing out on it would drop the whole capsule.
+        let Some(name) = entry
+            .get("agent_name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|n| !n.is_empty() && *n != CODEX_ROOT_AGENT_PATH)
+        else {
+            continue;
+        };
+        let (st, msg) = match entry.get("agent_status") {
+            Some(value) => extract_wait_agent_status(value),
+            None => continue,
+        };
+        if is_error_collab_status(&st) {
+            any_error = true;
+        }
+        receiver_ids.push(serde_json::Value::String(name.to_string()));
+        agents_states.insert(
+            name.to_string(),
+            serde_json::json!({ "status": st, "message": msg }),
+        );
+    }
+    if agents_states.is_empty() {
+        return None;
+    }
+    let input = serde_json::json!({
+        "senderThreadId": "",
+        "receiverThreadIds": receiver_ids,
+        "agentsStates": serde_json::Value::Object(agents_states),
+        "status": if any_error { "failed" } else { "completed" },
+        COLLAB_OP_KEY: "list",
+    });
+    Some((input.to_string(), any_error))
 }
 
 /// The parent thread id a rollout's `session_meta` payload declares, or `None`
@@ -2607,6 +2865,17 @@ impl CodexParser {
         // streaming, this on reload).
         let mut spawn_agent_call_ids: HashSet<String> = HashSet::new();
         let mut agent_id_to_spawn_call_id: HashMap<String, String> = HashMap::new();
+        // `agent_path` ("/root/history_limits") → the thread id currently
+        // answering to it. Last write wins, which is exactly the pairing an
+        // inter-agent message needs: the child that replies is whichever one
+        // that path most recently named. A path CAN be reused (codex re-spawns
+        // under the same task name), so a first-wins map would misfile the
+        // second child's result onto the first child's capsule.
+        let mut agent_path_to_thread_id: HashMap<String, String> = HashMap::new();
+        // Terminal `SubAgentActivity` kinds by thread id (`completed` /
+        // `interrupted`). Stamped onto the launch capsule so it stops reading as
+        // "codex will never report this child again" once codex has.
+        let mut agent_terminal_kind: HashMap<String, String> = HashMap::new();
         // Result text used to FILL the execution capsule only as a fallback for
         // agents that were never returned by a wait (keyed by agent_id). Filled
         // from close_agent's `previous_status`.
@@ -2619,6 +2888,7 @@ impl CodexParser {
         // execution capsule as failed (live parity).
         let mut agent_errored: HashSet<String> = HashSet::new();
         let mut wait_agent_call_ids: HashSet<String> = HashSet::new();
+        let mut list_agents_call_ids: HashSet<String> = HashSet::new();
         let mut close_agent_call_ids: HashSet<String> = HashSet::new();
         let mut close_agent_targets: HashMap<String, String> = HashMap::new();
         let mut active_agent_count: u32 = 0;
@@ -2815,28 +3085,56 @@ impl CodexParser {
                             );
                         }
 
-                        match payload_type {
-                            // codex 0.147 stopped returning the sub-agent's id
-                            // from `spawn_agent` (its output is just
-                            // `{"task_name":"/root/pnpm_build"}`). This event is
-                            // now the only place the parent's rollout names the
-                            // child thread, and it correlates back by carrying
-                            // the spawn's own `call_id` as `event_id`.
-                            "sub_agent_activity" => {
-                                let call_id = payload
-                                    .get("event_id")
-                                    .and_then(|v| v.as_str())
-                                    .filter(|id| spawn_agent_call_ids.contains(*id));
-                                let thread_id = payload
-                                    .get("agent_thread_id")
-                                    .and_then(|v| v.as_str())
-                                    .filter(|id| !id.is_empty());
-                                if let (Some(call_id), Some(thread_id)) = (call_id, thread_id) {
-                                    agent_id_to_spawn_call_id
-                                        .entry(thread_id.to_string())
-                                        .or_insert_with(|| call_id.to_string());
-                                }
+                        // codex 0.147 stopped returning the sub-agent's id from
+                        // `spawn_agent` (its output is empty, or just
+                        // `{"task_name":"/root/pnpm_build"}`). `SubAgentActivity`
+                        // is now the only place the parent's rollout names the
+                        // child thread, and it correlates back by carrying the
+                        // spawn's own `call_id`.
+                        //
+                        // Read BEFORE the match, not as an arm of it: 0.153.4
+                        // moved these records inside `item_completed`, whose arm
+                        // `continue`s on anything that is not a plan document.
+                        if let Some(activity) =
+                            codex_subagent_activity_record(payload_type, payload)
+                        {
+                            if let Some(path) = activity.agent_path {
+                                agent_path_to_thread_id
+                                    .insert(path.to_string(), activity.thread_id.to_string());
                             }
+                            // Only a launch names the capsule to attach to; a
+                            // terminal record carries a synthetic id of its own.
+                            if let Some(call_id) = activity
+                                .call_id
+                                .filter(|id| spawn_agent_call_ids.contains(*id))
+                            {
+                                agent_id_to_spawn_call_id
+                                    .entry(activity.thread_id.to_string())
+                                    .or_insert_with(|| call_id.to_string());
+                            }
+                            match activity.kind {
+                                "completed" | "interrupted" => {
+                                    agent_terminal_kind.insert(
+                                        activity.thread_id.to_string(),
+                                        activity.kind.to_string(),
+                                    );
+                                }
+                                // A terminal child can be brought back
+                                // (`resumeAgent` / `followup_task`), and it
+                                // announces that with a fresh `started`. Clear
+                                // the old outcome rather than leave the capsule
+                                // claiming a run that has since resumed. The
+                                // live path self-corrects the same way: a new
+                                // launch replaces the remembered input, which
+                                // carries no state key.
+                                "started" => {
+                                    agent_terminal_kind.remove(activity.thread_id);
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        match payload_type {
                             "task_started" => {
                                 if context_window_max_tokens.is_none() {
                                     context_window_max_tokens = payload
@@ -2948,16 +3246,24 @@ impl CodexParser {
                             "agent_message" => {
                                 // Parent narration is emitted even while a
                                 // sub-agent is active (active_agent_count > 0).
-                                // codex-acp 1.0.x writes the sub-agent's own
-                                // transcript to its `agent-<id>.jsonl`, NOT into
-                                // the parent rollout, so every agent_message here
-                                // is the parent's (verified across 180 real
-                                // rollouts: 0 sub-agent leaks). The old
+                                // Every `event_msg.agent_message` is the
+                                // parent's: a sub-agent's own work goes to a
+                                // transcript of its own, never into this channel
+                                // (verified across 180 real rollouts: 0
+                                // sub-agent leaks). The old
                                 // `active_agent_count == 0` guard wrongly dropped
                                 // the parent's between-capsule narration — and,
                                 // when no close_agent ran (active never returns to
                                 // 0), even the final answer. Images keep their own
                                 // guard (see image_generation arms).
+                                //
+                                // A sub-agent CAN speak into the parent's
+                                // rollout, but on a different channel: the
+                                // addressed `response_item.agent_message`
+                                // handled below. That one carries `author` /
+                                // `recipient` and a `message` ARRAY, so it
+                                // cannot be confused with this shape's bare
+                                // `message` string.
                                 let text = payload
                                     .get("message")
                                     .and_then(|m| m.as_str())
@@ -3370,6 +3676,36 @@ impl CodexParser {
                         }
 
                         match payload_type {
+                            // A sub-agent reporting back. Distinct from the
+                            // `event_msg.agent_message` arm above (which is the
+                            // PARENT speaking, and carries a bare `message`
+                            // string): this one is addressed
+                            // `author` → `recipient` and wraps its body in
+                            // codex's inter-agent envelope.
+                            //
+                            // It has no `item_completed` twin — codex publishes
+                            // no ThreadItem for it — so codex-acp never sees it
+                            // and it cannot arrive live. The rollout is the only
+                            // place a child's report exists, which is why an
+                            // otherwise-complete team run used to show nothing
+                            // at all of what its sub-agents concluded.
+                            //
+                            // Not emitted as a message of its own: it belongs to
+                            // the child, not the parent's narration. It is filed
+                            // by thread id and the back-patch at the end of the
+                            // parse folds it into that child's launch capsule,
+                            // through the same `agent_fallback_results` channel
+                            // the legacy `close_agent` result uses.
+                            "agent_message" => {
+                                if let Some((author, body)) =
+                                    codex_inter_agent_final_answer(payload)
+                                {
+                                    if let Some(thread_id) = agent_path_to_thread_id.get(author) {
+                                        agent_fallback_results
+                                            .insert(thread_id.clone(), body);
+                                    }
+                                }
+                            }
                             "reasoning" => {
                                 // Codex records one model response's reasoning as a
                                 // `summary` array of `{type:"summary_text", text}`
@@ -3525,6 +3861,11 @@ impl CodexParser {
                                             wait_agent_call_ids.insert(id.clone());
                                         }
                                     }
+                                    "list_agents" => {
+                                        if let Some(ref id) = tool_use_id {
+                                            list_agents_call_ids.insert(id.clone());
+                                        }
+                                    }
                                     "close_agent" => {
                                         if let Some(ref id) = tool_use_id {
                                             close_agent_call_ids.insert(id.clone());
@@ -3673,6 +4014,9 @@ impl CodexParser {
                                 let is_wait = tool_use_id
                                     .as_ref()
                                     .is_some_and(|id| wait_agent_call_ids.contains(id));
+                                let is_list = tool_use_id
+                                    .as_ref()
+                                    .is_some_and(|id| list_agents_call_ids.contains(id));
                                 let is_close = tool_use_id
                                     .as_ref()
                                     .is_some_and(|id| close_agent_call_ids.contains(id));
@@ -3803,33 +4147,45 @@ impl CodexParser {
                                         completed_at: Some(timestamp),
                                     agent_message_id: None,
                                     });
-                                } else if is_wait {
-                                    // Emit one `collab_agent` capsule per wait,
-                                    // routed through the same CollabAgentCard as
-                                    // the live wait capsule. Two output shapes —
-                                    // see `native_team_wait_input`.
+                                } else if is_wait || is_list {
+                                    // Emit one `collab_agent` capsule per wait or
+                                    // roster, routed through the same
+                                    // CollabAgentCard as the live capsule. Two
+                                    // wait output shapes — see
+                                    // `native_team_wait_input`.
+                                    //
+                                    // A roster deliberately does NOT mark its
+                                    // agents `agent_waited`: listing an agent is
+                                    // not collecting it, and suppressing the
+                                    // spawn capsule's own result on the strength
+                                    // of a `list_agents` the model happened to
+                                    // call would lose the report entirely.
                                     let capsule = parse_codex_json_output(payload).and_then(
-                                        |output_obj| match output_obj
-                                            .get("status")
-                                            .and_then(|s| s.as_object())
-                                        {
-                                            Some(status) => {
-                                                // Mark returned agents so the spawn
-                                                // capsule won't also show their
-                                                // result, and record per-agent error
-                                                // state so the execution capsule can
-                                                // render failed (live parity).
-                                                for (agent_id, value) in status {
-                                                    agent_waited.insert(agent_id.clone());
-                                                    let (st, _) = extract_wait_agent_status(value);
-                                                    if is_error_collab_status(&st) {
-                                                        agent_errored.insert(agent_id.clone());
-                                                    }
-                                                }
-                                                (!status.is_empty())
-                                                    .then(|| build_collab_wait_input(status))
+                                        |output_obj| {
+                                            if is_list {
+                                                return build_collab_list_input(&output_obj);
                                             }
-                                            None => native_team_wait_input(&output_obj),
+                                            match output_obj.get("status").and_then(|s| s.as_object())
+                                            {
+                                                Some(status) => {
+                                                    // Mark returned agents so the spawn
+                                                    // capsule won't also show their
+                                                    // result, and record per-agent error
+                                                    // state so the execution capsule can
+                                                    // render failed (live parity).
+                                                    for (agent_id, value) in status {
+                                                        agent_waited.insert(agent_id.clone());
+                                                        let (st, _) =
+                                                            extract_wait_agent_status(value);
+                                                        if is_error_collab_status(&st) {
+                                                            agent_errored.insert(agent_id.clone());
+                                                        }
+                                                    }
+                                                    (!status.is_empty())
+                                                        .then(|| build_collab_wait_input(status))
+                                                }
+                                                None => native_team_wait_input(&output_obj),
+                                            }
                                         },
                                     );
                                     if let Some((collab_input, is_error)) = capsule {
@@ -4272,7 +4628,8 @@ impl CodexParser {
                         }
                         // Stamp the sub-agent's id onto the spawn execution capsule
                         // input so the card can render it (parity with the wait
-                        // capsule, whose agentsStates already carry the id).
+                        // capsule, whose agentsStates already carry the id), plus
+                        // the terminal state when codex reported one.
                         ContentBlock::ToolUse {
                             tool_use_id: Some(ref id),
                             ref tool_name,
@@ -4283,6 +4640,7 @@ impl CodexParser {
                                 *input_preview = Some(inject_agent_id_into_input(
                                     input_preview.as_deref(),
                                     agent_id,
+                                    agent_terminal_kind.get(agent_id).map(String::as_str),
                                 ));
                             }
                         }
@@ -5879,9 +6237,11 @@ mod tests {
     use super::parse_codex_subagent_stats;
     use super::redact_encrypted_args;
     use super::resolve_codex_home_dir_from;
+    use super::trim_subagent_replay_prefix;
     use super::CODEX_PLAN_APPROVAL_PROMPT;
     use super::CODEX_PLAN_APPROVED_OUTPUT;
     use super::CODEX_SUBAGENT_LAUNCH_KEY;
+    use super::CODEX_SUBAGENT_STATE_KEY;
     use super::COLLAB_OP_KEY;
     use super::should_skip_duplicate_user_message;
     use super::strip_blocked_resource_mentions;
@@ -5891,6 +6251,7 @@ mod tests {
     use crate::models::{
         ContentBlock, MessageRole, MessageTurn, SessionStats, TurnRole, TurnUsage, UnifiedMessage,
     };
+    use crate::parsers::ConversationDetail;
     use chrono::{DateTime, Duration, Utc};
     use std::env;
     use std::fs;
@@ -9291,6 +9652,366 @@ mod tests {
         );
 
         let _ = fs::remove_file(path);
+    }
+
+    /// The 0.153.4 team-of-agents wire, transcribed from a real rollout:
+    /// `SubAgentActivity` moved inside `item_completed`, `spawn_agent` returns
+    /// an EMPTY output, and the child reports back through an inter-agent
+    /// `agent_message` in the parent's own stream.
+    fn native_team_0153_lines(final_answer_type: &str, sealed: &str) -> Vec<String> {
+        vec![
+            rollout_line(
+                "2026-09-08T06:44:00Z",
+                "session_meta",
+                serde_json::json!({"id":"parent","cwd":"/tmp/demo"}),
+            ),
+            rollout_line(
+                "2026-09-08T06:44:31Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call","call_id":"call_0sY5","name":"spawn_agent",
+                    "namespace":"collaboration",
+                    "arguments": serde_json::json!({
+                        "task_name":"history_limits","fork_turns":"all","message": sealed,
+                    }).to_string(),
+                }),
+            ),
+            rollout_line(
+                "2026-09-08T06:44:31Z",
+                "event_msg",
+                serde_json::json!({
+                    "type":"item_completed","thread_id":"parent",
+                    "item":{
+                        "type":"SubAgentActivity","id":"call_0sY5","kind":"started",
+                        "agent_thread_id":"01a07fc2-db62-78b3-9762-9cb2540216c2",
+                        "agent_path":"/root/history_limits",
+                    },
+                }),
+            ),
+            // 0.153.4 returns nothing at all from the spawn.
+            rollout_line(
+                "2026-09-08T06:44:32Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call_output","call_id":"call_0sY5","output":"",
+                }),
+            ),
+            rollout_line(
+                "2026-09-08T07:10:36Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"agent_message","id":"amsg_1",
+                    "author":"/root/history_limits","recipient":"/root",
+                    "content":[
+                        {"type":"input_text","text": format!(
+                            "Message Type: {final_answer_type}\nTask name: /root\nSender: /root/history_limits\nPayload:\n历史与运行预算增强已完成。"
+                        )},
+                    ],
+                }),
+            ),
+            rollout_line(
+                "2026-09-08T07:10:37Z",
+                "event_msg",
+                serde_json::json!({
+                    "type":"item_completed","thread_id":"parent",
+                    "item":{
+                        "type":"SubAgentActivity",
+                        "id":"subagent-completed-01a07fc2-dbcd","kind":"completed",
+                        "agent_thread_id":"01a07fc2-db62-78b3-9762-9cb2540216c2",
+                        "agent_path":"/root/history_limits",
+                    },
+                }),
+            ),
+        ]
+    }
+
+    /// The spawn capsule's `(input JSON, result text)` for `call_0sY5`.
+    fn spawn_capsule(detail: &ConversationDetail) -> (serde_json::Value, Option<String>) {
+        let blocks: Vec<&ContentBlock> =
+            detail.turns.iter().flat_map(|t| t.blocks.iter()).collect();
+        let input = blocks
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::ToolUse {
+                    tool_use_id: Some(id),
+                    tool_name,
+                    input_preview,
+                    ..
+                } if id == "call_0sY5" && tool_name == "Agent" => input_preview.as_deref(),
+                _ => None,
+            })
+            .expect("spawn Agent capsule present");
+        let output = blocks.iter().find_map(|b| match b {
+            ContentBlock::ToolResult {
+                tool_use_id: Some(id),
+                output_preview,
+                ..
+            } if id == "call_0sY5" => Some(output_preview.clone()),
+            _ => None,
+        });
+        (
+            serde_json::from_str(input).expect("spawn input is JSON"),
+            output.flatten(),
+        )
+    }
+
+    #[test]
+    fn native_team_0153_reads_the_nested_subagent_activity() {
+        // 0.153.4 retired `event_msg.sub_agent_activity` for a `SubAgentActivity`
+        // nested in `item_completed`. Reading only the flat shape left every
+        // capsule of that release with no `agent_id`, so the badge the live
+        // stream showed vanished on reload and nothing could resolve the
+        // child's own rollout.
+        let sealed = format!("gAAAAAB{}", "qgWsi0g7gOInVU3UTzqL".repeat(30));
+        let path = write_temp_rollout("nativeteam0153", &native_team_0153_lines("MESSAGE", &sealed));
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "parent")
+            .expect("parse ok");
+        let (input, result) = spawn_capsule(&detail);
+
+        assert_eq!(
+            input.get("agent_id").and_then(|v| v.as_str()),
+            Some("01a07fc2-db62-78b3-9762-9cb2540216c2"),
+            "the nested SubAgentActivity carries the same spawn call_id the flat event did"
+        );
+        // The terminal record is a `completed` of its own, under a synthetic id
+        // that shares nothing with the launch but the thread id.
+        assert_eq!(
+            input.get(CODEX_SUBAGENT_STATE_KEY).and_then(|v| v.as_str()),
+            Some("completed")
+        );
+        // A non-terminal inter-agent message is sealed and says nothing, so it
+        // must not be mistaken for the child's report.
+        assert_eq!(
+            result, None,
+            "only FINAL_ANSWER carries a readable payload; MESSAGE is a Fernet blob"
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_resumed_subagent_drops_its_previous_outcome() {
+        // codex can bring a finished child back (`resumeAgent` / `followup_task`)
+        // and announces it with a fresh `started`. The capsule must stop claiming
+        // the run that has since resumed.
+        let sealed = format!("gAAAAAB{}", "qgWsi0g7gOInVU3UTzqL".repeat(30));
+        let mut lines = native_team_0153_lines("MESSAGE", &sealed);
+        lines.push(rollout_line(
+            "2026-09-08T07:20:00Z",
+            "event_msg",
+            serde_json::json!({
+                "type":"item_completed","thread_id":"parent",
+                "item":{
+                    "type":"SubAgentActivity","id":"call_resume","kind":"started",
+                    "agent_thread_id":"01a07fc2-db62-78b3-9762-9cb2540216c2",
+                    "agent_path":"/root/history_limits",
+                },
+            }),
+        ));
+        let path = write_temp_rollout("nativeteamresume", &lines);
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "parent")
+            .expect("parse ok");
+        let (input, _) = spawn_capsule(&detail);
+        assert_eq!(
+            input.get(CODEX_SUBAGENT_STATE_KEY),
+            None,
+            "a restarted child is running again, not completed"
+        );
+        // The launch marker and the badge survive the restart.
+        assert_eq!(
+            input.get("agent_id").and_then(|v| v.as_str()),
+            Some("01a07fc2-db62-78b3-9762-9cb2540216c2")
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn native_team_final_answer_lands_on_the_spawn_capsule() {
+        // The child's report reaches the PARENT's rollout as an addressed
+        // `response_item.agent_message`, with no `item_completed` twin — so it
+        // never reaches ACP and the rollout is the only place it exists. It
+        // belongs to the child, so it is folded into that child's capsule
+        // rather than emitted as narration of the parent's own.
+        let sealed = format!("gAAAAAB{}", "qgWsi0g7gOInVU3UTzqL".repeat(30));
+        let path = write_temp_rollout(
+            "nativeteamfinal",
+            &native_team_0153_lines("FINAL_ANSWER", &sealed),
+        );
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "parent")
+            .expect("parse ok");
+        let (_, result) = spawn_capsule(&detail);
+        assert_eq!(result.as_deref(), Some("历史与运行预算增强已完成。"));
+
+        // …and not ALSO as an assistant message, which would show the report
+        // twice and attribute the child's words to the parent.
+        let assistant_texts: Vec<&str> = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !assistant_texts
+                .iter()
+                .any(|t| t.contains("历史与运行预算增强已完成")),
+            "the report is the capsule's, not a parent message: {assistant_texts:?}"
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn list_agents_becomes_a_collab_capsule_without_the_root_row() {
+        // `list_agents` returns a roster whose finished rows carry each child's
+        // ENTIRE report — with the native team there is no `close_agent` and the
+        // wait carries no text, so this is one of the few readable copies. It
+        // used to render as raw JSON on the generic tool card.
+        let lines = vec![
+            rollout_line(
+                "2026-09-08T07:11:00Z",
+                "session_meta",
+                serde_json::json!({"id":"parent","cwd":"/tmp/demo"}),
+            ),
+            rollout_line(
+                "2026-09-08T07:11:37Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call","call_id":"call_h62v","name":"list_agents",
+                    "namespace":"collaboration","arguments":"{}",
+                }),
+            ),
+            rollout_line(
+                "2026-09-08T07:11:38Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call_output","call_id":"call_h62v",
+                    "output": serde_json::json!({"agents":[
+                        {"agent_name":"/root","agent_status":"running"},
+                        {"agent_name":"/root/acceptance_fixture",
+                         "agent_status":{"completed":"只读分析已完成。"}},
+                        {"agent_name":"/root/query_core","agent_status":"running"},
+                    ]}).to_string(),
+                }),
+            ),
+        ];
+        let path = write_temp_rollout("listagents", &lines);
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "parent")
+            .expect("parse ok");
+        let input = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .find_map(|b| match b {
+                ContentBlock::ToolUse {
+                    tool_name,
+                    input_preview,
+                    ..
+                } if tool_name == "collab_agent" => input_preview.as_deref(),
+                _ => None,
+            })
+            .expect("roster renders as a collab capsule, not a generic tool card");
+        let parsed: serde_json::Value = serde_json::from_str(input).expect("collab input is JSON");
+        assert_eq!(parsed.get(COLLAB_OP_KEY).and_then(|v| v.as_str()), Some("list"));
+        let states = parsed
+            .get("agentsStates")
+            .and_then(|v| v.as_object())
+            .expect("agentsStates present");
+        assert!(
+            !states.contains_key("/root"),
+            "the parent is not one of its own sub-agents: {states:?}"
+        );
+        assert_eq!(
+            states
+                .get("/root/acceptance_fixture")
+                .and_then(|a| a.get("message"))
+                .and_then(|v| v.as_str()),
+            Some("只读分析已完成。")
+        );
+        assert_eq!(
+            states
+                .get("/root/query_core")
+                .and_then(|a| a.get("status"))
+                .and_then(|v| v.as_str()),
+            Some("running")
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn subagent_rollout_drops_the_replayed_parent_history() {
+        // A sub-agent rollout opens with however much of the parent's thread the
+        // spawn carried over. Those records are the PARENT's; without the cut,
+        // opening the child's session shows somebody else's conversation first.
+        let header = serde_json::json!({
+            "timestamp":"2026-09-08T06:44:31Z","ordinal":0,"type":"session_meta",
+            "payload":{
+                "id":"child","session_id":"parent","forked_from_id":"parent",
+                "parent_thread_id":"parent","cwd":"/tmp/demo",
+                "agent_path":"/root/history_limits","thread_source":"subagent",
+                "subagent_history_start_ordinal": 3,
+            },
+        })
+        .to_string();
+        let numbered = |ordinal: u64, text: &str| {
+            serde_json::json!({
+                "timestamp":"2026-09-08T06:44:32Z","ordinal":ordinal,"type":"response_item",
+                "payload":{"type":"message","role":"assistant",
+                           "content":[{"type":"output_text","text":text}]},
+            })
+            .to_string()
+        };
+        let lines = vec![
+            header.clone(),
+            // The parent's own header, replayed into the child's file.
+            serde_json::json!({
+                "timestamp":"2026-09-08T06:44:31Z","ordinal":1,"type":"session_meta",
+                "payload":{"id":"parent","cwd":"/tmp/demo"},
+            })
+            .to_string(),
+            numbered(2, "parent said this"),
+            numbered(3, "child said this"),
+        ];
+
+        let kept = trim_subagent_replay_prefix(lines);
+        assert_eq!(kept.len(), 2, "header + the child's own record: {kept:?}");
+        assert_eq!(kept[0], header, "the header declares the lineage — keep it");
+        assert!(kept[1].contains("child said this"));
+
+        // Without codex's own marker there is no exact cut, and guessing one
+        // would be worse than showing the file as it is.
+        let unmarked = vec![
+            serde_json::json!({
+                "timestamp":"2026-07-25T11:50:01Z","ordinal":0,"type":"session_meta",
+                "payload":{"id":"child","forked_from_id":"parent",
+                           "parent_thread_id":"parent","history_mode":"legacy"},
+            })
+            .to_string(),
+            numbered(2, "parent said this"),
+        ];
+        assert_eq!(trim_subagent_replay_prefix(unmarked.clone()), unmarked);
+
+        // A cut of 0 seeds nothing: the file is its own from the first record,
+        // and the header must not be spliced in on top of itself.
+        let unseeded = vec![
+            serde_json::json!({
+                "timestamp":"2026-09-08T06:44:31Z","ordinal":0,"type":"session_meta",
+                "payload":{"id":"child","forked_from_id":"parent",
+                           "parent_thread_id":"parent",
+                           "subagent_history_start_ordinal": 0},
+            })
+            .to_string(),
+            numbered(1, "child said this"),
+        ];
+        assert_eq!(trim_subagent_replay_prefix(unseeded.clone()), unseeded);
     }
 
     #[test]

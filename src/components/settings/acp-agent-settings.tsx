@@ -162,6 +162,7 @@ import {
   DEEPSEEK_PANEL_ENV_KEYS,
   DeepSeekConfigPanel,
 } from "./deepseek-config-panel"
+import { DeepSeekModelListEditor } from "./deepseek-model-list-editor"
 import { KimiCodeConfigPanel } from "./kimi-code-config-panel"
 import { PiConfigPanel } from "./pi-config-panel"
 import { QoderConfigPanel } from "./qoder-config-panel"
@@ -10630,29 +10631,39 @@ supports_websockets = true`}
                     onAffectedSessions={reportAffectedSessions}
                   />
                 ) : selectedAgent.agent_type === "deepseek" ? (
-                  <DeepSeekConfigPanel
-                    agent={selectedAgent}
-                    saving={Boolean(savingEnv[selectedAgent.agent_type])}
-                    onSaveEnv={(env, enabled) =>
-                      persistEnv(
-                        selectedAgent.agent_type,
-                        enabled,
-                        envMapToText(env),
-                        selectedAgent.model_provider_id,
-                        // The keys this panel owns, folded into the raw
-                        // editor's draft (which the enable switch persists
-                        // wholesale) so the two can never disagree.
-                        // `DEEPSEEK_ACP_MODEL` is NOT one of them — the raw
-                        // editor owns it, and folding it in would overwrite a
-                        // model line being typed there.
-                        {
-                          DEEPSEEK_API_KEY: env.DEEPSEEK_API_KEY,
-                          DEEPSEEK_BASE_URL: env.DEEPSEEK_BASE_URL,
-                          DEEPSEEK_ACP_PROVIDER: env.DEEPSEEK_ACP_PROVIDER,
-                        }
-                      )
-                    }
-                  />
+                  <>
+                    <DeepSeekConfigPanel
+                      agent={selectedAgent}
+                      saving={Boolean(savingEnv[selectedAgent.agent_type])}
+                      onSaveEnv={(env, enabled) =>
+                        persistEnv(
+                          selectedAgent.agent_type,
+                          enabled,
+                          envMapToText(env),
+                          selectedAgent.model_provider_id,
+                          // The keys this panel owns, folded into the raw
+                          // editor's draft (which the enable switch persists
+                          // wholesale) so the two can never disagree.
+                          // `DEEPSEEK_ACP_MODEL` is NOT one of them — the raw
+                          // editor owns it, and folding it in would overwrite a
+                          // model line being typed there.
+                          {
+                            DEEPSEEK_API_KEY: env.DEEPSEEK_API_KEY,
+                            DEEPSEEK_BASE_URL: env.DEEPSEEK_BASE_URL,
+                            DEEPSEEK_ACP_PROVIDER: env.DEEPSEEK_ACP_PROVIDER,
+                          }
+                        )
+                      }
+                    />
+                    {/* The deployment's model catalog. It lives in the harness'
+                      own `settings.yaml`, not in the agent env, so it has its
+                      own section and its own save — and it is what the
+                      composer's per-session model selector gets to choose
+                      from. */}
+                    <DeepSeekModelListEditor
+                      launchModel={selectedAgent.env.DEEPSEEK_ACP_MODEL}
+                    />
+                  </>
                 ) : selectedAgent.agent_type === "qoder" ? (
                   <QoderConfigPanel
                     agent={selectedAgent}

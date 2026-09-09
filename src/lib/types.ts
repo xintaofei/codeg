@@ -3853,6 +3853,7 @@ export type McpAppType =
   | "deepseek"
   | "qoder"
   | "antigravity"
+  | "pi"
 
 export interface LocalMcpServer {
   id: string
@@ -4862,4 +4863,57 @@ export function isCodexCompatEntry(
   return Object.entries(CODEX_COMPAT_OVERRIDES).every(([key, value]) =>
     Object.is(key in overrides ? overrides[key] : base[key], value)
   )
+}
+
+// ── DeepSeek Harness model catalog ──
+//
+// Mirrors `src-tauri/src/commands/deepseek_settings.rs`, which reads and writes
+// the `llm-deepseek.models` section of `$DSH_HOME/settings.yaml` — the advisory
+// catalog `deepseek-acp` turns into the composer's model dropdown. Field names
+// are the document's own, so the wire shape and the YAML shape are one thing.
+
+/** One entry of the DeepSeek Harness advisory model catalog. Every field but
+ *  `id` is optional, and an absent field is not the same as an empty one: the
+ *  agent falls back to its own default for what is missing. */
+export interface DeepSeekCatalogModel {
+  /** Wire model id sent to the endpoint. Required, unique within the list. */
+  id: string
+  /** Selector label; the agent shows `id` when absent. */
+  name?: string
+  /** Selector detail, for deployments carrying similar variants. */
+  description?: string
+  /** Combined request/response capacity, in tokens. */
+  contextWindow?: number
+  /** Per-request output cap, in tokens. */
+  maxTokens?: number
+  /** Accepted request modalities; absent means text-only, and sending an image
+   *  to a model without `image` here is refused by the agent. */
+  inputModalities?: ("text" | "image")[]
+  /** Total-pixel budget for one request preview. Vision entries only. */
+  imagePixelBudget?: number
+  /** Encoded-byte cap for one request preview. Vision entries only. */
+  imageMaxBytes?: number
+  /** Provider detail tier. Vision entries only. */
+  imageDetail?: "auto" | "low"
+}
+
+/** What the settings panel reads about the stored catalog. */
+export interface DeepSeekModelCatalog {
+  /** Resolved `settings.yaml` path (shown so the file can be found by hand). */
+  path: string
+  /** Whether that document exists at all. */
+  exists: boolean
+  /** Whether it declares `llm-deepseek.models`. `false` means `models` below is
+   *  the agent's built-in list, inherited rather than stored. */
+  configured: boolean
+  /** The effective catalog: what is stored, else the built-in defaults. */
+  models: DeepSeekCatalogModel[]
+  /** Why the stored document could not be read. Set only when the file exists
+   *  and is unusable — editing is refused rather than overwriting it blind. */
+  error: string | null
+  /** Why the stored list is one the agent refuses (duplicate ids, a
+   *  non-positive context window, image limits on a text-only entry…). The
+   *  document was understood, so the rows stay editable — but until they are
+   *  fixed, sessions run on the agent's built-in catalog instead. */
+  invalid: string | null
 }
