@@ -18,6 +18,7 @@ import { isUnsettledToolCall } from "@/lib/tool-call-lifecycle"
 import { normalizePriority, normalizeStatus } from "@/lib/plan-parse"
 import { isDelegateToAgentToolName } from "@/lib/delegation-card"
 import { useTranslations } from "next-intl"
+import { useLocale } from "next-intl"
 import { cn } from "@/lib/utils"
 import {
   countUnifiedDiffLineChanges,
@@ -87,6 +88,9 @@ import { GoalRunPart, GoalToolCallPart } from "./goal-tool-call"
 import { PlanCard, PlanEntriesList } from "./plan-card"
 import { PlanMarkdownCard, PlanModeCard } from "./plan-mode-card"
 import { PlainTextWithBadges } from "./plain-text-with-badges"
+import { TranslationToggle } from "./translation-toggle"
+import { useNearViewport } from "@/hooks/use-near-viewport"
+import { useTranslatedText } from "@/hooks/use-translated-text"
 import {
   FileTextIcon,
   FilePenLineIcon,
@@ -2237,13 +2241,32 @@ const TextPart = memo(function TextPart({
   text,
   isUser = false,
   isStreaming = false,
+  blockKey = "",
 }: {
   text: string
   // User messages render as plain text + inline reference badges (no Markdown),
   // matching the plain-text composer. Assistant / system text keeps full Markdown.
   isUser?: boolean
   isStreaming?: boolean
+  blockKey?: string
 }) {
+  const { ref, shouldLoad } = useNearViewport<HTMLDivElement>()
+  const uiLocale = useLocale()
+  const tTranslation = useTranslations("Translation")
+  // Settled translation only in this PR: the block requests once the turn is
+  // done rendering. Reply prose is the thing the reader is waiting on, so it
+  // queues on the backend's priority lane. The body switch (`translateBody`)
+  // gates inside the hook — user messages never request at all.
+  const view = useTranslatedText({
+    text,
+    isStreaming,
+    isUser,
+    shouldLoad,
+    uiLocale,
+    blockKey,
+    priority: true,
+  })
+
   if (isUser) {
     return (
       <div className="break-words text-sm">
@@ -2252,12 +2275,41 @@ const TextPart = memo(function TextPart({
     )
   }
   return (
-    <div className='break-words text-sm prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside [&_[data-streamdown="code-block-body"]]:max-h-96 [&_[data-streamdown="code-block-body"]]:overflow-auto'>
+    // `ref` sits on the block itself, not a trailing sentinel: the observer
+    // should fire when the message comes into view, not when its bottom edge
+    // does (a long reply's tail can be thousands of pixels further down).
+    <div
+      ref={ref}
+      className='group relative break-words text-sm prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside [&_[data-streamdown="code-block-body"]]:max-h-96 [&_[data-streamdown="code-block-body"]]:overflow-auto'
+    >
+      {view.hasTranslation && (
+        <TranslationToggle
+          isTranslated={view.isTranslated}
+          onShowOriginal={view.showOriginal}
+          onShowTranslation={view.showTranslation}
+          warning={
+            view.hasErrors
+              ? `${tTranslation("partialFailure")}: ${view.errorHint}`
+              : null
+          }
+          // Float, not `absolute`: out-of-flow positioning put the toggle ON
+          // the reply's first line, covering its tail (measured). Floating
+          // makes the first lines wrap around the button instead — nothing is
+          // ever hidden, and the button reads as part of the reply's corner.
+          className="float-right mb-1 ml-2 mt-0.5"
+        />
+      )}
       <MessageResponse
-        mode={isStreaming ? "streaming" : "static"}
-        parseIncompleteMarkdown={isStreaming}
+        // The streaming-mode remend repair may only run on the ORIGINAL: it
+        // closes "incomplete" markdown, and an unfinished reply's unclosed
+        // fence is REAL (its closer arrives with the next token) — remend's
+        // fix would wrap the whole translated tail in a code block. A
+        // translation, settled or identity-skipped, is whole by construction,
+        // so it takes FINISHED_MODE regardless of the turn's live state.
+        mode={isStreaming && !view.isTranslated ? "streaming" : "static"}
+        parseIncompleteMarkdown={isStreaming && !view.isTranslated}
       >
-        {text}
+        {view.display}
       </MessageResponse>
     </div>
   )
@@ -2961,15 +3013,63 @@ const ToolResultPart = memo(function ToolResultPart({
 
 const ReasoningPart = memo(function ReasoningPart({
   part,
+  blockKey = "",
 }: {
   part: Extract<AdaptedContentPart, { type: "reasoning" }>
+  blockKey?: string
 }) {
   const hasContent = part.content.trim().length > 0
   const expandable = hasContent || part.isStreaming
+  // Thinking translation is a separate opt-in (`translateThinking`), so the
+  // settled hook only ever does work when the user turned that switch on —
+  // the gate lives inside the hook.
+  const { ref, shouldLoad } = useNearViewport<HTMLDivElement>()
+  const uiLocale = useLocale()
+  const tTranslation = useTranslations("Translation")
+  const view = useTranslatedText({
+    text: part.content,
+    isStreaming: part.isStreaming,
+    isUser: false,
+    shouldLoad: shouldLoad && expandable,
+    uiLocale,
+    blockKey,
+    isThinking: true,
+  })
   return (
-    <Reasoning isStreaming={part.isStreaming} expandable={expandable}>
-      <ReasoningTrigger />
-      {expandable && <ReasoningContent>{part.content}</ReasoningContent>}
+    <Reasoning
+      isStreaming={part.isStreaming}
+      expandable={expandable}
+      className="group"
+    >
+      <div className="flex items-center gap-1">
+        {/* Hug the label instead of stretching: the toggle then sits right
+            next to "思考" rather than pushed to the row's far edge. `w-auto`
+            overrides the trigger's own `w-full` (tailwind-merge keeps the
+            last conflicting width). */}
+        <ReasoningTrigger className="w-auto min-w-0 shrink-0" />
+        {view.hasTranslation && (
+          <TranslationToggle
+            isTranslated={view.isTranslated}
+            onShowOriginal={view.showOriginal}
+            onShowTranslation={view.showTranslation}
+            warning={
+              view.hasErrors
+                ? `${tTranslation("partialFailure")}: ${view.errorHint}`
+                : null
+            }
+            className="shrink-0"
+          />
+        )}
+      </div>
+      {/* `forceStatic` opts the reasoning text out of remend while a
+          translation shows: remend's repair would close the display's
+          "incomplete" markdown even though the translation is whole. */}
+      {expandable && (
+        <ReasoningContent forceStatic={view.isTranslated}>
+          {view.display}
+        </ReasoningContent>
+      )}
+      <div ref={ref} aria-hidden className="h-0 w-0 overflow-hidden" />
     </Reasoning>
   )
 })
@@ -3102,12 +3202,22 @@ interface ContentPartsRendererProps {
   parts: AdaptedContentPart[]
   role?: MessageRole
   isStreaming?: boolean
+  /**
+   * Scope for the positional translation key. The settled turn renders its
+   * progress parts and its answer parts as TWO lists that each number from
+   * zero — without a scope prefix a reasoning block at progress position 0
+   * and the reply text at answer position 0 share one `blockKey`, and the
+   * translation cache (keyed by that key) has one block's translation served
+   * to the other.
+   */
+  keyPrefix?: string
 }
 
 export const ContentPartsRenderer = memo(function ContentPartsRenderer({
   parts,
   role,
   isStreaming = false,
+  keyPrefix = "",
 }: ContentPartsRendererProps) {
   const renderPart = (part: AdaptedContentPart, keyId: string): ReactNode => {
     if (part.type === "text") {
@@ -3123,6 +3233,7 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
           text={part.text}
           isUser={role === "user"}
           isStreaming={isStreaming}
+          blockKey={keyId}
         />
       )
     }
@@ -3162,7 +3273,13 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
     }
 
     if (part.type === "reasoning") {
-      return <ReasoningPart key={`reasoning-${keyId}`} part={part} />
+      return (
+        <ReasoningPart
+          key={`reasoning-${keyId}`}
+          part={part}
+          blockKey={keyId}
+        />
+      )
     }
 
     if (part.type === "plan") {
@@ -3190,7 +3307,14 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
 
   return (
     <div className="space-y-4">
-      {parts.map((part, i) => renderPart(part, `${i}`))}
+      {/* `blockKey` is the positional index, so it shifts when older history
+          pages prepend parts — a settled message's translation key moves and
+          its rendered translation falls back to the original for one render.
+          Accepted deliberately: the backend cache is content-addressed, so the
+          re-request that follows is a cache hit, not a network call. React's
+          own `key` has the same index stability, which is why prepending
+          remounts the list identically today. */}
+      {parts.map((part, i) => renderPart(part, `${keyPrefix}${i}`))}
     </div>
   )
 })
