@@ -41,7 +41,9 @@ use std::fs::{File, Metadata};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(any(unix, test))]
+use std::time::Duration;
 
 use http::{header, Request, Response, StatusCode, Uri};
 use serde::{Deserialize, Serialize};

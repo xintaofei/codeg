@@ -20,6 +20,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+#[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
@@ -33,17 +34,23 @@ use tauri_runtime_wry::wry::{
     self, dpi, NewWindowFeatures, NewWindowResponse, PageLoadEvent, Rect, WebViewBuilder,
 };
 
+#[cfg(target_os = "macos")]
 use super::channel::{self, MessageSink};
 use super::doc_guest::{self, DocGrant, DocGuests, GuestNavigation};
 use super::events;
 use super::hooks;
 use super::policy::{self, BrowserPolicy};
 use super::profile;
-use super::registry::{BrowserRegistry, BrowserTab};
+use super::registry::BrowserRegistry;
+#[cfg(target_os = "macos")]
+use super::registry::BrowserTab;
+#[cfg(target_os = "macos")]
 use super::surface::BrowserSurface;
+#[cfg(target_os = "macos")]
+use super::types::{BrowserTabState, ChannelKind, SurfaceKind, TabKind};
 use super::types::{
-    Bounds, BrowserOpenRequestPayload, BrowserPopupPayload, BrowserTabState, ChannelKind,
-    NavigationBlockReason, PopupPresentation, SurfaceKind, TabKind,
+    Bounds, BrowserOpenRequestPayload, BrowserPopupPayload, NavigationBlockReason,
+    PopupPresentation,
 };
 #[cfg(target_os = "macos")]
 use super::shim::macos as shim;
@@ -53,6 +60,7 @@ thread_local! {
 }
 
 static MAIN_THREAD: OnceLock<ThreadId> = OnceLock::new();
+#[cfg(target_os = "macos")]
 static POPUP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// How far back a page-initiated new-window request may look for a user
@@ -536,9 +544,6 @@ pub enum ChildKind {
     Document(Arc<DocGrant>),
 }
 
-/// Main thread only. Builds the child webview at `bounds` with every hook
-/// attached and **no URL**: a regular tab is navigated by the caller once the
-/// page channel is installed, a popup is navigated by the engine itself.
 #[cfg(target_os = "windows")]
 thread_local! {
     // WebView2 keeps a webview's cookies and storage in its environment's
@@ -562,6 +567,9 @@ pub fn forget_profile_context(app: &AppHandle, profile_id: &str) -> Result<(), C
     })
 }
 
+/// Main thread only. Builds the child webview at `bounds` with every hook
+/// attached and **no URL**: a regular tab is navigated by the caller once the
+/// page channel is installed, a popup is navigated by the engine itself.
 #[allow(clippy::too_many_arguments)]
 fn build_child(
     app: &AppHandle,

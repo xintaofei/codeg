@@ -358,7 +358,10 @@ pub fn doc_open_core(
         .map_err(AppCommandError::invalid_input)?;
     let label = doc_guest::doc_label(&params.tab_id);
     let surface = {
-        #[cfg(all(feature = "browser-child", target_os = "macos"))]
+        #[cfg(all(
+            feature = "browser-child",
+            any(target_os = "macos", target_os = "windows")
+        ))]
         {
             BrowserSurface::Child(
                 crate::browser::surface_child::create_document(
@@ -374,7 +377,10 @@ pub fn doc_open_core(
                 .map_err(|e| window_err("Failed to create document webview", e))?,
             )
         }
-        #[cfg(not(all(feature = "browser-child", target_os = "macos")))]
+        #[cfg(not(all(
+            feature = "browser-child",
+            any(target_os = "macos", target_os = "windows")
+        )))]
         {
             let _ = (owner, &label, reservation);
             return Err(AppCommandError::invalid_input(
