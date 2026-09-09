@@ -167,8 +167,6 @@ pub enum DelegationError {
     /// works.
     #[error("subagent's agent needs you to sign in again")]
     ChildAuthRequired,
-    #[error("subagent completed, but its native history was not persisted in time")]
-    ChildHistoryPersistenceTimeout,
     #[error("subagent ended with unrecognized stop reason: {0}")]
     ChildUnknown(String),
     #[error("canceled: {reason}")]
@@ -313,7 +311,6 @@ impl DelegationOutcome {
             DelegationError::ChildMaxTurnRequests => "child_max_turn_requests",
             DelegationError::ChildEmpty => "child_empty",
             DelegationError::ChildAuthRequired => "child_auth_required",
-            DelegationError::ChildHistoryPersistenceTimeout => "history_persistence_timeout",
             DelegationError::ChildUnknown(_) => "child_unknown",
             DelegationError::Canceled { .. } => "canceled",
             DelegationError::ParentSessionGone => "canceled",
@@ -349,18 +346,13 @@ mod tests {
             (DelegationError::ChildEmpty, "child_empty"),
             (DelegationError::ChildAuthRequired, "child_auth_required"),
             (
-                DelegationError::ChildHistoryPersistenceTimeout,
-                "history_persistence_timeout",
-            ),
-            (
                 DelegationError::ChildUnknown("whatever".into()),
                 "child_unknown",
             ),
         ];
         for (err, expected) in cases {
             let display = err.to_string();
-            let DelegationOutcome::Err { code, message, .. } =
-                DelegationOutcome::from_err(err, None)
+            let DelegationOutcome::Err { code, message, .. } = DelegationOutcome::from_err(err, None)
             else {
                 panic!("from_err must produce an Err outcome");
             };

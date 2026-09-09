@@ -2724,16 +2724,6 @@ impl DelegationBroker {
                     None,
                 );
             }
-            if source.report.error_code.as_deref() == Some("history_persistence_timeout") {
-                self.drop_inflight(inflight_id).await;
-                return report_err(
-                    req.agent_type,
-                    DelegationError::ContinuationInvalid(format!(
-                        "source task {source_task_id} did not confirm that its latest turn was persisted; start a new delegation"
-                    )),
-                    None,
-                );
-            }
             let binding = source.resume_binding;
             if binding.agent_type != req.agent_type
                 || !same_effective_working_dir(req.working_dir.as_deref(), &binding.working_dir)
@@ -5791,83 +5781,6 @@ mod tests {
                 .status,
             TaskStatus::Unknown
         );
-    }
-
-    #[tokio::test]
-    async fn continuation_refuses_source_with_unconfirmed_native_history() {
-        use crate::db::service::{
-            conversation_service, delegation_task_service as ledger, folder_service,
-        };
-
-        let db = Arc::new(crate::db::test_helpers::fresh_in_memory_db().await);
-        let folder = folder_service::add_folder(&db.conn, "/tmp/deepseek-history-timeout")
-            .await
-            .unwrap();
-        let parent =
-            conversation_service::create(&db.conn, folder.id, AgentType::ClaudeCode, None, None)
-                .await
-                .unwrap();
-        let child =
-            conversation_service::create(&db.conn, folder.id, AgentType::DeepSeek, None, None)
-                .await
-                .unwrap();
-        ledger::admit(
-            &db.conn,
-            ledger::AdmissionInput {
-                task_id: "source-timeout".into(),
-                parent_conversation_id: parent.id,
-                child_conversation_id: child.id,
-                source_task_id: None,
-                task: "first round".into(),
-                requested_working_dir: None,
-                resume_binding: ledger::ResumeBinding {
-                    agent_type: AgentType::DeepSeek,
-                    external_session_id: "deepseek-session".into(),
-                    child_conversation_id: child.id,
-                    working_dir: "/tmp/deepseek-history-timeout".into(),
-                    preferred_mode_id: None,
-                    preferred_config_values: BTreeMap::new(),
-                    config_fingerprint: "cfg".into(),
-                },
-            },
-        )
-        .await
-        .unwrap();
-        let terminal = DelegationTaskReport {
-            task_id: Some("source-timeout".into()),
-            status: TaskStatus::Failed,
-            child_conversation_id: Some(child.id),
-            agent_type: Some(AgentType::DeepSeek),
-            text: None,
-            error_code: Some("history_persistence_timeout".into()),
-            message: Some("native history was not persisted in time".into()),
-            duration_ms: Some(1),
-            blocked_on: None,
-        };
-        ledger::finish(&db.conn, parent.id, "source-timeout", &terminal)
-            .await
-            .unwrap();
-        ledger::mark_released(&db.conn, parent.id, "source-timeout")
-            .await
-            .unwrap();
-
-        let mock = Arc::new(MockSpawner::new());
-        let broker = DelegationBroker::new(
-            mock.clone() as Arc<dyn ConnectionSpawner>,
-            Arc::new(MockDepth(vec![(parent.id, None)])),
-        )
-        .with_ledger(db);
-        enable_delegation(&broker).await;
-        let mut req = request(parent.id, "follow-up-tool");
-        req.agent_type = AgentType::DeepSeek;
-        req.task = "second round".into();
-        req.continue_from_task_id = Some("source-timeout".into());
-
-        let report = broker.start_delegation(req).await;
-        assert_eq!(report.status, TaskStatus::Failed);
-        assert_eq!(report.error_code.as_deref(), Some("continuation_invalid"));
-        assert!(report.message.unwrap().contains("did not confirm"));
-        assert!(mock.spawn_args.lock().await.is_empty());
     }
 
     #[tokio::test]

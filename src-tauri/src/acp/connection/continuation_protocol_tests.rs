@@ -93,7 +93,6 @@ async fn run_driver(
             HostToolsPolicy::Default,
             Arc::new(StderrTail::new()),
             SessionRecoveryPolicy::Strict,
-            None,
         )
         .await
     });
@@ -192,7 +191,6 @@ impl ConnectionSpawner for FixtureContinuationSpawner {
                 HostToolsPolicy::Default,
                 Arc::new(StderrTail::new()),
                 SessionRecoveryPolicy::Strict,
-                None,
             )
             .await
         });

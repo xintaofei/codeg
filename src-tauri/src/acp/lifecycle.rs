@@ -263,13 +263,8 @@ pub(crate) async fn handle_event(
             // frontend-driven.
             let target_status = match stop_reason.as_str() {
                 "end_turn" => Some(ConversationStatus::PendingReview),
-                "refusal"
-                | "max_tokens"
-                | "max_turn_requests"
-                | "unknown"
-                | "empty"
-                | "auth_required"
-                | "history_persistence_timeout" => Some(ConversationStatus::Cancelled),
+                "refusal" | "max_tokens" | "max_turn_requests" | "unknown" | "empty"
+                | "auth_required" => Some(ConversationStatus::Cancelled),
                 // `cancelled` and any future reason: don't write here.
                 _ => None,
             };
@@ -450,10 +445,6 @@ async fn forward_turn_complete_to_broker(
         "auth_required" => {
             DelegationOutcome::from_err(DelegationError::ChildAuthRequired, Some(conversation_id))
         }
-        "history_persistence_timeout" => DelegationOutcome::from_err(
-            DelegationError::ChildHistoryPersistenceTimeout,
-            Some(conversation_id),
-        ),
         other => DelegationOutcome::from_err(
             DelegationError::ChildUnknown(other.to_string()),
             Some(conversation_id),

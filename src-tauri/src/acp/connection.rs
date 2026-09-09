@@ -2202,88 +2202,6 @@ pub enum SessionRecoveryPolicy {
     Strict,
 }
 
-#[derive(Debug, Clone)]
-struct DeepSeekHistoryGate {
-    sessions_root: Option<PathBuf>,
-}
-
-const DEEPSEEK_HISTORY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
-const DEEPSEEK_HISTORY_PERSISTENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const DEEPSEEK_HISTORY_BASELINE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
-
-async fn wait_for_deepseek_history(
-    gate: &DeepSeekHistoryGate,
-    session_id: &str,
-    baseline_seq: u64,
-    prompt_started_at_ms: u64,
-) -> bool {
-    wait_for_deepseek_history_with_timeout(
-        gate,
-        session_id,
-        baseline_seq,
-        prompt_started_at_ms,
-        DEEPSEEK_HISTORY_PERSISTENCE_TIMEOUT,
-    )
-    .await
-}
-
-async fn wait_for_deepseek_history_with_timeout(
-    gate: &DeepSeekHistoryGate,
-    session_id: &str,
-    baseline_seq: u64,
-    prompt_started_at_ms: u64,
-    timeout: std::time::Duration,
-) -> bool {
-    let Some(sessions_root) = gate.sessions_root.as_ref() else {
-        return false;
-    };
-    let deadline = tokio::time::Instant::now() + timeout;
-    let mut last_signature = None;
-    loop {
-        let sessions_root = sessions_root.clone();
-        let session_id = session_id.to_string();
-        let check = tokio::time::timeout_at(
-            deadline,
-            tokio::task::spawn_blocking(move || {
-                let signature = crate::parsers::deepseek::deepseek_session_log_signature(
-                    &sessions_root,
-                    &session_id,
-                );
-                let durable = if signature.is_some() && signature == last_signature {
-                    false
-                } else {
-                    crate::parsers::deepseek::deepseek_turn_is_durable(
-                        &sessions_root,
-                        &session_id,
-                        baseline_seq,
-                        prompt_started_at_ms,
-                    )
-                };
-                (durable, signature)
-            }),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok);
-        let Some((durable, signature)) = check else {
-            return false;
-        };
-        last_signature = signature;
-        if durable {
-            return true;
-        }
-        let now = tokio::time::Instant::now();
-        if now >= deadline {
-            return false;
-        }
-        tokio::time::sleep_until(std::cmp::min(
-            deadline,
-            now + DEEPSEEK_HISTORY_POLL_INTERVAL,
-        ))
-        .await;
-    }
-}
-
 /// Spawn an ACP agent process and run the connection loop in a background task.
 ///
 /// On success, the newly created `AgentConnection` is inserted into
@@ -2349,23 +2267,6 @@ pub async fn spawn_agent_connection(
     // agree. Computed here because `working_dir` is moved into run_connection
     // below.
     let launch_cwd = resolve_working_dir(working_dir.as_deref());
-    // DeepSeek's ACP bridge can answer `end_turn` just before its native log
-    // flush completes. Only delegated children need the native session to be
-    // durable before teardown, because their task id can later be continued.
-    let deepseek_history_gate = (agent_type == AgentType::DeepSeek && delegation_task_id.is_some())
-        .then(|| {
-            let sessions_root = crate::parsers::deepseek::resolve_deepseek_sessions_root_for_launch(
-                &runtime_env,
-                &launch_cwd,
-            );
-            if sessions_root.is_none() {
-                tracing::warn!(
-                    "[ACP] DeepSeek delegation history root could not be resolved; \
-                     clean completion will fail closed"
-                );
-            }
-            DeepSeekHistoryGate { sessions_root }
-        });
     // Shared cell that receives the agent process's OS pid the instant it
     // spawns (via `on_spawn` below). Stored on the `AgentConnection` so the
     // shutdown path can `kill_tree` the process tree synchronously as a
@@ -2537,7 +2438,6 @@ pub async fn spawn_agent_connection(
                     host_tools,
                     stderr_tail,
                     recovery_policy,
-                    deepseek_history_gate,
                 );
                 tokio::pin!(connection);
                 let result = tokio::select! {
@@ -5138,7 +5038,6 @@ async fn run_connection(
     // agent output, to attach evidence to the synthesized error.
     stderr_tail: Arc<StderrTail>,
     recovery_policy: SessionRecoveryPolicy,
-    deepseek_history_gate: Option<DeepSeekHistoryGate>,
 ) -> Result<(), AcpError> {
     let pending_perms: PendingPermissions =
         Arc::new(tokio::sync::Mutex::new(PermissionQueue::default()));
@@ -5825,7 +5724,6 @@ async fn run_connection(
                                 supports_fork,
                                 &prompt_ledger,
                                 delegation_injection.as_ref(),
-                                deepseek_history_gate.as_ref(),
                                 &stderr_tail,
                             )
                             .await;
@@ -5850,7 +5748,6 @@ async fn run_connection(
                                 &mcp_servers,
                                 &prompt_ledger,
                                 delegation_injection.as_ref(),
-                                deepseek_history_gate.as_ref(),
                                 &stderr_tail,
                             )
                             .await;
@@ -6070,7 +5967,6 @@ async fn run_connection(
                             supports_fork,
                             &prompt_ledger,
                             delegation_injection.as_ref(),
-                            deepseek_history_gate.as_ref(),
                             &stderr_tail,
                         )
                         .await;
@@ -6091,7 +5987,6 @@ async fn run_connection(
                             &mcp_servers,
                             &prompt_ledger,
                             delegation_injection.as_ref(),
-                            deepseek_history_gate.as_ref(),
                             &stderr_tail,
                         )
                         .await
@@ -6262,7 +6157,6 @@ async fn run_connection(
                             supports_fork,
                             &prompt_ledger,
                             delegation_injection.as_ref(),
-                            deepseek_history_gate.as_ref(),
                             &stderr_tail,
                         )
                         .await;
@@ -6285,7 +6179,6 @@ async fn run_connection(
                             &mcp_servers,
                             &prompt_ledger,
                             delegation_injection.as_ref(),
-                            deepseek_history_gate.as_ref(),
                             &stderr_tail,
                         )
                         .await
@@ -6353,7 +6246,6 @@ async fn run_connection(
                     supports_fork,
                     &prompt_ledger,
                     delegation_injection.as_ref(),
-                    deepseek_history_gate.as_ref(),
                     &stderr_tail,
                 )
                 .await;
@@ -6374,7 +6266,6 @@ async fn run_connection(
                     &mcp_servers,
                     &prompt_ledger,
                     delegation_injection.as_ref(),
-                    deepseek_history_gate.as_ref(),
                     &stderr_tail,
                 )
                 .await
@@ -8344,7 +8235,6 @@ async fn handle_fork_or_exit(
     // run_conversation_loop call has the same delegation cascade
     // capability as the original.
     delegation_injection: Option<&DelegationInjection>,
-    deepseek_history_gate: Option<&DeepSeekHistoryGate>,
     // Same rationale: the forked session keeps writing into (and reading from)
     // the SAME connection-scoped stderr buffer — the agent process is unchanged
     // across a fork, so its stderr history stays relevant.
@@ -8539,7 +8429,6 @@ async fn handle_fork_or_exit(
         true, // fork already succeeded on this process
         prompt_ledger,
         delegation_injection,
-        deepseek_history_gate,
         stderr_tail,
     )
     .await;
@@ -8562,7 +8451,6 @@ async fn handle_fork_or_exit(
         mcp_servers,
         prompt_ledger,
         delegation_injection,
-        deepseek_history_gate,
         stderr_tail,
     ))
     .await
@@ -9126,7 +9014,6 @@ async fn run_conversation_loop<'a>(
     // delegations on parent prompt cancel / non-success TurnComplete.
     // `None` for test paths that don't wire delegation.
     delegation_injection: Option<&DelegationInjection>,
-    deepseek_history_gate: Option<&DeepSeekHistoryGate>,
     // Connection-scoped (like `prompt_ledger`): the agent's stderr ring buffer,
     // read at turn end to explain a silent `EndTurn`.
     stderr_tail: &Arc<StderrTail>,
@@ -9355,32 +9242,7 @@ async fn run_conversation_loop<'a>(
                 // instantly — and awaited, so the replay gate can never see
                 // this conversation as transcript-less (see `record_prompt`).
                 record_prompt(agent_type, &sid.0, &prompt_blocks).await;
-                // Capture both watermarks immediately before dispatch. The
-                // sequence watermark is authoritative when two turns start in
-                // the same millisecond; the clock additionally prevents a
-                // stale or reordered record from satisfying the gate.
                 let turn_started_at_ms = crate::acp_transcript::now_epoch_ms();
-                let deepseek_history_baseline = if let Some(gate) = deepseek_history_gate.as_ref() {
-                    let sessions_root = gate.sessions_root.clone();
-                    let session_id = sid.0.to_string();
-                    tokio::time::timeout(
-                        DEEPSEEK_HISTORY_BASELINE_TIMEOUT,
-                        tokio::task::spawn_blocking(move || {
-                            sessions_root.and_then(|root| {
-                                crate::parsers::deepseek::deepseek_session_max_seq(
-                                    &root,
-                                    &session_id,
-                                )
-                            })
-                        }),
-                    )
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .flatten()
-                } else {
-                    None
-                };
                 let prompt_request = PromptRequest::new(sid.clone(), prompt_blocks);
                 // Snapshot the stderr write position BEFORE the request is
                 // dispatched. An agent that fails the moment the prompt lands
@@ -9391,36 +9253,11 @@ async fn run_conversation_loop<'a>(
                 let stderr_mark = stderr_tail.mark();
                 // Use Box::pin (heap) instead of tokio::pin! (stack) so the
                 // future can be moved into a background task on cancel.
-                let response_cx = cx.clone();
-                let response_gate = deepseek_history_gate.cloned();
-                let response_session_id = sid.0.to_string();
-                let mut prompt_response = Box::pin(async move {
-                    let response = response_cx
+                let mut prompt_response = Box::pin(
+                    cx.clone()
                         .send_request_to(Agent, prompt_request)
-                        .block_task()
-                        .await?;
-                    let persistence_timed_out =
-                        if matches!(response.stop_reason, StopReason::EndTurn) {
-                            if let Some(gate) = response_gate.as_ref() {
-                                if let Some(baseline_seq) = deepseek_history_baseline {
-                                    !wait_for_deepseek_history(
-                                        gate,
-                                        &response_session_id,
-                                        baseline_seq,
-                                        turn_started_at_ms,
-                                    )
-                                    .await
-                                } else {
-                                    true
-                                }
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-                    Ok::<_, sacp::Error>((response, persistence_timed_out))
-                });
+                        .block_task(),
+                );
                 let mut tracked_terminal_tool_calls: HashMap<String, TrackedTerminalToolCall> =
                     HashMap::new();
                 let mut terminal_poll_interval = tokio::time::interval(
@@ -9612,16 +9449,6 @@ async fn run_conversation_loop<'a>(
                                     }
                                 }
                                 SessionMessage::StopReason(reason) => {
-                                    // A DeepSeek delegation child is completed
-                                    // only by the prompt-response path after its
-                                    // native history gate settles. Ignoring this
-                                    // duplicate clean signal keeps the enclosing
-                                    // select responsive to Cancel/Disconnect.
-                                    if matches!(reason, StopReason::EndTurn)
-                                        && deepseek_history_gate.is_some()
-                                    {
-                                        continue;
-                                    }
                                     if !tracked_terminal_tool_calls.is_empty() {
                                         poll_tracked_terminal_tool_calls(
                                             terminal_runtime.as_ref(),
@@ -9738,7 +9565,7 @@ async fn run_conversation_loop<'a>(
                             // process — which is why `session/load` already
                             // treats "Authentication required" as an expected
                             // outcome rather than an error to surface.
-                            let (response, persistence_timed_out) = match prompt_result {
+                            let response = match prompt_result {
                                 Ok(response) => response,
                                 Err(e)
                                     if matches!(
@@ -9856,9 +9683,7 @@ async fn run_conversation_loop<'a>(
                             // explained by the AIR banner, so synthesizing an
                             // "empty" toast on top would misdiagnose a dead
                             // connection as "the agent produced nothing".
-                            let (reason_str, empty_report) = if persistence_timed_out {
-                                ("history_persistence_timeout", None)
-                            } else if terminal_failure
+                            let (reason_str, empty_report) = if terminal_failure
                                 .as_ref()
                                 .is_some_and(|record| record.severity == "error")
                             {
@@ -9870,22 +9695,6 @@ async fn run_conversation_loop<'a>(
                                 turn_failure_error_event(reason_str, agent_type, empty_report.as_ref())
                             {
                                 emit_with_state(state, emitter, err_event).await;
-                            }
-                            if reason_str == "history_persistence_timeout" {
-                                emit_with_state(
-                                    state,
-                                    emitter,
-                                    AcpEvent::Error {
-                                        message: format!(
-                                            "{agent_type} completed the turn, but its native history was not persisted in time."
-                                        ),
-                                        agent_type: agent_type.to_string(),
-                                        code: Some("history_persistence_timeout".into()),
-                                        details: None,
-                                        terminal: false,
-                                    },
-                                )
-                                .await;
                             }
                             // Clean completions only — a canceled/empty turn
                             // may be unpersisted (see journal_turn_span).
@@ -14126,125 +13935,6 @@ mod continuation_protocol_tests;
 mod tests {
     use super::*;
     use sacp::schema::{Diff, SessionConfigId};
-
-    #[tokio::test]
-    async fn deepseek_history_wait_obeys_its_deadline() {
-        let gate = DeepSeekHistoryGate {
-            sessions_root: Some(std::env::temp_dir().join(format!(
-                "missing-deepseek-history-{}",
-                uuid::Uuid::new_v4()
-            ))),
-        };
-        let started = tokio::time::Instant::now();
-        assert!(
-            !wait_for_deepseek_history_with_timeout(
-                &gate,
-                "missing-session",
-                0,
-                1,
-                std::time::Duration::from_millis(30),
-            )
-            .await
-        );
-        assert!(started.elapsed() < std::time::Duration::from_millis(200));
-    }
-
-    #[tokio::test]
-    async fn deepseek_history_wait_can_be_dropped_for_cancel() {
-        let gate = DeepSeekHistoryGate {
-            sessions_root: Some(std::env::temp_dir().join(format!(
-                "cancel-deepseek-history-{}",
-                uuid::Uuid::new_v4()
-            ))),
-        };
-        let wait = wait_for_deepseek_history_with_timeout(
-            &gate,
-            "missing-session",
-            0,
-            1,
-            std::time::Duration::from_secs(5),
-        );
-        tokio::pin!(wait);
-        tokio::select! {
-            _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
-            _ = &mut wait => panic!("history wait completed before cancellation won"),
-        }
-    }
-
-    #[tokio::test]
-    async fn deepseek_history_wait_observes_a_later_complete_flush() {
-        let root = std::env::temp_dir().join(format!(
-            "deepseek-history-flush-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let session_id = "session";
-        let session_dir = root.join("bucket").join(session_id);
-        std::fs::create_dir_all(&session_dir).unwrap();
-        let log_path = session_dir.join("session.jsonl");
-        let prompt_time = crate::acp_transcript::now_epoch_ms();
-        std::fs::write(
-            &log_path,
-            format!(
-                "{{\"type\":\"turn/start\",\"seq\":1,\"time\":{prompt_time},\"data\":{{\"turn\":1}}}}\n"
-            ),
-        )
-        .unwrap();
-        let writer = tokio::spawn({
-            let log_path = log_path.clone();
-            async move {
-                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-                use std::io::Write as _;
-                let mut log = std::fs::OpenOptions::new()
-                    .append(true)
-                    .open(log_path)
-                    .unwrap();
-                writeln!(
-                    log,
-                    "{{\"type\":\"assistant/message\",\"seq\":2,\"time\":{},\"data\":{{\"turn\":1,\"message\":{{\"content\":[]}}}}}}",
-                    prompt_time + 1
-                )
-                .unwrap();
-                writeln!(
-                    log,
-                    "{{\"type\":\"turn/end\",\"seq\":3,\"time\":{},\"data\":{{\"turn\":1,\"reason\":{{\"kind\":\"completed\"}}}}}}",
-                    prompt_time + 2
-                )
-                .unwrap();
-            }
-        });
-        let gate = DeepSeekHistoryGate {
-            sessions_root: Some(root.clone()),
-        };
-        assert!(
-            wait_for_deepseek_history_with_timeout(
-                &gate,
-                session_id,
-                0,
-                prompt_time,
-                std::time::Duration::from_millis(500),
-            )
-            .await
-        );
-        writer.await.unwrap();
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn unresolved_deepseek_history_root_fails_closed() {
-        let gate = DeepSeekHistoryGate {
-            sessions_root: None,
-        };
-        assert!(
-            !wait_for_deepseek_history_with_timeout(
-                &gate,
-                "session",
-                0,
-                1,
-                std::time::Duration::from_secs(5),
-            )
-            .await
-        );
-    }
 
     async fn release_barrier_fixture(
         connection_id: &str,
