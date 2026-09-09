@@ -1732,13 +1732,16 @@ pub async fn get_folder_conversation(
     app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     manager: tauri::State<'_, crate::acp::manager::ConnectionManager>,
-    broker: tauri::State<'_, std::sync::Arc<crate::acp::delegation::broker::DelegationBroker>>,
     chat_channel_manager: tauri::State<'_, crate::chat_channel::manager::ChatChannelManager>,
     conversation_id: i32,
     tail_turns: Option<usize>,
     from_index: Option<usize>,
 ) -> Result<DbConversationDetail, AppCommandError> {
     let window = resolve_turn_window_req(tail_turns, from_index)?;
+    let broker = app
+        .state::<std::sync::Arc<crate::acp::delegation::broker::DelegationBroker>>()
+        .inner()
+        .clone();
     get_folder_conversation_with_live_core(
         &db.conn,
         &manager,
