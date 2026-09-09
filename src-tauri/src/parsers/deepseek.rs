@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -81,6 +81,43 @@ fn resolve_deepseek_sessions_root_from(
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| resolve_dsh_home_from(dsh_home_env, home_dir).join("sessions"))
+}
+
+/// Resolve the sessions root as seen by one launched DeepSeek child process.
+/// Per-agent environment values outrank inherited values, and relative paths
+/// are resolved against the child's launch cwd, matching Node's `path.resolve`.
+pub(crate) fn resolve_deepseek_sessions_root_for_launch(
+    runtime_env: &BTreeMap<String, String>,
+    launch_cwd: &Path,
+) -> Option<PathBuf> {
+    let child_home = crate::acp::file_system_runtime::child_home_dir(runtime_env);
+    let env_value = |key: &str| match runtime_env.get(key) {
+        Some(value) => Some(OsString::from(value)),
+        None => std::env::var_os(key),
+    };
+    let sessions_env = env_value("DEEPSEEK_ACP_SESSIONS_ROOT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let root = if let Some(root) = sessions_env {
+        root
+    } else if let Some(dsh_home) =
+        env_value("DSH_HOME").filter(|value| !value.to_string_lossy().trim().is_empty())
+    {
+        let expanded = expand_home_prefix(&dsh_home.to_string_lossy(), child_home.as_ref());
+        // `~` needs the child's home. Leaving it literal would point the gate
+        // at a directory the child can never write.
+        if expanded.starts_with("~") {
+            return None;
+        }
+        expanded.join("sessions")
+    } else {
+        child_home?.join(".dsh").join("sessions")
+    };
+    if root.is_absolute() {
+        Some(root)
+    } else {
+        Some(launch_cwd.join(root))
+    }
 }
 
 /// Resolve the image attachment store the way `dsh-attachment-local` does:
@@ -365,6 +402,100 @@ fn decode_zstd_frames_prefix(bytes: &[u8]) -> Option<String> {
     // Lossy: one bad byte must not drop the whole session; the JSON lines
     // that decode cleanly still parse.
     Some(String::from_utf8_lossy(&decoded).into_owned())
+}
+
+/// Highest native event sequence already present immediately before a prompt
+/// is sent. A later durability check requires the target turn to start above
+/// this watermark, so an older completed turn from the same millisecond cannot
+/// satisfy the gate.
+pub(crate) fn deepseek_session_max_seq(sessions_root: &Path, conversation_id: &str) -> Option<u64> {
+    let parser = DeepSeekParser {
+        base_dir: sessions_root.to_path_buf(),
+        attachments_root: PathBuf::new(),
+    };
+    let Some(session_dir) = parser.find_session_dir(conversation_id) else {
+        return Some(0);
+    };
+    read_session_log_text(&session_dir).map(|text| {
+        text.lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter_map(|event| event.get("seq").and_then(Value::as_u64))
+            .max()
+            .unwrap_or(0)
+    })
+}
+
+pub(crate) fn deepseek_session_log_signature(
+    sessions_root: &Path,
+    conversation_id: &str,
+) -> Option<(u64, Option<std::time::SystemTime>)> {
+    let parser = DeepSeekParser {
+        base_dir: sessions_root.to_path_buf(),
+        attachments_root: PathBuf::new(),
+    };
+    let session_dir = parser.find_session_dir(conversation_id)?;
+    let compressed = session_dir.join("session.jsonl.zstd");
+    let metadata = fs::metadata(&compressed)
+        .or_else(|_| fs::metadata(session_dir.join("session.jsonl")))
+        .ok()?;
+    Some((metadata.len(), metadata.modified().ok()))
+}
+
+/// Whether the native log contains a fully durable assistant result for the
+/// post-prompt turn identified by the send-time sequence and clock watermarks.
+pub(crate) fn deepseek_turn_is_durable(
+    sessions_root: &Path,
+    conversation_id: &str,
+    baseline_seq: u64,
+    prompt_started_at_ms: u64,
+) -> bool {
+    let parser = DeepSeekParser {
+        base_dir: sessions_root.to_path_buf(),
+        attachments_root: PathBuf::new(),
+    };
+    let Some(text) = parser
+        .find_session_dir(conversation_id)
+        .and_then(|dir| read_session_log_text(&dir))
+    else {
+        return false;
+    };
+
+    let events: Vec<Value> = text
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    events.iter().any(|start| {
+        let start_seq = start.get("seq").and_then(Value::as_u64).unwrap_or(0);
+        if start.get("type").and_then(Value::as_str) != Some("turn/start")
+            || start_seq <= baseline_seq
+            || start.get("time").and_then(Value::as_u64).unwrap_or(0) < prompt_started_at_ms
+        {
+            return false;
+        }
+        let Some(turn_id) = start.pointer("/data/turn") else {
+            return false;
+        };
+        events
+            .iter()
+            .filter(|event| {
+                event.get("type").and_then(Value::as_str) == Some("assistant/message")
+                    && event.pointer("/data/turn") == Some(turn_id)
+                    && event
+                        .pointer("/data/message")
+                        .is_some_and(|message| !message.is_null())
+            })
+            .filter_map(|event| event.get("seq").and_then(Value::as_u64))
+            .any(|assistant_seq| {
+                assistant_seq > start_seq
+                    && events.iter().any(|event| {
+                        event.get("type").and_then(Value::as_str) == Some("turn/end")
+                            && event.pointer("/data/turn") == Some(turn_id)
+                            && event.get("seq").and_then(Value::as_u64) > Some(assistant_seq)
+                            && event.pointer("/data/reason/kind").and_then(Value::as_str)
+                                == Some("completed")
+                    })
+            })
+    })
 }
 
 fn parse_session_log(session_dir: &Path, attachments: Option<&Path>) -> Option<SessionParse> {
@@ -1234,6 +1365,98 @@ mod tests {
             resolve_deepseek_sessions_root_from(None, None, Some(PathBuf::from("/home/demo"))),
             PathBuf::from("/home/demo/.dsh/sessions")
         );
+    }
+
+    #[test]
+    fn launch_sessions_root_uses_child_env_home_and_cwd() {
+        let cwd = Path::new("/workspace/project");
+        let runtime_env = BTreeMap::from([
+            ("HOME".into(), "/child/home".into()),
+            ("DEEPSEEK_ACP_SESSIONS_ROOT".into(), "".into()),
+            ("DSH_HOME".into(), "relative-dsh".into()),
+        ]);
+        assert_eq!(
+            resolve_deepseek_sessions_root_for_launch(&runtime_env, cwd),
+            Some(cwd.join("relative-dsh/sessions"))
+        );
+
+        let runtime_env = BTreeMap::from([
+            ("HOME".into(), "/child/home".into()),
+            (
+                "DEEPSEEK_ACP_SESSIONS_ROOT".into(),
+                "relative-sessions".into(),
+            ),
+        ]);
+        assert_eq!(
+            resolve_deepseek_sessions_root_for_launch(&runtime_env, cwd),
+            Some(cwd.join("relative-sessions"))
+        );
+    }
+
+    #[test]
+    fn durability_requires_post_watermark_assistant_and_completed_same_turn() {
+        let root = std::env::temp_dir().join(format!(
+            "deepseek-durability-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let session_id = "durability-session";
+        let session_dir = root.join("bucket").join(session_id);
+        fs::create_dir_all(&session_dir).expect("session dir");
+        let write = |events: &[String]| {
+            fs::write(session_dir.join("session.jsonl"), events.join("\n")).expect("log")
+        };
+        let old = vec![
+            event("turn/start", 10, 2_000, json!({"turn": "old"})),
+            event(
+                "assistant/message",
+                11,
+                2_001,
+                json!({"turn": "old", "message": {"content": []}}),
+            ),
+            event(
+                "turn/end",
+                12,
+                2_002,
+                json!({"turn": "old", "reason": {"kind": "completed"}}),
+            ),
+        ];
+        write(&old);
+        assert_eq!(deepseek_session_max_seq(&root, session_id), Some(12));
+        assert!(!deepseek_turn_is_durable(&root, session_id, 12, 2_000));
+
+        let mut current = old;
+        current.push(event("turn/start", 13, 2_000, json!({"turn": "current"})));
+        write(&current);
+        assert!(!deepseek_turn_is_durable(&root, session_id, 12, 2_000));
+
+        current.push(event(
+            "assistant/message",
+            14,
+            2_009,
+            json!({"turn": "different", "message": {"content": []}}),
+        ));
+        write(&current);
+        assert!(!deepseek_turn_is_durable(&root, session_id, 12, 2_000));
+
+        current.push(event(
+            "assistant/message",
+            15,
+            2_009,
+            json!({"turn": "current", "message": {"content": []}}),
+        ));
+        write(&current);
+        assert!(!deepseek_turn_is_durable(&root, session_id, 12, 2_000));
+
+        current.push(event(
+            "turn/end",
+            16,
+            2_010,
+            json!({"turn": "current", "reason": {"kind": "completed"}}),
+        ));
+        write(&current);
+        assert!(deepseek_turn_is_durable(&root, session_id, 12, 2_000));
+        let _ = fs::remove_dir_all(root);
     }
 
     fn header_line(cwd: &str) -> String {
