@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -14,6 +14,16 @@ vi.mock("@/lib/api", () => ({
 }))
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+
+// Capture the change-event handler so a test can play a remote write back.
+let authoringHandler: ((p: unknown) => void) | undefined
+const unsubscribeSpy = vi.fn()
+vi.mock("@/lib/platform", () => ({
+  subscribe: vi.fn((_event: string, handler: (p: unknown) => void) => {
+    authoringHandler = handler
+    return Promise.resolve(unsubscribeSpy)
+  }),
+}))
 
 // Avoid mutating the shared module cache across tests.
 vi.mock("@/hooks/use-feedback-enabled", () => ({
@@ -158,6 +168,120 @@ describe("AgentToolsSettingsSection", () => {
     expect(mockSetFeedback).toHaveBeenCalledWith({ enabled: true })
     // Open conversations show/hide the feedback bar off this cached flag.
     expect(mockPrime).toHaveBeenCalledWith(true)
+  })
+
+  /** The status-bar codeg-mcp popover writes these same two flags one key at a
+   * time. Save here writes the PAIR whenever either is dirty, so a form left
+   * open across such a write must adopt the new value for the switch the user
+   * never touched — otherwise saving the other one reverts it. */
+  it("adopts a remote create-from-chat write instead of reverting it on save", async () => {
+    primeBackend({ feedback: true })
+    renderWithIntl()
+    await waitFor(() =>
+      expect(screen.getByLabelText(LABELS.feedback)).toBeChecked()
+    )
+
+    // Elsewhere (the popover), automations is switched on.
+    act(() =>
+      authoringHandler?.({
+        automations_enabled: true,
+        work_tasks_enabled: false,
+      })
+    )
+    await waitFor(() =>
+      expect(screen.getByLabelText(LABELS.automations)).toBeChecked()
+    )
+
+    // The user now flips the OTHER switch here and saves.
+    fireEvent.click(screen.getByLabelText(LABELS.workTasks))
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+
+    await waitFor(() =>
+      expect(mockSetChat).toHaveBeenCalledWith({
+        automations_enabled: true,
+        work_tasks_enabled: true,
+      })
+    )
+  })
+
+  /** A switch the user already moved must not be yanked out from under them by
+   * a remote write; their pending edit still wins on save. */
+  it("keeps a pending local edit when a remote write lands", async () => {
+    // `feedback: true` differs from the render-time default, so its switch
+    // flipping on is the signal that the initial load has settled.
+    primeBackend({ feedback: true })
+    renderWithIntl()
+    await waitFor(() =>
+      expect(screen.getByLabelText(LABELS.feedback)).toBeChecked()
+    )
+
+    fireEvent.click(screen.getByLabelText(LABELS.automations))
+    expect(screen.getByLabelText(LABELS.automations)).toBeChecked()
+
+    act(() =>
+      authoringHandler?.({
+        automations_enabled: false,
+        work_tasks_enabled: false,
+      })
+    )
+    await waitFor(() =>
+      expect(screen.getByLabelText(LABELS.automations)).toBeChecked()
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() =>
+      expect(mockSetChat).toHaveBeenCalledWith({
+        automations_enabled: true,
+        work_tasks_enabled: false,
+      })
+    )
+    // Let the save settle before unmount, so its trailing state updates land
+    // inside the test rather than after it.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
+    )
+  })
+
+  /** A broadcast that lands while the initial reads are still in flight is the
+   * newer fact — the load must not restore what it sampled before it. */
+  it("does not let a slow initial load overwrite a broadcast", async () => {
+    let releaseChat: (v: {
+      automations_enabled: boolean
+      work_tasks_enabled: boolean
+    }) => void = () => {}
+    primeBackend()
+    mockGetChat.mockReturnValue(
+      new Promise((resolve) => {
+        releaseChat = resolve
+      })
+    )
+
+    renderWithIntl()
+    await waitFor(() => expect(authoringHandler).toBeDefined())
+
+    // The popover writes while the form's own reads are still pending.
+    act(() =>
+      authoringHandler?.({
+        automations_enabled: true,
+        work_tasks_enabled: false,
+      })
+    )
+    // ...and only now does the (older) read land.
+    await act(async () => {
+      releaseChat({ automations_enabled: false, work_tasks_enabled: false })
+    })
+
+    await waitFor(() =>
+      expect(screen.getByLabelText(LABELS.automations)).toBeChecked()
+    )
+    fireEvent.click(screen.getByLabelText(LABELS.workTasks))
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() =>
+      expect(mockSetChat).toHaveBeenCalledWith({
+        automations_enabled: true,
+        work_tasks_enabled: true,
+      })
+    )
   })
 
   it("keeps Save inert until something actually changes", async () => {

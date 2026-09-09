@@ -54,7 +54,7 @@ import enMessages from "@/i18n/messages/en.json"
 import {
   buildBranchTree,
   localBranchItems,
-  worktreeBranchLeaves,
+  worktreeBranchNodes,
 } from "@/lib/branch-tree"
 
 const LOCAL = ["main", "feature/login", "task/132", "loop/x"]
@@ -69,7 +69,7 @@ function renderList(
     <NextIntlClientProvider locale="en" messages={enMessages}>
       <BranchSelectorList
         operations={[{ id: "pull", label: "Pull code" }]}
-        worktreeLeaves={worktreeBranchLeaves(WORKTREES, null)}
+        worktreeNodes={worktreeBranchNodes(WORKTREES, null)}
         localNodes={buildBranchTree(localBranchItems(LOCAL), "local")}
         remoteSections={[]}
         localCount={LOCAL.length}
@@ -102,22 +102,55 @@ describe("BranchSelectorList — worktree section", () => {
   it("lists the other worktrees above the local branches", () => {
     renderList()
     const labels = optionLabels()
-    expect(labels).toContain("Worktrees (2)")
+    expect(labels).toContain("Worktree branches (2)")
     expect(labels).toContain("Local branches (4)")
-    expect(labels.indexOf("Worktrees (2)")).toBeLessThan(
+    expect(labels.indexOf("Worktree branches (2)")).toBeLessThan(
       labels.indexOf("Local branches (4)")
     )
-    // Flat and whole-ref: no "task/" prefix group swallowing the two rows.
-    expect(labels.slice(labels.indexOf("Worktrees (2)") + 1, 3 + 1)).toEqual([
-      "loop/x",
-      "task/132",
+    // These two share no prefix, so each collapses to one whole-ref row.
+    expect(
+      labels.slice(labels.indexOf("Worktree branches (2)") + 1, 3 + 1)
+    ).toEqual(["loop/x", "task/132"])
+  })
+
+  it("folds a shared prefix into a collapsed group, like the local tree", () => {
+    const shared = ["task/131", "task/132"]
+    renderList({
+      worktreeNodes: worktreeBranchNodes(shared, null),
+      worktreeBranchSet: new Set(shared),
+    })
+    // The section header stays open and still counts both branches; the group
+    // under it arrives folded, so neither branch has a row yet.
+    expect(optionLabels().slice(1, 3)).toEqual([
+      "Worktree branches (2)",
+      "task/2",
+    ])
+    expect(optionLabels()).not.toContain("131")
+  })
+
+  it("expands a worktree prefix group on click", async () => {
+    const user = userEvent.setup()
+    const shared = ["task/131", "task/132"]
+    renderList({
+      worktreeNodes: worktreeBranchNodes(shared, null),
+      worktreeBranchSet: new Set(shared),
+    })
+    const groupRow = screen
+      .getAllByRole("option")
+      .find((el) => el.textContent?.trim() === "task/2")
+    await user.click(groupRow as HTMLElement)
+    expect(optionLabels().slice(1, 5)).toEqual([
+      "Worktree branches (2)",
+      "task/2",
+      "131",
+      "132",
     ])
   })
 
   it("holds its place with an empty row for a repo with no other worktree", () => {
-    renderList({ worktreeLeaves: [], worktreeBranchSet: new Set() })
-    expect(optionLabels()).toContain("Worktrees (0)")
-    expect(screen.getByText("No worktrees")).toBeInTheDocument()
+    renderList({ worktreeNodes: [], worktreeBranchSet: new Set() })
+    expect(optionLabels()).toContain("Worktree branches (0)")
+    expect(screen.getByText("No worktree branches")).toBeInTheDocument()
   })
 
   it("offers switch and the worktree removals on a worktree row", async () => {
@@ -150,7 +183,7 @@ describe("BranchSelectorList — worktree section", () => {
     await user.type(screen.getByRole("combobox"), "task")
     const labels = optionLabels()
     expect(labels).toEqual([
-      "Worktrees (1)",
+      "Worktree branches (1)",
       "task/132",
       "Local branches (1)",
       "task/132",
@@ -160,11 +193,13 @@ describe("BranchSelectorList — worktree section", () => {
   it("collapses the section without touching the local tree", async () => {
     const user = userEvent.setup()
     renderList()
-    await user.click(screen.getByRole("option", { name: "Worktrees (2)" }))
+    await user.click(
+      screen.getByRole("option", { name: "Worktree branches (2)" })
+    )
     const labels = optionLabels()
     expect(labels).toEqual([
       "Pull code",
-      "Worktrees (2)",
+      "Worktree branches (2)",
       "Local branches (4)",
       // The local tree still lists both worktree branches.
       "feature/login",

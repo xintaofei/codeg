@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 
+import { CODEG_MCP_WORKBENCH_TOOLS } from "@/lib/codeg-mcp-tool"
 import {
   classifyToolKind,
   isAgentLikeToolName,
@@ -82,6 +83,16 @@ describe("isAgentLikeToolName", () => {
     }
   })
 
+  // The classifier keeps its own copy of the workbench list; when
+  // `resume_delegation` was added to `CODEG_MCP_WORKBENCH_TOOLS` the copy was
+  // not updated, so the resume card spent its life wrapped in a spurious
+  // "工具 ×1" group shell. Pin the relationship so it can't drift again.
+  it("covers every tool that owns a CodegMcpToolCard", () => {
+    for (const tool of CODEG_MCP_WORKBENCH_TOOLS) {
+      expect(isAgentLikeToolName(tool)).toBe(true)
+    }
+  })
+
   it("matches the codeg-mcp workbench companions across host naming conventions", () => {
     // Each owns a CodegMcpToolCard, so it breaks the tool-group run and renders
     // standalone rather than folding into a "工具 ×N" tally.
@@ -91,6 +102,7 @@ describe("isAgentLikeToolName", () => {
       "task_complete",
       "create_automation",
       "create_work_task",
+      "resume_delegation",
     ]) {
       expect(isAgentLikeToolName(tool)).toBe(true)
       expect(isAgentLikeToolName(`mcp__codeg-mcp__${tool}`)).toBe(true)

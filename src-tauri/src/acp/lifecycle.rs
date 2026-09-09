@@ -246,21 +246,24 @@ pub(crate) async fn handle_event(
             //
             // The target status depends on the stop reason: `end_turn` is the
             // only success case and goes to `PendingReview`. `refusal`,
-            // `max_tokens`, `max_turn_requests`, `unknown`, and `empty`
-            // indicate the turn failed (often a backend/gateway error
-            // masquerading as `Refusal` per the ACP spec gap, or — common
+            // `max_tokens`, `max_turn_requests`, `unknown`, `empty`, and
+            // `auth_required` indicate the turn failed (often a backend/gateway
+            // error masquerading as `Refusal` per the ACP spec gap, or — common
             // with OpenCode — a silent EndTurn that produced no output), so
             // we flip to `Cancelled` and pair the transition with an
             // `AcpEvent::Error` toast emitted upstream by `connection.rs`.
+            // `auth_required` is the one whose CONNECTION survives (the agent
+            // refused the prompt with ACP's -32000 and wants the user to sign
+            // in), but the turn is just as dead as the others — leaving the row
+            // out of this arm would strand it at InProgress for good.
             // `cancelled` is already written by `manager.cancel()` (eager
             // CAS InProgress → Cancelled at the user-cancel entry point), so
             // we leave it alone here. `completed` transitions remain
             // frontend-driven.
             let target_status = match stop_reason.as_str() {
                 "end_turn" => Some(ConversationStatus::PendingReview),
-                "refusal" | "max_tokens" | "max_turn_requests" | "unknown" | "empty" => {
-                    Some(ConversationStatus::Cancelled)
-                }
+                "refusal" | "max_tokens" | "max_turn_requests" | "unknown" | "empty"
+                | "auth_required" => Some(ConversationStatus::Cancelled),
                 // `cancelled` and any future reason: don't write here.
                 _ => None,
             };
@@ -420,6 +423,9 @@ async fn forward_turn_complete_to_broker(
             Some(conversation_id),
         ),
         "empty" => DelegationOutcome::from_err(DelegationError::ChildEmpty, Some(conversation_id)),
+        "auth_required" => {
+            DelegationOutcome::from_err(DelegationError::ChildAuthRequired, Some(conversation_id))
+        }
         other => DelegationOutcome::from_err(
             DelegationError::ChildUnknown(other.to_string()),
             Some(conversation_id),
@@ -541,7 +547,8 @@ fn format_terminal_error(message: &str, code: Option<&str>) -> String {
 /// `{providerIdentifier, toolName, args: {...}}`. Mirrors the frontend
 /// `ARGS_WRAPPER_KEYS` in `delegation-card.ts` so the two sides peel exactly
 /// the same shapes.
-const ARGS_WRAPPER_KEYS: [&str; 6] = ["arguments", "input", "params", "payload", "_meta", "args"];
+pub(crate) const ARGS_WRAPPER_KEYS: [&str; 6] =
+    ["arguments", "input", "params", "payload", "_meta", "args"];
 
 /// Walk wrapper layers — and one level of double-encoded JSON-of-JSON — down to
 /// the object that actually carries the `delegate_to_agent` arguments, and
@@ -2095,12 +2102,17 @@ mod tests {
         // The lifecycle subscriber must flip the conversation to Cancelled
         // for refusal/max_tokens/max_turn_requests/unknown so the user sees
         // a terminal state instead of a misleading PendingReview ("待审查").
+        // `auth_required` is synthesized by `run_conversation_loop` when the
+        // agent rejects the prompt with ACP's -32000: the CONNECTION survives
+        // that one, but the turn did not, so the row must still leave
+        // InProgress — nothing else would ever move it.
         let cases = [
             "refusal",
             "max_tokens",
             "max_turn_requests",
             "unknown",
             "empty",
+            "auth_required",
         ];
         for stop_reason in cases {
             let db = test_helpers::fresh_in_memory_db().await;

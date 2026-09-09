@@ -46,17 +46,13 @@ import {
   type BranchSectionScope,
 } from "@/lib/branch-selector-rows"
 import { collectGroupKeys } from "@/lib/branch-tree"
-import type {
-  BranchTreeLeaf,
-  BranchTreeNode,
-  RemoteBranchSection,
-} from "@/lib/branch-tree"
+import type { BranchTreeNode, RemoteBranchSection } from "@/lib/branch-tree"
 
 interface BranchSelectorListProps {
   /** Operations with pre-translated labels (search matches on these). */
   operations: BranchOperationMeta[]
-  /** Flat worktree shortcut leaves; empty hides the section (see row model). */
-  worktreeLeaves: BranchTreeLeaf[]
+  /** Worktree shortcut tree; empty still renders the "(0)" section header. */
+  worktreeNodes: BranchTreeNode[]
   localNodes: BranchTreeNode[]
   remoteSections: RemoteBranchSection[]
   localCount: number
@@ -185,7 +181,7 @@ interface ActionBubble {
 // selection on WKWebView; see session-selectors-panel.tsx).
 export function BranchSelectorList({
   operations,
-  worktreeLeaves,
+  worktreeNodes,
   localNodes,
   remoteSections,
   localCount,
@@ -313,14 +309,16 @@ export function BranchSelectorList({
 
   // Prefix groups start folded: seed the default-collapsed set with every group
   // key in the current trees (sections + multi-remote wrappers are keyed outside
-  // the tree, so they stay open).
+  // the tree, so they stay open). All three sections follow the same rule, the
+  // worktree tree included.
   const defaultCollapsedGroups = useMemo(
     () =>
       new Set([
+        ...collectGroupKeys(worktreeNodes),
         ...collectGroupKeys(localNodes),
         ...remoteSections.flatMap((s) => collectGroupKeys(s.nodes)),
       ]),
-    [localNodes, remoteSections]
+    [worktreeNodes, localNodes, remoteSections]
   )
 
   // The set fed to buildBranchRows: defaults minus force-open overrides, plus
@@ -356,7 +354,7 @@ export function BranchSelectorList({
     () =>
       buildBranchRows({
         operations,
-        worktreeLeaves,
+        worktreeNodes,
         localNodes,
         remoteSections,
         localCount,
@@ -368,7 +366,7 @@ export function BranchSelectorList({
       }),
     [
       operations,
-      worktreeLeaves,
+      worktreeNodes,
       localNodes,
       remoteSections,
       localCount,

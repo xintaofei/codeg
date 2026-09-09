@@ -197,7 +197,33 @@
       "panelOpacityHint": "Wie deckend Seitenleiste, Panels und Tab-Leisten sind. Niedriger lässt mehr vom Bild durchscheinen.",
       "errorTooLarge": "Bild ist zu groß (max. 16 MB).",
       "errorUnsupportedFormat": "Nicht unterstütztes Bildformat. Wähle ein PNG, JPEG, WebP oder GIF.",
-      "errorUploadFailed": "Hintergrundbild konnte nicht festgelegt werden."
+      "errorUploadFailed": "Hintergrundbild konnte nicht festgelegt werden.",
+      "market": {
+        "open": "Hintergrund-Markt",
+        "title": "Hintergrund-Markt",
+        "description": "Durchsuche die öffentliche Wallhaven-Galerie; per Klick herunterladen und anwenden.",
+        "searchPlaceholder": "Hintergründe suchen…",
+        "categories": {
+          "all": "Alle",
+          "general": "Landschaften",
+          "anime": "Anime",
+          "people": "Personen"
+        },
+        "pageInfo": "Seite {page} von {lastPage}",
+        "prevPage": "Zurück",
+        "nextPage": "Weiter",
+        "refresh": "Aktualisieren",
+        "empty": "Keine passenden Hintergründe gefunden.",
+        "error": "Der Hintergrund-Markt konnte nicht geladen werden.",
+        "retry": "Erneut versuchen",
+        "cardLabel": "Hintergrund {id} anwenden",
+        "applied": "In Verwendung",
+        "unavailable": "Nicht verfügbar",
+        "tooLarge": "Zu groß für einen Hintergrund: {actual} (Grenze {limit})",
+        "downloadFailed": "Download fehlgeschlagen. Bitte erneut versuchen.",
+        "appliedToast": "Hintergrund angewendet",
+        "credit": "Bilder von wallhaven.cc · nur SFW"
+      }
     }
   },
   "SystemSettings": {
@@ -305,6 +331,10 @@
     "gitlabDescription": "GitLab-Konten für die Authentifizierung verwalten. Token werden lokal gespeichert.",
     "gitlabTokenHint": "Erstellen Sie unter GitLab → Preferences → Access tokens einen Personal Access Token mit dem Scope api.",
     "gitlabNoAccounts": "Noch kein GitLab-Konto",
+    "giteaTitle": "Gitea-Konten",
+    "giteaDescription": "Gitea- (und Forgejo-)Konten für die Authentifizierung verwalten. Token werden lokal gespeichert.",
+    "giteaTokenHint": "Erstellen Sie unter Gitea → Settings → Applications einen Access Token mit den Scopes write:repository, write:issue und read:user.",
+    "giteaNoAccounts": "Noch kein Gitea-Konto",
     "noAccounts": "Keine GitHub-Konten konfiguriert.",
     "addAccount": "Konto hinzufügen",
     "serverUrl": "Server-URL",
@@ -337,7 +367,7 @@
     "loadFailed": "Einstellungen konnten nicht geladen werden: {message}",
     "gitAccount": {
       "sectionTitle": "Git-Server-Konten",
-      "sectionDescription": "Verwalten Sie Anmeldedaten für Nicht-GitHub-Git-Server (GitLab, Bitbucket, selbst gehostet usw.).",
+      "sectionDescription": "Zugangsdaten für Git-Server ohne eigenen Abschnitt verwalten (Bitbucket, selbst gehostet usw.).",
       "noAccounts": "Keine Git-Server-Konten konfiguriert.",
       "addAccount": "Konto hinzufügen",
       "addTitle": "Git-Konto hinzufügen",
@@ -637,6 +667,8 @@
     "local": {
       "filterPlaceholder": "Lokales MCP filtern...",
       "loadFailed": "Laden fehlgeschlagen: {message}",
+      "sourceUnreadable": "Die MCP-Konfiguration von {app} konnte nicht gelesen werden, daher werden ihre Server ausgeblendet: {message}",
+      "saveBlockedByUnreadableSource": "Reparieren oder entfernen Sie diese Datei und aktualisieren Sie, bevor Sie speichern: Zuweisungen werden aus den Agenten berechnet, die diese Seite lesen konnte, sodass ein Speichern jetzt diesen Server aus einem nicht lesbaren Agenten entfernen könnte.",
       "empty": "Kein lokales MCP erkannt.",
       "description": "Die lokale MCP-Konfiguration kann direkt bearbeitet und gespeichert werden.",
       "enabledApps": "Aktivierte Apps",
@@ -681,6 +713,13 @@
     "emptyNoAgent": "Keine verfügbaren Agenten.",
     "configManagement": "Konfigurationsverwaltung",
     "envVars": "Umgebungsvariablen",
+    "adapterChannel": {
+      "label": "Adapter-Version",
+      "description": "Installieren und Aktualisieren verwenden die von codeg geprüfte und angepinnte Version. Mit Neueste wird stattdessen die jeweils neueste npm-Version des Pakets installiert; schlägt das fehl, fällt codeg auf die angepinnte Version zurück und vermerkt es im Installationsprotokoll.",
+      "pinned": "Angepinnt (empfohlen)",
+      "latest": "Neueste (ungeprüft)",
+      "latestWarning": "Die neuesten Versionen sind ungeprüft und können diesen Agenten in codeg beschädigen; gelegentlich ist eine Version sogar bekanntermaßen defekt. Der Versionsstatus zeigt, was tatsächlich installiert ist."
+    },
     "hostTools": {
       "label": "Dateien und Befehle vom Agenten selbst ausführen lassen",
       "description": "codeg übernimmt Dateizugriffe und Terminalbefehle nicht mehr, sodass der Agent sie im eigenen Prozess ausführt – nur dort greifen seine eigene Sandbox und seine Berechtigungsregeln. Auch das Delegieren an andere Agenten wird deaktiviert, da dieselbe Arbeit sonst wieder über codeg liefe. codeg fügt selbst keine Sandbox hinzu; aktivieren Sie dies also nur, wenn im Agenten eine konfiguriert ist."
@@ -923,6 +962,13 @@
         "failed": "Die Anmeldung wurde nicht abgeschlossen.",
         "startFailed": "Anmeldung konnte nicht gestartet werden",
         "credentialHint": "Das Token liegt hier. Kopiere diese Datei auf weitere Rechner ohne Desktop, um sie ebenfalls anzumelden."
+      },
+      "signOut": {
+        "title": "Mit dem falschen Konto angemeldet?",
+        "description": "Antigravity speichert das angemeldete Google-Konto zwischen und verwendet es stillschweigend weiter, sodass eine erneute Anmeldung kein anderes Konto erreicht. Beim Abmelden werden die gespeicherten Anmeldedaten verworfen; laufende Antigravity-Sitzungen werden zuvor beendet, da sie sonst das alte Konto zurückschreiben würden.",
+        "action": "Abmelden",
+        "done": "Abgemeldet. Melde dich erneut an, um ein anderes Konto zu wählen.",
+        "failed": "Abmelden fehlgeschlagen"
       }
     },
     "deepseek": {
@@ -935,14 +981,13 @@
       "apiKeyHint": "Wird dem Agenten als DEEPSEEK_API_KEY übergeben. Eine Umgebungsvariable hat Vorrang vor der Zugangsdatendatei – lass das Feld leer, wenn du dich im Terminal anmeldest."
     },
     "codex": {
-      "configDescription": "Unterstützt schnelle Konfiguration von API-URL, API-Key, Modellname und reasoning effort und synchronisiert mit `auth.json` / `config.toml`.",
+      "configDescription": "Unterstützt schnelle Konfiguration von API-URL, API-Key und Modellname und synchronisiert mit `auth.json` / `config.toml`.",
       "authMode": "Authentifizierungsmodus",
       "chatgptSubscription": "Offizielles Abonnement",
       "chatgptSubscriptionHint": "Mit offiziellem ChatGPT-Abonnement anmelden, kein API Key erforderlich",
       "apiKeyHint": "Mit API Key zu OpenAI oder kompatiblen API-Diensten verbinden",
       "selectProvider": "Provider auswählen",
       "modelName": "Modellname",
-      "selectReasoningEffort": "Reasoning Effort auswählen",
       "enableWebsocket": "WebSocket aktivieren",
       "enableWebsocketAria": "WebSocket für Codex Provider aktivieren",
       "enableSkills": "Skills aktivieren",
@@ -1277,12 +1322,6 @@
       "customModelOptionName": "Name des benutzerdefinierten Modells",
       "customModelOptionDescription": "Beschreibung des benutzerdefinierten Modells",
       "customModelOptionHint": "Fügt der Modellauswahl von Claude einen einzelnen benutzerdefinierten Eintrag hinzu (z. B. ein Modell hinter einem benutzerdefinierten Gateway/Proxy). Name und Beschreibung sind optionale Anzeigeangaben.",
-      "effortLevel": "Reasoning-Stufe",
-      "effortLevelDefault": "Standardstufe",
-      "effortLevel_low": "Niedrig",
-      "effortLevel_medium": "Mittel",
-      "effortLevel_high": "Hoch",
-      "effortLevel_xhigh": "Sehr Hoch",
       "sendAttributionHeader": "Attributions-/Abrechnungskennung an die API senden",
       "sendAttributionHeaderAria": "Attributions-/Abrechnungskennung von Claude Code an die API senden",
       "disableNonessentialTraffic": "Telemetrie oder überflüssige Netzwerkanfragen deaktivieren",
@@ -1395,7 +1434,8 @@
       "localUnrecognized": "{versionText}. Lokale Version ist nicht vergleichbar; zum Überschreiben bitte Upgrade versuchen.",
       "upgradeAvailable": "{versionText}. Upgrade verfügbar.",
       "remoteUnavailable": "{versionText}. Remote-Version ist derzeit nicht verfügbar.",
-      "latest": "{versionText}. Bereits aktuell."
+      "latest": "{versionText}. Bereits aktuell.",
+      "latestChannel": "{versionText}. Neueste-Kanal ist aktiv; Aktualisieren installiert die neueste Version."
     },
     "adapter": {
       "label": "ACP-Adapter",
@@ -1553,7 +1593,7 @@
   "GeneralSettings": {
     "loading": "Wird geladen...",
     "sectionTitle": "Allgemein",
-    "sectionDescription": "Zentrale Einstellungen für das Standardterminal, die Rendering-Beschleunigung, Benachrichtigungstöne und die Multi-Agent-Delegation.",
+    "sectionDescription": "Zentrale Einstellungen für das Standardterminal, die Rendering-Beschleunigung, Benachrichtigungen und die Multi-Agent-Delegation.",
     "terminalTitle": "Standardterminal",
     "terminalDescription": "Wählen Sie die Shell, die beim Öffnen neuer Terminal-Tabs über die Terminalleiste oder den Dateibaum verwendet wird. Agenten nutzen sie ebenfalls, wenn sie codeg um die Ausführung einer vollständigen Befehlszeile bitten.",
     "terminalSystemDefault": "Systemstandard",
@@ -1569,7 +1609,9 @@
     "terminalShellNotInstalled": "nicht installiert",
     "terminalShellNotFoundWarning": "Dieser Pfad existiert auf diesem Host nicht.",
     "terminalCurrentShell": "Aktuell verwendet: {path}",
-    "renderingDescription": "Deaktivieren Sie die Hardwarebeschleunigung, wenn die App einen schwarzen Bildschirm oder Render-Fehler zeigt (häufig bei bestimmten AMD-GPUs oder integrierten Intel-GPUs). Wirkt sich nur auf die Windows-Desktop-Version aus.",
+    "colorizeCommandOutput": "Befehlsausgabe einfärben",
+    "colorizeCommandOutputDescription": "Erzwingt ANSI-Farben in den Befehlen, die Agenten ausführen, sodass deren Ausgabe im Verlauf farbig statt als reiner Text erscheint. Gilt ab neuen Sitzungen.",
+    "renderingDescription": "Deaktivieren Sie die Hardwarebeschleunigung, wenn die App einen schwarzen Bildschirm oder Render-Fehler zeigt (häufig bei bestimmten AMD-GPUs oder integrierten Intel-GPUs unter Windows sowie beim proprietären NVIDIA-Treiber unter Linux). Wirkt sich nur auf die Windows- und Linux-Desktop-Versionen aus.",
     "disableHardwareAcceleration": "Hardwarebeschleunigung deaktivieren",
     "renderingSaveFailed": "Render-Einstellungen konnten nicht gespeichert werden: {message}",
     "restartRequired": "Gespeichert. Starten Sie die App neu, damit die Änderung wirksam wird.",
@@ -1633,6 +1675,9 @@
     "searchPlaceholder": "Titel oder Pfad suchen…",
     "allAgents": "Alle Agenten",
     "onlyImportable": "Nur importierbare",
+    "includeDeleted": "Gelöschte einbeziehen",
+    "includeDeletedWithCount": "Gelöschte einbeziehen ({count})",
+    "includeDeletedHint": "Das Löschen einer Sitzung in codeg blendet sie nur aus – Unterhaltung und Verlauf bleiben erhalten. Aktiviere dies, um gelöschte Sitzungen auszuwählen und an Ort und Stelle wiederherzustellen.",
     "selectAll": "Alle auswählen",
     "clearSelection": "Leeren",
     "expandAll": "Alle ausklappen",
@@ -1645,6 +1690,7 @@
     "toggleSessionAria": "Sitzung {title} auswählen",
     "statusImported": "Importiert",
     "statusDeleted": "Gelöscht",
+    "statusDeletedRestorable": "Gelöscht – beim Importieren wird die ursprüngliche Unterhaltung wiederhergestellt",
     "untitled": "Unbenannte Sitzung",
     "messageCount": "{count} Nachrichten",
     "selectedCount": "{count} ausgewählt",
@@ -1653,6 +1699,7 @@
     "close": "Schließen",
     "doneTitle": "Import abgeschlossen",
     "doneImported": "Importiert",
+    "doneRestored": "Wiederhergestellt",
     "doneUpdated": "Aktualisiert",
     "doneSkipped": "Übersprungen",
     "doneCreatedFolders": "Ordner erstellt",
@@ -1740,7 +1787,7 @@
       "viewOptions": "Anzeigeoptionen",
       "listOptions": "Konversationsliste",
       "showCompleted": "Abgeschlossene Konversationen anzeigen",
-      "showWorktrees": "Worktree-Ordner anzeigen",
+      "showWorktrees": "Worktree-Branches anzeigen",
       "showRecent": "Gruppe „Zuletzt“ anzeigen",
       "navigationItems": "Navigationselemente",
       "moreOptions": "Weitere Optionen",
@@ -1845,6 +1892,7 @@
       "forkSession": "Sitzung forken",
       "forkSessionSuccess": "Sitzung erfolgreich geforkt",
       "forkSessionFailed": "Sitzung konnte nicht geforkt werden: {error}",
+      "forkSessionBusy": "Verzweigen fehlgeschlagen: Ein Zug läuft",
       "exportConversation": "Konversation exportieren",
       "exportImage": "Bild",
       "exportMarkdown": "Markdown",
@@ -1999,11 +2047,53 @@
         "title": "Schnellaktionen",
         "groups": {
           "workspace": "Arbeitsbereich",
-          "sessions": "Sitzungen",
           "navigation": "Navigation",
           "more": "Mehr"
         },
         "showPet": "Pet anzeigen"
+      },
+      "mcp": {
+        "title": "codeg-mcp-Dienst",
+        "state": {
+          "running": "Läuft",
+          "stopped": "Läuft nicht",
+          "disabled": "Keine Tools aktiv",
+          "unavailable": "Companion fehlt",
+          "unknown": "Unbekannt"
+        },
+        "hint": {
+          "running": "Hier gestartete Agenten können codegs Tools nutzen.",
+          "stopped": "Der Broker-Socket antwortet nicht.",
+          "disabled": "Alle Tool-Gruppen sind ausgeschaltet.",
+          "unavailable": "Die codeg-mcp-Binärdatei fehlt auf der Festplatte.",
+          "unknown": "Der Status konnte nicht gelesen werden."
+        },
+        "socketPath": "Adresse",
+        "binary": "Companion",
+        "binaryMissing": "Nicht gefunden",
+        "sessions": "Sitzungen",
+        "activeDelegations": "Delegationen",
+        "depthLimit": "Max. Tiefe",
+        "tools": "Tools",
+        "groupDelegation": "Delegation",
+        "descDelegation": "Gibt eine Aufgabe an einen anderen Agenten ab.",
+        "groupFeedback": "Live-Feedback",
+        "descFeedback": "Ergänzt Hinweise, ohne den Zug zu unterbrechen.",
+        "groupAsk": "Rückfrage stellen",
+        "descAsk": "Lässt den Agenten vor einer Entscheidung nachfragen.",
+        "groupSessions": "Sitzungsabfrage",
+        "descSessions": "Schlägt frühere Sitzungen und Ergebnisse nach.",
+        "groupAutomations": "Automatisierung erstellen",
+        "descAutomations": "Erstellt und verwaltet geplante Automationen.",
+        "groupTaskboard": "Aufgabe erstellen",
+        "descTaskboard": "Erstellt und verwaltet Arbeitsaufgaben.",
+        "start": "Dienst starten",
+        "starting": "Wird gestartet…",
+        "actionFailed": "Fehlgeschlagen: {message}",
+        "lastError": "Letzter Fehler: {message}",
+        "loadFailed": "Status konnte nicht gelesen werden: {message}",
+        "openSettings": "Alle Einstellungen öffnen",
+        "refresh": "Aktualisieren"
       }
     },
     "auxPanel": {
@@ -2061,7 +2151,26 @@
       "closeOthers": "Andere schließen",
       "closeAll": "Alle schließen",
       "hideTerminal": "Terminal ausblenden ({shortcut})",
-      "openFolderFirst": "Öffnen Sie zuerst einen Ordner"
+      "openFolderFirst": "Öffnen Sie zuerst einen Ordner",
+      "keybar": {
+        "label": "Virtuelle Terminaltasten",
+        "show": "Virtuelle Tasten anzeigen",
+        "hide": "Virtuelle Tasten ausblenden",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "-",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "Ordner öffnen",
@@ -2170,6 +2279,17 @@
       "officeServerInstallHint": "OfficeCLI muss auf dem Server-Host installiert sein. Führe diesen Befehl dort aus und versuche es erneut:",
       "officeRemoteDesktopUnsupported": "Die Live-Vorschau ist in einem Remote-Desktop-Fenster nicht verfügbar. Öffne diesen Arbeitsbereich in der Web-Oberfläche des Servers, um Office-Dateien anzusehen."
     },
+    "fileViewer": {
+      "title": "Dateivorschau",
+      "description": "Eine in dieser Unterhaltung referenzierte Datei, daneben geöffnet.",
+      "openInWorkspace": "Im Arbeitsbereich öffnen",
+      "back": "Zurück",
+      "preview": "Vorschau",
+      "source": "Quelltext",
+      "loading": "Wird geladen...",
+      "cannotResolve": "Dieser Dateipfad kann nicht aufgelöst werden.",
+      "tooLargeToPreview": "Diese Datei ist zu groß für eine Vorschau hier. Öffne sie stattdessen im Arbeitsbereich."
+    },
     "branchDropdown": {
       "toasts": {
         "commitCodeCompleted": "Code-Commit abgeschlossen",
@@ -2246,8 +2366,8 @@
       "stashChanges": "Änderungen stashen...",
       "stashPop": "Stash anwenden...",
       "manageRemotes": "Remotes verwalten...",
-      "worktreeBranches": "Worktrees ({count, plural, one {#} other {#}})",
-      "noWorktreeBranches": "Keine Worktrees",
+      "worktreeBranches": "Worktree-Branches ({count, plural, one {#} other {#}})",
+      "noWorktreeBranches": "Keine Worktree-Branches",
       "localBranches": "Lokale Branches ({count, plural, one {#} other {#}})",
       "noLocalBranches": "Keine lokalen Branches",
       "remoteBranches": "Remote-Branches ({count, plural, one {#} other {#}})",
@@ -2573,6 +2693,7 @@
       "openInTerminal": "Terminal",
       "openInCode": "VS Code",
       "linkedFolder": "Verknüpfter Ordner",
+      "moreActions": "Weitere Aktionen",
       "copyPath": "Pfad kopieren",
       "upload": "Dateien/Ordner hochladen",
       "download": "Datei herunterladen",
@@ -2776,11 +2897,13 @@
           "downloadFailed": "{agent}-Download fehlgeschlagen: {message}",
           "sessionLoadResourceNotFound": "{agent}-Sitzung konnte nicht geladen werden. Neu laden, um es erneut zu versuchen, oder eine neue Konversation starten.",
           "sessionLoadUnavailable": "{agent} konnte diese Sitzung nicht wiederherstellen – sie wurde möglicherweise beendet oder der Agent wurde gestoppt. Neu laden, um es erneut zu versuchen, oder eine neue Konversation starten.",
+          "sessionLoadBusy": "Dieser Verlauf wird von der daraus abgezweigten Sitzung offen gehalten. Schließe diese Sitzung und lade neu, um ihn zu öffnen.",
           "sessionArchived": "Die vorherige Sitzung wurde auf {agent}-Seite archiviert. Führe {command} im Terminal aus, um sie wiederherzustellen und neu zu laden, oder starte eine neue Unterhaltung.",
           "turnFailedRefusal": "{agent} hat die Fortsetzung dieser Runde abgelehnt. Häufig deutet das auf einen Backend- oder Gateway-Fehler hin. Bitte prüfen Sie die Agent-Logs.",
           "turnFailedMaxTokens": "{agent} hat das Token-Limit für diese Runde erreicht.",
           "turnFailedMaxTurnRequests": "{agent} hat die maximale Anzahl zulässiger Anfragen für diese Runde erreicht.",
           "turnFailedUnknown": "{agent} hat die Runde mit einem unbekannten Stoppgrund beendet.",
+          "turnFailedAuthRequired": "{agent} benötigt eine erneute Anmeldung, bevor diese Runde ausgeführt werden kann. Melde dich in den Einstellungen an und sende die Nachricht erneut.",
           "grokModelSwitchIncompatibleAgent": "{agent} kann in einer bestehenden Unterhaltung nicht zu diesem Modell wechseln. Starte eine neue Sitzung, um es zu verwenden.",
           "turnFailedEmpty": "{agent} hat die Runde ohne jegliche Antwort beendet.",
           "turnFailedEmptyProtocol": "{agent} hat eine Ausgabe erzeugt, die codeg nicht auswerten konnte — die Agent-Version passt möglicherweise nicht zum Protokoll.",
@@ -2793,6 +2916,8 @@
         "eventErrorTitle": "Agentenfehler",
         "notificationTurnComplete": "{agent} hat die Antwort abgeschlossen",
         "notificationError": "{agent} Fehler: {message}",
+        "notificationQuestion": "{agent} wartet auf deine Antwort",
+        "notificationErrorRedacted": "{agent} ist auf einen Fehler gestoßen",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",
           "retryingWithMax": "erneuter Versuch {attempt}/{max}",
@@ -2846,6 +2971,9 @@
         "cut": "Ausschneiden",
         "copy": "Kopieren",
         "selectAll": "Alles auswählen",
+        "openLink": "Link öffnen",
+        "openFile": "Datei öffnen",
+        "sendEmail": "E-Mail senden",
         "pasteUnavailable": "Zwischenablage konnte nicht gelesen werden. Mit Strg/⌘V einfügen.",
         "clipboardWriteFailed": "Schreiben in die Zwischenablage fehlgeschlagen. Bitte das Tastenkürzel verwenden.",
         "quickMessageUntitled": "Ohne Titel",
@@ -2864,12 +2992,12 @@
         "noModels": "Keine Modelle gefunden",
         "cancel": "Abbrechen",
         "send": "Senden",
-        "forkAndSend": "Fork & Senden",
         "queueMessage": "In Warteschlange stellen",
         "steerIntoTurn": "In laufenden Turn einfügen",
+        "steerAsNote": "Notiz für die nächste Prüfung senden",
         "steerQueuedInstead": "Stattdessen in die Warteschlange gestellt – wird mit dem nächsten Turn gesendet.",
         "steerFailed": "Konnte nicht in den laufenden Turn eingefügt werden",
-        "steerAttachmentsUnsupported": "Nur Text – Entwürfe mit Anhängen laufen über die Warteschlange.",
+        "steerNoteFailed": "Deine Notiz konnte nicht gesendet werden",
         "slashCommands": "Slash-Befehle",
         "slashSearchPlaceholder": "Befehle suchen...",
         "slashSearchEmpty": "Keine passenden Befehle",
@@ -2923,7 +3051,7 @@
           "pasteDropFiles": "Füge einen Screenshot ein oder ziehe eine Datei direkt ins Eingabefeld, um sie anzuhängen.",
           "queueMessage": "Während der Agent antwortet, kannst du weitertippen – deine nächste Nachricht wird in die Warteschlange gestellt und automatisch gesendet.",
           "draftAutoSave": "Nicht gesendete Entwürfe werden pro Konversation automatisch gespeichert und beim Zurückkehren wiederhergestellt.",
-          "forkSend": "Im Dropdown der Senden-Schaltfläche gibt es Verzweigen und senden – verzweige vom aktuellen Punkt in einen neuen Tab.",
+          "forkFromTurn": "Jede abgeschlossene Antwort bietet Ab hier verzweigen – verzweige das Gespräch an dieser Nachricht in einen neuen Tab.",
           "exportConversation": "Klicke mit der rechten Maustaste in die Konversation, um sie als Markdown, HTML oder Bild zu exportieren.",
           "chatChannels": "Verbinde Telegram / Lark / WeChat unter Einstellungen → Chat-Kanäle, um vom Handy aus weiterzuarbeiten.",
           "shortcutsAuxPanel": "<shortcut>{toggleAuxPanel}</shortcut> blendet das rechte Panel ein – mit den geänderten Dateien und Git-Änderungen dieser Sitzung.",
@@ -3121,9 +3249,12 @@
         "openInFileManager": "Im Dateimanager öffnen",
         "copyRelativePath": "Relativen Pfad kopieren",
         "copyAbsolutePath": "Absoluten Pfad kopieren",
+        "download": "Datei herunterladen",
         "pathCopied": "Pfad kopiert",
         "copyPathFailed": "Pfad konnte nicht kopiert werden",
-        "openFailed": "Lokale Datei konnte nicht geöffnet werden"
+        "openFailed": "Lokale Datei konnte nicht geöffnet werden",
+        "downloadSaved": "{name} heruntergeladen",
+        "downloadFailed": "Herunterladen von {name} fehlgeschlagen"
       },
       "messageList": {
         "attachedResources": "Angehängte Ressourcen",
@@ -3139,6 +3270,9 @@
         "emptyConversation": "Keine Nachrichten in dieser Unterhaltung.",
         "systemMessage": "Systemnachricht",
         "copyMessage": "Kopieren",
+        "forkFromHere": "Ab hier verzweigen",
+        "forkBusy": "Verzweigen nicht möglich, während ein Zug läuft",
+        "forkNotReady": "Von dieser Antwort kann noch nicht verzweigt werden – bitte gleich erneut versuchen",
         "copied": "Kopiert",
         "selectionActions": "Auswahlaktionen",
         "selectionCopy": "Text kopieren",
@@ -3226,6 +3360,9 @@
         "noDetail": "No detail available yet.",
         "unknownAgent": "Sub-Agent",
         "openDetail": "Konversation anzeigen",
+        "resumed": "Fortgesetzt",
+        "resumeDetail": "Details zur Fortsetzung",
+        "resumeReasonLabel": "Grund der Fortsetzung",
         "detailTitle": "Unteragent-Konversation",
         "detailDescription": "Schreibgeschützte Ansicht der delegierten Unteragent-Konversation.",
         "waitForResult": "Warte auf das Ergebnis von Aufgabe {task}",
@@ -3255,6 +3392,7 @@
             "child_max_tokens": "Subagent: Token-Limit",
             "child_max_turn_requests": "Subagent: Anfragelimit",
             "child_empty": "Subagent ohne Ausgabe",
+            "child_auth_required": "Subagent braucht Anmeldung",
             "child_unknown": "Subagent: Fehler",
             "unknown": "unbekannte Aufgabe"
           }
@@ -3300,7 +3438,10 @@
         "agentSessionLoading": "Protokoll des Subagenten wird geladen…",
         "agentSessionEmpty": "Der Subagent hat noch nichts geschrieben.",
         "agentFallbackTitle": "Sub-Agent wird gestartet…",
-        "agentCodexLaunchOnly": "Gestartet. Codex meldet keinen weiteren Fortschritt dieses Sub-Agenten – sein Ergebnis trifft als Nachricht in dieser Unterhaltung ein.",
+        "agentCodexLaunchOnly": "Gestartet. Codex hat noch nicht gemeldet, wie dieser Sub-Agent geendet ist – öffne seine Sitzung, um die Arbeit zu verfolgen.",
+        "agentSubagentDone": "Fertig",
+        "agentSubagentInterrupted": "Unterbrochen",
+        "agentSubagentUnknown": "Ausgang unbekannt",
         "agentStatsBash": "Befehle",
         "agentStatsRead": "Dateien gelesen",
         "agentStatsSearch": "Suchen",
@@ -3412,7 +3553,6 @@
         },
         "planMode": {
           "entered": "Planungsmodus gestartet",
-          "planLabel": "Plan",
           "reviewApproved": "Plan genehmigt – wird umgesetzt",
           "reviewKept": "Im Planmodus geblieben",
           "reviewPending": "Warte auf Planentscheidung",
@@ -3567,13 +3707,16 @@
         "opSpawn": "Sub-Agent wird gestartet",
         "opWait": "Sub-Agent-Ergebnis wird abgerufen",
         "opClose": "Sub-Agent wird geschlossen",
-        "opResume": "Sub-Agent wird fortgesetzt"
+        "opResume": "Sub-Agent wird fortgesetzt",
+        "opList": "Sub-Agenten auflisten"
       },
       "contextCompaction": {
         "compacting": "Kontext wird komprimiert…",
         "compacted": "Kontext komprimiert",
         "compactedTokens": "Kontext komprimiert · {before} → {after} Tokens",
-        "failed": "Kontextkomprimierung fehlgeschlagen"
+        "failed": "Kontextkomprimierung fehlgeschlagen",
+        "triggerManual": "Manuell ausgelöst",
+        "triggerAutomatic": "Automatisch ausgelöst"
       },
       "sessionFailure": {
         "category": {
@@ -3597,11 +3740,20 @@
       },
       "backgroundTasks": {
         "settledFallback": "Hintergrundaufgabe beendet ({status})",
+        "notifySettledOne": "{agent}: Eine Hintergrundaufgabe ist fertig",
+        "notifySettledMany": "{agent}: {count} Hintergrundaufgaben sind fertig",
         "cardRunning": "Läuft im Hintergrund",
         "cardLaunchedPending": "Hintergrundaufgabe gestartet",
         "cardCompleted": "Hintergrundaufgabe abgeschlossen",
         "cardFinishedWithStatus": "Hintergrundaufgabe beendet ({status})",
         "cardResultPending": "Ergebnis steht noch aus"
+      },
+      "asyncTasks": {
+        "openOutput": "Ausgabe",
+        "stop": "Stoppen",
+        "tokens": "{count} Tokens",
+        "stopDeclined": "Diese Aufgabe konnte nicht gestoppt werden – sie ist möglicherweise bereits beendet.",
+        "stopFailed": "Aufgabe konnte nicht gestoppt werden: {error}"
       },
       "proposedPlan": {
         "title": "Vorgeschlagener Plan",
@@ -3622,6 +3774,16 @@
       "viewMode": {
         "split": "Zur Zwei-Spalten-Ansicht wechseln",
         "unified": "Zur Inline-Ansicht wechseln"
+      },
+      "binaryFile": "Binärdatei — Inhalt wird nicht angezeigt",
+      "image": {
+        "sideBySide": "Zur Zwei-Spalten-Ansicht wechseln",
+        "swipe": "Zur Wisch-Ansicht wechseln",
+        "swipeHandle": "Schieberegler für Bildvergleich",
+        "noImage": "Kein Bild in dieser Revision",
+        "unavailable": "Diese Seite konnte nicht geladen werden",
+        "tooLarge": "Bild zu groß für die Vorschau ({size})",
+        "loading": "Bilder werden geladen..."
       }
     },
     "conversationContextBar": {
@@ -4400,7 +4562,15 @@
       "button": "Sicherung exportieren",
       "inProgress": "Sicherung wird erstellt…",
       "success": "Sicherung erstellt.",
-      "started": "Download der Sicherung gestartet."
+      "started": "Download der Sicherung gestartet.",
+      "degradedTitle": "Einige Sitzungsdatenbanken von Agenten brauchten eine Sonderbehandlung",
+      "degradedHint": "Diese Agenten speichern ihre Sitzungen in SQLite. Sofern unten nichts anderes steht, sind sie in der Sicherung enthalten.",
+      "degradedMore": "…und {count} weitere.",
+      "degradedLevel": {
+        "recoveredOnCopy": "aus einer eigenen Kopie wiederhergestellt – vollständig",
+        "bareFileOnly": "ohne Write-Ahead-Log gesichert – die neuesten Nachrichten fehlen womöglich",
+        "notArchived": "nicht gesichert – sie veränderte sich während des Kopierens laufend"
+      }
     },
     "restore": {
       "selectFile": "Sicherungsdatei auswählen",
@@ -4438,11 +4608,37 @@
         "scanning": "Konflikte werden geprüft…",
         "noConflicts": "Es werden keine vorhandenen Dateien überschrieben.",
         "conflictCount": "{count} vorhandene Datei(en) wären betroffen.",
-        "conflictSkipNote": "Vorhandene Dateien bleiben erhalten (übersprungen), sofern du das Überschreiben nicht aktivierst."
+        "conflictSkipNote": "Vorhandene Dateien bleiben erhalten (übersprungen), sofern du das Überschreiben nicht aktivierst.",
+        "agentsRunning": "{count} Agent(en) laufen ({agents}). Schließe sie zuerst, sonst landen die Verläufe in einem Nebenordner statt an ihrem ursprünglichen Ort."
       },
-      "restartFailed": "Wiederherstellung vorbereitet, aber der Server konnte nicht neu starten. Starte ihn manuell neu, um sie anzuwenden."
+      "restartFailed": "Wiederherstellung vorbereitet, aber der Server konnte nicht neu starten. Starte ihn manuell neu, um sie anzuwenden.",
+      "discardPending": "Vorbereitete Wiederherstellung verwerfen",
+      "discarded": "Die vorbereitete Wiederherstellung wurde verworfen.",
+      "pendingBlockedHint": "Es wartet bereits eine vorbereitete Wiederherstellung auf einen Neustart. Verwirf sie, um eine andere vorzubereiten.",
+      "result": {
+        "title": "Wiederherstellung vorbereitet",
+        "needsRestart": "Sie wird beim nächsten Start angewendet. Von deinen aktuellen Daten wird vorher eine Momentaufnahme angelegt.",
+        "downgraded": "{agents} liefen, daher wurden die Gesprächsverläufe nicht an ihren ursprünglichen Ort zurückgeschrieben, sondern unter {path} abgelegt.",
+        "skipped": "{count} vorhandene Datei(en) wurden beibehalten",
+        "refused": "{count} Sitzungsdatenbank(en) wurden nicht zurückgeschrieben",
+        "refusedHint": "Sie stammen aus einer älteren Sicherung, die Datenbank und Write-Ahead-Log getrennt ablegte; dass beide zusammengehören, lässt sich nicht belegen. Deine vorhandenen Datenbanken blieben unangetastet – stelle in einen Nebenordner wieder her, um die Rohdateien zu erhalten.",
+        "restartNow": "Jetzt neu starten",
+        "later": "Später"
+      }
     },
-    "remoteUnsupported": "Sicherung & Wiederherstellung wirken auf die Daten des Rechners, auf dem codeg läuft. Du bist mit einem entfernten Arbeitsbereich verbunden – verwalte dessen Sicherungen direkt auf jenem Server."
+    "remoteUnsupported": "Sicherung & Wiederherstellung wirken auf die Daten des Rechners, auf dem codeg läuft. Du bist mit einem entfernten Arbeitsbereich verbunden – verwalte dessen Sicherungen direkt auf jenem Server.",
+    "progress": {
+      "cancel": "Abbrechen"
+    },
+    "snapshots": {
+      "title": "Momentaufnahmen vor der Wiederherstellung",
+      "hint": "Jede Wiederherstellung legt zuerst eine Momentaufnahme deiner aktuellen Daten an. Die beiden neuesten werden aufbewahrt.",
+      "empty": "Noch keine Momentaufnahmen.",
+      "rollback": "Hierauf zurücksetzen",
+      "unsupported": "Nur ansehen",
+      "rollbackConfirmTitle": "Auf diese Momentaufnahme zurücksetzen?",
+      "rollbackConfirmBody": "Damit werden deine aktuellen Daten durch die Momentaufnahme ersetzt und die App startet neu. Von den ersetzten Daten wird vorher eine Momentaufnahme angelegt."
+    }
   },
   "backup": {
     "restore": {
@@ -4504,6 +4700,45 @@
     "saved": "Tool-Einstellungen gespeichert",
     "saveFailed": "Tool-Einstellungen konnten nicht gespeichert werden",
     "loadFailed": "Laden fehlgeschlagen: {detail}"
+  },
+  "DesktopNotificationSettings": {
+    "title": "Desktop-Benachrichtigungen",
+    "description": "Zeigt eine Systembenachrichtigung, wenn ein Agent dich braucht. Die Einstellung gilt pro Gerät — in einem anderen Browser oder auf einem anderen Rechner ist sie unabhängig.",
+    "permissionTitle": "Berechtigung",
+    "permissionGranted": "Erlaubt",
+    "permissionDenied": "Blockiert",
+    "permissionDefault": "Nicht angefragt",
+    "permissionUnsupported": "Nicht verfügbar",
+    "permissionManagedByOs": "Vom System verwaltet",
+    "permissionGrantedHint": "Dieser Browser zeigt Benachrichtigungen von Codeg an.",
+    "permissionDeniedHint": "Dieser Browser blockiert Benachrichtigungen von Codeg. Nur die Website-Einstellungen des Browsers können das aufheben — eine Seite kann nicht erneut fragen.",
+    "permissionDefaultHint": "Dieser Browser wurde noch nicht gefragt. Bis du zustimmst, bleiben Benachrichtigungen aus.",
+    "permissionUnsupportedHint": "Benachrichtigungen brauchen einen sicheren Kontext. Rufe diesen Server über HTTPS oder auf localhost auf.",
+    "permissionManagedByOsHint": "Die Desktop-App sendet über die Mitteilungszentrale des Systems, die nicht zurückmeldet, ob Codeg erlaubt ist. Sende einen Test, um es herauszufinden.",
+    "identityTitle": "Zugestellt als",
+    "identityHint": "Das System ordnet diese Mitteilungen dieser App zu – es gelten deren eigene Schalter.",
+    "identityDegradedHint": "Codegs eigene Kennung konnte nicht belegt werden, daher stellt das System sie als {bundleId} zu, und die Schalter jener App gelten. Installiere Codeg in den Programme-Ordner, um die eigene Identität wiederherzustellen.",
+    "requestPermission": "Benachrichtigungen erlauben",
+    "permissionGrantedToast": "Benachrichtigungen erlaubt.",
+    "permissionDeniedToast": "Benachrichtigungen wurden blockiert. Aktiviere sie in den Website-Einstellungen deines Browsers erneut.",
+    "openSystemSettings": "Systemeinstellungen öffnen",
+    "openSystemSettingsFailed": "Die Benachrichtigungseinstellungen des Systems konnten nicht geöffnet werden.",
+    "sendTest": "Test senden",
+    "testTitle": "Codeg",
+    "testBody": "Desktop-Benachrichtigungen funktionieren.",
+    "testSent": "Testbenachrichtigung gesendet.",
+    "testFailed": "Die Testbenachrichtigung konnte nicht gesendet werden.",
+    "whenTitle": "Benachrichtigen wenn",
+    "whenHint": "Ein Fenster auf dem zweiten Monitor ist sichtbar, aber nicht fokussiert — wähle „Fenster ist nicht fokussiert“, wenn nie etwas ankommt.",
+    "whenAlways": "Immer",
+    "whenUnfocused": "Fenster ist nicht fokussiert",
+    "whenHidden": "Fenster ist nicht sichtbar",
+    "hideBody": "Inhalt ausblenden",
+    "hideBodyHint": "Zeigt eine allgemeine Zeile statt der Agentenausgabe. Die Mitteilungszentrale behält den Inhalt außerhalb der App, auch nachdem die Unterhaltung geschlossen wurde. Der Titel nennt weiterhin den Ordner, damit du weißt, zu welchem Fenster du zurückmusst.",
+    "eventsTitle": "Ereignisse",
+    "eventsHint": "Schalte Ereignisse ab, die dich nicht unterbrechen sollen. Wiederholungen desselben Ereignisses innerhalb weniger Sekunden werden zu einer Benachrichtigung zusammengefasst.",
+    "eventBackgroundTask": "Hintergrundaufgabe",
+    "eventWorkTask": "Arbeitsaufgabe"
   },
   "NotificationSoundSettings": {
     "title": "Benachrichtigungstöne",
@@ -4816,6 +5051,8 @@
     "errorView": "Ansehen",
     "notifyReview": "Bereit zur Abnahme: {title}",
     "notifyFailed": "Aufgabe fehlgeschlagen: {title}",
+    "notifyReviewRedacted": "Eine Aufgabe wartet auf die Abnahme",
+    "notifyFailedRedacted": "Eine Aufgabe ist fehlgeschlagen",
     "createFromMessage": "Aufgabe aus Nachricht erstellen",
     "detailTokens": "Token insgesamt",
     "editorTitleNew": "Neue Aufgabe",
@@ -4830,6 +5067,7 @@
     "phaseRetry": "Neuversuch",
     "phaseReturn": "Nachfassen",
     "phaseMerge": "Merge",
+    "phaseCompact": "Kontextverdichtung",
     "titleLabel": "Titel",
     "titlePlaceholder": "Was ist zu tun?",
     "promptLabel": "Aufgabenbeschreibung",
@@ -4860,6 +5098,7 @@
     "mergeDeleteWorktree": "Worktree nach dem Merge löschen",
     "mergeSubmit": "Mergen",
     "mergeSubmitQueue": "In die Warteschlange",
+    "mergeSubmitting": "Wird gestartet …",
     "mergeQueuedToast": "Zur Merge-Warteschlange hinzugefügt – startet, sobald der laufende Merge fertig ist.",
     "completeTitle": "Aufgabe abschließen",
     "completeDescription": "Diese Aufgabe hat keine Dateien geändert – es gibt nichts zu mergen, sie wird direkt als fertig markiert.",
@@ -4881,6 +5120,7 @@
     "settingsMaxConcurrentHint": "0 = unbegrenzt",
     "settingsAutoCompact": "Schwelle für automatisches Komprimieren",
     "settingsAutoCompactHint": "Vor einer Folge-, Wiederholungs- oder Merge-Runde die Sitzung komprimieren, wenn das Kontextfenster mindestens so voll ist. 0 = aus.",
+    "compactingNote": "Sitzungskontext wird verdichtet …",
     "settingsCompactCommand": "Komprimierungsbefehl",
     "settingsCompactCommandHint": "Leer lassen, um den vom Agenten angebotenen Befehl bzw. dessen bekannten Standard zu verwenden.",
     "settingsCompactCommandPlaceholder": "/compact",
@@ -5124,6 +5364,46 @@
     "fieldDescription": "Beschreibung",
     "baseInstructions": "System-Prompt (base_instructions)"
   },
+  "DeepSeekModelEditor": {
+    "title": "Modellliste",
+    "description": "Die Modelle, zwischen denen eine DeepSeek-Sitzung wechseln kann. Sie stehen im Einstellungsdokument des Harness, das der Agent beim Start liest – gespeicherte Änderungen greifen für danach gestartete Sitzungen.",
+    "inheritedBadge": "Agent-Standard",
+    "inheritedHint": "Es ist noch keine Liste gespeichert, dies sind die eingebauten Modelle des Agenten. Speichern legt sie fest; spätere Agent-Versionen ändern sie dann nicht mehr von selbst. Datei:",
+    "storedHint": "Im Einstellungsdokument des Harness gespeichert. Schlüssel außerhalb dieser Liste – und die Kommentare darum herum – bleiben unangetastet. Datei:",
+    "unreadable": "Dieses Einstellungsdokument lässt sich von hier aus nicht bearbeiten, ohne den vorhandenen Inhalt zu gefährden. Bitte von Hand bearbeiten.",
+    "invalidStored": "Der Agent weist diese gespeicherte Liste zurück; bis sie korrigiert ist, laufen Sitzungen auf seinen eingebauten Modellen:",
+    "loading": "Einstellungsdokument wird gelesen…",
+    "loadFailed": "Das Einstellungsdokument konnte nicht gelesen werden.",
+    "empty": "Keine Modelle. Füge eines hinzu oder speichere, um auf die eingebaute Liste des Agenten zurückzufallen.",
+    "addModel": "Modell hinzufügen",
+    "remove": "Modell entfernen",
+    "advanced": "Mehr",
+    "save": "Modellliste speichern",
+    "saving": "Wird gespeichert…",
+    "restoreDefaults": "Agent-Standard verwenden",
+    "fieldId": "Modell-ID",
+    "fieldName": "Anzeigename",
+    "fieldContextWindow": "Kontextfenster",
+    "fieldDescription": "Beschreibung",
+    "fieldMaxTokens": "Max. Ausgabe-Tokens",
+    "fieldAcceptsImages": "Nimmt Bilder an",
+    "fieldImageDetail": "Bilddetail",
+    "fieldImagePixelBudget": "Pixelbudget",
+    "fieldImageMaxBytes": "Byte-Obergrenze",
+    "placeholderId": "deepseek-v4-flash",
+    "placeholderName": "Wird in der Auswahl angezeigt",
+    "placeholderInherit": "Agent-Standard",
+    "errorMissingId": "Jedes Modell braucht eine ID.",
+    "errorDuplicateId": "Zwei Modelle haben dieselbe ID „{id}“.",
+    "errorBadContextWindow": "Das Kontextfenster von „{id}“ muss eine ganze Zahl größer als null sein.",
+    "errorBadMaxTokens": "Die maximalen Ausgabe-Tokens von „{id}“ müssen eine ganze Zahl größer als null sein.",
+    "errorBadImageLimit": "Die Bildgrenzen von „{id}“ müssen ganze Zahlen größer als null sein.",
+    "warnSingleModel": "Bei nur einem Modell bietet der Agent gar keine Modellauswahl mehr an.",
+    "warnLaunchModelMissing": "Neue Sitzungen starten mit „{model}“, das nicht in dieser Liste steht. Füge es hinzu oder setze {variable} in den Umgebungsvariablen oben.",
+    "toastSaved": "Modellliste gespeichert",
+    "toastRestored": "Es wird die eingebaute Modellliste des Agenten verwendet",
+    "toastSaveFailed": "Die Modellliste konnte nicht gespeichert werden"
+  },
   "DiagnosticsSettings": {
     "title": "Umgebungsdiagnose",
     "description": "Prüft, wie diese App die Agent-CLI im eigenen Prozess auflöst – das kann sich von deinem Terminal unterscheiden.",
@@ -5291,7 +5571,7 @@
     "noRemote": "Dieser Ordner hat kein erkennbares Forge-Remote (origin)",
     "errors": {
       "noAccount": "Für {host} ist kein {provider}-Konto konfiguriert. Füge unter Einstellungen → Versionskontrolle eines hinzu, um dieses Repository zu laden.",
-      "unsupportedHost": "Das Repository-Panel unterstützt nur GitHub und GitLab, und {host} wird als keines von beiden erkannt. Falls es sich um eine selbst gehostete GitHub-Enterprise- oder GitLab-Instanz handelt, füge unter Einstellungen → Versionskontrolle ein Konto dafür hinzu.",
+      "unsupportedHost": "Das Repository-Panel unterstützt nur GitHub, GitLab und Gitea, und {host} wird als keines davon erkannt. Falls es sich um eine selbst gehostete GitHub-Enterprise-, GitLab-, Gitea- oder Forgejo-Instanz handelt, füge unter Einstellungen → Versionskontrolle ein Konto dafür hinzu.",
       "wrongForge": "{host} ist ein {provider} und nicht die Forge, als die es eingestuft war. Die Erkennung wurde korrigiert — neu laden, um es erneut zu versuchen."
     },
     "addAccount": "Konto hinzufügen",
@@ -5550,8 +5830,29 @@
     "showFewerMembers": "Weniger anzeigen",
     "detachToCanvas": "Auf die Leinwand herausziehen",
     "deleteSelected": "Auswahl löschen",
+    "confirmDeleteTitle": "Auswahl löschen?",
+    "confirmDeleteNotes": "{count, plural, one {# selbst geschriebene Notiz wird} other {# selbst geschriebene Notizen werden}} endgültig gelöscht. Das lässt sich nicht rückgängig machen.",
+    "confirmDeleteCancel": "Abbrechen",
+    "confirmDeleteConfirm": "Löschen",
     "canvasActions": "Leinwand-Aktionen",
-    "mergeIntoNewRegion": "Neuer Bereich"
+    "mergeIntoNewRegion": "Neuer Bereich",
+    "addFileCard": "Dateikarte",
+    "addTerminalCard": "Terminalkarte",
+    "searchFiles": "Dateien suchen…",
+    "searchFilesIn": "In {folder} suchen…",
+    "searchingFiles": "Wird gesucht…",
+    "noFiles": "Keine Dateien gefunden",
+    "noOpenFiles": "Keine Dateien geöffnet – tippen zum Suchen",
+    "browseForFile": "Durchsuchen…",
+    "filePreview": "Vorschau",
+    "fileSource": "Quelltext",
+    "reloadFile": "Neu laden",
+    "removeFileCard": "Dateikarte entfernen",
+    "restartTerminal": "Terminal neu starten",
+    "removeTerminalCard": "Terminalkarte entfernen",
+    "terminalNoDirectory": "Diese Karte hat kein Arbeitsverzeichnis",
+    "confirmDeleteTerminals": "{count} laufende Terminal(s) werden geschlossen und ihre Prozesse beendet.",
+    "confirmDeleteNotesAndTerminals": "{notes} von dir geschriebene Notiz(en) werden endgültig gelöscht und {terminals} laufende Terminal(s) beendet."
   },
   "Translation": {
     "partialFailure": "Einige Abschnitte konnten nicht übersetzt werden",
@@ -5699,6 +6000,5 @@
     "poolIdle": "Inaktiv — dieser Endpunkt wurde noch nicht benutzt.",
     "poolRate": "Adaptive Rate: {rpm} Anfr./Min",
     "poolCooldown": "gedrosselt (429), Abklingen {seconds}s ({rpm}/Min)",
-    "poolDisabled": "Für diese Sitzung deaktiviert: {reason}"
-  }
+    "poolDisabled": "Für diese Sitzung deaktiviert: {reason}"  }
 }

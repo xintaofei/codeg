@@ -13,7 +13,7 @@ import {
   buildRemoteBranchSections,
   localBranchItems,
   sectionKey,
-  worktreeBranchLeaves,
+  worktreeBranchNodes,
   type BranchTreeNode,
 } from "@/lib/branch-tree"
 
@@ -49,7 +49,7 @@ function baseInput(
 ): BuildBranchRowsInput {
   return {
     operations: OPS,
-    worktreeLeaves: [],
+    worktreeNodes: [],
     localNodes: [],
     remoteSections: [],
     localCount: 0,
@@ -143,14 +143,14 @@ describe("buildBranchRows — worktree section", () => {
   const WORKTREES = ["task/132", "loop/x"]
   const worktreeInput = (overrides = {}) =>
     baseInput({
-      worktreeLeaves: worktreeBranchLeaves(WORKTREES, null),
+      worktreeNodes: worktreeBranchNodes(WORKTREES, null),
       worktreeBranchSet: new Set(WORKTREES),
       localNodes: localTree([...LOCAL, ...WORKTREES]),
       localCount: 6,
       ...overrides,
     })
 
-  it("sits above the local section, flat and expanded by default", () => {
+  it("sits above the local section, expanded by default", () => {
     const rows = buildBranchRows(worktreeInput())
     expect(rows.map(summarize)).toEqual([
       "op:pull",
@@ -172,6 +172,52 @@ describe("buildBranchRows — worktree section", () => {
     ])
   })
 
+  it("groups worktrees that share a prefix, keyed apart from the local tree", () => {
+    // The same `task/` prefix exists in both sections under different scoped
+    // keys, so folding one leaves the other alone. WHICH of them starts folded
+    // is the list component's default-seed decision, not this model's.
+    const shared = ["task/131", "task/132"]
+    const rowsWith = (collapsed: Set<string>) =>
+      buildBranchRows(
+        baseInput({
+          worktreeNodes: worktreeBranchNodes(shared, null),
+          worktreeBranchSet: new Set(shared),
+          localNodes: localTree([...LOCAL, ...shared]),
+          localCount: 6,
+          collapsed,
+        })
+      ).map(summarize)
+
+    const localFolded = rowsWith(new Set(["g local task"]))
+    expect(localFolded.slice(3, 7)).toEqual([
+      "section:worktree(2)+",
+      "group:task/@1+",
+      "leaf:task/131@2",
+      "leaf:task/132@2",
+    ])
+    expect(localFolded).toContain("group:task/@1-")
+
+    const worktreeFolded = rowsWith(new Set(["g worktree task"]))
+    expect(worktreeFolded.slice(3, 5)).toEqual([
+      "section:worktree(2)+",
+      "group:task/@1-",
+    ])
+    expect(worktreeFolded).toContain("group:task/@1+")
+  })
+
+  it("counts leaves, not nodes, in its header", () => {
+    const shared = ["task/131", "task/132", "loop/x"]
+    const rows = buildBranchRows(
+      baseInput({
+        worktreeNodes: worktreeBranchNodes(shared, null),
+        worktreeBranchSet: new Set(shared),
+        localNodes: localTree(LOCAL),
+        localCount: 4,
+      })
+    )
+    expect(rows.map(summarize)).toContain("section:worktree(3)+")
+  })
+
   it("keeps its place with an empty row when the repo has no other worktree", () => {
     const rows = buildBranchRows(
       baseInput({ localNodes: localTree(LOCAL), localCount: 4 })
@@ -190,7 +236,7 @@ describe("buildBranchRows — worktree section", () => {
     // renderer would mislabel as a second "Local branches".
     const rows = buildBranchRows(
       baseInput({
-        worktreeLeaves: null,
+        worktreeNodes: null,
         localNodes: localTree(LOCAL),
         localCount: 4,
       })
@@ -212,7 +258,7 @@ describe("buildBranchRows — worktree section", () => {
 
   it("stays absent while searching on a null surface", () => {
     const rows = buildBranchRows(
-      worktreeInput({ worktreeLeaves: null, query: "task" })
+      worktreeInput({ worktreeNodes: null, query: "task" })
     )
     expect(rows.map(summarize)).toEqual([
       "section:local(1)+",

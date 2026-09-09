@@ -162,6 +162,7 @@ import {
   DEEPSEEK_PANEL_ENV_KEYS,
   DeepSeekConfigPanel,
 } from "./deepseek-config-panel"
+import { DeepSeekModelListEditor } from "./deepseek-model-list-editor"
 import { KimiCodeConfigPanel } from "./kimi-code-config-panel"
 import { PiConfigPanel } from "./pi-config-panel"
 import { QoderConfigPanel } from "./qoder-config-panel"
@@ -196,7 +197,6 @@ interface AgentDraft {
   codexAuthMode: CodexAuthMode
   codexModelProvider: string
   codexProviderOptions: string[]
-  codexReasoningEffort: CodexReasoningEffort
   codexSupportsWebsockets: boolean
   codexSkills: boolean
   /** `[features].default_mode_request_user_input` — see
@@ -231,7 +231,6 @@ interface AgentDraft {
   claudeCustomModelOption: string
   claudeCustomModelOptionName: string
   claudeCustomModelOptionDescription: string
-  claudeEffortLevel: ClaudeEffortLevel
   // Claude Code hardening toggles (native config `env`). `claudeSendAttributionHeader`
   // → CLAUDE_CODE_ATTRIBUTION_HEADER (on="1"/off="0"), default off (don't send).
   // `claudeDisableNonessentialTraffic` → CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,
@@ -550,6 +549,56 @@ export function setHostToolsAgentMode(
   })
 }
 
+/**
+ * Per-agent `env_json` key that opts an npx agent into installing the
+ * package's `latest` npm dist-tag instead of the maintainer-reviewed pin.
+ * Same storage as pi's runtime override and the host-tools knob above. The
+ * backend reads it at install/upgrade time only: a launch always runs whatever
+ * is installed, nothing polls npm in the background, and a failed latest
+ * install falls back to the pinned version with a note in the install log.
+ */
+const ADAPTER_CHANNEL_ENV = "CODEG_ADAPTER_CHANNEL"
+const ADAPTER_CHANNEL_LATEST = "latest"
+
+export type AdapterChannel = "pinned" | "latest"
+
+/**
+ * Which adapter channel an env draft selects. Anything other than the exact
+ * (trimmed) `latest` sentinel reads as pinned, matching the Rust reader
+ * (`adapter_channel_is_latest`), which treats the pin as the only default.
+ */
+export function adapterChannelFromEnvText(envText: string): AdapterChannel {
+  return parseEnvText(envText)[ADAPTER_CHANNEL_ENV]?.trim() ===
+    ADAPTER_CHANNEL_LATEST
+    ? "latest"
+    : "pinned"
+}
+
+/** [`adapterChannelFromEnvText`] over the saved env map the backend reports. */
+export function adapterChannelFromEnv(
+  env: Record<string, string>
+): AdapterChannel {
+  return env[ADAPTER_CHANNEL_ENV]?.trim() === ADAPTER_CHANNEL_LATEST
+    ? "latest"
+    : "pinned"
+}
+
+/**
+ * Select the adapter channel in an env draft. Pinned DELETES the key: unlike
+ * the host-tools knob there is no process-env second layer that could make
+ * "absent" mean something else, so absent is unambiguously the pinned default
+ * on both sides, and the raw editor stays free of a key that only restates it.
+ */
+export function setAdapterChannel(
+  envText: string,
+  channel: AdapterChannel
+): string {
+  return patchEnvText(envText, {
+    [ADAPTER_CHANNEL_ENV]:
+      channel === "latest" ? ADAPTER_CHANNEL_LATEST : undefined,
+  })
+}
+
 interface ImportantEnvKeys {
   apiBaseUrl: string[]
   apiKey: string[]
@@ -583,32 +632,6 @@ const CLAUDE_ENV_FLAG_OFF = "0"
 // telemetry / redundant pings" → default ON (disabled).
 const CLAUDE_SEND_ATTRIBUTION_HEADER_DEFAULT = false
 const CLAUDE_DISABLE_NONESSENTIAL_TRAFFIC_DEFAULT = true
-
-const CLAUDE_EFFORT_LEVEL_CONFIG_KEY = "effortLevel"
-
-type ClaudeEffortLevel = "" | "low" | "medium" | "high" | "xhigh"
-
-const CLAUDE_EFFORT_LEVEL_VALUES: ReadonlyArray<
-  Exclude<ClaudeEffortLevel, "">
-> = ["low", "medium", "high", "xhigh"]
-
-function normalizeClaudeEffortLevel(value: unknown): ClaudeEffortLevel {
-  if (typeof value !== "string") return ""
-  const normalized = value.trim().toLowerCase()
-  // Upstream claude-agent-acp >=0.37 exposes the sentinel string "default";
-  // collapse it to "" so our UI's "默认/Default" placeholder stays
-  // canonical regardless of which side wrote the config.
-  if (normalized === "" || normalized === "default") return ""
-  if (
-    normalized === "low" ||
-    normalized === "medium" ||
-    normalized === "high" ||
-    normalized === "xhigh"
-  ) {
-    return normalized
-  }
-  return ""
-}
 
 const GEMINI_AUTH_MODES = [
   "custom",
@@ -957,7 +980,6 @@ function extractImportantConfigValues(
   claudeCustomModelOption: string
   claudeCustomModelOptionName: string
   claudeCustomModelOptionDescription: string
-  claudeEffortLevel: ClaudeEffortLevel
   claudeSendAttributionHeader: boolean
   claudeDisableNonessentialTraffic: boolean
   configError: string | null
@@ -1003,11 +1025,6 @@ function extractImportantConfigValues(
     CLAUDE_MODEL_ENV_KEYS.claudeCustomModelOptionDescription,
   ])
 
-  const claudeEffortLevel: ClaudeEffortLevel =
-    agentType === "claude_code"
-      ? normalizeClaudeEffortLevel(config[CLAUDE_EFFORT_LEVEL_CONFIG_KEY])
-      : ""
-
   // Present in env → on iff value is "1"; absent → the toggle's default.
   const attributionRaw = findEnvValue(mergedEnv, [
     CLAUDE_ATTRIBUTION_HEADER_ENV_KEY,
@@ -1047,7 +1064,6 @@ function extractImportantConfigValues(
       agentType === "claude_code" ? claudeCustomModelOptionName : "",
     claudeCustomModelOptionDescription:
       agentType === "claude_code" ? claudeCustomModelOptionDescription : "",
-    claudeEffortLevel,
     claudeSendAttributionHeader,
     claudeDisableNonessentialTraffic,
     configError: parseResult.error,
@@ -1777,7 +1793,6 @@ function ensureOpenCodeProviderNpm(configText: string): string {
 interface CodexTomlImportantValues {
   model: string
   modelProvider: string
-  modelReasoningEffort: CodexReasoningEffort
   providerNames: string[]
   providerBaseUrls: Record<string, string>
   providerSupportsWebsockets: Record<string, boolean>
@@ -1792,7 +1807,6 @@ interface CodexImportantValues {
   apiKey: string | null
   model: string
   modelProvider: string
-  reasoningEffort: CodexReasoningEffort
   providerOptions: string[]
   supportsWebsockets: boolean
   skills: boolean
@@ -1838,37 +1852,6 @@ const CODEX_AUTH_MODES = [
   "model_provider",
 ] as const
 type CodexAuthMode = (typeof CODEX_AUTH_MODES)[number]
-
-type CodexReasoningEffort = "low" | "medium" | "high" | "xhigh"
-
-const CODEX_REASONING_EFFORT_OPTIONS: ReadonlyArray<{
-  value: CodexReasoningEffort
-  label: string
-  description: string
-}> = [
-  {
-    value: "low",
-    label: "Low",
-    description: "Fast responses with lighter reasoning",
-  },
-  {
-    value: "medium",
-    label: "Medium",
-    description: "Balances speed and reasoning depth for everyday tasks",
-  },
-  {
-    value: "high",
-    label: "High",
-    description: "Greater reasoning depth for complex problems",
-  },
-  {
-    value: "xhigh",
-    label: "Extra High",
-    description: "Extra high reasoning depth for complex problems",
-  },
-]
-
-const CODEX_DEFAULT_REASONING_EFFORT: CodexReasoningEffort = "high"
 
 /** The draft value meaning "leave the key out of config.toml", i.e. let codex
  * apply its own default. */
@@ -2105,21 +2088,6 @@ export function codexSandboxSaveConfig(
   return Object.keys(patch).length > 0 ? patch : undefined
 }
 
-function normalizeCodexReasoningEffort(
-  value: string
-): CodexReasoningEffort | null {
-  const normalized = value.trim().toLowerCase()
-  if (
-    normalized === "low" ||
-    normalized === "medium" ||
-    normalized === "high" ||
-    normalized === "xhigh"
-  ) {
-    return normalized
-  }
-  return null
-}
-
 function buildCodexProviderOptions(
   activeProvider: string,
   providerNames: string[]
@@ -2220,8 +2188,6 @@ function extractCodexTomlImportantValues(
   const providerNames = new Set<string>()
   let model = ""
   let modelProvider = ""
-  let modelReasoningEffort: CodexReasoningEffort =
-    CODEX_DEFAULT_REASONING_EFFORT
   let featureResponsesWebsocketsV2 = false
   let featureSkills = false
   let featureDefaultModeRequestUserInput = false
@@ -2264,12 +2230,6 @@ function extractCodexTomlImportantValues(
       }
       if (assignment.key === "model_provider") {
         modelProvider = assignment.value
-        continue
-      }
-      if (assignment.key === "model_reasoning_effort") {
-        modelReasoningEffort =
-          normalizeCodexReasoningEffort(assignment.value) ??
-          CODEX_DEFAULT_REASONING_EFFORT
         continue
       }
       if (
@@ -2385,7 +2345,6 @@ function extractCodexTomlImportantValues(
   return {
     model,
     modelProvider,
-    modelReasoningEffort,
     providerNames: Array.from(providerNames),
     providerBaseUrls,
     providerSupportsWebsockets,
@@ -2496,7 +2455,6 @@ export function extractCodexImportantValues(
         : null,
     model: toml.model,
     modelProvider: activeProvider,
-    reasoningEffort: toml.modelReasoningEffort,
     providerOptions: buildCodexProviderOptions(
       activeProvider,
       toml.providerNames
@@ -2555,10 +2513,6 @@ function preferredTomlRootInsertionIndex(lines: string[], key: string): number {
   if (key === "model") {
     const providerIndex = findTomlRootAssignmentIndex(lines, "model_provider")
     return providerIndex >= 0 ? providerIndex : 0
-  }
-  if (key === "model_reasoning_effort") {
-    const modelIndex = findTomlRootAssignmentIndex(lines, "model")
-    return modelIndex >= 0 ? modelIndex + 1 : 0
   }
   let insertAt = findTomlRootEndIndex(lines)
   while (insertAt > 0 && lines[insertAt - 1].trim() === "") {
@@ -3084,7 +3038,6 @@ export function patchCodexConfigTomlText(
     apiBaseUrl?: string
     model?: string
     modelProvider?: string
-    modelReasoningEffort?: string
     supportsWebsockets?: boolean
     skills?: boolean
     defaultModeRequestUserInput?: boolean
@@ -3105,16 +3058,6 @@ export function patchCodexConfigTomlText(
   }
   if (typeof patch.model === "string") {
     nextTomlText = updateTomlRootStringKey(nextTomlText, "model", patch.model)
-  }
-  if (typeof patch.modelReasoningEffort === "string") {
-    const reasoningEffort =
-      normalizeCodexReasoningEffort(patch.modelReasoningEffort) ??
-      CODEX_DEFAULT_REASONING_EFFORT
-    nextTomlText = updateTomlRootStringKey(
-      nextTomlText,
-      "model_reasoning_effort",
-      reasoningEffort
-    )
   }
   if (typeof patch.apiBaseUrl === "string") {
     const tomlValues = extractCodexTomlImportantValues(nextTomlText)
@@ -3165,11 +3108,6 @@ export function patchCodexConfigTomlText(
       normalizedTomlValues.model
     )
   }
-  nextTomlText = updateTomlRootStringKey(
-    nextTomlText,
-    "model_reasoning_effort",
-    normalizedTomlValues.modelReasoningEffort
-  )
   const activeProvider =
     normalizedTomlValues.modelProvider.trim() || CODEX_DEFAULT_MODEL_PROVIDER
   // This key is rewritten on EVERY patch, including ones that have nothing to
@@ -3765,7 +3703,6 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     codexAuthMode,
     codexModelProvider: codexImportant.modelProvider,
     codexProviderOptions: codexImportant.providerOptions,
-    codexReasoningEffort: codexImportant.reasoningEffort,
     codexSupportsWebsockets: codexImportant.supportsWebsockets,
     codexSkills: codexImportant.skills,
     codexDefaultModeRequestUserInput:
@@ -3786,7 +3723,6 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     claudeCustomModelOptionName: important.claudeCustomModelOptionName,
     claudeCustomModelOptionDescription:
       important.claudeCustomModelOptionDescription,
-    claudeEffortLevel: important.claudeEffortLevel,
     claudeSendAttributionHeader: important.claudeSendAttributionHeader,
     claudeDisableNonessentialTraffic:
       important.claudeDisableNonessentialTraffic,
@@ -4045,6 +3981,12 @@ export function buildVersionCheck(
   const withCustomInstall = (fixes: UiFixAction[]): UiFixAction[] =>
     supportsCustomInstall ? [...fixes, customInstallFix] : fixes
 
+  // The opt-in "Adapter version: Latest" channel (npx agents only) — install
+  // and upgrade actions resolve the `latest` dist-tag instead of the pin.
+  const latestChannel =
+    agent.distribution_type === "npx" &&
+    adapterChannelFromEnv(agent.env) === "latest"
+
   if (!agent.installed_version) {
     return {
       check_id: "version_status",
@@ -4155,6 +4097,37 @@ export function buildVersionCheck(
         { versionText }
       ),
       fixes: withCustomInstall([
+        {
+          label: acpText("actions.uninstall", "Uninstall"),
+          kind: uninstallAction,
+          payload: agent.agent_type,
+        },
+      ]),
+    }
+  }
+
+  // A latest-channel agent's installed version normally sits AT or AHEAD of
+  // the pin, so the compare-to-pin branch above never offers an upgrade again
+  // — and codeg cannot know whether npm has something newer, because nothing
+  // polls in the background (by design). Keep the Upgrade action available:
+  // it resolves the `latest` dist-tag on demand, and "Already latest" would
+  // claim a comparison that was never made.
+  if (latestChannel) {
+    return {
+      check_id: "version_status",
+      label: acpText("version.statusLabel", "Version Status"),
+      status: "pass",
+      message: acpText(
+        "version.latestChannel",
+        "{versionText}. Latest channel is on; Upgrade installs the newest release.",
+        { versionText }
+      ),
+      fixes: withCustomInstall([
+        {
+          label: acpText("actions.upgrade", "Upgrade"),
+          kind: upgradeAction,
+          payload: agent.agent_type,
+        },
         {
           label: acpText("actions.uninstall", "Uninstall"),
           kind: uninstallAction,
@@ -5514,12 +5487,6 @@ export function AcpAgentSettings() {
     selectedNeedsModelProvider && selectedDraft?.modelProviderId == null
   const selectedConfigText = selectedDraft?.configText ?? ""
   const selectedOpenCodeAuthJsonText = selectedDraft?.openCodeAuthJsonText ?? ""
-  const selectedCodexReasoningEffortOption =
-    selectedAgent?.agent_type === "codex" && selectedDraft
-      ? (CODEX_REASONING_EFFORT_OPTIONS.find(
-          (option) => option.value === selectedDraft.codexReasoningEffort
-        ) ?? null)
-      : null
   // Inline validation for `writable_roots`: codex would accept a relative entry
   // and resolve it against CODEX_HOME, so it is surfaced before the save throws.
   const codexRelativeWritableRoot =
@@ -5763,7 +5730,6 @@ export function AcpAgentSettings() {
         claudeCustomModelOptionName: important.claudeCustomModelOptionName,
         claudeCustomModelOptionDescription:
           important.claudeCustomModelOptionDescription,
-        claudeEffortLevel: important.claudeEffortLevel,
         claudeSendAttributionHeader: important.claudeSendAttributionHeader,
         claudeDisableNonessentialTraffic:
           important.claudeDisableNonessentialTraffic,
@@ -5801,41 +5767,6 @@ export function AcpAgentSettings() {
           configText: nextJson.configText,
         }
       })
-    },
-    [selectedAgent, selectedDraft, t, updateSelectedDraft]
-  )
-
-  const handleClaudeEffortLevelChange = useCallback(
-    (nextValue: ClaudeEffortLevel) => {
-      if (
-        !selectedAgent ||
-        !selectedDraft ||
-        selectedAgent.agent_type !== "claude_code"
-      )
-        return
-      const parsed = parseConfigJsonText(selectedDraft.configText)
-      if (parsed.error) {
-        toast.warning(t("warnings.nativeJsonRecoveredStructured"))
-      }
-      const config: Record<string, unknown> = parsed.error
-        ? {}
-        : { ...parsed.config }
-      if (nextValue) {
-        config[CLAUDE_EFFORT_LEVEL_CONFIG_KEY] = nextValue
-      } else {
-        delete config[CLAUDE_EFFORT_LEVEL_CONFIG_KEY]
-      }
-      const nextConfigText =
-        Object.keys(config).length === 0 ? "" : JSON.stringify(config, null, 2)
-      setConfigErrors((prev) => ({
-        ...prev,
-        [selectedAgent.agent_type]: null,
-      }))
-      updateSelectedDraft((current) => ({
-        ...current,
-        claudeEffortLevel: nextValue,
-        configText: nextConfigText,
-      }))
     },
     [selectedAgent, selectedDraft, t, updateSelectedDraft]
   )
@@ -7210,7 +7141,6 @@ export function AcpAgentSettings() {
         model: important.model,
         codexModelProvider: important.modelProvider,
         codexProviderOptions: important.providerOptions,
-        codexReasoningEffort: important.reasoningEffort,
         codexSupportsWebsockets: important.supportsWebsockets,
         codexSkills: important.skills,
         codexDefaultModeRequestUserInput: important.defaultModeRequestUserInput,
@@ -7264,7 +7194,6 @@ export function AcpAgentSettings() {
           model: synced.model,
           codexModelProvider: synced.modelProvider,
           codexProviderOptions: synced.providerOptions,
-          codexReasoningEffort: synced.reasoningEffort,
           codexSupportsWebsockets: synced.supportsWebsockets,
           codexSkills: synced.skills,
           codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
@@ -7299,7 +7228,6 @@ export function AcpAgentSettings() {
         model: synced.model,
         codexModelProvider: CODEX_DEFAULT_MODEL_PROVIDER,
         codexProviderOptions: synced.providerOptions,
-        codexReasoningEffort: synced.reasoningEffort,
         codexSupportsWebsockets: synced.supportsWebsockets,
         codexSkills: synced.skills,
         codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
@@ -7340,10 +7268,7 @@ export function AcpAgentSettings() {
   )
 
   const handleCodexImportantConfigChange = useCallback(
-    (
-      key: "apiBaseUrl" | "apiKey" | "model" | "reasoningEffort",
-      value: string
-    ) => {
+    (key: "apiBaseUrl" | "apiKey" | "model", value: string) => {
       if (
         !selectedAgent ||
         !selectedDraft ||
@@ -7364,18 +7289,12 @@ export function AcpAgentSettings() {
           ? patchCodexConfigTomlText(selectedDraft.codexConfigTomlText, {
               apiBaseUrl: value,
               modelProvider: selectedDraft.codexModelProvider,
-              modelReasoningEffort: selectedDraft.codexReasoningEffort,
             })
           : key === "model"
             ? patchCodexConfigTomlText(selectedDraft.codexConfigTomlText, {
                 model: value,
-                modelReasoningEffort: selectedDraft.codexReasoningEffort,
               })
-            : key === "reasoningEffort"
-              ? patchCodexConfigTomlText(selectedDraft.codexConfigTomlText, {
-                  modelReasoningEffort: value,
-                })
-              : selectedDraft.codexConfigTomlText
+            : selectedDraft.codexConfigTomlText
       if (nextAuth.recoveredFromInvalid) {
         toast.warning(t("warnings.authRecoveredStructured"))
       }
@@ -7384,20 +7303,12 @@ export function AcpAgentSettings() {
         nextToml
       )
       updateSelectedDraft((current) => ({
-        ...(key === "reasoningEffort"
-          ? {
-              ...current,
-              codexReasoningEffort:
-                normalizeCodexReasoningEffort(value) ??
-                CODEX_DEFAULT_REASONING_EFFORT,
-            }
-          : applyImportantFieldToDraft(current, key, value)),
+        ...applyImportantFieldToDraft(current, key, value),
         apiBaseUrl: synced.apiBaseUrl,
         apiKey: synced.apiKey ?? current.apiKey,
         model: synced.model,
         codexModelProvider: synced.modelProvider,
         codexProviderOptions: synced.providerOptions,
-        codexReasoningEffort: synced.reasoningEffort,
         codexSupportsWebsockets: synced.supportsWebsockets,
         codexSkills: synced.skills,
         codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
@@ -7435,7 +7346,6 @@ export function AcpAgentSettings() {
         model: synced.model,
         codexModelProvider: synced.modelProvider,
         codexProviderOptions: synced.providerOptions,
-        codexReasoningEffort: synced.reasoningEffort,
         codexSupportsWebsockets: synced.supportsWebsockets,
         codexSkills: synced.skills,
         codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
@@ -7469,7 +7379,6 @@ export function AcpAgentSettings() {
         model: synced.model,
         codexModelProvider: synced.modelProvider,
         codexProviderOptions: synced.providerOptions,
-        codexReasoningEffort: synced.reasoningEffort,
         codexSupportsWebsockets: synced.supportsWebsockets,
         codexSkills: synced.skills,
         codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
@@ -7503,7 +7412,6 @@ export function AcpAgentSettings() {
         model: synced.model,
         codexModelProvider: synced.modelProvider,
         codexProviderOptions: synced.providerOptions,
-        codexReasoningEffort: synced.reasoningEffort,
         codexSupportsWebsockets: synced.supportsWebsockets,
         codexSkills: synced.skills,
         codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
@@ -7537,7 +7445,6 @@ export function AcpAgentSettings() {
         model: synced.model,
         codexModelProvider: synced.modelProvider,
         codexProviderOptions: synced.providerOptions,
-        codexReasoningEffort: synced.reasoningEffort,
         codexSupportsWebsockets: synced.supportsWebsockets,
         codexSkills: synced.skills,
         codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
@@ -8097,6 +8004,58 @@ export function AcpAgentSettings() {
                       aria-label={t("hostTools.label")}
                     />
                   </div>
+                  {/*
+                    Same contract as the host-tools switch above: backed by the
+                    `envText` draft, persisted by the one Save button. Npx
+                    agents only — a binary or uvx install has no npm dist-tag
+                    to track.
+                  */}
+                  {selectedAgent.distribution_type === "npx" && (
+                    <div className="flex items-start justify-between gap-3 rounded-md border bg-muted/10 p-3">
+                      <div className="min-w-0 space-y-1">
+                        <label className="text-xs font-medium">
+                          {t("adapterChannel.label")}
+                        </label>
+                        <p className="text-2xs text-muted-foreground">
+                          {t("adapterChannel.description")}
+                        </p>
+                        {adapterChannelFromEnvText(selectedDraft.envText) ===
+                          "latest" && (
+                          <p className="text-2xs text-yellow-600 dark:text-yellow-400">
+                            {t("adapterChannel.latestWarning")}
+                          </p>
+                        )}
+                      </div>
+                      <Select
+                        value={adapterChannelFromEnvText(selectedDraft.envText)}
+                        onValueChange={(value) => {
+                          updateSelectedDraft((current) => ({
+                            ...current,
+                            envText: setAdapterChannel(
+                              current.envText,
+                              value === "latest" ? "latest" : "pinned"
+                            ),
+                          }))
+                        }}
+                        disabled={selectedGrokSaving}
+                      >
+                        <SelectTrigger
+                          className="w-44 shrink-0"
+                          aria-label={t("adapterChannel.label")}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="pinned">
+                            {t("adapterChannel.pinned")}
+                          </SelectItem>
+                          <SelectItem value="latest">
+                            {t("adapterChannel.latest")}
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
                   <div className="flex justify-end">
                     <Button
                       size="sm"
@@ -8414,38 +8373,6 @@ export function AcpAgentSettings() {
                         />
                       </div>
                     )}
-
-                    <div className="space-y-1.5">
-                      <label className="text-2xs text-muted-foreground">
-                        Reasoning Effort
-                      </label>
-                      <Select
-                        value={selectedDraft.codexReasoningEffort}
-                        onValueChange={(nextValue) => {
-                          handleCodexImportantConfigChange(
-                            "reasoningEffort",
-                            nextValue
-                          )
-                        }}
-                      >
-                        <SelectTrigger className="w-full">
-                          <SelectValue
-                            placeholder={t("codex.selectReasoningEffort")}
-                          />
-                        </SelectTrigger>
-                        <SelectContent align="start">
-                          {CODEX_REASONING_EFFORT_OPTIONS.map((option) => (
-                            <SelectItem key={option.value} value={option.value}>
-                              {option.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <p className="text-2xs text-muted-foreground">
-                        {selectedCodexReasoningEffortOption?.description ??
-                          "Greater reasoning depth for complex problems"}
-                      </p>
-                    </div>
 
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between rounded-md border px-3 py-2">
@@ -10704,29 +10631,39 @@ supports_websockets = true`}
                     onAffectedSessions={reportAffectedSessions}
                   />
                 ) : selectedAgent.agent_type === "deepseek" ? (
-                  <DeepSeekConfigPanel
-                    agent={selectedAgent}
-                    saving={Boolean(savingEnv[selectedAgent.agent_type])}
-                    onSaveEnv={(env, enabled) =>
-                      persistEnv(
-                        selectedAgent.agent_type,
-                        enabled,
-                        envMapToText(env),
-                        selectedAgent.model_provider_id,
-                        // The keys this panel owns, folded into the raw
-                        // editor's draft (which the enable switch persists
-                        // wholesale) so the two can never disagree.
-                        // `DEEPSEEK_ACP_MODEL` is NOT one of them — the raw
-                        // editor owns it, and folding it in would overwrite a
-                        // model line being typed there.
-                        {
-                          DEEPSEEK_API_KEY: env.DEEPSEEK_API_KEY,
-                          DEEPSEEK_BASE_URL: env.DEEPSEEK_BASE_URL,
-                          DEEPSEEK_ACP_PROVIDER: env.DEEPSEEK_ACP_PROVIDER,
-                        }
-                      )
-                    }
-                  />
+                  <>
+                    <DeepSeekConfigPanel
+                      agent={selectedAgent}
+                      saving={Boolean(savingEnv[selectedAgent.agent_type])}
+                      onSaveEnv={(env, enabled) =>
+                        persistEnv(
+                          selectedAgent.agent_type,
+                          enabled,
+                          envMapToText(env),
+                          selectedAgent.model_provider_id,
+                          // The keys this panel owns, folded into the raw
+                          // editor's draft (which the enable switch persists
+                          // wholesale) so the two can never disagree.
+                          // `DEEPSEEK_ACP_MODEL` is NOT one of them — the raw
+                          // editor owns it, and folding it in would overwrite a
+                          // model line being typed there.
+                          {
+                            DEEPSEEK_API_KEY: env.DEEPSEEK_API_KEY,
+                            DEEPSEEK_BASE_URL: env.DEEPSEEK_BASE_URL,
+                            DEEPSEEK_ACP_PROVIDER: env.DEEPSEEK_ACP_PROVIDER,
+                          }
+                        )
+                      }
+                    />
+                    {/* The deployment's model catalog. It lives in the harness'
+                      own `settings.yaml`, not in the agent env, so it has its
+                      own section and its own save — and it is what the
+                      composer's per-session model selector gets to choose
+                      from. */}
+                    <DeepSeekModelListEditor
+                      launchModel={selectedAgent.env.DEEPSEEK_ACP_MODEL}
+                    />
+                  </>
                 ) : selectedAgent.agent_type === "qoder" ? (
                   <QoderConfigPanel
                     agent={selectedAgent}
@@ -11762,37 +11699,6 @@ supports_websockets = true`}
                           <p className="text-2xs text-muted-foreground">
                             {t("claude.customModelOptionHint")}
                           </p>
-                        </div>
-                        <div className="space-y-1.5">
-                          <label className="text-2xs text-muted-foreground">
-                            {t("claude.effortLevel")}
-                          </label>
-                          <Select
-                            value={selectedDraft.claudeEffortLevel || "default"}
-                            onValueChange={(nextValue) => {
-                              handleClaudeEffortLevelChange(
-                                nextValue === "default"
-                                  ? ""
-                                  : (nextValue as ClaudeEffortLevel)
-                              )
-                            }}
-                          >
-                            <SelectTrigger className="w-full">
-                              <SelectValue
-                                placeholder={t("claude.effortLevelDefault")}
-                              />
-                            </SelectTrigger>
-                            <SelectContent align="start">
-                              <SelectItem value="default">
-                                {t("claude.effortLevelDefault")}
-                              </SelectItem>
-                              {CLAUDE_EFFORT_LEVEL_VALUES.map((value) => (
-                                <SelectItem key={value} value={value}>
-                                  {t(`claude.effortLevel_${value}`)}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
                         </div>
                         <div className="space-y-1.5">
                           <div className="flex items-center justify-between rounded-md border px-3 py-2">

@@ -11,8 +11,10 @@ import {
   extractClaudeCodeMetaTitle,
   extractClaudeCodeSkillName,
   normalizeToolName,
+  toolCallMovedToBackground,
 } from "@/lib/tool-call-normalization"
 import { parseBackgroundLaunch } from "@/lib/background-task"
+import { isUnsettledToolCall } from "@/lib/tool-call-lifecycle"
 import { normalizePriority, normalizeStatus } from "@/lib/plan-parse"
 import { isDelegateToAgentToolName } from "@/lib/delegation-card"
 import { useTranslations } from "next-intl"
@@ -49,6 +51,7 @@ import {
 import { AgentToolCallPart } from "./agent-tool-call"
 import { AskQuestionResultCard } from "./ask-question-result-card"
 import { CodegMcpToolCard } from "./codeg-mcp-tool-card"
+import { ResumedDelegationCard } from "./resumed-delegation-card"
 import { CollabAgentCard } from "./collab-agent-card"
 import {
   ContextCompactionCard,
@@ -56,7 +59,10 @@ import {
 } from "./context-compaction-card"
 import { FeedbackCheckResultCard } from "./feedback-check-result-card"
 import { SearchResultsOutput } from "./search-results-output"
-import { parseCodexCommandEnvelope } from "@/lib/codex-command-action"
+import {
+  isCodexGrepNoMatchEnvelope,
+  parseCodexCommandEnvelope,
+} from "@/lib/codex-command-action"
 import {
   CODEX_SCRIPT_TOOL_NAME,
   parseCodexScriptCard,
@@ -80,7 +86,7 @@ import { BackgroundTaskCard } from "./background-task-card"
 import { GeneratedImagesBlock } from "./generated-images-block"
 import { GoalRunPart, GoalToolCallPart } from "./goal-tool-call"
 import { PlanCard, PlanEntriesList } from "./plan-card"
-import { PlanModeCard } from "./plan-mode-card"
+import { PlanMarkdownCard, PlanModeCard } from "./plan-mode-card"
 import { PlainTextWithBadges } from "./plain-text-with-badges"
 import { TranslationToggle } from "./translation-toggle"
 import { useNearViewport } from "@/hooks/use-near-viewport"
@@ -96,7 +102,6 @@ import {
   TerminalIcon,
   SearchIcon,
   GlobeIcon,
-  ClipboardListIcon,
   ListTodoIcon,
   SparklesIcon,
   CircleCheckIcon,
@@ -2354,6 +2359,38 @@ const ToolCallPart = memo(function ToolCallPart({
         : null,
     [isCommandTool, part.output, part.errorText]
   )
+  // The same statement, told a different way. codex-acp doesn't put a launch
+  // notice in the output — it never completes the call at all — and says so on
+  // the ACP `_meta` instead (`toolCallMovedToBackground`). Not gated on
+  // `isCommandTool`: the marker is authoritative about THIS call regardless of
+  // how the tool name resolved, which is what makes it safe to trust over a
+  // parsed string. The live strip above the transcript owns the rest of the
+  // lifecycle (and the stop button); this badge only answers "why is it still
+  // spinning".
+  //
+  // Gated on the call being UNSETTLED, which the claude arm below is not — and
+  // the asymmetry is the wire's, not a style choice. Claude's launch call
+  // completes immediately (its output IS the ack), so its badge has to survive
+  // a settled card; codex's stays open for the process's whole life and settles
+  // only when the process dies or a stop lands. Ungated, the marker would
+  // outlive its own truth: the reducer keeps the stored meta when an update
+  // carries none (`meta: action.meta ?? block.info.meta`), so a settling frame
+  // without `_meta` would leave "Background" pinned to a finished command.
+  // `isUnsettledToolCall` rather than a bare state check, so the badge survives
+  // COMPLETE_TURN promotion — that flips `state` to `output-available` while the
+  // forwarded ACP status is still `in_progress`.
+  //
+  // The gate only fires when the settle lands INSIDE the turn (a short task) or
+  // after a detail reload. A process that outlives its turn settles out-of-turn,
+  // and the reducer routes an out-of-turn `tool_call_update` to
+  // `outOfTurnToolCalls` rather than into the promoted turn — so the card keeps
+  // both its `in_progress` status and this badge until the conversation is
+  // reloaded. That is pre-existing routing, not something the marker changes,
+  // and the strip above the transcript is the surface that does clear on time.
+  const airBackgrounded = useMemo(
+    () => toolCallMovedToBackground(part.meta) && isUnsettledToolCall(part),
+    [part]
+  )
   const title = useMemo(() => {
     // claude-agent-acp ≥0.63 supplies the human-readable description as
     // `_meta.claudeCode.title` (ACP `title` stays the raw command). It wins
@@ -2456,6 +2493,7 @@ const ToolCallPart = memo(function ToolCallPart({
       !hasStats &&
       !wallTime &&
       !backgroundLaunch &&
+      !airBackgrounded &&
       !announcedSessionId &&
       !codexScript?.label
     ) {
@@ -2486,10 +2524,13 @@ const ToolCallPart = memo(function ToolCallPart({
             {t("shellSession", { id: announcedSessionId })}
           </span>
         )}
-        {backgroundLaunch && (
+        {/* One badge, two sources — a parsed launch notice (claude/grok) or the
+            AIR marker (codex). They never coexist on one call, and the claim
+            they make is the same, so the AIR arm reuses the existing copy. */}
+        {(backgroundLaunch || airBackgrounded) && (
           <span
             className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-3xs font-medium text-muted-foreground"
-            title={backgroundLaunch.taskId}
+            title={backgroundLaunch?.taskId ?? part.toolCallId}
           >
             <TerminalIcon className="size-3" />
             {t("backgroundTask.runningInBackground")}
@@ -2518,6 +2559,8 @@ const ToolCallPart = memo(function ToolCallPart({
     lineChangeStats,
     wallTime,
     backgroundLaunch,
+    airBackgrounded,
+    part.toolCallId,
     announcedSessionId,
     codexScript,
     t,
@@ -2591,18 +2634,17 @@ const ToolCallPart = memo(function ToolCallPart({
 
     // codex appears to derive the tool status from the exit code, so an rg/grep
     // "no matches" (exit 1, no output) can arrive as a FAILED call and land on
-    // the error channel. Recognise exactly that shape as an empty result instead
-    // of a red envelope dump. Scoped to `grep`: exit 1 means "nothing selected"
-    // only for grep-likes — for the list-files commands that classify as `glob`
-    // (ls/find/…) it is a genuine failure, and a successful empty listing
-    // already arrives with exit 0. A real grep failure (exit ≥ 2, or any stderr
-    // text) keeps the error rendering, as does any non-codex error string.
+    // the error channel. `adaptMessageTurn` normally takes that shape off the
+    // error channel entirely (same `isCodexGrepNoMatchEnvelope` predicate, so
+    // the card's status and this body can never disagree); this arm still
+    // catches the adapter-independent callers — an `agent_stats` child call, an
+    // export/replay part built outside the turn adapter — and renders an empty
+    // result instead of a red envelope dump. A real grep failure (exit ≥ 2, or
+    // any stderr text) keeps the error rendering, as does any non-codex error
+    // string.
     if (typeof part.errorText === "string") {
       if (toolNameLower !== "grep") return null
-      const envelope = parseCodexCommandEnvelope(part.errorText)
-      const noMatches =
-        envelope?.exitCode === 1 && envelope.output.trim().length === 0
-      return noMatches ? "" : null
+      return isCodexGrepNoMatchEnvelope(part.errorText) ? "" : null
     }
 
     if (typeof part.output !== "string") return null
@@ -2769,6 +2811,36 @@ const ToolCallPart = memo(function ToolCallPart({
         output={part.output ?? null}
         errorText={part.errorText ?? null}
         state={part.state}
+      />
+    )
+  }
+
+  // codeg-mcp resume_delegation: the sub-agent that came back. Rendered as the
+  // delegation card itself (with a ⟳ marker) rather than a task-id row above
+  // one, and tried BEFORE the generic workbench card below — which stays as the
+  // fallback for a REFUSED resume (`not_resumable`, unknown task), where there
+  // is no sub-agent to draw and only the reason is worth reading.
+  if (toolNameLower === "resume_delegation" && part.toolCallId) {
+    return (
+      <ResumedDelegationCard
+        toolCallId={part.toolCallId}
+        input={part.input ?? null}
+        output={part.output ?? null}
+        errorText={part.errorText ?? null}
+        state={part.state}
+        meta={part.meta ?? null}
+        // Whether a sub-agent resolves is only known inside the card (it takes
+        // a hook to find out), so the fallback goes in rather than the decision
+        // coming out.
+        fallback={
+          <CodegMcpToolCard
+            tool="resume_delegation"
+            input={part.input ?? null}
+            output={part.output ?? null}
+            errorText={part.errorText ?? null}
+            state={part.state}
+          />
+        }
       />
     )
   }
@@ -3030,29 +3102,23 @@ const PlanPart = memo(function PlanPart({
 
 // Codex Plan-mode `<proposed_plan>` block: free-form markdown plan document
 // rendered inside card chrome (distinct from the TodoWrite checklist PlanCard).
+//
+// Renders through the SAME <PlanMarkdownCard> the live `plan_review` tool call
+// uses. The two carriers of a codex plan — this lifted block on reload, that
+// tool call live — previously had their own chrome, so the reloaded plan lost
+// the prose styling and the clamp/expand footer the live one had.
 const ProposedPlanPart = memo(function ProposedPlanPart({
   part,
 }: {
   part: Extract<AdaptedContentPart, { type: "proposed-plan" }>
 }) {
   const t = useTranslations("Folder.chat.proposedPlan")
-  const markdown = part.markdown.trim()
   return (
-    <div className="overflow-hidden rounded-lg border bg-card/50 ws-msg-card">
-      <div className="flex items-center gap-2 border-b px-3 py-2">
-        <ClipboardListIcon className="size-4 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate text-sm font-medium">
-          {t("title")}
-        </span>
-      </div>
-      <div className="px-3 py-2 text-sm">
-        {markdown.length > 0 ? (
-          <MessageResponse>{markdown}</MessageResponse>
-        ) : (
-          <span className="text-muted-foreground">{t("planning")}</span>
-        )}
-      </div>
-    </div>
+    <PlanMarkdownCard
+      markdown={part.markdown.trim()}
+      label={t("title")}
+      emptyLabel={t("planning")}
+    />
   )
 })
 
@@ -3174,6 +3240,12 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
 }: ContentPartsRendererProps) {
   const renderPart = (part: AdaptedContentPart, keyId: string): ReactNode => {
     if (part.type === "text") {
+      // An empty text part renders nothing but still earns a `space-y-4` gap
+      // below, which reads as a blank band inside the bubble. A user turn is
+      // final by the time it is rendered, so an empty one is always residue —
+      // never a stream that has not produced its first token yet, which is why
+      // this is scoped to `user` and assistant text is left to render as-is.
+      if (role === "user" && part.text.trim().length === 0) return null
       return (
         <TextPart
           key={`text-${keyId}`}

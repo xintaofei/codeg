@@ -88,7 +88,9 @@ mod tauri_app {
         acp as acp_commands, app_update as app_update_commands, automation as automation_commands,
         background as background_commands, backup, canvas as canvas_commands,
         chat_authoring as chat_authoring_commands, chat_channel as chat_channel_commands,
-        conversations, custom_skills as custom_skills_commands, delegation as delegation_commands,
+        conversations,
+        custom_skills as custom_skills_commands,
+        deepseek_settings as deepseek_settings_commands, delegation as delegation_commands,
         experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
         folder_links, folders, forge as forge_commands, logging as logging_commands,
         mcp as mcp_commands, model_provider as model_provider_commands, notification,
@@ -136,54 +138,201 @@ mod tauri_app {
         });
     }
 
-    /// On Windows, opt-out users can disable WebView2 hardware acceleration to
-    /// work around AMD/Intel GPU driver bugs that produce a black-screen
-    /// webview. The flag is stored in a tiny sidecar file at
-    /// `~/.codeg/preferences.json` so it can be read **before** the Tauri
-    /// builder, plugins, or tokio runtime start — once a tokio worker is alive,
-    /// `std::env::set_var` would race with concurrent `getenv` calls from
-    /// libraries like reqwest/rustls that read `HTTP_PROXY` etc.
+    /// Chromium command line WebView2 appends to its own when launching.
     #[cfg(target_os = "windows")]
-    fn apply_webview2_rendering_override() {
-        // Matches the dominant pattern across the Tauri 2 ecosystem (Dorion,
-        // Seelen-UI, and most production Tauri 2 apps that ship a "disable
-        // hardware acceleration" toggle all use `--disable-gpu`).
-        const DISABLE_GPU_ARGS: [&str; 1] = ["--disable-gpu"];
-        const ENV_KEY: &str = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
+    const WEBVIEW2_ARGS_ENV: &str = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
 
-        let prefs = crate::preferences::load();
-        if !prefs.disable_hardware_acceleration {
+    /// Matches the dominant pattern across the Tauri 2 ecosystem (Dorion,
+    /// Seelen-UI, and most production Tauri 2 apps that ship a "disable
+    /// hardware acceleration" toggle all use `--disable-gpu`).
+    #[cfg(target_os = "windows")]
+    const WEBVIEW2_DISABLE_GPU_ARGS: [&str; 1] = ["--disable-gpu"];
+
+    /// WebKitGTK has no command line — it reads one boolean env var per
+    /// rendering path, and the two that matter fail independently:
+    ///
+    /// - `WEBKIT_DISABLE_DMABUF_RENDERER` drops the DMA-BUF buffer sharing
+    ///   between the web and UI processes (the default since WebKitGTK 2.42).
+    ///   This is the fix for the blank/black window under the proprietary
+    ///   NVIDIA driver.
+    /// - `WEBKIT_DISABLE_COMPOSITING_MODE` turns off accelerated compositing
+    ///   outright, which is what breaks under software GL (llvmpipe) and inside
+    ///   VMs / remote desktops.
+    ///
+    /// Both are set: the user reaching for this toggle has a black screen and
+    /// no way to tell which path is at fault. An unknown variable is inert on
+    /// WebKitGTK builds that no longer read it.
+    #[cfg(target_os = "linux")]
+    const WEBKITGTK_DISABLE_ENVS: [&str; 2] = [
+        "WEBKIT_DISABLE_DMABUF_RENDERER",
+        "WEBKIT_DISABLE_COMPOSITING_MODE",
+    ];
+
+    /// Comma-separated list of the env vars *this* process injected below.
+    ///
+    /// "Restart now" in the settings UI goes through `tauri::process::restart`,
+    /// which spawns the replacement with `Command::new(exe).spawn()` — no
+    /// `env_clear`, so the child inherits everything we set. Without this
+    /// marker an injected override is indistinguishable from one the user
+    /// exported in their shell, and turning the toggle back **off** would never
+    /// take effect: the next launch would read `false`, do nothing, and still
+    /// hand WebKitGTK/WebView2 the inherited flags.
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    const RENDERING_OVERRIDE_OWNED_ENV: &str = "CODEG_WEBVIEW_RENDERING_OVERRIDE";
+
+    /// Opt-out users can disable webview hardware acceleration to work around
+    /// GPU driver bugs that produce a black-screen or glitching webview. The
+    /// flag is stored in a tiny sidecar file at `~/.codeg/preferences.json` so
+    /// it can be read **before** anything else in `run()` — `set_var` is only
+    /// sound while the process is single-threaded, and the logging init alone
+    /// spawns a `tracing_appender` worker.
+    ///
+    /// Each webview has its own knob: Windows/WebView2 takes a Chromium command
+    /// line, Linux/WebKitGTK reads boolean env vars. macOS/WKWebView exposes
+    /// neither, so the toggle is hidden there and this function is not compiled.
+    ///
+    /// # Safety
+    ///
+    /// Must be called before any thread is spawned — see
+    /// [`RENDERING_OVERRIDE_OWNED_ENV`] for why it also runs when the toggle is
+    /// off.
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    unsafe fn apply_webview_rendering_override() {
+        let owned_raw = std::env::var(RENDERING_OVERRIDE_OWNED_ENV).unwrap_or_default();
+        // What a previous launch of *ours* injected. Anything not listed here
+        // that is already set came from the user and stays untouched.
+        let inherited: Vec<&str> = owned_raw.split(',').filter(|s| !s.is_empty()).collect();
+
+        if !crate::preferences::load().disable_hardware_acceleration {
+            // SAFETY: forwarded from this function's own contract.
+            unsafe { withdraw_webview_rendering_override(&inherited) };
             return;
         }
 
-        let mut tokens: Vec<String> = match std::env::var(ENV_KEY) {
-            Ok(prev) => prev.split_whitespace().map(str::to_string).collect(),
-            Err(_) => Vec::new(),
-        };
-        for arg in DISABLE_GPU_ARGS {
-            if !tokens.iter().any(|t| t == arg) {
-                tokens.push(arg.to_string());
+        // Keys this process now owns: the ones inherited from our own previous
+        // launch plus the ones we set here. Re-published so ownership survives
+        // an arbitrary number of restarts with the toggle left on.
+        let mut owned: Vec<&str> = Vec::new();
+
+        #[cfg(target_os = "windows")]
+        {
+            let ours = inherited.contains(&WEBVIEW2_ARGS_ENV);
+            // Append rather than replace: the variable is a whole command line
+            // the user may already have exported for unrelated reasons.
+            let mut tokens: Vec<String> = match std::env::var(WEBVIEW2_ARGS_ENV) {
+                Ok(prev) => prev.split_whitespace().map(str::to_string).collect(),
+                Err(_) => Vec::new(),
+            };
+            let mut added = false;
+            for arg in WEBVIEW2_DISABLE_GPU_ARGS {
+                if !tokens.iter().any(|t| t == arg) {
+                    tokens.push(arg.to_string());
+                    added = true;
+                }
+            }
+            if added {
+                // SAFETY: forwarded from this function's own contract.
+                unsafe { std::env::set_var(WEBVIEW2_ARGS_ENV, tokens.join(" ")) };
+            }
+            // Claim the variable only if the flag is there because of us. A
+            // user who put `--disable-gpu` in their own command line keeps it
+            // when the toggle goes off.
+            if added || ours {
+                owned.push(WEBVIEW2_ARGS_ENV);
             }
         }
-        // SAFETY: called before any tokio worker or plugin thread spawns, so
-        // no concurrent `getenv` can race. `set_var` is `unsafe` since Rust 1.82.
-        unsafe {
-            std::env::set_var(ENV_KEY, tokens.join(" "));
+
+        #[cfg(target_os = "linux")]
+        {
+            for key in WEBKITGTK_DISABLE_ENVS {
+                // A value the user exported themselves wins — they may have set
+                // it to `0` deliberately on a build where the fallback is worse.
+                if !inherited.contains(&key) && std::env::var_os(key).is_some() {
+                    continue;
+                }
+                // SAFETY: forwarded from this function's own contract.
+                unsafe { std::env::set_var(key, "1") };
+                owned.push(key);
+            }
         }
+
+        // SAFETY: forwarded from this function's own contract.
+        unsafe {
+            if owned.is_empty() {
+                std::env::remove_var(RENDERING_OVERRIDE_OWNED_ENV);
+            } else {
+                std::env::set_var(RENDERING_OVERRIDE_OWNED_ENV, owned.join(","));
+            }
+        }
+    }
+
+    /// Undo the overrides listed in `inherited` — the ones a previous launch of
+    /// ours injected and this process inherited across a restart. Variables the
+    /// user exported are not listed and so are left alone.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`apply_webview_rendering_override`]: single-threaded only.
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    unsafe fn withdraw_webview_rendering_override(inherited: &[&str]) {
+        if inherited.is_empty() {
+            return;
+        }
+
+        #[cfg(target_os = "windows")]
+        if inherited.contains(&WEBVIEW2_ARGS_ENV) {
+            // Drop only our own flags; the rest of the command line is the
+            // user's and must survive.
+            let remaining: Vec<String> = std::env::var(WEBVIEW2_ARGS_ENV)
+                .unwrap_or_default()
+                .split_whitespace()
+                .filter(|t| !WEBVIEW2_DISABLE_GPU_ARGS.contains(t))
+                .map(str::to_string)
+                .collect();
+            // SAFETY: forwarded from this function's own contract.
+            unsafe {
+                if remaining.is_empty() {
+                    std::env::remove_var(WEBVIEW2_ARGS_ENV);
+                } else {
+                    std::env::set_var(WEBVIEW2_ARGS_ENV, remaining.join(" "));
+                }
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        for key in WEBKITGTK_DISABLE_ENVS {
+            if inherited.contains(&key) {
+                // SAFETY: forwarded from this function's own contract.
+                unsafe { std::env::remove_var(key) };
+            }
+        }
+
+        // SAFETY: forwarded from this function's own contract.
+        unsafe { std::env::remove_var(RENDERING_OVERRIDE_OWNED_ENV) };
     }
 
     #[cfg_attr(mobile, tauri::mobile_entry_point)]
     pub fn run() {
-        // Install the logging subscriber first so it captures everything from
+        // Ahead of the logging init, which is otherwise the first statement
+        // here: `init_desktop` builds a `tracing_appender::non_blocking` file
+        // writer, and that spawns a worker thread. `set_var` is UB once any
+        // other thread exists, so the rendering override has to run while the
+        // process is still single-threaded — `main()` calls straight into
+        // `run()`, making this the first thing the GUI path does. The cost is
+        // that a `preferences.json` read error here has no subscriber to log
+        // to; it degrades to defaults either way.
+        //
+        // SAFETY: single-threaded as argued above.
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        unsafe {
+            apply_webview_rendering_override()
+        };
+
+        // Install the logging subscriber next so it captures everything from
         // here on. The file appender's logs dir is resolved from env (no DB
         // needed); hold the guard for the whole process so buffered file lines
         // flush on a graceful exit.
         let _log_guard = crate::logging::init::init_desktop();
-
-        // Apply the WebView2 rendering override before *any* tokio worker
-        // exists or any plugin reads the env. See doc comment above.
-        #[cfg(target_os = "windows")]
-        apply_webview2_rendering_override();
 
         if let Err(err) = fix_path_env::fix() {
             tracing::error!("[PATH] fix_path_env failed: {err}");
@@ -483,18 +632,20 @@ mod tauri_app {
                     });
                 }
 
-                // Push the persisted default shell into the ACP terminal
-                // runtime BEFORE any background task that can spawn an agent
-                // (the chat-channel dispatcher below is one). The handle is
-                // read at terminal-create time, so a late seed would only ever
-                // be a narrow race — but "seeded before anything can connect"
-                // is cheap to guarantee here and matches server startup, which
-                // seeds before it binds.
+                // Push the persisted terminal settings into their live
+                // runtimes BEFORE any background task that can spawn an agent
+                // (the chat-channel dispatcher below is one). For the shell
+                // handle a late seed would only ever be a narrow race, since
+                // it is read at terminal-create time; the command-color flag
+                // is read while BUILDING a launch's env, so a late seed there
+                // would silently hand the first agent of the run the wrong
+                // one. "Seeded before anything can connect" covers both, and
+                // matches server startup, which seeds before it binds.
                 {
                     let db_for_shell = app.state::<db::AppDatabase>().conn.clone();
                     let shell_config = app.state::<ConnectionManager>().terminal_shell_config();
                     tauri::async_runtime::block_on(async move {
-                        crate::commands::system_settings::apply_persisted_terminal_shell_config(
+                        crate::commands::system_settings::apply_persisted_terminal_settings(
                             &db_for_shell,
                             &shell_config,
                         )
@@ -759,9 +910,19 @@ mod tauri_app {
                             ),
                         ),
                     );
+                    // Bind through the service handle rather than a bare
+                    // `listener.run` spawn: it keeps the bind error and the
+                    // accept-loop handle around, which is what lets the
+                    // workspace status indicator report why the broker socket
+                    // is down and rebind it without an app restart.
+                    let service = crate::acp::delegation::service::DelegationService::new(
+                        listener,
+                        socket_path,
+                    );
+                    crate::acp::delegation::service::install(service.clone());
                     tauri::async_runtime::spawn(async move {
-                        if let Err(e) = listener.run(socket_path).await {
-                            tracing::info!("[delegation] listener exited: {e}");
+                        if let Err(e) = service.start().await {
+                            tracing::error!("[delegation] listener failed to start: {e}");
                         }
                     });
                     broker
@@ -1157,6 +1318,7 @@ mod tauri_app {
                 folders::git_diff_with_branch,
                 folders::git_show_diff,
                 folders::git_show_file,
+                folders::git_show_file_base64,
                 folders::git_commit,
                 folders::git_rollback_file,
                 folders::git_add_files,
@@ -1258,6 +1420,9 @@ mod tauri_app {
                 background_commands::background_read,
                 background_commands::background_set,
                 background_commands::background_clear,
+                background_commands::background_market_search,
+                background_commands::background_market_asset,
+                background_commands::background_market_download,
                 app_update_commands::app_update_state,
                 app_update_commands::perform_app_update,
                 app_update_commands::restart_app,
@@ -1297,6 +1462,9 @@ mod tauri_app {
                 logging_commands::open_logs_dir,
                 delegation_commands::get_delegation_settings,
                 delegation_commands::set_delegation_settings,
+                crate::commands::mcp_service::get_codeg_mcp_service_status,
+                crate::commands::mcp_service::start_codeg_mcp_service,
+                crate::commands::mcp_service::set_codeg_mcp_tool_group,
                 feedback_commands::get_feedback_settings,
                 feedback_commands::set_feedback_settings,
                 feedback_commands::submit_session_feedback,
@@ -1313,6 +1481,7 @@ mod tauri_app {
                 version_control::get_github_accounts,
                 version_control::validate_github_token,
                 version_control::validate_gitlab_token,
+                version_control::validate_gitea_token,
                 version_control::update_github_accounts,
                 version_control::save_account_token,
                 version_control::get_account_token,
@@ -1329,6 +1498,7 @@ mod tauri_app {
                 acp_commands::acp_describe_agent_options,
                 acp_commands::acp_cancel,
                 acp_commands::acp_fork,
+                acp_commands::acp_stop_async_task,
                 acp_commands::acp_respond_permission,
                 acp_commands::acp_answer_question,
                 acp_commands::acp_answer_plan_approval,
@@ -1353,6 +1523,8 @@ mod tauri_app {
                 acp_commands::acp_update_hermes_config,
                 acp_commands::acp_update_kimi_code_config,
                 acp_commands::acp_fetch_kimi_models,
+                deepseek_settings_commands::acp_load_deepseek_model_catalog,
+                deepseek_settings_commands::acp_update_deepseek_model_catalog,
                 acp_commands::acp_update_pi_config,
                 acp_commands::acp_load_pi_config,
                 acp_commands::acp_validate_pi_command,
@@ -1360,6 +1532,7 @@ mod tauri_app {
                 acp_commands::acp_antigravity_login_start,
                 acp_commands::acp_antigravity_login_finish,
                 acp_commands::acp_antigravity_login_cancel,
+                acp_commands::acp_antigravity_sign_out,
                 acp_commands::acp_pi_project_trust_state,
                 acp_commands::acp_pi_set_project_trust,
                 acp_commands::acp_pi_acknowledge_project_trust,
@@ -1503,6 +1676,7 @@ mod tauri_app {
                 terminal_commands::terminal_spawn,
                 terminal_commands::terminal_write,
                 terminal_commands::terminal_resize,
+                terminal_commands::terminal_snapshot,
                 terminal_commands::terminal_kill,
                 terminal_commands::terminal_list,
                 mcp_commands::mcp_scan_local,
@@ -1514,13 +1688,20 @@ mod tauri_app {
                 mcp_commands::mcp_set_server_apps,
                 mcp_commands::mcp_remove_server,
                 notification::send_notification,
+                notification::notification_identity,
+                notification::open_system_notification_settings,
                 file_io::save_binary_file,
                 file_io::save_text_file,
                 backup::backup_create,
-                backup::backup_inspect,
+                backup::backup_prepare_source,
+                backup::backup_release_source,
                 backup::backup_scan_external_conflicts,
                 backup::backup_restore_stage,
                 backup::backup_cancel,
+                backup::backup_list_safety_snapshots,
+                backup::backup_rollback,
+                backup::backup_discard_pending,
+                backup::backup_active_agents,
                 chat_channel_commands::list_chat_channels,
                 chat_channel_commands::create_chat_channel,
                 chat_channel_commands::update_chat_channel,

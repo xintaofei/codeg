@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PromptInputBlock {
     Text {
@@ -95,6 +95,181 @@ pub struct SessionFailureRecord {
     /// Emitted `false` from the parser; flipped by the two stores.
     #[serde(default)]
     pub resolved: bool,
+}
+
+/// Cumulative cost of one async task, as the adapter last reported it
+/// (`async_task_progress.usage`). All three fields are required upstream — the
+/// adapter drops a partial `usage` object rather than publishing one — so this
+/// is either fully present or absent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AsyncTaskUsage {
+    pub total_tokens: u64,
+    pub tool_uses: u64,
+    pub duration_ms: u64,
+}
+
+/// One JetBrains AIR async task — an agent's non-agent background work, merged
+/// from the three `session/update` variants that describe it (claude-agent-acp
+/// 0.73+: background shells, workflows, monitors; codex-acp 1.10+: background
+/// terminals). Published only because `build_client_capabilities` advertises the
+/// `asyncTasks` AIR capability.
+///
+/// This is the MERGED projection, not a wire frame: the adapter announces a
+/// task once with its full identity (`async_task_spawned`) and then revises it
+/// with partial deltas ([`AsyncTaskDelta`]). `SessionState::apply_event` and
+/// the frontend reducer apply the same merge, so a client attaching mid-session
+/// (which seeds from the snapshot's merged table) and one that watched every
+/// event converge on identical rows.
+///
+/// Sub-agent tasks are NOT here: the adapter marks `taskType: "local_agent"`
+/// ignored on this channel and describes them on the subagent channel instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AsyncTaskRecord {
+    pub task_id: String,
+    /// Adapter-authored label — claude: the workflow name, else the
+    /// description; codex: the launching tool call's title, else the raw
+    /// command.
+    pub name: String,
+    /// Already FRIENDLY, not the SDK's raw type: claude maps
+    /// `local_bash`→`"shell"`, `local_workflow`→`"workflow"`,
+    /// `local_monitor`/`mcp`→`"monitor"`, and anything else to `"task"`; codex
+    /// publishes `"shell"` for every background terminal. Kept a plain string so
+    /// an unmapped future type renders as itself instead of failing to
+    /// deserialize.
+    pub task_type: String,
+    pub description: String,
+    /// Whether this task earns its own transcript card upstream. codeg renders
+    /// the live strip regardless — that is AIR's always-on task panel, and the
+    /// strip answers "is it still running", which no transcript card can. Not
+    /// currently read by any surface; carried so a client that does want to
+    /// distinguish a task already drawn as an ordinary tool call (a background
+    /// `Bash` is one) from a standalone job doesn't need a wire change.
+    pub show_in_transcript: bool,
+    /// Whether `_session/async_task/stop` is offered. The adapter announces
+    /// `true` for every task it publishes; it is carried rather than assumed so
+    /// a future adapter can withdraw the affordance without a codeg release.
+    pub can_stop: bool,
+    /// `running` | `paused` | `completed` | `failed` | `stopped`. Plain string
+    /// for the same forward-compatibility reason as `task_type`; treat anything
+    /// outside the terminal three as still live.
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<AsyncTaskUsage>,
+    /// Absolute path to the task's output file, when the adapter recovered one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_file_path: Option<String>,
+    /// The tool call this task belongs to, when it has one — the link back to
+    /// the card already in the transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+/// One async-task delta as it arrived on the wire.
+///
+/// The adapter's three `sessionUpdate` variants collapse into this single
+/// shape: `task_id` says which row, `spawned` says whether this frame may
+/// CREATE one, and every other field is an optional revision (absent = leave
+/// the stored value alone). Collapsing them keeps one merge rule instead of
+/// three, and keeps the event enum from growing a variant per wire frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AsyncTaskDelta {
+    pub task_id: String,
+    /// True only for `async_task_spawned`. A progress/state delta naming an
+    /// unknown task is DROPPED rather than creating a placeholder row: the
+    /// adapter publishes progress only for tasks it already announced, so an
+    /// unknown id means a frame we failed to read, and a row with a default
+    /// name and no type is worse than no row (see `SessionState::apply_event`).
+    pub spawned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_in_transcript: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_stop: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<AsyncTaskUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_file_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+impl AsyncTaskDelta {
+    /// Build the row this delta creates. Only meaningful for a `spawned`
+    /// delta — the defaults exist because the wire fields are individually
+    /// optional, not because a half-announced task is expected.
+    pub fn to_record(&self) -> AsyncTaskRecord {
+        AsyncTaskRecord {
+            task_id: self.task_id.clone(),
+            name: self.name.clone().unwrap_or_else(|| "Background task".into()),
+            task_type: self.task_type.clone().unwrap_or_else(|| "task".into()),
+            description: self.description.clone().unwrap_or_default(),
+            show_in_transcript: self.show_in_transcript.unwrap_or(true),
+            can_stop: self.can_stop.unwrap_or(false),
+            state: self.state.clone().unwrap_or_else(|| "running".into()),
+            summary: self.summary.clone(),
+            last_tool_name: self.last_tool_name.clone(),
+            usage: self.usage.clone(),
+            output_file_path: self.output_file_path.clone(),
+            tool_call_id: self.tool_call_id.clone(),
+        }
+    }
+
+    /// Apply this delta's present fields onto an existing row.
+    pub fn apply_to(&self, record: &mut AsyncTaskRecord) {
+        if let Some(v) = &self.name {
+            record.name = v.clone();
+        }
+        if let Some(v) = &self.task_type {
+            record.task_type = v.clone();
+        }
+        if let Some(v) = &self.description {
+            record.description = v.clone();
+        }
+        if let Some(v) = self.show_in_transcript {
+            record.show_in_transcript = v;
+        }
+        if let Some(v) = self.can_stop {
+            record.can_stop = v;
+        }
+        if let Some(v) = &self.state {
+            record.state = v.clone();
+        }
+        if let Some(v) = &self.summary {
+            record.summary = Some(v.clone());
+        }
+        if let Some(v) = &self.last_tool_name {
+            record.last_tool_name = Some(v.clone());
+        }
+        if let Some(v) = &self.usage {
+            record.usage = Some(v.clone());
+        }
+        if let Some(v) = &self.output_file_path {
+            record.output_file_path = Some(v.clone());
+        }
+        if let Some(v) = &self.tool_call_id {
+            record.tool_call_id = Some(v.clone());
+        }
+    }
+}
+
+/// Whether `state` is one the adapter never revises away from.
+pub fn async_task_state_is_terminal(state: &str) -> bool {
+    matches!(state, "completed" | "failed" | "stopped")
 }
 
 /// Events pushed from Rust backend to frontend via Tauri event system.
@@ -367,6 +542,16 @@ pub enum AcpEvent {
     /// text chunks), so severity-`warning` records take over the retry-banner
     /// role on those connections.
     SessionFailure { record: SessionFailureRecord },
+    /// A JetBrains AIR async-task delta (see [`AsyncTaskDelta`]). Emitted for
+    /// every frame codeg could read; the merge into whole rows happens
+    /// identically in `SessionState::apply_event` (which the snapshot is taken
+    /// from) and the frontend reducer, so a mid-session attach and a client that
+    /// saw every delta agree.
+    ///
+    /// Reaches codeg from the two adapters `build_client_capabilities`
+    /// advertises `asyncTasks` to: claude-agent-acp (0.73+) and codex-acp
+    /// (1.10+).
+    AsyncTask { delta: AsyncTaskDelta },
     /// `session/load` failed in a way codeg cannot paper over — the agent has
     /// no record of this `session_id`, the session/process died, or it is
     /// archived. Emitted instead of silently falling back to `session/new`, so
@@ -588,7 +773,9 @@ pub enum ConfigStaleKind {
 /// `Resource` (how an `image:false` / `embedded_context:true` agent carries a
 /// pasted image — and still how a format the agent cannot decode travels) is
 /// promoted to `Image` so the viewer renders a thumbnail, not a link.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+// `Eq` because `FeedbackItem` carries these and derives it; every field is a
+// `String`, so the bound costs nothing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UserMessageBlock {
     Text { text: String },

@@ -8,6 +8,7 @@ import {
   extractClaudeCodeSkillName,
   inferLiveToolName,
   normalizeToolName,
+  toolCallMovedToBackground,
 } from "./tool-call-normalization"
 
 describe("aliasToolInputKeys", () => {
@@ -1108,6 +1109,50 @@ describe("inferLiveToolName resolves Qoder's authoritative _meta.qoder.toolName"
           meta,
         })
       ).toBe("whatever")
+    }
+  })
+})
+
+describe("toolCallMovedToBackground", () => {
+  it("reads the codex-acp 1.10 marker verbatim off the wire", () => {
+    // The whole `tool_call_update` codex sends when a command goes background —
+    // no status, no content, no output, and crucially NO `version` key inside
+    // `air` (its `sessionFailure` sibling has one; gating on it here would make
+    // the badge never appear).
+    expect(
+      toolCallMovedToBackground({
+        jetbrains: { air: { asyncTasks: { backgrounded: true } } },
+      })
+    ).toBe(true)
+    // A `version` alongside it must not break the read either, in case the
+    // adapter ever starts stamping one.
+    expect(
+      toolCallMovedToBackground({
+        jetbrains: { air: { version: 1, asyncTasks: { backgrounded: true } } },
+      })
+    ).toBe(true)
+  })
+
+  it("stays false for every other meta shape", () => {
+    for (const meta of [
+      null,
+      undefined,
+      {},
+      // The AIR sibling that DOES ride this envelope — reading it as a
+      // background marker would badge every failing turn's tool calls.
+      { jetbrains: { air: { version: 1, sessionFailure: { id: "x" } } } },
+      { jetbrains: { air: { asyncTasks: {} } } },
+      // Strict equality: only a literal `true` counts.
+      { jetbrains: { air: { asyncTasks: { backgrounded: false } } } },
+      { jetbrains: { air: { asyncTasks: { backgrounded: "true" } } } },
+      { jetbrains: { air: { asyncTasks: { backgrounded: 1 } } } },
+      // Missing a level, or the wrong nesting.
+      { air: { asyncTasks: { backgrounded: true } } },
+      { jetbrains: { asyncTasks: { backgrounded: true } } },
+      { asyncTasks: { backgrounded: true } },
+      { jetbrains: { air: "backgrounded" } },
+    ] as (Record<string, unknown> | null | undefined)[]) {
+      expect(toolCallMovedToBackground(meta)).toBe(false)
     }
   })
 })

@@ -15,6 +15,194 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const MAX_STDERR_CAPTURE_BYTES: usize = 1024 * 1024;
 
+/// Windows' extended-length spelling of a UNC path, e.g. what
+/// `fs::canonicalize` returns for `\\server\share`.
+const VERBATIM_UNC_PREFIX: &str = r"\\?\UNC\";
+
+fn is_windows_unc_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.starts_with(r"\\?\unc\")
+        || (path.starts_with(r"\\") && !path.starts_with(r"\\?\") && !path.starts_with(r"\\.\"))
+}
+
+fn is_windows_batch_file(command: &std::path::Path) -> bool {
+    let lower = command.to_string_lossy().to_ascii_lowercase();
+    lower.ends_with(".cmd") || lower.ends_with(".bat")
+}
+
+/// True for a path `cmd.exe` runs outright, without consulting a search order:
+/// drive-absolute (`C:\…`, `C:/…`) or UNC (`\\…`).
+///
+/// `Path::is_absolute` cannot answer this — it follows the HOST's rules, and
+/// this decision has to hold (and be testable) on the Linux CI that runs this
+/// crate's tests. Drive-relative (`C:x`) and root-relative (`\x`) both resolve
+/// against the *current* drive and directory, so neither counts.
+///
+/// A forward-slash UNC spelling (`//server/share/agent.cmd`) is deliberately
+/// NOT recognised, and neither is one as the cwd. Win32 accepts it, but cmd
+/// reads a leading `/` inconsistently, and nothing reaches this crate spelled
+/// that way — `which`, `PathBuf::join` and the OS dialogs all hand back
+/// backslashes. Such a launch keeps the direct spawn, which is to say the
+/// behaviour it already had; widening a hand-built cmd command line to cover
+/// a shape no caller produces would cost more than it buys.
+fn is_absolute_windows_path(path: &std::path::Path) -> bool {
+    let Some(text) = path.to_str() else {
+        return false;
+    };
+    if text.starts_with(r"\\") {
+        return true;
+    }
+    let bytes = text.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
+}
+
+/// The directory `pushd` has to map for this launch, or `None` when the plain
+/// direct spawn is the right one.
+///
+/// This is the ONLY place that decides a launch takes the cmd detour: both the
+/// command line and the `current_dir` call read it, so they cannot drift apart
+/// and leave `cmd.exe` holding a UNC cwd it would silently trade for
+/// `C:\Windows` — the very bug the detour exists to fix.
+///
+/// The launcher must already be an absolute path. Rust resolves a bare program
+/// name against PATH and pointedly NOT against the child's cwd; cmd.exe's own
+/// search order starts at the current directory, which `pushd` has just pointed
+/// at the workspace. Taking the detour with a relative launcher would therefore
+/// let an `agent.cmd` committed to the repo shadow the trusted one on PATH, so
+/// that shape keeps the direct spawn instead — the cwd stays wrong there, which
+/// is exactly what it already was.
+///
+/// The answer is the plain `\\server\share\…` spelling with any trailing
+/// separator removed, because `pushd` is a cmd BUILT-IN rather than a batch
+/// file, and cmd parses its own command line:
+///
+/// * it cannot resolve an extended-length `\\?\UNC\…` path at all (the shape
+///   `fs::canonicalize` hands back on Windows), and
+/// * it never undoes the `\` doubling `append_windows_batch_arg` applies to a
+///   trailing backslash — right for an argument a batch file re-parses, wrong
+///   here, where the doubled pair would reach `pushd` verbatim.
+///
+/// Either shape makes `pushd` fail, and `&&` then takes the whole agent launch
+/// down with it. Every other path survives that quoting byte-for-byte, so the
+/// two agree once these two shapes are ruled out.
+fn windows_pushd_cwd(
+    current_dir: Option<&std::path::Path>,
+    command: &std::path::Path,
+) -> Option<String> {
+    if !is_windows_batch_file(command) || !is_absolute_windows_path(command) {
+        return None;
+    }
+    let dir = current_dir?.to_str()?;
+    if !is_windows_unc_path(dir) {
+        return None;
+    }
+    // `\\?\UNC\server\share` → `\\server\share`; a plain UNC path keeps its
+    // own leading pair. Casing is not ours to predict — Windows accepts
+    // `\\?\unc\` as readily as `\\?\UNC\`.
+    let rest = match dir.get(..VERBATIM_UNC_PREFIX.len()) {
+        Some(head) if head.eq_ignore_ascii_case(VERBATIM_UNC_PREFIX) => {
+            &dir[VERBATIM_UNC_PREFIX.len()..]
+        }
+        // `is_windows_unc_path` already proved the first two bytes are ASCII
+        // backslashes, so this can neither split a character nor run past the
+        // end.
+        _ => &dir[2..],
+    };
+    Some(format!(r"\\{}", rest.trim_end_matches(['\\', '/'])))
+}
+
+#[cfg(windows)]
+fn system_cmd_exe() -> PathBuf {
+    // Avoid resolving cmd.exe from a potentially untrusted workspace. Agent
+    // environment overrides are applied only after this path is selected.
+    std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+        .join("System32")
+        .join("cmd.exe")
+}
+
+/// Append one argument using the same defensive quoting rules Rust's standard
+/// library applies when it launches a Windows batch file. In particular, cmd
+/// metacharacters stay quoted and percent signs cannot expand environment vars.
+#[cfg(any(windows, test))]
+fn append_windows_batch_arg(output: &mut String, arg: &str) -> std::io::Result<()> {
+    if arg.contains(['\r', '\n', '\0']) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "batch file arguments may not contain line breaks or NUL bytes",
+        ));
+    }
+
+    const UNQUOTED: &str = r"#$*+-./:?@\_";
+    let quote = arg.is_empty()
+        || arg.ends_with('\\')
+        || arg.chars().any(|ch| {
+            (ch.is_ascii() && !(ch.is_ascii_alphanumeric() || UNQUOTED.contains(ch)))
+                || ch.is_control()
+        });
+
+    if quote {
+        output.push('"');
+    }
+    let mut backslashes = 0;
+    for ch in arg.chars() {
+        if ch == '\\' {
+            backslashes += 1;
+            continue;
+        }
+        if ch == '"' {
+            output.extend(std::iter::repeat_n('\\', backslashes * 2));
+            output.push_str("\"\"");
+        } else {
+            output.extend(std::iter::repeat_n('\\', backslashes));
+            if ch == '%' || ch == '\r' {
+                output.push_str("%%cd:~,");
+            }
+            output.push(ch);
+        }
+        backslashes = 0;
+    }
+    if quote {
+        output.extend(std::iter::repeat_n('\\', backslashes * 2));
+        output.push('"');
+    } else {
+        output.extend(std::iter::repeat_n('\\', backslashes));
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn make_unc_batch_command_line(
+    cwd: &str,
+    command: &std::path::Path,
+    args: &[String],
+) -> std::io::Result<String> {
+    let mut line = String::from("/e:ON /v:OFF /d /s /c \"pushd ");
+    append_windows_batch_arg(&mut line, cwd)?;
+    // Do not use `call`: it reparses arguments and can expand metacharacters a
+    // second time. The batch file may take over this short-lived cmd process.
+    line.push_str(" && ");
+    append_windows_batch_arg(
+        &mut line,
+        command.to_str().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "batch file path is not valid Unicode",
+            )
+        })?,
+    )?;
+    for arg in args {
+        line.push(' ');
+        append_windows_batch_arg(&mut line, arg)?;
+    }
+    line.push('"');
+    Ok(line)
+}
+
 /// Direction of a line being sent or received.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineDirection {
@@ -273,8 +461,41 @@ impl AcpAgent {
     > {
         match &self.server {
             sacp::schema::McpServer::Stdio(stdio) => {
-                let mut cmd = tokio::process::Command::new(&stdio.command);
-                cmd.args(&stdio.args);
+                // cmd.exe cannot use a UNC path as its process cwd, and a
+                // batch launcher always runs under cmd.exe (std spawns one for
+                // any `.cmd`/`.bat` program). Left alone it drops the cwd for
+                // `C:\Windows`, so that one combination is launched through a
+                // `pushd` detour instead, which maps the share to a temporary
+                // drive first. `None` on every other host and every other
+                // launch — and the single decision both branches below read.
+                let pushd_cwd = if cfg!(windows) {
+                    windows_pushd_cwd(self.current_dir.as_deref(), &stdio.command)
+                } else {
+                    None
+                };
+                #[cfg(windows)]
+                let mut cmd = {
+                    use std::os::windows::process::CommandExt;
+
+                    if let Some(dir) = pushd_cwd.as_deref() {
+                        let command_line =
+                            make_unc_batch_command_line(dir, &stdio.command, &stdio.args)
+                                .map_err(sacp::Error::into_internal_error)?;
+                        let mut command = tokio::process::Command::new(system_cmd_exe());
+                        command.as_std_mut().raw_arg(command_line);
+                        command
+                    } else {
+                        let mut command = tokio::process::Command::new(&stdio.command);
+                        command.args(&stdio.args);
+                        command
+                    }
+                };
+                #[cfg(not(windows))]
+                let mut cmd = {
+                    let mut command = tokio::process::Command::new(&stdio.command);
+                    command.args(&stdio.args);
+                    command
+                };
                 for env_var in &stdio.env {
                     // codeg convention: an empty value means "ensure this var is
                     // ABSENT from the child" (strip an inherited value) rather
@@ -291,7 +512,12 @@ impl AcpAgent {
                     }
                 }
                 if let Some(dir) = &self.current_dir {
-                    cmd.current_dir(dir);
+                    // The `pushd` detour already owns the cwd for this launch,
+                    // and handing the same UNC path to `CreateProcess` is the
+                    // very thing cmd.exe would refuse.
+                    if pushd_cwd.is_none() {
+                        cmd.current_dir(dir);
+                    }
                 }
                 #[cfg(windows)]
                 {
@@ -1010,6 +1236,147 @@ mod tests {
             assert!(reported, "the reaper never observed the child's death");
         });
         let _ = std::fs::remove_file(&ready);
+    }
+
+    #[test]
+    fn detects_windows_unc_paths_without_misclassifying_device_or_drive_paths() {
+        assert!(is_windows_unc_path(
+            r"\\wsl.localhost\Ubuntu\home\user\repo"
+        ));
+        assert!(is_windows_unc_path(r"\\wsl$\Ubuntu\home\user\repo"));
+        assert!(is_windows_unc_path(r"\\?\UNC\server\share\repo"));
+        assert!(!is_windows_unc_path(r"C:\Users\user\repo"));
+        assert!(!is_windows_unc_path(r"\\?\C:\Users\user\repo"));
+        assert!(!is_windows_unc_path(r"\\.\pipe\codeg"));
+    }
+
+    #[test]
+    fn detects_batch_launchers_case_insensitively() {
+        assert!(is_windows_batch_file(std::path::Path::new("hermes.CmD")));
+        assert!(is_windows_batch_file(std::path::Path::new("agent.BAT")));
+        assert!(!is_windows_batch_file(std::path::Path::new("agent.exe")));
+        assert!(!is_windows_batch_file(std::path::Path::new("hermes")));
+    }
+
+    /// The detour is a rescue for exactly one combination. Widening it would
+    /// put a cmd.exe in front of agents that do not need one; narrowing it
+    /// puts the agent back in `C:\Windows`.
+    #[test]
+    fn pushd_is_reserved_for_a_unc_workspace_behind_a_batch_launcher() {
+        use std::path::Path;
+
+        let batch = Path::new(r"C:\npm\hermes.cmd");
+        let unc = Path::new(r"\\wsl.localhost\Ubuntu\home\user\repo");
+
+        assert_eq!(
+            windows_pushd_cwd(Some(unc), batch).as_deref(),
+            Some(r"\\wsl.localhost\Ubuntu\home\user\repo")
+        );
+        // A native executable takes a UNC cwd fine — no cmd.exe involved.
+        assert_eq!(
+            windows_pushd_cwd(Some(unc), Path::new(r"C:\npm\uvx.exe")),
+            None
+        );
+        assert_eq!(
+            windows_pushd_cwd(Some(Path::new(r"C:\Users\user\repo")), batch),
+            None
+        );
+        assert_eq!(windows_pushd_cwd(None, batch), None);
+    }
+
+    /// Rust resolves a bare program name against PATH and never against the
+    /// child's cwd. cmd.exe searches the current directory FIRST — which
+    /// `pushd` has just pointed at the workspace — so handing it a relative
+    /// launcher would let a `hermes.cmd` committed to the repo run instead of
+    /// the trusted one on PATH. Those launches keep the direct spawn.
+    #[test]
+    fn a_relative_launcher_never_takes_the_detour() {
+        use std::path::Path;
+
+        let unc = Path::new(r"\\wsl.localhost\Ubuntu\home\user\repo");
+        for relative in [
+            "hermes.cmd",
+            r".\hermes.cmd",
+            r"node_modules\.bin\hermes.cmd",
+            // Root-relative and drive-relative both resolve against the drive
+            // and directory `pushd` just changed.
+            r"\hermes.cmd",
+            "C:hermes.cmd",
+        ] {
+            assert_eq!(
+                windows_pushd_cwd(Some(unc), Path::new(relative)),
+                None,
+                "{relative} would be resolved out of the workspace"
+            );
+        }
+        for absolute in [
+            r"C:\npm\hermes.cmd",
+            r"c:/npm/hermes.cmd",
+            r"\\tools\share\hermes.cmd",
+        ] {
+            assert!(
+                windows_pushd_cwd(Some(unc), Path::new(absolute)).is_some(),
+                "{absolute} needs the detour"
+            );
+        }
+    }
+
+    /// `pushd` is a cmd built-in, so cmd parses this argument itself: the two
+    /// spellings it cannot resolve have to be gone before it ever sees them,
+    /// or `&&` takes the whole agent launch down with the failed `pushd`.
+    #[test]
+    fn pushd_cwd_is_spelled_the_only_way_cmd_can_resolve_it() {
+        use std::path::Path;
+
+        let batch = Path::new(r"C:\npm\hermes.cmd");
+        // The extended-length form is what `fs::canonicalize` hands back on
+        // Windows, and cmd.exe supports none of it.
+        for verbatim in [
+            r"\\?\UNC\wsl.localhost\Ubuntu\home\user\repo",
+            r"\\?\unc\wsl.localhost\Ubuntu\home\user\repo",
+        ] {
+            assert_eq!(
+                windows_pushd_cwd(Some(Path::new(verbatim)), batch).as_deref(),
+                Some(r"\\wsl.localhost\Ubuntu\home\user\repo")
+            );
+        }
+        // A trailing separator comes out of `append_windows_batch_arg` as a
+        // doubled backslash — correct for an argument a batch file re-parses,
+        // but cmd never unescapes its own command line, so `pushd` would
+        // receive the pair verbatim and reject the path.
+        assert_eq!(
+            windows_pushd_cwd(Some(Path::new(r"\\srv\share\repo\")), batch).as_deref(),
+            Some(r"\\srv\share\repo")
+        );
+        assert_eq!(
+            windows_pushd_cwd(Some(Path::new(r"\\srv\share\repo/")), batch).as_deref(),
+            Some(r"\\srv\share\repo")
+        );
+    }
+
+    #[test]
+    fn unc_batch_command_uses_pushd_and_escapes_cmd_metacharacters() {
+        let command = make_unc_batch_command_line(
+            r"\\wsl.localhost\Ubuntu\home\a&b\repo",
+            std::path::Path::new(r"C:\Program Files\nodejs\hermes.cmd"),
+            &["acp".into(), "100% ready".into(), "x&whoami".into()],
+        )
+        .expect("valid command line");
+
+        assert_eq!(
+            command,
+            r#"/e:ON /v:OFF /d /s /c "pushd "\\wsl.localhost\Ubuntu\home\a&b\repo" && "C:\Program Files\nodejs\hermes.cmd" acp "100%%cd:~,% ready" "x&whoami"""#
+        );
+    }
+
+    #[test]
+    fn unc_batch_command_rejects_line_breaks() {
+        assert!(make_unc_batch_command_line(
+            r"\\wsl.localhost\Ubuntu\home\user\repo",
+            std::path::Path::new("hermes.cmd"),
+            &["line\nbreak".into()],
+        )
+        .is_err());
     }
 
     #[cfg(unix)]

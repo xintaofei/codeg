@@ -33,6 +33,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react"
@@ -61,6 +62,13 @@ export interface DelegationBinding {
 interface DelegationContextValue {
   findByParentToolUseId(id: string): DelegationBinding | undefined
   findByChildConversationId(id: number): DelegationBinding | undefined
+  /**
+   * Resolve a binding by the broker-minted task id rather than the parent's
+   * tool_use_id. `resume_delegation` needs this: it re-binds the child to the
+   * ORIGINAL `delegate_to_agent` call's id, so the resume card's own
+   * tool_call_id matches no binding — the task id is the only handle it holds.
+   */
+  findByTaskId(taskId: string): DelegationBinding | undefined
 }
 
 const DelegationContext = createContext<DelegationContextValue | null>(null)
@@ -232,10 +240,24 @@ export function DelegationProvider({ children }: { children: ReactNode }) {
     [byToolUseId]
   )
 
+  const findByTaskId = useCallback(
+    (taskId: string): DelegationBinding | undefined => {
+      if (!taskId) return undefined
+      for (const b of byToolUseId.values()) {
+        if (b.taskId === taskId) return b
+      }
+      return undefined
+    },
+    [byToolUseId]
+  )
+
+  const value = useMemo(
+    () => ({ findByParentToolUseId, findByChildConversationId, findByTaskId }),
+    [findByParentToolUseId, findByChildConversationId, findByTaskId]
+  )
+
   return (
-    <DelegationContext.Provider
-      value={{ findByParentToolUseId, findByChildConversationId }}
-    >
+    <DelegationContext.Provider value={value}>
       {children}
     </DelegationContext.Provider>
   )

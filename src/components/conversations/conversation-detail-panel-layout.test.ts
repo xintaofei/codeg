@@ -525,4 +525,24 @@ describe("ConversationDetailPanel session-load failure surface", () => {
       "setExternalId(effectiveConversationId, detail?.summary.external_id ?? null)"
     )
   })
+
+  it("resolves the connect session id from the runtime store, not from detail", () => {
+    // `runtimeExternalId` is fed by BOTH sources (the effect above writes the
+    // DB value into it; the connSessionId effect writes the live session), so
+    // it is always the more recently established of the two. `detail` is only
+    // the cold-open fallback.
+    expect(source).toContain(
+      "runtimeExternalId ?? detail?.summary.external_id ?? undefined"
+    )
+    // The regression this guards, and it is not cosmetic. A fork re-points
+    // THIS row at S2 and inserts a sibling row holding S1. The panel learns S2
+    // from the fork response immediately, but `detail` still says S1 until its
+    // refetch lands — so with `detail` first, the next reconnect asked for S1,
+    // which the sibling now owns, and the tab silently re-homed onto the
+    // pre-fork history with the `[Fork]` row abandoned. Forking again then
+    // forked S1 a second time, chaining rows.
+    expect(source).not.toContain(
+      "detail?.summary.external_id ?? runtimeExternalId ?? undefined"
+    )
+  })
 })

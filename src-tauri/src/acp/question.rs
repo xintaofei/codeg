@@ -442,11 +442,12 @@ pub fn build_outcome(questions: &[QuestionSpec], answer: &QuestionAnswer) -> Que
     }
 }
 
-/// Grok's native `ask_user_question` tool has NO `header` (the short category
-/// chip codeg renders); synthesize one from the leading characters of the
-/// question text, bounded to [`MAX_HEADER_CHARS`]. Always returns a non-empty,
-/// in-bounds string so [`validate_specs`] accepts it.
-fn synthesize_grok_header(question: &str) -> String {
+/// Some native asks carry NO `header` (the short category chip codeg renders):
+/// grok's `ask_user_question` tool and pi's extension-UI `select` both send bare
+/// question text. Synthesize one from the leading characters, bounded to
+/// [`MAX_HEADER_CHARS`]. Always returns a non-empty, in-bounds string so
+/// [`validate_specs`] accepts it.
+fn synthesize_header(question: &str) -> String {
     let header: String = question.trim().chars().take(MAX_HEADER_CHARS).collect();
     let header = header.trim();
     if header.is_empty() {
@@ -544,13 +545,138 @@ pub fn parse_grok_ext_questions(params: &Value) -> Result<Vec<QuestionSpec>, Str
         out.push(QuestionSpec {
             id: uuid::Uuid::new_v4().to_string(),
             question: question.chars().take(MAX_QUESTION_TEXT_CHARS).collect(),
-            header: synthesize_grok_header(question),
+            header: synthesize_header(question),
             multi_select,
             options,
             is_secret: false,
         });
     }
     Ok(out)
+}
+
+/// pi-acp's tool-call id prefix for an extension-UI request
+/// (`extensionUiToolCall`, pi-acp 0.0.33). It is the only marker that
+/// distinguishes a `ctx.ui.*` dialog from a real tool approval, since both
+/// arrive as a plain `session/request_permission`. Public so the connection
+/// handler can screen requests on it before paying for anything else — one
+/// definition, so the cheap screen and the full parse can never drift.
+pub const PI_EXTENSION_UI_ID_PREFIX: &str = "pi-ui-";
+
+/// pi-acp's option-id prefix for a `select` choice (`CHOICE_OPTION_PREFIX`); it
+/// maps the id back to the index of its own options array when replying to the
+/// extension.
+const PI_CHOICE_OPTION_PREFIX: &str = "choice-";
+
+/// pi's extension-UI `select` ask, lifted off a `session/request_permission`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PiSelectAsk {
+    /// The single question to register on the interactive card.
+    pub spec: QuestionSpec,
+    /// `(option label, permission optionId)` in wire order. The user picks a
+    /// LABEL on the card, but pi must be answered with the id that label arrived
+    /// with — pi-acp turns it back into an index into its own options array — so
+    /// the pairing has to survive the round trip.
+    pub option_ids: Vec<(String, String)>,
+}
+
+/// Recognize a `session/request_permission` that is really pi asking the user a
+/// multiple-choice question, and convert it into a [`QuestionSpec`] so it renders
+/// in the SAME interactive card as the codeg-mcp ask tool.
+///
+/// pi has no dedicated question channel: `ctx.ui.select` from an extension
+/// becomes an `extension_ui_request`, which pi-acp translates into a permission
+/// request whose `toolCall` is a synthetic `{toolCallId: "pi-ui-<id>", kind:
+/// "other", status: "pending", rawInput: {method: "select", title, options:
+/// [...]}}` and whose permission options are the choices, keyed
+/// `choice-<index>` (verified against pi-acp 0.0.33 on a live run). Without this
+/// the choices render as a generic approval card that dumps that JSON verbatim.
+///
+/// Returns `None` — leaving the caller on the untouched permission path — for
+/// anything that does not fingerprint as pi's select, and for a select the card
+/// could not represent FAITHFULLY: more than [`MAX_OPTIONS`] choices (truncating
+/// would hide choices the user must be able to pick), fewer than
+/// [`MIN_OPTIONS`], or duplicate/blank labels (the label is the card's selection
+/// identity, so a duplicate would answer pi with the wrong index). Those keep
+/// today's approval card, which lists every option as its own button.
+///
+/// `options` is `(optionId, name)` in wire order.
+pub fn parse_pi_select_ask(tool_call: &Value, options: &[(String, String)]) -> Option<PiSelectAsk> {
+    let id = tool_call
+        .get("toolCallId")
+        .or_else(|| tool_call.get("tool_call_id"))
+        .and_then(|v| v.as_str())?;
+    if !id.starts_with(PI_EXTENSION_UI_ID_PREFIX) {
+        return None;
+    }
+    let raw_input = tool_call
+        .get("rawInput")
+        .or_else(|| tool_call.get("raw_input"))?;
+    if raw_input.get("method").and_then(|v| v.as_str()) != Some("select") {
+        return None;
+    }
+    // The dialog prompt: `rawInput.title` is the extension's own text, while the
+    // tool call's `title` falls back to a bare `Pi select` when it has none.
+    let question = raw_input
+        .get("title")
+        .and_then(|v| v.as_str())
+        .or_else(|| tool_call.get("title").and_then(|v| v.as_str()))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    if !(MIN_OPTIONS..=MAX_OPTIONS).contains(&options.len()) {
+        return None;
+    }
+    let mut choices = Vec::with_capacity(options.len());
+    let mut option_ids = Vec::with_capacity(options.len());
+    let mut seen = std::collections::HashSet::new();
+    for (option_id, name) in options {
+        if !option_id.starts_with(PI_CHOICE_OPTION_PREFIX) {
+            return None;
+        }
+        let label = name.trim();
+        if label.is_empty() || label.chars().count() > MAX_QUESTION_TEXT_CHARS {
+            return None;
+        }
+        if !seen.insert(label) {
+            return None;
+        }
+        choices.push(QuestionOption {
+            label: label.to_string(),
+            // pi's select carries no per-option description; the card renders
+            // fine without one.
+            description: String::new(),
+        });
+        option_ids.push((label.to_string(), option_id.clone()));
+    }
+    Some(PiSelectAsk {
+        spec: QuestionSpec {
+            id: uuid::Uuid::new_v4().to_string(),
+            question: question.chars().take(MAX_QUESTION_TEXT_CHARS).collect(),
+            header: synthesize_header(question),
+            // `ctx.ui.select` resolves to ONE value; pi-acp's reply carries a
+            // single `optionId`.
+            multi_select: false,
+            options: choices,
+            is_secret: false,
+        },
+        option_ids,
+    })
+}
+
+/// The permission `optionId` that answers pi with what the user picked, or
+/// `None` when the card produced nothing pi can accept: a declined card, or a
+/// free-text "Other" answer (the card always offers one, but pi's select can
+/// only be answered with one of ITS options). `None` means reply `Cancelled`,
+/// which pi-acp forwards to the extension as `{cancelled: true}` — the same
+/// thing `ctx.ui.select` returns when a TUI user presses Escape.
+pub fn pi_select_option_id(outcome: &QuestionOutcome, ask: &PiSelectAsk) -> Option<String> {
+    if outcome.declined {
+        return None;
+    }
+    let picked = outcome.answers.first()?.selected.first()?;
+    ask.option_ids
+        .iter()
+        .find(|(label, _)| label == picked)
+        .map(|(_, option_id)| option_id.clone())
 }
 
 /// Serialize a resolved [`QuestionOutcome`] into grok's `AskUserQuestionExtResponse`
@@ -1076,7 +1202,7 @@ fn parse_form_questions(
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(|h| h.chars().take(MAX_HEADER_CHARS).collect())
-            .unwrap_or_else(|| synthesize_grok_header(question));
+            .unwrap_or_else(|| synthesize_header(question));
         specs.push(QuestionSpec {
             id: id.clone(),
             question: question.chars().take(MAX_QUESTION_TEXT_CHARS).collect(),
@@ -1232,12 +1358,13 @@ pub fn elicitation_cancel_response() -> CreateElicitationResponse {
 
 /// Build the `raw_input` (questions) for the in-stream `AskQuestionResultCard`
 /// codeg synthesizes for a native ask that resolves out-of-band rather than as a
-/// completed stream tool_call. Two callers: grok (answers over the
-/// `_x.ai/ask_user_question` ext round-trip — `handle_grok_ask_user_question`)
-/// and codex `request_user_input` (answers over the `elicitation/create`
-/// round-trip — `handle_elicitation_request`). Neither emits a completed tool
-/// result into the ACP stream, so the connection handler emits this once the
-/// user submits.
+/// completed stream tool_call. Three callers: grok (answers over the
+/// `_x.ai/ask_user_question` ext round-trip — `handle_grok_ask_user_question`),
+/// codex `request_user_input` (answers over the `elicitation/create` round-trip
+/// — `handle_elicitation_request`), and pi's extension-UI `select` (answers over
+/// the `session/request_permission` round-trip — `try_bridge_pi_select_ask`).
+/// None of them emits a completed tool result into the ACP stream, so the
+/// connection handler emits this once the user submits.
 ///
 /// Deliberately omits `header`, so the frontend parses `header:""` and matches
 /// answers to questions by `question` text alone. The paired
@@ -2127,6 +2254,159 @@ mod tests {
         assert!(parse_grok_ext_questions(&json!({ "mode": "default" })).is_err());
         // Empty questions.
         assert!(parse_grok_ext_questions(&grok_params(json!([]))).is_err());
+    }
+
+    /// The `toolCall` of a `session/request_permission` captured from a live
+    /// pi-acp 0.0.33 run of an extension calling `ctx.ui.select` (#644).
+    fn pi_select_tool_call() -> Value {
+        json!({
+            "toolCallId": "pi-ui-69c549d7-9f79-4de6-a860-7ae4d27553f7",
+            "title": "[未提交改动] 当前分支有未提交的 AddIOP.cs 修改；创建热修复分支时应如何处理？",
+            "kind": "other",
+            "status": "pending",
+            "rawInput": {
+                "method": "select",
+                "title": "[未提交改动] 当前分支有未提交的 AddIOP.cs 修改；创建热修复分支时应如何处理？",
+                "options": [
+                    "1. 暂存后切分支 (Recommended) — 把当前改动保存到具名 stash",
+                    "2. 独立 worktree — 保留当前工作区不动",
+                    "3. 携带改动切换 — 直接创建并切换分支",
+                    "4. Type something."
+                ]
+            }
+        })
+    }
+
+    /// The paired permission `options`, same run.
+    fn pi_select_options() -> Vec<(String, String)> {
+        [
+            "1. 暂存后切分支 (Recommended) — 把当前改动保存到具名 stash",
+            "2. 独立 worktree — 保留当前工作区不动",
+            "3. 携带改动切换 — 直接创建并切换分支",
+            "4. Type something.",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, name)| (format!("choice-{i}"), (*name).to_string()))
+        .collect()
+    }
+
+    #[test]
+    fn parse_pi_select_ask_maps_captured_wire_shape() {
+        let ask = parse_pi_select_ask(&pi_select_tool_call(), &pi_select_options())
+            .expect("pi select must be recognized");
+        assert_eq!(
+            ask.spec.question,
+            "[未提交改动] 当前分支有未提交的 AddIOP.cs 修改；创建热修复分支时应如何处理？"
+        );
+        // `ctx.ui.select` yields one value.
+        assert!(!ask.spec.multi_select);
+        assert_eq!(ask.spec.options.len(), 4);
+        assert_eq!(
+            ask.spec.options[0].label,
+            "1. 暂存后切分支 (Recommended) — 把当前改动保存到具名 stash"
+        );
+        // Whatever we synthesize MUST satisfy the register-time re-validation,
+        // else `register_question` silently declines the ask and the user is
+        // left with the raw approval card.
+        validate_specs(std::slice::from_ref(&ask.spec))
+            .expect("synthesized spec must pass validate_specs");
+        // Labels round-trip to the ids pi replies against.
+        assert_eq!(
+            ask.option_ids
+                .iter()
+                .map(|(_, id)| id.as_str())
+                .collect::<Vec<_>>(),
+            ["choice-0", "choice-1", "choice-2", "choice-3"]
+        );
+    }
+
+    #[test]
+    fn parse_pi_select_ask_declines_what_it_cannot_render_faithfully() {
+        let opts = |n: usize| -> Vec<(String, String)> {
+            (0..n)
+                .map(|i| (format!("choice-{i}"), format!("option {i}")))
+                .collect()
+        };
+        // More options than the card can show: truncating would HIDE choices the
+        // user must be able to pick, so keep the approval card (which lists all).
+        assert!(parse_pi_select_ask(&pi_select_tool_call(), &opts(MAX_OPTIONS + 1)).is_none());
+        assert!(parse_pi_select_ask(&pi_select_tool_call(), &opts(MIN_OPTIONS - 1)).is_none());
+        // Duplicate labels: the label is the card's selection identity, so a
+        // duplicate could answer pi with the wrong index.
+        let dup = vec![
+            ("choice-0".to_string(), "Same".to_string()),
+            ("choice-1".to_string(), "Same".to_string()),
+        ];
+        assert!(parse_pi_select_ask(&pi_select_tool_call(), &dup).is_none());
+        // Blank label.
+        let blank = vec![
+            ("choice-0".to_string(), "  ".to_string()),
+            ("choice-1".to_string(), "B".to_string()),
+        ];
+        assert!(parse_pi_select_ask(&pi_select_tool_call(), &blank).is_none());
+    }
+
+    #[test]
+    fn parse_pi_select_ask_ignores_other_permission_requests() {
+        let strip = |f: &str| {
+            let mut tc = pi_select_tool_call();
+            tc.as_object_mut().unwrap().remove(f);
+            tc
+        };
+        // An ordinary tool approval (claude/codex/pi's own tools) has no pi-ui id.
+        let mut edit = pi_select_tool_call();
+        edit["toolCallId"] = json!("call_abc");
+        assert!(parse_pi_select_ask(&edit, &pi_select_options()).is_none());
+        // pi's `confirm` dialog is a real yes/no approval, which the permission
+        // card already models (allow_once / reject_once).
+        let mut confirm = pi_select_tool_call();
+        confirm["rawInput"]["method"] = json!("confirm");
+        assert!(parse_pi_select_ask(&confirm, &pi_select_options()).is_none());
+        assert!(parse_pi_select_ask(&strip("rawInput"), &pi_select_options()).is_none());
+        // Option ids that aren't pi-acp's `choice-<index>`: the reply mapping
+        // would be a guess.
+        let foreign = vec![
+            ("allow".to_string(), "Allow".to_string()),
+            ("deny".to_string(), "Deny".to_string()),
+        ];
+        assert!(parse_pi_select_ask(&pi_select_tool_call(), &foreign).is_none());
+    }
+
+    #[test]
+    fn pi_select_option_id_maps_pick_and_cancels_what_pi_cannot_take() {
+        let ask = parse_pi_select_ask(&pi_select_tool_call(), &pi_select_options()).unwrap();
+        let answered = |labels: Vec<&str>| QuestionOutcome {
+            answers: vec![QuestionAnsweredItem {
+                question: ask.spec.question.clone(),
+                header: ask.spec.header.clone(),
+                multi_select: false,
+                selected: labels.into_iter().map(str::to_string).collect(),
+            }],
+            declined: false,
+        };
+        assert_eq!(
+            pi_select_option_id(&answered(vec![&ask.spec.options[1].label]), &ask).as_deref(),
+            Some("choice-1")
+        );
+        // Declined card → cancel, which is what `ctx.ui.select` sees on Escape.
+        assert_eq!(
+            pi_select_option_id(
+                &QuestionOutcome {
+                    answers: vec![],
+                    declined: true
+                },
+                &ask
+            ),
+            None
+        );
+        // Free text typed into the card's always-present "Other" box has no
+        // option id, so pi can only be told the dialog was cancelled.
+        assert_eq!(
+            pi_select_option_id(&answered(vec!["something else"]), &ask),
+            None
+        );
+        assert_eq!(pi_select_option_id(&answered(vec![]), &ask), None);
     }
 
     #[test]

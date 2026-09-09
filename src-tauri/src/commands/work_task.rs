@@ -384,8 +384,24 @@ pub async fn work_task_delete_core(
         // Read from THIS pass, not from a stale first look: a run that started
         // and was cancelled above has a worktree the first snapshot never saw.
         if delete_worktree && task.worktree_folder_id.is_some() {
-            if let Err(e) = engine()?.cleanup_task(id).await {
-                tracing::warn!("[work_task] cleanup during delete of task {id}: {e}");
+            if let Err(blocked) = engine()?.cleanup_task(id).await {
+                if blocked.holds_work {
+                    // STOP, rather than the `warn!` a mere failure gets. The
+                    // tombstone below is what makes this different from every
+                    // other swallowed cleanup: it takes the card, its
+                    // `cleanup_state` and its retry entry in one write, so the
+                    // worktree the user was told would be deleted would be left
+                    // on disk with nothing anywhere left to say why. Refusing
+                    // the delete keeps both the files and the way out.
+                    return Err(DbError::Validation(crate::work_task::worktree_kept(
+                        "Remove them, or clear \"also delete its worktree\" to delete just the \
+                         task.",
+                    )));
+                }
+                tracing::warn!(
+                    "[work_task] cleanup during delete of task {id}: {}",
+                    blocked.message
+                );
             }
         }
         if work_task_service::soft_delete(&db.conn, id, task.status).await? {
@@ -550,10 +566,14 @@ pub async fn work_task_return_core(
 ///
 /// Best-effort, like the delete path — a git failure flags a retryable
 /// `cleanup_state` on the card rather than turning a stop that already happened
-/// into an error. The one outcome that stays silent is a refusal, which by the
-/// above can only mean the task was re-claimed while we were stopping it: the
-/// worktree survives (fail-safe), and the requeue that saved it is itself on
-/// the board.
+/// into an error. Refusals are swallowed here too, and both of them leave the
+/// worktree standing (fail-safe) with the reason visible on the board rather
+/// than in this return value: either the task was re-claimed while we were
+/// stopping it — the requeue that saved the checkout is itself on the board —
+/// or it still holds uncommitted files, which `cleanup_task` flags as a
+/// retryable `cleanup_state`. A stop interrupts a working agent, so the second
+/// is the common one, and turning it into an error would report the stop that
+/// already happened as failed.
 pub async fn work_task_cancel_core(
     id: i32,
     reason: Option<String>,
@@ -562,8 +582,11 @@ pub async fn work_task_cancel_core(
     let engine = engine()?;
     engine.cancel(id, reason).await.map_err(DbError::Validation)?;
     if delete_worktree {
-        if let Err(e) = engine.cleanup_task(id).await {
-            tracing::warn!("[work_task] cleanup during cancel of task {id}: {e}");
+        if let Err(blocked) = engine.cleanup_task(id).await {
+            tracing::warn!(
+                "[work_task] cleanup during cancel of task {id}: {}",
+                blocked.message
+            );
         }
     }
     Ok(())
@@ -672,7 +695,10 @@ pub async fn work_task_archive_core(
 }
 
 pub async fn work_task_cleanup_core(id: i32) -> Result<(), DbError> {
-    engine()?.cleanup_task(id).await.map_err(DbError::Validation)
+    engine()?
+        .cleanup_task(id)
+        .await
+        .map_err(|blocked| DbError::Validation(blocked.message))
 }
 
 /// Diff of the task worktree vs. its recorded base (`base_sha`, so the view is

@@ -183,6 +183,84 @@ async fn add_folder_inner(
     Ok(to_entry(model))
 }
 
+/// Get (or create) the folder row for a directory a BACKGROUND producer needs to
+/// name, without opening it into the workspace.
+///
+/// The delegation host needs a `folder_id` to write a child conversation row and
+/// to resolve that child's cwd on resume — nothing more. [`add_folder`] is the
+/// wrong tool for that: it unconditionally sets `is_open = true`, so an agent
+/// choosing a scratch `working_dir` (a PR checkout in `/tmp`, a throwaway
+/// worktree) would silently mint a top-level PROJECT in the user's sidebar, and
+/// a delegation into a folder the user had closed would silently reopen it.
+///
+/// Nothing is lost by keeping the row closed: delegation children are not
+/// sidebar rows at all (`conversation_service` lists roots only, and children
+/// render lazily under their parent), while both cwd lookups —
+/// [`get_folder_by_id`] and [`list_all_folder_details`] — deliberately ignore
+/// `is_open`.
+///
+/// So, against [`add_folder`]:
+/// - A live existing row is left ALONE — `is_open`, `last_opened_at`,
+///   `parent_id`, `name` and `group_id` all keep their values.
+/// - A soft-deleted row is revived (`deleted_at` cleared), because the two cwd
+///   lookups above both filter on it and a deleted row would fail the resume it
+///   is being created for — but revived CLOSED. [`remove_folder`] stamps only
+///   `deleted_at` and leaves `is_open` behind at whatever it was, so a deleted
+///   row's `is_open` says nothing; "deleted" already means "not in the
+///   workspace", and honoring the stale flag would put a folder the user removed
+///   back in their sidebar.
+/// - A new row starts `is_open = false`. It still takes a `sort_order` so that
+///   opening it later (deliberately, by the user) lands it in a sane position.
+pub async fn ensure_folder_for_path(
+    conn: &DatabaseConnection,
+    path: &str,
+) -> Result<FolderHistoryEntry, DbError> {
+    let now = Utc::now();
+
+    let existing = folder::Entity::find()
+        .filter(folder::Column::Path.eq(path))
+        .one(conn)
+        .await?;
+
+    let model = if let Some(row) = existing {
+        if row.deleted_at.is_none() {
+            return Ok(to_entry(row));
+        }
+        let mut active = row.into_active_model();
+        active.deleted_at = Set(None);
+        active.is_open = Set(false);
+        active.updated_at = Set(now);
+        active.update(conn).await?
+    } else {
+        let name = std::path::Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string());
+        let next_order = next_sort_order(conn).await?;
+        let active = folder::ActiveModel {
+            id: NotSet,
+            name: Set(name),
+            path: Set(path.to_string()),
+            git_branch: Set(None),
+            default_agent_type: Set(None),
+            last_opened_at: Set(now),
+            created_at: Set(now),
+            updated_at: Set(now),
+            deleted_at: Set(None),
+            is_open: Set(false),
+            sort_order: Set(next_order),
+            color: Set(DEFAULT_FOLDER_COLOR.to_string()),
+            parent_id: Set(None),
+            kind: Set(FolderKind::Regular),
+            alias: Set(None),
+            group_id: Set(None),
+        };
+        active.insert(conn).await?
+    };
+
+    Ok(to_entry(model))
+}
+
 /// Create a dedicated hidden folder backing a single chat-mode conversation.
 ///
 /// Unlike [`add_folder`], the display name is a fixed sentinel ("Chat") rather

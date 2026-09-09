@@ -263,6 +263,15 @@ pub enum BrokerMessage {
     TaskComplete(BrokerTaskCompleteRequest),
     CreateAutomation(BrokerCreateAutomationRequest),
     CreateWorkTask(BrokerCreateWorkTaskRequest),
+    /// Liveness probe. Unlike every other variant this one is NOT sent by a
+    /// companion — it comes from codeg's own service-status check
+    /// (`acp::delegation::service`), which is why it carries no `token`: a
+    /// `{"ok": true}` answer reveals nothing beyond "the socket is being
+    /// served", which the connect itself already proved. Answering it end to
+    /// end (accept → decode → dispatch → encode → write) is the point: it
+    /// distinguishes a live accept loop from a stale socket file left behind
+    /// by a dead one, which a bare `connect()` cannot.
+    Ping,
 }
 
 /// The wrapped outcome the main process returns over the same socket.
@@ -453,6 +462,15 @@ pub async fn client_create_work_task_round_trip(
     req: &BrokerCreateWorkTaskRequest,
 ) -> io::Result<BrokerResponse> {
     message_round_trip(socket_path, &BrokerMessage::CreateWorkTask(req.clone())).await
+}
+
+/// Probe the listener: write a [`BrokerMessage::Ping`] and read the
+/// `{"ok": true}` answer back. Used by the codeg-mcp service-status indicator
+/// to tell "listening" from "socket file exists but nobody is accepting".
+/// Callers should wrap this in their own timeout — a socket whose peer accepts
+/// but never answers would otherwise park here.
+pub async fn client_ping(socket_path: &str) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::Ping).await
 }
 
 /// Total budget for `open()` retries on Windows named pipes. Has to be

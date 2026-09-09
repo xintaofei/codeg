@@ -75,6 +75,7 @@ import { isDesktop } from "@/lib/platform"
 import { leftChromeReserve, rightChromeReserve } from "@/lib/window-chrome"
 import {
   acpFork,
+  acpStopAsyncTask,
   createChatConversation,
   createChatDir,
   createConversation,
@@ -84,7 +85,6 @@ import {
 import { isWindowedDetail } from "@/lib/turn-window"
 import {
   flushRetryDelayMs,
-  forkSendBlockedByQueue,
   isConnectionReady,
   shouldQueueDirectSend,
   shouldRejectDuplicateCreate,
@@ -111,6 +111,7 @@ import {
   type MessageTurn,
   type PlanApprovalAnswer,
   type PromptDraft,
+  type PromptInputBlock,
   type QuestionAnswer,
   type UserMessageBlock,
 } from "@/lib/types"
@@ -119,6 +120,7 @@ import {
   lastUserPromptText,
   type SessionFailureAction,
 } from "@/lib/session-failures"
+import { contentBlocksFromUserMessage } from "@/lib/user-message-blocks"
 import { getAgentLabel } from "@/lib/custom-agents"
 import {
   getSavedModeId,
@@ -209,15 +211,10 @@ function buildUserTurnFromMessageBlocks(
   messageId: string,
   blocks: UserMessageBlock[]
 ): MessageTurn {
-  const contentBlocks: ContentBlock[] = blocks.map((b) =>
-    b.type === "image"
-      ? { type: "image", data: b.data, mime_type: b.mime_type, uri: null }
-      : { type: "text", text: b.text }
-  )
   return {
     id: messageId,
     role: "user",
-    blocks: contentBlocks,
+    blocks: contentBlocksFromUserMessage(blocks),
     timestamp: new Date().toISOString(),
   }
 }
@@ -246,6 +243,7 @@ const ConversationTabView = memo(function ConversationTabView({
   const tDiag = useTranslations("DiagnosticsSettings")
   const sharedT = useTranslations("Folder.chat.shared")
   const tMessageList = useTranslations("Folder.chat.messageList")
+  const tAsyncTasks = useTranslations("Folder.chat.asyncTasks")
   const refreshConversations = useAppWorkspaceStore(
     (s) => s.refreshConversations
   )
@@ -486,20 +484,37 @@ const ConversationTabView = memo(function ConversationTabView({
       })
     )
 
-  // Two-source resolution for the session id passed to acp_connect:
-  //   1. detail.summary.external_id — DB value, available for tabs opened
-  //      from the sidebar (effectiveConversationId equals the real cid).
-  //   2. runtimeExternalId — populated by the connSessionId effect
-  //      below when SessionStarted fires. This is the ONLY source for tabs
-  //      that started as a new conversation: their effectiveConversationId
-  //      is locked to a virtual negative id (line 186 useState initializer
-  //      runs once), useConversationDetail skips fetching for virtual ids,
-  //      and detail stays null forever. Without this fallback, every
-  //      reconnect on a new-conversation tab passes sessionId=undefined →
-  //      backend takes session/new → DB.external_id is overwritten on the
-  //      next prompt → original sid orphaned, agent loses prior context.
+  // Session id passed to acp_connect. `runtimeExternalId` is the single
+  // resolution point, NOT a fallback behind `detail`: it is fed by BOTH
+  // sources — the effect below writes `detail.summary.external_id` into it
+  // whenever the DB value changes, and the `connSessionId` effect writes the
+  // live session id — so it is always the more recently established of the
+  // two. `detail` remains as the fallback for the first render after a cold
+  // open, before that effect has run.
+  //
+  // Ordering it the other way round silently un-forked a conversation. A fork
+  // re-points THIS row at S2 and inserts a sibling row holding S1; the panel
+  // learns S2 immediately (`setExternalId` from the fork response) but
+  // `detail` still holds S1 until its refetch lands. With `detail` winning,
+  // the next reconnect asked for S1 — which the new sibling row now owns — so
+  // the tab re-homed onto the sibling and the user was looking at the pre-fork
+  // history again, `[Fork]` row abandoned. Forking from there forked S1 a
+  // second time, which is exactly the chain the conversation table records:
+  // each row created at one fork's timestamp, then itself forked at the next.
+  // Because the tab landed on a session it had not established, the composer's
+  // selectors came back as the agent's defaults too — the reported "model
+  // changed after forking".
+  //
+  // The `detail` fallback still matters for tabs that started as a new
+  // conversation: their `effectiveConversationId` is locked to a virtual
+  // negative id (line 186's useState initializer runs once),
+  // useConversationDetail skips fetching for virtual ids, and `detail` stays
+  // null forever — there, `runtimeExternalId` is the ONLY source, and without
+  // it every reconnect passes sessionId=undefined → backend takes session/new
+  // → DB.external_id is overwritten on the next prompt → original sid
+  // orphaned, agent loses prior context.
   const externalId =
-    detail?.summary.external_id ?? runtimeExternalId ?? undefined
+    runtimeExternalId ?? detail?.summary.external_id ?? undefined
   // For persisted conversations opened from the sidebar, wait until the
   // session's external_id has been resolved before auto-connecting.
   // Otherwise the auto-connect effect fires with sessionId=undefined and
@@ -1234,92 +1249,125 @@ const ConversationTabView = memo(function ConversationTabView({
     handleSendRef.current = handleSend
   }, [handleSend])
 
-  const handleForkSend = useCallback(
-    // Fire-and-forget: the input clears the draft synchronously on click (like a
-    // normal send), so there is no in-flight editable window. If the fork can't
-    // run right now — disconnected, or the queue is non-empty (a fork is an
-    // immediate session side effect and must not jump ahead of queued items) —
-    // the draft is NOT lost: it is queued as a normal send (it flushes after any
-    // queued items). The same on a fork failure.
-    async (draft: PromptDraft, selectedModeIdArg?: string | null) => {
+  // "Fork from here": fork at a rendered assistant turn, sending nothing. The
+  // ONLY fork entry point — the composer's fork-and-send was removed once this
+  // existed, since the tail is just one of the turns this can be aimed at.
+  //
+  // No draft is at stake, so a failure is simply reported: the session is
+  // untouched and the same click can be retried, or aimed elsewhere.
+  //
+  // Which turns the agent can actually name is the backend's call
+  // (`resolve_fork_point`): a turn it cannot name forks at the tail rather than
+  // failing, so this never has to reason about per-agent identity.
+  //
+  // Liveness is read off `connStatusRef` rather than captured: this callback is
+  // handed to every rendered reply, so taking `connStatus` as a dependency
+  // would swap its identity at both ends of every turn and re-render the whole
+  // mounted transcript window for nothing. The ref is also the fresher answer
+  // at click time.
+  const handleForkFromTurn = useCallback(
+    async (turnId: string) => {
       const connectionId = conn.connectionId
-      if (
-        !connectionId ||
-        connStatus !== "connected" ||
-        // Read the queue length SYNCHRONOUSLY so a draft re-queued by a same-
-        // tick bounce is seen even before React commits. The UI also hides the
-        // fork affordance while the queue is non-empty; this is the guard.
-        forkSendBlockedByQueue(mqGetQueueLength())
-      ) {
-        mqEnqueue(draft, selectedModeIdArg ?? null)
-        return
-      }
+      if (!connectionId || connStatusRef.current !== "connected") return
+      // Snapshot which live turns belong to the PRE-fork session, before the
+      // await. The fork RPC is a window in which a send can still start — a
+      // queued auto-flush, a fast typist, another client — and such a turn
+      // legitimately runs on the forked session, so it must not be swept away
+      // with the history it isn't part of. Naming the stale turns instead of
+      // clearing wholesale is what keeps that distinction.
+      //
+      // COMPLETED turns only. An optimistic user turn is one whose prompt has
+      // not reached the agent yet, and the backend refuses a fork while a turn
+      // is in flight (`AcpError::TurnInProgress`) — so a fork that SUCCEEDS
+      // proves any optimistic turn standing at this moment never started a
+      // turn on the old session, and it will therefore run on the forked one.
+      // Sweeping it would erase the user's own message while its reply streams
+      // in underneath.
+      const preForkSession = useConversationRuntimeStore
+        .getState()
+        .byConversationId.get(effectiveConversationId)
+      const staleLiveTurnIds = (preForkSession?.localTurns ?? []).map(
+        (t) => t.id
+      )
       try {
-        // Backend performs all DB writes in one transaction-shaped call:
-        // - current row: external_id=S2, title="[Fork] ..."
-        // - sibling row: created with external_id=S1, status=pending_review
-        // Pass (conversationId, folderId) so a conversation opened from history
-        // — whose connection resumed via session_id but isn't row-linked until
-        // its first prompt — is adopted by the backend before forking (a
-        // fork-send forks BEFORE that prompt). No-op once already linked. Use
-        // the real persisted DB id (`dbConvIdRef`, same as the send path below),
-        // NOT the runtime key `effectiveConversationId` which can be virtual.
         const { forkedSessionId } = await acpFork(
           connectionId,
           dbConvIdRef.current,
-          folderId
+          folderId,
+          turnId
         )
-        // Update runtime session id to S2 (frontend in-memory state only)
         sessionIdRef.current = forkedSessionId
         setExternalId(effectiveConversationId, forkedSessionId)
-
-        // NOTE: a fork is a transcript discontinuity — the row's session flips
-        // S1→S2, and S2 is a COPY of S1's transcript plus the turns to come.
-        // The pre-fork history is NOT re-surfaced here: the backend background
-        // watcher correctly excludes the fork-copied prefix from the out-of-turn
-        // overlay (see `baseline_offset_since`), so `detail.turns` (S1 parse) +
-        // the new local turns render each exchange exactly once. No detail
-        // refetch is needed or wanted — an early one races the forked turn and
-        // can drop the just-sent message.
+        // The backend's two-row reshuffle: the current row now points at S2
+        // and a freshly inserted sibling preserves S1.
         refreshConversations()
-        // Send the message on the forked session (S2)
-        handleSend(draft, selectedModeIdArg)
+        // This row's HISTORY just changed — the whole point is that S2 ends
+        // at the chosen turn. The turns rendered right now came
+        // from S1 — the persisted detail plus every turn this session streamed
+        // — so leaving them would show the fork with the parent's full history
+        // until the tab is closed and reopened.
+        //
+        // The removal rides ON the refetch rather than preceding it, so the
+        // two land as one dispatch: no frame shows S2's history beside S1's
+        // turns, and a refetch that FAILS removes nothing (it dispatches
+        // `FETCH_DETAIL_ERROR`, leaving the timeline as it was rather than
+        // stranding the row with neither the old turns nor new ones).
+        // `preserveLive` keeps everything else — the point of naming the stale
+        // turns is that a reply started during the fork survives.
+        refetchDetail(effectiveConversationId, {
+          preserveLive: true,
+          dropLiveTurnIds: staleLiveTurnIds,
+        })
       } catch (err) {
-        // Busy (a turn is in flight, e.g. another co-controlling client started
-        // one): NOT a fork failure — silently re-queue, like a normal bounce.
-        // It sends after the current turn.
-        if (err instanceof TurnBusyError) {
-          mqEnqueue(draft, selectedModeIdArg ?? null)
-          return
-        }
-        // Real fork failure: surface it. EXPLICIT product decision — fork-send
-        // is best-effort, so the draft is never lost; it is re-queued and sent
-        // on the current (un-forked) session.
+        // A turn in flight is transient here, not a failure to report as one —
+        // there is no draft to re-queue, so say so and let the user retry.
         toast.error(
-          t("forkSessionFailed", {
-            error:
-              err instanceof Error
-                ? err.message
-                : typeof err === "object" && err !== null
-                  ? JSON.stringify(err)
-                  : String(err),
-          })
+          err instanceof TurnBusyError
+            ? t("forkSessionBusy")
+            : t("forkSessionFailed", {
+                error:
+                  err instanceof Error
+                    ? err.message
+                    : typeof err === "object" && err !== null
+                      ? JSON.stringify(err)
+                      : String(err),
+              })
         )
-        mqEnqueue(draft, selectedModeIdArg ?? null)
       }
     },
     [
       conn.connectionId,
-      connStatus,
-      mqGetQueueLength,
-      mqEnqueue,
       effectiveConversationId,
       folderId,
-      handleSend,
+      refetchDetail,
       refreshConversations,
       setExternalId,
       t,
     ]
+  )
+
+  /** Stop one AIR async task. Returns the adapter's verdict so the strip can
+   *  release its button; `false` (the adapter declined) is reported, because
+   *  nothing else would tell the user their click did nothing — a successful
+   *  stop announces itself by the row disappearing. */
+  const handleStopAsyncTask = useCallback(
+    async (taskId: string) => {
+      const connectionId = conn.connectionId
+      if (!connectionId) return false
+      try {
+        const stopped = await acpStopAsyncTask(connectionId, taskId)
+        if (!stopped) toast.warning(tAsyncTasks("stopDeclined"))
+        return stopped
+      } catch (err) {
+        toast.error(
+          tAsyncTasks("stopFailed", {
+            error: err instanceof Error ? err.message : String(err),
+          })
+        )
+        return false
+      }
+    },
+    [conn.connectionId, tAsyncTasks]
   )
 
   const handleOpenAgentsSettings = useCallback(() => {
@@ -1919,6 +1967,24 @@ const ConversationTabView = memo(function ConversationTabView({
         // rather than a usable composer here — a transcript whose composer is
         // blocked (session/load failure) can still spawn the question elsewhere.
         onAskSelection={canAskSelection ? handleAskSelection : undefined}
+        // Fork carries no draft, so — unlike a send — a non-empty queue is
+        // not at risk of being jumped and needs no guard here. A turn in
+        // flight is still rejected, by the backend, which is the only place
+        // that can see it without racing.
+        //
+        // "prompting" belongs on this side of the gate (same shape as the
+        // goal-control gate above): this answers "can this surface fork at
+        // all", and a turn in flight is a passing "not right now" that the
+        // view greys the button out for. Dropping the handler instead made
+        // every reply's fork icon disappear for the length of each reply.
+        // `handleForkFromTurn` re-checks liveness at click time.
+        onForkFromTurn={
+          (connStatus === "connected" || connStatus === "prompting") &&
+          hasPersistedConversation &&
+          conn.supportsFork
+            ? handleForkFromTurn
+            : undefined
+        }
       />
     </GoalControlProvider>
   )
@@ -1944,15 +2010,22 @@ const ConversationTabView = memo(function ConversationTabView({
     connectionId: conn.connectionId,
     connStatus,
     enabled: feedbackEnabled,
+    // Notes the transcript adopted as mid-turn user turns show as messages,
+    // not as strips above the composer.
+    steeredMessageIds: conn.steeredMessageIds,
     onResendAsPrompt: resendFeedbackAsPrompt,
   })
-  // Composer "insert into current turn" (native steering only). Rethrows —
-  // MessageInput owns the enqueue fallback and draft-preservation policy, so
-  // this wrapper must not swallow the turn-end race the way `submit` does.
+  // Composer mid-turn send, over whichever live-feedback channel this session
+  // has (native push or the pull tool). Rethrows — MessageInput owns the
+  // enqueue fallback and draft-preservation policy, so this wrapper must not
+  // swallow the turn-end race the way `submit` does. `blocks` rides along when
+  // the draft carries attachments (images steer natively; the pull path
+  // rejects them into the composer's queue fallback); `text` stays the
+  // recorded/display form.
   const feedbackSteer = feedback.steer
   const handleSteer = useCallback(
-    async (text: string) => {
-      await feedbackSteer(text)
+    async (text: string, blocks?: PromptInputBlock[]) => {
+      await feedbackSteer(text, blocks)
     },
     [feedbackSteer]
   )
@@ -1984,6 +2057,14 @@ const ConversationTabView = memo(function ConversationTabView({
           : undefined
       }
       onSessionFailureDismiss={handleSessionFailureDismiss}
+      asyncTasks={conn.asyncTasks}
+      onStopAsyncTask={
+        // Owners of a live connection only — same gate as the failure actions:
+        // a viewer has no connection to send the stop on.
+        conn.connectionId !== null && !conn.isViewer
+          ? handleStopAsyncTask
+          : undefined
+      }
       pendingPermission={conn.pendingPermission}
       pendingQuestion={conn.pendingQuestion}
       pendingAskQuestion={conn.pendingAskQuestion}
@@ -2013,7 +2094,15 @@ const ConversationTabView = memo(function ConversationTabView({
       composerBanner={acpLoadErrorBanner}
       feedbackList={
         feedback.showList ? (
-          <FeedbackNotesDisplay notes={feedback.notes} />
+          <FeedbackNotesDisplay
+            notes={feedback.notes}
+            // Past the turn the list is the only place an unread note still
+            // exists on screen, so it carries its own recovery actions rather
+            // than disappearing with the turn that never read it.
+            expired={feedback.notesExpired}
+            onResend={feedback.resendNote}
+            onDismiss={feedback.dismissNote}
+          />
         ) : null
       }
       onAddFeedback={feedback.featureEnabled ? feedback.openDialog : undefined}
@@ -2031,22 +2120,18 @@ const ConversationTabView = memo(function ConversationTabView({
       isEditingQueueItem={mqEditingItemId != null}
       onSaveQueueEdit={handleSaveQueueEdit}
       onCancelQueueEdit={handleQueueCancelEdit}
-      onForkSend={
-        connStatus === "connected" &&
-        hasPersistedConversation &&
-        conn.supportsFork &&
-        !forkSendBlockedByQueue(msgQueue.length)
-          ? handleForkSend
-          : undefined
-      }
       onSteer={
-        // Native channel only: on pull sessions the prompting branch must
-        // stay pixel-identical (Stop button alone). The prompting scope
-        // itself is enforced where the button renders.
-        feedback.featureEnabled && feedback.channel === "native"
+        // Any working delivery channel, not just the native push: the pull
+        // tool records a waiting note the agent reads on its next check, and
+        // `steerChannel` swaps the copy so pull sessions never promise an
+        // instant insert. Sessions with NEITHER channel keep the historical
+        // prompting branch (Stop button alone, Enter queues). The prompting
+        // scope itself is enforced where the button renders.
+        feedback.featureEnabled && feedback.steerAvailable
           ? handleSteer
           : undefined
       }
+      steerChannel={feedback.channel}
     >
       {isWelcomeMode ? (
         // Same overlay scrollbar as the sidebar / file lists (os-theme-codeg)

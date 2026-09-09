@@ -347,6 +347,97 @@ describe("loadOlderTurns", () => {
     expect(session()?.loadingOlderTurns).toBe(false)
   })
 
+  it("a fork removes only the turns that existed when it was requested", async () => {
+    // "Fork from here" re-points the row at a session whose history stops at
+    // the chosen turn, so the turns this session streamed on the old session
+    // are stale — but ONLY the ones present when the fork was asked for. The
+    // fork RPC is a window in which a send can still start (a queued auto-
+    // flush, a fast typist, another client), and such a turn runs on the
+    // forked session, so a blanket clear would take it off screen. The stale
+    // ids ride on the refetch so both land in one dispatch.
+    seed({
+      detail: windowedDetail(4),
+      localTurns: [turn("parent-reply", "assistant", 9)],
+    })
+    let resolveDetail: (d: DbConversationDetail) => void = () => {}
+    mockGet.mockImplementation(
+      () =>
+        new Promise<DbConversationDetail>((r) => {
+          resolveDetail = r
+        })
+    )
+
+    actions().refetchDetail(CID, {
+      preserveLive: true,
+      dropLiveTurnIds: ["parent-reply"],
+    })
+    await flush()
+
+    // A reply the user started right after forking completes while the
+    // response is still out.
+    useConversationRuntimeStore.setState({
+      byConversationId: new Map([
+        [
+          CID,
+          {
+            ...session()!,
+            localTurns: [
+              ...session()!.localTurns,
+              turn("forked-reply", "assistant", 11),
+            ],
+          },
+        ],
+      ]),
+    })
+
+    resolveDetail(windowedDetail(4))
+    await flush()
+    expect(session()?.detailLoading).toBe(false)
+    expect(session()?.detail?.turns_offset).toBe(4)
+    expect(session()?.localTurns.map((t) => t.id)).toEqual(["forked-reply"])
+  })
+
+  it("a fork keeps an optimistic turn whose prompt will run on the fork", async () => {
+    // A send that has not reached the agent yet leaves an optimistic user
+    // turn standing. The backend refuses a fork while a turn is in flight, so
+    // a fork that SUCCEEDS proves that prompt never ran on the old session —
+    // it will run on the forked one. The panel therefore snapshots completed
+    // turns only, and the reducer removes strictly what it was given.
+    seed({
+      detail: windowedDetail(4),
+      localTurns: [turn("parent-reply", "assistant", 9)],
+      optimisticTurns: [turn("pending-prompt", "user", 10)],
+    })
+    mockGet.mockResolvedValue(windowedDetail(4))
+    actions().refetchDetail(CID, {
+      preserveLive: true,
+      dropLiveTurnIds: ["parent-reply"],
+    })
+    await flush()
+    expect(session()?.localTurns).toEqual([])
+    expect(session()?.optimisticTurns.map((t) => t.id)).toEqual([
+      "pending-prompt",
+    ])
+  })
+
+  it("a failed fork refetch removes nothing", async () => {
+    // The removal is a property of the SUCCESS dispatch, so an error leaves
+    // the timeline exactly as it was rather than stranding the row with
+    // neither the pre-fork turns nor a new history.
+    seed({
+      detail: windowedDetail(4),
+      localTurns: [turn("parent-reply", "assistant", 9)],
+    })
+    mockGet.mockRejectedValue(new Error("nope"))
+    actions().refetchDetail(CID, {
+      preserveLive: true,
+      dropLiveTurnIds: ["parent-reply"],
+    })
+    await flush()
+    expect(session()?.detailError).toBe("nope")
+    expect(session()?.localTurns.map((t) => t.id)).toEqual(["parent-reply"])
+  })
+
   it("dedupes turns already present at the seam", async () => {
     seed({ detail: windowedDetail(4) })
     // Malformed page that also carries the first loaded turn (turn-4).

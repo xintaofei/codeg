@@ -4,7 +4,9 @@ import type { AgentType } from "@/lib/types"
 
 /**
  * Device-local memory of how the canvas was left: where the viewport sat, which
- * cards were open, and any conversation that was started there but never sent.
+ * cards and regions were open, whether the map was showing, any conversation
+ * started there but never sent, and the connection key a card inherited from
+ * the draft that created it.
  *
  * The canvas is a full-page route, and `WorkbenchRoutePage` unmounts it whenever
  * the user goes back to the workspace — so without this, every visit reopens a
@@ -12,10 +14,15 @@ import type { AgentType } from "@/lib/types"
  * "come back to where I was" true across route switches AND app restarts.
  *
  * Advisory, not authoritative, and deliberately not scoped per backend — the
- * same contract `last-active-context-storage.ts` has. Node ids that belong to
- * some other database simply resolve to nothing: an unknown expanded id matches
- * no node, and a restored draft whose folder is gone falls back to a card with
- * no working directory. The authoritative board is always `canvas_node`.
+ * same contract `last-active-context-storage.ts` has. The authoritative board is
+ * always `canvas_node`. That un-scoping is the sharp edge of this file: a node
+ * id is only meaningful WITHIN one database, and two databases behind one origin
+ * hand out the same low `AUTOINCREMENT` ids to entirely different nodes. Most
+ * entries degrade harmlessly under that (an unmatched expanded id opens nothing;
+ * a restored draft whose folder is gone falls back to a card with no working
+ * directory), so the caller's prune against the live board is all they need. An
+ * entry that would carry BEHAVIOUR across — the connection key below — has to
+ * name the card itself instead, and does.
  */
 
 const VIEWPORT_KEY = "workspace:canvas-viewport"
@@ -23,6 +30,7 @@ const EXPANDED_CARDS_KEY = "workspace:canvas-expanded-cards"
 const EXPANDED_REGIONS_KEY = "workspace:canvas-expanded-regions"
 const DRAFTS_KEY = "workspace:canvas-drafts"
 const MINIMAP_KEY = "workspace:canvas-minimap"
+const SURFACE_KEYS_KEY = "workspace:canvas-surface-keys"
 
 /** Mirrors ReactFlow's `Viewport`. Zoom is clamped to the same range the flow
  *  is configured with, so a corrupted entry can never strand the board at a
@@ -130,6 +138,71 @@ export function loadCanvasExpandedRegions(): number[] {
 
 export function saveCanvasExpandedRegions(ids: readonly number[]): void {
   writeJson(EXPANDED_REGIONS_KEY, [...ids])
+}
+
+/**
+ * Pinned card id → the ACP connection key its surface must keep using, for the
+ * cards minted by a draft's first send: those inherit the DRAFT's key so the
+ * send already in flight isn't left on a surface nobody renders (see
+ * `materializeDraft`).
+ *
+ * Remembered for the same reason the expansions are. The key is only the
+ * default (`canvas-node-<id>`) for a card that was never a draft, so a card
+ * that recomputed it after a route switch would go looking for a connection
+ * that lives under the draft's key — and find nothing, while the agent it
+ * started keeps running under a key no surface claims any more.
+ *
+ * Each entry names the card it was written for, and the caller drops any whose
+ * node no longer matches. Within one database an id would be enough —
+ * `canvas_node.id` is `AUTOINCREMENT`, so ids are never reused, and a node's
+ * `conversation_id` is fixed at creation — but this file is deliberately NOT
+ * scoped per backend (see the header), and two databases behind one origin
+ * hand out the same low ids to entirely different cards. `createdAt` is what
+ * survives that: it identifies the node itself rather than its place in some
+ * database's counter, so an entry written against another database resolves to
+ * nothing, like every other entry here, instead of handing a card a stranger's
+ * connection key.
+ */
+export interface CanvasSurfaceKey {
+  /** The conversation the node was bound to when the key was inherited. */
+  conversationId: number
+  /** The node's `created_at`, as the card identity an id sequence can't give. */
+  createdAt: string
+  /** The ACP connection key that card must keep using. */
+  key: string
+}
+
+export function loadCanvasSurfaceKeys(): Map<number, CanvasSurfaceKey> {
+  const parsed = readJson(SURFACE_KEYS_KEY)
+  const keys = new Map<number, CanvasSurfaceKey>()
+  if (!Array.isArray(parsed)) return keys
+  for (const raw of parsed) {
+    if (!raw || typeof raw !== "object") continue
+    const entry = raw as Record<string, unknown>
+    if (!Number.isInteger(entry.nodeId)) continue
+    if (!Number.isInteger(entry.conversationId)) continue
+    if (typeof entry.createdAt !== "string" || entry.createdAt === "") continue
+    if (typeof entry.key !== "string" || entry.key.length === 0) continue
+    keys.set(entry.nodeId as number, {
+      conversationId: entry.conversationId as number,
+      createdAt: entry.createdAt,
+      key: entry.key,
+    })
+  }
+  return keys
+}
+
+export function saveCanvasSurfaceKeys(
+  keys: ReadonlyMap<number, CanvasSurfaceKey>
+): void {
+  if (keys.size === 0) {
+    remove(SURFACE_KEYS_KEY)
+    return
+  }
+  writeJson(
+    SURFACE_KEYS_KEY,
+    [...keys].map(([nodeId, entry]) => ({ nodeId, ...entry }))
+  )
 }
 
 /**

@@ -8,6 +8,7 @@ import {
   Coins,
   CopyIcon,
   ListTodo,
+  Split,
 } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
 import {
@@ -32,6 +33,18 @@ interface TurnStatsProps {
   copyText?: string
   /** ISO timestamp marking when the assistant reply finished. */
   completedAt?: string | null
+  /** Fork the session at THIS reply. Undefined hides the affordance — the
+   * session has no live connection, the agent has no `session/fork`, or this
+   * surface doesn't own the conversation. */
+  onForkFromHere?: () => void
+  /** Forking is possible here but not right now. The button stays in place,
+   * greyed out, and says why on hover — it used to vanish for the length of
+   * every reply, which moved the whole icon row. */
+  forkDisabled?: boolean
+  /** Why it is greyed out: a turn is in flight (`busy`), or this reply has no
+   * name the backend can resolve yet (`unnamed` — the post-turn reparse fills
+   * it in a moment later). Only read while `forkDisabled`. */
+  forkDisabledReason?: "busy" | "unnamed"
 }
 
 const iconButtonClass =
@@ -46,6 +59,9 @@ export function TurnStats({
   isResponseComplete = true,
   copyText = "",
   completedAt,
+  onForkFromHere,
+  forkDisabled = false,
+  forkDisabledReason = "busy",
 }: TurnStatsProps) {
   const locale = useLocale()
   const t = useTranslations("Folder.chat.messageList")
@@ -128,7 +144,8 @@ export function TurnStats({
   if (!isResponseComplete) return null
   // Deliberately not gated on `hasDuration`: nothing in this row renders a
   // duration any more, so a turn carrying only one would open an empty row.
-  if (!hasCopy && !hasUsage && !hasCompletedAt && !hasJump) return null
+  if (!hasCopy && !hasUsage && !hasCompletedAt && !hasJump && !onForkFromHere)
+    return null
 
   return (
     <div className="mt-2 -ms-[0.3125rem] flex items-center justify-start gap-1 text-xs text-muted-foreground">
@@ -168,6 +185,36 @@ export function TurnStats({
             </TooltipTrigger>
             <TooltipContent side="top">
               {tTasks("createFromMessage")}
+            </TooltipContent>
+          </Tooltip>
+        )}
+        {onForkFromHere && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              {/* `aria-disabled`, deliberately NOT the native `disabled`: a
+                  disabled element receives no pointer events, so the tooltip —
+                  the only thing that says WHY the button is dead — would never
+                  open. Staying focusable also keeps it reachable by keyboard. */}
+              <button
+                type="button"
+                onClick={forkDisabled ? undefined : onForkFromHere}
+                aria-disabled={forkDisabled || undefined}
+                className={cn(
+                  iconButtonClass,
+                  forkDisabled &&
+                    "cursor-not-allowed opacity-50 hover:bg-transparent hover:text-muted-foreground"
+                )}
+                aria-label={t("forkFromHere")}
+              >
+                <Split aria-hidden="true" className="h-3.5 w-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              {forkDisabled
+                ? forkDisabledReason === "unnamed"
+                  ? t("forkNotReady")
+                  : t("forkBusy")
+                : t("forkFromHere")}
             </TooltipContent>
           </Tooltip>
         )}

@@ -9,7 +9,7 @@ import { toErrorMessage } from "@/lib/app-error"
 import type { LinkSafetyConfig, LinkSafetyModalProps } from "streamdown"
 import { toast } from "sonner"
 import { useActiveFolder } from "@/contexts/active-folder-context"
-import { useWorkspaceActions } from "@/contexts/workspace-context"
+import { useOpenFileTarget } from "@/hooks/use-open-file-target"
 import { isHomeRelativePath } from "@/lib/file-open-target"
 import { isAbsoluteFilePath } from "@/lib/file-path-display"
 import { cn } from "@/lib/utils"
@@ -197,6 +197,24 @@ function getAllowedExternalProtocol(rawUrl: string): string | null {
 }
 
 /**
+ * Whether {@link useOpenLinkOrFile} has anywhere to send `rawUrl`: a local
+ * file, or an external url whose protocol is on the allow-list. Mirrors that
+ * hook's own branch order, so a caller offering an "open" affordance can leave
+ * it out rather than show one that can only end in the unsupported-protocol
+ * toast (`ftp://`, `vscode://`, a bare relative path with no folder to
+ * anchor it).
+ *
+ * A `true` answer is not a promise the open succeeds — a folder-relative path
+ * still needs an active folder, which only the hook can see.
+ */
+export function canOpenLinkOrFile(rawUrl: string): boolean {
+  return (
+    parseLocalFileTarget(rawUrl) !== null ||
+    getAllowedExternalProtocol(rawUrl) !== null
+  )
+}
+
+/**
  * True when `window.open` actually opens something — i.e. a real browser.
  *
  * NOT the same question as `isWebOpenerEnvironment` below. A Tauri window bound
@@ -361,15 +379,17 @@ function DirectLinkOpen({
 
 /**
  * Hook returning an async opener for a link or local-file uri: `file://` (and
- * bare local paths) open in the workspace file panel; http(s)/mailto/tel route
- * to the browser / OS handler. Used by the Streamdown link-safety modal and by
- * standalone clickable file affordances (e.g. user-message resource badges).
+ * bare local paths) open in the workspace file panel — or, where that panel is
+ * covered by a full-page route, in the transcript's own file viewer (see
+ * `useOpenFileTarget`); http(s)/mailto/tel route to the browser / OS handler.
+ * Used by the Streamdown link-safety modal and by standalone clickable file
+ * affordances (e.g. user-message resource badges).
  */
 export function useOpenLinkOrFile() {
   const t = useTranslations("Folder.chat.linkSafety")
   const { activeFolder: folder } = useActiveFolder()
   const folderPath = folder?.path
-  const { openFilePreview } = useWorkspaceActions()
+  const openFileTarget = useOpenFileTarget()
 
   return useCallback(
     async (url: string) => {
@@ -386,8 +406,8 @@ export function useOpenLinkOrFile() {
         }
 
         try {
-          await openFilePreview(localTarget.path.replace(/^\.\/+/, ""), {
-            line: localTarget.line ?? undefined,
+          await openFileTarget(localTarget.path.replace(/^\.\/+/, ""), {
+            line: localTarget.line,
           })
         } catch (error) {
           toast.error(t("errorFailedOpen"), {
@@ -425,7 +445,7 @@ export function useOpenLinkOrFile() {
         })
       }
     },
-    [folderPath, openFilePreview, t]
+    [folderPath, openFileTarget, t]
   )
 }
 
@@ -467,7 +487,9 @@ function resolveToolFilePath(rawPath: string): string | null {
 }
 
 /**
- * Clickable file-path label that routes the file into the workspace file panel.
+ * Clickable file-path label that routes the file into the workspace file panel
+ * — or the transcript's own file viewer when that panel is covered by a
+ * full-page route (see `useOpenFileTarget`).
  */
 export function FilePathLink({
   filePath,
@@ -485,7 +507,7 @@ export function FilePathLink({
   const t = useTranslations("Folder.chat.linkSafety")
   const { activeFolder: folder } = useActiveFolder()
   const folderPath = folder?.path ?? null
-  const { openFilePreview } = useWorkspaceActions()
+  const openFileTarget = useOpenFileTarget()
   // `opening` drives the visual busy state. `openingRef` is the synchronous
   // gate that survives rapid double-fires within a single event tick —
   // React batches the `setOpening(true)` commit, so relying purely on the
@@ -509,9 +531,7 @@ export function FilePathLink({
 
     openingRef.current = true
     setOpening(true)
-    void openFilePreview(target, {
-      line: line ?? undefined,
-    })
+    void openFileTarget(target, { line })
       .catch((error) => {
         toast.error(t("errorFailedOpen"), {
           description: toErrorMessage(error),
@@ -521,7 +541,7 @@ export function FilePathLink({
         openingRef.current = false
         setOpening(false)
       })
-  }, [filePath, folderPath, line, openFilePreview, t])
+  }, [filePath, folderPath, line, openFileTarget, t])
 
   return (
     <span className={cn("block min-w-0", className)}>

@@ -15,17 +15,14 @@
  *
  * All agent-type / task / status / child-id resolution lives in
  * `useDelegationCardModel` (shared with the top-right `SubAgentOverlay`), so the
- * card and the overlay never disagree about a sub-agent.
+ * card and the overlay never disagree about a sub-agent; the row itself is
+ * `DelegationCardRow`, shared with `ResumedDelegationCard`.
  */
 
 import { useState } from "react"
-import { getAgentLabel } from "@/lib/custom-agents"
-import { Eye } from "lucide-react"
-import { useTranslations } from "next-intl"
 
-import { AgentIcon } from "@/components/agent-icon"
 import type { ToolCallState } from "@/lib/adapters/ai-elements-adapter"
-import { StatusBadge } from "@/components/message/delegation-status-badge"
+import { DelegationCardRow } from "@/components/message/delegation-card-row"
 import { SubAgentSessionDialog } from "@/components/message/sub-agent-session-dialog"
 import { useSessionViewerHost } from "@/components/message/session-viewer-host"
 import { useDelegationCardModel } from "@/hooks/use-delegation-card-model"
@@ -59,7 +56,6 @@ export function DelegatedSubThread({
   state,
   meta,
 }: Props) {
-  const t = useTranslations("Folder.chat.delegation")
   // Preferred: hand the viewer to the transcript-level host, which outlives
   // this card's virtual row. `null` means this card is rendering outside a
   // `MessageListView` (and so outside any virtualizer) — then it owns the
@@ -97,56 +93,21 @@ export function DelegatedSubThread({
       data-testid="delegated-sub-thread"
       className="@container/delegcard rounded-lg border border-border bg-card ws-msg-card"
     >
-      <div className="flex w-full items-stretch rounded-lg overflow-hidden">
-        <div className="flex flex-1 min-w-0 items-center gap-3 px-3 py-2.5 text-left">
-          <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border bg-background text-foreground">
-            {agentType ? (
-              <AgentIcon agentType={agentType} className="h-5 w-5" />
-            ) : (
-              <span className="h-2.5 w-2.5 rounded-sm bg-muted-foreground/60" />
-            )}
-          </span>
-          <div className="min-w-0 flex-1 space-y-0.5">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-foreground">
-                {agentType ? getAgentLabel(agentType) : t("unknownAgent")}
-              </span>
-              {taskId && (
-                <span
-                  className="shrink-0 font-mono text-xs text-muted-foreground"
-                  title={taskId}
-                >
-                  #{taskId.slice(0, 8)}
-                </span>
-              )}
-              <StatusBadge status={status} errorCode={errorCode} />
-            </div>
-            {task && (
-              <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words line-clamp-1">
-                {task}
-              </div>
-            )}
-          </div>
-        </div>
-        {childConversationId != null && (
-          <button
-            type="button"
-            onClick={() =>
-              viewerHost
-                ? viewerHost.open({ kind: "delegation", source })
-                : setDialogOpen(true)
-            }
-            className="shrink-0 flex items-center gap-1.5 px-3 border-l border-border text-xs font-medium text-foreground/80 hover:bg-muted/60 hover:text-foreground transition-colors"
-            title={t("openDetail")}
-            aria-label={t("openDetail")}
-          >
-            <Eye className="h-3.5 w-3.5" />
-            <span className="hidden @[24rem]/delegcard:inline">
-              {t("openDetail")}
-            </span>
-          </button>
-        )}
-      </div>
+      <DelegationCardRow
+        agentType={agentType}
+        taskId={taskId}
+        status={status}
+        errorCode={errorCode}
+        task={task}
+        onOpenSession={
+          childConversationId != null
+            ? () =>
+                viewerHost
+                  ? viewerHost.open({ kind: "delegation", source })
+                  : setDialogOpen(true)
+            : undefined
+        }
+      />
       {viewerHost == null && childConversationId != null && (
         <SubAgentSessionDialog
           open={dialogOpen}

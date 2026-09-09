@@ -19,7 +19,7 @@
  * unless the user touched it.
  */
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
   CalendarClock,
@@ -39,6 +39,8 @@ import {
   SettingsSection,
 } from "@/components/shared/settings-section"
 import { Switch } from "@/components/ui/switch"
+import { subscribe } from "@/lib/platform"
+import { CHAT_AUTHORING_SETTINGS_CHANGED_EVENT } from "@/lib/types"
 import {
   getChatAuthoringSettings,
   getFeedbackSettings,
@@ -48,6 +50,7 @@ import {
   setFeedbackSettings,
   setQuestionSettings,
   setSessionInfoSettings,
+  type ChatAuthoringSettings,
 } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import { primeFeedbackEnabled } from "@/hooks/use-feedback-enabled"
@@ -130,10 +133,23 @@ export function AgentToolsSettingsSection() {
   // successful write. The diff against `values` is what Save acts on.
   const [baseline, setBaseline] = useState<AgentToolValues>(DEFAULTS)
   const [loadError, setLoadError] = useState<string | null>(null)
+  // Read through refs so the subscription below can compare `values` against
+  // `baseline` without re-subscribing on every state change.
+  const valuesRef = useRef(values)
+  const baselineRef = useRef(baseline)
+  useEffect(() => {
+    valuesRef.current = values
+    baselineRef.current = baseline
+  }, [values, baseline])
+  /** Bumped by every broadcast. The initial load samples it before its reads
+   * and, if it moved while they were in flight, yields the create-from-chat
+   * fields to the broadcast — those reads are older than it. */
+  const remoteGenRef = useRef(0)
 
   useEffect(() => {
     let cancelled = false
     void (async () => {
+      const gen = remoteGenRef.current
       const [feedback, question, sessionInfo, chat] = await Promise.allSettled([
         getFeedbackSettings(),
         getQuestionSettings(),
@@ -160,13 +176,74 @@ export function AgentToolsSettingsSection() {
         next.workTasks = chat.value.work_tasks_enabled
       } else failures.push(toErrorMessage(chat.reason))
 
-      setValues(next)
-      setBaseline(next)
+      const supersededByBroadcast = remoteGenRef.current !== gen
+      // `prev` already holds the broadcast's value for these two fields (or the
+      // user's pending edit, in `values`), so keeping it is the merge.
+      const keepAuthoring = (prev: AgentToolValues): AgentToolValues =>
+        supersededByBroadcast
+          ? {
+              ...next,
+              automations: prev.automations,
+              workTasks: prev.workTasks,
+            }
+          : next
+      setValues(keepAuthoring)
+      setBaseline(keepAuthoring)
       setLoadError(failures.length > 0 ? failures.join("; ") : null)
       setLoading(false)
     })()
     return () => {
       cancelled = true
+    }
+  }, [])
+
+  /**
+   * Converge on a create-from-chat write that happened elsewhere.
+   *
+   * The status-bar codeg-mcp popover carries the same two switches, and the
+   * save below writes the pair whenever *either* is dirty. Without this, a
+   * form left open since before that popover toggle would submit its stale
+   * value for the switch the user never touched and silently revert it.
+   *
+   * A switch the user *has* moved keeps their pending value — only the
+   * baseline follows the remote, so the row stays dirty and their edit still
+   * wins on save.
+   */
+  useEffect(() => {
+    let disposed = false
+    let unsubscribe: (() => void) | undefined
+    void subscribe<ChatAuthoringSettings>(
+      CHAT_AUTHORING_SETTINGS_CHANGED_EVENT,
+      (remote) => {
+        remoteGenRef.current += 1
+        const incoming = {
+          automations: remote.automations_enabled,
+          workTasks: remote.work_tasks_enabled,
+        }
+        const current = valuesRef.current
+        const base = baselineRef.current
+        setValues((prev) => ({
+          ...prev,
+          ...(current.automations === base.automations
+            ? { automations: incoming.automations }
+            : {}),
+          ...(current.workTasks === base.workTasks
+            ? { workTasks: incoming.workTasks }
+            : {}),
+        }))
+        setBaseline((prev) => ({ ...prev, ...incoming }))
+      }
+    )
+      .then((fn) => {
+        if (disposed) fn()
+        else unsubscribe = fn
+      })
+      // Transport not ready is not a reason to break the form; it just means
+      // this window keeps whatever it loaded.
+      .catch(() => {})
+    return () => {
+      disposed = true
+      unsubscribe?.()
     }
   }, [])
 

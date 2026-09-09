@@ -195,9 +195,62 @@ export const useCanvasStore = create<CanvasStoreState>((set, get) => ({
       clearTimeout(retryTimer)
       retryTimer = null
     }
+    // Whatever is still in the air belongs to the old scope, and its ids mean
+    // nothing in the new one. The epoch bump is what makes dropping the table
+    // safe: a stranded write's handle no longer matches, so its completion
+    // cannot decrement a reused id in the scope that replaced it.
+    contentWriteEpoch++
+    contentWrites.clear()
     set({ nodes: new Map(), lastRevision: 0, hydrated: false })
   },
 }))
+
+/**
+ * Notes whose text has been sent but not yet acknowledged, by COUNT.
+ *
+ * A note commits its text on the way out of the editor and `nodes` only learns
+ * it when the backend answers, so for one round-trip the cached row still reads
+ * EMPTY. The delete confirmations read that row, so without this, text typed
+ * into a fresh note and deleted right after (Escape, then Delete) looks like an
+ * empty note and is taken without asking.
+ *
+ * A COUNT, not a set: a note can be saved twice in quick succession (edit,
+ * blur, edit again, blur) and the first response must not clear a mark the
+ * second still needs.
+ *
+ * Module state rather than component state, for two reasons. It outlives the
+ * board — a save fired from a note's unmount is exactly the one still in the
+ * air when the route switches, and a fresh ref on remount would not know about
+ * it. And it is not rendered, so putting it in the store proper would wake
+ * every subscriber for something none of them draw.
+ */
+const contentWrites = new Map<number, number>()
+let contentWriteEpoch = 0
+
+/**
+ * Mark a note's text as sent, and return the function that un-marks it. The
+ * caller cannot un-mark without having marked, and the handle carries the epoch
+ * it was minted in — a write still in the air across a [`reset`] belongs to the
+ * old scope, and node ids are per-scope, so letting its completion decrement a
+ * REUSED id would clear a mark the new scope still needs. Same reasoning as
+ * `fetchEpoch`, which strands stale snapshot fetches the same way.
+ */
+export function beginContentWrite(nodeId: number): () => void {
+  const epoch = contentWriteEpoch
+  contentWrites.set(nodeId, (contentWrites.get(nodeId) ?? 0) + 1)
+  return () => {
+    if (epoch !== contentWriteEpoch) return
+    const left = (contentWrites.get(nodeId) ?? 0) - 1
+    // Never below zero: an end without a live begin (already cleared) must not
+    // wedge the node at a negative count that can never read as "settled".
+    if (left > 0) contentWrites.set(nodeId, left)
+    else contentWrites.delete(nodeId)
+  }
+}
+
+export function hasContentWriteInFlight(nodeId: number): boolean {
+  return (contentWrites.get(nodeId) ?? 0) > 0
+}
 
 /** Event-shaped move apply for optimistic drag confirmation, shared with the
  *  view's `applyResponse` callbacks so both paths write identical state. */

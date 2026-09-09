@@ -41,13 +41,25 @@ function parseInput(input: string | null): Record<string, unknown> | null {
  * the body is clamped to the same height the sibling checklist `<PlanCard>`
  * scrolls at and gets a "Show more"/"Show less" footer once it's actually
  * clipped — the same `useCollapsibleOverflow` affordance user messages use.
+ *
+ * Exported because a codex plan reaches the UI through two different carriers
+ * that must not look like two different features: the live `plan_review` tool
+ * call's `rawInput.plan` (here) and the `<proposed_plan>` block lifted out of
+ * assistant text (`ProposedPlanPart` in `content-parts-renderer.tsx`). Both
+ * render THIS component with the same label, so the prose styling and the
+ * clamp/expand affordance can't drift between live and reload.
+ *
+ * `emptyLabel` covers the streaming case where the block has opened but no
+ * markdown has arrived yet; without one an empty plan renders as bare chrome.
  */
-function PlanMarkdownCard({
+export function PlanMarkdownCard({
   markdown,
   label,
+  emptyLabel,
 }: {
   markdown: string
   label: string
+  emptyLabel?: string
 }) {
   const t = useTranslations("Folder.chat.messageList")
   const { contentRef, contentId, isOverflowing, expanded, toggle } =
@@ -71,7 +83,13 @@ function PlanMarkdownCard({
           clipped && isOverflowing && "collapsed-content-fade"
         )}
       >
-        <MessageResponse>{markdown}</MessageResponse>
+        {markdown.length > 0 ? (
+          <MessageResponse>{markdown}</MessageResponse>
+        ) : (
+          emptyLabel && (
+            <span className="text-muted-foreground">{emptyLabel}</span>
+          )
+        )}
       </div>
       {isOverflowing && (
         <button
@@ -130,6 +148,10 @@ export const PlanModeCard = memo(function PlanModeCard({
   state: ToolCallState
 }) {
   const t = useTranslations("Folder.chat.contentParts")
+  // The plan card's own title comes from the `proposedPlan` namespace so this
+  // card and `ProposedPlanPart` cannot be titled differently — they are the
+  // same plan document arriving by two routes.
+  const tPlan = useTranslations("Folder.chat.proposedPlan")
   const parsed = parseInput(input)
   const planMarkdown = parsed ? extractPlanMarkdown(parsed) : null
   const isError = state === "output-error" || !!errorText?.trim()
@@ -161,14 +183,18 @@ export const PlanModeCard = memo(function PlanModeCard({
     return t("planMode.entered")
   })()
 
+  // codex's review gate is the one plan-mode tool whose marker says something
+  // the card does not: the plan is the card, the DECISION is the marker. Show
+  // both. The other plan-mode tools keep the either/or shape, where the marker
+  // would only restate the card it sits under.
+  const showsDecision = toolName === "plan_review"
+
   return (
     <div className={cn(planMarkdown ? "w-full space-y-2" : "space-y-2")}>
-      {planMarkdown ? (
-        <PlanMarkdownCard
-          markdown={planMarkdown}
-          label={t("planMode.planLabel")}
-        />
-      ) : (
+      {planMarkdown && (
+        <PlanMarkdownCard markdown={planMarkdown} label={tPlan("title")} />
+      )}
+      {(!planMarkdown || showsDecision) && (
         <PlanModeMarker label={markerLabel} />
       )}
       {isError && errorText && (

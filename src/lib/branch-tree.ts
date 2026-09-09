@@ -298,31 +298,40 @@ export function localBranchItems(local: string[]): BranchTreeItem[] {
 }
 
 /**
- * Flat, ordered leaves for the branch selector's worktree section: the repo's
- * main working tree first — the usual "back to the project root" target — then
- * the linked worktrees by name. `branches` is `GitBranchList.worktree_branches`,
+ * Nodes for the branch selector's worktree section: the repo's main working
+ * tree first — the usual "back to the project root" target — then the linked
+ * worktrees as a prefix tree. `branches` is `GitBranchList.worktree_branches`,
  * i.e. the branches checked out somewhere OTHER than the folder being viewed.
  *
- * Deliberately NOT prefix-grouped like the local/remote trees, and labelled
- * with the full ref: the section is a short quick-switch list, and folding
- * `task/a` + `task/b` behind a group that defaults to collapsed would cost the
- * very click it exists to save. Keys are scoped to "worktree", so a branch that
- * also appears in the local tree keeps a distinct identity in both places.
+ * Prefix-grouped exactly like the local/remote trees, down to the groups
+ * defaulting to collapsed: a repo with several `task/*` worktrees reads as a
+ * hierarchy instead of a flat wall, and the section carries no expansion rule
+ * of its own to remember.
+ *
+ * The main working tree's branch is hoisted OUT of the trie and kept as the
+ * first top-level leaf, labelled with its full ref. Left in, `sortNodes` would
+ * float every prefix group above it (groups sort before leaves) or bury it
+ * inside one, and the "back to the project root" target would move around per
+ * repo. Keys are scoped to "worktree", so a branch that also appears in the
+ * local tree keeps a distinct identity in both places.
  */
-export function worktreeBranchLeaves(
+export function worktreeBranchNodes(
   branches: string[],
   mainBranch: string | null
-): BranchTreeLeaf[] {
-  return [...branches]
-    .sort((a, b) => {
-      if (a === mainBranch) return -1
-      if (b === mainBranch) return 1
-      return a.localeCompare(b, undefined, { sensitivity: "base" })
-    })
-    .map((full) => ({
+): BranchTreeNode[] {
+  const linked = branches.filter((full) => full !== mainBranch)
+  const nodes = buildBranchTree(
+    linked.map((full) => ({ full, display: full })),
+    "worktree"
+  )
+  if (mainBranch == null || !branches.includes(mainBranch)) return nodes
+  return [
+    {
       type: "leaf",
-      fullName: full,
-      label: full,
-      key: leafKey("worktree", full),
-    }))
+      fullName: mainBranch,
+      label: mainBranch,
+      key: leafKey("worktree", mainBranch),
+    },
+    ...nodes,
+  ]
 }

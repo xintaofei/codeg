@@ -194,6 +194,13 @@ pub struct UnifiedMessage {
     /// in most parsers and adding them produces wrong completion times.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<DateTime<Utc>>,
+    /// The agent's own id for this message, when it differs from [`Self::id`].
+    ///
+    /// `id` is whatever the parser keys messages by (Claude uses the record
+    /// `uuid`); this is the id the AGENT would recognise. Propagated into
+    /// [`MessageTurn::agent_message_id`], which documents what it is for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,4 +229,22 @@ pub struct MessageTurn {
     /// most parsers (event-log time vs. full turn span).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<DateTime<Utc>>,
+    /// The id the AGENT knows this turn's message by, when codeg can name it
+    /// the same way the agent does. `id` above is positional (`turn-3`) and
+    /// names nothing an agent could look up.
+    ///
+    /// Set only where a turn can be a fork point: `session/fork` takes an AIR
+    /// fork point (`_meta.jetbrains.air.fork.messageId`) and claude-agent-acp
+    /// 0.75.1, codex-acp 1.8.0 and deepseek-acp 0.8.0 all resolve it against
+    /// their own message identity, so a fork "up to here" needs the agent's
+    /// spelling of "here". Claude's is `assistant.message.id ?? uuid` and
+    /// DeepSeek's is the session log's `message.id` — both pure functions of
+    /// the stored record, which is why the parsers can derive them offline
+    /// instead of having to have captured the live `messageId` chunk field.
+    ///
+    /// `None` for every parser with no such id (codex rollouts record no item
+    /// ids at all, so that side forks by content fingerprint instead) and for
+    /// synthesized turns, which name nothing the agent stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_message_id: Option<String>,
 }

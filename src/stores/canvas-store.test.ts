@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { CanvasChange, CanvasNode, CanvasSnapshot } from "@/lib/types"
 import { canvasListNodes } from "@/lib/api"
-import { useCanvasStore } from "./canvas-store"
+import {
+  beginContentWrite,
+  hasContentWriteInFlight,
+  useCanvasStore,
+} from "./canvas-store"
 
 vi.mock("@/lib/api", () => ({
   canvasListNodes: vi.fn(),
@@ -20,6 +24,7 @@ function makeNode(id: number, over: Partial<CanvasNode> = {}): CanvasNode {
     member_ids: [],
     title: null,
     content: null,
+    path: null,
     color: null,
     collapsed: false,
     grid_columns: 0,
@@ -50,6 +55,55 @@ beforeEach(() => {
   // Default: refetch resolves to an empty, revision-0 snapshot (individual
   // tests override). Never leave it unmocked — a gap test would reject.
   mockList.mockResolvedValue(snapshot(0, []))
+})
+
+describe("in-flight note text", () => {
+  it("stays marked until the LAST write for that note lands", () => {
+    // Edit, blur, edit again, blur: two saves for one note are in the air at
+    // once. A plain set would have the first response clear the mark the second
+    // still needs, and the delete confirmation would read the (still empty)
+    // cached row and take the note without asking.
+    const first = beginContentWrite(7)
+    const second = beginContentWrite(7)
+    first()
+    expect(hasContentWriteInFlight(7)).toBe(true)
+    second()
+    expect(hasContentWriteInFlight(7)).toBe(false)
+  })
+
+  it("tracks notes independently and ignores a repeated end", () => {
+    const end = beginContentWrite(1)
+    expect(hasContentWriteInFlight(1)).toBe(true)
+    expect(hasContentWriteInFlight(2)).toBe(false)
+    end()
+    // Must not drive the count negative and wedge the node "in flight".
+    end()
+    expect(hasContentWriteInFlight(1)).toBe(false)
+    beginContentWrite(1)()
+    expect(hasContentWriteInFlight(1)).toBe(false)
+  })
+
+  it("is cleared by reset — the ids mean nothing in the next scope", () => {
+    beginContentWrite(9)
+    useCanvasStore.getState().reset()
+    expect(hasContentWriteInFlight(9)).toBe(false)
+  })
+
+  it("a write stranded by reset cannot clear the next scope's mark", () => {
+    // Backend switch with a save still in the air. Node ids are per-scope, so
+    // the new scope can hand id 9 to a different note — and the old request
+    // landing must not un-mark it, or the delete confirmation goes back to
+    // reading a row that has not caught up yet.
+    const stranded = beginContentWrite(9)
+    useCanvasStore.getState().reset()
+
+    const live = beginContentWrite(9)
+    stranded()
+    expect(hasContentWriteInFlight(9)).toBe(true)
+
+    live()
+    expect(hasContentWriteInFlight(9)).toBe(false)
+  })
 })
 
 describe("canvas-store revision protocol", () => {

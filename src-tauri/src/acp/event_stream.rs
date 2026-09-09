@@ -1018,6 +1018,7 @@ mod tests {
             duration_ms: Some(u64::MAX),
             model: Some("claude-sonnet-5[1m]".into()),
             completed_at: Some(chrono::Utc::now()),
+        agent_message_id: None,
         };
         let env = Arc::new(EventEnvelope {
             seq: u64::MAX,

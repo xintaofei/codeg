@@ -6,4 +6,7 @@ pub mod compact;
 pub mod engine;
 pub mod git;
 
-pub use engine::{build_task_engine, engine, run_task_engine, EngineWorkTaskTools, TaskEngine};
+pub use engine::{
+    build_task_engine, engine, run_task_engine, CleanupBlocked, EngineWorkTaskTools, TaskEngine,
+};
+pub(crate) use engine::worktree_kept;

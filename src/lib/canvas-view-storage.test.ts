@@ -5,10 +5,12 @@ import {
   loadCanvasDrafts,
   loadCanvasExpandedCards,
   loadCanvasMinimapVisible,
+  loadCanvasSurfaceKeys,
   loadCanvasViewport,
   saveCanvasDrafts,
   saveCanvasExpandedCards,
   saveCanvasMinimapVisible,
+  saveCanvasSurfaceKeys,
   saveCanvasViewport,
   type CanvasDraftCard,
 } from "./canvas-view-storage"
@@ -24,6 +26,8 @@ const VIEWPORT_KEY = "workspace:canvas-viewport"
 const CARDS_KEY = "workspace:canvas-expanded-cards"
 const DRAFTS_KEY = "workspace:canvas-drafts"
 const MINIMAP_KEY = "workspace:canvas-minimap"
+const SURFACE_KEYS_KEY = "workspace:canvas-surface-keys"
+const T = "2026-09-02T09:00:00.000Z"
 
 describe("canvas view storage", () => {
   beforeEach(() => {
@@ -193,5 +197,71 @@ describe("canvas view storage", () => {
     expect(loadCanvasMinimapVisible()).toBe(false)
     saveCanvasMinimapVisible(true)
     expect(loadCanvasMinimapVisible()).toBe(true)
+  })
+
+  it("round-trips the connection keys cards inherited from drafts", () => {
+    // A card minted by a draft's first send keeps the DRAFT's key, because the
+    // send is already in flight on it. Recomputing the default key on the next
+    // visit would send the card looking for a connection that isn't there while
+    // the agent it started keeps running under a key nothing claims.
+    const entry = {
+      conversationId: 42,
+      createdAt: "2026-09-02T09:00:00.000Z",
+      key: "canvas-draft-abc",
+    }
+    saveCanvasSurfaceKeys(new Map([[7, entry]]))
+    expect(loadCanvasSurfaceKeys()).toEqual(new Map([[7, entry]]))
+    saveCanvasSurfaceKeys(new Map())
+    expect(localStorage.getItem(SURFACE_KEYS_KEY)).toBeNull()
+  })
+
+  it("keeps the card identity each key was written for", () => {
+    // The id alone doesn't identify a card across databases — this file is not
+    // backend-scoped, and two databases behind one origin hand out the same low
+    // ids to different cards. `createdAt` is what lets the caller tell those
+    // apart instead of handing one of them a stranger's connection key.
+    saveCanvasSurfaceKeys(
+      new Map([
+        [
+          7,
+          {
+            conversationId: 42,
+            createdAt: "2026-09-02T09:00:00.000Z",
+            key: "canvas-draft-abc",
+          },
+        ],
+      ])
+    )
+    const restored = loadCanvasSurfaceKeys().get(7)
+    expect(restored?.conversationId).toBe(42)
+    expect(restored?.createdAt).toBe("2026-09-02T09:00:00.000Z")
+  })
+
+  it("drops surface-key entries it can't use", () => {
+    // Same contract as the rest of this module: an entry from another database,
+    // a hand-edited file or an older shape resolves to "nothing remembered" —
+    // the card falls back to its default key, which is merely the pre-draft
+    // behaviour, rather than mounting on a key of the wrong type.
+    localStorage.setItem(
+      SURFACE_KEYS_KEY,
+      JSON.stringify([
+        { nodeId: 1, conversationId: 10, createdAt: T, key: "canvas-draft-ok" },
+        { nodeId: 2.5, conversationId: 10, createdAt: T, key: "fractional" },
+        { nodeId: "3", conversationId: 10, createdAt: T, key: "string-node" },
+        { nodeId: 4, createdAt: T, key: "no-conversation" },
+        { nodeId: 5, conversationId: 10, key: "no-created-at" },
+        { nodeId: 6, conversationId: 10, createdAt: T, key: "" },
+        [7, "canvas-draft-old-pair-shape"],
+        null,
+      ])
+    )
+    expect(loadCanvasSurfaceKeys()).toEqual(
+      new Map([
+        [1, { conversationId: 10, createdAt: T, key: "canvas-draft-ok" }],
+      ])
+    )
+
+    localStorage.setItem(SURFACE_KEYS_KEY, '{"1":"canvas-draft-ok"}')
+    expect(loadCanvasSurfaceKeys().size).toBe(0)
   })
 })

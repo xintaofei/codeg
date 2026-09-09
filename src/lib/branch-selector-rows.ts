@@ -98,10 +98,10 @@ export type BranchRow =
 export interface BuildBranchRowsInput {
   operations: BranchOperationMeta[]
   /**
-   * Branches checked out in the repo's OTHER worktrees, already flat and
-   * ordered (see `worktreeBranchLeaves`). Rendered as a shortcut section above
-   * Local, which keeps listing every local branch including these — the section
-   * is a shortcut, not a partition.
+   * Branches checked out in the repo's OTHER worktrees, already ordered and
+   * prefix-grouped (see `worktreeBranchNodes`). Rendered as a shortcut section
+   * above Local, which keeps listing every local branch including these — the
+   * section is a shortcut, not a partition.
    *
    * Empty vs absent are DIFFERENT, and every caller has to say which it means:
    * `[]` is "this surface has the section, the repo just has no other worktree"
@@ -111,7 +111,7 @@ export interface BuildBranchRowsInput {
    * git-log branch filter reuses this row model and is a `null` caller; folding
    * the two cases together silently grew a phantom section there.
    */
-  worktreeLeaves: BranchTreeLeaf[] | null
+  worktreeNodes: BranchTreeNode[] | null
   localNodes: BranchTreeNode[]
   remoteSections: RemoteBranchSection[]
   /** Total local branch count (for the section header's "(n)"). */
@@ -282,9 +282,9 @@ function matchAndRankLeaves(
 /**
  * Flatten operations + branch trees into a single linear row list.
  *
- * - Empty query: operations block → separator → Worktree section (flat, no
- *   prefix groups; absent entirely when `worktreeLeaves` is null) → Local
- *   section (its prefix tree, descending only expanded groups) → Remote section
+ * - Empty query: operations block → separator → Worktree section (its own
+ *   prefix tree; absent entirely when `worktreeNodes` is null) → Local section
+ *   (its prefix tree, descending only expanded groups) → Remote section
  *   (single-remote strips the wrapper; multi-remote nests each remote as a
  *   group). Every section present defaults open.
  * - Non-empty query: operations whose label matches → separator → matched
@@ -299,7 +299,7 @@ function matchAndRankLeaves(
 export function buildBranchRows(input: BuildBranchRowsInput): BranchRow[] {
   const {
     operations,
-    worktreeLeaves,
+    worktreeNodes,
     localNodes,
     remoteSections,
     localCount,
@@ -342,8 +342,8 @@ export function buildBranchRows(input: BuildBranchRowsInput): BranchRow[] {
   const branchRows: BranchRow[] = []
 
   if (searching) {
-    const worktreeMatches = worktreeLeaves
-      ? matchAndRankLeaves(worktreeLeaves, q)
+    const worktreeMatches = worktreeNodes
+      ? matchAndRankLeaves(collectLeaves(worktreeNodes), q)
       : []
     if (worktreeMatches.length > 0) {
       branchRows.push({
@@ -390,26 +390,25 @@ export function buildBranchRows(input: BuildBranchRowsInput): BranchRow[] {
   } else {
     // Worktree section — only on the surfaces that asked for one (`null` skips
     // it outright; `[]` still gets the header + empty row).
-    if (worktreeLeaves) {
+    if (worktreeNodes) {
       const worktreeExpanded = !collapsed.has(worktreeSectionKey)
       branchRows.push({
         kind: "section",
         key: worktreeSectionKey,
         scope: "worktree",
-        count: worktreeLeaves.length,
+        // Leaf count, not node count: a prefix group stands for its branches.
+        count: collectLeaves(worktreeNodes).length,
         expanded: worktreeExpanded,
       })
       if (worktreeExpanded) {
-        if (worktreeLeaves.length === 0) {
+        if (worktreeNodes.length === 0) {
           branchRows.push({
             kind: "empty",
             key: "empty:worktree",
             scope: "worktree",
           })
         } else {
-          for (const leaf of worktreeLeaves) {
-            emitLeaf(branchRows, leaf, 1, false, ctx)
-          }
+          emitTree(branchRows, worktreeNodes, 1, false, ctx)
         }
       }
     }

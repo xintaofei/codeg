@@ -43,6 +43,18 @@ function BindingProbe({ parentToolUseId }: { parentToolUseId: string }) {
   )
 }
 
+/** Same idea for the task-id lookup `ResumedDelegationCard` depends on. */
+function TaskIdProbe({ taskId }: { taskId: string }) {
+  const { findByTaskId } = useDelegation()
+  const binding = findByTaskId(taskId)
+  return (
+    <div>
+      <div data-testid="by-task-id">{binding?.parentToolUseId ?? "none"}</div>
+      <div data-testid="by-task-id-status">{binding?.status ?? "-"}</div>
+    </div>
+  )
+}
+
 function renderProvider(children: ReactNode = null) {
   return render(
     <DelegationProvider>
@@ -231,5 +243,64 @@ describe("DelegationProvider", () => {
     })
     // Detach was canceled by the re-arriving start event.
     expect(mockDetach).not.toHaveBeenCalled()
+  })
+
+  // `resume_delegation` re-binds the child to the ORIGINAL delegate call's
+  // tool_use_id, so the resume card's own id matches no binding. The broker
+  // task id — which the resumed run deliberately keeps — is its only handle.
+  it("finds a binding by the broker task id", async () => {
+    render(
+      <DelegationProvider>
+        <TaskIdProbe taskId="task-abc" />
+      </DelegationProvider>
+    )
+    await awaitHandlerCaptured()
+    expect(screen.getByTestId("by-task-id")).toHaveTextContent("none")
+
+    dispatch({
+      type: "delegation_started",
+      parent_connection_id: "p1",
+      parent_tool_use_id: "pt-original",
+      child_connection_id: "c1",
+      child_conversation_id: 99,
+      agent_type: "codex",
+      task_id: "task-abc",
+    } as unknown as EventEnvelope)
+    expect(screen.getByTestId("by-task-id")).toHaveTextContent("pt-original")
+
+    // The task id survives the child's completion, so the resumed card keeps
+    // tracking it to its terminal status.
+    dispatch({
+      type: "delegation_completed",
+      parent_connection_id: "p1",
+      parent_tool_use_id: "pt-original",
+      child_connection_id: "c1",
+      child_conversation_id: 99,
+      agent_type: "codex",
+      result: { kind: "ok", duration_ms: 100 },
+    } as unknown as EventEnvelope)
+    expect(screen.getByTestId("by-task-id-status")).toHaveTextContent("ok")
+  })
+
+  it("does not match a different task id, or an empty one", async () => {
+    render(
+      <DelegationProvider>
+        <TaskIdProbe taskId="task-other" />
+        <TaskIdProbe taskId="" />
+      </DelegationProvider>
+    )
+    await awaitHandlerCaptured()
+    dispatch({
+      type: "delegation_started",
+      parent_connection_id: "p1",
+      parent_tool_use_id: "pt-original",
+      child_connection_id: "c1",
+      child_conversation_id: 99,
+      agent_type: "codex",
+      task_id: "task-abc",
+    } as unknown as EventEnvelope)
+    for (const probe of screen.getAllByTestId("by-task-id")) {
+      expect(probe).toHaveTextContent("none")
+    }
   })
 })

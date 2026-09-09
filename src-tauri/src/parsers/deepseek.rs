@@ -732,6 +732,7 @@ fn parse_session_events(text: &str, attachments: Option<&Path>) -> SessionParse 
                     duration_ms: None,
                     model: None,
                     completed_at: Some(ts),
+                    agent_message_id: None,
                 });
             }
             "request/header" => {
@@ -787,6 +788,17 @@ fn parse_session_events(text: &str, attachments: Option<&Path>) -> SessionParse 
                 if sp.model.is_none() {
                     sp.model.clone_from(&source_model);
                 }
+                // The log's own persistent identity for this message, which
+                // deepseek-acp 0.8.0 accepts as an AIR fork point (see
+                // `acp::fork`). Upstream keeps it stable "across every
+                // representation boundary" precisely for clients that read the
+                // JSONL, and matching it resolves to the message's log TURN —
+                // which is the granularity a codeg bubble already has.
+                let message_id = message
+                    .and_then(|m| m.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
                 let Some(blocks) = message
                     .and_then(|m| m.get("content"))
                     .and_then(Value::as_array)
@@ -864,6 +876,16 @@ fn parse_session_events(text: &str, attachments: Option<&Path>) -> SessionParse 
                         ts,
                         sp.model.clone().or(source_model.clone()),
                     );
+                    // The turn's fork point is the message that OPENS it, so
+                    // the later steps of a multi-step turn must not overwrite
+                    // it. Any of them resolves to the same log turn upstream,
+                    // and naming the first matches how the Claude parser picks
+                    // a turn's id. Set here rather than above so a message
+                    // whose blocks are all skipped never conjures an empty
+                    // bubble just to hold an id.
+                    if let Some(id) = message_id {
+                        turn.agent_message_id.get_or_insert_with(|| id.to_string());
+                    }
                     turn.blocks.push(rendered);
                 }
             }
@@ -1059,6 +1081,7 @@ fn ensure_assistant<'a>(
                 duration_ms: None,
                 model,
                 completed_at: None,
+                agent_message_id: None,
             });
             let idx = turns.len() - 1;
             *open_assistant = Some(idx);
@@ -1403,12 +1426,118 @@ mod tests {
             DateTime::from_timestamp_millis(1_786_708_739_100)
         );
 
+        // The fork point is the message that OPENED the turn (`a-1`, whose only
+        // blocks are reasoning + a tool call), not the later one that carried
+        // the prose. Both resolve to the same log turn upstream, and naming the
+        // first is what `parsers::claude` does too.
+        assert_eq!(assistant.agent_message_id.as_deref(), Some("a-1"));
+        // A user turn names nothing the adapter would look up.
+        assert_eq!(sp.turns[0].agent_message_id, None);
+
         // user prompt + assistant text message.
         assert_eq!(sp.message_count, 2);
         assert_eq!(
             sp.created_at,
             DateTime::from_timestamp_millis(1_786_708_736_990)
         );
+    }
+
+    /// Each log turn keeps its OWN opening message id — a turn must not inherit
+    /// the previous one's, which would fork at the wrong place silently.
+    #[test]
+    fn each_turn_carries_its_own_opening_message_id() {
+        let step = |seq: u64, time: i64, turn: u64, step: u64, id: &str, text: &str| {
+            event(
+                "assistant/message",
+                seq,
+                time,
+                json!({
+                    "turn": turn, "step": step,
+                    "message": {"role": "assistant", "content": [{"type": "text", "text": text}], "source": {"kind": "model", "model": "deepseek-v4"}, "id": id}
+                }),
+            )
+        };
+        let log = [
+            header_line("/w"),
+            event("turn/start", 1, 1_000, json!({"turn": 1})),
+            step(2, 1_100, 1, 1, "a-1", "first"),
+            event("turn/end", 3, 1_200, json!({"turn": 1})),
+            event("turn/start", 4, 2_000, json!({"turn": 2})),
+            step(5, 2_100, 2, 1, "b-1", "second"),
+            step(6, 2_200, 2, 2, "b-2", " and more"),
+            event("turn/end", 7, 2_300, json!({"turn": 2})),
+        ]
+        .join("\n");
+
+        let sp = parse_session_events(&log, None);
+        assert_eq!(sp.turns.len(), 2);
+        assert_eq!(sp.turns[0].agent_message_id.as_deref(), Some("a-1"));
+        // Turn 2's later step must not overwrite the id its first step set.
+        assert_eq!(sp.turns[1].agent_message_id.as_deref(), Some("b-1"));
+    }
+
+    /// A turn whose first rendered block came from a tool result (a log read
+    /// from a truncated prefix) still adopts the id of the next assistant
+    /// message in the same turn.
+    #[test]
+    fn a_turn_opened_by_a_tool_result_still_adopts_a_later_message_id() {
+        let log = [
+            header_line("/w"),
+            event(
+                "tool/result",
+                1,
+                1_000,
+                json!({
+                    "turn": 1, "step": 1,
+                    "message": {
+                        "source": {"kind": "tool", "callId": "call_1"},
+                        "content": [{"type": "tool-result", "toolCallId": "call_1", "content": [{"type": "text", "text": "out"}], "isError": false}],
+                        "role": "user", "id": "t-1"
+                    }
+                }),
+            ),
+            event(
+                "assistant/message",
+                2,
+                1_100,
+                json!({
+                    "turn": 1, "step": 2,
+                    "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}], "source": {"kind": "model", "model": "deepseek-v4"}, "id": "a-2"}
+                }),
+            ),
+            event("turn/end", 3, 1_200, json!({"turn": 1})),
+        ]
+        .join("\n");
+
+        let sp = parse_session_events(&log, None);
+        assert_eq!(sp.turns.len(), 1);
+        assert_eq!(sp.turns[0].agent_message_id.as_deref(), Some("a-2"));
+    }
+
+    /// No usable id in the log leaves the field honestly empty — an empty
+    /// string would be an id the adapter cannot match while claiming it can,
+    /// and `acp::fork` forks by content fingerprint in that case instead.
+    #[test]
+    fn a_message_without_an_id_leaves_the_fork_point_unnamed() {
+        let log = [
+            header_line("/w"),
+            event("turn/start", 1, 1_000, json!({"turn": 1})),
+            event(
+                "assistant/message",
+                2,
+                1_100,
+                json!({
+                    "turn": 1, "step": 1,
+                    "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}], "source": {"kind": "model", "model": "deepseek-v4"}, "id": "  "}
+                }),
+            ),
+            event("turn/end", 3, 1_200, json!({"turn": 1})),
+        ]
+        .join("\n");
+
+        let sp = parse_session_events(&log, None);
+        assert_eq!(sp.turns.len(), 1);
+        assert_eq!(sp.turns[0].agent_message_id, None);
     }
 
     #[test]

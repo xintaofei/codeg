@@ -197,7 +197,33 @@
       "panelOpacityHint": "侧栏、面板与标签栏的不透明程度。越低，透出的图片越多。",
       "errorTooLarge": "图片太大（最大 16 MB）。",
       "errorUnsupportedFormat": "不支持的图片格式，请选择 PNG、JPEG、WebP 或 GIF。",
-      "errorUploadFailed": "设置背景图片失败。"
+      "errorUploadFailed": "设置背景图片失败。",
+      "market": {
+        "open": "壁纸市场",
+        "title": "壁纸市场",
+        "description": "浏览 Wallhaven 公开图库，点击即可下载并应用。",
+        "searchPlaceholder": "搜索壁纸…",
+        "categories": {
+          "all": "全部",
+          "general": "风景",
+          "anime": "二次元",
+          "people": "人物"
+        },
+        "pageInfo": "第 {page} / {lastPage} 页",
+        "prevPage": "上一页",
+        "nextPage": "下一页",
+        "refresh": "刷新",
+        "empty": "没有找到匹配的壁纸。",
+        "error": "壁纸市场加载失败。",
+        "retry": "重试",
+        "cardLabel": "应用壁纸 {id}",
+        "applied": "使用中",
+        "unavailable": "不可用",
+        "tooLarge": "超出背景图上限：{actual}（上限 {limit}）",
+        "downloadFailed": "下载失败，请重试。",
+        "appliedToast": "壁纸已应用",
+        "credit": "图片来源 wallhaven.cc · 仅 SFW 内容"
+      }
     }
   },
   "SystemSettings": {
@@ -305,6 +331,10 @@
     "gitlabDescription": "管理用于身份验证的 GitLab 账号。令牌存储在本地。",
     "gitlabTokenHint": "在 GitLab → Preferences → Access tokens 中创建带 api 权限的个人访问令牌。",
     "gitlabNoAccounts": "还没有 GitLab 账号",
+    "giteaTitle": "Gitea 账号",
+    "giteaDescription": "管理用于身份验证的 Gitea（及 Forgejo）账号。令牌存储在本地。",
+    "giteaTokenHint": "在 Gitea → Settings → Applications 中创建带 write:repository、write:issue 和 read:user 权限的访问令牌。",
+    "giteaNoAccounts": "还没有 Gitea 账号",
     "noAccounts": "暂无 GitHub 账号。",
     "addAccount": "添加账号",
     "serverUrl": "服务器地址",
@@ -337,7 +367,7 @@
     "loadFailed": "加载设置失败：{message}",
     "gitAccount": {
       "sectionTitle": "Git 服务器账号",
-      "sectionDescription": "管理非 GitHub 的 Git 服务器凭据（GitLab、Bitbucket、自建服务等）。",
+      "sectionDescription": "管理没有独立分区的 Git 服务器凭据（Bitbucket、自建服务等）。",
       "noAccounts": "暂无 Git 服务器账号。",
       "addAccount": "添加账号",
       "addTitle": "添加 Git 账号",
@@ -637,6 +667,8 @@
     "local": {
       "filterPlaceholder": "筛选本地 MCP...",
       "loadFailed": "加载失败：{message}",
+      "sourceUnreadable": "无法读取 {app} 的 MCP 配置，其服务器已隐藏：{message}",
+      "saveBlockedByUnreadableSource": "保存前请先修复或删除该文件并刷新：分配结果按本页能读到的智能体计算，现在保存可能会把该服务器从读不到的智能体中移除。",
       "empty": "当前未检测到本地 MCP。",
       "description": "本地 MCP 配置可直接编辑并保存。",
       "enabledApps": "启用应用",
@@ -681,6 +713,13 @@
     "emptyNoAgent": "暂无可用 Agent。",
     "configManagement": "配置管理",
     "envVars": "环境变量",
+    "adapterChannel": {
+      "label": "适配器版本",
+      "description": "安装与升级默认使用 codeg 审查并固定的版本。选择最新版后会改为安装该包当时最新的 npm 版本；若最新版安装失败，codeg 会回退到固定版本，并在安装日志中说明。",
+      "pinned": "固定版本（推荐）",
+      "latest": "最新版（未经审查）",
+      "latestWarning": "最新版本未经审查，可能破坏该 Agent 在 codeg 中的使用，偶尔甚至是已知损坏的版本。实际安装的版本以版本状态为准。"
+    },
     "hostTools": {
       "label": "由 Agent 自行处理文件与命令",
       "description": "codeg 不再代为提供文件访问和终端命令，改由 Agent 在自己的进程中执行——只有这样它自带的沙箱与权限规则才会生效。同时会关闭向其他 Agent 委托，否则同样的操作又会绕回 codeg 执行。codeg 本身不提供沙箱，因此请仅在 Agent 已配置沙箱时开启。"
@@ -923,6 +962,13 @@
         "failed": "登录未完成。",
         "startFailed": "无法开始登录",
         "credentialHint": "令牌缓存在这里。把这个文件复制到其他无桌面机器，那台也就登录好了。"
+      },
+      "signOut": {
+        "title": "登录了错误的账号？",
+        "description": "Antigravity 会缓存登录时使用的 Google 账号并静默复用，所以再次登录也换不到别的账号。退出登录会清除已保存的凭据；正在运行的 Antigravity 会话会先被结束，否则它们会把旧账号写回去。",
+        "action": "退出登录",
+        "done": "已退出登录。重新登录即可选择其他账号。",
+        "failed": "退出登录失败"
       }
     },
     "deepseek": {
@@ -935,14 +981,13 @@
       "apiKeyHint": "以 DEEPSEEK_API_KEY 传给智能体。环境变量的优先级高于凭据文件，因此若用终端登录，这里留空即可。"
     },
     "codex": {
-      "configDescription": "支持 API URL、API Key、模型名称、Reasoning Effort 快捷配置，并与 `auth.json` / `config.toml` 双向联动。",
+      "configDescription": "支持 API URL、API Key、模型名称快捷配置，并与 `auth.json` / `config.toml` 双向联动。",
       "authMode": "认证方式",
       "chatgptSubscription": "官网订阅",
       "chatgptSubscriptionHint": "使用 ChatGPT 官网订阅登录，无需配置 API Key",
       "apiKeyHint": "使用 API Key 连接 OpenAI 或兼容的 API 服务",
       "selectProvider": "选择 Provider",
       "modelName": "模型名称",
-      "selectReasoningEffort": "选择 Reasoning Effort",
       "enableWebsocket": "启用 WebSocket",
       "enableWebsocketAria": "Codex Provider 启用 WebSocket",
       "enableSkills": "启用 Skills",
@@ -1277,12 +1322,6 @@
       "customModelOptionName": "自定义模型名称",
       "customModelOptionDescription": "自定义模型描述",
       "customModelOptionHint": "在 Claude 模型选择器中追加一个自定义条目（例如经自定义网关/代理提供的模型）。名称与描述为可选的显示信息。",
-      "effortLevel": "推理级别",
-      "effortLevelDefault": "默认级别",
-      "effortLevel_low": "低",
-      "effortLevel_medium": "中",
-      "effortLevel_high": "高",
-      "effortLevel_xhigh": "超高",
       "sendAttributionHeader": "向接口发送归属/计费标识",
       "sendAttributionHeaderAria": "向接口发送 Claude Code 归属/计费标识",
       "disableNonessentialTraffic": "禁用遥测或多余的网络请求",
@@ -1395,7 +1434,8 @@
       "localUnrecognized": "{versionText}。本地版本无法识别，可尝试升级覆盖安装。",
       "upgradeAvailable": "{versionText}。发现可升级版本。",
       "remoteUnavailable": "{versionText}。远程版本暂不可用。",
-      "latest": "{versionText}。已是最新版本。"
+      "latest": "{versionText}。已是最新版本。",
+      "latestChannel": "{versionText}。已启用最新版通道；升级会安装最新版本。"
     },
     "adapter": {
       "label": "ACP 适配器",
@@ -1553,7 +1593,7 @@
   "GeneralSettings": {
     "loading": "加载中...",
     "sectionTitle": "常规",
-    "sectionDescription": "集中管理默认终端、渲染加速、通知提示音以及多智能体协同等通用偏好。",
+    "sectionDescription": "集中管理默认终端、渲染加速、通知与提示音以及多智能体协同等通用偏好。",
     "terminalTitle": "默认终端",
     "terminalDescription": "选择从终端栏或文件树打开新终端标签页时使用的 Shell。智能体请求 codeg 代为执行整条命令行时也会使用它。",
     "terminalSystemDefault": "系统默认",
@@ -1569,7 +1609,9 @@
     "terminalShellNotInstalled": "未安装",
     "terminalShellNotFoundWarning": "当前主机上不存在此路径。",
     "terminalCurrentShell": "当前使用：{path}",
-    "renderingDescription": "如果应用出现黑屏或渲染异常（常见于 AMD 显卡或部分 Intel 集成显卡），可关闭硬件加速。仅 Windows 桌面端生效。",
+    "colorizeCommandOutput": "为命令输出着色",
+    "colorizeCommandOutputDescription": "强制智能体运行的命令输出 ANSI 颜色，使其在会话记录中以彩色而非纯文本呈现。对新建会话生效。",
+    "renderingDescription": "如果应用出现黑屏或渲染异常（Windows 上常见于 AMD 显卡或部分 Intel 集成显卡，Linux 上常见于 NVIDIA 闭源驱动），可关闭硬件加速。仅 Windows 与 Linux 桌面端生效。",
     "disableHardwareAcceleration": "禁用硬件加速",
     "renderingSaveFailed": "渲染设置保存失败：{message}",
     "restartRequired": "已保存，重启应用后生效。",
@@ -1633,6 +1675,9 @@
     "searchPlaceholder": "搜索标题或路径…",
     "allAgents": "全部智能体",
     "onlyImportable": "仅显示可导入",
+    "includeDeleted": "包含已删除",
+    "includeDeletedWithCount": "包含已删除（{count}）",
+    "includeDeletedHint": "在 codeg 中删除会话只是隐藏，会话及其历史仍然保留。开启后可勾选已删除的会话，将其原地恢复。",
     "selectAll": "全选",
     "clearSelection": "清空",
     "expandAll": "全部展开",
@@ -1645,6 +1690,7 @@
     "toggleSessionAria": "选择会话 {title}",
     "statusImported": "已导入",
     "statusDeleted": "已删除",
+    "statusDeletedRestorable": "已删除——导入即可恢复原会话",
     "untitled": "未命名会话",
     "messageCount": "{count} 条消息",
     "selectedCount": "已选 {count} 个",
@@ -1653,6 +1699,7 @@
     "close": "关闭",
     "doneTitle": "导入完成",
     "doneImported": "新导入",
+    "doneRestored": "已恢复",
     "doneUpdated": "已刷新",
     "doneSkipped": "已跳过",
     "doneCreatedFolders": "新建文件夹",
@@ -1740,7 +1787,7 @@
       "viewOptions": "显示选项",
       "listOptions": "会话列表",
       "showCompleted": "显示已完成会话",
-      "showWorktrees": "显示工作树文件夹",
+      "showWorktrees": "显示工作树分支",
       "showRecent": "显示「最近」分组",
       "navigationItems": "菜单导航项",
       "moreOptions": "更多选项",
@@ -1845,6 +1892,7 @@
       "forkSession": "分叉会话",
       "forkSessionSuccess": "会话分叉成功",
       "forkSessionFailed": "会话分叉失败：{error}",
+      "forkSessionBusy": "分叉失败：当前有回合正在进行",
       "exportConversation": "导出会话",
       "exportImage": "图片",
       "exportMarkdown": "Markdown",
@@ -1999,11 +2047,53 @@
         "title": "快捷操作",
         "groups": {
           "workspace": "工作区",
-          "sessions": "会话",
           "navigation": "菜单导航",
           "more": "更多"
         },
         "showPet": "显示宠物"
+      },
+      "mcp": {
+        "title": "codeg-mcp 服务",
+        "state": {
+          "running": "运行中",
+          "stopped": "未运行",
+          "disabled": "未启用工具",
+          "unavailable": "伴生程序缺失",
+          "unknown": "未知"
+        },
+        "hint": {
+          "running": "从这里启动的智能体可使用 codeg 自带的工具。",
+          "stopped": "Broker 套接字没有响应，伴生进程连不回 codeg。",
+          "disabled": "所有工具组都已关闭，不会注入伴生进程。",
+          "unavailable": "磁盘上找不到 codeg-mcp 可执行文件。",
+          "unknown": "无法读取状态。"
+        },
+        "socketPath": "地址",
+        "binary": "伴生程序",
+        "binaryMissing": "未找到",
+        "sessions": "智能体会话",
+        "activeDelegations": "进行中的委派",
+        "depthLimit": "深度上限",
+        "tools": "工具",
+        "groupDelegation": "多智能体委派",
+        "descDelegation": "把任务交给另一个智能体处理。",
+        "groupFeedback": "实时反馈",
+        "descFeedback": "回合进行中补充说明，不打断执行。",
+        "groupAsk": "向用户提问",
+        "descAsk": "让智能体拿不准时先问你。",
+        "groupSessions": "会话查询",
+        "descSessions": "查询历史会话及其结果。",
+        "groupAutomations": "创建自动化",
+        "descAutomations": "创建和管理定时自动化。",
+        "groupTaskboard": "创建任务",
+        "descTaskboard": "创建和管理工作任务。",
+        "start": "启动服务",
+        "starting": "正在启动…",
+        "actionFailed": "操作失败：{message}",
+        "lastError": "上次错误：{message}",
+        "loadFailed": "无法读取状态：{message}",
+        "openSettings": "打开详细设置",
+        "refresh": "刷新"
       }
     },
     "auxPanel": {
@@ -2061,7 +2151,26 @@
       "closeOthers": "关闭其它",
       "closeAll": "关闭所有",
       "hideTerminal": "隐藏终端（{shortcut}）",
-      "openFolderFirst": "请先打开一个文件夹"
+      "openFolderFirst": "请先打开一个文件夹",
+      "keybar": {
+        "label": "终端虚拟键",
+        "show": "显示虚拟键",
+        "hide": "隐藏虚拟键",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "-",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "打开文件夹",
@@ -2170,6 +2279,17 @@
       "officeServerInstallHint": "OfficeCLI 需安装在服务器主机上。请在服务器上运行以下命令后重试：",
       "officeRemoteDesktopUnsupported": "远程桌面窗口暂不支持实时预览。请在服务器的 Web 界面中打开此工作区来预览 Office 文件。"
     },
+    "fileViewer": {
+      "title": "文件预览",
+      "description": "会话中引用的文件，在旁边打开。",
+      "openInWorkspace": "在工作区打开",
+      "back": "返回",
+      "preview": "预览",
+      "source": "源码",
+      "loading": "加载中...",
+      "cannotResolve": "无法解析该文件路径。",
+      "tooLargeToPreview": "文件太大，无法在此预览。请在工作区打开。"
+    },
     "branchDropdown": {
       "toasts": {
         "commitCodeCompleted": "提交代码完成",
@@ -2246,8 +2366,8 @@
       "stashChanges": "贮藏更改...",
       "stashPop": "取消贮藏...",
       "manageRemotes": "管理远程...",
-      "worktreeBranches": "工作树 ({count})",
-      "noWorktreeBranches": "无工作树",
+      "worktreeBranches": "工作树分支 ({count})",
+      "noWorktreeBranches": "无工作树分支",
       "localBranches": "本地分支 ({count})",
       "noLocalBranches": "无本地分支",
       "remoteBranches": "远程分支 ({count})",
@@ -2573,6 +2693,7 @@
       "openInTerminal": "终端",
       "openInCode": "VS Code",
       "linkedFolder": "关联的文件夹",
+      "moreActions": "更多操作",
       "copyPath": "复制路径",
       "upload": "上传文件/目录",
       "download": "下载文件",
@@ -2776,11 +2897,13 @@
           "downloadFailed": "{agent} 下载失败：{message}",
           "sessionLoadResourceNotFound": "{agent} 会话加载失败，可重新加载重试，或开始新会话。",
           "sessionLoadUnavailable": "{agent} 无法恢复此会话，它可能已结束或 agent 已停止。可重新加载重试，或开始新会话。",
+          "sessionLoadBusy": "这份历史正被从它分叉出来的会话占用。关掉那个会话，再重新加载即可打开。",
           "sessionArchived": "原会话已在 {agent} 侧归档，可在终端运行 {command} 找回历史后重载，或直接开始新会话。",
           "turnFailedRefusal": "{agent} 拒绝继续本轮回复，通常意味着后端或网关出错，请检查代理日志。",
           "turnFailedMaxTokens": "{agent} 已达到本轮回复的最大 Token 限制。",
           "turnFailedMaxTurnRequests": "{agent} 已达到本轮回复允许的最大请求次数。",
           "turnFailedUnknown": "{agent} 以未知的停止原因结束了本轮回复。",
+          "turnFailedAuthRequired": "{agent} 需要你重新登录后才能执行本轮回复。请在设置中登录，然后重新发送这条消息。",
           "grokModelSwitchIncompatibleAgent": "{agent} 无法在已有对话中切换到该模型，请新建会话以使用它。",
           "turnFailedEmpty": "{agent} 本轮没有产生任何回复就结束了。",
           "turnFailedEmptyProtocol": "{agent} 本轮的输出 codeg 无法解析，可能是代理版本与协议不匹配。",
@@ -2793,6 +2916,8 @@
         "eventErrorTitle": "Agent 错误",
         "notificationTurnComplete": "{agent} 已完成响应",
         "notificationError": "{agent} 错误：{message}",
+        "notificationQuestion": "{agent} 正在等你回答",
+        "notificationErrorRedacted": "{agent} 遇到错误",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",
           "retryingWithMax": "正在重试 {attempt}/{max}",
@@ -2848,6 +2973,9 @@
         "cut": "剪切",
         "copy": "复制",
         "selectAll": "全选",
+        "openLink": "打开链接",
+        "openFile": "打开文件",
+        "sendEmail": "发送邮件",
         "pasteUnavailable": "无法读取剪贴板，请改用 Ctrl/⌘V 粘贴。",
         "clipboardWriteFailed": "无法写入剪贴板，请改用键盘快捷键。",
         "quickMessageUntitled": "未命名",
@@ -2866,12 +2994,12 @@
         "noModels": "未找到模型",
         "cancel": "取消",
         "send": "发送",
-        "forkAndSend": "分叉发送",
         "queueMessage": "加入队列",
         "steerIntoTurn": "插入当前回合",
+        "steerAsNote": "发送留言，供下次检查时读取",
         "steerQueuedInstead": "已转入队列——将随下一回合发送。",
         "steerFailed": "无法插入当前回合",
-        "steerAttachmentsUnsupported": "仅支持纯文本——带附件的草稿请走队列。",
+        "steerNoteFailed": "留言发送失败",
         "slashCommands": "斜杠命令",
         "slashSearchPlaceholder": "搜索命令...",
         "slashSearchEmpty": "没有匹配的命令",
@@ -2923,7 +3051,7 @@
           "pasteDropFiles": "直接粘贴截图或把文件拖到输入框，即可作为附件",
           "queueMessage": "智能体回复中也能继续输入并排队，回答完毕会自动续发",
           "draftAutoSave": "未发送的草稿会自动保存，重新打开会话仍在",
-          "forkSend": "发送按钮旁的下拉选择「分叉发送」，从当前位置开一条新分支",
+          "forkFromTurn": "任意已完成的回复上都有「从此处分叉」，从那条消息开一条新分支",
           "exportConversation": "右键会话内容区可导出为 Markdown / HTML / 图片",
           "chatChannels": "在「设置 → 聊天频道」接入 Telegram / 飞书 / 微信，从手机继续操作",
           "shortcutsAuxPanel": "<shortcut>{toggleAuxPanel}</shortcut> 切换右侧面板，查看本次会话改动的文件与 Git 变更",
@@ -3121,9 +3249,12 @@
         "openInFileManager": "在文件管理器打开",
         "copyRelativePath": "复制相对路径",
         "copyAbsolutePath": "复制绝对路径",
+        "download": "下载文件",
         "pathCopied": "已复制路径",
         "copyPathFailed": "复制路径失败",
-        "openFailed": "打开本地文件失败"
+        "openFailed": "打开本地文件失败",
+        "downloadSaved": "已下载 {name}",
+        "downloadFailed": "下载 {name} 失败"
       },
       "messageList": {
         "attachedResources": "附加资源",
@@ -3139,6 +3270,9 @@
         "emptyConversation": "当前会话暂无消息。",
         "systemMessage": "系统消息",
         "copyMessage": "复制",
+        "forkFromHere": "从此处分叉",
+        "forkBusy": "当前有回合正在进行，暂不可分叉",
+        "forkNotReady": "这条回复暂时还不能作为分叉点，请稍后再试",
         "copied": "已复制",
         "selectionActions": "选中内容操作",
         "selectionCopy": "复制文本",
@@ -3226,6 +3360,9 @@
         "noDetail": "暂无详情。",
         "unknownAgent": "子智能体",
         "openDetail": "查看会话",
+        "resumed": "已恢复",
+        "resumeDetail": "恢复详情",
+        "resumeReasonLabel": "恢复原因",
         "detailTitle": "子智能体会话",
         "detailDescription": "只读查看委托给子智能体的会话内容。",
         "waitForResult": "等待 {task} 任务执行结果",
@@ -3255,6 +3392,7 @@
             "child_max_tokens": "子代理超出 token 上限",
             "child_max_turn_requests": "子代理超出请求上限",
             "child_empty": "子代理无响应",
+            "child_auth_required": "子智能体需登录",
             "child_unknown": "子代理未知错误",
             "unknown": "未知任务"
           }
@@ -3300,7 +3438,10 @@
         "agentSessionLoading": "正在加载子智能体的会话记录…",
         "agentSessionEmpty": "子智能体还没有写入任何内容。",
         "agentFallbackTitle": "子智能体启动中…",
-        "agentCodexLaunchOnly": "已启动。Codex 不会再报告这个子智能体的进展——它的结果会作为一条消息出现在本会话中。",
+        "agentCodexLaunchOnly": "已启动。Codex 尚未报告这个子智能体的结局——打开它的会话可以跟进进展。",
+        "agentSubagentDone": "已完成",
+        "agentSubagentInterrupted": "已中断",
+        "agentSubagentUnknown": "结果未知",
         "agentStatsBash": "命令",
         "agentStatsRead": "读取文件",
         "agentStatsSearch": "搜索",
@@ -3412,7 +3553,6 @@
         },
         "planMode": {
           "entered": "进入计划模式",
-          "planLabel": "计划",
           "reviewApproved": "已批准执行计划",
           "reviewKept": "保持在计划模式",
           "reviewPending": "等待计划决定",
@@ -3567,13 +3707,16 @@
         "opSpawn": "启动子智能体",
         "opWait": "获取子智能体结果",
         "opClose": "结束子智能体",
-        "opResume": "恢复子智能体"
+        "opResume": "恢复子智能体",
+        "opList": "查看子智能体"
       },
       "contextCompaction": {
         "compacting": "正在压缩上下文…",
         "compacted": "上下文已压缩",
         "compactedTokens": "上下文已压缩 · {before} → {after} tokens",
-        "failed": "上下文压缩失败"
+        "failed": "上下文压缩失败",
+        "triggerManual": "手动触发",
+        "triggerAutomatic": "自动触发"
       },
       "sessionFailure": {
         "category": {
@@ -3597,11 +3740,20 @@
       },
       "backgroundTasks": {
         "settledFallback": "后台任务已结束（{status}）",
+        "notifySettledOne": "{agent}：一个后台任务已结束",
+        "notifySettledMany": "{agent}：{count} 个后台任务已结束",
         "cardRunning": "后台运行中",
         "cardLaunchedPending": "已启动后台任务",
         "cardCompleted": "后台任务已完成",
         "cardFinishedWithStatus": "后台任务已结束（{status}）",
         "cardResultPending": "结果尚未返回"
+      },
+      "asyncTasks": {
+        "openOutput": "输出",
+        "stop": "停止",
+        "tokens": "{count} tokens",
+        "stopDeclined": "无法停止该任务，它可能已经结束。",
+        "stopFailed": "停止任务失败：{error}"
       },
       "proposedPlan": {
         "title": "计划提案",
@@ -3622,6 +3774,16 @@
       "viewMode": {
         "split": "切换为左右分栏视图",
         "unified": "切换为内联视图"
+      },
+      "binaryFile": "二进制文件 — 不显示内容",
+      "image": {
+        "sideBySide": "切换为左右分栏视图",
+        "swipe": "切换为滑动对比视图",
+        "swipeHandle": "图片对比滑块",
+        "noImage": "此版本没有图片",
+        "unavailable": "无法加载此侧内容",
+        "tooLarge": "图片过大，无法预览（{size}）",
+        "loading": "正在加载图片..."
       }
     },
     "conversationContextBar": {
@@ -4400,7 +4562,15 @@
       "button": "导出备份",
       "inProgress": "正在创建备份…",
       "success": "备份已创建。",
-      "started": "已开始下载备份。"
+      "started": "已开始下载备份。",
+      "degradedTitle": "部分智能体会话数据库需要特殊处理",
+      "degradedHint": "这些智能体用 SQLite 保存会话。除非下方另有说明，备份中仍包含它们。",
+      "degradedMore": "……还有 {count} 项。",
+      "degradedLevel": {
+        "recoveredOnCopy": "已在私有副本上恢复——内容完整",
+        "bareFileOnly": "未包含预写日志——最新的消息可能缺失",
+        "notArchived": "未纳入备份——拷贝期间它一直在变化"
+      }
     },
     "restore": {
       "selectFile": "选择备份文件",
@@ -4438,11 +4608,37 @@
         "scanning": "正在检查冲突…",
         "noConflicts": "不会覆盖任何已存在的文件。",
         "conflictCount": "将影响 {count} 个已存在的文件。",
-        "conflictSkipNote": "未启用覆盖时，已存在的文件将被保留（跳过）。"
+        "conflictSkipNote": "未启用覆盖时，已存在的文件将被保留（跳过）。",
+        "agentsRunning": "有 {count} 个智能体正在运行（{agents}）。请先关闭，否则会话记录会被保留在旁路目录，而不会写回原始位置。"
       },
-      "restartFailed": "恢复已就绪，但服务未能重启。请手动重启以应用此次恢复。"
+      "restartFailed": "恢复已就绪，但服务未能重启。请手动重启以应用此次恢复。",
+      "discardPending": "放弃已暂存的恢复",
+      "discarded": "已放弃暂存的恢复。",
+      "pendingBlockedHint": "已有一个恢复在等待重启生效。放弃它才能暂存另一个。",
+      "result": {
+        "title": "恢复已暂存",
+        "needsRestart": "将在下次启动时生效。当前数据会先做快照。",
+        "downgraded": "{agents} 正在运行，会话记录未写回原始位置，已保留在 {path}。",
+        "skipped": "保留了 {count} 个已存在的文件",
+        "refused": "有 {count} 个会话数据库未写回",
+        "refusedHint": "它们来自旧版备份，数据库与其预写日志是分开保存的，无法证明二者匹配。你现有的数据库未被改动——选择恢复到旁路目录即可拿到原始文件。",
+        "restartNow": "立即重启",
+        "later": "稍后"
+      }
     },
-    "remoteUnsupported": "备份与恢复作用于运行 codeg 的那台机器上的数据。你当前连接的是远程工作区——请直接在该服务器上管理其备份。"
+    "remoteUnsupported": "备份与恢复作用于运行 codeg 的那台机器上的数据。你当前连接的是远程工作区——请直接在该服务器上管理其备份。",
+    "progress": {
+      "cancel": "取消"
+    },
+    "snapshots": {
+      "title": "恢复前快照",
+      "hint": "每次恢复都会先为当前数据做快照，保留最近两份。",
+      "empty": "暂无快照。",
+      "rollback": "回退到这份",
+      "unsupported": "仅可查看",
+      "rollbackConfirmTitle": "回退到这份快照？",
+      "rollbackConfirmBody": "这会用该快照替换当前数据并重启。被替换的数据会先做快照。"
+    }
   },
   "backup": {
     "restore": {
@@ -4504,6 +4700,45 @@
     "saved": "工具设置已保存",
     "saveFailed": "保存工具设置失败",
     "loadFailed": "加载失败：{detail}"
+  },
+  "DesktopNotificationSettings": {
+    "title": "桌面通知",
+    "description": "智能体需要你时弹出系统通知。设置只对当前设备生效，其它浏览器或机器上是独立的。",
+    "permissionTitle": "通知权限",
+    "permissionGranted": "已授权",
+    "permissionDenied": "已拒绝",
+    "permissionDefault": "尚未请求",
+    "permissionUnsupported": "不可用",
+    "permissionManagedByOs": "由系统管理",
+    "permissionGrantedHint": "当前浏览器会显示来自 Codeg 的通知。",
+    "permissionDeniedHint": "当前浏览器正在拦截 Codeg 的通知。只能在浏览器的站点设置里重新开启——网页无法再次弹窗请求。",
+    "permissionDefaultHint": "还没有向当前浏览器请求过权限。在你允许之前不会有任何通知。",
+    "permissionUnsupportedHint": "通知需要安全上下文。请通过 HTTPS 或 localhost 访问该服务。",
+    "permissionManagedByOsHint": "桌面版通过系统通知中心发送，而系统不会告诉应用 Codeg 是否被允许。发一条测试通知即可确认。",
+    "identityTitle": "投递身份",
+    "identityHint": "系统把这些通知记在这个 App 名下，生效的是它自己的通知开关。",
+    "identityDegradedHint": "无法使用 Codeg 自己的标识，系统改以 {bundleId} 的身份投递，生效的是那个 App 的通知开关。把 Codeg 安装到「应用程序」文件夹即可恢复。",
+    "requestPermission": "允许通知",
+    "permissionGrantedToast": "通知已允许。",
+    "permissionDeniedToast": "通知被拒绝。请在浏览器的站点设置里重新开启。",
+    "openSystemSettings": "打开系统设置",
+    "openSystemSettingsFailed": "无法打开系统通知设置。",
+    "sendTest": "发送测试通知",
+    "testTitle": "Codeg",
+    "testBody": "桌面通知已生效。",
+    "testSent": "测试通知已发送。",
+    "testFailed": "测试通知发送失败。",
+    "whenTitle": "通知时机",
+    "whenHint": "副屏上的窗口虽然可见，但并未聚焦——如果你从来收不到通知，选「窗口未聚焦时」。",
+    "whenAlways": "总是通知",
+    "whenUnfocused": "窗口未聚焦时",
+    "whenHidden": "窗口不可见时",
+    "hideBody": "隐藏通知内容",
+    "hideBodyHint": "用一句通用文案代替智能体输出。通知中心会把内容保留在应用之外，会话关掉了也还在。标题仍会显示文件夹名，好让你知道该回到哪个窗口。",
+    "eventsTitle": "事件",
+    "eventsHint": "关掉不想被打断的事件。同一事件在数秒内重复触发时只通知一次。",
+    "eventBackgroundTask": "后台任务",
+    "eventWorkTask": "待办任务"
   },
   "NotificationSoundSettings": {
     "title": "提示音",
@@ -4816,6 +5051,8 @@
     "errorView": "查看",
     "notifyReview": "待验收：{title}",
     "notifyFailed": "任务失败：{title}",
+    "notifyReviewRedacted": "有任务等待验收",
+    "notifyFailedRedacted": "有任务失败",
     "createFromMessage": "由此消息创建任务",
     "detailTokens": "总 token 用量",
     "editorTitleNew": "新建任务",
@@ -4830,6 +5067,7 @@
     "phaseRetry": "重试执行",
     "phaseReturn": "继续处理",
     "phaseMerge": "合并变更",
+    "phaseCompact": "压缩上下文",
     "titleLabel": "标题",
     "titlePlaceholder": "要做什么？",
     "promptLabel": "任务描述",
@@ -4860,6 +5098,7 @@
     "mergeDeleteWorktree": "合并后删除 worktree",
     "mergeSubmit": "合并",
     "mergeSubmitQueue": "加入合并队列",
+    "mergeSubmitting": "启动中…",
     "mergeQueuedToast": "已加入合并队列，等当前合并完成后自动开始。",
     "completeTitle": "完成任务",
     "completeDescription": "该任务没有改动任何文件，无需合并，将直接标记为已完成。",
@@ -4881,6 +5120,7 @@
     "settingsMaxConcurrentHint": "0 表示不限制",
     "settingsAutoCompact": "自动压缩上下文阈值",
     "settingsAutoCompactHint": "继续处理、重试或合并前，若会话上下文占用达到该比例，先压缩再发送任务消息。0 表示关闭。",
+    "compactingNote": "正在压缩会话上下文…",
     "settingsCompactCommand": "压缩命令",
     "settingsCompactCommandHint": "留空则按智能体自身提供的命令（或已知默认值）自动选择。",
     "settingsCompactCommandPlaceholder": "/compact",
@@ -5124,6 +5364,46 @@
     "fieldDescription": "描述",
     "baseInstructions": "系统提示词（base_instructions）"
   },
+  "DeepSeekModelEditor": {
+    "title": "模型列表",
+    "description": "DeepSeek 会话可切换的模型。保存在 harness 的设置文档里，代理在启动时读取——保存后对之后新建的会话生效。",
+    "inheritedBadge": "代理默认",
+    "inheritedHint": "尚未保存过列表，这些是代理内置的模型。保存会把它们固定下来，之后升级代理也不再自动变化。文件：",
+    "storedHint": "已保存在 harness 设置文档中。这份列表之外的键、以及它们周围的注释都不会被改动。文件：",
+    "unreadable": "无法在这里安全地编辑该设置文档（会有丢失已有内容的风险），请手动编辑。",
+    "invalidStored": "代理拒绝了这份已保存的列表，在修好之前，会话用的都是它内置的模型：",
+    "loading": "正在读取设置文档…",
+    "loadFailed": "无法读取设置文档。",
+    "empty": "没有模型。添加一个，或直接保存以退回代理内置列表。",
+    "addModel": "添加模型",
+    "remove": "删除模型",
+    "advanced": "更多",
+    "save": "保存模型列表",
+    "saving": "保存中…",
+    "restoreDefaults": "使用代理默认",
+    "fieldId": "模型 id",
+    "fieldName": "显示名称",
+    "fieldContextWindow": "上下文窗口",
+    "fieldDescription": "描述",
+    "fieldMaxTokens": "最大输出 token",
+    "fieldAcceptsImages": "接受图片",
+    "fieldImageDetail": "图片精度",
+    "fieldImagePixelBudget": "图片像素预算",
+    "fieldImageMaxBytes": "图片字节上限",
+    "placeholderId": "deepseek-v4-flash",
+    "placeholderName": "选择器中显示的名字",
+    "placeholderInherit": "代理默认",
+    "errorMissingId": "每个模型都需要一个 id。",
+    "errorDuplicateId": "有两个模型都叫“{id}”。",
+    "errorBadContextWindow": "“{id}”的上下文窗口必须是大于 0 的整数。",
+    "errorBadMaxTokens": "“{id}”的最大输出 token 必须是大于 0 的整数。",
+    "errorBadImageLimit": "“{id}”的图片限制必须是大于 0 的整数。",
+    "warnSingleModel": "只有一个模型时，代理不会再提供模型选择器。",
+    "warnLaunchModelMissing": "新会话会以“{model}”启动，而它不在这个列表里。可以把它加进来，或在上方环境变量里设置 {variable}。",
+    "toastSaved": "模型列表已保存",
+    "toastRestored": "已改用代理内置模型列表",
+    "toastSaveFailed": "保存模型列表失败"
+  },
   "DiagnosticsSettings": {
     "title": "环境诊断",
     "description": "检查本应用在自身进程中如何解析该智能体的 CLI——这可能与你的终端不同。",
@@ -5291,7 +5571,7 @@
     "noRemote": "该文件夹没有可识别的代码托管远端（origin）",
     "errors": {
       "noAccount": "还没有为 {host} 配置 {provider} 账号。请在「设置 → 版本控制」中添加后再加载该仓库。",
-      "unsupportedHost": "仓库面板目前仅支持 GitHub 和 GitLab，而 {host} 不是其中任何一种。如果它是自建的 GitHub Enterprise 或 GitLab 实例，请在「设置 → 版本控制」中为它添加账号。",
+      "unsupportedHost": "仓库面板目前仅支持 GitHub、GitLab 和 Gitea，而 {host} 不是其中任何一种。如果它是自建的 GitHub Enterprise、GitLab、Gitea 或 Forgejo 实例，请在「设置 → 版本控制」中为它添加账号。",
       "wrongForge": "{host} 实际上是 {provider}，此前被误判为另一种代码托管服务。已自动更正，请重新加载。"
     },
     "addAccount": "添加账号",
@@ -5550,8 +5830,29 @@
     "showFewerMembers": "收起多余会话",
     "detachToCanvas": "移出到画布",
     "deleteSelected": "删除所选",
+    "confirmDeleteTitle": "删除选中内容？",
+    "confirmDeleteNotes": "你写下的 {count} 条便签将被永久删除，此操作无法撤销。",
+    "confirmDeleteCancel": "取消",
+    "confirmDeleteConfirm": "删除",
     "canvasActions": "画布操作",
-    "mergeIntoNewRegion": "新建区域"
+    "mergeIntoNewRegion": "新建区域",
+    "addFileCard": "文件卡片",
+    "addTerminalCard": "终端卡片",
+    "searchFiles": "搜索文件…",
+    "searchFilesIn": "在 {folder} 中搜索…",
+    "searchingFiles": "搜索中…",
+    "noFiles": "未找到文件",
+    "noOpenFiles": "没有已打开的文件——输入以搜索",
+    "browseForFile": "浏览…",
+    "filePreview": "预览",
+    "fileSource": "源码",
+    "reloadFile": "重新加载",
+    "removeFileCard": "移除文件卡片",
+    "restartTerminal": "重启终端",
+    "removeTerminalCard": "移除终端卡片",
+    "terminalNoDirectory": "这张卡片没有工作目录",
+    "confirmDeleteTerminals": "{count} 个正在运行的终端会被关闭，其中的进程也会一并结束。",
+    "confirmDeleteNotesAndTerminals": "你写下的 {notes} 条便签将被永久删除，另有 {terminals} 个正在运行的终端会被结束。"
   },
   "Translation": {
     "partialFailure": "部分片段翻译失败",
@@ -5699,6 +6000,5 @@
     "poolIdle": "空闲 — 尚未使用过该端点。",
     "poolRate": "自适应速率：{rpm} 请求/分",
     "poolCooldown": "限流(429)冷却中 {seconds} 秒（{rpm}/分）",
-    "poolDisabled": "本会话已停用：{reason}"
-  }
+    "poolDisabled": "本会话已停用：{reason}"  }
 }

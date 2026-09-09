@@ -66,6 +66,18 @@ pub fn build_router(
             post(handlers::delegation::set_delegation_settings),
         )
         .route(
+            "/get_codeg_mcp_service_status",
+            post(handlers::mcp_service::get_codeg_mcp_service_status),
+        )
+        .route(
+            "/start_codeg_mcp_service",
+            post(handlers::mcp_service::start_codeg_mcp_service),
+        )
+        .route(
+            "/set_codeg_mcp_tool_group",
+            post(handlers::mcp_service::set_codeg_mcp_tool_group),
+        )
+        .route(
             "/get_feedback_settings",
             post(handlers::feedback::get_feedback_settings),
         )
@@ -384,6 +396,10 @@ pub fn build_router(
             post(handlers::git::git_commit_branches),
         )
         .route("/git_show_file", post(handlers::git::git_show_file))
+        .route(
+            "/git_show_file_base64",
+            post(handlers::git::git_show_file_base64),
+        )
         .route("/git_diff", post(handlers::git::git_diff))
         .route(
             "/git_diff_with_branch",
@@ -540,7 +556,14 @@ pub fn build_router(
             "/backup_upload",
             post(handlers::backup::backup_upload).layer(DefaultBodyLimit::disable()),
         )
-        .route("/backup_inspect", post(handlers::backup::backup_inspect))
+        .route(
+            "/backup_prepare_source",
+            post(handlers::backup::backup_prepare_source),
+        )
+        .route(
+            "/backup_release_source",
+            post(handlers::backup::backup_release_source),
+        )
         .route(
             "/backup_scan_external_conflicts",
             post(handlers::backup::backup_scan_external_conflicts),
@@ -550,6 +573,19 @@ pub fn build_router(
             post(handlers::backup::backup_restore_stage),
         )
         .route("/backup_cancel", post(handlers::backup::backup_cancel))
+        .route(
+            "/backup_list_safety_snapshots",
+            post(handlers::backup::backup_list_safety_snapshots),
+        )
+        .route("/backup_rollback", post(handlers::backup::backup_rollback))
+        .route(
+            "/backup_active_agents",
+            post(handlers::backup::backup_active_agents),
+        )
+        .route(
+            "/backup_discard_pending",
+            post(handlers::backup::backup_discard_pending),
+        )
         .route(
             "/download_workspace_file",
             post(handlers::workspace_files::download_workspace_file),
@@ -639,6 +675,10 @@ pub fn build_router(
         .route(
             "/validate_gitlab_token",
             post(handlers::version_control::validate_gitlab_token),
+        )
+        .route(
+            "/validate_gitea_token",
+            post(handlers::version_control::validate_gitea_token),
         )
         .route(
             "/save_account_token",
@@ -773,6 +813,10 @@ pub fn build_router(
         .route("/acp_cancel", post(handlers::acp::acp_cancel))
         .route("/acp_fork", post(handlers::acp::acp_fork))
         .route(
+            "/acp_stop_async_task",
+            post(handlers::acp::acp_stop_async_task),
+        )
+        .route(
             "/acp_respond_permission",
             post(handlers::acp::acp_respond_permission),
         )
@@ -849,6 +893,14 @@ pub fn build_router(
             post(handlers::acp::acp_load_pi_config),
         )
         .route(
+            "/acp_load_deepseek_model_catalog",
+            post(handlers::acp::acp_load_deepseek_model_catalog),
+        )
+        .route(
+            "/acp_update_deepseek_model_catalog",
+            post(handlers::acp::acp_update_deepseek_model_catalog),
+        )
+        .route(
             "/acp_validate_pi_command",
             post(handlers::acp::acp_validate_pi_command),
         )
@@ -867,6 +919,10 @@ pub fn build_router(
         .route(
             "/acp_antigravity_login_cancel",
             post(handlers::acp::acp_antigravity_login_cancel),
+        )
+        .route(
+            "/acp_antigravity_sign_out",
+            post(handlers::acp::acp_antigravity_sign_out),
         )
         .route(
             "/acp_pi_project_trust_state",
@@ -1589,6 +1645,18 @@ pub fn build_router(
             "/background_clear",
             post(handlers::background::background_clear),
         )
+        .route(
+            "/background_market_search",
+            post(handlers::background::background_market_search),
+        )
+        .route(
+            "/background_market_asset",
+            post(handlers::background::background_market_asset),
+        )
+        .route(
+            "/background_market_download",
+            post(handlers::background::background_market_download),
+        )
         // ─── Pet ───
         .route("/pet_list", post(handlers::pet::pet_list))
         .route("/pet_get", post(handlers::pet::pet_get))
@@ -1645,6 +1713,10 @@ pub fn build_router(
         .route(
             "/terminal_resize",
             post(handlers::terminal::terminal_resize),
+        )
+        .route(
+            "/terminal_snapshot",
+            post(handlers::terminal::terminal_snapshot),
         )
         .route("/terminal_kill", post(handlers::terminal::terminal_kill))
         .route("/terminal_list", post(handlers::terminal::terminal_list))

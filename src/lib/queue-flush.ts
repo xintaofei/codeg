@@ -49,17 +49,6 @@ export function shouldQueueDirectSend(
 }
 
 /**
- * Whether a fork-and-send must be blocked because the message queue is
- * non-empty. Fork is an immediate session side effect (it re-points the live
- * session), so it cannot run while drafts are queued for the CURRENT session —
- * the queued items would otherwise flush onto the forked session, i.e. the fork
- * would jump ahead of the queue. The user drains/clears the queue first.
- */
-export function forkSendBlockedByQueue(queueLength: number): boolean {
-  return queueLength > 0
-}
-
-/**
  * Whether the live connection is ready to accept a send for THIS tab: connected,
  * its established cwd matches the tab's intended working dir, AND it belongs to
  * the agent the tab currently has selected.

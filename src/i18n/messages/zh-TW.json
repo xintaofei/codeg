@@ -197,7 +197,33 @@
       "panelOpacityHint": "側邊欄、面板與標籤列的不透明程度。越低，透出的圖片越多。",
       "errorTooLarge": "圖片太大（最大 16 MB）。",
       "errorUnsupportedFormat": "不支援的圖片格式，請選擇 PNG、JPEG、WebP 或 GIF。",
-      "errorUploadFailed": "設定背景圖片失敗。"
+      "errorUploadFailed": "設定背景圖片失敗。",
+      "market": {
+        "open": "桌布市集",
+        "title": "桌布市集",
+        "description": "瀏覽 Wallhaven 公開圖庫，點擊即可下載並套用。",
+        "searchPlaceholder": "搜尋桌布…",
+        "categories": {
+          "all": "全部",
+          "general": "風景",
+          "anime": "二次元",
+          "people": "人物"
+        },
+        "pageInfo": "第 {page} / {lastPage} 頁",
+        "prevPage": "上一頁",
+        "nextPage": "下一頁",
+        "refresh": "重新整理",
+        "empty": "沒有找到符合的桌布。",
+        "error": "桌布市集載入失敗。",
+        "retry": "重試",
+        "cardLabel": "套用桌布 {id}",
+        "applied": "使用中",
+        "unavailable": "無法使用",
+        "tooLarge": "超出背景圖上限：{actual}（上限 {limit}）",
+        "downloadFailed": "下載失敗，請重試。",
+        "appliedToast": "桌布已套用",
+        "credit": "圖片來源 wallhaven.cc · 僅 SFW 內容"
+      }
     }
   },
   "SystemSettings": {
@@ -305,6 +331,10 @@
     "gitlabDescription": "管理用於身份驗證的 GitLab 帳號。權杖儲存在本機。",
     "gitlabTokenHint": "在 GitLab → Preferences → Access tokens 中建立具備 api 權限的個人存取權杖。",
     "gitlabNoAccounts": "還沒有 GitLab 帳號",
+    "giteaTitle": "Gitea 帳號",
+    "giteaDescription": "管理用於身份驗證的 Gitea（及 Forgejo）帳號。權杖儲存在本機。",
+    "giteaTokenHint": "在 Gitea → Settings → Applications 中建立具備 write:repository、write:issue 與 read:user 權限的存取權杖。",
+    "giteaNoAccounts": "還沒有 Gitea 帳號",
     "noAccounts": "尚未設定 GitHub 帳號。",
     "addAccount": "新增帳號",
     "serverUrl": "伺服器網址",
@@ -337,7 +367,7 @@
     "loadFailed": "載入設定失敗：{message}",
     "gitAccount": {
       "sectionTitle": "Git 伺服器帳號",
-      "sectionDescription": "管理非 GitHub 的 Git 伺服器憑據（GitLab、Bitbucket、自建服務等）。",
+      "sectionDescription": "管理沒有獨立區塊的 Git 伺服器憑證（Bitbucket、自架服務等）。",
       "noAccounts": "尚未設定 Git 伺服器帳號。",
       "addAccount": "新增帳號",
       "addTitle": "新增 Git 帳號",
@@ -637,6 +667,8 @@
     "local": {
       "filterPlaceholder": "篩選本地 MCP...",
       "loadFailed": "載入失敗：{message}",
+      "sourceUnreadable": "無法讀取 {app} 的 MCP 設定，其伺服器已隱藏：{message}",
+      "saveBlockedByUnreadableSource": "儲存前請先修復或刪除該檔案並重新整理：指派結果依本頁能讀取到的智慧體計算，現在儲存可能會將該伺服器從讀不到的智慧體中移除。",
       "empty": "目前未檢測到本地 MCP。",
       "description": "本地 MCP 配置可直接編輯並儲存。",
       "enabledApps": "啟用應用",
@@ -681,6 +713,13 @@
     "emptyNoAgent": "暫無可用 Agent。",
     "configManagement": "配置管理",
     "envVars": "環境變數",
+    "adapterChannel": {
+      "label": "轉接器版本",
+      "description": "安裝與升級預設使用 codeg 審查並固定的版本。選擇最新版後會改為安裝該套件當時最新的 npm 版本；若最新版安裝失敗，codeg 會回退到固定版本，並在安裝日誌中說明。",
+      "pinned": "固定版本（建議）",
+      "latest": "最新版（未經審查）",
+      "latestWarning": "最新版本未經審查，可能破壞該 Agent 在 codeg 中的使用，偶爾甚至是已知損壞的版本。實際安裝的版本以版本狀態為準。"
+    },
     "hostTools": {
       "label": "由 Agent 自行處理檔案與指令",
       "description": "codeg 不再代為提供檔案存取與終端指令，改由 Agent 在自己的行程中執行——只有這樣它自帶的沙箱與權限規則才會生效。同時會關閉向其他 Agent 委派，否則同樣的操作又會繞回 codeg 執行。codeg 本身不提供沙箱，因此請僅在 Agent 已設定沙箱時開啟。"
@@ -923,6 +962,13 @@
         "failed": "登入未完成。",
         "startFailed": "無法開始登入",
         "credentialHint": "權杖快取在這裡。把這個檔案複製到其他無桌面機器，那台也就登入好了。"
+      },
+      "signOut": {
+        "title": "登入了錯誤的帳號？",
+        "description": "Antigravity 會快取登入時使用的 Google 帳號並靜默重複使用，所以再次登入也換不到別的帳號。登出會清除已儲存的憑證；正在執行的 Antigravity 工作階段會先被結束，否則它們會把舊帳號寫回去。",
+        "action": "登出",
+        "done": "已登出。重新登入即可選擇其他帳號。",
+        "failed": "登出失敗"
       }
     },
     "deepseek": {
@@ -935,14 +981,13 @@
       "apiKeyHint": "以 DEEPSEEK_API_KEY 傳給智慧體。環境變數的優先權高於憑證檔，因此若用終端機登入，這裡留空即可。"
     },
     "codex": {
-      "configDescription": "支援 API URL、API Key、模型名稱、Reasoning Effort 快捷配置，並與 `auth.json` / `config.toml` 雙向聯動。",
+      "configDescription": "支援 API URL、API Key、模型名稱快捷配置，並與 `auth.json` / `config.toml` 雙向聯動。",
       "authMode": "認證方式",
       "chatgptSubscription": "官網訂閱",
       "chatgptSubscriptionHint": "使用 ChatGPT 官網訂閱登入，無需配置 API Key",
       "apiKeyHint": "使用 API Key 連接 OpenAI 或相容的 API 服務",
       "selectProvider": "選擇 Provider",
       "modelName": "模型名稱",
-      "selectReasoningEffort": "選擇 Reasoning Effort",
       "enableWebsocket": "啟用 WebSocket",
       "enableWebsocketAria": "Codex Provider 啟用 WebSocket",
       "enableSkills": "啟用 Skills",
@@ -1277,12 +1322,6 @@
       "customModelOptionName": "自訂模型名稱",
       "customModelOptionDescription": "自訂模型描述",
       "customModelOptionHint": "在 Claude 模型選擇器中新增一個自訂項目（例如透過自訂閘道／代理提供的模型）。名稱與描述為選填的顯示資訊。",
-      "effortLevel": "推理等級",
-      "effortLevelDefault": "預設等級",
-      "effortLevel_low": "低",
-      "effortLevel_medium": "中",
-      "effortLevel_high": "高",
-      "effortLevel_xhigh": "超高",
       "sendAttributionHeader": "向介面傳送歸屬/計費識別碼",
       "sendAttributionHeaderAria": "向介面傳送 Claude Code 歸屬/計費識別碼",
       "disableNonessentialTraffic": "停用遙測或多餘的網路請求",
@@ -1395,7 +1434,8 @@
       "localUnrecognized": "{versionText}。本地版本無法識別，可嘗試升級覆蓋安裝。",
       "upgradeAvailable": "{versionText}。發現可升級版本。",
       "remoteUnavailable": "{versionText}。遠端版本暫不可用。",
-      "latest": "{versionText}。已是最新版本。"
+      "latest": "{versionText}。已是最新版本。",
+      "latestChannel": "{versionText}。已啟用最新版通道；升級會安裝最新版本。"
     },
     "adapter": {
       "label": "ACP 轉接器",
@@ -1553,7 +1593,7 @@
   "GeneralSettings": {
     "loading": "載入中...",
     "sectionTitle": "一般",
-    "sectionDescription": "集中管理預設終端機、渲染加速、通知提示音以及多智能體協同等通用偏好。",
+    "sectionDescription": "集中管理預設終端機、渲染加速、通知與提示音以及多智能體協同等通用偏好。",
     "terminalTitle": "預設終端",
     "terminalDescription": "選擇從終端列或檔案樹開啟新終端分頁時使用的 Shell。智慧代理請求 codeg 代為執行整條命令列時也會使用它。",
     "terminalSystemDefault": "系統預設",
@@ -1569,7 +1609,9 @@
     "terminalShellNotInstalled": "未安裝",
     "terminalShellNotFoundWarning": "目前主機上不存在此路徑。",
     "terminalCurrentShell": "目前使用：{path}",
-    "renderingDescription": "若應用出現黑屏或渲染異常（常見於 AMD 顯示卡或部分 Intel 內顯），可關閉硬體加速。僅 Windows 桌面端生效。",
+    "colorizeCommandOutput": "為命令輸出著色",
+    "colorizeCommandOutputDescription": "強制智慧代理執行的命令輸出 ANSI 色彩，使其在對話記錄中以彩色而非純文字呈現。對新建工作階段生效。",
+    "renderingDescription": "若應用出現黑屏或渲染異常（Windows 上常見於 AMD 顯示卡或部分 Intel 內顯，Linux 上常見於 NVIDIA 閉源驅動），可關閉硬體加速。僅 Windows 與 Linux 桌面端生效。",
     "disableHardwareAcceleration": "停用硬體加速",
     "renderingSaveFailed": "渲染設定儲存失敗：{message}",
     "restartRequired": "已儲存，需重新啟動應用程式才會生效。",
@@ -1633,6 +1675,9 @@
     "searchPlaceholder": "搜尋標題或路徑…",
     "allAgents": "全部智慧代理",
     "onlyImportable": "僅顯示可匯入",
+    "includeDeleted": "包含已刪除",
+    "includeDeletedWithCount": "包含已刪除（{count}）",
+    "includeDeletedHint": "在 codeg 中刪除工作階段只是隱藏，工作階段與其歷史仍然保留。開啟後可勾選已刪除的工作階段，將其原地還原。",
     "selectAll": "全選",
     "clearSelection": "清空",
     "expandAll": "全部展開",
@@ -1645,6 +1690,7 @@
     "toggleSessionAria": "選擇工作階段 {title}",
     "statusImported": "已匯入",
     "statusDeleted": "已刪除",
+    "statusDeletedRestorable": "已刪除——匯入即可還原原本的工作階段",
     "untitled": "未命名工作階段",
     "messageCount": "{count} 則訊息",
     "selectedCount": "已選 {count} 個",
@@ -1653,6 +1699,7 @@
     "close": "關閉",
     "doneTitle": "匯入完成",
     "doneImported": "新匯入",
+    "doneRestored": "已還原",
     "doneUpdated": "已重新整理",
     "doneSkipped": "已略過",
     "doneCreatedFolders": "新建資料夾",
@@ -1740,7 +1787,7 @@
       "viewOptions": "顯示選項",
       "listOptions": "會話列表",
       "showCompleted": "顯示已完成對話",
-      "showWorktrees": "顯示工作樹資料夾",
+      "showWorktrees": "顯示工作樹分支",
       "showRecent": "顯示「最近」分組",
       "navigationItems": "選單導覽項目",
       "moreOptions": "更多選項",
@@ -1845,6 +1892,7 @@
       "forkSession": "分叉會話",
       "forkSessionSuccess": "會話分叉成功",
       "forkSessionFailed": "會話分叉失敗：{error}",
+      "forkSessionBusy": "分叉失敗：目前有回合正在進行",
       "exportConversation": "匯出對話",
       "exportImage": "圖片",
       "exportMarkdown": "Markdown",
@@ -1999,11 +2047,53 @@
         "title": "快捷操作",
         "groups": {
           "workspace": "工作區",
-          "sessions": "會話",
           "navigation": "選單導覽",
           "more": "更多"
         },
         "showPet": "顯示寵物"
+      },
+      "mcp": {
+        "title": "codeg-mcp 服務",
+        "state": {
+          "running": "執行中",
+          "stopped": "未執行",
+          "disabled": "未啟用工具",
+          "unavailable": "伴生程式缺失",
+          "unknown": "未知"
+        },
+        "hint": {
+          "running": "從這裡啟動的代理可使用 codeg 內建的工具。",
+          "stopped": "Broker 通訊端沒有回應，伴生程序連不回 codeg。",
+          "disabled": "所有工具群組都已關閉，不會注入伴生程序。",
+          "unavailable": "磁碟上找不到 codeg-mcp 執行檔。",
+          "unknown": "無法讀取狀態。"
+        },
+        "socketPath": "位址",
+        "binary": "伴生程式",
+        "binaryMissing": "找不到",
+        "sessions": "代理工作階段",
+        "activeDelegations": "進行中的委派",
+        "depthLimit": "深度上限",
+        "tools": "工具",
+        "groupDelegation": "多代理委派",
+        "descDelegation": "把任務交給另一個代理處理。",
+        "groupFeedback": "即時回饋",
+        "descFeedback": "回合進行中補充說明，不打斷執行。",
+        "groupAsk": "向使用者提問",
+        "descAsk": "讓代理拿不準時先問你。",
+        "groupSessions": "工作階段查詢",
+        "descSessions": "查詢歷史工作階段及其結果。",
+        "groupAutomations": "建立自動化",
+        "descAutomations": "建立和管理定時自動化。",
+        "groupTaskboard": "建立任務",
+        "descTaskboard": "建立和管理工作任務。",
+        "start": "啟動服務",
+        "starting": "正在啟動…",
+        "actionFailed": "操作失敗：{message}",
+        "lastError": "上次錯誤：{message}",
+        "loadFailed": "無法讀取狀態：{message}",
+        "openSettings": "開啟詳細設定",
+        "refresh": "重新整理"
       }
     },
     "auxPanel": {
@@ -2061,7 +2151,26 @@
       "closeOthers": "關閉其它",
       "closeAll": "關閉所有",
       "hideTerminal": "隱藏終端（{shortcut}）",
-      "openFolderFirst": "請先開啟一個資料夾"
+      "openFolderFirst": "請先開啟一個資料夾",
+      "keybar": {
+        "label": "終端虛擬鍵",
+        "show": "顯示虛擬鍵",
+        "hide": "隱藏虛擬鍵",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "-",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "開啟資料夾",
@@ -2170,6 +2279,17 @@
       "officeServerInstallHint": "OfficeCLI 需安裝在伺服器主機上。請在伺服器上執行以下指令後重試：",
       "officeRemoteDesktopUnsupported": "遠端桌面視窗暫不支援即時預覽。請在伺服器的 Web 介面中開啟此工作區以預覽 Office 檔案。"
     },
+    "fileViewer": {
+      "title": "檔案預覽",
+      "description": "對話中引用的檔案，在旁邊開啟。",
+      "openInWorkspace": "在工作區開啟",
+      "back": "返回",
+      "preview": "預覽",
+      "source": "原始碼",
+      "loading": "載入中...",
+      "cannotResolve": "無法解析該檔案路徑。",
+      "tooLargeToPreview": "檔案太大，無法在此預覽。請在工作區開啟。"
+    },
     "branchDropdown": {
       "toasts": {
         "commitCodeCompleted": "提交程式碼完成",
@@ -2246,8 +2366,8 @@
       "stashChanges": "貯藏更改...",
       "stashPop": "取消暫存...",
       "manageRemotes": "管理遠端...",
-      "worktreeBranches": "工作樹 ({count})",
-      "noWorktreeBranches": "無工作樹",
+      "worktreeBranches": "工作樹分支 ({count})",
+      "noWorktreeBranches": "無工作樹分支",
       "localBranches": "本地分支 ({count})",
       "noLocalBranches": "無本地分支",
       "remoteBranches": "遠端分支 ({count})",
@@ -2573,6 +2693,7 @@
       "openInTerminal": "終端",
       "openInCode": "VS Code",
       "linkedFolder": "已連結的資料夾",
+      "moreActions": "更多操作",
       "copyPath": "複製路徑",
       "upload": "上傳檔案/目錄",
       "download": "下載檔案",
@@ -2776,11 +2897,13 @@
           "downloadFailed": "{agent} 下載失敗：{message}",
           "sessionLoadResourceNotFound": "{agent} 會話載入失敗，可重新載入重試，或開始新會話。",
           "sessionLoadUnavailable": "{agent} 無法還原此會話，它可能已結束或 agent 已停止。可重新載入重試，或開始新會話。",
+          "sessionLoadBusy": "這份歷史正被從它分叉出來的工作階段佔用。關閉那個工作階段後，重新載入即可開啟。",
           "sessionArchived": "原會話已在 {agent} 側歸檔，可在終端機執行 {command} 找回歷史後重新載入，或直接開始新會話。",
           "turnFailedRefusal": "{agent} 拒絕繼續此輪回覆，通常代表後端或網關出錯，請檢查代理日誌。",
           "turnFailedMaxTokens": "{agent} 已達到此輪回覆的最大 Token 限制。",
           "turnFailedMaxTurnRequests": "{agent} 已達到此輪回覆允許的最大請求次數。",
           "turnFailedUnknown": "{agent} 以未知的停止原因結束了此輪回覆。",
+          "turnFailedAuthRequired": "{agent} 需要你重新登入後才能執行本輪回覆。請在設定中登入，然後重新傳送這則訊息。",
           "grokModelSwitchIncompatibleAgent": "{agent} 無法在既有對話中切換到該模型，請新建工作階段以使用它。",
           "turnFailedEmpty": "{agent} 此輪沒有產生任何回覆就結束了。",
           "turnFailedEmptyProtocol": "{agent} 此輪的輸出 codeg 無法解析，可能是代理版本與協定不相符。",
@@ -2793,6 +2916,8 @@
         "eventErrorTitle": "Agent 錯誤",
         "notificationTurnComplete": "{agent} 已完成回應",
         "notificationError": "{agent} 錯誤：{message}",
+        "notificationQuestion": "{agent} 正在等你回答",
+        "notificationErrorRedacted": "{agent} 遇到錯誤",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",
           "retryingWithMax": "正在重試 {attempt}/{max}",
@@ -2846,6 +2971,9 @@
         "cut": "剪下",
         "copy": "複製",
         "selectAll": "全選",
+        "openLink": "開啟連結",
+        "openFile": "開啟檔案",
+        "sendEmail": "傳送郵件",
         "pasteUnavailable": "無法讀取剪貼簿，請改用 Ctrl/⌘V 貼上。",
         "clipboardWriteFailed": "無法寫入剪貼簿，請改用鍵盤快速鍵。",
         "quickMessageUntitled": "未命名",
@@ -2864,12 +2992,12 @@
         "noModels": "找不到模型",
         "cancel": "取消",
         "send": "傳送",
-        "forkAndSend": "分叉發送",
         "queueMessage": "加入佇列",
         "steerIntoTurn": "插入目前回合",
+        "steerAsNote": "傳送留言，供下次檢查時讀取",
         "steerQueuedInstead": "已轉入佇列——將隨下一回合傳送。",
         "steerFailed": "無法插入目前回合",
-        "steerAttachmentsUnsupported": "僅支援純文字——帶附件的草稿請走佇列。",
+        "steerNoteFailed": "留言送出失敗",
         "slashCommands": "斜線命令",
         "slashSearchPlaceholder": "搜尋命令...",
         "slashSearchEmpty": "沒有符合的指令",
@@ -2923,7 +3051,7 @@
           "pasteDropFiles": "直接貼上截圖或把檔案拖到輸入框，即可作為附件",
           "queueMessage": "智能體回覆中也能繼續輸入並排隊，回答完畢會自動續發",
           "draftAutoSave": "未發送的草稿會自動儲存，重新開啟會話仍在",
-          "forkSend": "傳送按鈕旁的下拉選擇「分叉傳送」，從目前位置開一條新分支",
+          "forkFromTurn": "任一已完成的回覆上都有「從此處分叉」，從那則訊息開一條新分支",
           "exportConversation": "右鍵會話內容區可匯出為 Markdown / HTML / 圖片",
           "chatChannels": "在「設定 → 聊天頻道」接入 Telegram / 飛書 / 微信，從手機繼續操作",
           "shortcutsAuxPanel": "<shortcut>{toggleAuxPanel}</shortcut> 切換右側面板，檢視本次會話改動的檔案與 Git 變更",
@@ -3121,9 +3249,12 @@
         "openInFileManager": "在檔案管理器開啟",
         "copyRelativePath": "複製相對路徑",
         "copyAbsolutePath": "複製絕對路徑",
+        "download": "下載檔案",
         "pathCopied": "已複製路徑",
         "copyPathFailed": "複製路徑失敗",
-        "openFailed": "開啟本地檔案失敗"
+        "openFailed": "開啟本地檔案失敗",
+        "downloadSaved": "已下載 {name}",
+        "downloadFailed": "下載 {name} 失敗"
       },
       "messageList": {
         "attachedResources": "附加資源",
@@ -3139,6 +3270,9 @@
         "emptyConversation": "目前會話暫無訊息。",
         "systemMessage": "系統訊息",
         "copyMessage": "複製",
+        "forkFromHere": "從此處分叉",
+        "forkBusy": "目前有回合正在進行，暫不可分叉",
+        "forkNotReady": "這則回覆暫時還不能作為分叉點，請稍後再試",
         "copied": "已複製",
         "selectionActions": "選取內容操作",
         "selectionCopy": "複製文字",
@@ -3226,6 +3360,9 @@
         "noDetail": "暫無詳情。",
         "unknownAgent": "子智慧體",
         "openDetail": "檢視會話",
+        "resumed": "已恢復",
+        "resumeDetail": "恢復詳情",
+        "resumeReasonLabel": "恢復原因",
         "detailTitle": "子智慧體會話",
         "detailDescription": "唯讀檢視委派給子智慧體的會話內容。",
         "waitForResult": "等待 {task} 任務執行結果",
@@ -3255,6 +3392,7 @@
             "child_max_tokens": "子代理超出 token 上限",
             "child_max_turn_requests": "子代理超出請求上限",
             "child_empty": "子代理無回應",
+            "child_auth_required": "子智慧體需登入",
             "child_unknown": "子代理未知錯誤",
             "unknown": "未知任務"
           }
@@ -3300,7 +3438,10 @@
         "agentSessionLoading": "正在載入子智慧體的對話記錄…",
         "agentSessionEmpty": "子智慧體尚未寫入任何內容。",
         "agentFallbackTitle": "子智能體啟動中…",
-        "agentCodexLaunchOnly": "已啟動。Codex 不會再回報這個子智能體的進度——它的結果會以一則訊息出現在本工作階段中。",
+        "agentCodexLaunchOnly": "已啟動。Codex 尚未回報這個子智能體的結果——開啟它的工作階段即可追蹤進度。",
+        "agentSubagentDone": "已完成",
+        "agentSubagentInterrupted": "已中斷",
+        "agentSubagentUnknown": "結果未知",
         "agentStatsBash": "命令",
         "agentStatsRead": "讀取檔案",
         "agentStatsSearch": "搜尋",
@@ -3412,7 +3553,6 @@
         },
         "planMode": {
           "entered": "進入計畫模式",
-          "planLabel": "計畫",
           "reviewApproved": "已核准執行計畫",
           "reviewKept": "維持在計畫模式",
           "reviewPending": "等待計畫決定",
@@ -3567,13 +3707,16 @@
         "opSpawn": "啟動子智能體",
         "opWait": "取得子智能體結果",
         "opClose": "結束子智能體",
-        "opResume": "恢復子智能體"
+        "opResume": "恢復子智能體",
+        "opList": "檢視子智能體"
       },
       "contextCompaction": {
         "compacting": "正在壓縮上下文…",
         "compacted": "上下文已壓縮",
         "compactedTokens": "上下文已壓縮 · {before} → {after} tokens",
-        "failed": "上下文壓縮失敗"
+        "failed": "上下文壓縮失敗",
+        "triggerManual": "手動觸發",
+        "triggerAutomatic": "自動觸發"
       },
       "sessionFailure": {
         "category": {
@@ -3597,11 +3740,20 @@
       },
       "backgroundTasks": {
         "settledFallback": "背景任務已結束（{status}）",
+        "notifySettledOne": "{agent}：一個背景任務已結束",
+        "notifySettledMany": "{agent}：{count} 個背景任務已結束",
         "cardRunning": "背景執行中",
         "cardLaunchedPending": "已啟動背景任務",
         "cardCompleted": "背景任務已完成",
         "cardFinishedWithStatus": "背景任務已結束（{status}）",
         "cardResultPending": "結果尚未返回"
+      },
+      "asyncTasks": {
+        "openOutput": "輸出",
+        "stop": "停止",
+        "tokens": "{count} tokens",
+        "stopDeclined": "無法停止該任務，它可能已經結束。",
+        "stopFailed": "停止任務失敗：{error}"
       },
       "proposedPlan": {
         "title": "計劃提案",
@@ -3622,6 +3774,16 @@
       "viewMode": {
         "split": "切換為左右分欄視圖",
         "unified": "切換為內聯視圖"
+      },
+      "binaryFile": "二進位檔案 — 不顯示內容",
+      "image": {
+        "sideBySide": "切換為左右分欄視圖",
+        "swipe": "切換為滑動比較視圖",
+        "swipeHandle": "圖片比較滑桿",
+        "noImage": "此版本沒有圖片",
+        "unavailable": "無法載入此側內容",
+        "tooLarge": "圖片過大，無法預覽（{size}）",
+        "loading": "正在載入圖片..."
       }
     },
     "conversationContextBar": {
@@ -4400,7 +4562,15 @@
       "button": "匯出備份",
       "inProgress": "正在建立備份…",
       "success": "備份已建立。",
-      "started": "已開始下載備份。"
+      "started": "已開始下載備份。",
+      "degradedTitle": "部分智能體工作階段資料庫需要特殊處理",
+      "degradedHint": "這些智能體以 SQLite 儲存工作階段。除非下方另有說明，備份中仍包含它們。",
+      "degradedMore": "……還有 {count} 項。",
+      "degradedLevel": {
+        "recoveredOnCopy": "已在私有副本上復原——內容完整",
+        "bareFileOnly": "未包含預寫日誌——最新的訊息可能缺失",
+        "notArchived": "未納入備份——複製期間它一直在變動"
+      }
     },
     "restore": {
       "selectFile": "選擇備份檔案",
@@ -4438,11 +4608,37 @@
         "scanning": "正在檢查衝突…",
         "noConflicts": "不會覆寫任何已存在的檔案。",
         "conflictCount": "將影響 {count} 個已存在的檔案。",
-        "conflictSkipNote": "未啟用覆寫時，已存在的檔案將被保留（略過）。"
+        "conflictSkipNote": "未啟用覆寫時，已存在的檔案將被保留（略過）。",
+        "agentsRunning": "有 {count} 個智能體正在執行（{agents}）。請先關閉，否則工作階段記錄會保留在旁路資料夾，不會寫回原始位置。"
       },
-      "restartFailed": "還原已就緒，但伺服器未能重新啟動。請手動重新啟動以套用此次還原。"
+      "restartFailed": "還原已就緒，但伺服器未能重新啟動。請手動重新啟動以套用此次還原。",
+      "discardPending": "捨棄已暫存的還原",
+      "discarded": "已捨棄暫存的還原。",
+      "pendingBlockedHint": "已有一個還原在等待重新啟動生效。捨棄它才能暫存另一個。",
+      "result": {
+        "title": "還原已暫存",
+        "needsRestart": "將在下次啟動時生效。目前資料會先建立快照。",
+        "downgraded": "{agents} 正在執行，工作階段記錄未寫回原始位置，已保留在 {path}。",
+        "skipped": "保留了 {count} 個已存在的檔案",
+        "refused": "有 {count} 個工作階段資料庫未寫回",
+        "refusedHint": "它們來自舊版備份，資料庫與其預寫日誌是分開儲存的，無法證明兩者相符。你現有的資料庫未被更動——選擇還原到旁路資料夾即可取得原始檔案。",
+        "restartNow": "立即重新啟動",
+        "later": "稍後"
+      }
     },
-    "remoteUnsupported": "備份與還原作用於執行 codeg 的那台機器上的資料。你目前連線的是遠端工作區——請直接在該伺服器上管理其備份。"
+    "remoteUnsupported": "備份與還原作用於執行 codeg 的那台機器上的資料。你目前連線的是遠端工作區——請直接在該伺服器上管理其備份。",
+    "progress": {
+      "cancel": "取消"
+    },
+    "snapshots": {
+      "title": "還原前快照",
+      "hint": "每次還原都會先為目前資料建立快照，保留最近兩份。",
+      "empty": "尚無快照。",
+      "rollback": "回復到這份",
+      "unsupported": "僅可檢視",
+      "rollbackConfirmTitle": "回復到這份快照？",
+      "rollbackConfirmBody": "這會用該快照取代目前資料並重新啟動。被取代的資料會先建立快照。"
+    }
   },
   "backup": {
     "restore": {
@@ -4504,6 +4700,45 @@
     "saved": "工具設定已儲存",
     "saveFailed": "儲存工具設定失敗",
     "loadFailed": "載入失敗：{detail}"
+  },
+  "DesktopNotificationSettings": {
+    "title": "桌面通知",
+    "description": "智慧體需要你時彈出系統通知。設定只對目前裝置生效，其他瀏覽器或電腦上是獨立的。",
+    "permissionTitle": "通知權限",
+    "permissionGranted": "已授權",
+    "permissionDenied": "已拒絕",
+    "permissionDefault": "尚未請求",
+    "permissionUnsupported": "不可用",
+    "permissionManagedByOs": "由系統管理",
+    "permissionGrantedHint": "目前瀏覽器會顯示來自 Codeg 的通知。",
+    "permissionDeniedHint": "目前瀏覽器正在摞截 Codeg 的通知。只能在瀏覽器的網站設定裡重新開啟——網頁無法再次彈窗請求。",
+    "permissionDefaultHint": "還沒有向目前瀏覽器請求過權限。在你允許之前不會有任何通知。",
+    "permissionUnsupportedHint": "通知需要安全上下文。請透過 HTTPS 或 localhost 存取該服務。",
+    "permissionManagedByOsHint": "桌面版透過系統通知中心發送，而系統不會告訴應用 Codeg 是否被允許。發一則測試通知即可確認。",
+    "identityTitle": "投遞身分",
+    "identityHint": "系統會把這些通知記在這個 App 名下，生效的是它自己的通知開關。",
+    "identityDegradedHint": "無法使用 Codeg 自己的識別碼，系統改以 {bundleId} 的身分投遞，生效的是那個 App 的通知開關。將 Codeg 安裝到「應用程式」資料夾即可恢復。",
+    "requestPermission": "允許通知",
+    "permissionGrantedToast": "通知已允許。",
+    "permissionDeniedToast": "通知被拒絕。請在瀏覽器的網站設定裡重新開啟。",
+    "openSystemSettings": "開啟系統設定",
+    "openSystemSettingsFailed": "無法開啟系統通知設定。",
+    "sendTest": "發送測試通知",
+    "testTitle": "Codeg",
+    "testBody": "桌面通知已生效。",
+    "testSent": "測試通知已發送。",
+    "testFailed": "測試通知發送失敗。",
+    "whenTitle": "通知時機",
+    "whenHint": "副螢幕上的視窗雖然可見，但並未取得焦點——如果你從來收不到通知，選「視窗未取得焦點時」。",
+    "whenAlways": "總是通知",
+    "whenUnfocused": "視窗未取得焦點時",
+    "whenHidden": "視窗不可見時",
+    "hideBody": "隱藏通知內容",
+    "hideBodyHint": "用一句通用文案代替智慧體輸出。通知中心會把內容保留在應用之外，對話關掉了也還在。標題仍會顯示資料夾名稱，好讓你知道該回到哪個視窗。",
+    "eventsTitle": "事件",
+    "eventsHint": "關掉不想被打斷的事件。同一事件在數秒內重複觸發時只通知一次。",
+    "eventBackgroundTask": "背景任務",
+    "eventWorkTask": "待辦任務"
   },
   "NotificationSoundSettings": {
     "title": "提示音",
@@ -4816,6 +5051,8 @@
     "errorView": "檢視",
     "notifyReview": "待驗收：{title}",
     "notifyFailed": "任務失敗：{title}",
+    "notifyReviewRedacted": "有任務等待驗收",
+    "notifyFailedRedacted": "有任務失敗",
     "createFromMessage": "由此訊息建立任務",
     "detailTokens": "總 token 用量",
     "editorTitleNew": "新增任務",
@@ -4830,6 +5067,7 @@
     "phaseRetry": "重試執行",
     "phaseReturn": "繼續處理",
     "phaseMerge": "合併變更",
+    "phaseCompact": "壓縮脈絡",
     "titleLabel": "標題",
     "titlePlaceholder": "要做什麼？",
     "promptLabel": "任務描述",
@@ -4860,6 +5098,7 @@
     "mergeDeleteWorktree": "合併後刪除 worktree",
     "mergeSubmit": "合併",
     "mergeSubmitQueue": "加入合併佇列",
+    "mergeSubmitting": "啟動中…",
     "mergeQueuedToast": "已加入合併佇列，等目前的合併完成後自動開始。",
     "completeTitle": "完成任務",
     "completeDescription": "此任務沒有變更任何檔案，無須合併，將直接標記為已完成。",
@@ -4881,6 +5120,7 @@
     "settingsMaxConcurrentHint": "0 表示不限制",
     "settingsAutoCompact": "自動壓縮上下文閾值",
     "settingsAutoCompactHint": "繼續處理、重試或合併前，若工作階段上下文佔用達到該比例，先壓縮再傳送任務訊息。0 表示關閉。",
+    "compactingNote": "正在壓縮工作階段脈絡…",
     "settingsCompactCommand": "壓縮指令",
     "settingsCompactCommandHint": "留空則依代理自身提供的指令（或已知預設值）自動選擇。",
     "settingsCompactCommandPlaceholder": "/compact",
@@ -5124,6 +5364,46 @@
     "fieldDescription": "描述",
     "baseInstructions": "系統提示詞（base_instructions）"
   },
+  "DeepSeekModelEditor": {
+    "title": "模型清單",
+    "description": "DeepSeek 工作階段可切換的模型。儲存在 harness 的設定文件中，代理在啟動時讀取——儲存後對之後新建的工作階段生效。",
+    "inheritedBadge": "代理預設",
+    "inheritedHint": "尚未儲存過清單，這些是代理內建的模型。儲存會將它們固定下來，之後升級代理也不會再自動變動。檔案：",
+    "storedHint": "已儲存在 harness 設定文件中。這份清單之外的鍵，以及它們周圍的註解都不會被更動。檔案：",
+    "unreadable": "無法在這裡安全地編輯該設定文件（有遺失既有內容的風險），請手動編輯。",
+    "invalidStored": "代理拒絕了這份已儲存的清單，在修好之前，工作階段用的都是它內建的模型：",
+    "loading": "正在讀取設定文件…",
+    "loadFailed": "無法讀取設定文件。",
+    "empty": "沒有模型。新增一個，或直接儲存以退回代理內建清單。",
+    "addModel": "新增模型",
+    "remove": "刪除模型",
+    "advanced": "更多",
+    "save": "儲存模型清單",
+    "saving": "儲存中…",
+    "restoreDefaults": "使用代理預設",
+    "fieldId": "模型 id",
+    "fieldName": "顯示名稱",
+    "fieldContextWindow": "脈絡視窗",
+    "fieldDescription": "描述",
+    "fieldMaxTokens": "最大輸出 token",
+    "fieldAcceptsImages": "接受圖片",
+    "fieldImageDetail": "圖片精度",
+    "fieldImagePixelBudget": "圖片像素預算",
+    "fieldImageMaxBytes": "圖片位元組上限",
+    "placeholderId": "deepseek-v4-flash",
+    "placeholderName": "選擇器中顯示的名稱",
+    "placeholderInherit": "代理預設",
+    "errorMissingId": "每個模型都需要一個 id。",
+    "errorDuplicateId": "有兩個模型都叫「{id}」。",
+    "errorBadContextWindow": "「{id}」的脈絡視窗必須是大於 0 的整數。",
+    "errorBadMaxTokens": "「{id}」的最大輸出 token 必須是大於 0 的整數。",
+    "errorBadImageLimit": "「{id}」的圖片限制必須是大於 0 的整數。",
+    "warnSingleModel": "只有一個模型時，代理不會再提供模型選擇器。",
+    "warnLaunchModelMissing": "新工作階段會以「{model}」啟動，而它不在這個清單裡。可以把它加進來，或在上方環境變數中設定 {variable}。",
+    "toastSaved": "模型清單已儲存",
+    "toastRestored": "已改用代理內建模型清單",
+    "toastSaveFailed": "儲存模型清單失敗"
+  },
   "DiagnosticsSettings": {
     "title": "環境診斷",
     "description": "檢查本應用在自身行程中如何解析該智能體的 CLI——這可能與你的終端機不同。",
@@ -5291,7 +5571,7 @@
     "noRemote": "該資料夾沒有可識別的程式碼託管遠端（origin）",
     "errors": {
       "noAccount": "尚未為 {host} 設定 {provider} 帳號。請先在「設定 → 版本控制」中新增，才能載入這個儲存庫。",
-      "unsupportedHost": "儲存庫面板目前僅支援 GitHub 與 GitLab，而 {host} 不屬於其中任何一種。如果它是自架的 GitHub Enterprise 或 GitLab 執行個體，請在「設定 → 版本控制」中為它新增帳號。",
+      "unsupportedHost": "儲存庫面板目前僅支援 GitHub、GitLab 與 Gitea，而 {host} 不屬於其中任何一種。如果它是自架的 GitHub Enterprise、GitLab、Gitea 或 Forgejo 執行個體，請在「設定 → 版本控制」中為它新增帳號。",
       "wrongForge": "{host} 實際上是 {provider}，先前被誤判為另一種程式碼託管服務。已自動更正，請重新載入。"
     },
     "addAccount": "新增帳號",
@@ -5550,8 +5830,29 @@
     "showFewerMembers": "收起多餘對話",
     "detachToCanvas": "移出到畫布",
     "deleteSelected": "刪除所選",
+    "confirmDeleteTitle": "刪除選取內容？",
+    "confirmDeleteNotes": "你寫下的 {count} 則便利貼將被永久刪除，此操作無法復原。",
+    "confirmDeleteCancel": "取消",
+    "confirmDeleteConfirm": "刪除",
     "canvasActions": "畫布操作",
-    "mergeIntoNewRegion": "新增區域"
+    "mergeIntoNewRegion": "新增區域",
+    "addFileCard": "檔案卡片",
+    "addTerminalCard": "終端機卡片",
+    "searchFiles": "搜尋檔案…",
+    "searchFilesIn": "在 {folder} 中搜尋…",
+    "searchingFiles": "搜尋中…",
+    "noFiles": "找不到檔案",
+    "noOpenFiles": "沒有已開啟的檔案——輸入以搜尋",
+    "browseForFile": "瀏覽…",
+    "filePreview": "預覽",
+    "fileSource": "原始碼",
+    "reloadFile": "重新載入",
+    "removeFileCard": "移除檔案卡片",
+    "restartTerminal": "重新啟動終端機",
+    "removeTerminalCard": "移除終端機卡片",
+    "terminalNoDirectory": "這張卡片沒有工作目錄",
+    "confirmDeleteTerminals": "{count} 個執行中的終端機會被關閉，其中的處理程序也會一併結束。",
+    "confirmDeleteNotesAndTerminals": "你寫下的 {notes} 則便條將被永久刪除，另有 {terminals} 個執行中的終端機會被結束。"
   },
   "Translation": {
     "partialFailure": "部分片段翻譯失敗",
@@ -5699,6 +6000,5 @@
     "poolIdle": "閒置 — 尚未使用過該端點。",
     "poolRate": "自適應速率：{rpm} 請求/分",
     "poolCooldown": "限流(429)冷卻中 {seconds} 秒（{rpm}/分）",
-    "poolDisabled": "本工作階段已停用：{reason}"
-  }
+    "poolDisabled": "本工作階段已停用：{reason}"  }
 }

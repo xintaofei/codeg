@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest"
 
 import {
   advanceReplyFold,
+  dedupeCompactionItems,
+  extractDelegationSources,
+  isForkPointUnnamed,
+  markThreadTail,
   mergeConsecutiveAssistantTurns,
   singletonSourceTurns,
   type MergedAssistantRunCache,
@@ -9,6 +13,7 @@ import {
   type ResolvedMessageGroup,
   type ThreadRenderItem,
 } from "./message-list-view"
+import type { AdaptedContentPart } from "@/lib/adapters/ai-elements-adapter"
 import type { MessageTurn } from "@/lib/types"
 
 function turn(id: string): MessageTurn {
@@ -39,6 +44,7 @@ function assistantItem(
     isRoleTransition: false,
     previousUserIndex: null,
     isLastAssistantRun: false,
+    isThreadTail: false,
     sourceTurns: [],
   }
 }
@@ -331,6 +337,7 @@ function makeItem(
     isRoleTransition: false,
     previousUserIndex: null,
     isLastAssistantRun: false,
+    isThreadTail: false,
     sourceTurns: singletonSourceTurns(turn(group.id)),
   }
 }
@@ -495,5 +502,276 @@ describe("mergeConsecutiveAssistantTurns merged-run cache", () => {
     expect(out1).toHaveLength(1)
     expect(out2[0]).not.toBe(out1[0])
     expect(out2[0]).toEqual(out1[0])
+  })
+})
+
+describe("extractDelegationSources", () => {
+  function toolCall(
+    toolCallId: string,
+    toolName: string,
+    input?: string | null
+  ): AdaptedContentPart {
+    return {
+      type: "tool-call",
+      toolCallId,
+      toolName,
+      input: input ?? null,
+      state: "output-available",
+      output: null,
+    }
+  }
+
+  it("collects a delegate_to_agent call keyed by its own tool_use_id", () => {
+    const sources = extractDelegationSources([
+      toolCall(
+        "tu-1",
+        "mcp__codeg-mcp__delegate_to_agent",
+        '{"agent_type":"codex"}'
+      ),
+    ])
+    expect(sources).toHaveLength(1)
+    expect(sources[0]).toMatchObject({
+      parentToolUseId: "tu-1",
+      input: '{"agent_type":"codex"}',
+    })
+    expect(sources[0].taskIdHint).toBeUndefined()
+  })
+
+  // The overlay lists the sub-agents of the LAST reply. A reply that RESUMED
+  // one contains no `delegate_to_agent` call at all (the original is in an
+  // earlier turn), so without this arm a resumed sub-agent would be missing
+  // from the overlay for its whole second run.
+  it("collects a resume_delegation call keyed by the task id in its arguments", () => {
+    const sources = extractDelegationSources([
+      toolCall("tu-resume", "resume_delegation", '{"task_id":"task-abc"}'),
+    ])
+    expect(sources).toHaveLength(1)
+    expect(sources[0]).toMatchObject({
+      parentToolUseId: "tu-resume",
+      taskIdHint: "task-abc",
+      // Not the `{task_id, reason}` arguments — `parseInput` would only warn.
+      input: null,
+    })
+  })
+
+  it("skips a resume whose task id is unreadable, and de-dupes repeats", () => {
+    const sources = extractDelegationSources([
+      toolCall("tu-a", "resume_delegation", "{}"),
+      toolCall(
+        "tu-b",
+        "mcp__codeg-mcp__resume_delegation",
+        '{"task_id":"t-1"}'
+      ),
+      toolCall("tu-c", "resume_delegation", '{"task_id":"t-1"}'),
+    ])
+    expect(sources).toHaveLength(1)
+    expect(sources[0]).toMatchObject({ parentToolUseId: "tu-b" })
+  })
+
+  it("finds delegations nested inside tool-groups and goal-runs", () => {
+    const sources = extractDelegationSources([
+      {
+        type: "tool-group",
+        items: [
+          toolCall("tu-resume", "resume_delegation", '{"task_id":"t-1"}'),
+        ],
+      } as AdaptedContentPart,
+    ])
+    expect(sources).toHaveLength(1)
+    expect(sources[0].taskIdHint).toBe("t-1")
+  })
+
+  it("ignores unrelated tool calls", () => {
+    expect(
+      extractDelegationSources([
+        toolCall("tu-1", "bash", '{"command":"ls"}'),
+        toolCall("tu-2", "get_delegation_status", '{"task_ids":["t-1"]}'),
+      ])
+    ).toEqual([])
+  })
+
+  // A refusal reports the task's REAL status plus its agent and child, so it
+  // reads like a successful resume to everything but `error_code`. Listing it
+  // would put a sub-agent in the overlay that this reply never revived.
+  it("skips a refused resume", () => {
+    const refused: AdaptedContentPart = {
+      type: "tool-call",
+      toolCallId: "tu-resume",
+      toolName: "resume_delegation",
+      input: '{"task_id":"t-1"}',
+      state: "output-available",
+      output: JSON.stringify({
+        task_id: "t-1",
+        status: "completed",
+        error_code: "not_resumable",
+        agent_type: "codex",
+        child_conversation_id: 9,
+        message: "Not resumed: the task already completed.",
+      }),
+    }
+    expect(extractDelegationSources([refused])).toEqual([])
+  })
+})
+
+/**
+ * The fork affordance sends a turn id to the backend, and the backend cannot
+ * resolve an id this client minted for its own live stream — it tail-forks
+ * instead of refusing. That is the right answer for the newest reply and a
+ * silent wrong one for any earlier reply, which a steered turn creates: it
+ * promotes as assistant / user message / assistant, so its first half sits
+ * settled and non-tail with a fork button while the parser's name is still a
+ * reparse away.
+ */
+describe("isForkPointUnnamed", () => {
+  function forkTurn(id: string, sourceTurnId?: string | null): MessageTurn {
+    return {
+      id,
+      role: "assistant",
+      blocks: [],
+      timestamp: "",
+      ...(sourceTurnId !== undefined ? { source_turn_id: sourceTurnId } : {}),
+    }
+  }
+
+  it("withholds a live-named reply that is not the thread's last item", () => {
+    expect(isForkPointUnnamed(forkTurn("live-7-lm-1"), false)).toBe(true)
+  })
+
+  it("allows one at the end of the thread — there the tail IS the fork point", () => {
+    expect(isForkPointUnnamed(forkTurn("live-7-lm-1"), true)).toBe(false)
+  })
+
+  it("withholds the newest REPLY when a message follows it", () => {
+    // Steering at the very end of a turn promotes as assistant + user message
+    // with nothing after it: the reply is the newest one, and still not the
+    // tail. The backend's tail fork would land after the steered message, and
+    // a parse ending on a user turn never backfills a name to correct it — so
+    // "newest assistant run" is the wrong exception and `isThreadTail` is the
+    // right one.
+    expect(isForkPointUnnamed(forkTurn("live-7-lm"), false)).toBe(true)
+  })
+
+  it("allows it again once the reparse names it", () => {
+    expect(isForkPointUnnamed(forkTurn("live-7-lm-1", "turn-4"), false)).toBe(
+      false
+    )
+  })
+
+  it("leaves parser-named history alone", () => {
+    // Every historical turn arrives under a parser id and no `source_turn_id`;
+    // treating that as unnamed would grey out the whole thread.
+    expect(isForkPointUnnamed(forkTurn("turn-4"), false)).toBe(false)
+  })
+
+  it("says nothing about a group with no turns", () => {
+    expect(isForkPointUnnamed(null, false)).toBe(false)
+  })
+})
+
+describe("markThreadTail", () => {
+  const compaction: ThreadItem = {
+    key: "persisted-compact",
+    kind: "compaction",
+    meta: { contextCompaction: true },
+  }
+  const tailFlags = (items: ThreadItem[]) =>
+    items.map((it) => (it.kind === "turn" ? it.isThreadTail : null))
+
+  it("marks the last rendered turn", () => {
+    const items = [assistantItem("a"), assistantItem("b")]
+    markThreadTail(items)
+    expect(tailFlags(items)).toEqual([false, true])
+  })
+
+  it("leaves a reply unmarked when a message follows it", () => {
+    // The shape a steer at the very end of a turn promotes to: the reply is
+    // still the newest one, and the tail is the message after it.
+    const items = [assistantItem("a"), makeUserItem("u", 1)]
+    markThreadTail(items)
+    expect(tailFlags(items)).toEqual([false, true])
+  })
+
+  it("marks nothing when a compaction divider is last", () => {
+    const items = [assistantItem("a"), compaction]
+    markThreadTail(items)
+    expect(tailFlags(items)).toEqual([false, null])
+  })
+
+  it("steps over a trailing turn that renders nothing", () => {
+    const items = [assistantItem("a"), assistantItem("empty", { parts: [] })]
+    markThreadTail(items)
+    expect(tailFlags(items)).toEqual([true, false])
+  })
+
+  it("marks nothing in an empty thread", () => {
+    const items: ThreadItem[] = []
+    markThreadTail(items)
+    expect(items).toEqual([])
+  })
+})
+
+describe("dedupeCompactionItems", () => {
+  const divider = (
+    key: string,
+    payload: Record<string, unknown>
+  ): ThreadItem => ({
+    key,
+    kind: "compaction",
+    meta: { contextCompaction: { version: 1, ...payload } },
+  })
+  const full = { preTokens: 108716, postTokens: 4462, durationMs: 92728 }
+  const keys = (items: ThreadItem[]) => items.map((i) => i.key)
+
+  // The live ACP tool_call and the transcript-derived divider are the same
+  // compaction under two ids, and mid-turn both are in the timeline at once.
+  it("keeps the first of two renderings of one compaction", () => {
+    const items = [
+      assistantItem("a"),
+      divider("persisted-c", full),
+      assistantItem("b"),
+      divider("live-c", full),
+    ]
+    expect(keys(dedupeCompactionItems(items))).toEqual([
+      "persisted-a",
+      "persisted-c",
+      "persisted-b",
+    ])
+  })
+
+  it("keeps two genuinely different compactions", () => {
+    const items = [
+      divider("c1", full),
+      divider("c2", {
+        preTokens: 475949,
+        postTokens: 12634,
+        durationMs: 134503,
+      }),
+    ]
+    expect(dedupeCompactionItems(items)).toHaveLength(2)
+  })
+
+  // codex-acp sends a bare `{version: 1}` for every compaction it runs, so a
+  // key that tolerated missing counters would fold a whole session's
+  // compactions into one.
+  it("never folds payloads that cannot identify an event", () => {
+    const bare = [divider("c1", {}), divider("c2", {})]
+    expect(dedupeCompactionItems(bare)).toHaveLength(2)
+    const partial = [
+      divider("c1", { preTokens: 100, postTokens: 10 }),
+      divider("c2", { preTokens: 100, postTokens: 10 }),
+    ]
+    expect(dedupeCompactionItems(partial)).toHaveLength(2)
+    // grok's boolean-marker shape carries no versioned payload at all.
+    const grok: ThreadItem[] = [
+      { key: "g1", kind: "compaction", meta: { contextCompaction: true } },
+      { key: "g2", kind: "compaction", meta: { contextCompaction: true } },
+    ]
+    expect(dedupeCompactionItems(grok)).toHaveLength(2)
+  })
+
+  // Identity-stable so the memo around it does not invalidate every batch.
+  it("returns the input array when nothing is dropped", () => {
+    const items = [assistantItem("a"), divider("c1", full)]
+    expect(dedupeCompactionItems(items)).toBe(items)
   })
 })

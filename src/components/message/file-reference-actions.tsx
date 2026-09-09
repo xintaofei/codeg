@@ -13,6 +13,11 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { useActiveFolder } from "@/contexts/active-folder-context"
+import {
+  downloadWorkspaceFile,
+  isWorkspaceFileApiAvailable,
+  WORKSPACE_DOWNLOAD_CANCELLED,
+} from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import { expandHomePath, isHomeRelativePath } from "@/lib/file-open-target"
 import {
@@ -123,6 +128,34 @@ function FileReferenceActionsMenu({ target }: { target: string }) {
     })
   }
 
+  // Same shape as the file tree's download row: the ticket is issued against
+  // the workspace root, so a file outside the active folder — the case where
+  // there is no relative form — has nothing to download from.
+  const handleDownload = () => {
+    const relative = paths?.relative
+    if (!relative || !folderPath) return
+    const name = relative.split("/").pop() || relative
+    void (async () => {
+      try {
+        const result = await downloadWorkspaceFile(folderPath, relative, name)
+        // Web hands off to the browser's download manager ("started"), which
+        // shows its own progress — a toast there would just be noise. Only the
+        // remote-desktop save-dialog path has an outcome worth reporting.
+        if (result.status === "started") return
+        if (result.status === WORKSPACE_DOWNLOAD_CANCELLED) return
+        if (result.savedPath) {
+          toast.success(t("downloadSaved", { name }), {
+            description: result.savedPath,
+          })
+        }
+      } catch (error) {
+        toast.error(t("downloadFailed", { name }), {
+          description: toErrorMessage(error),
+        })
+      }
+    })()
+  }
+
   return (
     <>
       {/* `revealItemInDir` is a no-op in web mode and for a desktop window
@@ -144,6 +177,15 @@ function FileReferenceActionsMenu({ target }: { target: string }) {
       >
         {t("copyAbsolutePath")}
       </ContextMenuItem>
+      {/* Web and remote-desktop windows have no reach into the machine that
+          holds the file, so downloading is how the byte stream gets to the
+          user — mirroring the file tree's own row. A local desktop window can
+          just open it, so the row is hidden rather than dead. */}
+      {isWorkspaceFileApiAvailable() && (
+        <ContextMenuItem disabled={!paths?.relative} onSelect={handleDownload}>
+          {t("download")}
+        </ContextMenuItem>
+      )}
     </>
   )
 }
@@ -152,8 +194,9 @@ function FileReferenceActionsMenu({ target }: { target: string }) {
  * Wraps an inline file badge in the transcript (user messages via
  * PlainTextWithBadges, assistant markdown via MarkdownLink) so that right-
  * clicking the file name opens its actions: reveal in the OS file manager, copy
- * relative path, copy absolute path. A non-file target renders its children
- * untouched, with no menu attached.
+ * relative path, copy absolute path, and — where the file lives on another host
+ * — download it. A non-file target renders its children untouched, with no menu
+ * attached.
  *
  * A context menu (not a hover popover, and not a click target of its own) is
  * what leaves the badge's own behaviour intact: a left click still opens the

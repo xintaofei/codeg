@@ -18,7 +18,7 @@ type TipKey =
   | "pasteDropFiles"
   | "queueMessage"
   | "draftAutoSave"
-  | "forkSend"
+  | "forkFromTurn"
   | "exportConversation"
   | "chatChannels"
   | "shortcutsAuxPanel"
@@ -65,7 +65,7 @@ const TIPS: TipDef[] = [
   { key: "pasteDropFiles" },
   { key: "queueMessage" },
   { key: "draftAutoSave" },
-  { key: "forkSend" },
+  { key: "forkFromTurn" },
   { key: "exportConversation" },
   { key: "chatChannels" },
   {

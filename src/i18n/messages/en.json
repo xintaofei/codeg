@@ -197,7 +197,33 @@
       "panelOpacityHint": "How opaque the sidebar, panels and tab bars are. Lower lets more of the image show through.",
       "errorTooLarge": "Image is too large (max 16 MB).",
       "errorUnsupportedFormat": "Unsupported image format. Choose a PNG, JPEG, WebP or GIF.",
-      "errorUploadFailed": "Failed to set the background image."
+      "errorUploadFailed": "Failed to set the background image.",
+      "market": {
+        "open": "Wallpaper market",
+        "title": "Wallpaper market",
+        "description": "Browse the public Wallhaven gallery; click to download and apply.",
+        "searchPlaceholder": "Search wallpapers…",
+        "categories": {
+          "all": "All",
+          "general": "General",
+          "anime": "Anime",
+          "people": "People"
+        },
+        "pageInfo": "Page {page} of {lastPage}",
+        "prevPage": "Previous",
+        "nextPage": "Next",
+        "refresh": "Refresh",
+        "empty": "No wallpapers matched.",
+        "error": "Failed to load the wallpaper market.",
+        "retry": "Retry",
+        "cardLabel": "Apply wallpaper {id}",
+        "applied": "In use",
+        "unavailable": "Unavailable",
+        "tooLarge": "Too large for a background: {actual} (limit {limit})",
+        "downloadFailed": "Download failed. Please retry.",
+        "appliedToast": "Wallpaper applied",
+        "credit": "Images from wallhaven.cc · SFW only"
+      }
     }
   },
   "SystemSettings": {
@@ -305,6 +331,10 @@
     "gitlabDescription": "Manage GitLab accounts for authentication. Tokens are stored locally.",
     "gitlabTokenHint": "Create a personal access token with the api scope under GitLab → Preferences → Access tokens.",
     "gitlabNoAccounts": "No GitLab account yet",
+    "giteaTitle": "Gitea accounts",
+    "giteaDescription": "Manage Gitea (and Forgejo) accounts for authentication. Tokens are stored locally.",
+    "giteaTokenHint": "Create an access token with the write:repository, write:issue and read:user scopes under Gitea → Settings → Applications.",
+    "giteaNoAccounts": "No Gitea account yet",
     "noAccounts": "No GitHub accounts configured.",
     "addAccount": "Add Account",
     "serverUrl": "Server URL",
@@ -337,7 +367,7 @@
     "loadFailed": "Failed to load settings: {message}",
     "gitAccount": {
       "sectionTitle": "Git Accounts",
-      "sectionDescription": "Manage credentials for non-GitHub Git servers (GitLab, Bitbucket, self-hosted, etc.).",
+      "sectionDescription": "Manage credentials for Git servers with no section of their own (Bitbucket, self-hosted, etc.).",
       "noAccounts": "No Git server accounts configured.",
       "addAccount": "Add Account",
       "addTitle": "Add Git Account",
@@ -637,6 +667,8 @@
     "local": {
       "filterPlaceholder": "Filter local MCP...",
       "loadFailed": "Load failed: {message}",
+      "sourceUnreadable": "Could not read the MCP config for {app}, so its servers are hidden: {message}",
+      "saveBlockedByUnreadableSource": "Fix or remove that file and refresh before saving: assignments are computed from the agents this page could read, so saving now could drop this server from one it could not.",
       "empty": "No local MCP detected.",
       "description": "Local MCP configuration can be edited and saved directly.",
       "enabledApps": "Enabled Apps",
@@ -681,6 +713,13 @@
     "emptyNoAgent": "No available agent.",
     "configManagement": "Config Management",
     "envVars": "Environment Variables",
+    "adapterChannel": {
+      "label": "Adapter version",
+      "description": "Install and Upgrade use the version codeg has reviewed and pinned. Latest switches them to the package's newest npm release at that moment; if installing it fails, codeg falls back to the pinned version and notes it in the install log.",
+      "pinned": "Pinned (recommended)",
+      "latest": "Latest (unreviewed)",
+      "latestWarning": "Newest releases are unreviewed and can break this agent in codeg, and occasionally a release is known broken. Version Status shows what is actually installed."
+    },
     "hostTools": {
       "label": "Let the agent handle files and commands",
       "description": "codeg stops serving file access and terminal commands, so the agent runs them in its own process — where its own sandbox and permission rules apply. Delegating to other agents is also turned off, since that would route the same work back through codeg. codeg adds no sandbox itself, so turn this on only if the agent has one configured."
@@ -923,6 +962,13 @@
         "failed": "Sign-in did not complete.",
         "startFailed": "Could not start the sign-in",
         "credentialHint": "The token is cached here. Copy this file to another machine with no desktop to sign that one in too."
+      },
+      "signOut": {
+        "title": "Signed in as the wrong account?",
+        "description": "Antigravity caches the Google account it signed in as and reuses it silently, so signing in again cannot reach a different one. Signing out discards the stored credential; any running Antigravity sessions end first, because they would otherwise write the old account back.",
+        "action": "Sign out",
+        "done": "Signed out. Sign in again to pick a different account.",
+        "failed": "Could not sign out"
       }
     },
     "deepseek": {
@@ -935,14 +981,13 @@
       "apiKeyHint": "Passed to the agent as DEEPSEEK_API_KEY. An environment variable outranks the credentials file, so leave this empty if you sign in through the terminal."
     },
     "codex": {
-      "configDescription": "Supports quick configuration for API URL, API Key, model name and reasoning effort, and syncs with `auth.json` / `config.toml`.",
+      "configDescription": "Supports quick configuration for API URL, API Key and model name, and syncs with `auth.json` / `config.toml`.",
       "authMode": "Auth Mode",
       "chatgptSubscription": "Official Subscription",
       "chatgptSubscriptionHint": "Log in with ChatGPT official subscription, no API Key required",
       "apiKeyHint": "Connect using API Key to OpenAI or compatible API services",
       "selectProvider": "Select Provider",
       "modelName": "Model Name",
-      "selectReasoningEffort": "Select Reasoning Effort",
       "enableWebsocket": "Enable WebSocket",
       "enableWebsocketAria": "Enable WebSocket for Codex Provider",
       "enableSkills": "Enable Skills",
@@ -1277,12 +1322,6 @@
       "customModelOptionName": "Custom Model Name",
       "customModelOptionDescription": "Custom Model Description",
       "customModelOptionHint": "Adds a single custom entry to Claude's model picker (e.g. a model behind a custom gateway/proxy). Name and description are optional display overrides.",
-      "effortLevel": "Reasoning Effort Level",
-      "effortLevelDefault": "Default Level",
-      "effortLevel_low": "Low",
-      "effortLevel_medium": "Medium",
-      "effortLevel_high": "High",
-      "effortLevel_xhigh": "Extra High",
       "sendAttributionHeader": "Send attribution/billing identifier to the API",
       "sendAttributionHeaderAria": "Send Claude Code attribution/billing identifier to the API",
       "disableNonessentialTraffic": "Disable telemetry or redundant network requests",
@@ -1395,7 +1434,8 @@
       "localUnrecognized": "{versionText}. Local version is not comparable; try upgrade to overwrite install.",
       "upgradeAvailable": "{versionText}. Upgrade available.",
       "remoteUnavailable": "{versionText}. Remote version is currently unavailable.",
-      "latest": "{versionText}. Already latest."
+      "latest": "{versionText}. Already latest.",
+      "latestChannel": "{versionText}. Latest channel is on; Upgrade installs the newest release."
     },
     "adapter": {
       "label": "ACP adapter",
@@ -1553,7 +1593,7 @@
   "GeneralSettings": {
     "loading": "Loading...",
     "sectionTitle": "General",
-    "sectionDescription": "Centralized preferences for the default terminal, rendering acceleration, notification sounds, and multi-agent delegation.",
+    "sectionDescription": "Centralized preferences for the default terminal, rendering acceleration, notifications, and multi-agent delegation.",
     "terminalTitle": "Default Terminal",
     "terminalDescription": "Choose the shell used when opening new terminal tabs from the terminal bar or file tree. Agents also use it when they ask codeg to run a whole command line for them.",
     "terminalSystemDefault": "System default",
@@ -1569,7 +1609,9 @@
     "terminalShellNotInstalled": "not installed",
     "terminalShellNotFoundWarning": "This path doesn't exist on this host.",
     "terminalCurrentShell": "Currently using: {path}",
-    "renderingDescription": "Disable hardware acceleration if the app shows a black screen or rendering glitches (common on certain AMD GPUs or Intel integrated GPUs). Only takes effect on the Windows desktop build.",
+    "colorizeCommandOutput": "Colorize command output",
+    "colorizeCommandOutputDescription": "Force ANSI color out of the commands agents run, so their output renders in color in the transcript instead of as plain text. Takes effect on new sessions.",
+    "renderingDescription": "Disable hardware acceleration if the app shows a black screen or rendering glitches (common on certain AMD GPUs or Intel integrated GPUs on Windows, and with the proprietary NVIDIA driver on Linux). Only takes effect on the Windows and Linux desktop builds.",
     "disableHardwareAcceleration": "Disable hardware acceleration",
     "renderingSaveFailed": "Failed to save rendering settings: {message}",
     "restartRequired": "Saved. Restart the app for the change to take effect.",
@@ -1633,6 +1675,9 @@
     "searchPlaceholder": "Search title or path…",
     "allAgents": "All agents",
     "onlyImportable": "Importable only",
+    "includeDeleted": "Include deleted",
+    "includeDeletedWithCount": "Include deleted ({count})",
+    "includeDeletedHint": "Deleting a session in codeg only hides it — the conversation and its history are still here. Turn this on to select deleted sessions and restore them in place.",
     "selectAll": "Select all",
     "clearSelection": "Clear",
     "expandAll": "Expand all",
@@ -1645,6 +1690,7 @@
     "toggleSessionAria": "Select session {title}",
     "statusImported": "Imported",
     "statusDeleted": "Deleted",
+    "statusDeletedRestorable": "Deleted — importing it restores the original conversation",
     "untitled": "Untitled session",
     "messageCount": "{count} msgs",
     "selectedCount": "{count} selected",
@@ -1653,6 +1699,7 @@
     "close": "Close",
     "doneTitle": "Import finished",
     "doneImported": "Imported",
+    "doneRestored": "Restored",
     "doneUpdated": "Refreshed",
     "doneSkipped": "Skipped",
     "doneCreatedFolders": "Folders created",
@@ -1740,7 +1787,7 @@
       "viewOptions": "View options",
       "listOptions": "Conversation list",
       "showCompleted": "Show completed conversations",
-      "showWorktrees": "Show worktree folders",
+      "showWorktrees": "Show worktree branches",
       "showRecent": "Show Recent group",
       "navigationItems": "Navigation items",
       "moreOptions": "More options",
@@ -1845,6 +1892,7 @@
       "forkSession": "Fork Session",
       "forkSessionSuccess": "Session forked successfully",
       "forkSessionFailed": "Failed to fork session: {error}",
+      "forkSessionBusy": "Failed to fork session: a turn is running",
       "exportConversation": "Export Conversation",
       "exportImage": "Image",
       "exportMarkdown": "Markdown",
@@ -1999,11 +2047,53 @@
         "title": "Quick actions",
         "groups": {
           "workspace": "Workspace",
-          "sessions": "Sessions",
           "navigation": "Navigation",
           "more": "More"
         },
         "showPet": "Show pet"
+      },
+      "mcp": {
+        "title": "codeg-mcp service",
+        "state": {
+          "running": "Running",
+          "stopped": "Not running",
+          "disabled": "No tools enabled",
+          "unavailable": "Companion missing",
+          "unknown": "Unknown"
+        },
+        "hint": {
+          "running": "Agents launched here can use codeg's own tools.",
+          "stopped": "The broker socket is not answering.",
+          "disabled": "Every tool group is off — nothing is injected.",
+          "unavailable": "The codeg-mcp binary is not on disk.",
+          "unknown": "The status could not be read."
+        },
+        "socketPath": "Address",
+        "binary": "Companion",
+        "binaryMissing": "Not found",
+        "sessions": "Sessions",
+        "activeDelegations": "Delegations",
+        "depthLimit": "Depth cap",
+        "tools": "Tools",
+        "groupDelegation": "Delegation",
+        "descDelegation": "Hand a task to another agent.",
+        "groupFeedback": "Live feedback",
+        "descFeedback": "Add notes mid-turn without interrupting.",
+        "groupAsk": "Ask a question",
+        "descAsk": "Let the agent ask you before it decides.",
+        "groupSessions": "Session lookup",
+        "descSessions": "Look up past sessions and their results.",
+        "groupAutomations": "Create automation",
+        "descAutomations": "Create and manage scheduled automations.",
+        "groupTaskboard": "Create task",
+        "descTaskboard": "Create and manage work tasks.",
+        "start": "Start service",
+        "starting": "Starting…",
+        "actionFailed": "Failed: {message}",
+        "lastError": "Last error: {message}",
+        "loadFailed": "Could not read the status: {message}",
+        "openSettings": "Open full settings",
+        "refresh": "Refresh"
       }
     },
     "auxPanel": {
@@ -2061,7 +2151,26 @@
       "closeOthers": "Close Others",
       "closeAll": "Close All",
       "hideTerminal": "Hide Terminal ({shortcut})",
-      "openFolderFirst": "Open a folder first"
+      "openFolderFirst": "Open a folder first",
+      "keybar": {
+        "label": "Terminal virtual keys",
+        "show": "Show virtual keys",
+        "hide": "Hide virtual keys",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "-",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "Open Folder",
@@ -2170,6 +2279,17 @@
       "officeServerInstallHint": "OfficeCLI must be installed on the server host. Run this command there, then retry:",
       "officeRemoteDesktopUnsupported": "Live preview isn't available in a remote-desktop window. Open this workspace in the server's web UI to preview Office files."
     },
+    "fileViewer": {
+      "title": "File preview",
+      "description": "A file referenced in this conversation, opened beside it.",
+      "openInWorkspace": "Open in workspace",
+      "back": "Back",
+      "preview": "Preview",
+      "source": "Source",
+      "loading": "Loading...",
+      "cannotResolve": "Cannot resolve this file path.",
+      "tooLargeToPreview": "This file is too large to preview here. Open it in the workspace instead."
+    },
     "branchDropdown": {
       "toasts": {
         "commitCodeCompleted": "Code commit completed",
@@ -2246,8 +2366,8 @@
       "stashChanges": "Stash changes...",
       "stashPop": "Unstash...",
       "manageRemotes": "Manage Remotes...",
-      "worktreeBranches": "Worktrees ({count, plural, one {#} other {#}})",
-      "noWorktreeBranches": "No worktrees",
+      "worktreeBranches": "Worktree branches ({count, plural, one {#} other {#}})",
+      "noWorktreeBranches": "No worktree branches",
       "localBranches": "Local branches ({count, plural, one {#} other {#}})",
       "noLocalBranches": "No local branches",
       "remoteBranches": "Remote branches ({count, plural, one {#} other {#}})",
@@ -2573,6 +2693,7 @@
       "openInTerminal": "Terminal",
       "openInCode": "VS Code",
       "linkedFolder": "Linked folder",
+      "moreActions": "More actions",
       "copyPath": "Copy path",
       "upload": "Upload files/folder",
       "download": "Download file",
@@ -2776,11 +2897,13 @@
           "downloadFailed": "{agent} download failed: {message}",
           "sessionLoadResourceNotFound": "{agent} session failed to load. Reload to retry, or start a new conversation.",
           "sessionLoadUnavailable": "{agent} couldn't restore this session — it may have ended or the agent stopped. Reload to retry, or start a new conversation.",
+          "sessionLoadBusy": "This history is held open by the session forked from it. Close that session, then reload to open this one.",
           "sessionArchived": "The previous session was archived on the {agent} side. Run {command} in a terminal to restore it and reload, or start a new conversation.",
           "turnFailedRefusal": "{agent} refused to continue this turn. This often indicates a backend or gateway error — check the agent's logs.",
           "turnFailedMaxTokens": "{agent} reached the maximum token limit for this turn.",
           "turnFailedMaxTurnRequests": "{agent} reached the maximum number of allowed requests for this turn.",
           "turnFailedUnknown": "{agent} ended the turn with an unrecognized stop reason.",
+          "turnFailedAuthRequired": "{agent} needs you to sign in again before it can run this turn. Sign in from Settings, then send the message again.",
           "grokModelSwitchIncompatibleAgent": "{agent} can't switch to that model in an existing conversation. Start a new session to use it.",
           "turnFailedEmpty": "{agent} ended the turn without producing any response.",
           "turnFailedEmptyProtocol": "{agent} produced output that codeg could not parse — the agent version may not match the protocol.",
@@ -2793,6 +2916,8 @@
         "eventErrorTitle": "Agent Error",
         "notificationTurnComplete": "{agent} has finished responding",
         "notificationError": "{agent} error: {message}",
+        "notificationQuestion": "{agent} is waiting for your answer",
+        "notificationErrorRedacted": "{agent} ran into an error",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",
           "retryingWithMax": "retrying {attempt}/{max}",
@@ -2848,6 +2973,9 @@
         "cut": "Cut",
         "copy": "Copy",
         "selectAll": "Select all",
+        "openLink": "Open link",
+        "openFile": "Open file",
+        "sendEmail": "Send email",
         "pasteUnavailable": "Couldn't read the clipboard. Press Ctrl/⌘V to paste instead.",
         "clipboardWriteFailed": "Couldn't write to the clipboard. Use the keyboard shortcut instead.",
         "quickMessageUntitled": "Untitled",
@@ -2866,12 +2994,12 @@
         "noModels": "No models found",
         "cancel": "Cancel",
         "send": "Send",
-        "forkAndSend": "Fork & Send",
         "queueMessage": "Queue message",
         "steerIntoTurn": "Insert into current turn",
+        "steerAsNote": "Send note for next check",
         "steerQueuedInstead": "Queued instead — it will be sent with the next turn.",
         "steerFailed": "Couldn't insert into the current turn",
-        "steerAttachmentsUnsupported": "Text only — drafts with attachments go through the queue.",
+        "steerNoteFailed": "Couldn't send your note",
         "slashCommands": "Slash commands",
         "slashSearchPlaceholder": "Search commands...",
         "slashSearchEmpty": "No matching commands",
@@ -2923,7 +3051,7 @@
           "pasteDropFiles": "Paste a screenshot or drop a file directly onto the input to attach it.",
           "queueMessage": "While the agent is replying, keep typing — your next message gets queued and auto-sent when it finishes.",
           "draftAutoSave": "Unsent drafts are auto-saved per conversation and restored when you come back.",
-          "forkSend": "The send button's dropdown has Fork and Send — branch from the current turn into a new tab.",
+          "forkFromTurn": "Any completed reply has Fork from here — branch the conversation at that message into a new tab.",
           "exportConversation": "Right-click inside the conversation to export it as Markdown, HTML, or an image.",
           "chatChannels": "Connect Telegram / Lark / WeChat under Settings → Chat Channels to continue from your phone.",
           "shortcutsAuxPanel": "<shortcut>{toggleAuxPanel}</shortcut> toggles the right panel to view this session's touched files and Git changes.",
@@ -3121,9 +3249,12 @@
         "openInFileManager": "Open in file manager",
         "copyRelativePath": "Copy relative path",
         "copyAbsolutePath": "Copy absolute path",
+        "download": "Download file",
         "pathCopied": "Path copied",
         "copyPathFailed": "Failed to copy path",
-        "openFailed": "Failed to open local file"
+        "openFailed": "Failed to open local file",
+        "downloadSaved": "Downloaded {name}",
+        "downloadFailed": "Failed to download {name}"
       },
       "messageList": {
         "attachedResources": "Attached resources",
@@ -3139,6 +3270,9 @@
         "emptyConversation": "No messages in this conversation.",
         "systemMessage": "System message",
         "copyMessage": "Copy",
+        "forkFromHere": "Fork from here",
+        "forkBusy": "Can't fork while a turn is running",
+        "forkNotReady": "Can't fork from this reply just yet — try again in a moment",
         "copied": "Copied",
         "selectionActions": "Selection actions",
         "selectionCopy": "Copy Text",
@@ -3226,6 +3360,9 @@
         "noDetail": "No detail available yet.",
         "unknownAgent": "Sub-agent",
         "openDetail": "Open conversation",
+        "resumed": "Resumed",
+        "resumeDetail": "Resume details",
+        "resumeReasonLabel": "Resume reason",
         "detailTitle": "Sub-agent conversation",
         "detailDescription": "Read-only view of the delegated sub-agent's conversation.",
         "waitForResult": "Waiting for task {task} result",
@@ -3255,6 +3392,7 @@
             "child_max_tokens": "subagent token limit",
             "child_max_turn_requests": "subagent request limit",
             "child_empty": "subagent no output",
+            "child_auth_required": "subagent needs sign-in",
             "child_unknown": "subagent unknown error",
             "unknown": "unknown task"
           }
@@ -3300,7 +3438,10 @@
         "agentSessionLoading": "Loading the sub-agent's transcript…",
         "agentSessionEmpty": "The sub-agent hasn't written anything yet.",
         "agentFallbackTitle": "Sub-agent starting…",
-        "agentCodexLaunchOnly": "Launched. Codex reports no further progress for this sub-agent — its result arrives as a message in this conversation.",
+        "agentCodexLaunchOnly": "Launched. Codex hasn't reported how this sub-agent ended — open its session to follow the work.",
+        "agentSubagentDone": "Finished",
+        "agentSubagentInterrupted": "Interrupted",
+        "agentSubagentUnknown": "Outcome unknown",
         "agentStatsBash": "Commands",
         "agentStatsRead": "Files read",
         "agentStatsSearch": "Searches",
@@ -3412,7 +3553,6 @@
         },
         "planMode": {
           "entered": "Entered plan mode",
-          "planLabel": "Plan",
           "reviewApproved": "Plan approved — implementing",
           "reviewKept": "Kept in plan mode",
           "reviewPending": "Awaiting plan decision",
@@ -3567,13 +3707,16 @@
         "opSpawn": "Starting sub-agent",
         "opWait": "Fetching sub-agent result",
         "opClose": "Closing sub-agent",
-        "opResume": "Resuming sub-agent"
+        "opResume": "Resuming sub-agent",
+        "opList": "Listing sub-agents"
       },
       "contextCompaction": {
         "compacting": "Compacting context…",
         "compacted": "Context compacted",
         "compactedTokens": "Context compacted · {before} → {after} tokens",
-        "failed": "Context compaction failed"
+        "failed": "Context compaction failed",
+        "triggerManual": "Manually triggered",
+        "triggerAutomatic": "Automatically triggered"
       },
       "sessionFailure": {
         "category": {
@@ -3597,11 +3740,20 @@
       },
       "backgroundTasks": {
         "settledFallback": "Background task finished ({status})",
+        "notifySettledOne": "{agent}: a background task finished",
+        "notifySettledMany": "{agent}: {count} background tasks finished",
         "cardRunning": "Running in background",
         "cardLaunchedPending": "Launched in background",
         "cardCompleted": "Background task completed",
         "cardFinishedWithStatus": "Background task finished ({status})",
         "cardResultPending": "Result not returned yet"
+      },
+      "asyncTasks": {
+        "openOutput": "Output",
+        "stop": "Stop",
+        "tokens": "{count} tokens",
+        "stopDeclined": "That task could not be stopped — it may have already finished.",
+        "stopFailed": "Failed to stop the task: {error}"
       },
       "proposedPlan": {
         "title": "Proposed plan",
@@ -3622,6 +3774,16 @@
       "viewMode": {
         "split": "Switch to side-by-side view",
         "unified": "Switch to inline view"
+      },
+      "binaryFile": "Binary file — content not shown",
+      "image": {
+        "sideBySide": "Switch to side-by-side view",
+        "swipe": "Switch to swipe view",
+        "swipeHandle": "Image comparison slider",
+        "noImage": "No image at this revision",
+        "unavailable": "Could not load this side",
+        "tooLarge": "Image too large to preview ({size})",
+        "loading": "Loading images..."
       }
     },
     "conversationContextBar": {
@@ -4400,7 +4562,15 @@
       "button": "Export backup",
       "inProgress": "Creating backup…",
       "success": "Backup created.",
-      "started": "Backup download started."
+      "started": "Backup download started.",
+      "degradedTitle": "Some agent session databases needed special handling",
+      "degradedHint": "These agents keep their sessions in SQLite. The backup still contains them unless marked otherwise below.",
+      "degradedMore": "…and {count} more.",
+      "degradedLevel": {
+        "recoveredOnCopy": "recovered from a private copy — complete",
+        "bareFileOnly": "archived without its write-ahead log — the newest messages may be missing",
+        "notArchived": "not archived — it kept changing while being copied"
+      }
     },
     "restore": {
       "selectFile": "Select backup file",
@@ -4438,11 +4608,37 @@
         "scanning": "Checking for conflicts…",
         "noConflicts": "No existing files would be overwritten.",
         "conflictCount": "{count} existing file(s) would be affected.",
-        "conflictSkipNote": "Existing files are kept (skipped) unless you enable overwrite."
+        "conflictSkipNote": "Existing files are kept (skipped) unless you enable overwrite.",
+        "agentsRunning": "{count} agent(s) are running ({agents}). Close them first, or the transcripts will be kept in a side folder instead of written back."
       },
-      "restartFailed": "Restore staged, but the server couldn't restart. Restart it manually to apply the restore."
+      "restartFailed": "Restore staged, but the server couldn't restart. Restart it manually to apply the restore.",
+      "discardPending": "Discard staged restore",
+      "discarded": "The staged restore was discarded.",
+      "pendingBlockedHint": "A restore is already staged and waiting for a restart. Discard it to stage a different one.",
+      "result": {
+        "title": "Restore staged",
+        "needsRestart": "It will be applied on the next start. Your current data is snapshotted first.",
+        "downgraded": "{agents} were running, so conversation transcripts were not written back to their original locations. They were kept in {path}.",
+        "skipped": "{count} existing file(s) were kept",
+        "refused": "{count} session database(s) were not written back",
+        "refusedHint": "They come from an older backup that stored a database and its write-ahead log separately, and the two cannot be proven to match. Your existing databases were left untouched — restore to a side folder to get the raw files.",
+        "restartNow": "Restart now",
+        "later": "Later"
+      }
     },
-    "remoteUnsupported": "Backup & restore acts on the data of the machine running codeg. You're connected to a remote workspace — manage its backups from that server directly."
+    "remoteUnsupported": "Backup & restore acts on the data of the machine running codeg. You're connected to a remote workspace — manage its backups from that server directly.",
+    "progress": {
+      "cancel": "Cancel"
+    },
+    "snapshots": {
+      "title": "Pre-restore snapshots",
+      "hint": "Each restore snapshots your current data first. The two newest are kept.",
+      "empty": "No snapshots yet.",
+      "rollback": "Roll back to this",
+      "unsupported": "Inspect only",
+      "rollbackConfirmTitle": "Roll back to this snapshot?",
+      "rollbackConfirmBody": "This replaces your current data with the snapshot, then restarts. The data being replaced is snapshotted first."
+    }
   },
   "backup": {
     "restore": {
@@ -4504,6 +4700,45 @@
     "saved": "Tool settings saved",
     "saveFailed": "Failed to save tool settings",
     "loadFailed": "Failed to load: {detail}"
+  },
+  "DesktopNotificationSettings": {
+    "title": "Desktop notifications",
+    "description": "Raise an OS notification when an agent needs you. Configured per device — the same setting on another browser or machine is separate.",
+    "permissionTitle": "Permission",
+    "permissionGranted": "Allowed",
+    "permissionDenied": "Blocked",
+    "permissionDefault": "Not requested",
+    "permissionUnsupported": "Unavailable",
+    "permissionManagedByOs": "Managed by the system",
+    "permissionGrantedHint": "This browser will show notifications from Codeg.",
+    "permissionDeniedHint": "This browser is blocking notifications from Codeg. Only the browser's own site settings can undo that — a page cannot ask again.",
+    "permissionDefaultHint": "This browser has not been asked yet. Notifications stay silent until you allow them.",
+    "permissionUnsupportedHint": "Notifications need a secure context. Reach this server over HTTPS or on localhost.",
+    "permissionManagedByOsHint": "The desktop app posts through the system notification centre, which does not report back whether Codeg is allowed. Send a test to find out.",
+    "identityTitle": "Delivered as",
+    "identityHint": "The system files these notifications under this app — its own switches are the ones that apply.",
+    "identityDegradedHint": "Codeg's own identifier could not be claimed, so the system posts these as {bundleId} and that app's switches apply instead. Installing Codeg to your Applications folder restores its own identity.",
+    "requestPermission": "Allow notifications",
+    "permissionGrantedToast": "Notifications allowed.",
+    "permissionDeniedToast": "Notifications were blocked. Re-enable them in your browser's site settings.",
+    "openSystemSettings": "Open system settings",
+    "openSystemSettingsFailed": "Could not open the system notification settings.",
+    "sendTest": "Send a test",
+    "testTitle": "Codeg",
+    "testBody": "Desktop notifications are working.",
+    "testSent": "Test notification sent.",
+    "testFailed": "The test notification could not be sent.",
+    "whenTitle": "Notify when",
+    "whenHint": "A window on a second monitor is visible but not focused — pick “Window is not focused” if notifications never seem to arrive.",
+    "whenAlways": "Always",
+    "whenUnfocused": "Window is not focused",
+    "whenHidden": "Window is not visible",
+    "hideBody": "Hide notification contents",
+    "hideBodyHint": "Show a generic line instead of agent output. A notification centre keeps its payload outside the app, after the conversation is closed. The title still names the folder, so you can tell which window to go back to.",
+    "eventsTitle": "Events",
+    "eventsHint": "Turn off any event that should not interrupt you. Repeats of the same event within a few seconds collapse into one notification.",
+    "eventBackgroundTask": "Background task",
+    "eventWorkTask": "Work task"
   },
   "NotificationSoundSettings": {
     "title": "Notification sounds",
@@ -4816,6 +5051,8 @@
     "errorView": "View",
     "notifyReview": "Ready for review: {title}",
     "notifyFailed": "Task failed: {title}",
+    "notifyReviewRedacted": "A task is ready for review",
+    "notifyFailedRedacted": "A task failed",
     "createFromMessage": "Create task from message",
     "detailTokens": "Total tokens",
     "editorTitleNew": "New task",
@@ -4830,6 +5067,7 @@
     "phaseRetry": "Retry run",
     "phaseReturn": "Follow-up",
     "phaseMerge": "Merge",
+    "phaseCompact": "Context compaction",
     "titleLabel": "Title",
     "titlePlaceholder": "What needs to be done?",
     "promptLabel": "Task description",
@@ -4860,6 +5098,7 @@
     "mergeDeleteWorktree": "Delete worktree after merge",
     "mergeSubmit": "Merge",
     "mergeSubmitQueue": "Add to merge queue",
+    "mergeSubmitting": "Starting…",
     "mergeQueuedToast": "Added to the merge queue — it starts as soon as the current merge finishes.",
     "completeTitle": "Complete task",
     "completeDescription": "This task changed no files, so there is nothing to merge — it is marked as done directly.",
@@ -4881,6 +5120,7 @@
     "settingsMaxConcurrentHint": "0 = unlimited",
     "settingsAutoCompact": "Auto-compact threshold",
     "settingsAutoCompactHint": "Before a follow-up, retry or merge round, compact the session when its context window is at least this full. 0 = off.",
+    "compactingNote": "Compacting the session context…",
     "settingsCompactCommand": "Compact command",
     "settingsCompactCommandHint": "Leave blank to use what the agent offers, or its known default.",
     "settingsCompactCommandPlaceholder": "/compact",
@@ -5124,6 +5364,46 @@
     "fieldDescription": "Description",
     "baseInstructions": "System prompt (base_instructions)"
   },
+  "DeepSeekModelEditor": {
+    "title": "Model list",
+    "description": "The models a DeepSeek session can be switched between. Stored in the harness settings document, which the agent reads at launch — a save reaches sessions started after it.",
+    "inheritedBadge": "Agent defaults",
+    "inheritedHint": "No list is stored yet, so these are the agent's built-in models. Saving pins them, and later agent versions will no longer change them on their own. File:",
+    "storedHint": "Stored in your harness settings document. Keys outside this list — and the comments around them — are left untouched. File:",
+    "unreadable": "This settings document cannot be edited from here without risking what it already holds. Edit it by hand instead.",
+    "invalidStored": "This stored list is one the agent refuses, so sessions are running on its built-in models until it is fixed:",
+    "loading": "Reading the settings document…",
+    "loadFailed": "Could not read the settings document.",
+    "empty": "No models. Add one, or save to fall back to the agent's built-in list.",
+    "addModel": "Add model",
+    "remove": "Remove model",
+    "advanced": "More",
+    "save": "Save model list",
+    "saving": "Saving…",
+    "restoreDefaults": "Use agent defaults",
+    "fieldId": "Model id",
+    "fieldName": "Display name",
+    "fieldContextWindow": "Context window",
+    "fieldDescription": "Description",
+    "fieldMaxTokens": "Max output tokens",
+    "fieldAcceptsImages": "Accepts images",
+    "fieldImageDetail": "Image detail",
+    "fieldImagePixelBudget": "Image pixel budget",
+    "fieldImageMaxBytes": "Image byte cap",
+    "placeholderId": "deepseek-v4-flash",
+    "placeholderName": "Shown in the picker",
+    "placeholderInherit": "Agent default",
+    "errorMissingId": "Every model needs an id.",
+    "errorDuplicateId": "Two models share the id “{id}”.",
+    "errorBadContextWindow": "The context window of “{id}” must be a whole number above zero.",
+    "errorBadMaxTokens": "The max output tokens of “{id}” must be a whole number above zero.",
+    "errorBadImageLimit": "The image limits of “{id}” must be whole numbers above zero.",
+    "warnSingleModel": "With a single model the agent stops offering a model picker at all.",
+    "warnLaunchModelMissing": "New sessions start on “{model}”, which is not in this list. Add it, or set {variable} in the environment variables above.",
+    "toastSaved": "Model list saved",
+    "toastRestored": "Using the agent's built-in model list",
+    "toastSaveFailed": "Could not save the model list"
+  },
   "DiagnosticsSettings": {
     "title": "Environment diagnostics",
     "description": "Checks how this app resolves the agent CLI inside its own process, which can differ from your terminal.",
@@ -5291,7 +5571,7 @@
     "noRemote": "This folder has no recognizable forge remote (origin)",
     "errors": {
       "noAccount": "No {provider} account is configured for {host}. Add one under Settings → Version Control to load this repository.",
-      "unsupportedHost": "The repository panel supports GitHub and GitLab only, and {host} is not recognized as either. If it is a self-hosted GitHub Enterprise or GitLab instance, add an account for it under Settings → Version Control.",
+      "unsupportedHost": "The repository panel supports GitHub, GitLab and Gitea only, and {host} is not recognized as any of them. If it is a self-hosted GitHub Enterprise, GitLab, Gitea or Forgejo instance, add an account for it under Settings → Version Control.",
       "wrongForge": "{host} is a {provider}, not the forge codeg had it classified as. The detection has been corrected — reload to retry."
     },
     "addAccount": "Add an account",
@@ -5550,8 +5830,29 @@
     "showFewerMembers": "Show fewer",
     "detachToCanvas": "Move out to canvas",
     "deleteSelected": "Delete selection",
+    "confirmDeleteTitle": "Delete selection?",
+    "confirmDeleteNotes": "{count, plural, one {# note you wrote} other {# notes you wrote}} will be deleted for good. This cannot be undone.",
+    "confirmDeleteCancel": "Cancel",
+    "confirmDeleteConfirm": "Delete",
     "canvasActions": "Canvas actions",
-    "mergeIntoNewRegion": "New region"
+    "mergeIntoNewRegion": "New region",
+    "addFileCard": "File card",
+    "addTerminalCard": "Terminal card",
+    "searchFiles": "Search files…",
+    "searchFilesIn": "Search in {folder}…",
+    "searchingFiles": "Searching…",
+    "noFiles": "No files found",
+    "noOpenFiles": "No files open — type to search",
+    "browseForFile": "Browse…",
+    "filePreview": "Preview",
+    "fileSource": "Source",
+    "reloadFile": "Reload",
+    "removeFileCard": "Remove file card",
+    "restartTerminal": "Restart terminal",
+    "removeTerminalCard": "Remove terminal card",
+    "terminalNoDirectory": "This card has no working directory",
+    "confirmDeleteTerminals": "{count} running terminal(s) will be closed and their processes stopped.",
+    "confirmDeleteNotesAndTerminals": "{notes} note(s) you wrote will be permanently deleted, and {terminals} running terminal(s) will be stopped."
   },
   "Translation": {
     "partialFailure": "Some chunks failed to translate",
@@ -5699,6 +6000,5 @@
     "poolIdle": "Idle — the endpoint has not been used yet.",
     "poolRate": "Adaptive rate: {rpm} req/min",
     "poolCooldown": "rate-limited (429), cooling {seconds}s ({rpm}/min)",
-    "poolDisabled": "Disabled for this session: {reason}"
-  }
+    "poolDisabled": "Disabled for this session: {reason}"  }
 }

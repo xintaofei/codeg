@@ -10,6 +10,9 @@ import {
   CARD_WIDTH,
   DETAIL_CARD_HEIGHT,
   DETAIL_CARD_WIDTH,
+  DRAG_HANDLE_SELECTOR,
+  FILE_CARD_HEIGHT,
+  FILE_CARD_WIDTH,
   MAX_VISIBLE_MEMBERS,
   REGION_COLLAPSED_HEIGHT,
   REGION_FOOTER_HEIGHT,
@@ -21,11 +24,15 @@ import {
   regionWidthForColumns,
   rowsForRegionHeight,
   BOARD_DOT_GAP,
+  basePathName,
+  canvasTerminalId,
   compareByRecency,
   computeAlignment,
   computeRegionMembers,
   deriveFlowGraph,
+  isRegionKind,
   layoutRegionGrid,
+  noteHoldsProse,
   memberNodeId,
   packLayout,
   parseMemberNodeId,
@@ -34,7 +41,9 @@ import {
   resolveNewConversationTarget,
   type CanvasDragSource,
   type ConversationCardData,
+  type FileNodeData,
   type RegionNodeData,
+  type TerminalNodeData,
 } from "./canvas-model"
 
 /** Every card on the board renders at the fixed summary footprint. */
@@ -92,6 +101,7 @@ function node(id: number, over: Partial<CanvasNode> = {}): CanvasNode {
     member_ids: [],
     title: null,
     content: null,
+    path: null,
     color: null,
     collapsed: false,
     grid_columns: 0,
@@ -111,6 +121,42 @@ const NO_DRAG = {
   overlay: new Map<string, { x: number; y: number }>(),
   frozenMembers: null,
 }
+
+describe("noteHoldsProse — what the delete gestures stop to ask about", () => {
+  it("is true only for a note that actually holds text", () => {
+    expect(
+      noteHoldsProse(node(1, { kind: "note", content: "worth keeping" }))
+    ).toBe(true)
+    // An empty sheet carries nothing the user typed, and asking about it would
+    // train the reflex the prompt exists to interrupt.
+    expect(noteHoldsProse(node(1, { kind: "note", content: null }))).toBe(false)
+    expect(noteHoldsProse(node(1, { kind: "note", content: "" }))).toBe(false)
+    expect(noteHoldsProse(node(1, { kind: "note", content: "  \n\t " }))).toBe(
+      false
+    )
+  })
+
+  it("is false for every node whose content lives somewhere else", () => {
+    // Deleting these unpins or unframes; the conversation itself survives, so
+    // there is nothing here a confirmation could save. A region is not a note
+    // however much text it carries.
+    expect(noteHoldsProse(node(2, { kind: "custom", content: "x" }))).toBe(
+      false
+    )
+    expect(noteHoldsProse(node(3, { kind: "folder", content: "x" }))).toBe(
+      false
+    )
+    expect(
+      noteHoldsProse(node(4, { kind: "conversation", content: "x" }))
+    ).toBe(false)
+  })
+
+  it("is false for a row the store does not have", () => {
+    // Both delete paths look the row up by id, and a node deleted underneath
+    // us (remote delete, stale selection) is nothing left to protect.
+    expect(noteHoldsProse(undefined)).toBe(false)
+  })
+})
 
 describe("node id codecs", () => {
   it("round-trips region and member ids", () => {
@@ -1029,5 +1075,145 @@ describe("resolveNewConversationTarget", () => {
     // id pointing at nothing until the next tab switch, and a draft aimed at a
     // folder that no longer exists has nowhere to send its first message.
     expect(resolveNewConversationTarget(9, [folder(3)])).toEqual({ chat: true })
+  })
+})
+
+describe("file and terminal cards", () => {
+  it("derives a file card at its stored footprint, with a drag handle", () => {
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [
+        node(1, {
+          kind: "file",
+          path: "/repo/src/index.ts",
+          width: FILE_CARD_WIDTH,
+          height: FILE_CARD_HEIGHT,
+        }),
+      ],
+      conversations: [],
+      allFolders: [],
+      ...NO_DRAG,
+    })
+    expect(nodes).toHaveLength(1)
+    expect(nodes[0].type).toBe("file")
+    expect(nodes[0].width).toBe(FILE_CARD_WIDTH)
+    expect(nodes[0].height).toBe(FILE_CARD_HEIGHT)
+    // Without this the whole card is a drag surface and a click inside it
+    // cannot place a caret — see the RF drag-filter note in the derive layer.
+    expect(nodes[0].dragHandle).toBe(DRAG_HANDLE_SELECTOR)
+    const data = nodes[0].data as FileNodeData
+    expect(data.path).toBe("/repo/src/index.ts")
+    expect(data.label).toBe("index.ts")
+  })
+
+  it("prefers a renamed card's own title over the file name", () => {
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [
+        node(1, { kind: "file", path: "/repo/README.md", title: "The plan" }),
+      ],
+      conversations: [],
+      allFolders: [],
+      ...NO_DRAG,
+    })
+    expect((nodes[0].data as FileNodeData).label).toBe("The plan")
+  })
+
+  it("derives a terminal card from its working directory", () => {
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [node(2, { kind: "terminal", path: "/repo/api" })],
+      conversations: [],
+      allFolders: [],
+      ...NO_DRAG,
+    })
+    expect(nodes[0].type).toBe("terminal")
+    const data = nodes[0].data as TerminalNodeData
+    expect(data.workingDir).toBe("/repo/api")
+    expect(data.label).toBe("api")
+  })
+
+  it("renders a row that lost its path rather than dropping it", () => {
+    // The path is a SOFT reference like every other binding on this board: a
+    // card whose file moved must stay on screen for the user to delete, not
+    // silently disappear along with the arrangement around it.
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [node(3, { kind: "file", path: null })],
+      conversations: [],
+      allFolders: [],
+      ...NO_DRAG,
+    })
+    expect(nodes).toHaveLength(1)
+    expect((nodes[0].data as FileNodeData).path).toBe("")
+  })
+
+  it("honours a live resize over the stored box", () => {
+    const { nodes, renderedSizes } = deriveFlowGraph({
+      dbNodes: [node(4, { kind: "terminal", path: "/repo", width: 480 })],
+      conversations: [],
+      allFolders: [],
+      ...NO_DRAG,
+      sizeOverlay: new Map([[regionNodeId(4), { width: 640, height: 200 }]]),
+    })
+    expect(nodes[0].width).toBe(640)
+    // Auto-arrange packs by what is DRAWN, not by what the row says — a card
+    // mid-resize that reported its stored width would be packed under its
+    // neighbour.
+    expect(renderedSizes.get(4)).toEqual({ width: 640, height: 200 })
+  })
+
+  it("keeps neither kind out of the merge/region gestures' way", () => {
+    // Only conversation cards are droppable into regions. A file or terminal
+    // card must never show up as a merge target, or dropping a conversation on
+    // one would try to collect a file into a conversation region.
+    const { pinRects, regionRects } = deriveFlowGraph({
+      dbNodes: [
+        node(5, { kind: "file", path: "/repo/a.ts" }),
+        node(6, { kind: "terminal", path: "/repo" }),
+      ],
+      conversations: [],
+      allFolders: [],
+      ...NO_DRAG,
+    })
+    expect(pinRects).toEqual([])
+    expect(regionRects).toEqual([])
+  })
+})
+
+describe("canvasTerminalId", () => {
+  it("is derived from the row id so a card re-attaches to its own shell", () => {
+    // Stability across mounts is the whole point: the canvas route really
+    // unmounts, and the PTY has to be findable again by the card that placed
+    // it — including from a second window showing the same board.
+    expect(canvasTerminalId(12)).toBe("canvas-term-12")
+    expect(canvasTerminalId(12)).toBe(canvasTerminalId(12))
+    expect(canvasTerminalId(13)).not.toBe(canvasTerminalId(12))
+  })
+})
+
+describe("isRegionKind", () => {
+  it("covers exactly the container kinds", () => {
+    // The view quantizes a resize to whole member cards for these and only
+    // these; a file or terminal card snapping to a conversation grid would
+    // jump under the pointer.
+    for (const kind of ["folder", "group", "agent", "custom"] as const) {
+      expect(isRegionKind(kind)).toBe(true)
+    }
+    for (const kind of ["conversation", "note", "file", "terminal"] as const) {
+      expect(isRegionKind(kind)).toBe(false)
+    }
+  })
+})
+
+describe("basePathName", () => {
+  it("takes the last segment of either separator style", () => {
+    expect(basePathName("/repo/src/index.ts")).toBe("index.ts")
+    expect(basePathName("C:\\repo\\src\\index.ts")).toBe("index.ts")
+  })
+
+  it("ignores trailing separators, which a directory path often has", () => {
+    expect(basePathName("/repo/api/")).toBe("api")
+  })
+
+  it("never returns an empty label", () => {
+    expect(basePathName("/")).toBe("/")
+    expect(basePathName("")).toBe("")
   })
 })

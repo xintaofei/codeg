@@ -229,6 +229,7 @@ const FolderHeader = memo(function FolderHeader({
   depth = 0,
   variant = "repo",
   worktreeBranch = null,
+  rootBranch = null,
 }: {
   folderId: number
   folderName: string
@@ -312,12 +313,20 @@ const FolderHeader = memo(function FolderHeader({
    *   `alias [ name ]` label as a repo, with the branch standing in for the
    *   alias (see {@link worktreeHeaderAlias}).
    * - `root`: a repo container's own-sessions sub-group — the FolderRoot glyph
-   *   and a fixed, non-localized "root" label.
+   *   and the same `alias [ name ]` label as the two above, with the container's
+   *   live branch standing in for the alias and a fixed, non-localized "root"
+   *   for the name (see {@link rootBranch}).
    */
   variant?: "repo" | "worktree" | "root"
   /** The worktree's branch name (its own `git_branch`), used as the alias when
    *  none is set. Leaves the bare folder name when absent. */
   worktreeBranch?: string | null
+  /**
+   * The container repo's live HEAD branch, for the `root` variant only. Absent
+   * (unknown HEAD, detached, or not yet resolved) degrades the label to the
+   * bare "root" this row carried before there was a branch to show.
+   */
+  rootBranch?: string | null
 }) {
   // Own the translations here rather than receiving `t` as a prop: next-intl
   // returns a fresh `t` on every parent render, so passing it down would defeat
@@ -460,11 +469,18 @@ const FolderHeader = memo(function FolderHeader({
                         bracketClassName={bracketClassName}
                       />
                     ) : variant === "root" ? (
-                      // The container repo's own-sessions sub-group is labeled
-                      // with a fixed, non-localized "root" (its glyph is
-                      // FolderRoot); it stands for the repo root regardless of UI
-                      // language.
-                      "root"
+                      // The container repo's own-sessions sub-group: its live
+                      // branch as the alias, a fixed "root" as the name — the
+                      // same two-part label its worktree siblings render, so the
+                      // whole subtree reads as one column of branches. "root"
+                      // stays non-localized: it stands for the repo root
+                      // regardless of UI language. With no known branch this
+                      // collapses back to the bare "root" it has always shown.
+                      <FolderAliasLabel
+                        name="root"
+                        alias={rootBranch ?? null}
+                        bracketClassName={bracketClassName}
+                      />
                     ) : (
                       <FolderAliasLabel
                         name={folderName}
@@ -879,6 +895,12 @@ export function SidebarConversationList({
   const folders = useAppWorkspaceStore((s) => s.folders)
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
   const conversations = useAppWorkspaceStore((s) => s.conversations)
+  // Live HEAD branch per folder, for the container repos' "root" sub-group
+  // labels. Safe to subscribe to from a list this hot: `applyGitHead` is
+  // equality-guarded, so the Map reference only changes when a branch actually
+  // changes — not on every poll tick.
+  const branches = useAppWorkspaceStore((s) => s.branches)
+  const ensureGitHead = useAppWorkspaceStore((s) => s.ensureGitHead)
   const loading = useAppWorkspaceStore((s) => s.conversationsLoading)
   const error = useAppWorkspaceStore((s) => s.conversationsError)
   const refreshConversations = useAppWorkspaceStore(
@@ -1455,6 +1477,25 @@ export function SidebarConversationList({
     () => new Set(containerChildren.keys()),
     [containerChildren]
   )
+
+  // Resolve each container's HEAD so its "root" sub-group can be labeled with
+  // the branch its main worktree is on. Needed because the app-wide branch poll
+  // only covers the ACTIVE folder, and working inside a worktree makes the
+  // worktree active, not its container — the label would otherwise read a bare
+  // "root" forever. `ensureGitHead` is idempotent and de-dupes in-flight reads,
+  // so this costs one request per container per session.
+  //
+  // One-shot, deliberately: the container is refreshed by the regular poll
+  // whenever it IS the active folder, and an in-app checkout on it writes the
+  // store directly (`use-switch-to-branch`). Only a branch switched from OUTSIDE
+  // the app, on a container that is not active, reads stale — the same bargain
+  // the tab-bar branch chips already make, and not worth a second poll loop.
+  useEffect(() => {
+    for (const repoId of containerRepoIds) {
+      const path = folderIndex.get(repoId)?.path
+      if (path) ensureGitHead(repoId, path)
+    }
+  }, [containerRepoIds, folderIndex, ensureGitHead])
 
   // Flat row model for windowing — the pinned section, the folders section, and
   // every conversation live in this ONE array fed to the single Virtualizer (no
@@ -2675,6 +2716,14 @@ export function SidebarConversationList({
         depth={depth}
         variant={variant}
         worktreeBranch={folderEntry?.gitBranch ?? null}
+        // The container's live HEAD (the root sub-group shares its repo's id).
+        // `gitBranch` is only a fallback for shape's sake — the folder row's
+        // `git_branch` column is never written by the folder flow.
+        rootBranch={
+          isRootGroup
+            ? (branches.get(folderId) ?? folderEntry?.gitBranch ?? null)
+            : null
+        }
       />
     )
   }

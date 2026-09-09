@@ -69,16 +69,16 @@ describe("PlanModeCard", () => {
     const { container } = renderCard({ toolName: "enterplanmode", input: "{}" })
     expect(screen.getByText("Entered plan mode")).toBeInTheDocument()
     // No collapsible Tool shell, no plan card header.
-    expect(screen.queryByText("Plan")).toBeNull()
+    expect(screen.queryByText("Proposed plan")).toBeNull()
     expect(container.querySelector("pre")).toBeNull()
   })
 
-  it("renders ExitPlanMode's plan markdown directly under a Plan label", async () => {
+  it("renders ExitPlanMode's plan markdown directly under the plan label", async () => {
     const { container } = renderCard({
       toolName: "exitplanmode",
       input: JSON.stringify({ plan: "# Heading\n- item one" }),
     })
-    expect(screen.getByText("Plan")).toBeInTheDocument()
+    expect(screen.getByText("Proposed plan")).toBeInTheDocument()
     await waitFor(() => {
       expect(container.textContent).toContain("Heading")
       expect(container.textContent).toContain("item one")
@@ -90,9 +90,9 @@ describe("PlanModeCard", () => {
       toolName: "switch_mode",
       input: JSON.stringify({ mode: "act" }),
     })
-    // Content-driven: no plan markdown → mode marker, NOT a "Plan" card.
+    // Content-driven: no plan markdown → mode marker, NOT a plan card.
     expect(screen.getByText("Switched mode · act")).toBeInTheDocument()
-    expect(screen.queryByText("Plan")).toBeNull()
+    expect(screen.queryByText("Proposed plan")).toBeNull()
   })
 
   it("renders the plan when switch_mode carries plan markdown (content-driven)", async () => {
@@ -100,7 +100,7 @@ describe("PlanModeCard", () => {
       toolName: "switch_mode",
       input: JSON.stringify({ mode: "plan", plan: "## Steps\n- do x" }),
     })
-    expect(screen.getByText("Plan")).toBeInTheDocument()
+    expect(screen.getByText("Proposed plan")).toBeInTheDocument()
     await waitFor(() => {
       expect(container.textContent).toContain("Steps")
       expect(container.textContent).toContain("do x")
@@ -127,7 +127,46 @@ describe("PlanModeCard", () => {
       output: "User approved the plan.",
     })
     expect(screen.getByText("Plan approved — implementing")).toBeInTheDocument()
-    expect(screen.queryByText("Plan")).toBeNull()
+    expect(screen.queryByText("Proposed plan")).toBeNull()
+  })
+
+  it("shows the plan AND the decision when a plan review carries both", async () => {
+    // Live shape once codex's follow-up `tool_call_update` supplies
+    // `rawInput.plan`: the card is the plan, the marker is what the user did
+    // about it. The old either/or rendering dropped the decision entirely as
+    // soon as a plan was present, so an approved plan looked undecided.
+    const { container } = renderCard({
+      toolName: "plan_review",
+      input: JSON.stringify({ plan: "# Heading\n- item one" }),
+      output: "User approved the plan.",
+    })
+
+    expect(screen.getByText("Proposed plan")).toBeInTheDocument()
+    expect(screen.getByText("Plan approved — implementing")).toBeInTheDocument()
+    await waitFor(() => {
+      expect(container.textContent).toContain("Heading")
+    })
+  })
+
+  it("says the decision is pending under a plan that is still awaiting review", () => {
+    renderCard({
+      toolName: "plan_review",
+      input: JSON.stringify({ plan: "# Heading" }),
+      output: null,
+      state: "input-available",
+    })
+    expect(screen.getByText("Proposed plan")).toBeInTheDocument()
+    expect(screen.getByText("Awaiting plan decision")).toBeInTheDocument()
+  })
+
+  it("keeps the either/or shape for non-review plan-mode tools", () => {
+    // ExitPlanMode's marker would only restate the card above it.
+    renderCard({
+      toolName: "exitplanmode",
+      input: JSON.stringify({ plan: "# Heading" }),
+    })
+    expect(screen.getByText("Proposed plan")).toBeInTheDocument()
+    expect(screen.queryByText("Plan submitted")).toBeNull()
   })
 
   it("reports a declined codex plan review, and defaults to it when the output is unknown", () => {

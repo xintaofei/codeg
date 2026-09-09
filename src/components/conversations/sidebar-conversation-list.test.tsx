@@ -883,6 +883,22 @@ describe("SidebarConversationList — worktree grouping (Show worktrees)", () =>
       folders,
       allFolders: folders,
       conversations: [conv(11, 1), conv(12, 1), conv(21, 2)],
+      // The container's live HEAD, which labels its "root" sub-group. `gitHeads`
+      // has to be seeded too: it — not `branches` — is what makes the list's
+      // `ensureGitHead` call short-circuit, and without it every render here
+      // would fire a real transport read.
+      branches: new Map([[1, "main"]]),
+      gitHeads: new Map([
+        [
+          1,
+          {
+            is_repo: true,
+            branch: "main",
+            detached: false,
+            short_sha: "abc1234",
+          },
+        ],
+      ]),
     })
   })
 
@@ -920,6 +936,31 @@ describe("SidebarConversationList — worktree grouping (Show worktrees)", () =>
     expect(iWtConv).toBeGreaterThan(iBranch)
     // Exactly one container header (FolderOpen) + one root sub-group (FolderRoot).
     expect(probes.folder).toBe(1)
+    expect(probes.root).toBe(1)
+  })
+
+  it("labels the root sub-group with the container's live branch", () => {
+    render(wtTree(true))
+    // The main worktree's branch, in the same `branch [ name ]` shape the
+    // worktree sibling below it uses — so the subtree reads as one column of
+    // branches rather than one anonymous "root" above a list of them.
+    expect(document.body.textContent).toContain("main [ root ]")
+  })
+
+  it("falls back to a bare 'root' when the container's HEAD is unknown", () => {
+    // Detached HEAD, a non-repo, or simply not resolved yet. The label degrades
+    // to the plain word rather than rendering empty brackets.
+    useAppWorkspaceStore.setState({
+      branches: new Map([[1, null]]),
+      gitHeads: new Map([
+        [1, { is_repo: true, branch: null, detached: true, short_sha: "abc" }],
+      ]),
+    })
+    render(wtTree(true))
+    const text = document.body.textContent ?? ""
+    expect(text).not.toContain("[ root ]")
+    // Still present as its own sub-group — this is a label fallback, not a
+    // missing row (the glyph probe is the unambiguous check).
     expect(probes.root).toBe(1)
   })
 

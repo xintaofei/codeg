@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest"
 import {
   flushRetryDelayMs,
-  forkSendBlockedByQueue,
   isConnectionReady,
   QUEUE_FLUSH_RETRY_BACKOFF_MS,
   shouldQueueDirectSend,
@@ -50,17 +49,6 @@ describe("shouldQueueDirectSend", () => {
   it("never tail-routes the auto-flush itself (it is draining the queue)", () => {
     expect(shouldQueueDirectSend(true, 5)).toBe(false)
     expect(shouldQueueDirectSend(true, 0)).toBe(false)
-  })
-})
-
-describe("forkSendBlockedByQueue", () => {
-  it("blocks fork-send while the queue is non-empty (fork must not jump the queue)", () => {
-    expect(forkSendBlockedByQueue(1)).toBe(true)
-    expect(forkSendBlockedByQueue(3)).toBe(true)
-  })
-
-  it("allows fork-send when the queue is empty", () => {
-    expect(forkSendBlockedByQueue(0)).toBe(false)
   })
 })
 

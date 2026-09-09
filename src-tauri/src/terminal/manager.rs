@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -8,8 +8,52 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use super::error::TerminalError;
 #[cfg(target_os = "windows")]
 use super::shell_flavor::ShellFamily;
-use super::types::{TerminalEvent, TerminalInfo};
+use super::types::{TerminalEvent, TerminalInfo, TerminalSnapshot};
 use crate::web::event_bridge::EventEmitter;
+
+/// How much recent PTY output a terminal keeps for re-attaching viewers. Sized
+/// to cover a screenful of `ls -R` or a compile log, not a whole session: this
+/// is a "pick the pane back up where you left it" buffer, not a transcript.
+const SCROLLBACK_MAX_CHARS: usize = 128 * 1024;
+
+/// Recent output of one terminal, kept so a viewer that mounts after the spawn
+/// (or re-mounts after its host view was unmounted — a canvas terminal card
+/// crossing a route switch) can redraw instead of showing a blank pane while
+/// the shell sits there waiting at a prompt it already printed.
+///
+/// Whole chunks are evicted from the front rather than characters: the buffer
+/// holds raw terminal bytes, and slicing one at an arbitrary offset would cut
+/// an escape sequence in half and paint the replay with whatever the truncated
+/// tail happens to mean.
+#[derive(Default)]
+struct Scrollback {
+    chunks: VecDeque<String>,
+    chars: usize,
+    /// Chunks appended since the terminal spawned — the monotonic cursor the
+    /// output events carry. Never reset, so it stays comparable across a
+    /// re-attach.
+    seq: u64,
+}
+
+impl Scrollback {
+    /// Record a chunk and return the seq it was assigned (= the seq an event
+    /// carrying this chunk must report).
+    fn append(&mut self, data: &str) -> u64 {
+        self.seq += 1;
+        self.chars += data.chars().count();
+        self.chunks.push_back(data.to_string());
+        while self.chars > SCROLLBACK_MAX_CHARS && self.chunks.len() > 1 {
+            if let Some(old) = self.chunks.pop_front() {
+                self.chars = self.chars.saturating_sub(old.chars().count());
+            }
+        }
+        self.seq
+    }
+
+    fn read(&self) -> (String, u64) {
+        (self.chunks.iter().cloned().collect(), self.seq)
+    }
+}
 
 struct TerminalInstance {
     write_tx: mpsc::Sender<Vec<u8>>,
@@ -17,6 +61,10 @@ struct TerminalInstance {
     _child: Box<dyn portable_pty::Child + Send>,
     title: String,
     owner_window_label: String,
+    /// Shared with this terminal's reader thread — the thread appends, viewers
+    /// read. Held behind its own lock rather than the map's so a chunk of
+    /// output never waits on a write / resize / list call.
+    scrollback: Arc<Mutex<Scrollback>>,
     /// Temp files (credential store + helper script) to clean up on exit.
     temp_files: Vec<std::path::PathBuf>,
 }
@@ -290,6 +338,7 @@ impl TerminalManager {
         let short_id = thread_name_prefix(&terminal_id);
 
         let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>();
+        let scrollback = Arc::new(Mutex::new(Scrollback::default()));
 
         let instance = TerminalInstance {
             write_tx,
@@ -297,6 +346,7 @@ impl TerminalManager {
             _child: child,
             title: "Terminal".to_string(),
             owner_window_label: opts.owner_window_label,
+            scrollback: scrollback.clone(),
             temp_files: opts.temp_files,
         };
 
@@ -319,7 +369,7 @@ impl TerminalManager {
         std::thread::Builder::new()
             .name(format!("pty-reader-{short_id}"))
             .spawn(move || {
-                read_loop(reader, id_for_reader, &emitter, &terminals_ref);
+                read_loop(reader, id_for_reader, &emitter, &terminals_ref, &scrollback);
             })
             .map_err(|e| TerminalError::SpawnFailed(e.to_string()))?;
 
@@ -353,6 +403,39 @@ impl TerminalManager {
             })
             .map_err(|e| TerminalError::ResizeFailed(e.to_string()))?;
         Ok(())
+    }
+
+    /// Recent output of a live terminal, for a viewer attaching to a PTY that
+    /// was spawned before it mounted.
+    ///
+    /// Never an error: "no such terminal" is the answer that tells the caller
+    /// to spawn one instead, and a caller that has to distinguish that from a
+    /// transport failure would have to parse the error string to do it. Note
+    /// the map lock is taken only to find the instance — the buffer has its own,
+    /// so a large scrollback is never copied while output is blocked.
+    pub fn snapshot(&self, terminal_id: &str) -> TerminalSnapshot {
+        let buffer = {
+            let terminals = self.terminals.lock().unwrap();
+            match terminals.get(terminal_id) {
+                Some(instance) => instance.scrollback.clone(),
+                None => {
+                    return TerminalSnapshot {
+                        alive: false,
+                        data: String::new(),
+                        seq: 0,
+                    }
+                }
+            }
+        };
+        let (data, seq) = buffer
+            .lock()
+            .map(|s| s.read())
+            .unwrap_or_else(|_| (String::new(), 0));
+        TerminalSnapshot {
+            alive: true,
+            data,
+            seq,
+        }
     }
 
     pub fn kill(&self, terminal_id: &str) -> Result<(), TerminalError> {
@@ -486,6 +569,7 @@ fn read_loop(
     terminal_id: String,
     emitter: &EventEmitter,
     terminals: &Arc<Mutex<HashMap<String, TerminalInstance>>>,
+    scrollback: &Arc<Mutex<Scrollback>>,
 ) {
     let output_event = format!("terminal://output/{}", terminal_id);
     let mut buf = [0u8; 8192];
@@ -495,9 +579,22 @@ fn read_loop(
             Ok(0) => break,
             Ok(n) => {
                 let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                // Record BEFORE emitting, and take the seq from the same
+                // critical section: a snapshot read concurrent with this chunk
+                // either sees it (and reports a seq at least this high) or does
+                // not (and reports one below it). Either way the receiving
+                // client can tell overlap from new output — see `TerminalEvent`.
+                // A poisoned lock is not fatal here: the buffer is an
+                // optimisation, so fall back to an un-deduplicable seq of 0
+                // rather than killing the reader thread and the terminal with it.
+                let seq = scrollback
+                    .lock()
+                    .map(|mut s| s.append(&data))
+                    .unwrap_or_default();
                 let event = TerminalEvent {
                     terminal_id: terminal_id.clone(),
                     data,
+                    seq,
                 };
                 crate::web::event_bridge::emit_event(emitter, &output_event, event.clone());
             }
@@ -518,6 +615,7 @@ fn emit_terminal_exit_event(emitter: &EventEmitter, terminal_id: &str) {
     let event = TerminalEvent {
         terminal_id: terminal_id.to_string(),
         data: String::new(),
+        seq: 0,
     };
     crate::web::event_bridge::emit_event(emitter, &exit_event, event.clone());
 }
@@ -540,7 +638,62 @@ fn thread_name_prefix(terminal_id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::thread_name_prefix;
+    use super::{thread_name_prefix, Scrollback, SCROLLBACK_MAX_CHARS};
+
+    #[test]
+    fn scrollback_seq_counts_every_chunk_and_never_rewinds() {
+        // The seq is what a re-attaching client uses to tell "already in the
+        // snapshot" from "arrived after it". A repeated or reset value would
+        // make the replay either double-print or swallow output.
+        let mut buffer = Scrollback::default();
+        assert_eq!(buffer.append("a"), 1);
+        assert_eq!(buffer.append("b"), 2);
+        assert_eq!(buffer.read(), ("ab".to_string(), 2));
+    }
+
+    #[test]
+    fn scrollback_evicts_whole_chunks_and_keeps_counting() {
+        // Whole chunks, never a character slice: the buffer holds raw terminal
+        // bytes, and cutting one mid-escape paints the replay with whatever the
+        // truncated tail happens to mean.
+        let mut buffer = Scrollback::default();
+        let chunk = "x".repeat(SCROLLBACK_MAX_CHARS / 2 + 1);
+        buffer.append(&chunk);
+        buffer.append(&chunk);
+        let seq = buffer.append("tail");
+        let (data, read_seq) = buffer.read();
+        assert_eq!(read_seq, seq, "eviction must not rewind the cursor");
+        assert!(data.ends_with("tail"));
+        assert!(
+            data.chars().count() <= SCROLLBACK_MAX_CHARS,
+            "kept {} chars",
+            data.chars().count()
+        );
+    }
+
+    #[test]
+    fn scrollback_keeps_the_last_chunk_even_when_it_alone_is_too_big() {
+        // A single chunk over the cap must not evict itself into an empty
+        // buffer — the newest output is the part worth keeping.
+        let mut buffer = Scrollback::default();
+        let huge = "y".repeat(SCROLLBACK_MAX_CHARS * 2);
+        buffer.append(&huge);
+        let (data, seq) = buffer.read();
+        assert_eq!(seq, 1);
+        assert_eq!(data.chars().count(), huge.chars().count());
+    }
+
+    #[test]
+    fn a_missing_terminal_reports_not_alive_rather_than_failing() {
+        // "No such terminal" is the answer that tells a caller to spawn one;
+        // an error would force it to parse a string to tell that apart from a
+        // transport failure.
+        let manager = super::TerminalManager::new();
+        let snapshot = manager.snapshot("nope");
+        assert!(!snapshot.alive);
+        assert!(snapshot.data.is_empty());
+        assert_eq!(snapshot.seq, 0);
+    }
 
     #[test]
     fn keeps_short_ascii_id() {

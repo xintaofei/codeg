@@ -48,10 +48,17 @@ const ASK_USER_QUESTION_SUFFIX_RE = /[^a-z0-9]ask_user_question$/
 const CHECK_USER_FEEDBACK_SUFFIX_RE = /[^a-z0-9]check_user_feedback$/
 
 /**
- * The codeg-mcp workbench companions, which own `CodegMcpToolCard`. Same
- * bare-name-plus-suffix treatment as the delegation tools above: the bare form
- * is what the live path produces post-`inferLiveToolName`, the suffix form is
- * the raw `mcp__<server>__<tool>` name the history parsers keep.
+ * The codeg-mcp workbench companions, which own `CodegMcpToolCard` (and, for
+ * `resume_delegation`, `ResumedDelegationCard`). Same bare-name-plus-suffix
+ * treatment as the delegation tools above: the bare form is what the live path
+ * produces post-`inferLiveToolName`, the suffix form is the raw
+ * `mcp__<server>__<tool>` name the history parsers keep.
+ *
+ * MUST stay in sync with `CODEG_MCP_WORKBENCH_TOOLS` in `@/lib/codeg-mcp-tool`
+ * — a tool listed there but missing here still gets its dedicated card, but
+ * folds into a generic "工具 ×N" tool-group shell instead of standing alone.
+ * That is exactly what happened to `resume_delegation` when it was added.
+ * `tool-kind-classifier.test.ts` asserts the two can't drift again.
  */
 const CODEG_MCP_WORKBENCH_NAMES: ReadonlySet<string> = new Set([
   "get_session_info",
@@ -59,9 +66,10 @@ const CODEG_MCP_WORKBENCH_NAMES: ReadonlySet<string> = new Set([
   "task_complete",
   "create_automation",
   "create_work_task",
+  "resume_delegation",
 ])
 const CODEG_MCP_WORKBENCH_SUFFIX_RE =
-  /[^a-z0-9](?:get_session_info|task_progress|task_complete|create_automation|create_work_task)$/
+  /[^a-z0-9](?:get_session_info|task_progress|task_complete|create_automation|create_work_task|resume_delegation)$/
 
 export function isAgentLikeToolName(toolName: string): boolean {
   const name = toolName.toLowerCase().trim()

@@ -12,6 +12,12 @@ use crate::models::agent::{is_valid_custom_agent_id, BUILTIN_AGENT_TYPES};
 // Codeg-authored without deleting an API caller's control-character text.
 const ROUTE_FRAME_SEPARATOR: char = '\u{001e}';
 const ROUTE_FRAME_KIND: &str = "codeg_internal_agent_routes";
+/// Opening bytes of the frame's descriptor line — the anchor used to find a
+/// frame in a transcript that no longer has the separators around it (see
+/// [`find_unseparated_frame`]). `kind` is the descriptor's first field, so this
+/// is a prefix of every rendered body; a field reorder that broke that is what
+/// `the_body_anchor_is_what_the_renderer_starts_with` guards.
+const ROUTE_FRAME_BODY_PREFIX: &str = "{\"kind\":\"codeg_internal_agent_routes\"";
 const ROUTE_FRAME_VERSION: u8 = 3;
 const MAX_ROUTE_FRAME_BYTES: usize = 16 * 1024;
 /// Distinct agents one frame may route, applied AFTER deduplication.
@@ -145,16 +151,33 @@ pub(crate) fn append_agent_routes(blocks: &mut Vec<PromptInputBlock>, delegation
 /// reach for their own sub-agent mechanism instead. This frame only binds the
 /// channel — it does not tell the agent whether to delegate at all.
 fn render_internal_agent_routes(frame: &InternalAgentRoutes) -> String {
+    format!(
+        "{ROUTE_FRAME_SEPARATOR}{}{ROUTE_FRAME_SEPARATOR}",
+        render_internal_agent_routes_body(frame)
+    )
+}
+
+/// The frame WITHOUT its separators: exactly three newline-terminated lines.
+///
+/// Split out because the separators are the one part of the frame an agent may
+/// not give back. They are reserved and scrubbed at ingress, but that only
+/// guarantees codeg never *sends* a stray one — it says nothing about what the
+/// agent writes into its own store. Antigravity's ACP server, for one, joins
+/// the prompt's text blocks with a space and replaces each separator with one,
+/// so its trajectory holds this body and no separators at all.
+///
+/// Everything the identity argument needs is in here: the nonce, the routes,
+/// and the full instruction wording. See [`find_unseparated_frame`].
+fn render_internal_agent_routes_body(frame: &InternalAgentRoutes) -> String {
     let descriptor = serde_json::to_string(frame).expect("internal route frame is serializable");
     let routes = serde_json::to_string(&frame.routes).expect("agent routes are serializable");
     format!(
-        "{ROUTE_FRAME_SEPARATOR}{descriptor}\n\
+        "{descriptor}\n\
 Codeg composer routing metadata (authoritative): {routes}\n\
 When you delegate any of this work, route it through the `delegate_to_agent` \
 tool from the `codeg-mcp` server with `agent_type` taken from the matching \
 route: do not substitute your own native sub-agent, task, or spawn mechanism, \
-and do not route it through any other delegation tool.\n\
-{ROUTE_FRAME_SEPARATOR}"
+and do not route it through any other delegation tool.\n"
     )
 }
 
@@ -168,17 +191,25 @@ fn valid_agent_wire_syntax(agent_type: &str) -> bool {
 }
 
 fn parse_internal_agent_routes(candidate: &str) -> Option<InternalAgentRoutes> {
-    if candidate.len() > MAX_ROUTE_FRAME_BYTES
-        || !candidate.starts_with(ROUTE_FRAME_SEPARATOR)
-        || !candidate.ends_with(ROUTE_FRAME_SEPARATOR)
-    {
+    if !candidate.starts_with(ROUTE_FRAME_SEPARATOR) || !candidate.ends_with(ROUTE_FRAME_SEPARATOR) {
         return None;
     }
+    parse_internal_agent_routes_body(
+        candidate
+            .strip_prefix(ROUTE_FRAME_SEPARATOR)?
+            .strip_suffix(ROUTE_FRAME_SEPARATOR)?,
+    )
+}
 
-    let body = candidate
-        .strip_prefix(ROUTE_FRAME_SEPARATOR)?
-        .strip_suffix(ROUTE_FRAME_SEPARATOR)?;
-    let (descriptor, remainder) = body.split_once('\n')?;
+/// Validate a candidate against [`render_internal_agent_routes_body`].
+///
+/// Shared by both finders so the separated and unseparated forms can never
+/// drift into accepting different things.
+fn parse_internal_agent_routes_body(candidate: &str) -> Option<InternalAgentRoutes> {
+    if candidate.len() > MAX_ROUTE_FRAME_BYTES {
+        return None;
+    }
+    let (descriptor, remainder) = candidate.split_once('\n')?;
     let mut frame: InternalAgentRoutes = serde_json::from_str(descriptor).ok()?;
     let routes_json = remainder
         .lines()
@@ -194,14 +225,33 @@ fn parse_internal_agent_routes(candidate: &str) -> Option<InternalAgentRoutes> {
             .routes
             .iter()
             .any(|route| !valid_agent_wire_syntax(&route.agent_type))
-        || render_internal_agent_routes(&frame) != candidate
+        || render_internal_agent_routes_body(&frame) != candidate
     {
         return None;
     }
     Some(frame)
 }
 
+/// The next frame at or after `from`, in whichever form the agent stored it.
+///
+/// Both forms are searched and the EARLIER start wins. That ordering is what
+/// keeps the separators inside the removed span whenever they survived: a
+/// separated frame's own body is also a valid unseparated match one byte later,
+/// so the separated hit is always the earlier one and the stray control
+/// characters go with it.
 fn find_internal_agent_routes(input: &str, from: usize) -> Option<(usize, usize)> {
+    match (
+        find_separated_frame(input, from),
+        find_unseparated_frame(input, from),
+    ) {
+        (Some(separated), Some(bare)) if bare.0 < separated.0 => Some(bare),
+        (Some(separated), _) => Some(separated),
+        (None, bare) => bare,
+    }
+}
+
+/// A frame the agent gave back exactly as it was sent, separators and all.
+fn find_separated_frame(input: &str, from: usize) -> Option<(usize, usize)> {
     let mut search_from = from;
     while search_from < input.len() {
         let start = search_from + input[search_from..].find(ROUTE_FRAME_SEPARATOR)?;
@@ -224,10 +274,67 @@ fn find_internal_agent_routes(input: &str, from: usize) -> Option<(usize, usize)
     None
 }
 
+/// A frame whose separators the agent dropped or rewrote, matched on its body.
+///
+/// WHY THIS EXISTS. Separators are the cheapest possible proof that a frame is
+/// Codeg-authored, but they only reach a transcript intact if the agent stores
+/// the prompt verbatim — and one does not. Antigravity's ACP server joins the
+/// prompt's text blocks with a space and replaces each separator with one, so a
+/// routed turn lands in `conversations/<id>.db` as
+/// `…（使用codeg-mcp工具）  {"kind":…delegation tool.\n ` — the same body, both
+/// separators now spaces. The separated pass cannot see that, and the whole
+/// frame renders inside the user's bubble when the session is reopened.
+///
+/// The body's own NEWLINES do survive that rewrite, which is load-bearing:
+/// [`unseparated_frame_end`] delimits a candidate by counting exactly three of
+/// them. Only the separators were observed to be rewritten — an agent that
+/// flattened newlines too would need a different anchor, not a wider one.
+///
+/// What stands in for the separators as evidence is the body itself: three
+/// lines that must re-render byte-for-byte from their own parsed contents,
+/// nonce and full instruction wording included. Prose that reproduces all of
+/// that was copied out of a frame, not typed. The residue an agent leaves in
+/// place of the separators is left to the callers' existing trims — it is
+/// whitespace, and the frame is always the last thing in the record.
+fn find_unseparated_frame(input: &str, from: usize) -> Option<(usize, usize)> {
+    let mut search_from = from;
+    while search_from < input.len() {
+        let start = search_from + input[search_from..].find(ROUTE_FRAME_BODY_PREFIX)?;
+        if let Some(end) = unseparated_frame_end(input, start) {
+            if parse_internal_agent_routes_body(&input[start..end]).is_some() {
+                return Some((start, end));
+            }
+        }
+        // Same rule as the separated scan: a look-alike opening must not hide a
+        // real frame further along.
+        search_from = start + ROUTE_FRAME_BODY_PREFIX.len();
+    }
+    None
+}
+
+/// End of an unseparated candidate: the body is exactly three newline-terminated
+/// lines, so there is nothing to search for — the third newline IS the close.
+fn unseparated_frame_end(input: &str, start: usize) -> Option<usize> {
+    let mut bounded_end = (start + MAX_ROUTE_FRAME_BYTES).min(input.len());
+    while !input.is_char_boundary(bounded_end) {
+        bounded_end -= 1;
+    }
+    let mut cursor = start;
+    for _ in 0..3 {
+        cursor += input.get(cursor..bounded_end)?.find('\n')? + 1;
+    }
+    Some(cursor)
+}
+
 /// Remove only complete frames that can be parsed and reproduced byte-for-byte.
 /// Codeg scrubs the reserved separator from every prompt at ingress, so a frame
 /// that still round-trips can only have been appended at the final boundary —
 /// true for any agent's transcript, not just the one this was first written for.
+///
+/// A frame the agent stored without its separators is removed too, on the
+/// strength of its body alone (see [`find_unseparated_frame`]); only the body
+/// goes, and the whitespace an agent put where the separators were is left to
+/// the caller's trim.
 pub(crate) fn strip_internal_agent_routes(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     let mut cursor = 0;
@@ -258,28 +365,72 @@ pub(crate) fn contains_internal_agent_routes(input: &str) -> bool {
     find_internal_agent_routes(input, 0).is_some()
 }
 
-/// Cut a string at a separator left behind by TRUNCATION, for the title path.
+/// Cut a string at a frame marker left behind by TRUNCATION, for the title path.
 ///
 /// [`strip_internal_agent_routes`] only removes a byte-exact *complete* frame,
 /// which is right for turn text but not for a title: parsers derive one by
 /// joining a prompt's text blocks and capping the result (80 chars in
 /// `acp_native`, 100 in [`title_from_user_text`]), and that cap lands wherever it
 /// lands. A short first prompt therefore truncates mid-frame, leaving an opening
-/// separator and half a JSON descriptor with no closing separator — which the
-/// strip pass skips, putting internal route metadata in the sidebar.
+/// marker and half a JSON descriptor with no close — which the strip pass skips,
+/// putting internal route metadata in the sidebar. The frame's body is 453
+/// bytes even for the shortest agent slug, well past either cap, so a title that
+/// reaches a frame at all is always sliced inside one.
 ///
-/// Cutting is sound because RS is reserved: `strip_route_separator_from_prompt`
-/// removes it from every prompt field at ingress, so a separator that survives
-/// into persisted history can only be one Codeg appended itself, and everything
-/// from it onward is frame — never the user's prose.
+/// Two markers, because either one can be the first thing left of a frame.
+/// Cutting at the SEPARATOR is sound because RS is reserved:
+/// `strip_route_separator_from_prompt` removes it from every prompt field at
+/// ingress, so a separator that survives into persisted history can only be one
+/// Codeg appended itself. The descriptor prefix carries no such guarantee — it
+/// is ordinary text a user could in principle type — but it is the only handle
+/// left on the agents that rewrite the separators away (Antigravity), and the
+/// blast radius of a false positive is one truncated sidebar title, against a
+/// certainty of leaking route metadata into every routed conversation's title.
+/// Turn text keeps demanding the full round-trip either way; the asymmetry is
+/// the same one the separator cut has always had.
 ///
 /// [`title_from_user_text`]: crate::parsers::title_from_user_text
-pub(crate) fn cut_at_route_separator(text: &mut String) {
-    let Some(cut) = text.find(ROUTE_FRAME_SEPARATOR) else {
+pub(crate) fn cut_at_route_frame_marker(text: &mut String) {
+    let Some(cut) = text
+        .find(ROUTE_FRAME_SEPARATOR)
+        .into_iter()
+        .chain(text.find(ROUTE_FRAME_BODY_PREFIX))
+        .chain(find_halved_body_prefix(text))
+        .min()
+    else {
         return;
     };
     text.truncate(cut);
     text.truncate(text.trim_end().len());
+}
+
+/// Start of a descriptor prefix the CAP itself cut in half.
+///
+/// The separator is one character and cannot be halved: either it is inside the
+/// capped window or no frame content is. The descriptor prefix is 37 bytes and
+/// very much can be, so a first prompt whose prose length falls in a 37-wide
+/// band leaves `…prose  {"kind":"codeg_int...` — a fragment [`str::find`] cannot
+/// see, and the leak this whole cut exists to stop.
+///
+/// Matched at the END of the string with a trailing run of `.` discarded,
+/// because both title paths cap with [`truncate_str`], which marks the cut by
+/// appending `...`.
+///
+/// A fragment shorter than `{"kind":"c` is deliberately left alone: what
+/// survives at that length is a generic JSON opening rather than anything that
+/// identifies codeg, and matching it would start trimming ordinary prose that
+/// happens to end in `{`.
+///
+/// [`truncate_str`]: crate::parsers::truncate_str
+fn find_halved_body_prefix(text: &str) -> Option<usize> {
+    const SHORTEST_FRAGMENT: usize = "{\"kind\":\"c".len();
+    let capped = text.trim_end_matches('.');
+    // Longest fragment first, so the cut lands at the earliest byte. The full
+    // marker is excluded — `find` already covers that case.
+    (SHORTEST_FRAGMENT..ROUTE_FRAME_BODY_PREFIX.len())
+        .rev()
+        .find(|&length| capped.ends_with(&ROUTE_FRAME_BODY_PREFIX[..length]))
+        .map(|length| capped.len() - length)
 }
 
 /// The record contains one or more valid internal frames and no user-visible
@@ -612,6 +763,114 @@ mod tests {
             }
         }
         any_string(&serde_json::to_value(blocks).expect("prompt blocks are serializable"))
+    }
+
+    /// Exactly what Antigravity's ACP server writes into its trajectory: the
+    /// prompt's text blocks joined with a space, and each separator replaced by
+    /// one. Verified against a real `conversations/<id>.db`, where a routed turn
+    /// reads `…（使用codeg-mcp工具）  {"kind":…delegation tool.\n ` — note the
+    /// body's own newlines came through, which is why the scan can count them.
+    fn as_antigravity_persists(blocks: &[PromptInputBlock]) -> String {
+        blocks
+            .iter()
+            .map(|block| text(block).replace(ROUTE_FRAME_SEPARATOR, " "))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn a_frame_stored_without_its_separators_is_still_stripped() {
+        let visible = "调用[@Claude Code](codeg://agent/claude_code) 看下这个文件夹干什么的";
+        let mut blocks = vec![PromptInputBlock::Text {
+            text: visible.into(),
+        }];
+        append_agent_routes(&mut blocks, true);
+        let persisted = as_antigravity_persists(&blocks);
+        assert!(
+            !persisted.contains(ROUTE_FRAME_SEPARATOR),
+            "the fixture must have LOST its separators, or it proves nothing"
+        );
+
+        assert!(contains_internal_agent_routes(&persisted));
+        // Only the body goes; the spaces that replaced the separators are the
+        // caller's trim to make (`parsers::sanitize_text`).
+        assert_eq!(strip_internal_agent_routes(&persisted).trim_end(), visible);
+    }
+
+    #[test]
+    fn a_separator_less_frame_still_has_to_round_trip_byte_for_byte() {
+        let mut blocks = vec![PromptInputBlock::Text {
+            text: "ask [@Codex](codeg://agent/codex)".into(),
+        }];
+        append_agent_routes(&mut blocks, true);
+        let body = text(&blocks[1]).replace(ROUTE_FRAME_SEPARATOR, "");
+        assert_eq!(strip_internal_agent_routes(&body), "");
+
+        // One byte off anywhere in the wording, and it is prose again.
+        let reworded = body.replace("delegation tool.", "delegation tool!");
+        assert_eq!(strip_internal_agent_routes(&reworded), reworded);
+        // A nonce that is not a UUID is not a nonce this renderer produced.
+        let forged = body.replacen("\"nonce\":\"", "\"nonce\":\"x", 1);
+        assert_eq!(strip_internal_agent_routes(&forged), forged);
+        // Truncated mid-body there is no third line, so nothing matches — which
+        // is why the title path cuts rather than strips.
+        let truncated = &body[..body.len() - 20];
+        assert_eq!(strip_internal_agent_routes(truncated), truncated);
+    }
+
+    #[test]
+    fn the_body_anchor_is_what_the_renderer_starts_with() {
+        let mut blocks = vec![PromptInputBlock::Text {
+            text: "ask [@Codex](codeg://agent/codex)".into(),
+        }];
+        append_agent_routes(&mut blocks, true);
+        assert!(
+            text(&blocks[1])
+                .starts_with(&format!("{ROUTE_FRAME_SEPARATOR}{ROUTE_FRAME_BODY_PREFIX}")),
+            "reordering the descriptor's fields would silently unanchor the \
+             separator-less scan"
+        );
+    }
+
+    #[test]
+    fn a_title_is_cut_at_whichever_frame_marker_comes_first() {
+        // Separator intact: the cut lands on it, as it always has.
+        let mut separated = String::from("hi \u{001e}{\"kind\":\"codeg_internal_agent_routes\",\"ve");
+        cut_at_route_frame_marker(&mut separated);
+        assert_eq!(separated, "hi");
+
+        // Separator rewritten away: the descriptor's own opening is the only
+        // handle left.
+        let mut bare = String::from("hi  {\"kind\":\"codeg_internal_agent_routes\",\"ve");
+        cut_at_route_frame_marker(&mut bare);
+        assert_eq!(bare, "hi");
+
+        let mut clean = String::from("just a normal title");
+        cut_at_route_frame_marker(&mut clean);
+        assert_eq!(clean, "just a normal title");
+    }
+
+    #[test]
+    fn a_title_whose_cap_halved_the_marker_is_cut_as_well() {
+        // The separator is one char and lands inside the window or not at all;
+        // the 37-byte descriptor prefix can be sliced through, and `find` is
+        // blind to the fragment that survives.
+        let mut halved = String::from("hi  {\"kind\":\"codeg_int...");
+        cut_at_route_frame_marker(&mut halved);
+        assert_eq!(halved, "hi");
+
+        // A parser that caps without an ellipsis leaves the same fragment bare.
+        let mut bare = String::from("hi  {\"kind\":\"codeg");
+        cut_at_route_frame_marker(&mut bare);
+        assert_eq!(bare, "hi");
+
+        // Below the floor it is generic punctuation, not route metadata, and
+        // trimming it would eat ordinary prose.
+        for prose in ["what does this do: {", "see the shape {\"kind\":\""] {
+            let mut title = String::from(prose);
+            cut_at_route_frame_marker(&mut title);
+            assert_eq!(title, prose);
+        }
     }
 
     #[test]

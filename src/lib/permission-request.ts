@@ -908,7 +908,7 @@ function parsePermissionMetaDescription(permission: unknown): string | null {
  *
  * Two shapes, both under `_meta.permission` on a `PermissionOption`:
  *
- * - `{version: 1, changes: [...]}` — claude-agent-acp ≥0.64.1 (#930) and
+ * - `{version: 1, changes: [...]}` — claude-agent-acp 0.64.1–0.72.0 (#930) and
  *   codex-acp 1.1.8–1.6.2 (#342). Every change carries a rendered English
  *   sentence ("Allow access to api.example.com for this session", "Allow all
  *   Bash calls").
@@ -919,15 +919,26 @@ function parsePermissionMetaDescription(permission: unknown): string | null {
  *   renders. Read as a single scope-less change so those cards keep their
  *   per-option explanation.
  *
+ * BOTH producers are now historical: claude-agent-acp 0.73.0 rebuilt its
+ * permission layer the way codex 1.7.0 did and its options carry NO `_meta` at
+ * all, so on the pinned versions this returns `[]` every time. It is kept
+ * because the adapter version is user-selectable (`supports_custom_version()`
+ * is true for every npx agent), so a pin anywhere in the ranges above still
+ * feeds it.
+ *
  * `lifetime` is read (in the `changes[]` form) because `description` alone does
  * NOT always answer "for how long": codex wrote the duration into its sentences,
- * claude does not — it reports `{scope: "session"}` vs `{scope: "persistent",
- * storage: "project"}` structurally instead. Left unread, claude's most common
- * card would pair an "Always Allow" button with "Allow all Bash calls" and never
- * reveal that the grant expires with the session (or, worse, that it is about to
- * be written into settings the repo commits). The remaining structural fields
- * (`targets`, `ruleBehavior`) stay ignored: those `description` really does
- * summarize. codex's flat form carries no lifetime at all, hence `scope: null`.
+ * claude (through 0.72.0) did not — it reported `{scope: "session"}` vs
+ * `{scope: "persistent", storage: "project"}` structurally instead. Left unread,
+ * claude's most common card would pair an "Always Allow" button with "Allow all
+ * Bash calls" and never reveal that the grant expires with the session (or,
+ * worse, that it is about to be written into settings the repo commits). 0.73.0
+ * closes that gap on its own by naming the grant AND its duration in the button
+ * ("Yes, and always allow access to <paths> from this project", "Yes, during
+ * this session"), which is why losing the scope chip there is acceptable rather
+ * than a regression to repair. The remaining structural fields (`targets`,
+ * `ruleBehavior`) stay ignored: those `description` really does summarize.
+ * codex's flat form carries no lifetime at all, hence `scope: null`.
  */
 export function parsePermissionOptionChanges(
   meta: Record<string, unknown> | null | undefined

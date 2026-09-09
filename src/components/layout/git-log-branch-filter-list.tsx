@@ -277,7 +277,7 @@ export function GitLogBranchFilterList({
         // which filtering the log never does, and those branches are already in
         // the local tree below. `[]` would mean "has the section, currently
         // empty" and would render a header + empty row here.
-        worktreeLeaves: null,
+        worktreeNodes: null,
         localNodes,
         remoteSections,
         localCount: branchList.local.length,

@@ -9,6 +9,7 @@
 //! (unlike the tabs CAS, which protects whole-set replacement).
 
 use chrono::Utc;
+use sea_orm::sea_query::Expr;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DatabaseConnection,
     EntityTrait, IntoActiveModel, QueryFilter, QueryOrder, Set, TransactionTrait,
@@ -17,7 +18,7 @@ use std::sync::OnceLock;
 use tokio::sync::Mutex;
 
 use crate::db::entities::canvas_node::{self, CanvasNodeKind};
-use crate::db::entities::{conversation, folder, folder_group};
+use crate::db::entities::{app_metadata, conversation, folder, folder_group};
 use crate::db::error::DbError;
 use crate::db::service::app_metadata_service;
 
@@ -64,6 +65,52 @@ async fn bump_revision<C: ConnectionTrait>(conn: &C) -> Result<i64, DbError> {
     let next = get_revision(conn).await? + 1;
     app_metadata_service::upsert_value(conn, CANVAS_REVISION_KEY, &next.to_string()).await?;
     Ok(next)
+}
+
+/// The opening statement of every canvas mutation's transaction, and the reason
+/// each one below starts with a call to it.
+///
+/// SeaORM's SQLite backend can only open a transaction with a plain (deferred)
+/// `BEGIN` — access mode isn't configurable per transaction — so a transaction
+/// whose FIRST statement is a `SELECT` takes a read snapshot and only tries to
+/// become a writer later. If any other pooled connection commits in between,
+/// SQLite cannot promote that now-stale snapshot and fails the WHOLE
+/// transaction with `SQLITE_BUSY_SNAPSHOT` (517): surfaced to the user as
+/// "database is locked" with nothing actually deadlocked, and NOT retried by
+/// `busy_timeout`, which only covers ordinary lock contention.
+///
+/// Every mutation here leads with reads — liveness checks, the row it is about
+/// to rewrite — and the runtime pool has five connections, so the losing side of
+/// that race is ordinary use: dragging a card while an agent streams (the ACP
+/// transcript write-behind holds its own connection for the whole turn) is the
+/// shape that produced it. `acp::manager::persist_fork_outcome` documents the
+/// same hazard and `folder_group_service` sidesteps it; this is the same rule.
+///
+/// Touching the revision row is the cheapest claim available and needs no new
+/// table. The value is deliberately left ALONE: [`bump_revision`] still owns the
+/// counter at the end of the transaction, so a mutation that turns out to be a
+/// no-op (or rolls back) consumes no revision and leaves no gap in the sequence
+/// clients use to tell "applied" from "refetch the snapshot".
+///
+/// `rows_affected == 0` means the first-ever mutation on a fresh database, where
+/// there is no row to touch: create it, so the claim is a write either way. "0"
+/// is what [`get_revision`] already reads a missing row as, so this is not a
+/// bump either.
+///
+/// Applied to ALL of them, including `delete_node`, which happens to already
+/// open with a `DELETE`: the invariant is "canvas transactions claim first", and
+/// one that holds only by accident of statement order breaks the next time
+/// someone adds a check above the write.
+async fn claim_writer<C: ConnectionTrait>(conn: &C) -> Result<(), DbError> {
+    let touched = app_metadata::Entity::update_many()
+        .col_expr(app_metadata::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(app_metadata::Column::Key.eq(CANVAS_REVISION_KEY))
+        .exec(conn)
+        .await?;
+    if touched.rows_affected == 0 {
+        app_metadata_service::upsert_value(conn, CANVAS_REVISION_KEY, "0").await?;
+    }
+    Ok(())
 }
 
 /// Read the node set and the revision in a single transaction so a concurrent
@@ -153,6 +200,25 @@ fn normalize_color(v: Option<String>) -> Result<Option<String>, DbError> {
     }
 }
 
+/// Longest filesystem path a node may bind to. Well past every real OS limit
+/// (Windows extended-length paths top out at 32767 UTF-16 units, but nothing a
+/// user picks or a folder root comes near this) — it exists so a malformed
+/// caller cannot park an unbounded blob in a column every client reads.
+const MAX_PATH_LEN: usize = 4096;
+
+/// Trim a bound filesystem path, requiring a non-empty value. Callers hand us
+/// an already-absolute path (the frontend normalizes before it asks); we do not
+/// touch separators here, because the string has to round-trip byte-for-byte —
+/// it is the identity a file card's reads and a terminal's cwd are keyed on.
+fn normalize_path(v: Option<String>) -> Result<String, DbError> {
+    let path = normalize_text(v)
+        .ok_or_else(|| DbError::Validation("this node kind needs a path".into()))?;
+    if path.chars().count() > MAX_PATH_LEN {
+        return Err(DbError::Validation("path is too long".into()));
+    }
+    Ok(path)
+}
+
 /// Trim a pinned grid axis to `0..=MAX_GRID_AXIS`. Absent / negative reads as
 /// auto rather than an error: the axis is a display preference, and rejecting
 /// the whole write over one would lose a legitimate geometry change with it.
@@ -168,6 +234,8 @@ pub struct NewCanvasNode {
     pub conversation_id: Option<i32>,
     pub title: Option<String>,
     pub content: Option<String>,
+    /// Required for `file` / `terminal`, rejected for every other kind.
+    pub path: Option<String>,
     pub color: Option<String>,
     pub grid_columns: Option<i32>,
     pub grid_rows: Option<i32>,
@@ -203,6 +271,7 @@ pub async fn create_node(
 ) -> Result<(canvas_node::Model, i64), DbError> {
     let _guard = revision_lock().lock().await;
     let txn = conn.begin().await?;
+    claim_writer(&txn).await?;
 
     // Kind-specific binding invariants. The unrelated binding columns are
     // forced to NULL rather than trusted from the caller, so a row can never
@@ -211,6 +280,7 @@ pub async fn create_node(
     let mut folder_group_id = None;
     let mut agent_type = None;
     let mut conversation_id = None;
+    let mut path = None;
     match input.kind {
         CanvasNodeKind::Folder => {
             let id = input
@@ -263,6 +333,24 @@ pub async fn create_node(
         // `detach_member` so every entry passes the liveness check.
         CanvasNodeKind::Custom => {}
         CanvasNodeKind::Note => {}
+        // Both bind a place on disk. Existence is deliberately NOT checked:
+        // like the folder / conversation bindings above the reference is SOFT,
+        // and a card whose file was moved has to survive as a visible
+        // "unavailable" frame the user can delete — the alternative is a create
+        // that fails on a network share that happens to be unmounted, or a row
+        // that silently vanishes when a branch switch takes the file away. The
+        // frontend renders the missing state and offers the delete.
+        CanvasNodeKind::File | CanvasNodeKind::Terminal => {
+            path = Some(normalize_path(input.path.clone())?);
+        }
+    }
+    // A path on any other kind is a caller bug, and one that would smuggle a
+    // filesystem reference into a row nothing reads it from — same stance the
+    // `content` check below takes for notes.
+    if path.is_none() && input.path.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+        return Err(DbError::Validation(
+            "path only applies to file and terminal nodes".into(),
+        ));
     }
 
     let now = Utc::now();
@@ -291,6 +379,7 @@ pub async fn create_node(
                 None
             }
         }),
+        path: Set(path),
         color: Set(normalize_color(input.color)?),
         collapsed: Set(false),
         // Grid shape is meaningless for a pinned card or a note; forcing 0
@@ -376,6 +465,7 @@ pub async fn group_into_region(
 ) -> Result<GroupIntoRegionOutcome, DbError> {
     let _guard = revision_lock().lock().await;
     let txn = conn.begin().await?;
+    claim_writer(&txn).await?;
 
     // Dedupe preserving the caller's order: the same conversation can be
     // selected twice (a member card and its mirror in another region), and the
@@ -492,6 +582,7 @@ pub async fn group_into_region(
                 member_ids: Set(Some(encode_member_ids(&final_members))),
                 title: Set(normalize_text(input.title)),
                 content: Set(None),
+                path: Set(None),
                 color: Set(normalize_color(input.color)?),
                 collapsed: Set(false),
                 grid_columns: Set(clamp_grid_axis(input.grid_columns)),
@@ -524,6 +615,7 @@ pub async fn update_node(
 ) -> Result<(canvas_node::Model, i64), DbError> {
     let _guard = revision_lock().lock().await;
     let txn = conn.begin().await?;
+    claim_writer(&txn).await?;
 
     let existing = canvas_node::Entity::find_by_id(node_id)
         .one(&txn)
@@ -628,6 +720,7 @@ pub async fn move_nodes(
     }
     let _guard = revision_lock().lock().await;
     let txn = conn.begin().await?;
+    claim_writer(&txn).await?;
     let now = Utc::now();
     let mut applied = Vec::with_capacity(moves.len());
     for m in moves {
@@ -655,6 +748,7 @@ pub async fn move_nodes(
 /// Result of [`detach_member`]: the region the conversation was removed from
 /// (custom regions only — binding regions copy), the freshly pinned node, and
 /// the revision of the single event describing both steps.
+#[derive(Debug)]
 pub struct DetachOutcome {
     pub removed_from: Option<i32>,
     pub node: canvas_node::Model,
@@ -682,6 +776,7 @@ pub async fn detach_member(
 ) -> Result<DetachOutcome, DbError> {
     let _guard = revision_lock().lock().await;
     let txn = conn.begin().await?;
+    claim_writer(&txn).await?;
 
     let region = canvas_node::Entity::find_by_id(region_id)
         .one(&txn)
@@ -705,7 +800,10 @@ pub async fn detach_member(
             Some(region_id)
         }
         CanvasNodeKind::Folder | CanvasNodeKind::Group | CanvasNodeKind::Agent => None,
-        CanvasNodeKind::Conversation | CanvasNodeKind::Note => {
+        CanvasNodeKind::Conversation
+        | CanvasNodeKind::Note
+        | CanvasNodeKind::File
+        | CanvasNodeKind::Terminal => {
             return Err(DbError::Validation(format!(
                 "canvas node {region_id} is not a region"
             )));
@@ -725,6 +823,7 @@ pub async fn detach_member(
         member_ids: Set(None),
         title: Set(None),
         content: Set(None),
+        path: Set(None),
         color: Set(None),
         collapsed: Set(false),
         grid_columns: Set(0),
@@ -756,6 +855,7 @@ pub async fn delete_node(
 ) -> Result<Option<i64>, DbError> {
     let _guard = revision_lock().lock().await;
     let txn = conn.begin().await?;
+    claim_writer(&txn).await?;
     let removed = canvas_node::Entity::delete_by_id(node_id).exec(&txn).await?;
     if removed.rows_affected == 0 {
         txn.commit().await?;
@@ -781,6 +881,7 @@ pub async fn delete_nodes(
     }
     let _guard = revision_lock().lock().await;
     let txn = conn.begin().await?;
+    claim_writer(&txn).await?;
     let existing: Vec<i32> = canvas_node::Entity::find()
         .filter(canvas_node::Column::Id.is_in(ids.iter().copied()))
         .all(&txn)
@@ -824,6 +925,7 @@ pub async fn prune_for_conversations(
     }
     let _guard = revision_lock().lock().await;
     let txn = conn.begin().await?;
+    claim_writer(&txn).await?;
 
     let doomed = canvas_node::Entity::find()
         .filter(canvas_node::Column::ConversationId.is_in(conversation_ids.iter().copied()))
@@ -871,4 +973,131 @@ pub async fn prune_for_conversations(
         updated,
         revision,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_helpers::fresh_in_memory_db;
+
+    fn new_node(kind: CanvasNodeKind, path: Option<&str>) -> NewCanvasNode {
+        NewCanvasNode {
+            kind,
+            folder_id: None,
+            folder_group_id: None,
+            agent_type: None,
+            conversation_id: None,
+            title: None,
+            content: None,
+            path: path.map(str::to_string),
+            color: None,
+            grid_columns: None,
+            grid_rows: None,
+            x: 0.0,
+            y: 0.0,
+            width: 460.0,
+            height: 360.0,
+        }
+    }
+
+    #[tokio::test]
+    async fn file_and_terminal_nodes_keep_their_path() {
+        let db = fresh_in_memory_db().await;
+        let (file, _) = create_node(
+            &db.conn,
+            new_node(CanvasNodeKind::File, Some("  /repo/src/main.rs  ")),
+        )
+        .await
+        .expect("create file node");
+        // Trimmed, but otherwise byte-for-byte: the path is the identity every
+        // read and every watch join is keyed on, so nothing may rewrite it.
+        assert_eq!(file.path.as_deref(), Some("/repo/src/main.rs"));
+
+        let (terminal, _) = create_node(
+            &db.conn,
+            new_node(CanvasNodeKind::Terminal, Some("/repo")),
+        )
+        .await
+        .expect("create terminal node");
+        assert_eq!(terminal.path.as_deref(), Some("/repo"));
+    }
+
+    #[tokio::test]
+    async fn a_path_bound_kind_without_a_path_is_rejected() {
+        let db = fresh_in_memory_db().await;
+        for kind in [CanvasNodeKind::File, CanvasNodeKind::Terminal] {
+            for candidate in [None, Some(""), Some("   ")] {
+                let err = create_node(&db.conn, new_node(kind, candidate))
+                    .await
+                    .expect_err("a path-bound node needs a path");
+                assert!(matches!(err, DbError::Validation(_)), "got {err:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn other_kinds_may_not_smuggle_a_path() {
+        // Same stance `content` takes for notes: a column only one kind reads
+        // must not be settable on the kinds that ignore it, or the row carries
+        // state nothing will ever surface or clean up.
+        let db = fresh_in_memory_db().await;
+        let err = create_node(
+            &db.conn,
+            new_node(CanvasNodeKind::Custom, Some("/repo/secret")),
+        )
+        .await
+        .expect_err("path is not a custom-region field");
+        assert!(matches!(err, DbError::Validation(_)), "got {err:?}");
+
+        // …and a kind that legitimately has none stores NULL rather than "".
+        let (note, _) = create_node(&db.conn, new_node(CanvasNodeKind::Note, None))
+            .await
+            .expect("create note");
+        assert_eq!(note.path, None);
+    }
+
+    #[tokio::test]
+    async fn an_over_long_path_is_rejected_rather_than_stored() {
+        let db = fresh_in_memory_db().await;
+        let long = format!("/{}", "a".repeat(MAX_PATH_LEN));
+        let err = create_node(&db.conn, new_node(CanvasNodeKind::File, Some(&long)))
+            .await
+            .expect_err("bounded");
+        assert!(matches!(err, DbError::Validation(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn file_and_terminal_nodes_are_not_regions() {
+        // `is_region` gates the grid shape, member drops and the detach
+        // gesture. A file card answering yes would accept conversations it has
+        // nowhere to put.
+        assert!(!CanvasNodeKind::File.is_region());
+        assert!(!CanvasNodeKind::Terminal.is_region());
+        assert!(CanvasNodeKind::File.needs_path());
+        assert!(CanvasNodeKind::Terminal.needs_path());
+        for kind in [
+            CanvasNodeKind::Folder,
+            CanvasNodeKind::Group,
+            CanvasNodeKind::Agent,
+            CanvasNodeKind::Custom,
+            CanvasNodeKind::Conversation,
+            CanvasNodeKind::Note,
+        ] {
+            assert!(!kind.needs_path(), "{kind:?} should not carry a path");
+        }
+
+        let db = fresh_in_memory_db().await;
+        let (file, _) =
+            create_node(&db.conn, new_node(CanvasNodeKind::File, Some("/repo/a.rs")))
+                .await
+                .expect("create file node");
+        // Grid axes are forced to 0 for non-regions, so nothing downstream can
+        // read a shape off a card that has no grid.
+        assert_eq!((file.grid_columns, file.grid_rows), (0, 0));
+
+        let err = detach_member(&db.conn, file.id, 1, 0.0, 0.0)
+            .await
+            .expect_err("a file card is not a region to detach from");
+        assert!(matches!(err, DbError::Validation(_)), "got {err:?}");
+    }
 }

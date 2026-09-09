@@ -41,13 +41,15 @@ use crate::parsers::{
 /// (The names are built from a `QODER_`/`QODERCN_` prefix at runtime —
 /// `<id>=<helper>("CLI_HOME")`, `…("CONFIG_DIR")`, `…("CONFIG_DIR_NAME")` — so
 /// they do not appear as literals in the bundle. Re-verify by grepping those
-/// bare SUFFIXES, never the minified identifiers: they are renamed every
-/// release (`$t`/`b8A`/`L8A`/`H8A` at 1.1.23 became `ln`/`I1A`/`h1A`/`Q1A` at
+/// bare SUFFIXES, never the minified identifiers: they are renamed on most
+/// releases (`$t`/`b8A`/`L8A`/`H8A` at 1.1.23 became `ln`/`I1A`/`h1A`/`Q1A` at
 /// 1.1.28, then `on`/`F4A`/`U4A`/`N4A` at 1.1.31, then `Yi`/`JJA`/`YJA`/`WJA`
-/// at 1.1.33), so a grep written against the old names returns zero hits and
-/// reads as "the resolver is gone" when nothing moved. `GEMINI_CLI_HOME` really
-/// is a second key on the home lookup: qodercli carries its ancestry.
-/// Re-checked against the pinned 1.1.33 bundle: same precedence, same keys,
+/// at 1.1.33, then `Zn`/`MYA`/`FYA`/`UYA` at 1.1.40–1.1.41, then
+/// `qn`/`A7A`/`t7A`/`n7A` at 1.1.44, then `Ai`/`d7A`/`g7A`/`f7A` at 1.1.45),
+/// so a grep written against the old names returns zero hits and reads as
+/// "the resolver is gone" when nothing moved. `GEMINI_CLI_HOME` really is a
+/// second key on the home lookup: qodercli carries its ancestry.
+/// Re-checked against the pinned 1.1.45 bundle: same precedence, same keys,
 /// same `.qoder` config-dir name.)
 ///
 /// Not mirrored, deliberately: the `--config-dir` FLAG, which codeg never
@@ -621,6 +623,7 @@ fn parse_transcript(bytes: &[u8]) -> Transcript {
                     duration_ms: None,
                     model: None,
                     completed_at: Some(timestamp),
+                agent_message_id: None,
                 });
                 pending_assistant_chat_id = None;
             }
@@ -690,6 +693,7 @@ fn parse_transcript(bytes: &[u8]) -> Transcript {
                         duration_ms: None,
                         model: entry_model,
                         completed_at: Some(timestamp),
+                    agent_message_id: None,
                     });
                 }
                 pending_assistant_chat_id = message_id;

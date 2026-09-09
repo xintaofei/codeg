@@ -683,7 +683,7 @@ function MobileFolderWorkspaceShell({
         swipeDirection="down"
         disablePointerDismissal={false}
       >
-        <DrawerContent showCloseButton={false} className="h-[70vh] p-0">
+        <DrawerContent showCloseButton={false} className="h-[95vh] p-0">
           <DrawerTitle className="sr-only">Terminal</DrawerTitle>
           <div className="h-full min-h-0 overflow-hidden">
             <TerminalPanel />

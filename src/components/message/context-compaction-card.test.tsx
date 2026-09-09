@@ -54,6 +54,38 @@ describe("ContextCompactionCard", () => {
     expect(screen.getByText("· 3.2s")).toBeInTheDocument()
   })
 
+  // claude-agent-acp 0.75.0 is the first adapter to actually send `trigger`, so
+  // this untranslated vocabulary only becomes user-visible with that bump.
+  it.each([
+    ["automatic", "Automatically triggered"],
+    // deepseek's parser passes the SDK's own spelling through; claude renames
+    // it to `automatic`. Both mean the same thing to the reader.
+    ["auto", "Automatically triggered"],
+    ["manual", "Manually triggered"],
+  ])("translates the %s trigger in the tooltip", (trigger, expected) => {
+    renderCard({
+      state: "output-available",
+      meta: { contextCompaction: { version: 1, trigger } },
+    })
+    expect(screen.getByText("Context compacted").parentElement).toHaveAttribute(
+      "title",
+      expected
+    )
+  })
+
+  // `trigger` is adapter-defined, so an unknown value is surfaced verbatim
+  // rather than dropped or forced into one of the two known buckets.
+  it("passes an unrecognized trigger through untranslated", () => {
+    renderCard({
+      state: "output-available",
+      meta: { contextCompaction: { version: 1, trigger: "threshold" } },
+    })
+    expect(screen.getByText("Context compacted").parentElement).toHaveAttribute(
+      "title",
+      "threshold"
+    )
+  })
+
   it("shows the failed label when the versioned payload carries an error", () => {
     renderCard({
       state: "output-available",
