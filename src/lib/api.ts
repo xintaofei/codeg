@@ -1773,6 +1773,38 @@ export async function getTranslationPoolStatus(): Promise<
   return getTransport().call("translation_pool_status")
 }
 
+/** Clear one provider's session-level state: cooldown, parking, disable. */
+export async function resetTranslationProvider(
+  providerId: string
+): Promise<void> {
+  return getTransport().call("translation_provider_reset", { providerId })
+}
+
+/**
+ * Force one provider out of the rotation for the configured cooldown,
+ * returning the fresh pool status. It re-enters automatically once the
+ * cooldown elapses.
+ */
+export async function disableTranslationProvider(
+  providerId: string
+): Promise<TranslationPoolStatus[]> {
+  return getTransport().call("translation_provider_disable", { providerId })
+}
+
+/**
+ * Park one provider for `seconds` (the configured cooldown when omitted),
+ * returning the fresh pool status.
+ */
+export async function cooldownTranslationProvider(
+  providerId: string,
+  seconds?: number
+): Promise<TranslationPoolStatus[]> {
+  return getTransport().call("translation_provider_cooldown", {
+    providerId,
+    ...(seconds != null ? { seconds } : {}),
+  })
+}
+
 /**
  * Process-wide translation counters: dispatch volume, cache effectiveness,
  * gate rejections, per-provider transport outcomes. In-memory only — the

@@ -12,17 +12,17 @@
 //! auth), and Anthropic's native `/v1/messages` for anthropic, whose host
 //! publishes no OpenAI route.
 
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Semaphore;
+use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
 
 use crate::app_error::AppCommandError;
 use crate::translation::metrics::{translation_metrics, ProviderEventKind};
-use crate::translation::pool::{self, pick_provider, PickedProvider};
+use crate::translation::pool::{self, pick_provider, pick_provider_excluding, PickedProvider};
 use crate::translation::prompt;
 use crate::translation::settings::{ApiFormat, ProviderConfig, TranslationSettings};
 
@@ -34,12 +34,15 @@ use crate::translation::settings::{ApiFormat, ProviderConfig, TranslationSetting
 /// appears" report. Visible prose and user-initiated translation ride the
 /// priority lane; background thinking-block translation shares whatever
 /// endpoint capacity is left.
-const PRIORITY_MAX_CONCURRENT: usize = 4;
-const BACKGROUND_MAX_CONCURRENT: usize = 3;
-/// Transport-level and 5xx retries. A 429 is NOT retried in place any more:
-/// the pool's rotation hands the next chunk to another provider, the limiter
-/// throttles this one, and the frontend's bounded retry re-requests only what
-/// is still missing.
+/// Built-in lane sizes, in force while the user has not set an explicit cap
+/// (`priority_max_concurrent` / `background_max_concurrent` in settings).
+const DEFAULT_PRIORITY_MAX_CONCURRENT: usize = 4;
+const DEFAULT_BACKGROUND_MAX_CONCURRENT: usize = 3;
+/// Transport-level and 5xx retries. A retry never lands on the endpoint that
+/// just failed: each one re-picks from the pool minus the providers this
+/// chunk has already burned. A 429 is not retried in place at all — the
+/// provider cools down, the rotation hands the next chunk elsewhere, and the
+/// frontend's bounded retry re-requests only what is still missing.
 const RETRY_BACKOFF: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(3)];
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Generous on purpose: reasoning models (deepseek-r1 distills and friends)
@@ -85,8 +88,7 @@ fn request_timeout(text_chars: usize) -> Duration {
     if text_chars <= SCALING_TIMEOUT_THRESHOLD_CHARS {
         return READ_TIMEOUT;
     }
-    SCALING_TIMEOUT_BASE
-        .saturating_add(SCALING_TIMEOUT_PER_CHAR.saturating_mul(text_chars as u32))
+    SCALING_TIMEOUT_BASE.saturating_add(SCALING_TIMEOUT_PER_CHAR.saturating_mul(text_chars as u32))
 }
 
 /// The version header Anthropic pins per protocol release; requests without it
@@ -103,36 +105,90 @@ pub enum Priority {
 }
 
 impl Priority {
-    /// The cap for this lane: a plain concurrency ceiling the adaptive rate
-    /// lives under, not a rate itself.
-    fn max_concurrent(self) -> usize {
+    /// The lane this priority rides, indexed into [`LANES`]. Kept adjacent to
+    /// the lane table so a new variant cannot silently index out of bounds.
+    fn lane_index(self) -> usize {
         match self {
-            Priority::Priority => PRIORITY_MAX_CONCURRENT,
-            Priority::Background => BACKGROUND_MAX_CONCURRENT,
+            Priority::Priority => 0,
+            Priority::Background => 1,
         }
     }
 }
 
-/// Dynamically sized gates. Grown once at first use, never shrunk: a briefly
-/// oversubscribed lane is harmless, and the lane caps are compile-time
-/// constants since the adaptive limiter took over pacing.
-struct LaneGate {
-    semaphore: Semaphore,
+/// One lane's live concurrency gate. The semaphore sits behind an `Arc` so the
+/// cap can change at runtime while in-flight requests keep the old permits
+/// alive: a permit is acquired from and released back to the *same* `Arc`, so
+/// an old, smaller semaphore simply drains and dies once the last request
+/// holding it finishes.
+struct LaneState {
+    cap: usize,
+    semaphore: Arc<Semaphore>,
 }
 
-fn gate(priority: Priority) -> &'static Semaphore {
-    static PRIORITY: OnceLock<LaneGate> = OnceLock::new();
-    static BACKGROUND: OnceLock<LaneGate> = OnceLock::new();
-    let lane = match priority {
-        Priority::Priority => &PRIORITY,
-        Priority::Background => &BACKGROUND,
+/// Both lanes, indexed by [`Priority::lane_index`]. Caps are user settings, so
+/// they can change between requests; the write lock swaps in a fresh
+/// semaphore only when the desired cap differs from the live one.
+static LANES: OnceLock<RwLock<[LaneState; 2]>> = OnceLock::new();
+
+/// The semaphore enforcing `desired_cap` for this lane right now. Read lock
+/// hits are a plain clone; a cap change takes the write lock and replaces the
+/// semaphore whole. A briefly oversubscribed lane (permits from the old
+/// semaphore still in flight while the new one is already open) is harmless —
+/// the lane exists to mask round-trip latency, not to enforce a hard atom
+/// across a settings change.
+fn lane_semaphore(priority: Priority, desired_cap: usize) -> Arc<Semaphore> {
+    let lanes = LANES.get_or_init(|| {
+        RwLock::new([
+            LaneState {
+                cap: DEFAULT_PRIORITY_MAX_CONCURRENT,
+                semaphore: Arc::new(Semaphore::new(DEFAULT_PRIORITY_MAX_CONCURRENT)),
+            },
+            LaneState {
+                cap: DEFAULT_BACKGROUND_MAX_CONCURRENT,
+                semaphore: Arc::new(Semaphore::new(DEFAULT_BACKGROUND_MAX_CONCURRENT)),
+            },
+        ])
+    });
+    let mut guard = match lanes.write() {
+        Ok(guard) => guard,
+        // A poisoned table still holds valid lane state; the panic that
+        // poisoned it happened elsewhere and must not take translation down.
+        Err(poisoned) => poisoned.into_inner(),
     };
-    let cap = priority.max_concurrent();
-    &lane
-        .get_or_init(|| LaneGate {
-            semaphore: Semaphore::new(cap),
-        })
-        .semaphore
+    let lane = &mut guard[priority.lane_index()];
+    if lane.cap != desired_cap {
+        lane.cap = desired_cap;
+        lane.semaphore = Arc::new(Semaphore::new(desired_cap));
+    }
+    lane.semaphore.clone()
+}
+
+/// The cap in force for this lane: an explicit user setting wins, `None`
+/// follows the built-in ceiling.
+fn lane_cap(priority: Priority, settings: &TranslationSettings) -> usize {
+    match priority {
+        Priority::Priority => settings
+            .priority_max_concurrent
+            .map(|value| value as usize)
+            .unwrap_or(DEFAULT_PRIORITY_MAX_CONCURRENT),
+        Priority::Background => settings
+            .background_max_concurrent
+            .map(|value| value as usize)
+            .unwrap_or(DEFAULT_BACKGROUND_MAX_CONCURRENT),
+    }
+}
+
+/// Acquire one lane permit. The permit is *owned* (it carries its semaphore's
+/// `Arc` with it), so releasing it returns it to the exact semaphore it came
+/// from even if the user changed the cap and the lane table swapped in a
+/// fresh one while the request was in flight.
+async fn lane_acquire(
+    priority: Priority,
+    settings: &TranslationSettings,
+) -> Result<OwnedSemaphorePermit, AcquireError> {
+    lane_semaphore(priority, lane_cap(priority, settings))
+        .acquire_owned()
+        .await
 }
 
 /// The proxy env fingerprint a client was built under, paired with that client.
@@ -266,7 +322,9 @@ fn openai_max_tokens(text_chars: usize) -> usize {
 fn is_retryable(status: Option<reqwest::StatusCode>) -> bool {
     match status {
         // Rate limiting is the one 4xx that a wait can fix.
-        Some(status) => status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS,
+        Some(status) => {
+            status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        }
         // Transport-level failure (timeout, connection reset).
         None => true,
     }
@@ -295,10 +353,8 @@ fn classify(status: reqwest::StatusCode, body: &str) -> AppCommandError {
     let detail = body.chars().take(500).collect::<String>();
     match status {
         reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
-            AppCommandError::authentication_failed(
-                "The translation service rejected the API key",
-            )
-            .with_detail(detail)
+            AppCommandError::authentication_failed("The translation service rejected the API key")
+                .with_detail(detail)
         }
         reqwest::StatusCode::NOT_FOUND => AppCommandError::configuration_invalid(
             "The translation endpoint was not found — check the base URL",
@@ -359,12 +415,16 @@ fn auth_headers(format: ApiFormat, api_key: &str) -> Vec<(&'static str, String)>
     }
 }
 
-/// One text in, one translation out, against one picked provider. Retries
-/// transport and 5xx failures per [`RETRY_BACKOFF`]; returns the last error
-/// when the retries are spent. Every outcome feeds the provider's adaptive
-/// limiter (success climbs, a 429 halves and cools down, a 4xx twice in a
-/// row retires the endpoint for the session) and the per-attempt metrics
-/// window that the health score reads.
+/// One text in, one translation out, starting from one picked provider.
+/// Transport and 5xx failures are retried per [`RETRY_BACKOFF`], and each
+/// retry re-picks from the pool minus the providers this chunk already
+/// burned, so a failing endpoint is not hammered with the very next attempt.
+/// With `failover` off (the settings-page row test) the retries stay pinned
+/// to the picked endpoint — the test must judge exactly the row it tests.
+/// Every terminal outcome reports on the provider that produced it (a 429
+/// halves and cools it down, any other failure counts toward its
+/// consecutive-failure cooldown, a clean reply resets the streak), and the
+/// per-attempt metrics window that the health score reads sees each attempt.
 ///
 /// The request speaks the endpoint's dialect ([`ApiFormat`]): Anthropic gets
 /// its native `/v1/messages` body and versioned key headers, everything else
@@ -372,9 +432,11 @@ fn auth_headers(format: ApiFormat, api_key: &str) -> Vec<(&'static str, String)>
 async fn translate_one(
     text: &str,
     target_lang: &str,
-    picked: &PickedProvider,
+    mut picked: PickedProvider,
     priority: Priority,
+    settings: &TranslationSettings,
     trace: Option<&str>,
+    failover: bool,
 ) -> ChunkOutcome {
     let client = match http_client() {
         Ok(client) => client,
@@ -386,38 +448,13 @@ async fn translate_one(
             }
         }
     };
-    let provider = &picked.provider;
-    let url = provider.chat_completions_url();
     let system = prompt::system_prompt(target_lang);
-    let format = provider.resolve_format();
     let timeout = request_timeout(text.chars().count());
 
-    let body = match format {
-        ApiFormat::Anthropic => serde_json::json!({
-            "model": provider.model,
-            "max_tokens": anthropic_max_tokens(text.chars().count()),
-            "system": system,
-            "messages": [{ "role": "user", "content": text }],
-        }),
-        _ => serde_json::to_value(ChatRequest {
-            model: &provider.model,
-            messages: vec![
-                ChatMessage {
-                    role: "system",
-                    content: &system,
-                },
-                ChatMessage {
-                    role: "user",
-                    content: text,
-                },
-            ],
-            temperature: 0.0,
-            max_tokens: openai_max_tokens(text.chars().count()),
-        })
-        .expect("the chat request serializes by construction"),
-    };
-
     let mut attempt = 0;
+    // Providers this chunk has already burned; each retry re-pick excludes
+    // them so a failed endpoint never sees this chunk again.
+    let mut failed: Vec<String> = Vec::new();
     #[allow(unused_assignments)]
     let mut last_latency_ms = 0u64;
     loop {
@@ -426,7 +463,7 @@ async fn translate_one(
         // permit. The permit is held for the whole attempt so the gate bounds
         // requests actually in flight, not just the rate they start.
         picked.wait_for_dispatch_slot().await;
-        let _permit = match gate(priority).acquire().await {
+        let _permit = match lane_acquire(priority, settings).await {
             Ok(permit) => permit,
             Err(_) => {
                 return ChunkOutcome {
@@ -455,6 +492,35 @@ async fn translate_one(
             attempt + 1,
             text.chars().take(200).collect::<String>()
         );
+        // Request material per attempt: a failover lands on an endpoint with
+        // its own URL, key, dialect, and model.
+        let provider = &picked.provider;
+        let url = provider.chat_completions_url();
+        let format = provider.resolve_format();
+        let body = match format {
+            ApiFormat::Anthropic => serde_json::json!({
+                "model": provider.model,
+                "max_tokens": anthropic_max_tokens(text.chars().count()),
+                "system": system,
+                "messages": [{ "role": "user", "content": text }],
+            }),
+            _ => serde_json::to_value(ChatRequest {
+                model: &provider.model,
+                messages: vec![
+                    ChatMessage {
+                        role: "system",
+                        content: &system,
+                    },
+                    ChatMessage {
+                        role: "user",
+                        content: text,
+                    },
+                ],
+                temperature: 0.0,
+                max_tokens: openai_max_tokens(text.chars().count()),
+            })
+            .expect("the chat request serializes by construction"),
+        };
         let started = std::time::Instant::now();
         let mut request = client.post(&url).timeout(timeout);
         for (name, value) in auth_headers(format, &provider.api_key) {
@@ -503,24 +569,29 @@ async fn translate_one(
             Ok(response) => {
                 let status = response.status();
                 if status.is_success() {
-                    let bytes =
-                        match read_capped(response, MAX_RESPONSE_BYTES, "translation").await {
-                            Ok(bytes) => bytes,
-                            Err(err) => {
-                                log_failure("read the translation response", picked.id(), &err);
-                                return ChunkOutcome {
-                                    result: Err(err),
-                                    provider_id: picked.id().to_string(),
-                                    latency_ms: latency,
-                                };
-                            }
-                        };
+                    let bytes = match read_capped(response, MAX_RESPONSE_BYTES, "translation").await
+                    {
+                        Ok(bytes) => bytes,
+                        Err(err) => {
+                            picked.report_failure(&err.message);
+                            log_failure("read the translation response", picked.id(), &err);
+                            return ChunkOutcome {
+                                result: Err(err),
+                                provider_id: picked.id().to_string(),
+                                latency_ms: latency,
+                            };
+                        }
+                    };
                     let parsed = match format {
                         ApiFormat::Anthropic => parse_anthropic_translation(&bytes),
                         _ => parse_translation(&bytes),
                     };
                     match &parsed {
-                        Err(err) => log_failure(&format!("{tag}parse the translation response"), picked.id(), err),
+                        Err(err) => log_failure(
+                            &format!("{tag}parse the translation response"),
+                            picked.id(),
+                            err,
+                        ),
                         // DEBUG diagnostics for the "endpoint answers fine but
                         // nothing renders" class of report: the frontend
                         // discards a translation whose placeholders drifted,
@@ -541,8 +612,12 @@ async fn translate_one(
                             picked.report_success();
                         }
                         Err(err) => {
+                            // A parse failure is a terminal failure like any
+                            // other: the endpoint answered, but not with a
+                            // translation.
+                            picked.report_failure(&err.message);
                             if err.message.contains("cut off") {
-                                metrics.record_truncated();
+                                metrics.record_truncated(picked.id());
                             }
                             metrics.record_attempt(
                                 picked.id(),
@@ -583,10 +658,15 @@ async fn translate_one(
                     };
                 }
                 let err = classify(status, &body);
-                if status.is_client_error() {
-                    picked.report_client_error(&err.message);
-                }
-                log_failure(&format!("{tag}endpoint answered HTTP {status}"), picked.id(), &err);
+                // Any non-429 HTTP verdict is this provider's failure — a bad
+                // key and a 500 both mean "this endpoint cannot serve right
+                // now"; the pool decides what the streak earns.
+                picked.report_failure(&err.message);
+                log_failure(
+                    &format!("{tag}endpoint answered HTTP {status}"),
+                    picked.id(),
+                    &err,
+                );
                 metrics.record_attempt(picked.id(), ProviderEventKind::HttpError, latency);
                 if !is_retryable(Some(status)) {
                     return ChunkOutcome {
@@ -600,6 +680,7 @@ async fn translate_one(
             Err(err) => {
                 let mapped = AppCommandError::network("The translation request failed")
                     .with_detail(err.to_string());
+                picked.report_failure(&mapped.message);
                 log_failure("request to the translation endpoint", picked.id(), &mapped);
                 metrics.record_attempt(picked.id(), ProviderEventKind::NetworkError, latency);
                 if !is_retryable(err.status()) {
@@ -615,20 +696,46 @@ async fn translate_one(
 
         // `_permit` drops here, so the backoff wait does not occupy the gate.
         drop(_permit);
+        // The attempt failed retryably (5xx or transport) and was already
+        // reported on its provider. Mark the endpoint as burned for this
+        // chunk so the retry goes elsewhere.
+        let failed_id = picked.id().to_string();
+        failed.push(failed_id.clone());
         match RETRY_BACKOFF.get(attempt) {
             Some(delay) => {
                 tracing::debug!(
-                    "[translation] attempt {} failed, retrying in {:?}",
+                    "[translation] attempt {} failed on {failed_id}, retrying in {:?}",
                     attempt + 1,
                     delay
                 );
                 sleep(*delay).await;
                 attempt += 1;
+                if failover {
+                    picked = match pick_provider_excluding(settings, &failed).await {
+                        Ok(next) => next,
+                        // Nothing untried remains — but this code path only
+                        // runs AFTER at least one real failed attempt, so the
+                        // pool's "all endpoints disabled" verdict would hide
+                        // the actual cause (the user saw it while their
+                        // endpoint was answering HTTP 503). The last attempt's
+                        // own error is always the actionable one here.
+                        Err(_pool_err) => {
+                            return ChunkOutcome {
+                                result: Err(error),
+                                provider_id: failed_id,
+                                latency_ms: last_latency_ms,
+                            };
+                        }
+                    };
+                }
+                // Without failover the retries stay pinned to the picked
+                // endpoint: the settings-page row test must judge exactly the
+                // row it tests.
             }
             None => {
                 return ChunkOutcome {
                     result: Err(error),
-                    provider_id: picked.id().to_string(),
+                    provider_id: failed_id,
                     latency_ms: last_latency_ms,
                 }
             }
@@ -685,11 +792,9 @@ fn parse_translation(bytes: &[u8]) -> Result<String, AppCommandError> {
             .with_detail(e.to_string())
     })?;
 
-    let choice = parsed
-        .choices
-        .into_iter()
-        .next()
-        .ok_or_else(|| AppCommandError::network("The translation service returned no translation"))?;
+    let choice = parsed.choices.into_iter().next().ok_or_else(|| {
+        AppCommandError::network("The translation service returned no translation")
+    })?;
 
     // A `length` stop means the answer was cut mid-output; serving it would
     // cache a half translation forever (the same rule the Anthropic path
@@ -795,7 +900,12 @@ pub async fn list_models(
             && (provider.resolve_format() == ApiFormat::Ollama || !provider.api_key.is_empty())
     };
     let provider = provider_id
-        .and_then(|id| settings.providers.iter().find(|p| p.id == id && candidate(p)))
+        .and_then(|id| {
+            settings
+                .providers
+                .iter()
+                .find(|p| p.id == id && candidate(p))
+        })
         .or_else(|| settings.providers.iter().find(|p| candidate(p)))
         .cloned()
         // A legacy row keeps its endpoint in the flat fields.
@@ -862,9 +972,7 @@ fn parse_models(bytes: &[u8]) -> Result<Vec<String>, AppCommandError> {
             .cloned(),
         _ => None,
     }
-    .ok_or_else(|| {
-        AppCommandError::network("The model list response was not recognised")
-    })?;
+    .ok_or_else(|| AppCommandError::network("The model list response was not recognised"))?;
 
     let mut names = Vec::new();
     for entry in entries {
@@ -889,7 +997,8 @@ fn parse_models(bytes: &[u8]) -> Result<Vec<String>, AppCommandError> {
 
 /// Translate every text, preserving order. One request per text; each text
 /// picks its own provider from the rotation, so a batch of N chunks spreads
-/// across the pool instead of stacking on one endpoint.
+/// across the pool instead of stacking on one endpoint, and a chunk's own
+/// 5xx/transport retries fail over to members it has not already tried.
 ///
 /// The texts are issued concurrently — `join_all` (not `try_join_all`) so one
 /// failed chunk does not cancel the others' already-spent work. Per-chunk
@@ -919,7 +1028,7 @@ pub async fn translate_batch(
                 };
             }
         };
-        translate_one(text, target_lang, &picked, priority, trace).await
+        translate_one(text, target_lang, picked, priority, settings, trace, true).await
     }))
     .await
 }
@@ -941,12 +1050,16 @@ pub async fn test_connection(
         Some(provider) => pool::standalone(provider),
         None => pick_provider(settings).await?,
     };
+    // Failover stays off: the row test must judge exactly the row it tests,
+    // never a success borrowed from another pool member.
     translate_one(
         prompt::TEST_PHRASE,
         target_lang,
-        &picked,
+        picked,
         Priority::Priority,
+        settings,
         None,
+        false,
     )
     .await
     .result
@@ -955,6 +1068,7 @@ pub async fn test_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[test]
     fn a_well_formed_response_yields_its_content() {
@@ -989,7 +1103,10 @@ mod tests {
     #[test]
     fn reasoning_blocks_are_stripped_from_the_translation() {
         let body = r#"{"choices":[{"message":{"content":"<think>\nThe user wants Chinese. Okay.\n</think>\n你好世界"}}]}"#;
-        assert_eq!(parse_translation(body.as_bytes()).expect("parses"), "你好世界");
+        assert_eq!(
+            parse_translation(body.as_bytes()).expect("parses"),
+            "你好世界"
+        );
     }
 
     #[test]
@@ -1050,7 +1167,9 @@ mod tests {
     #[test]
     fn only_transport_and_server_failures_are_retried() {
         assert!(is_retryable(None), "a transport failure is worth a retry");
-        assert!(is_retryable(Some(reqwest::StatusCode::INTERNAL_SERVER_ERROR)));
+        assert!(is_retryable(Some(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        )));
         assert!(is_retryable(Some(reqwest::StatusCode::BAD_GATEWAY)));
         assert!(is_retryable(Some(reqwest::StatusCode::TOO_MANY_REQUESTS)));
 
@@ -1077,7 +1196,10 @@ mod tests {
     /// megabyte of HTML must not put all of it on screen.
     #[test]
     fn error_detail_is_bounded() {
-        let err = classify(reqwest::StatusCode::INTERNAL_SERVER_ERROR, &"x".repeat(10_000));
+        let err = classify(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            &"x".repeat(10_000),
+        );
         assert!(err.detail.unwrap_or_default().chars().count() <= 500);
     }
 
@@ -1096,25 +1218,29 @@ mod tests {
 
     /// The lane gate is structural with the concurrent `translate_batch`: ten
     /// waiters each hold their permit across a yield, so the runtime genuinely
-    /// overlaps them and the sampled peak pins the ≤lane-cap-in-flight
-    /// contract (plan P-8 / G-1). Pacing itself lives in the pool's per-
-    /// provider slots now; the gate only bounds requests in flight.
+    /// overlaps them and the sampled peak pins the ≤cap-in-flight contract
+    /// (plan P-8 / G-1). The cap comes from settings now; a custom value must
+    /// be honored exactly, not just the built-in default. Pacing itself lives
+    /// in the pool's per-provider slots; the gate only bounds requests in
+    /// flight.
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn the_gate_never_holds_more_than_lane_cap_permits() {
-        let cap = Priority::Background.max_concurrent();
+        let cap = 2usize;
+        let semaphore = lane_semaphore(Priority::Background, cap);
         let mut max_held = 0usize;
         let mut waiters = Vec::new();
         for _ in 0..10 {
-            waiters.push(async {
-                let _permit = gate(Priority::Background)
-                    .acquire()
-                    .await
-                    .expect("gate open");
+            let semaphore = semaphore.clone();
+            waiters.push(async move {
+                // Borrowed acquire: the permit lives on this waiter's own Arc
+                // clone, so the sample below reads the same semaphore the
+                // permit came from even if the lane table swaps meanwhile.
+                let _permit = semaphore.acquire().await.expect("gate open");
                 // Park behind a yield so other waiters can claim the rest of
                 // the pool before this one samples; without it each future
                 // acquires, samples, and drops within a single poll.
                 tokio::task::yield_now().await;
-                cap - gate(Priority::Background).available_permits()
+                cap - semaphore.available_permits()
             });
         }
 
@@ -1130,6 +1256,36 @@ mod tests {
             max_held, cap,
             "ten concurrent waiters must actually saturate the gate"
         );
+    }
+
+    /// A settings change must take effect on the *next* request: a smaller
+    /// semaphore with a permit still held out must be swapped whole for a
+    /// fresh one at the new cap, not silently ignored because the old state
+    /// was initialized first. Uses the priority lane so it cannot race the
+    /// background-lane saturation test over the shared lane table (tests run
+    /// in parallel on separate runtimes).
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn a_cap_change_swaps_in_a_fresh_semaphore() {
+        let old = lane_semaphore(Priority::Priority, 2);
+        let held = old.clone().acquire_owned().await.expect("gate open");
+
+        let new = lane_semaphore(Priority::Priority, 4);
+        assert!(
+            !Arc::ptr_eq(&old, &new),
+            "a cap change must replace the semaphore, not reuse the old one"
+        );
+        assert_eq!(
+            new.available_permits(),
+            4,
+            "the replacement opens at the new cap, not the old one's remaining permits"
+        );
+
+        // The old semaphore stays alive only through the held permit: when it
+        // drops, the old gate drains and dies without leaking a permit into
+        // the new one (which still shows its full 4).
+        drop(held);
+        assert_eq!(old.available_permits(), 2);
+        assert_eq!(new.available_permits(), 4);
     }
 
     /// A numeric `Retry-After` parses; a date-shaped one deliberately does
@@ -1164,7 +1320,11 @@ mod tests {
         assert_eq!(anthropic_max_tokens(0), 4096);
         assert_eq!(anthropic_max_tokens(100), 4096, "small texts hit the floor");
         assert_eq!(anthropic_max_tokens(5000), 11_024);
-        assert_eq!(anthropic_max_tokens(1 << 20), 32768, "huge texts hit the cap");
+        assert_eq!(
+            anthropic_max_tokens(1 << 20),
+            32768,
+            "huge texts hit the cap"
+        );
     }
 
     #[test]
@@ -1179,16 +1339,14 @@ mod tests {
     /// would cache the half answer forever.
     #[test]
     fn a_length_stopped_translation_is_an_error() {
-        let body =
-            br#"{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}"#;
+        let body = br#"{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}"#;
         let err = parse_translation(body).expect_err("truncation must fail");
         assert!(err.message.contains("cut off"));
     }
 
     #[test]
     fn a_stop_finished_translation_is_accepted() {
-        let body =
-            br#"{"choices":[{"message":{"content":"full"},"finish_reason":"stop"}]}"#;
+        let body = br#"{"choices":[{"message":{"content":"full"},"finish_reason":"stop"}]}"#;
         assert_eq!(parse_translation(body).expect("parses"), "full");
     }
 
@@ -1206,8 +1364,7 @@ mod tests {
     /// forever; it must read as an error instead.
     #[test]
     fn a_truncated_anthropic_output_is_an_error() {
-        let body =
-            br#"{"content":[{"type":"text","text":"partial"}],"stop_reason":"max_tokens"}"#;
+        let body = br#"{"content":[{"type":"text","text":"partial"}],"stop_reason":"max_tokens"}"#;
         let err = parse_anthropic_translation(body).expect_err("truncation must fail");
         assert!(err.message.contains("cut off"));
     }
@@ -1269,7 +1426,9 @@ mod tests {
 
     #[test]
     fn an_empty_model_list_is_ok_not_an_error() {
-        assert!(parse_models(br#"{"data":[]}"#).expect("empty ok").is_empty());
+        assert!(parse_models(br#"{"data":[]}"#)
+            .expect("empty ok")
+            .is_empty());
     }
 
     #[test]
@@ -1297,6 +1456,305 @@ mod tests {
     fn malformed_model_json_is_an_error() {
         assert!(parse_models(b"{not json").is_err());
         assert!(parse_models(br#"{"nope":1}"#).is_err());
+    }
+
+    // ─── Wire-level failover coverage ──────────────────────────────────────
+    //
+    // Same pattern as the stub-endpoint test in `mod.rs`: raw loopback
+    // listeners answering hand-rolled HTTP, so the retry path runs against
+    // real sockets.
+
+    /// A loopback endpoint that answers 500 to every request until
+    /// `set_ok(true)`, after which it answers a well-formed OpenAI chat
+    /// reply, counting every request it saw.
+    struct StubEndpoint {
+        base_url: String,
+        hits: Arc<AtomicUsize>,
+        ok: Arc<AtomicBool>,
+    }
+
+    impl StubEndpoint {
+        fn start() -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind stub endpoint");
+            let port = listener.local_addr().expect("local addr").port();
+            let hits = Arc::new(AtomicUsize::new(0));
+            let ok = Arc::new(AtomicBool::new(false));
+            std::thread::spawn({
+                let hits = Arc::clone(&hits);
+                let ok = Arc::clone(&ok);
+                move || {
+                    use std::io::{Read, Write};
+                    while let Ok((mut stream, _)) = listener.accept() {
+                        let mut buf: Vec<u8> = Vec::new();
+                        let mut chunk = [0u8; 8192];
+                        loop {
+                            match stream.read(&mut chunk) {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => {
+                                    buf.extend_from_slice(&chunk[..n]);
+                                    // The request is complete once the headers
+                                    // end and Content-Length payload bytes
+                                    // have followed.
+                                    let complete = buf
+                                        .windows(4)
+                                        .position(|w| w == b"\r\n\r\n")
+                                        .map(|header_end| {
+                                            let headers =
+                                                String::from_utf8_lossy(&buf[..header_end])
+                                                    .to_lowercase();
+                                            let length = headers
+                                                .lines()
+                                                .find_map(|line| {
+                                                    line.strip_prefix("content-length:")?
+                                                        .trim()
+                                                        .parse::<usize>()
+                                                        .ok()
+                                                })
+                                                .unwrap_or(0);
+                                            buf.len() >= header_end + 4 + length
+                                        })
+                                        .unwrap_or(false);
+                                    if complete {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        let (status_line, reply) = if ok.load(Ordering::SeqCst) {
+                            (
+                                "HTTP/1.1 200 OK",
+                                r#"{"choices":[{"message":{"role":"assistant","content":"你好"},"finish_reason":"stop"}]}"#,
+                            )
+                        } else {
+                            ("HTTP/1.1 500 Internal Server Error", "boom")
+                        };
+                        let response = format!(
+                            "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                            reply.len()
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    }
+                }
+            });
+            StubEndpoint {
+                base_url: format!("http://127.0.0.1:{port}"),
+                hits,
+                ok,
+            }
+        }
+
+        fn set_ok(&self, ok: bool) {
+            self.ok.store(ok, Ordering::SeqCst);
+        }
+
+        fn hits(&self) -> usize {
+            self.hits.load(Ordering::SeqCst)
+        }
+    }
+
+    /// A pool whose members are all loopback stubs. The high explicit RPM cap
+    /// keeps the adaptive dispatch slot near-instant — these tests are about
+    /// failover, not pacing.
+    fn pool_of(members: &[(&str, &StubEndpoint)]) -> TranslationSettings {
+        TranslationSettings {
+            enabled: true,
+            providers: members
+                .iter()
+                .map(|(id, endpoint)| ProviderConfig {
+                    id: (*id).to_string(),
+                    name: None,
+                    base_url: format!("{}/v1", endpoint.base_url),
+                    api_key: "sk-test".to_string(),
+                    model: "stub".to_string(),
+                    api_format: "openai".to_string(),
+                    enabled: true,
+                    rpm_cap: Some(600),
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// A PickedProvider pinned to one row, bypassing rotation — the test's
+    /// way to choose who takes the FIRST attempt.
+    fn pinned(settings: &TranslationSettings, id: &str) -> PickedProvider {
+        pool::standalone(
+            settings
+                .providers
+                .iter()
+                .find(|provider| provider.id == id)
+                .cloned()
+                .expect("the row exists"),
+        )
+    }
+
+    async fn stub_translate_one(
+        settings: &TranslationSettings,
+        picked: PickedProvider,
+    ) -> ChunkOutcome {
+        translate_one(
+            "hello world",
+            "Simplified Chinese",
+            picked,
+            Priority::Background,
+            settings,
+            None,
+            true,
+        )
+        .await
+    }
+
+    /// A 5xx is not retried against the endpoint that returned it: the retry
+    /// re-pick excludes the failed provider, the healthy member serves, and
+    /// the success is attributed to the provider that actually produced it.
+    #[tokio::test]
+    async fn a_5xx_fails_over_to_a_different_provider() {
+        let x = StubEndpoint::start();
+        let y = StubEndpoint::start();
+        // The stub answers 500 until told otherwise: only y is healthy, so
+        // the retry has somewhere to land.
+        y.set_ok(true);
+        let settings = pool_of(&[("failover-x", &x), ("failover-y", &y)]);
+
+        let outcome = stub_translate_one(&settings, pinned(&settings, "failover-x")).await;
+
+        assert_eq!(
+            outcome
+                .result
+                .expect("the retry must land on the healthy member"),
+            "你好"
+        );
+        assert_eq!(outcome.provider_id, "failover-y");
+        assert_eq!(x.hits(), 1, "the failing endpoint is never retried");
+        assert_eq!(y.hits(), 1, "the retry went to the other member");
+    }
+
+    /// When every member the chunk tries fails too, the pool's exhaustion
+    /// verdict surfaces after the retry budget — each endpoint sees exactly
+    /// one attempt, and the outcome carries the LAST endpoint's own error —
+    /// the actionable verdict. The pool's "all disabled" verdict is reserved
+    /// for a first pick with nothing dispatchable; when the chunk itself
+    /// burned through the members, the user needs the endpoint's real
+    /// failure (a 5xx body says far more than "check the provider settings").
+    #[tokio::test]
+    async fn a_chunk_that_burns_the_whole_pool_surfaces_the_last_error() {
+        let x = StubEndpoint::start();
+        let y = StubEndpoint::start();
+        let settings = pool_of(&[("burn-x", &x), ("burn-y", &y)]);
+
+        let outcome = stub_translate_one(&settings, pinned(&settings, "burn-x")).await;
+
+        let err = outcome.result.expect_err("both endpoints failed");
+        assert!(
+            err.message.contains("500"),
+            "the last endpoint's own failure surfaces, not the pool verdict: {err:?}"
+        );
+        assert_eq!(
+            outcome.provider_id, "burn-y",
+            "the last endpoint tried is named"
+        );
+        assert_eq!(x.hits(), 1);
+        assert_eq!(y.hits(), 1, "each retry landed on a fresh endpoint");
+    }
+
+    /// The user-visible shape of "one endpoint 5xxs, the other is manually
+    /// disabled": the first (only) attempt fails, the failover re-pick finds
+    /// nothing dispatchable, and the surfaced error must be that endpoint's
+    /// OWN failure — the pool's "all endpoints disabled" verdict reads as
+    /// nonsense while the settings page shows a perfectly healthy row.
+    #[tokio::test]
+    async fn a_first_failure_with_the_rest_disabled_surfaces_the_real_error() {
+        let x = StubEndpoint::start();
+        let y = StubEndpoint::start();
+        let settings = pool_of(&[("solo-x", &x), ("solo-y", &y)]);
+        // The user's scenario: the other member was sidelined by hand (the
+        // row's disable button), leaving the failing endpoint as the only
+        // dispatchable one. The rotation pool registers lazily on first
+        // pick, so force it to exist before disabling the member.
+        let _ = pool::pick_provider(&settings).await;
+        assert!(pool::disable_provider("solo-y", "manual disable"));
+
+        let outcome = stub_translate_one(&settings, pinned(&settings, "solo-x")).await;
+
+        let err = outcome.result.expect_err("the only endpoint 500s");
+        assert!(
+            err.message.contains("500"),
+            "the endpoint's own failure surfaces, not the pool verdict: {err:?}"
+        );
+        assert_eq!(outcome.provider_id, "solo-x");
+        assert_eq!(x.hits(), 1, "one attempt, no failover target to retry");
+        assert_eq!(y.hits(), 0, "the disabled member is never contacted");
+    }
+
+    /// The terminal-failure reports reach the pool, and a clean reply resets
+    /// the streak. Observable seam: `pool_status`'s consecutive-failure
+    /// counter — it only moves when the client reports a failure, and it only
+    /// returns to zero through the reported success. Whether the threshold
+    /// cooldown ENGAGES is pool-side behavior with its own coverage; this test
+    /// deliberately stays below it, so no run parks a member for a real-time
+    /// window.
+    #[tokio::test]
+    async fn terminal_failures_reach_the_pool_and_a_success_resets_the_streak() {
+        let x = StubEndpoint::start();
+        let settings = pool_of(&[("streak-x", &x)]);
+        let id = "streak-x";
+
+        let streak = |settings: &TranslationSettings| {
+            pool::pool_status(settings)
+                .iter()
+                .find(|status| status.id == id)
+                .expect("the member is in the pool")
+                .consecutive_failures
+        };
+        let cooled = |settings: &TranslationSettings| {
+            pool::pool_status(settings)
+                .iter()
+                .find(|status| status.id == id)
+                .expect("the member is in the pool")
+                .cooldown_remaining_ms
+                > 0
+        };
+        // The built-in threshold (this settings shape sets no explicit one);
+        // every phase below stays strictly under it.
+        let threshold = settings.failure_threshold() as usize;
+
+        // Each terminal failure reports on the endpoint that produced it.
+        for expected in 1..threshold {
+            let picked = pick_provider(&settings).await.expect("the member serves");
+            let outcome = stub_translate_one(&settings, picked).await;
+            assert!(outcome.result.is_err());
+            assert_eq!(outcome.provider_id, id);
+            assert_eq!(
+                streak(&settings),
+                expected as u32,
+                "failure {expected} must be reported to the pool"
+            );
+            assert!(!cooled(&settings));
+        }
+        assert_eq!(
+            x.hits(),
+            threshold - 1,
+            "one attempt per chunk on a lone member"
+        );
+
+        // One clean reply resets the streak (report_success) ...
+        x.set_ok(true);
+        let picked = pick_provider(&settings).await.expect("the member serves");
+        let outcome = stub_translate_one(&settings, picked).await;
+        assert_eq!(outcome.result.expect("healthy now"), "你好");
+        assert_eq!(streak(&settings), 0, "the success reset the streak");
+
+        // ...so the next failure starts from zero: it neither re-cools the
+        // member (which a third unreset failure would) nor counts past one.
+        x.set_ok(false);
+        let picked = pick_provider(&settings).await.expect("the member serves");
+        assert!(stub_translate_one(&settings, picked).await.result.is_err());
+        assert_eq!(streak(&settings), 1);
+        assert!(
+            !cooled(&settings),
+            "the success reset the streak; this failure cannot re-cool the member"
+        );
     }
 
     fn tokio_test_block<F: std::future::Future>(future: F) -> F::Output {

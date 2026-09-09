@@ -2,10 +2,10 @@
 //! the rolling event window the metrics layer records.
 //!
 //! Why a composite score: the pool's existing signals are fragmented — the
-//! AIMD tracks rate and 429s, `client_errors` retires on hard 4xx, and a
-//! provider that quietly echoes or invents translations (the observed
-//! failure: 13% of a relay's replies refused by the quality gates) never
-//! leaves the rotation at all. The score folds the three dimensions the
+//! AIMD tracks rate and 429s, the failure-threshold cooldown only sees
+//! consecutive hard failures, and a provider that quietly echoes or invents
+//! translations (the observed failure: 13% of a relay's replies refused by
+//! the quality gates) never leaves the rotation at all. The score folds the
 //! reader actually feels — does the reply translate (quality), does the
 //! endpoint answer at all (stability), how long does it take (speed) — into
 //! the one number the dispatcher and the settings page can both consume.
@@ -69,9 +69,11 @@ pub const OBSERVING_SCORE: f64 = 70.0;
 /// its probe quota and can climb back.
 pub const DEGRADE_THRESHOLD: f64 = 70.0;
 
-/// Below this, with enough sample, the provider is retired for the session —
-/// the quality-side twin of the two-consecutive-4xx rule, which only ever
-/// caught broken keys, never broken models.
+/// Below this, with enough sample, the provider leaves the normal rotation —
+/// a session disable surfaced through the runtime's `disabled_reason`, which
+/// the settings page's per-row restore button clears. The quality-side twin
+/// of the failure-threshold cooldown, which only ever caught broken keys,
+/// never broken models.
 pub const RETIRE_THRESHOLD: f64 = 40.0;
 
 /// One provider's score, plus the sub-scores the settings page renders.
@@ -252,9 +254,16 @@ mod tests {
         let mut kinds = vec![(K::Ok, 3_000); 10];
         kinds.extend(vec![(K::GateRejectedSoft, 3_000); 2]);
         let health = health_score(&events(&kinds), now());
-        assert!((health.quality - 0.7917).abs() < 0.001, "quality was {}", health.quality);
+        assert!(
+            (health.quality - 0.7917).abs() < 0.001,
+            "quality was {}",
+            health.quality
+        );
         assert!(!health.degraded());
-        assert_eq!(health.speed, 1.0, "soft rejections carry latency and count in speed too");
+        assert_eq!(
+            health.speed, 1.0,
+            "soft rejections carry latency and count in speed too"
+        );
     }
 
     #[test]
@@ -275,11 +284,24 @@ mod tests {
         let mut kinds = vec![(K::Ok, 3_000); 10];
         kinds.extend(vec![(K::SlowInflight, 30_000); 10]);
         let health = health_score(&events(&kinds), now());
-        assert_eq!(health.stability, 0.0, "ten half-weight waits spend stability");
-        assert_eq!(health.quality, 1.0, "no reply was judged; quality untouched");
-        assert_eq!(health.speed, 1.0, "the true latency rides on the eventual Ok event");
+        assert_eq!(
+            health.stability, 0.0,
+            "ten half-weight waits spend stability"
+        );
+        assert_eq!(
+            health.quality, 1.0,
+            "no reply was judged; quality untouched"
+        );
+        assert_eq!(
+            health.speed, 1.0,
+            "the true latency rides on the eventual Ok event"
+        );
         assert!(health.degraded(), "score was {}", health.score);
-        assert!(!health.retired(), "slow alone must not retire: score {}", health.score);
+        assert!(
+            !health.retired(),
+            "slow alone must not retire: score {}",
+            health.score
+        );
     }
 
     /// 全是慢信号、没有任何回复：quality 与 speed 都无样本、被剔除，
@@ -350,7 +372,10 @@ mod tests {
             *kind = (ProviderEventKind::GateRejected, 3_000);
         }
         let health = health_score(&events(&kinds), now());
-        assert_eq!(health.quality, 0.0, "50% rejections saturates the gate rate");
+        assert_eq!(
+            health.quality, 0.0,
+            "50% rejections saturates the gate rate"
+        );
         assert_eq!(health.stability, 1.0, "transport was flawless");
         assert!(
             (health.score - 55.0).abs() < 0.001,
@@ -369,8 +394,15 @@ mod tests {
         kinds.extend(vec![(ProviderEventKind::ParseError, 3_000); 10]);
         let health = health_score(&events(&kinds), now());
         assert_eq!(health.stability, 0.0);
-        assert_eq!(health.quality, 1.0, "no answered replies: quality is neutral");
-        assert!(health.score < RETIRE_THRESHOLD, "score was {}", health.score);
+        assert_eq!(
+            health.quality, 1.0,
+            "no answered replies: quality is neutral"
+        );
+        assert!(
+            health.score < RETIRE_THRESHOLD,
+            "score was {}",
+            health.score
+        );
         assert!(health.retired());
     }
 

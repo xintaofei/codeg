@@ -68,3 +68,9 @@ src-tauri/binaries/
 src-tauri/runtest.*
 src-tauri/translation_out.txt
 src/probe.test.ts
+
+# security-scan and tooling artifacts (regenerated on every scan)
+.mimosa/
+src-tauri/.mimosa/
+.magi/
+bash.exe.stackdump

@@ -12,7 +12,8 @@ use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::translation::{
     translation_cache_stats_core, translation_clear_cache_core, translation_get_settings_core,
-    translation_list_models_core, translation_pool_status_core, translation_test_core,
+    translation_list_models_core, translation_pool_status_core, translation_provider_cooldown_core,
+    translation_provider_disable_core, translation_provider_reset_core, translation_test_core,
     translation_translate_core, translation_update_settings_core,
 };
 use crate::translation::pool::ProviderStatus;
@@ -74,8 +75,13 @@ pub async fn translation_test(
     Json(params): Json<TestParams>,
 ) -> Result<Json<String>, AppCommandError> {
     Ok(Json(
-        translation_test_core(&state.db.conn, params.settings, &params.ui_locale, params.provider_id)
-            .await?,
+        translation_test_core(
+            &state.db.conn,
+            params.settings,
+            &params.ui_locale,
+            params.provider_id,
+        )
+        .await?,
     ))
 }
 
@@ -106,6 +112,56 @@ pub async fn translation_pool_status(
 pub async fn translation_metrics() -> Json<crate::translation::metrics::TranslationMetricsSnapshot>
 {
     Json(crate::commands::translation::translation_metrics_core())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderResetParams {
+    /// The pool row (`ProviderConfig::id`) to reset.
+    pub provider_id: String,
+}
+
+pub async fn translation_provider_reset(
+    Json(params): Json<ProviderResetParams>,
+) -> Result<Json<()>, AppCommandError> {
+    translation_provider_reset_core(&params.provider_id).await?;
+    Ok(Json(()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderDisableParams {
+    /// The pool row (`ProviderConfig::id`) to disable for this session.
+    pub provider_id: String,
+}
+
+pub async fn translation_provider_disable(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ProviderDisableParams>,
+) -> Result<Json<Vec<ProviderStatus>>, AppCommandError> {
+    Ok(Json(
+        translation_provider_disable_core(&state.db.conn, &params.provider_id).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderCooldownParams {
+    /// The pool row (`ProviderConfig::id`) to put on cooldown.
+    pub provider_id: String,
+    /// Cooldown length in seconds; absent, the saved settings' default.
+    #[serde(default)]
+    pub seconds: Option<u64>,
+}
+
+pub async fn translation_provider_cooldown(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ProviderCooldownParams>,
+) -> Result<Json<Vec<ProviderStatus>>, AppCommandError> {
+    Ok(Json(
+        translation_provider_cooldown_core(&state.db.conn, &params.provider_id, params.seconds)
+            .await?,
+    ))
 }
 
 pub async fn translation_translate(

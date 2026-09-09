@@ -16,8 +16,16 @@
 // ONLY test compilations, which is what no build-script directive can express
 // (`rustc-link-arg-tests` skips the lib harness, `rustc-link-arg` duplicates
 // the resource into the bins and fails the link with CVT1100). The search
-// path for `resource.lib` comes from build.rs's `rustc-link-search`.
-#[cfg(all(target_os = "windows", target_env = "msvc", test))]
+// path for `resource.lib` comes from build.rs's `rustc-link-search`, which is
+// also tauri-runtime-gated — and server-mode test exes don't need the
+// manifest at all, since nothing in them imports the comctl32 v6 entry
+// points.
+#[cfg(all(
+    feature = "tauri-runtime",
+    target_os = "windows",
+    target_env = "msvc",
+    test
+))]
 #[link(name = "resource", kind = "dylib")]
 extern "C" {}
 
@@ -77,24 +85,20 @@ mod tauri_app {
     use crate::acp::manager::ConnectionManager;
     use crate::chat_channel::manager::ChatChannelManager;
     use crate::commands::{
-        acp as acp_commands, app_update as app_update_commands,
-        automation as automation_commands, background as background_commands, backup,
-        canvas as canvas_commands,
+        acp as acp_commands, app_update as app_update_commands, automation as automation_commands,
+        background as background_commands, backup, canvas as canvas_commands,
         chat_authoring as chat_authoring_commands, chat_channel as chat_channel_commands,
-        conversations,
-        custom_skills as custom_skills_commands, delegation as delegation_commands,
+        conversations, custom_skills as custom_skills_commands, delegation as delegation_commands,
         experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
-        folder_links, office_tools as office_tools_commands, open_in,
-        folders, logging as logging_commands, mcp as mcp_commands,
-        model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
+        folder_links, folders, forge as forge_commands, logging as logging_commands,
+        mcp as mcp_commands, model_provider as model_provider_commands, notification,
+        office_tools as office_tools_commands, open_in, pet as pet_commands, project_boot,
         question as question_commands, quick_messages as quick_messages_commands,
-        remote_proxy as remote_proxy_commands,
-        remote_workspace as remote_workspace_commands, science as science_commands,
-        session_info as session_info_commands,
-        system_settings, terminal as terminal_commands,
-        token_usage as token_usage_commands, translation as translation_commands,
-        forge as forge_commands, version_control, windows, work_task as work_task_commands,
-        workspace_state as workspace_state_commands,
+        remote_proxy as remote_proxy_commands, remote_workspace as remote_workspace_commands,
+        science as science_commands, session_info as session_info_commands, system_settings,
+        terminal as terminal_commands, token_usage as token_usage_commands,
+        translation as translation_commands, version_control, windows,
+        work_task as work_task_commands, workspace_state as workspace_state_commands,
     };
     use crate::terminal::manager::TerminalManager;
     use crate::{db, git_credential, network, paths, process, web};
@@ -546,6 +550,24 @@ mod tauri_app {
                             serde_json::json!({}),
                         );
                     }));
+                }
+
+                // Push translation-settings changes to the frontends: the
+                // message-list hooks re-fetch their snapshot on this event,
+                // so a save in one window (e.g. re-enabling translateBody)
+                // takes effect everywhere without a reload.
+                {
+                    let emitter =
+                        web::event_bridge::EventEmitter::Tauri(app.handle().clone());
+                    crate::translation::settings::on_settings_change(
+                        std::sync::Arc::new(move || {
+                            web::event_bridge::emit_event(
+                                &emitter,
+                                "translation-settings-changed",
+                                serde_json::json!({}),
+                            );
+                        }),
+                    );
                 }
 
                 // Start chat channel background tasks
@@ -1265,6 +1287,9 @@ mod tauri_app {
                 translation_commands::translation_clear_cache,
                 translation_commands::translation_pool_status,
                 translation_commands::translation_metrics,
+                translation_commands::translation_provider_reset,
+                translation_commands::translation_provider_disable,
+                translation_commands::translation_provider_cooldown,
                 logging_commands::get_log_settings,
                 logging_commands::set_log_settings,
                 logging_commands::get_recent_logs,

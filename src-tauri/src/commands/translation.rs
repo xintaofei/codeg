@@ -23,11 +23,19 @@ pub async fn translation_get_settings_core(
 }
 
 /// Validate and persist. Returns the saved settings, masked.
+///
+/// A successful save fires [`translation::settings::notify_settings_changed`]:
+/// the startup wiring turns it into a `translation-settings-changed` event so
+/// every open frontend re-reads the snapshot — the saving window primes
+/// itself locally, the others would otherwise keep their mount-time copy
+/// (and a freshly re-enabled `translateBody` gate with it) until reload.
 pub async fn translation_update_settings_core(
     conn: &DatabaseConnection,
     settings: TranslationSettings,
 ) -> Result<TranslationSettings, AppCommandError> {
-    translation::settings::save(conn, settings).await
+    let saved = translation::settings::save(conn, settings).await?;
+    translation::settings::notify_settings_changed();
+    Ok(saved)
 }
 
 /// Prove the endpoint, key, and model resolve, using the settings the user is
@@ -65,9 +73,7 @@ pub async fn translation_test_core(
     tokio::time::timeout(TEST_CONNECTION_TIMEOUT, test)
         .await
         .map_err(|_| {
-            AppCommandError::network(
-                "The translation endpoint did not respond within 150 seconds",
-            )
+            AppCommandError::network("The translation endpoint did not respond within 150 seconds")
         })?
 }
 
@@ -136,6 +142,58 @@ pub async fn translation_pool_status_core(
 /// settings needed — everything here is runtime memory.
 pub fn translation_metrics_core() -> crate::translation::metrics::TranslationMetricsSnapshot {
     translation::metrics::translation_metrics().snapshot()
+}
+
+/// The manual "this endpoint is fixed" action: re-seed the pool's runtime
+/// entry (clearing the session disable, the 4xx streak, and AIMD penalties)
+/// and drop the provider's metrics counters and series, so both sides start
+/// counting fresh. Runtime memory only — no settings or db involved.
+pub async fn translation_provider_reset_core(provider_id: &str) -> Result<(), AppCommandError> {
+    if provider_id.is_empty() {
+        return Err(AppCommandError::configuration_missing(
+            "A provider id is required to reset it",
+        ));
+    }
+    translation::pool::reset_provider(provider_id);
+    translation::metrics::translation_metrics().reset_provider(provider_id);
+    Ok(())
+}
+
+/// The manual "keep this provider out of rotation" action: session-disable the
+/// pool's runtime entry under the given reason. Settings are only read back to
+/// rebuild the pool snapshot, which comes with the reply so the caller's
+/// status badges update without a second round trip.
+pub async fn translation_provider_disable_core(
+    conn: &DatabaseConnection,
+    provider_id: &str,
+) -> Result<Vec<crate::translation::pool::ProviderStatus>, AppCommandError> {
+    if provider_id.is_empty() {
+        return Err(AppCommandError::configuration_missing(
+            "A provider id is required to disable it",
+        ));
+    }
+    translation::pool::disable_provider(provider_id, "manually disabled");
+    let settings = translation::settings::load(conn).await;
+    Ok(crate::translation::pool::pool_status(&settings))
+}
+
+/// Put a provider on a timed cooldown without ending its session: it sits out
+/// for `seconds`, or the saved settings' default when no explicit length is
+/// given. Returns the fresh pool snapshot alongside the action.
+pub async fn translation_provider_cooldown_core(
+    conn: &DatabaseConnection,
+    provider_id: &str,
+    seconds: Option<u64>,
+) -> Result<Vec<crate::translation::pool::ProviderStatus>, AppCommandError> {
+    if provider_id.is_empty() {
+        return Err(AppCommandError::configuration_missing(
+            "A provider id is required to put it into cooldown",
+        ));
+    }
+    let settings = translation::settings::load(conn).await;
+    let seconds = seconds.unwrap_or_else(|| settings.cooldown_seconds());
+    translation::pool::cooldown_provider(provider_id, seconds);
+    Ok(crate::translation::pool::pool_status(&settings))
 }
 
 /// Translate a batch of already-masked texts, serving cache hits first.
@@ -228,6 +286,31 @@ pub fn translation_metrics(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn translation_provider_reset(provider_id: String) -> Result<(), AppCommandError> {
+    translation_provider_reset_core(&provider_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn translation_provider_disable(
+    provider_id: String,
+    db: State<'_, AppDatabase>,
+) -> Result<Vec<crate::translation::pool::ProviderStatus>, AppCommandError> {
+    translation_provider_disable_core(&db.conn, &provider_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn translation_provider_cooldown(
+    provider_id: String,
+    seconds: Option<u64>,
+    db: State<'_, AppDatabase>,
+) -> Result<Vec<crate::translation::pool::ProviderStatus>, AppCommandError> {
+    translation_provider_cooldown_core(&db.conn, &provider_id, seconds).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn translation_translate(
     texts: Vec<String>,
     ui_locale: String,
@@ -269,11 +352,16 @@ mod tests {
             model: "gpt-4o-mini".to_string(),
             target_lang: None,
             translate_thinking: false,
+            translate_body: true,
             selection_translate: true,
             selection_target_lang: None,
             toggle_always_visible: false,
             api_format: String::new(),
             batch_max_chars: None,
+            failure_threshold: None,
+            cooldown_seconds: None,
+            priority_max_concurrent: None,
+            background_max_concurrent: None,
             carry_context: true,
             providers: Vec::new(),
         }

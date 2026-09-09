@@ -5,6 +5,8 @@
 //! `agent_type` to name a real coding agent, which a translation endpoint is
 //! not. A KV row needs no migration and carries no such constraint.
 
+use std::sync::{Arc, OnceLock, RwLock};
+
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +31,30 @@ const MAX_PROVIDER_NAME_LEN: usize = 64;
 pub const RPM_CAP_MIN: u32 = 2;
 pub const RPM_CAP_MAX: u32 = 600;
 
+/// Bounds for the two lane concurrency caps (priority / background). A floor
+/// of 1 keeps a 0 from silently stalling the lane forever, and the ceiling
+/// keeps a fat-fingered 999 from opening that many sockets against an
+/// endpoint the user described as "small".
+pub const LANE_CAP_MIN: u32 = 1;
+pub const LANE_CAP_MAX: u32 = 16;
+
+/// Bounds and default for the consecutive-failure auto-cooldown: how many
+/// failed requests in a row (429s and hard errors alike) park a pool member
+/// before it sits out [`COOLDOWN_SECONDS_DEFAULT`] seconds. The floor keeps a
+/// single transport blip from benching an endpoint; a zero would park it on
+/// every request.
+pub const FAILURE_THRESHOLD_MIN: u32 = 1;
+pub const FAILURE_THRESHOLD_MAX: u32 = 20;
+pub const FAILURE_THRESHOLD_DEFAULT: u32 = 3;
+
+/// Bounds and default for that cooldown's length in seconds. The floor keeps
+/// a typo from parking a member for less time than the request itself would
+/// have taken; the ceiling keeps "come back tomorrow" from looking like a
+/// setting.
+pub const COOLDOWN_SECONDS_MIN: u32 = 5;
+pub const COOLDOWN_SECONDS_MAX: u32 = 3600;
+pub const COOLDOWN_SECONDS_DEFAULT: u32 = 60;
+
 /// The `api_format` value that asks the backend to read the dialect off the
 /// host. Stored rows written before the field existed deserialize to `""`,
 /// which [`resolve_format`] treats the same way — hence no migration.
@@ -45,8 +71,7 @@ pub const KNOWN_API_FORMATS: [&str; 5] =
 // differently from "the scheme is wrong" or the user has nothing to act on.
 
 pub const ERR_BASE_URL_TOO_LONG: &str = "Translation base URL is too long";
-pub const ERR_BASE_URL_SCHEME: &str =
-    "Translation base URL scheme must be http:// or https://";
+pub const ERR_BASE_URL_SCHEME: &str = "Translation base URL scheme must be http:// or https://";
 pub const ERR_BASE_URL_INVALID: &str = "Translation base URL is not a valid URL";
 pub const ERR_BASE_URL_NO_HOST: &str = "Translation base URL must include a host";
 pub const ERR_UNKNOWN_API_FORMAT: &str = "Unknown translation API format";
@@ -162,12 +187,8 @@ impl ProviderConfig {
     /// plain trimmed value for rows saved before normalization existed. That
     /// keeps endpoint derivation working for legacy rows without a rewrite.
     fn normalized_base(&self) -> String {
-        normalize_base_url(&self.base_url).unwrap_or_else(|_| {
-            self.base_url
-                .trim()
-                .trim_end_matches('/')
-                .to_string()
-        })
+        normalize_base_url(&self.base_url)
+            .unwrap_or_else(|_| self.base_url.trim().trim_end_matches('/').to_string())
     }
 
     /// One endpoint family, two routes: the chat path and its model-list
@@ -263,6 +284,11 @@ pub struct TranslationSettings {
     pub target_lang: Option<String>,
     #[serde(default)]
     pub translate_thinking: bool,
+    /// Translate reply prose. `None` isn't an option here — bool with a true
+    /// default so rows written before this field existed keep translating the
+    /// body (the feature's behaviour since it shipped).
+    #[serde(default = "default_true")]
+    pub translate_body: bool,
     /// One of [`KNOWN_API_FORMATS`]. Empty means the same as `"auto"` so rows
     /// written before this field existed keep working untouched. Legacy: the
     /// single-endpoint dialect, mirrored from `providers[0]` on save.
@@ -290,6 +316,25 @@ pub struct TranslationSettings {
     /// limiter's job.)
     #[serde(default)]
     pub batch_max_chars: Option<u32>,
+    /// Concurrency ceiling for the priority lane — visible prose and
+    /// user-initiated translation, the traffic a reader is actively waiting
+    /// on. `None` follows the built-in default (4).
+    #[serde(default)]
+    pub priority_max_concurrent: Option<u32>,
+    /// Concurrency ceiling for the background lane — thinking-block
+    /// translation, which must not crowd out the priority lane on a small
+    /// endpoint. `None` follows the built-in default (3).
+    #[serde(default)]
+    pub background_max_concurrent: Option<u32>,
+    /// Consecutive failed requests (429s and hard errors alike) before the
+    /// rotation parks the member for a cooldown. `None` follows the built-in
+    /// default ([`FAILURE_THRESHOLD_DEFAULT`]).
+    #[serde(default)]
+    pub failure_threshold: Option<u32>,
+    /// How long that failure cooldown lasts, in seconds. `None` follows the
+    /// built-in default ([`COOLDOWN_SECONDS_DEFAULT`]).
+    #[serde(default)]
+    pub cooldown_seconds: Option<u32>,
     /// Prepend the previous segment's source and translation as a
     /// reference-only block, so terminology stays consistent across the
     /// independent per-segment requests. Default on; one request carries
@@ -301,6 +346,45 @@ pub struct TranslationSettings {
 
 fn default_true() -> bool {
     true
+}
+
+// ─── Settings-change notification ────────────────────────────────────────
+//
+// The pool has its own notifier (pool::on_change) for runtime state; this one
+// covers the PERSISTED settings: a save anywhere (desktop command or web
+// handler) must reach every open frontend, not just the window that saved.
+// Same shape, same contract — the app wires one callback per mode at startup
+// that emits `translation-settings-changed`; listeners re-fetch the settings
+// instead of the backend pushing a payload (which would leak the real keys if
+// assembled carelessly).
+
+type SettingsChangeCallback = Arc<dyn Fn() + Send + Sync>;
+
+static SETTINGS_CHANGE_NOTIFIERS: OnceLock<RwLock<Vec<SettingsChangeCallback>>> = OnceLock::new();
+
+fn settings_notifiers() -> &'static RwLock<Vec<SettingsChangeCallback>> {
+    SETTINGS_CHANGE_NOTIFIERS.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Register a listener for persisted-settings changes. Wired once per process
+/// at startup (desktop and server mode each route the callback into their own
+/// event channel); the callback runs synchronously inside the save call, so
+/// keep it cheap — emit-and-return.
+pub fn on_settings_change(callback: SettingsChangeCallback) {
+    settings_notifiers()
+        .write()
+        .expect("settings notifier lock is never poisoned across a panic-free run")
+        .push(callback);
+}
+
+/// Fire every registered listener. Called after a successful `save`.
+pub fn notify_settings_changed() {
+    let callbacks = settings_notifiers()
+        .read()
+        .expect("settings notifier lock is never poisoned across a panic-free run");
+    for callback in callbacks.iter() {
+        callback();
+    }
 }
 
 impl TranslationSettings {
@@ -340,7 +424,11 @@ impl TranslationSettings {
                 enabled: true,
                 ..Default::default()
             };
-            return if legacy.is_complete() { vec![legacy] } else { Vec::new() };
+            return if legacy.is_complete() {
+                vec![legacy]
+            } else {
+                Vec::new()
+            };
         }
         self.providers
             .iter()
@@ -357,6 +445,27 @@ impl TranslationSettings {
     /// runtime state, which is not persisted.)
     pub fn provider_id(&self) -> String {
         "pool".to_string()
+    }
+
+    /// Consecutive failures before a pool member auto-cools, as in force for
+    /// these settings: the explicit value clamped to its band, or the
+    /// built-in default when unset. The clamp runs here and not only in
+    /// `validate` because `load` deserializes stored rows without validating
+    /// them — a hand-edited row cannot smuggle in a 0.
+    pub fn failure_threshold(&self) -> u32 {
+        self.failure_threshold
+            .unwrap_or(FAILURE_THRESHOLD_DEFAULT)
+            .clamp(FAILURE_THRESHOLD_MIN, FAILURE_THRESHOLD_MAX)
+    }
+
+    /// The failure cooldown's length in seconds, same policy as
+    /// [`Self::failure_threshold`].
+    pub fn cooldown_seconds(&self) -> u64 {
+        u64::from(
+            self.cooldown_seconds
+                .unwrap_or(COOLDOWN_SECONDS_DEFAULT)
+                .clamp(COOLDOWN_SECONDS_MIN, COOLDOWN_SECONDS_MAX),
+        )
     }
 
     /// The dialect of the pool's first active member, for callers that need a
@@ -377,12 +486,8 @@ impl TranslationSettings {
     /// plain trimmed value for rows saved before normalization existed. That
     /// keeps endpoint derivation working for legacy rows without a rewrite.
     fn normalized_base(&self) -> String {
-        normalize_base_url(&self.base_url).unwrap_or_else(|_| {
-            self.base_url
-                .trim()
-                .trim_end_matches('/')
-                .to_string()
-        })
+        normalize_base_url(&self.base_url)
+            .unwrap_or_else(|_| self.base_url.trim().trim_end_matches('/').to_string())
     }
 
     /// One endpoint family, two routes: the chat path and its model-list
@@ -559,8 +664,9 @@ pub fn normalize_base_url(raw: &str) -> Result<String, AppCommandError> {
             .expect("checked for the separator above");
         let scheme = scheme.to_ascii_lowercase();
         if scheme != "http" && scheme != "https" {
-            return Err(AppCommandError::configuration_invalid(ERR_BASE_URL_SCHEME)
-                .with_detail(scheme));
+            return Err(
+                AppCommandError::configuration_invalid(ERR_BASE_URL_SCHEME).with_detail(scheme)
+            );
         }
         format!("{scheme}://{rest}")
     } else {
@@ -599,8 +705,9 @@ pub fn normalize_base_url(raw: &str) -> Result<String, AppCommandError> {
         }
     };
 
-    let mut url = reqwest::Url::parse(&candidate)
-        .map_err(|e| AppCommandError::invalid_input(ERR_BASE_URL_INVALID).with_detail(e.to_string()))?;
+    let mut url = reqwest::Url::parse(&candidate).map_err(|e| {
+        AppCommandError::invalid_input(ERR_BASE_URL_INVALID).with_detail(e.to_string())
+    })?;
 
     if url.host_str().is_none_or(str::is_empty) {
         return Err(AppCommandError::configuration_invalid(ERR_BASE_URL_NO_HOST));
@@ -699,6 +806,23 @@ pub fn validate(settings: TranslationSettings) -> Result<TranslationSettings, Ap
     let batch_max_chars = settings
         .batch_max_chars
         .map(|value| value.clamp(500, 20_000));
+    // Same policy for the lane caps: a clamp keeps the save alive, and the
+    // floor of 1 matters more than it looks — a 0-sized lane would deadlock
+    // every request queued on it.
+    let priority_max_concurrent = settings
+        .priority_max_concurrent
+        .map(|value| value.clamp(LANE_CAP_MIN, LANE_CAP_MAX));
+    let background_max_concurrent = settings
+        .background_max_concurrent
+        .map(|value| value.clamp(LANE_CAP_MIN, LANE_CAP_MAX));
+    // The failure-cooldown knobs follow the same policy: clamp, never
+    // refuse — they only decide how fast a misbehaving endpoint is benched.
+    let failure_threshold = settings
+        .failure_threshold
+        .map(|value| value.clamp(FAILURE_THRESHOLD_MIN, FAILURE_THRESHOLD_MAX));
+    let cooldown_seconds = settings
+        .cooldown_seconds
+        .map(|value| value.clamp(COOLDOWN_SECONDS_MIN, COOLDOWN_SECONDS_MAX));
 
     let mut providers = Vec::with_capacity(settings.providers.len());
     for provider in settings.providers {
@@ -712,7 +836,9 @@ pub fn validate(settings: TranslationSettings) -> Result<TranslationSettings, Ap
     if let Some(head) = providers.first() {
         let api_format = head.api_format.trim().to_string();
         if !api_format.is_empty() && !KNOWN_API_FORMATS.contains(&api_format.as_str()) {
-            return Err(AppCommandError::configuration_invalid(ERR_UNKNOWN_API_FORMAT));
+            return Err(AppCommandError::configuration_invalid(
+                ERR_UNKNOWN_API_FORMAT,
+            ));
         }
         return Ok(TranslationSettings {
             enabled: settings.enabled,
@@ -721,11 +847,16 @@ pub fn validate(settings: TranslationSettings) -> Result<TranslationSettings, Ap
             model: head.model.trim().to_string(),
             target_lang,
             translate_thinking: settings.translate_thinking,
+            translate_body: settings.translate_body,
             api_format,
             selection_translate: settings.selection_translate,
             selection_target_lang: settings.selection_target_lang,
             toggle_always_visible: settings.toggle_always_visible,
             batch_max_chars,
+            priority_max_concurrent,
+            background_max_concurrent,
+            failure_threshold,
+            cooldown_seconds,
             carry_context: settings.carry_context,
             providers,
         });
@@ -733,7 +864,9 @@ pub fn validate(settings: TranslationSettings) -> Result<TranslationSettings, Ap
 
     let api_format = settings.api_format.trim().to_string();
     if !api_format.is_empty() && !KNOWN_API_FORMATS.contains(&api_format.as_str()) {
-        return Err(AppCommandError::configuration_invalid(ERR_UNKNOWN_API_FORMAT));
+        return Err(AppCommandError::configuration_invalid(
+            ERR_UNKNOWN_API_FORMAT,
+        ));
     }
     let api_key = settings.api_key.trim().to_string();
     let model = settings.model.trim().to_string();
@@ -755,11 +888,16 @@ pub fn validate(settings: TranslationSettings) -> Result<TranslationSettings, Ap
         model,
         target_lang,
         translate_thinking: settings.translate_thinking,
+        translate_body: settings.translate_body,
         api_format,
         selection_translate: settings.selection_translate,
         selection_target_lang: settings.selection_target_lang,
         toggle_always_visible: settings.toggle_always_visible,
         batch_max_chars,
+        priority_max_concurrent,
+        background_max_concurrent,
+        failure_threshold,
+        cooldown_seconds,
         carry_context: settings.carry_context,
     })
 }
@@ -774,7 +912,9 @@ fn validate_provider(provider: ProviderConfig) -> Result<ProviderConfig, AppComm
     let model = provider.model.trim().to_string();
     let api_format = provider.api_format.trim().to_string();
     if !api_format.is_empty() && !KNOWN_API_FORMATS.contains(&api_format.as_str()) {
-        return Err(AppCommandError::configuration_invalid(ERR_UNKNOWN_API_FORMAT));
+        return Err(AppCommandError::configuration_invalid(
+            ERR_UNKNOWN_API_FORMAT,
+        ));
     }
     if api_key.chars().count() > MAX_API_KEY_LEN {
         return Err(AppCommandError::invalid_input(
@@ -793,7 +933,9 @@ fn validate_provider(provider: ProviderConfig) -> Result<ProviderConfig, AppComm
             ));
         }
     }
-    let rpm_cap = provider.rpm_cap.map(|value| value.clamp(RPM_CAP_MIN, RPM_CAP_MAX));
+    let rpm_cap = provider
+        .rpm_cap
+        .map(|value| value.clamp(RPM_CAP_MIN, RPM_CAP_MAX));
 
     Ok(ProviderConfig {
         // A provider without an id gets one at validation time, so pool-state
@@ -906,11 +1048,16 @@ mod tests {
             model: "gpt-4o-mini".to_string(),
             target_lang: Some("zh-CN".to_string()),
             translate_thinking: false,
+            translate_body: true,
             api_format: String::new(),
             selection_translate: true,
             selection_target_lang: None,
             toggle_always_visible: false,
             batch_max_chars: None,
+            priority_max_concurrent: None,
+            background_max_concurrent: None,
+            failure_threshold: None,
+            cooldown_seconds: None,
             carry_context: true,
         }
     }
@@ -956,7 +1103,10 @@ mod tests {
                 "https://api.example.com/v1/?key=abc#frag",
                 "https://api.example.com/v1",
             ),
-            ("HTTP://Api.Example.Com:8080/v1", "http://api.example.com:8080/v1"),
+            (
+                "HTTP://Api.Example.Com:8080/v1",
+                "http://api.example.com:8080/v1",
+            ),
         ] {
             assert_eq!(
                 normalize_base_url(raw).expect("normalizes"),
@@ -1015,11 +1165,18 @@ mod tests {
 
     #[test]
     fn unsupported_schemes_are_rejected_distinctly() {
-        for raw in ["ftp://files.example.com", "file:///etc/passwd", "socks5://host"] {
+        for raw in [
+            "ftp://files.example.com",
+            "file:///etc/passwd",
+            "socks5://host",
+        ] {
             let err = normalize_base_url(raw).expect_err("must be rejected");
             assert_eq!(err.message, ERR_BASE_URL_SCHEME, "input {raw:?}");
             assert!(
-                matches!(err.code, crate::app_error::AppErrorCode::ConfigurationInvalid),
+                matches!(
+                    err.code,
+                    crate::app_error::AppErrorCode::ConfigurationInvalid
+                ),
                 "a wrong scheme is a configuration problem, not bad input"
             );
         }
@@ -1031,10 +1188,7 @@ mod tests {
     #[test]
     fn a_schemeless_url_without_a_host_is_rejected() {
         for raw in ["://no-host", "http://"] {
-            assert!(
-                normalize_base_url(raw).is_err(),
-                "{raw:?} must be rejected"
-            );
+            assert!(normalize_base_url(raw).is_err(), "{raw:?} must be rejected");
         }
     }
 
@@ -1241,8 +1395,7 @@ mod tests {
         assert_eq!(models, "https://api.anthropic.com/v1/models");
 
         // Gemini OpenAI-compat surface.
-        let (chat, models) =
-            urls("https://generativelanguage.googleapis.com", "gemini");
+        let (chat, models) = urls("https://generativelanguage.googleapis.com", "gemini");
         assert_eq!(
             chat,
             "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
@@ -1285,10 +1438,7 @@ mod tests {
         for (raw, expected_base) in [
             ("https://host/v1/chat/completions", "https://host/v1"),
             ("https://host/v1/messages", "https://host"),
-            (
-                "https://host/v1beta/openai",
-                "https://host",
-            ),
+            ("https://host/v1beta/openai", "https://host"),
             ("http://localhost:11434/api/chat", "http://localhost:11434"),
             (
                 "http://localhost:11434/api/generate",
@@ -1424,6 +1574,107 @@ mod tests {
         })
         .expect("clamps, not errors");
         assert_eq!(clamped.batch_max_chars, Some(20_000));
+    }
+
+    /// The lane caps deserialize to `None` (follow the built-in lane sizes)
+    /// and stay `None` through validate; an out-of-range value clamps to the
+    /// documented band instead of erroring, same policy as `batch_max_chars`
+    /// and the RPM cap.
+    #[test]
+    fn lane_caps_default_to_none_and_clamp_to_their_band() {
+        let parsed: TranslationSettings = serde_json::from_str("{}").expect("parses");
+        assert_eq!(parsed.priority_max_concurrent, None);
+        assert_eq!(parsed.background_max_concurrent, None);
+
+        let validated = validate(parsed).expect("defaults validate");
+        assert_eq!(validated.priority_max_concurrent, None);
+        assert_eq!(validated.background_max_concurrent, None);
+
+        let clamped = validate(TranslationSettings {
+            priority_max_concurrent: Some(0),
+            background_max_concurrent: Some(999),
+            ..complete()
+        })
+        .expect("clamps, not errors");
+        assert_eq!(clamped.priority_max_concurrent, Some(LANE_CAP_MIN));
+        assert_eq!(clamped.background_max_concurrent, Some(LANE_CAP_MAX));
+    }
+
+    /// The failure-cooldown knobs deserialize to `None` (follow the built-in
+    /// defaults) and the accessors apply the band themselves, because `load`
+    /// reads stored rows without validating; `validate` clamps the stored
+    /// value the same way.
+    #[test]
+    fn failure_threshold_and_cooldown_default_and_clamp() {
+        let parsed: TranslationSettings = serde_json::from_str("{}").expect("parses");
+        assert_eq!(parsed.failure_threshold(), FAILURE_THRESHOLD_DEFAULT);
+        assert_eq!(
+            parsed.cooldown_seconds(),
+            u64::from(COOLDOWN_SECONDS_DEFAULT)
+        );
+
+        let clamped = validate(TranslationSettings {
+            failure_threshold: Some(0),
+            cooldown_seconds: Some(1),
+            ..complete()
+        })
+        .expect("clamps, not errors");
+        assert_eq!(clamped.failure_threshold, Some(FAILURE_THRESHOLD_MIN));
+        assert_eq!(clamped.cooldown_seconds, Some(COOLDOWN_SECONDS_MIN));
+        assert_eq!(clamped.failure_threshold(), FAILURE_THRESHOLD_MIN);
+        assert_eq!(clamped.cooldown_seconds(), u64::from(COOLDOWN_SECONDS_MIN));
+
+        let clamped = validate(TranslationSettings {
+            failure_threshold: Some(999),
+            cooldown_seconds: Some(99_999),
+            ..complete()
+        })
+        .expect("clamps, not errors");
+        assert_eq!(clamped.failure_threshold, Some(FAILURE_THRESHOLD_MAX));
+        assert_eq!(clamped.cooldown_seconds, Some(COOLDOWN_SECONDS_MAX));
+        assert_eq!(clamped.failure_threshold(), FAILURE_THRESHOLD_MAX);
+        assert_eq!(clamped.cooldown_seconds(), u64::from(COOLDOWN_SECONDS_MAX));
+    }
+
+    /// A stored row written before `translate_body` existed carries no
+    /// `translateBody` key; it must read as `true` so every row saved before
+    /// the field shipped keeps translating the body — the feature's behaviour
+    /// since it landed, never a silent regression for old settings.
+    #[test]
+    fn a_row_without_translate_body_reads_as_enabled() {
+        // Minimal legacy-shaped JSON: the serde defaults must fill in
+        // `translate_body` (and the other defaulted fields) on their own.
+        let parsed: TranslationSettings = serde_json::from_str("{}").expect("parses");
+        assert!(parsed.translate_body, "missing key defaults to on");
+
+        // The exact wire shape an older build stored: explicit keys, no
+        // `translateBody`.
+        let legacy: TranslationSettings = serde_json::from_str(
+            r#"{"enabled":true,"translateThinking":true,"selectionTranslate":false}"#,
+        )
+        .expect("parses");
+        assert!(legacy.translate_thinking);
+        assert!(!legacy.selection_translate);
+        assert!(legacy.translate_body, "legacy row keeps body translation");
+    }
+
+    /// An explicit `false` is a real user choice and must survive validate —
+    /// the serde default covers only the absent key, never overrides a saved
+    /// `false` back to on.
+    #[test]
+    fn validate_preserves_an_explicit_translate_body_false() {
+        let saved = complete();
+        assert!(saved.translate_body);
+
+        let validated = validate(TranslationSettings {
+            translate_body: false,
+            ..complete()
+        })
+        .expect("explicit false validates");
+        assert!(
+            !validated.translate_body,
+            "validate must not reset the user's off switch"
+        );
     }
 
     /// A legacy row (flat fields, no list) migrates to a one-member pool on
@@ -1586,4 +1837,3 @@ mod tests {
         assert_eq!(returned.api_key, API_KEY_MASK);
     }
 }
-

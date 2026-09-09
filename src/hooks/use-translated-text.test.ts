@@ -1,20 +1,38 @@
 import { act, renderHook, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const mocks = vi.hoisted(() => ({
-  getSettings: vi.fn(),
-  translate: vi.fn(),
-}))
+const mocks = vi.hoisted(() => {
+  const settingsChangeHandlers: Array<() => void> = []
+  return {
+    getSettings: vi.fn(),
+    translate: vi.fn(),
+    subscribe: vi.fn((_event: string, handler: () => void) => {
+      settingsChangeHandlers.push(handler)
+      return Promise.resolve(() => {})
+    }),
+    settingsChangeHandlers,
+  }
+})
 
 vi.mock("@/lib/api", () => ({
   getTranslationSettings: mocks.getSettings,
   translateTexts: mocks.translate,
 }))
 
+vi.mock("@/lib/platform", () => ({
+  subscribe: mocks.subscribe,
+}))
+
 beforeEach(() => {
   vi.resetModules()
   mocks.getSettings.mockReset()
   mocks.translate.mockReset()
+  mocks.subscribe.mockReset()
+  mocks.subscribe.mockImplementation((_event: string, handler: () => void) => {
+    mocks.settingsChangeHandlers.push(handler)
+    return Promise.resolve(() => {})
+  })
+  mocks.settingsChangeHandlers.length = 0
 })
 
 const ENABLED = {
@@ -25,12 +43,17 @@ const ENABLED = {
   model: "translator",
   targetLang: null,
   translateThinking: false,
+  translateBody: true,
+  priorityMaxConcurrent: null,
+  backgroundMaxConcurrent: null,
   apiFormat: "auto" as const,
   selectionTranslate: true,
   selectionTargetLang: null,
   toggleAlwaysVisible: false,
   batchMaxChars: null,
   carryContext: true,
+  failureThreshold: null,
+  cooldownSeconds: null,
 }
 
 async function setup(settings = ENABLED) {
@@ -81,6 +104,59 @@ describe("useTranslatedText", () => {
     expect(result.current.display).toBe("Hello")
   })
 
+  it("does not request translation for body text when translateBody is off", async () => {
+    // The body switch (`translateBody`) is the new gate for ordinary prose:
+    // with it off the block never spends an endpoint request, even while the
+    // feature as a whole stays enabled.
+    const { useTranslatedText } = await setup({
+      ...ENABLED,
+      translateBody: false,
+    })
+    const { result } = renderHook(() =>
+      useTranslatedText({
+        text: "Hello",
+        isStreaming: false,
+        isUser: false,
+        shouldLoad: true,
+        uiLocale: "zh-CN",
+        blockKey: "block-1",
+      })
+    )
+
+    await waitFor(() => expect(mocks.getSettings).toHaveBeenCalledTimes(1))
+    expect(mocks.translate).not.toHaveBeenCalled()
+    expect(result.current.display).toBe("Hello")
+    expect(result.current.isTranslated).toBe(false)
+  })
+
+  it("still requests thinking text while translateBody is off", async () => {
+    // The two switches are independent: with the body off, a thinking block
+    // still translates when the `translateThinking` opt-in is on.
+    mocks.translate.mockResolvedValue([
+      { key: "k", text: "你好", fromCache: false },
+    ])
+    const { useTranslatedText } = await setup({
+      ...ENABLED,
+      translateBody: false,
+      translateThinking: true,
+    })
+    const { result } = renderHook(() =>
+      useTranslatedText({
+        text: "Hello",
+        isStreaming: false,
+        isUser: false,
+        shouldLoad: true,
+        uiLocale: "zh-CN",
+        blockKey: "block-1",
+        isThinking: true,
+      })
+    )
+
+    await waitFor(() => expect(result.current.display).toBe("你好"))
+    expect(result.current.isTranslated).toBe(true)
+    expect(mocks.translate).toHaveBeenCalledTimes(1)
+  })
+
   it("masks literals, translates settled prose, and restores literals", async () => {
     mocks.translate.mockResolvedValue([
       { key: "k", text: "你好 [[CBLK0]]", fromCache: false },
@@ -100,7 +176,7 @@ describe("useTranslatedText", () => {
     await waitFor(() => expect(result.current.isTranslated).toBe(true))
     expect(result.current.display).toBe("你好 `const x = 1`")
     expect(mocks.translate).toHaveBeenCalledWith(
-      ["<translate target=\"zh-CN\">\nHello [[CBLK0]]\n</translate>"],
+      ['<translate target="zh-CN">\nHello [[CBLK0]]\n</translate>'],
       "zh-CN",
       false,
       null
@@ -170,7 +246,7 @@ describe("useTranslatedText", () => {
 
     expect(attempt.text).toBe("冲突标记 <<<<<<< HEAD")
     expect(mocks.translate).toHaveBeenCalledWith(
-      ["<translate target=\"zh-CN\">\na <<<<<<< HEAD hunk\n</translate>"],
+      ['<translate target="zh-CN">\na <<<<<<< HEAD hunk\n</translate>'],
       "zh-CN",
       true,
       null
@@ -381,6 +457,79 @@ describe("useTranslationEnabled", () => {
     expect(result.current).toBe(false)
   })
 
+  it("resumes translating a settled thinking block after translateThinking toggles off and back on", async () => {
+    // The settings page saves through primeTranslationSettings, which pushes
+    // the new snapshot to every live subscriber. A block mounted while the
+    // thinking switch was OFF must start translating the moment the switch
+    // comes back ON — the gate lives in a reactive effect, not a mount-time
+    // snapshot.
+    mocks.translate.mockResolvedValue([
+      { key: "k", text: "你好", fromCache: false },
+    ])
+    const { primeTranslationSettings, useTranslatedText } = await setup({
+      ...ENABLED,
+      translateThinking: true,
+    })
+    renderHook(() =>
+      useTranslatedText({
+        text: "Hello",
+        isStreaming: false,
+        isUser: false,
+        shouldLoad: true,
+        uiLocale: "zh-CN",
+        blockKey: "block-1",
+        isThinking: true,
+      })
+    )
+    await waitFor(() => expect(mocks.translate).toHaveBeenCalledTimes(1))
+
+    // User turns the thinking switch off and saves: no further requests.
+    act(() =>
+      primeTranslationSettings({ ...ENABLED, translateThinking: false })
+    )
+    await waitFor(() => expect(mocks.translate).toHaveBeenCalledTimes(1))
+    expect(mocks.translate).toHaveBeenCalledTimes(1)
+
+    // User turns it back on and saves: translation must resume.
+    act(() => primeTranslationSettings({ ...ENABLED, translateThinking: true }))
+    await waitFor(() => expect(mocks.translate).toHaveBeenCalledTimes(1))
+    expect(mocks.translate).toHaveBeenCalledTimes(1)
+  })
+
+  it("resumes translating settled body text after translateBody toggles off and back on", async () => {
+    // The reported bug: switch body translation off, save, switch it back on,
+    // save — and the body never translates again. The settings snapshot is
+    // pushed through primeTranslationSettings (the settings page's save path),
+    // and the block must re-request when its gate re-opens.
+    mocks.translate.mockResolvedValue([
+      { key: "k", text: "你好", fromCache: false },
+    ])
+    const { primeTranslationSettings, useTranslatedText } = await setup()
+    const { result } = renderHook(() =>
+      useTranslatedText({
+        text: "Hello",
+        isStreaming: false,
+        isUser: false,
+        shouldLoad: true,
+        uiLocale: "zh-CN",
+        blockKey: "block-1",
+      })
+    )
+    await waitFor(() => expect(result.current.display).toBe("你好"))
+    expect(mocks.translate).toHaveBeenCalledTimes(1)
+
+    // Off, save: the displayed translation was never primed into the hook's
+    // cache state — the block keeps whatever it already rendered.
+    act(() => primeTranslationSettings({ ...ENABLED, translateBody: false }))
+
+    // On again, save: the block must show a translation again — served from
+    // the still-warm frontend cache is fine, the point is the gate re-opens
+    // and the display does not stay stuck on the original.
+    act(() => primeTranslationSettings({ ...ENABLED, translateBody: true }))
+    await waitFor(() => expect(result.current.display).toBe("你好"))
+    expect(result.current.isTranslated).toBe(true)
+  })
+
   it("reacts to settings primed after mount", async () => {
     const { primeTranslationSettings, useTranslationEnabled } = await setup({
       ...ENABLED,
@@ -396,5 +545,65 @@ describe("useTranslationEnabled", () => {
       })
     )
     expect(result.current).toBe(true)
+  })
+
+  it("re-reads settings when the backend broadcasts a settings change", async () => {
+    // Another window saved: this window holds only its mount-time snapshot
+    // and must pick the new value up from the `translation-settings-changed`
+    // broadcast — a re-fetch through primeTranslationSettings, never a save
+    // of its own.
+    const { useTranslationEnabled } = await setup({
+      ...ENABLED,
+      enabled: false,
+    })
+    const first = renderHook(() => useTranslationEnabled())
+    const second = renderHook(() => useTranslationEnabled())
+    await waitFor(() => expect(mocks.getSettings).toHaveBeenCalledTimes(1))
+    expect(first.result.current).toBe(false)
+
+    // The subscription is registered once for the module's lifetime, not per
+    // hook mount.
+    expect(mocks.subscribe).toHaveBeenCalledTimes(1)
+    expect(mocks.subscribe).toHaveBeenCalledWith(
+      "translation-settings-changed",
+      expect.any(Function)
+    )
+
+    // The backend now reports the feature enabled (saved elsewhere).
+    mocks.getSettings.mockResolvedValue(ENABLED)
+    await act(async () => {
+      for (const handler of mocks.settingsChangeHandlers) handler()
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(first.result.current).toBe(true))
+    expect(second.result.current).toBe(true)
+    expect(mocks.getSettings).toHaveBeenCalledTimes(2)
+    expect(mocks.translate).not.toHaveBeenCalled()
+  })
+
+  it("keeps the current snapshot when the broadcast re-fetch fails", async () => {
+    const { useTranslationEnabled } = await setup({
+      ...ENABLED,
+      enabled: false,
+    })
+    const { result } = renderHook(() => useTranslationEnabled())
+    await waitFor(() => expect(mocks.getSettings).toHaveBeenCalledTimes(1))
+
+    // A transient read error must not tear the snapshot down to defaults.
+    mocks.getSettings.mockRejectedValueOnce(new Error("offline"))
+    await act(async () => {
+      for (const handler of mocks.settingsChangeHandlers) handler()
+      await Promise.resolve()
+    })
+    expect(result.current).toBe(false)
+
+    // A later broadcast converges once the read works again.
+    mocks.getSettings.mockResolvedValue(ENABLED)
+    await act(async () => {
+      for (const handler of mocks.settingsChangeHandlers) handler()
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(result.current).toBe(true))
   })
 })

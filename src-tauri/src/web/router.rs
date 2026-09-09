@@ -446,10 +446,7 @@ pub fn build_router(
         .route("/git_pull", post(handlers::git::git_pull))
         .route("/git_push", post(handlers::git::git_push))
         .route("/git_fetch", post(handlers::git::git_fetch))
-        .route(
-            "/git_update_branch",
-            post(handlers::git::git_update_branch),
-        )
+        .route("/git_update_branch", post(handlers::git::git_update_branch))
         .route("/git_commit", post(handlers::git::git_commit))
         .route("/git_fetch_remote", post(handlers::git::git_fetch_remote))
         .route("/git_delete_branch", post(handlers::git::git_delete_branch))
@@ -721,6 +718,18 @@ pub fn build_router(
             "/translation_metrics",
             post(handlers::translation::translation_metrics),
         )
+        .route(
+            "/translation_provider_reset",
+            post(handlers::translation::translation_provider_reset),
+        )
+        .route(
+            "/translation_provider_disable",
+            post(handlers::translation::translation_provider_disable),
+        )
+        .route(
+            "/translation_provider_cooldown",
+            post(handlers::translation::translation_provider_cooldown),
+        )
         // ─── Logging ───
         .route(
             "/get_log_settings",
@@ -756,10 +765,7 @@ pub fn build_router(
             "/acp_set_config_option",
             post(handlers::acp::acp_set_config_option),
         )
-        .route(
-            "/acp_goal_control",
-            post(handlers::acp::acp_goal_control),
-        )
+        .route("/acp_goal_control", post(handlers::acp::acp_goal_control))
         .route(
             "/acp_describe_agent_options",
             post(handlers::acp::acp_describe_agent_options),
@@ -1329,7 +1335,10 @@ pub fn build_router(
             "/automation_list",
             post(handlers::automation::automation_list),
         )
-        .route("/automation_get", post(handlers::automation::automation_get))
+        .route(
+            "/automation_get",
+            post(handlers::automation::automation_get),
+        )
         .route(
             "/automation_runs",
             post(handlers::automation::automation_runs),
@@ -1442,10 +1451,7 @@ pub fn build_router(
             "/forge_list_issues",
             post(handlers::forge::forge_list_issues),
         )
-        .route(
-            "/forge_tab_count",
-            post(handlers::forge::forge_tab_count),
-        )
+        .route("/forge_tab_count", post(handlers::forge::forge_tab_count))
         .route(
             "/forge_list_labels",
             post(handlers::forge::forge_list_labels),

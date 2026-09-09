@@ -213,9 +213,7 @@ async fn async_main() -> ExitCode {
         // bearer credential and must never enter the durable log files or the
         // in-app log viewer. `eprintln!` bypasses the tracing sinks (file +
         // ring buffer); only the local terminal / Docker stderr sees it.
-        eprintln!(
-            "[SERVER] No CODEG_TOKEN set; generated an access token (persisted): {token}"
-        );
+        eprintln!("[SERVER] No CODEG_TOKEN set; generated an access token (persisted): {token}");
         eprintln!("[SERVER] Pin your own by setting the CODEG_TOKEN environment variable.");
     }
 
@@ -262,6 +260,20 @@ async fn async_main() -> ExitCode {
             codeg_lib::web::event_bridge::emit_event(
                 &emitter,
                 "translation-pool-changed",
+                serde_json::json!({}),
+            );
+        }));
+    }
+
+    // Push translation-settings changes to connected clients: hooks beyond
+    // the window that saved re-fetch their snapshot on this event instead of
+    // keeping the mount-time copy.
+    {
+        let emitter = emitter.clone();
+        codeg_lib::translation::settings::on_settings_change(Arc::new(move || {
+            codeg_lib::web::event_bridge::emit_event(
+                &emitter,
+                "translation-settings-changed",
                 serde_json::json!({}),
             );
         }));
@@ -581,9 +593,11 @@ async fn async_main() -> ExitCode {
     // Publish runtime state so the settings page (served by us) shows
     // the truth — running on `actual_port` with this token — instead of
     // the placeholder "stopped" that triggers the stale-port banner.
-    state
-        .web_server_state
-        .mark_externally_running(advertised_host.clone(), actual_port, token.clone());
+    state.web_server_state.mark_externally_running(
+        advertised_host.clone(),
+        actual_port,
+        token.clone(),
+    );
     let addresses = addresses_for_bind(&advertised_host, actual_port);
 
     // Token on stderr ONLY (bearer credential — keep it out of the log files

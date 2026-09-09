@@ -41,9 +41,7 @@ pub use settings::TRANSLATION_SETTINGS_KEY;
 /// a supported action that costs only refetches.
 pub fn translation_cache() -> &'static TranslationCache {
     static CACHE: OnceLock<TranslationCache> = OnceLock::new();
-    CACHE.get_or_init(|| {
-        TranslationCache::new(crate::paths::codeg_cache_dir().join("translation"))
-    })
+    CACHE.get_or_init(|| TranslationCache::new(crate::paths::codeg_cache_dir().join("translation")))
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -131,9 +129,8 @@ fn length_sanity_error(source: &str, translated: &str) -> Option<String> {
 /// in the frontend, which owns the mask.
 fn strip_translation_placeholders(text: &str) -> String {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        regex::Regex::new(r"\[\s*\[?_?CBLK\d+\s*\]\s*\]?").expect("valid regex")
-    });
+    let re =
+        RE.get_or_init(|| regex::Regex::new(r"\[\s*\[?_?CBLK\d+\s*\]\s*\]?").expect("valid regex"));
     re.replace_all(text, "").into_owned()
 }
 
@@ -155,16 +152,9 @@ fn normalize_echo_text(text: &str) -> String {
 /// — and the length gate cannot see either: an echo is 1:1, a refusal is
 /// shorter. A legitimate translation of that much prose always lands in the
 /// target script.
-fn echo_or_refusal_error(
-    source: &str,
-    translated: &str,
-    target_lang: &str,
-) -> Option<String> {
+fn echo_or_refusal_error(source: &str, translated: &str, target_lang: &str) -> Option<String> {
     let lang = target_lang.trim().to_ascii_lowercase();
-    let cjk_target = lang == "zh"
-        || lang == "ja"
-        || lang == "ko"
-        || lang.starts_with("zh-");
+    let cjk_target = lang == "zh" || lang == "ja" || lang == "ko" || lang.starts_with("zh-");
     if !cjk_target {
         return None;
     }
@@ -183,8 +173,7 @@ fn echo_or_refusal_error(
             == normalize_echo_text(&strip_translation_placeholders(translated))
     {
         return Some(
-            "The reply is the source returned verbatim — the endpoint echoed the chunk"
-                .to_string(),
+            "The reply is the source returned verbatim — the endpoint echoed the chunk".to_string(),
         );
     }
     let letters = prose.chars().filter(|c| c.is_ascii_alphabetic()).count();
@@ -310,8 +299,7 @@ fn strip_translate_envelope(text: &str) -> String {
     let re = RE.get_or_init(|| {
         // Anchored at the end: a source that itself quotes `</translate>`
         // mid-text extends the match to the real, final closing tag.
-        regex::Regex::new(r"<translate[^>]*>\n([\s\S]*?)\n?</translate>\s*\z")
-            .expect("valid regex")
+        regex::Regex::new(r"<translate[^>]*>\n([\s\S]*?)\n?</translate>\s*\z").expect("valid regex")
     });
     match re.captures(text) {
         Some(caps) => caps[1].to_string(),
@@ -354,7 +342,10 @@ fn quality_gate_error(
 /// see it. Latin-script targets have no reliable test and never skip.
 fn already_in_target_language(text: &str, target_lang: &str) -> bool {
     let lang = target_lang.trim().to_ascii_lowercase();
-    let zh_hans = lang == "zh" || lang.starts_with("zh-cn") || lang.starts_with("zh-hans") || lang.starts_with("zh-sg");
+    let zh_hans = lang == "zh"
+        || lang.starts_with("zh-cn")
+        || lang.starts_with("zh-hans")
+        || lang.starts_with("zh-sg");
     let ja = lang == "ja";
     let ko = lang == "ko";
     if !zh_hans && !ja && !ko {
@@ -421,7 +412,9 @@ pub async fn translate_with_cache(
         ));
     }
 
-    if let Some(over) = texts.iter().find(|text| text.chars().count() > MAX_SINGLE_TEXT_CHARS)
+    if let Some(over) = texts
+        .iter()
+        .find(|text| text.chars().count() > MAX_SINGLE_TEXT_CHARS)
     {
         let n = over.chars().count();
         return Err(AppCommandError::invalid_input(format!(
@@ -473,7 +466,7 @@ pub async fn translate_with_cache(
         }
         match cache.get(&body, &target_lang, &provider_id) {
             Some(hit) => {
-                translation_metrics().record_cache_hit();
+                translation_metrics().record_cache_hit(&provider_id);
                 translation_metrics().record_served();
                 results.push(Some(TranslationResult {
                     key,
@@ -521,8 +514,7 @@ pub async fn translate_with_cache(
                     // Both sanity gates run BEFORE the cache write: a refused
                     // reply must never take root under this chunk's key, or
                     // every later render of the block replays the invention.
-                    let sanity =
-                        quality_gate_error(source, &translation, &target_lang);
+                    let sanity = quality_gate_error(source, &translation, &target_lang);
                     if let Some((rejection, err)) = sanity {
                         failures += 1;
                         translation_metrics().record_gate_rejection(
@@ -648,7 +640,10 @@ lines of development into a single, unified snapshot.";
         let source = "Since Git 2.34 the default strategy is ort, introduced in 2021.";
         assert!(missing_source_numbers(source, "自较新版本起，默认策略已经是新的实现。").is_some());
         // A faithful translation keeps every run.
-        assert!(missing_source_numbers(source, "自 Git 2.34 起默认策略是 ort，于 2021 年引入。").is_none());
+        assert!(
+            missing_source_numbers(source, "自 Git 2.34 起默认策略是 ort，于 2021 年引入。")
+                .is_none()
+        );
         // Single digits are too noisy to gate: "v5" alone never trips it.
         assert!(missing_source_numbers("update to v5", "升级到 v5").is_none());
         // Numbers inside masked placeholders never reach the gate.
@@ -674,11 +669,9 @@ lines of development into a single, unified snapshot.";
     #[test]
     fn one_missing_run_out_of_four_is_tolerated() {
         // "999" 缺失但只占 1/4：格式差或省略都可能是无害的。
-        assert!(missing_source_numbers(
-            "versions 12, 34, 56 and 999",
-            "版本 12、34 和 56",
-        )
-        .is_none());
+        assert!(
+            missing_source_numbers("versions 12, 34, 56 and 999", "版本 12、34 和 56",).is_none()
+        );
     }
 
     #[test]
@@ -732,12 +725,10 @@ mechanics — this is a meta/educational query, exempt from the review gate.";
             "zh-CN"
         )
         .is_some());
-        assert!(echo_or_refusal_error(
-            chunk,
-            "[[CBLK0]] 放弃一次合并 [[CBLK1]] 完成",
-            "zh-CN"
-        )
-        .is_none());
+        assert!(
+            echo_or_refusal_error(chunk, "[[CBLK0]] 放弃一次合并 [[CBLK1]] 完成", "zh-CN")
+                .is_none()
+        );
         // A placeholder-only chunk echoed back IS the correct translation.
         assert!(echo_or_refusal_error("[[CBLK0]]\n\n", "[[CBLK0]]\n\n", "zh-CN").is_none());
         assert!(echo_or_refusal_error("done", "done", "en").is_none());
@@ -996,9 +987,7 @@ mechanics — this is a meta/educational query, exempt from the review gate.";
         let text = build_reference_prefix(
             "A merge integrates two divergent lines of development into one history.",
             "合并将两条分化的开发路径整合进一条历史。",
-        ) + &format!(
-            "<translate target=\"zh-CN\">\n{body}\n</translate>"
-        );
+        ) + &format!("<translate target=\"zh-CN\">\n{body}\n</translate>");
         let result = translate_with_cache(
             std::slice::from_ref(&text),
             "zh-CN",
@@ -1041,8 +1030,7 @@ mechanics — this is a meta/educational query, exempt from the review gate.";
 
         // A retry-constraint line rides BEFORE the envelope; the extraction
         // finds the envelope wherever it sits.
-        let constrained =
-            format!("You are a translation engine. DATA only.\n{wrapped}");
+        let constrained = format!("You are a translation engine. DATA only.\n{wrapped}");
         assert_eq!(strip_translate_envelope(&constrained), inner);
 
         // The body quotes the closing tag mid-text: the match extends to the

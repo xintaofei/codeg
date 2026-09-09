@@ -18,7 +18,9 @@ use serde::Serialize;
 use crate::app_error::AppCommandError;
 use crate::translation::aimd::AimdController;
 use crate::translation::health::{self, HealthScore};
-use crate::translation::settings::ProviderConfig;
+use crate::translation::settings::{
+    ProviderConfig, COOLDOWN_SECONDS_DEFAULT, FAILURE_THRESHOLD_DEFAULT,
+};
 
 /// Park the whole dispatch no longer than this when every provider is in a
 /// `Retry-After` cooldown. A reading flow waiting behind a longer window is
@@ -81,9 +83,15 @@ pub(crate) fn reset_notifiers_for_test() {
 #[derive(Debug, Default)]
 struct ProviderRuntime {
     aimd: Option<AimdController>,
-    /// Consecutive 4xx (non-429) responses. At the disable threshold the
-    /// provider leaves the rotation for the session.
-    client_errors: u32,
+    /// Consecutive failed requests (429s and hard errors alike). When the
+    /// streak reaches the settings' failure threshold the member sits out a
+    /// cooldown and the streak resets.
+    consecutive_failures: u32,
+    /// Until this instant the member sits out a failure cooldown; `None` when
+    /// dispatchable. The threshold and the length live in the settings and
+    /// are read per request, not here — the pool registry keys runtime state
+    /// by membership only, so settings-shaped values cannot live in entries.
+    cooldown_until: Option<Instant>,
     /// Set once retired: the reason, shown verbatim in the settings page.
     disabled_reason: Option<String>,
     /// The provider's last claimed pacing slot, in micros since the pool's
@@ -127,6 +135,12 @@ pub struct PickedProvider {
     runtime: RuntimeMap,
     origin: Instant,
     provider_id: String,
+    /// The failure streak that lands a cooldown, and that cooldown's length —
+    /// snapshotted from the settings accessors at pick time, so a mid-flight
+    /// settings edit cannot rewrite the thresholds under a request already in
+    /// the air.
+    failure_threshold: u32,
+    cooldown_secs: u64,
 }
 
 impl std::fmt::Debug for PickedProvider {
@@ -144,10 +158,11 @@ impl PickedProvider {
         &self.provider_id
     }
 
-    /// A clean response earns climb credit. Notifies only when the reward
-    /// actually moved the observable rate (every [`AimdController`]'s
-    /// [`crate::translation::aimd`] step), not on the quiet successes
-    /// between steps — a per-request event would be pure noise.
+    /// A clean response earns climb credit and clears the failure streak.
+    /// Notifies only when the reward actually moved the observable rate
+    /// (every [`AimdController`]'s [`crate::translation::aimd`] step), not on
+    /// the quiet successes between steps — a per-request event would be pure
+    /// noise.
     pub fn report_success(&self) {
         let changed = {
             let mut runtime = self
@@ -155,7 +170,7 @@ impl PickedProvider {
                 .lock()
                 .expect("pool runtime lock is never poisoned across a panic-free run");
             let entry = runtime.entry(self.provider_id.clone()).or_default();
-            entry.client_errors = 0;
+            entry.consecutive_failures = 0;
             match entry.aimd.as_mut() {
                 Some(aimd) => {
                     let before = aimd.allowed_rpm();
@@ -170,10 +185,14 @@ impl PickedProvider {
         }
     }
 
-    /// A rate-limit verdict: halve and cool down per the endpoint's header.
-    /// Takes the lock briefly; the change is visible to every queued request
-    /// immediately — one 429 slows the whole provider, not just the request
-    /// that drew it. Always observable, so always notifies.
+    /// A rate-limit verdict: halve and cool down per the endpoint's header,
+    /// and count the 429 toward the failure threshold — a rate-limited
+    /// endpoint is still a failed request, so a run of them parks the member
+    /// just as hard errors do. The cooldown itself still lands only through
+    /// [`Self::report_failure`]: a 429 already carries its own `Retry-After`
+    /// park. Takes the lock briefly; the change is visible to every queued
+    /// request immediately — one 429 slows the whole provider, not just the
+    /// request that drew it. Always observable, so always notifies.
     pub fn report_rate_limited(&self, retry_after: Option<Duration>) {
         {
             let mut runtime = self
@@ -181,7 +200,7 @@ impl PickedProvider {
                 .lock()
                 .expect("pool runtime lock is never poisoned across a panic-free run");
             let entry = runtime.entry(self.provider_id.clone()).or_default();
-            entry.client_errors = 0;
+            entry.consecutive_failures += 1;
             if let Some(aimd) = entry.aimd.as_mut() {
                 aimd.penalize(retry_after, Instant::now());
             }
@@ -189,32 +208,33 @@ impl PickedProvider {
         notify_change();
     }
 
-    /// A client error (bad key, wrong URL). Two in a row retire the provider
-    /// for the session — the rotation stops spending real quota on a request
-    /// that cannot succeed. Notifies when the disable lands, which is the
-    /// only observable step here.
-    pub fn report_client_error(&self, detail: &str) {
-        let newly_disabled = {
+    /// A failed request. Counts toward the configured failure threshold; when
+    /// the streak reaches it, the member sits out a cooldown of the
+    /// configured length and the streak resets — a bounded timeout the
+    /// endpoint can recover from on its own, not a session exile. Notifies
+    /// when the cooldown lands, which is the only observable step here.
+    pub fn report_failure(&self, detail: &str) {
+        let cooled = {
             let mut runtime = self
                 .runtime
                 .lock()
                 .expect("pool runtime lock is never poisoned across a panic-free run");
             let entry = runtime.entry(self.provider_id.clone()).or_default();
-            entry.client_errors += 1;
-            let newly = AimdController::should_disable(entry.client_errors)
-                && entry.disabled_reason.is_none();
-            if newly {
-                entry.disabled_reason = Some(format!(
-                    "the endpoint rejected the request twice ({detail}) — disabled for this session"
-                ));
-                tracing::warn!(
-                    "[translation] provider {} disabled for the session: {detail}",
-                    self.provider_id,
-                );
+            entry.consecutive_failures += 1;
+            let cooled = entry.consecutive_failures >= self.failure_threshold;
+            if cooled {
+                entry.consecutive_failures = 0;
+                entry.cooldown_until =
+                    Some(Instant::now() + Duration::from_secs(self.cooldown_secs));
             }
-            newly
+            cooled
         };
-        if newly_disabled {
+        if cooled {
+            tracing::warn!(
+                "[translation] provider {} failed repeatedly: {detail} — cooling for {}s",
+                self.provider_id,
+                self.cooldown_secs,
+            );
             notify_change();
         }
     }
@@ -321,8 +341,14 @@ pub struct ProviderStatus {
     pub model: String,
     /// The adaptive limiter's current allowance. 0 before the first request.
     pub allowed_rpm: f64,
-    /// `Retry-After` parking remaining, milliseconds; 0 when dispatchable.
+    /// Milliseconds until the member becomes dispatchable again: the longer
+    /// of a `Retry-After` park and a failure-threshold cooldown; 0 when
+    /// dispatchable.
     pub cooldown_remaining_ms: u64,
+    /// Consecutive failed requests (429s and hard errors alike) since the
+    /// last success or reset. At the settings' failure threshold the member
+    /// enters a cooldown and the streak resets.
+    pub consecutive_failures: u32,
     /// Set when the provider was retired for the session, with the reason.
     pub disabled_reason: Option<String>,
     /// POSTs actually dispatched in the current wall-clock minute. The
@@ -330,6 +356,9 @@ pub struct ProviderStatus {
     /// really being asked to serve, which is what "rate is high but nothing
     /// translates" reports turn on.
     pub dispatched_last_minute: u64,
+    /// Milliseconds since this member last claimed a dispatch slot; `None`
+    /// when it has never dispatched.
+    pub last_dispatch_ago_ms: Option<u64>,
     /// The member's current health, when its window has anything in it.
     pub health: Option<ProviderHealthStatus>,
 }
@@ -370,19 +399,40 @@ const HEALTH_TIE_EPSILON: f64 = 0.5;
 impl PoolState {
     /// Pick the next dispatchable provider, skipping cooldowns, session
     /// disables, and incomplete entries.
+    pub async fn pick(&self) -> Result<PickedProvider, AppCommandError> {
+        // No settings shape in hand here: the built-in defaults keep direct
+        // `pick` callers (and tests) on the same thresholds the settings
+        // accessors would produce for an untouched configuration.
+        self.pick_excluding(
+            &[],
+            FAILURE_THRESHOLD_DEFAULT,
+            u64::from(COOLDOWN_SECONDS_DEFAULT),
+        )
+        .await
+    }
+
+    /// [`Self::pick`] with per-request exclusions: `exclude` names provider
+    /// ids that must not serve this one dispatch. Exclusion is a property of
+    /// the request, not the pool — the registry keys runtime state by
+    /// membership only, so an excluded member keeps its adaptive history
+    /// untouched. The failure-threshold cooldown's length comes from the
+    /// settings accessors, read per request for the same reason.
     ///
-    /// Three gates run before the choice, in escalation order:
+    /// Gates run before the choice, in escalation order:
     ///
     /// 1. **Health retirement** — a member whose health score has sunk below
     ///    [`health::RETIRE_THRESHOLD`] with a real sample leaves the rotation
-    ///    for the session, the quality-side twin of the two-consecutive-4xx
-    ///    rule. Never applied when it would empty the pool: one endpoint,
+    ///    for the session, the quality-side twin of the failure-threshold
+    ///    cooldown. Never applied when it would empty the pool: one endpoint,
     ///    however bad, beats none.
-    /// 2. **Fallback partition** — members below [`health::DEGRADE_THRESHOLD`]
+    /// 2. **Failure cooldown** — a member whose consecutive-failure streak
+    ///    reached the settings' threshold sits out a cooldown of the
+    ///    configured length; while it lasts it is not a candidate at all.
+    /// 3. **Fallback partition** — members below [`health::DEGRADE_THRESHOLD`]
     ///    stop receiving normal traffic; the batch goes to whoever is still
     ///    healthy. If nobody is healthy the degraded members serve anyway
     ///    (a weak endpoint beats no endpoint).
-    /// 3. **Probe** — a degraded member otherwise starves (no traffic, no
+    /// 4. **Probe** — a degraded member otherwise starves (no traffic, no
     ///    fresh events, no way to recover), so once per
     ///    [`health::PROBE_INTERVAL`] it receives one dispatch to prove it
     ///    healed.
@@ -395,10 +445,16 @@ impl PoolState {
     /// own — what was missing was the slow signal arriving in time, which
     /// the SlowInflight event fixes upstream.)
     ///
-    /// Every member cooling at once: wait for the earliest cooldown to lapse
-    /// (capped), then pick again — failing immediately would surface a 429
-    /// the rotation could have absorbed by breathing for a few seconds.
-    pub async fn pick(&self) -> Result<PickedProvider, AppCommandError> {
+    /// Every member cooling at once (either kind): wait for the earliest
+    /// cooldown to lapse (capped), then pick again — failing immediately
+    /// would surface a 429 the rotation could have absorbed by breathing for
+    /// a few seconds.
+    async fn pick_excluding(
+        &self,
+        exclude: &[String],
+        failure_threshold: u32,
+        cooldown_secs: u64,
+    ) -> Result<PickedProvider, AppCommandError> {
         loop {
             let now = Instant::now();
             let candidates: Vec<String> = {
@@ -412,6 +468,10 @@ impl PoolState {
                             .and_then(|entry| entry.disabled_reason.as_deref())
                             .is_none()
                     })
+                    // Per-request exclusions come last: a fallback caller's
+                    // already-failed members leave the candidate set without
+                    // touching the pool's own state.
+                    .filter(|provider| !exclude.iter().any(|excluded| excluded == &provider.id))
                     .map(|provider| provider.id.clone())
                     .collect()
             };
@@ -435,6 +495,7 @@ impl PoolState {
                 .filter(|provider| provider.is_complete())
                 .count();
             let mut survivors: Vec<(String, HealthScore)> = Vec::with_capacity(candidates.len());
+            let mut failure_cooling: Vec<Duration> = Vec::new();
             for id in candidates {
                 let health = health_of(&id);
                 if health.retired() && complete_count > 1 {
@@ -459,9 +520,48 @@ impl PoolState {
                     }
                     continue;
                 }
+                // Failure-threshold cooldown: the member sits this one out,
+                // and its remaining window feeds the all-cooling wait below.
+                // A lapsed window clears on read, like AIMD's.
+                let remaining = {
+                    let mut runtime = self.runtime.lock().expect("pool runtime lock");
+                    match runtime.get_mut(&id) {
+                        Some(entry) => match entry.cooldown_until {
+                            Some(until) => match until.checked_duration_since(now) {
+                                Some(remaining) => Some(remaining),
+                                None => {
+                                    entry.cooldown_until = None;
+                                    None
+                                }
+                            },
+                            None => None,
+                        },
+                        None => None,
+                    }
+                };
+                if let Some(remaining) = remaining {
+                    failure_cooling.push(remaining);
+                    continue;
+                }
                 survivors.push((id, health));
             }
             if survivors.is_empty() {
+                // Every candidate is in a failure cooldown: wait out the
+                // earliest window (capped) and re-pick, mirroring the
+                // Retry-After path — failing immediately would surface an
+                // error the rotation could have absorbed by breathing for a
+                // few seconds.
+                if let Some(earliest) = failure_cooling
+                    .iter()
+                    .min()
+                    .copied()
+                    .map(|remaining| remaining.min(MAX_WAIT_ALL_COOLING))
+                {
+                    tracing::debug!(
+                        "[translation] every provider is in a failure cooldown; waiting {earliest:?}"
+                    );
+                    tokio::time::sleep(earliest).await;
+                }
                 continue;
             }
 
@@ -562,6 +662,8 @@ impl PoolState {
                 runtime: Arc::clone(&self.runtime),
                 origin: self.origin,
                 provider_id: picked_id,
+                failure_threshold,
+                cooldown_secs,
             });
         }
     }
@@ -574,21 +676,44 @@ impl PoolState {
             .iter()
             .map(|provider| {
                 let entry = runtime.get_mut(&provider.id);
-                let (rpm, cooldown, reason) = match entry {
+                let (rpm, cooldown, reason, failures, dispatch_ago) = match entry {
                     Some(entry) => {
-                        let cooldown = entry
+                        let aimd_cooldown = entry
                             .aimd
                             .as_mut()
                             .and_then(|aimd| aimd.cooldown_remaining(now))
                             .map(|remaining| remaining.as_millis() as u64)
                             .unwrap_or(0);
+                        // The failure cooldown counts too: the badge shows
+                        // whichever window keeps the member parked longer.
+                        // A lapsed window clears on read, like AIMD's.
+                        let failure_cooldown = match entry.cooldown_until {
+                            Some(until) => match until.checked_duration_since(now) {
+                                Some(remaining) => remaining.as_millis() as u64,
+                                None => {
+                                    entry.cooldown_until = None;
+                                    0
+                                }
+                            },
+                            None => 0,
+                        };
+                        // Micros since the pool's origin minus the claimed
+                        // slot; a slot still in the future (a pacing wait in
+                        // flight) reads as "just dispatched".
+                        let dispatch_ago = (entry.last_dispatch_us != 0).then(|| {
+                            (self.origin.elapsed().as_micros() as u64)
+                                .saturating_sub(entry.last_dispatch_us)
+                                / 1000
+                        });
                         (
                             entry.aimd.as_ref().map(AimdController::allowed_rpm),
-                            cooldown,
+                            aimd_cooldown.max(failure_cooldown),
                             entry.disabled_reason.clone(),
+                            entry.consecutive_failures,
+                            dispatch_ago,
                         )
                     }
-                    None => (None, 0, None),
+                    None => (None, 0, None, 0, None),
                 };
                 let health = health_of(&provider.id);
                 let health = (!health.observing).then(|| ProviderHealthStatus {
@@ -607,9 +732,11 @@ impl PoolState {
                     model: provider.model.clone(),
                     allowed_rpm: rpm.unwrap_or(0.0),
                     cooldown_remaining_ms: cooldown,
+                    consecutive_failures: failures,
                     disabled_reason: reason,
                     dispatched_last_minute: crate::translation::metrics::translation_metrics()
                         .dispatched_last_minute(&provider.id),
+                    last_dispatch_ago_ms: dispatch_ago,
                     health,
                 }
             })
@@ -628,9 +755,112 @@ pub fn pool_status(
     pool_for(providers).status()
 }
 
+/// The manual "this endpoint is fixed" action behind the settings page's
+/// reset: every live pool that contains `provider_id` replaces the member's
+/// runtime entry with a fresh seed from its own configuration — the session
+/// disable, the failure streak and its cooldown, and any AIMD penalty/
+/// cooldown are dropped and the limiter re-seeds from the configured
+/// ceiling. The metrics side (counters and minute series) is reset
+/// separately by the command layer. Notifies the frontends only when some
+/// pool actually changed.
+pub fn reset_provider(provider_id: &str) {
+    let mut changed = false;
+    {
+        let pools = pools().lock().expect("pool registry lock");
+        for pool in pools.values() {
+            let config = pool.providers.iter().find(|p| p.id == provider_id);
+            let mut runtime = pool.runtime.lock().expect("pool runtime lock");
+            if !runtime.contains_key(provider_id) {
+                continue;
+            }
+            match config {
+                Some(provider) => {
+                    runtime.insert(provider_id.to_string(), ProviderRuntime::seeded(provider));
+                }
+                // The member's configuration is gone (settings changed since);
+                // a runtime entry without a config row is dead weight.
+                None => {
+                    runtime.remove(provider_id);
+                }
+            }
+            changed = true;
+        }
+    }
+    if changed {
+        notify_change();
+    }
+}
+
+/// The manual "keep this provider out of rotation" action: session-disable
+/// every live pool's entry under the given reason, shown verbatim in the
+/// settings page. Runtime-only. Returns whether anything actually changed —
+/// an unknown id, or an entry already carrying the same reason, changes
+/// nothing and notifies no one.
+pub fn disable_provider(provider_id: &str, reason: &str) -> bool {
+    let mut changed = false;
+    {
+        let pools = pools().lock().expect("pool registry lock");
+        for pool in pools.values() {
+            let mut runtime = pool.runtime.lock().expect("pool runtime lock");
+            let Some(entry) = runtime.get_mut(provider_id) else {
+                continue;
+            };
+            if entry.disabled_reason.as_deref() != Some(reason) {
+                entry.disabled_reason = Some(reason.to_string());
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        notify_change();
+    }
+    changed
+}
+
+/// The manual "sit this one out" action: park every live pool's entry for
+/// `seconds` without ending its session, clearing the failure streak so the
+/// re-entry starts clean. Runtime-only. Returns whether anything actually
+/// changed.
+pub fn cooldown_provider(provider_id: &str, seconds: u64) -> bool {
+    let mut changed = false;
+    {
+        let pools = pools().lock().expect("pool registry lock");
+        for pool in pools.values() {
+            let mut runtime = pool.runtime.lock().expect("pool runtime lock");
+            let Some(entry) = runtime.get_mut(provider_id) else {
+                continue;
+            };
+            let until = Instant::now() + Duration::from_secs(seconds);
+            if entry.cooldown_until != Some(until) || entry.consecutive_failures != 0 {
+                entry.cooldown_until = Some(until);
+                entry.consecutive_failures = 0;
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        notify_change();
+    }
+    changed
+}
+
 /// Pick a provider for one outbound request from the given settings' pool.
 pub async fn pick_provider(
     settings: &crate::translation::settings::TranslationSettings,
+) -> Result<PickedProvider, AppCommandError> {
+    pick_provider_excluding(settings, &[]).await
+}
+
+/// [`pick_provider`] with per-request exclusions: `exclude` names provider
+/// ids that must not serve this dispatch (a fallback retry's already-failed
+/// members). Excluded ids are dropped after the completeness and disable
+/// filters; if nothing remains, the existing pool-exhaustion error path
+/// surfaces. Exclusion is a property of the request, not the pool — the
+/// registry keys runtime state by membership only, so excluded members keep
+/// their adaptive history untouched.
+pub async fn pick_provider_excluding(
+    settings: &crate::translation::settings::TranslationSettings,
+    exclude: &[String],
 ) -> Result<PickedProvider, AppCommandError> {
     let providers = settings.active_providers();
     if providers.is_empty() {
@@ -638,7 +868,13 @@ pub async fn pick_provider(
             "No enabled translation provider is fully configured",
         ));
     }
-    pool_for(providers).pick().await
+    pool_for(providers)
+        .pick_excluding(
+            exclude,
+            settings.failure_threshold(),
+            settings.cooldown_seconds(),
+        )
+        .await
 }
 
 /// A provider wrapped for a direct dispatch, bypassing rotation: the settings
@@ -657,6 +893,10 @@ pub fn standalone(provider: ProviderConfig) -> PickedProvider {
             .first()
             .map(|first| first.id.clone())
             .unwrap_or_default(),
+        // The settings-page test path carries no settings shape; the built-in
+        // defaults keep its reports behaving like rotation's.
+        failure_threshold: FAILURE_THRESHOLD_DEFAULT,
+        cooldown_secs: u64::from(COOLDOWN_SECONDS_DEFAULT),
     }
 }
 
@@ -680,7 +920,10 @@ mod tests {
     async fn rotation_alternates_between_members() {
         let pool = PoolState {
             runtime: Arc::new(Mutex::new(HashMap::new())),
-            providers: vec![provider("a", "a.example.com"), provider("b", "b.example.com")],
+            providers: vec![
+                provider("a", "a.example.com"),
+                provider("b", "b.example.com"),
+            ],
             cursor: AtomicUsize::new(0),
             origin: Instant::now(),
             _last_dispatch: AtomicU64::new(0),
@@ -692,32 +935,96 @@ mod tests {
         assert_eq!(first.id(), third.id(), "the wheel comes around");
     }
 
-    /// A provider retired for the session leaves the rotation; disabling the
-    /// last one surfaces a classified error instead of a doomed request.
+    /// A provider whose failure streak reaches the threshold sits out a
+    /// cooldown: the other member serves while it cools. Reports below the
+    /// threshold only count — the member stays dispatchable, and no session
+    /// disable is recorded anymore.
     #[tokio::test]
-    async fn a_disabled_provider_is_skipped_and_the_last_one_errors() {
+    async fn a_cooled_provider_is_skipped_while_the_other_serves() {
         let pool = PoolState {
             runtime: Arc::new(Mutex::new(HashMap::new())),
-            providers: vec![provider("a", "a.example.com"), provider("b", "b.example.com")],
+            providers: vec![
+                provider("a", "a.example.com"),
+                provider("b", "b.example.com"),
+            ],
             cursor: AtomicUsize::new(0),
             origin: Instant::now(),
             _last_dispatch: AtomicU64::new(0),
         };
-        let first = pool.pick().await.expect("pick");
-        first.report_client_error("HTTP 401");
-        first.report_client_error("HTTP 401");
-        let second = pool.pick().await.expect("pick");
-        assert_ne!(second.id(), first.id(), "the retired member is skipped");
-        let third = pool.pick().await.expect("pick");
-        assert_ne!(third.id(), first.id(), "still skipped");
-        third.report_client_error("HTTP 401");
-        third.report_client_error("HTTP 401");
-        let err = pool.pick().await.expect_err("no member left");
-        assert!(
-            err.message.contains("disabled for this session"),
-            "the error must say the pool is exhausted, got: {}",
-            err.message
-        );
+        let mut first = pool.pick().await.expect("pick");
+        first.failure_threshold = 2;
+        first.report_failure("HTTP 401");
+        {
+            let runtime = pool.runtime.lock().unwrap();
+            let entry = runtime.get(first.id()).expect("entry exists");
+            assert_eq!(
+                entry.consecutive_failures, 1,
+                "below threshold: counted, not parked"
+            );
+            assert!(entry.cooldown_until.is_none(), "no window yet");
+        }
+        first.report_failure("HTTP 401");
+        {
+            let runtime = pool.runtime.lock().unwrap();
+            let entry = runtime.get(first.id()).expect("entry exists");
+            assert_eq!(
+                entry.consecutive_failures, 0,
+                "the streak resets when the cooldown lands"
+            );
+            assert!(entry.cooldown_until.is_some(), "the cooldown landed");
+            assert!(
+                entry.disabled_reason.is_none(),
+                "a failure cooldown is bounded, not a session exile"
+            );
+        }
+        for _ in 0..2 {
+            let picked = pool.pick().await.expect("the other member serves");
+            assert_ne!(picked.id(), first.id(), "the cooling member is skipped");
+        }
+    }
+
+    /// The manual reset returns a cooling member to service. A single-member
+    /// pool makes the before/after unambiguous: `reset_provider` re-seeds the
+    /// runtime entry, dropping the failure cooldown and streak together with
+    /// the session disable and any AIMD penalties.
+    #[tokio::test]
+    async fn reset_provider_clears_the_failure_streak_and_cooldown() {
+        let _guard = NOTIFIER_TEST_LOCK.lock().await;
+        reset_notifiers_for_test();
+
+        let providers = vec![provider("reset-a", "reset-a.example.com")];
+        let pool = pool_for(providers);
+        let id = "reset-a".to_string();
+
+        let mut picked = pool.pick().await.expect("pick");
+        picked.failure_threshold = 1;
+        picked.report_failure("HTTP 500");
+        {
+            let runtime = pool.runtime.lock().unwrap();
+            let entry = runtime.get(&id).expect("the entry exists");
+            assert!(entry.cooldown_until.is_some(), "the cooldown landed");
+            assert!(entry.disabled_reason.is_none());
+        }
+
+        reset_provider(&id);
+
+        {
+            let runtime = pool.runtime.lock().unwrap();
+            let entry = runtime
+                .get(&id)
+                .expect("the entry is re-seeded, not dropped");
+            assert!(entry.disabled_reason.is_none(), "the disable is cleared");
+            assert!(entry.cooldown_until.is_none(), "the cooldown is cleared");
+            assert_eq!(
+                entry.consecutive_failures, 0,
+                "the failure streak is cleared"
+            );
+            assert!(entry.aimd.is_some(), "the limiter is re-seeded");
+        }
+        let again = pool.pick().await.expect("the reset member serves again");
+        assert_eq!(again.id(), id);
+
+        reset_notifiers_for_test();
     }
 
     /// A `Retry-After` park defers a member's next pick: with one of two
@@ -727,12 +1034,18 @@ mod tests {
     async fn a_cooling_provider_defers_to_the_others() {
         let pool = PoolState {
             runtime: Arc::new(Mutex::new(
-                vec![provider("a", "a.example.com"), provider("b", "b.example.com")]
-                    .into_iter()
-                    .map(|p| (p.id.clone(), ProviderRuntime::seeded(&p)))
-                    .collect(),
+                vec![
+                    provider("a", "a.example.com"),
+                    provider("b", "b.example.com"),
+                ]
+                .into_iter()
+                .map(|p| (p.id.clone(), ProviderRuntime::seeded(&p)))
+                .collect(),
             )),
-            providers: vec![provider("a", "a.example.com"), provider("b", "b.example.com")],
+            providers: vec![
+                provider("a", "a.example.com"),
+                provider("b", "b.example.com"),
+            ],
             cursor: AtomicUsize::new(0),
             origin: Instant::now(),
             _last_dispatch: AtomicU64::new(0),
@@ -770,7 +1083,10 @@ mod tests {
         let picked = pool.pick().await.expect("pick");
         let baseline = pool.status()[0].allowed_rpm;
         picked.report_success();
-        assert!(pool.status()[0].allowed_rpm > 0.0, "a member shows its rate");
+        assert!(
+            pool.status()[0].allowed_rpm > 0.0,
+            "a member shows its rate"
+        );
         assert_eq!(pool.status()[0].cooldown_remaining_ms, 0);
 
         picked.report_rate_limited(Some(Duration::from_secs(10)));
@@ -821,8 +1137,8 @@ mod tests {
     }
 
     /// Change notifications fire on observable mutations only: a `Retry-After`
-    /// penalty always, a disable when it lands, and a success only on the
-    /// every-tenth one that moves the rate. The registry is process-global,
+    /// penalty always, a failure cooldown when it lands, and a success only on
+    /// the every-tenth one that moves the rate. The registry is process-global,
     /// so the reset keeps other tests' reports from leaking in before ours.
     #[tokio::test]
     async fn change_notifications_fire_on_observable_mutations() {
@@ -847,7 +1163,7 @@ mod tests {
             origin: Instant::now(),
             _last_dispatch: AtomicU64::new(0),
         };
-        let picked = pool.pick().await.expect("pick");
+        let mut picked = pool.pick().await.expect("pick");
 
         // Four quiet successes change nothing observable.
         for _ in 0..4 {
@@ -866,16 +1182,278 @@ mod tests {
         picked.report_rate_limited(Some(Duration::from_secs(5)));
         assert!(fired.load(Ordering::SeqCst) >= 2);
 
-        // Two client errors retire the provider — the landing notifies.
-        picked.report_client_error("HTTP 401");
+        // A clean reply clears the failure streak the 429 opened.
+        picked.report_success();
+
+        // A failure below the threshold is quiet.
+        picked.failure_threshold = 2;
+        picked.report_failure("HTTP 401");
         let after_first = fired.load(Ordering::SeqCst);
-        picked.report_client_error("HTTP 401");
+        // Reaching the threshold lands the cooldown — that notifies.
+        picked.report_failure("HTTP 401");
         assert!(
             fired.load(Ordering::SeqCst) > after_first,
-            "the disable must notify"
+            "the cooldown landing must notify"
         );
 
         reset_notifiers_for_test();
+    }
+
+    /// A seeded pool over the given member ids (distinct hosts, so direct
+    /// `PoolState`s never share anything anyway).
+    fn pool_with(ids: &[&str]) -> PoolState {
+        let providers: Vec<ProviderConfig> = ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| provider(id, &format!("q{index}.example.com")))
+            .collect();
+        PoolState {
+            runtime: Arc::new(Mutex::new(
+                providers
+                    .iter()
+                    .map(|p| (p.id.clone(), ProviderRuntime::seeded(p)))
+                    .collect(),
+            )),
+            providers,
+            cursor: AtomicUsize::new(0),
+            origin: Instant::now(),
+            _last_dispatch: AtomicU64::new(0),
+        }
+    }
+
+    /// The failure cooldown is bounded: `pick` waits it out and the member
+    /// rejoins on its own — no manual reset required. (The paused clock makes
+    /// each wait instantaneous; the window itself runs on the real clock,
+    /// like the Retry-After test above.)
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn a_failure_cooldown_expires_and_the_member_rejoins() {
+        let pool = pool_with(&["rejoin"]);
+        let mut picked = pool.pick().await.expect("pick");
+        picked.failure_threshold = 1;
+        picked.cooldown_secs = 1;
+        picked.report_failure("HTTP 500");
+
+        // The only member is cooling, so pick waits out the window and
+        // serves it again.
+        let again = pool.pick().await.expect("rejoins after the cooldown");
+        assert_eq!(again.id(), "rejoin");
+        {
+            let runtime = pool.runtime.lock().unwrap();
+            let entry = &runtime["rejoin"];
+            assert_eq!(entry.consecutive_failures, 0, "the streak stayed reset");
+            assert!(
+                entry.cooldown_until.is_none(),
+                "a lapsed window clears on read"
+            );
+        }
+    }
+
+    /// A 429 counts toward the failure threshold like any hard error, but
+    /// the failure cooldown itself still lands only through the failure
+    /// report: a 429 already carries its own Retry-After park.
+    #[tokio::test]
+    async fn a_429_counts_toward_the_failure_threshold() {
+        let pool = pool_with(&["rl"]);
+        let mut picked = pool.pick().await.expect("pick");
+        picked.failure_threshold = 2;
+
+        picked.report_rate_limited(None);
+        {
+            let runtime = pool.runtime.lock().unwrap();
+            assert_eq!(runtime["rl"].consecutive_failures, 1, "the 429 counts");
+        }
+        picked.report_rate_limited(None);
+        {
+            let runtime = pool.runtime.lock().unwrap();
+            let entry = &runtime["rl"];
+            assert_eq!(entry.consecutive_failures, 2, "past the threshold");
+            assert!(
+                entry.cooldown_until.is_none(),
+                "a 429 parks via Retry-After only; it does not land the failure cooldown"
+            );
+        }
+
+        // The next failure report of any kind lands it.
+        picked.report_failure("HTTP 500");
+        {
+            let runtime = pool.runtime.lock().unwrap();
+            let entry = &runtime["rl"];
+            assert!(entry.cooldown_until.is_some(), "the cooldown landed");
+            assert_eq!(entry.consecutive_failures, 0);
+        }
+    }
+
+    /// A clean response clears the streak: alternating failure/success runs
+    /// never accumulate into a cooldown.
+    #[tokio::test]
+    async fn a_success_resets_the_failure_streak() {
+        let pool = pool_with(&["okr"]);
+        let mut picked = pool.pick().await.expect("pick");
+        picked.failure_threshold = 3;
+        for round in 0..3 {
+            picked.report_failure("HTTP 500");
+            picked.report_failure("HTTP 500");
+            picked.report_success();
+            let runtime = pool.runtime.lock().unwrap();
+            let entry = &runtime["okr"];
+            assert_eq!(
+                entry.consecutive_failures, 0,
+                "round {round}: success wipes the streak"
+            );
+            assert!(entry.cooldown_until.is_none());
+        }
+    }
+
+    /// The manual ops behave as named: disable parks the member for the
+    /// session under the given reason, cooldown parks it for a bounded
+    /// window and clears the streak, and both report whether they changed
+    /// anything (an unknown id, or an already-identical disable, changes
+    /// nothing). `reset_provider` is the undo for both.
+    #[tokio::test]
+    async fn manual_disable_and_cooldown_ops_report_and_revert() {
+        let _guard = NOTIFIER_TEST_LOCK.lock().await;
+        reset_notifiers_for_test();
+
+        let providers = vec![
+            provider("man-a", "man-a.example.com"),
+            provider("man-b", "man-b.example.com"),
+        ];
+        let pool = pool_for(providers);
+
+        // Unknown ids change nothing.
+        assert!(!disable_provider("nope", "reason"));
+        assert!(!cooldown_provider("nope", 10));
+
+        // Disable: the member leaves the rotation, the other serves.
+        assert!(disable_provider("man-a", "test disable"));
+        {
+            let runtime = pool.runtime.lock().unwrap();
+            assert_eq!(
+                runtime["man-a"].disabled_reason.as_deref(),
+                Some("test disable")
+            );
+        }
+        for _ in 0..2 {
+            let picked = pool.pick().await.expect("pick");
+            assert_eq!(picked.id(), "man-b", "the disabled member is skipped");
+        }
+        // Re-disabling with the same reason is a no-op.
+        assert!(!disable_provider("man-a", "test disable"));
+
+        // Cooldown: sets the window and clears the streak, without ending
+        // the session.
+        {
+            let mut runtime = pool.runtime.lock().unwrap();
+            runtime.get_mut("man-b").unwrap().consecutive_failures = 2;
+        }
+        assert!(cooldown_provider("man-b", 120));
+        {
+            let runtime = pool.runtime.lock().unwrap();
+            let entry = &runtime["man-b"];
+            assert!(entry.cooldown_until.is_some(), "the window is set");
+            assert_eq!(entry.consecutive_failures, 0, "the streak clears");
+            assert!(entry.disabled_reason.is_none(), "no session disable");
+        }
+        let status = pool.status();
+        let b = status.iter().find(|s| s.id == "man-b").expect("status row");
+        assert!(b.cooldown_remaining_ms > 0, "the badge shows the window");
+
+        // reset_provider is the undo for both.
+        reset_provider("man-a");
+        reset_provider("man-b");
+        {
+            let runtime = pool.runtime.lock().unwrap();
+            for id in ["man-a", "man-b"] {
+                let entry = &runtime[id];
+                assert!(entry.disabled_reason.is_none());
+                assert!(entry.cooldown_until.is_none());
+            }
+        }
+        let both = pool.pick().await.expect("both serve again");
+        assert!(both.id() == "man-a" || both.id() == "man-b");
+
+        reset_notifiers_for_test();
+    }
+
+    /// Per-request exclusion drops members from the candidate set after the
+    /// completeness and disable filters: the survivors rotate among
+    /// themselves, and excluding everyone surfaces the existing
+    /// pool-exhaustion error.
+    #[tokio::test]
+    async fn pick_provider_excluding_skips_the_named_members() {
+        let settings = crate::translation::settings::TranslationSettings {
+            providers: vec![
+                provider("ex-a", "ex-a.example.com"),
+                provider("ex-b", "ex-b.example.com"),
+            ],
+            enabled: true,
+            ..Default::default()
+        };
+
+        let one = pick_provider_excluding(&settings, &["ex-a".to_string()])
+            .await
+            .expect("pick");
+        assert_eq!(one.id(), "ex-b", "the excluded member does not serve");
+        let two = pick_provider_excluding(&settings, &["ex-a".to_string()])
+            .await
+            .expect("pick");
+        assert_eq!(two.id(), "ex-b");
+
+        // An empty exclusion list is plain pick_provider.
+        let three = pick_provider_excluding(&settings, &[]).await.expect("pick");
+        assert_eq!(three.id(), "ex-a", "a stays out only while excluded");
+
+        // Everyone excluded: the existing exhaustion error path.
+        let err = pick_provider_excluding(&settings, &["ex-a".to_string(), "ex-b".to_string()])
+            .await
+            .expect_err("no member left");
+        assert!(
+            err.message.contains("disabled for this session"),
+            "the error must say the pool is exhausted, got: {}",
+            err.message
+        );
+    }
+
+    /// The status row carries the failure streak and the last-dispatch age:
+    /// `None` before the member ever dispatched, a fresh age once a slot is
+    /// claimed, and a landed failure cooldown shows in the badge.
+    #[tokio::test]
+    async fn status_reports_failure_streak_and_dispatch_age() {
+        let pool = pool_with(&["st"]);
+        let status = pool.status();
+        assert_eq!(status[0].consecutive_failures, 0);
+        assert_eq!(status[0].last_dispatch_ago_ms, None, "never dispatched");
+
+        let mut picked = pool.pick().await.expect("pick");
+        picked.failure_threshold = 2;
+        picked.report_failure("HTTP 500");
+        let status = pool.status();
+        assert_eq!(status[0].consecutive_failures, 1, "the streak shows");
+        assert_eq!(status[0].cooldown_remaining_ms, 0, "no window yet");
+
+        picked.report_failure("HTTP 500");
+        let status = pool.status();
+        assert!(
+            status[0].cooldown_remaining_ms > 0,
+            "the landed window shows"
+        );
+        assert_eq!(status[0].consecutive_failures, 0, "reset on landing");
+
+        // A claimed slot shows as a dispatch age; zero micros still means
+        // "never".
+        {
+            let mut runtime = pool.runtime.lock().unwrap();
+            runtime.get_mut("st").unwrap().last_dispatch_us = 0;
+        }
+        assert_eq!(pool.status()[0].last_dispatch_ago_ms, None);
+        {
+            let mut runtime = pool.runtime.lock().unwrap();
+            runtime.get_mut("st").unwrap().last_dispatch_us = 1_500_000;
+        }
+        let ago = pool.status()[0]
+            .last_dispatch_ago_ms
+            .expect("dispatched once");
+        assert!(ago < 5_000, "a fresh dispatch age, got {ago}ms");
     }
 }
 
@@ -983,7 +1561,11 @@ mod health_rotation_tests {
         let pool = pool_with(&["deg2", "ok2"]);
         // First pick: the probe is due (never probed), so deg2 is served.
         let first = pool.pick().await.expect("pick");
-        assert_eq!(first.id(), "deg2", "the probe ride goes to the degraded member");
+        assert_eq!(
+            first.id(),
+            "deg2",
+            "the probe ride goes to the degraded member"
+        );
         // Immediately after, normal traffic flows to the healthy member.
         let second = pool.pick().await.expect("pick");
         assert_eq!(second.id(), "ok2");
@@ -1011,7 +1593,10 @@ mod health_rotation_tests {
         }
         {
             let runtime = pool.runtime.lock().unwrap();
-            let reason = runtime["dead3"].disabled_reason.as_deref().expect("retired");
+            let reason = runtime["dead3"]
+                .disabled_reason
+                .as_deref()
+                .expect("retired");
             assert!(reason.contains("health score"), "reason was: {reason}");
         }
         // Single-member pool: the same poisoned window must NOT retire the

@@ -66,9 +66,7 @@ impl AimdController {
     /// that names the endpoint's real quota), otherwise probe from
     /// [`AUTO_START_RPM`].
     pub fn new(rpm_cap: Option<u32>) -> Self {
-        let ceiling = rpm_cap
-            .map(|value| value as f64)
-            .unwrap_or(AUTO_MAX_RPM);
+        let ceiling = rpm_cap.map(|value| value as f64).unwrap_or(AUTO_MAX_RPM);
         let start = rpm_cap.map(|value| value as f64).unwrap_or(AUTO_START_RPM);
         Self {
             allowed_rpm: start.min(ceiling),
@@ -135,15 +133,6 @@ impl AimdController {
             self.allowed_rpm = (self.allowed_rpm + REWARD_STEP_RPM).min(self.ceiling);
         }
     }
-
-    /// Whether a client error (4xx other than 429) should retire the
-    /// provider for the session. One 401 proves the key wrong — retrying it
-    /// spends nothing and fixes nothing; a single transport blip must not.
-    /// Two consecutive client errors on a *configured* endpoint is a
-    /// configuration problem the pool should stop feeding.
-    pub fn should_disable(client_errors: u32) -> bool {
-        client_errors >= 2
-    }
 }
 
 #[cfg(test)]
@@ -177,8 +166,14 @@ mod tests {
 
     #[test]
     fn the_dispatch_interval_is_sixty_seconds_over_the_rate() {
-        assert_eq!(controller(Some(30)).dispatch_interval(), Duration::from_secs(2));
-        assert_eq!(controller(Some(60)).dispatch_interval(), Duration::from_secs(1));
+        assert_eq!(
+            controller(Some(30)).dispatch_interval(),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            controller(Some(60)).dispatch_interval(),
+            Duration::from_secs(1)
+        );
     }
 
     #[test]
@@ -189,7 +184,11 @@ mod tests {
         for _ in 0..10 {
             c.penalize(None, Instant::now());
         }
-        assert_eq!(c.allowed_rpm(), MIN_RPM, "repeated halvings stop at the floor");
+        assert_eq!(
+            c.allowed_rpm(),
+            MIN_RPM,
+            "repeated halvings stop at the floor"
+        );
     }
 
     #[test]
@@ -224,7 +223,11 @@ mod tests {
         // penalizing with a short window and checking after the window.
         let mut early = controller(None);
         early.penalize(Some(Duration::from_secs(1)), now - Duration::from_secs(2));
-        assert_eq!(early.cooldown_remaining(now), None, "a lapsed window clears");
+        assert_eq!(
+            early.cooldown_remaining(now),
+            None,
+            "a lapsed window clears"
+        );
     }
 
     #[test]
@@ -253,12 +256,5 @@ mod tests {
         assert_eq!(c.allowed_rpm(), halved, "four successes buy nothing");
         c.reward();
         assert_eq!(c.allowed_rpm(), halved + 2.0);
-    }
-
-    #[test]
-    fn two_client_errors_in_a_row_retire_the_provider() {
-        assert!(!AimdController::should_disable(0));
-        assert!(!AimdController::should_disable(1));
-        assert!(AimdController::should_disable(2));
     }
 }

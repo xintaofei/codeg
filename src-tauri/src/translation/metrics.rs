@@ -29,6 +29,11 @@ const PROVIDER_EVENT_WINDOW_CAP: usize = 64;
 /// How far back the health score's window reaches.
 pub const HEALTH_WINDOW: Duration = Duration::from_secs(600);
 
+/// The minute series keeps one bucket per wall-clock minute for six hours —
+/// long enough to see a provider's day shape in the settings-page timeline,
+/// short enough that the per-provider history stays a few kilobytes.
+const SERIES_WINDOW_MINUTES: usize = 360;
+
 /// One per-provider outcome in the rolling window. `latency_ms` is the full
 /// round trip for the attempt that produced the event (0 where no request
 /// was made — currently never; gate rejections reuse the attempt's latency).
@@ -86,16 +91,96 @@ impl ProviderEventKind {
     }
 }
 
+/// Minute-granularity activity for one provider: how many attempts were
+/// dispatched that minute and how they resolved. `minute` is Unix time
+/// divided by 60, so buckets compare naturally across midnight and map 1:1
+/// onto an axis the frontend can label with local wall-clock times.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MinuteBucket {
+    /// Unix minutes (unix_secs / 60).
+    pub minute: u64,
+    /// Outbound attempts (all of them, retries included).
+    pub dispatched: u64,
+    /// Attempts that resolved cleanly (parseable, accepted reply).
+    pub ok: u64,
+    /// Attempts that failed the provider way: rate limited, HTTP error,
+    /// network error, parse failure, or a quality-gate rejection. Slow-inflight
+    /// signals count neither way — the reply may still land fine.
+    pub failed: u64,
+    /// Sum of the ok attempts' latencies; the snapshot divides by `ok`.
+    pub latency_ms_sum: u64,
+}
+
+/// One provider's rolling minute series, oldest first, capped at
+/// [`SERIES_WINDOW_MINUTES`].
+#[derive(Debug, Default)]
+struct ProviderSeries {
+    buckets: VecDeque<MinuteBucket>,
+}
+
+/// The minute index the process currently sits in; 0 before the clock is
+/// set (matching the other timestamp fallbacks here).
+fn current_minute() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_secs() / 60)
+        .unwrap_or_default()
+}
+
+impl ProviderSeries {
+    /// Fold one observation into the current minute's bucket, opening a new
+    /// one when the clock ticked over and forgetting buckets past the window.
+    /// Only ok outcomes add to the latency sum, so the snapshot's
+    /// `avg_latency_ms = latency_ms_sum / ok` stays a true per-success
+    /// average; failed attempts' latencies remain visible in the event window.
+    fn note(&mut self, minute: u64, dispatched: bool, ok: bool, failed: bool, latency_ms: u64) {
+        match self.buckets.back() {
+            Some(bucket) if bucket.minute == minute => {
+                let bucket = self.buckets.back_mut().expect("just peeked");
+                if dispatched {
+                    bucket.dispatched += 1;
+                }
+                if ok {
+                    bucket.ok += 1;
+                    bucket.latency_ms_sum += latency_ms;
+                }
+                if failed {
+                    bucket.failed += 1;
+                }
+            }
+            _ => {
+                self.buckets.push_back(MinuteBucket {
+                    minute,
+                    dispatched: u64::from(dispatched),
+                    ok: u64::from(ok),
+                    failed: u64::from(failed),
+                    latency_ms_sum: if ok { latency_ms } else { 0 },
+                });
+            }
+        }
+        while self.buckets.len() > SERIES_WINDOW_MINUTES {
+            self.buckets.pop_front();
+        }
+    }
+}
+
 /// Per-provider counters plus the rolling event window.
 #[derive(Debug, Default)]
 pub struct ProviderCounters {
     pub sent: AtomicU64,
     pub ok: AtomicU64,
     pub gate_rejected: AtomicU64,
+    pub gate_rejected_invented: AtomicU64,
+    pub gate_rejected_echo: AtomicU64,
+    pub gate_rejected_dropped_numbers: AtomicU64,
     pub rate_limited: AtomicU64,
     pub http_error: AtomicU64,
     pub network_error: AtomicU64,
     pub parse_error: AtomicU64,
+    /// Slots served from the cache under this provider's cache-key partition.
+    pub cache_hits: AtomicU64,
+    /// Slots this provider cut off mid-translation (max_tokens / length).
+    pub truncated: AtomicU64,
     pub latency_ms_sum: AtomicU64,
     pub latency_count: AtomicU64,
     /// Minute index (Unix minutes) the `dispatch_minute_count` bucket covers.
@@ -200,10 +285,17 @@ impl ProviderCounters {
             sent: self.sent.load(Ordering::Relaxed),
             ok: self.ok.load(Ordering::Relaxed),
             gate_rejected: self.gate_rejected.load(Ordering::Relaxed),
+            gate_rejected_invented: self.gate_rejected_invented.load(Ordering::Relaxed),
+            gate_rejected_echo: self.gate_rejected_echo.load(Ordering::Relaxed),
+            gate_rejected_dropped_numbers: self
+                .gate_rejected_dropped_numbers
+                .load(Ordering::Relaxed),
             rate_limited: self.rate_limited.load(Ordering::Relaxed),
             http_error: self.http_error.load(Ordering::Relaxed),
             network_error: self.network_error.load(Ordering::Relaxed),
             parse_error: self.parse_error.load(Ordering::Relaxed),
+            cache_hits: self.cache_hits.load(Ordering::Relaxed),
+            truncated: self.truncated.load(Ordering::Relaxed),
             avg_latency_ms: if latency_count > 0 {
                 self.latency_ms_sum.load(Ordering::Relaxed) / latency_count
             } else {
@@ -232,6 +324,10 @@ pub struct TranslationMetrics {
     /// Slots the endpoint truncated (max_tokens / `finish_reason: length`).
     pub truncated_total: AtomicU64,
     providers: Mutex<HashMap<String, std::sync::Arc<ProviderCounters>>>,
+    /// Per-provider minute series behind the settings page's timeline. Keyed
+    /// like `providers`, guarded by its own mutex so snapshot reads of one
+    /// never block the other.
+    series: Mutex<HashMap<String, ProviderSeries>>,
 }
 
 static METRICS: OnceLock<TranslationMetrics> = OnceLock::new();
@@ -260,6 +356,27 @@ impl TranslationMetrics {
             .clone()
     }
 
+    /// Fold one observation into the provider's minute series. `dispatched`
+    /// marks the attempt's opening (exactly one per outbound POST), `ok` /
+    /// `failed` its verdict — SlowInflight arrives with neither. Kept next to
+    /// the record_* methods so the series' counting rules stay reviewable
+    /// against them in one screen.
+    fn note_series(
+        &self,
+        provider_id: &str,
+        dispatched: bool,
+        ok: bool,
+        failed: bool,
+        latency_ms: u64,
+    ) {
+        let minute = current_minute();
+        let mut series = self.series.lock().expect("translation metrics lock");
+        series
+            .entry(provider_id.to_string())
+            .or_default()
+            .note(minute, dispatched, ok, failed, latency_ms);
+    }
+
     /// One outbound POST (per attempt, not per chunk — a retried chunk shows
     /// every attempt, which is what pacing and health analysis need).
     pub fn record_dispatch(&self, provider_id: &str) {
@@ -267,15 +384,33 @@ impl TranslationMetrics {
         let entry = self.entry(provider_id);
         entry.sent.fetch_add(1, Ordering::Relaxed);
         entry.note_dispatch();
+        self.note_series(provider_id, true, false, false, 0);
     }
 
     /// A per-attempt transport/parse verdict from `client.rs`.
     pub fn record_attempt(&self, provider_id: &str, kind: ProviderEventKind, latency_ms: u64) {
         self.entry(provider_id).record(kind, latency_ms);
+        // SlowInflight stays out of the series as well: the reply may still
+        // land as a success, and the dispatch itself was already counted by
+        // `record_dispatch`.
+        let (ok, failed) = match kind {
+            ProviderEventKind::Ok => (true, false),
+            ProviderEventKind::SlowInflight => (false, false),
+            ProviderEventKind::GateRejected
+            | ProviderEventKind::GateRejectedSoft
+            | ProviderEventKind::RateLimited
+            | ProviderEventKind::HttpError
+            | ProviderEventKind::NetworkError
+            | ProviderEventKind::ParseError => (false, true),
+        };
+        if ok || failed {
+            self.note_series(provider_id, false, ok, failed, latency_ms);
+        }
     }
 
     /// A quality-gate rejection from `mod.rs`, attributed to the provider
-    /// that produced the refused reply.
+    /// that produced the refused reply: the global bucket, the provider's
+    /// matching bucket, and the provider's gate total all move together.
     pub fn record_gate_rejection(
         &self,
         provider_id: &str,
@@ -283,29 +418,51 @@ impl TranslationMetrics {
         latency_ms: u64,
     ) {
         self.gate_rejected_total.fetch_add(1, Ordering::Relaxed);
-        match rejection {
+        let entry = self.entry(provider_id);
+        let event_kind = match rejection {
             GateRejection::Invented => {
-                self.gate_rejected_invented.fetch_add(1, Ordering::Relaxed)
+                self.gate_rejected_invented.fetch_add(1, Ordering::Relaxed);
+                entry.gate_rejected_invented.fetch_add(1, Ordering::Relaxed);
+                ProviderEventKind::GateRejected
             }
-            GateRejection::EchoOrRefusal => self.gate_rejected_echo.fetch_add(1, Ordering::Relaxed),
+            GateRejection::EchoOrRefusal => {
+                self.gate_rejected_echo.fetch_add(1, Ordering::Relaxed);
+                entry.gate_rejected_echo.fetch_add(1, Ordering::Relaxed);
+                ProviderEventKind::GateRejected
+            }
             GateRejection::DroppedNumbers => {
                 self.gate_rejected_dropped_numbers
-                    .fetch_add(1, Ordering::Relaxed)
+                    .fetch_add(1, Ordering::Relaxed);
+                entry
+                    .gate_rejected_dropped_numbers
+                    .fetch_add(1, Ordering::Relaxed);
+                ProviderEventKind::GateRejectedSoft
             }
         };
-        let event_kind = match rejection {
-            GateRejection::Invented | GateRejection::EchoOrRefusal => ProviderEventKind::GateRejected,
-            GateRejection::DroppedNumbers => ProviderEventKind::GateRejectedSoft,
-        };
-        self.entry(provider_id).record(event_kind, latency_ms);
+        entry.record(event_kind, latency_ms);
+        // The series mirrors the event window's counting: a gate rejection is
+        // a failed attempt (and no dispatch — that was already counted when
+        // the request was sent).
+        self.note_series(provider_id, false, false, true, latency_ms);
     }
 
-    pub fn record_truncated(&self) {
+    /// A slot the endpoint cut off mid-translation, attributed to the
+    /// provider that produced the truncated reply.
+    pub fn record_truncated(&self, provider_id: &str) {
         self.truncated_total.fetch_add(1, Ordering::Relaxed);
+        self.entry(provider_id)
+            .truncated
+            .fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn record_cache_hit(&self) {
+    /// A slot served from the cache: the global counter counts slots, the
+    /// per-provider counter attributes the hit to the provider whose id
+    /// partitioned the cache key.
+    pub fn record_cache_hit(&self, provider_id: &str) {
         self.cache_hits.fetch_add(1, Ordering::Relaxed);
+        self.entry(provider_id)
+            .cache_hits
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_served(&self) {
@@ -335,6 +492,21 @@ impl TranslationMetrics {
             .unwrap_or(0)
     }
 
+    /// Drop one provider's counters and series — the metrics side of the
+    /// manual "this endpoint is fixed, start counting fresh" action (the pool
+    /// side is [`crate::translation::pool::reset_provider`]). A later event
+    /// recreates the entry from scratch.
+    pub fn reset_provider(&self, provider_id: &str) {
+        self.providers
+            .lock()
+            .expect("translation metrics lock")
+            .remove(provider_id);
+        self.series
+            .lock()
+            .expect("translation metrics lock")
+            .remove(provider_id);
+    }
+
     /// The JSON-serializable view for the settings page.
     pub fn snapshot(&self) -> TranslationMetricsSnapshot {
         let providers = self
@@ -342,10 +514,31 @@ impl TranslationMetrics {
             .lock()
             .expect("translation metrics lock")
             .iter()
-            .map(|(id, entry)| {
+            .map(|(id, entry)| (id.clone(), entry.snapshot()))
+            .collect();
+        let series = self
+            .series
+            .lock()
+            .expect("translation metrics lock")
+            .iter()
+            .map(|(id, provider)| {
                 (
                     id.clone(),
-                    entry.snapshot(),
+                    provider
+                        .buckets
+                        .iter()
+                        .map(|bucket| MinuteBucketSnapshot {
+                            minute: bucket.minute,
+                            dispatched: bucket.dispatched,
+                            ok: bucket.ok,
+                            failed: bucket.failed,
+                            avg_latency_ms: if bucket.ok > 0 {
+                                bucket.latency_ms_sum / bucket.ok
+                            } else {
+                                0
+                            },
+                        })
+                        .collect(),
                 )
             })
             .collect();
@@ -356,9 +549,12 @@ impl TranslationMetrics {
             gate_rejected_total: self.gate_rejected_total.load(Ordering::Relaxed),
             gate_rejected_invented: self.gate_rejected_invented.load(Ordering::Relaxed),
             gate_rejected_echo: self.gate_rejected_echo.load(Ordering::Relaxed),
-            gate_rejected_dropped_numbers: self.gate_rejected_dropped_numbers.load(Ordering::Relaxed),
+            gate_rejected_dropped_numbers: self
+                .gate_rejected_dropped_numbers
+                .load(Ordering::Relaxed),
             truncated_total: self.truncated_total.load(Ordering::Relaxed),
             providers,
+            series,
         }
     }
 }
@@ -380,6 +576,9 @@ pub struct TranslationMetricsSnapshot {
     /// migrated flat row) so the settings page can join it with the pool
     /// status rows.
     pub providers: HashMap<String, ProviderMetricsSnapshot>,
+    /// Per-provider minute series (oldest first, at most 360 buckets each),
+    /// only for providers that produced at least one recorded event.
+    pub series: HashMap<String, Vec<MinuteBucketSnapshot>>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -388,12 +587,31 @@ pub struct ProviderMetricsSnapshot {
     pub sent: u64,
     pub ok: u64,
     pub gate_rejected: u64,
+    pub gate_rejected_invented: u64,
+    pub gate_rejected_echo: u64,
+    pub gate_rejected_dropped_numbers: u64,
     pub rate_limited: u64,
     pub http_error: u64,
     pub network_error: u64,
     pub parse_error: u64,
+    pub cache_hits: u64,
+    pub truncated: u64,
     pub avg_latency_ms: u64,
     pub dispatched_last_minute: u64,
+}
+
+/// One minute of one provider's series, as the settings page's timeline
+/// renders it.
+#[derive(Debug, Clone, Copy, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MinuteBucketSnapshot {
+    /// Unix minutes (`unix_secs / 60`).
+    pub minute: u64,
+    pub dispatched: u64,
+    pub ok: u64,
+    pub failed: u64,
+    /// Mean latency of the bucket's ok outcomes; 0 when none.
+    pub avg_latency_ms: u64,
 }
 
 #[cfg(test)]
@@ -413,10 +631,16 @@ mod tests {
         let snap = metrics.snapshot();
         assert_eq!(snap.dispatched_total, 2, "dispatches are global");
         let a = &snap.providers["a"];
-        assert_eq!((a.sent, a.ok, a.network_error, a.rate_limited), (2, 1, 1, 1));
+        assert_eq!(
+            (a.sent, a.ok, a.network_error, a.rate_limited),
+            (2, 1, 1, 1)
+        );
         assert_eq!(a.avg_latency_ms, 1500, "average covers the ok attempt only");
         assert_eq!(snap.providers["b"].ok, 1);
-        assert!(a.dispatched_last_minute > 0, "same-minute dispatch is visible");
+        assert!(
+            a.dispatched_last_minute > 0,
+            "same-minute dispatch is visible"
+        );
     }
 
     #[test]
@@ -428,8 +652,83 @@ mod tests {
 
         let snap = metrics.snapshot();
         assert_eq!(snap.gate_rejected_total, 3);
-        assert_eq!((snap.gate_rejected_echo, snap.gate_rejected_dropped_numbers, snap.gate_rejected_invented), (1, 1, 1));
+        assert_eq!(
+            (
+                snap.gate_rejected_echo,
+                snap.gate_rejected_dropped_numbers,
+                snap.gate_rejected_invented
+            ),
+            (1, 1, 1)
+        );
         assert_eq!(snap.providers["a"].gate_rejected, 3);
+        // The per-provider buckets mirror the global ones kind for kind.
+        assert_eq!(
+            (
+                snap.providers["a"].gate_rejected_invented,
+                snap.providers["a"].gate_rejected_echo,
+                snap.providers["a"].gate_rejected_dropped_numbers
+            ),
+            (1, 1, 1)
+        );
+    }
+
+    #[test]
+    fn gate_rejection_kinds_land_in_their_own_provider_buckets() {
+        let metrics = TranslationMetrics::default();
+        metrics.record_gate_rejection("a", GateRejection::Invented, 900);
+        metrics.record_gate_rejection("a", GateRejection::Invented, 900);
+        metrics.record_gate_rejection("b", GateRejection::EchoOrRefusal, 900);
+        metrics.record_gate_rejection("b", GateRejection::DroppedNumbers, 900);
+
+        let snap = metrics.snapshot();
+        assert_eq!(snap.gate_rejected_total, 4);
+        let a = &snap.providers["a"];
+        let b = &snap.providers["b"];
+        // Each provider carries only the kinds it was actually refused for.
+        assert_eq!(
+            (
+                a.gate_rejected,
+                a.gate_rejected_invented,
+                a.gate_rejected_echo,
+                a.gate_rejected_dropped_numbers
+            ),
+            (2, 2, 0, 0)
+        );
+        assert_eq!(
+            (
+                b.gate_rejected,
+                b.gate_rejected_invented,
+                b.gate_rejected_echo,
+                b.gate_rejected_dropped_numbers
+            ),
+            (2, 0, 1, 1)
+        );
+    }
+
+    #[test]
+    fn cache_hits_land_on_their_own_provider() {
+        let metrics = TranslationMetrics::default();
+        metrics.record_cache_hit("a");
+        metrics.record_cache_hit("a");
+        metrics.record_cache_hit("b");
+
+        let snap = metrics.snapshot();
+        assert_eq!(snap.cache_hits, 3, "the global counter still counts slots");
+        assert_eq!(snap.providers["a"].cache_hits, 2);
+        assert_eq!(snap.providers["b"].cache_hits, 1);
+    }
+
+    #[test]
+    fn truncations_land_on_their_own_provider() {
+        let metrics = TranslationMetrics::default();
+        metrics.record_truncated("a");
+        metrics.record_truncated("b");
+        metrics.record_truncated("b");
+
+        let snap = metrics.snapshot();
+        assert_eq!(snap.truncated_total, 3);
+        assert_eq!(snap.providers["a"].truncated, 1);
+        assert_eq!(snap.providers["b"].truncated, 2);
     }
 
     #[test]
@@ -465,6 +764,126 @@ mod tests {
             metrics.record_attempt("a", ProviderEventKind::Ok, 1);
         }
         let entry = metrics.entry("a");
-        assert_eq!(entry.events.lock().unwrap().len(), PROVIDER_EVENT_WINDOW_CAP);
+        assert_eq!(
+            entry.events.lock().unwrap().len(),
+            PROVIDER_EVENT_WINDOW_CAP
+        );
+    }
+
+    #[test]
+    fn same_minute_events_merge_into_one_bucket() {
+        let metrics = TranslationMetrics::default();
+        metrics.record_dispatch("a");
+        metrics.record_dispatch("a");
+        metrics.record_attempt("a", ProviderEventKind::Ok, 100);
+
+        let series = metrics.series.lock().unwrap();
+        let buckets = &series["a"].buckets;
+        assert_eq!(buckets.len(), 1, "events in one minute share one bucket");
+        let bucket = &buckets[0];
+        assert_eq!(bucket.minute, current_minute());
+        assert_eq!((bucket.dispatched, bucket.ok, bucket.failed), (2, 1, 0));
+        assert_eq!(bucket.latency_ms_sum, 100);
+    }
+
+    #[test]
+    fn a_minute_tick_opens_a_new_bucket() {
+        let metrics = TranslationMetrics::default();
+        let now = current_minute();
+        // Pre-seed a bucket from the previous minute; the next dispatch must
+        // open its own bucket instead of merging into the stale one.
+        {
+            let mut series = metrics.series.lock().unwrap();
+            series
+                .entry("a".to_string())
+                .or_default()
+                .note(now - 1, true, false, false, 0);
+        }
+        metrics.record_dispatch("a");
+        metrics.record_attempt("a", ProviderEventKind::Ok, 40);
+
+        let series = metrics.series.lock().unwrap();
+        let buckets = &series["a"].buckets;
+        assert_eq!(buckets.len(), 2);
+        assert_eq!(buckets[0].minute, now - 1);
+        assert!(
+            buckets[1].minute >= now,
+            "the new bucket is the live minute"
+        );
+        assert_eq!((buckets[1].dispatched, buckets[1].ok), (1, 1));
+    }
+
+    #[test]
+    fn the_series_window_trims_the_oldest_buckets() {
+        let mut series = ProviderSeries::default();
+        for minute in 0..(SERIES_WINDOW_MINUTES as u64 + 1) {
+            series.note(minute, true, false, false, 0);
+        }
+        assert_eq!(series.buckets.len(), SERIES_WINDOW_MINUTES);
+        assert_eq!(
+            series.buckets.front().unwrap().minute,
+            1,
+            "minute 0 fell off the front"
+        );
+        assert_eq!(
+            series.buckets.back().unwrap().minute,
+            SERIES_WINDOW_MINUTES as u64
+        );
+    }
+
+    #[test]
+    fn attempt_kinds_land_in_the_series_ok_and_failed_columns() {
+        let metrics = TranslationMetrics::default();
+        metrics.record_dispatch("a");
+        metrics.record_attempt("a", ProviderEventKind::Ok, 100);
+        metrics.record_attempt("a", ProviderEventKind::RateLimited, 10);
+        metrics.record_attempt("a", ProviderEventKind::HttpError, 10);
+        metrics.record_attempt("a", ProviderEventKind::NetworkError, 0);
+        metrics.record_attempt("a", ProviderEventKind::ParseError, 5);
+        metrics.record_attempt("a", ProviderEventKind::GateRejected, 900);
+        metrics.record_attempt("a", ProviderEventKind::GateRejectedSoft, 900);
+        metrics.record_attempt("a", ProviderEventKind::SlowInflight, 0);
+        // A gate rejection recorded by mod.rs lands the same way, and adds no
+        // dispatch of its own.
+        metrics.record_gate_rejection("b", GateRejection::Invented, 700);
+
+        let snap = metrics.snapshot();
+        let bucket = &snap.series["a"][0];
+        assert_eq!(
+            bucket.dispatched, 1,
+            "the dispatch is counted once, by record_dispatch"
+        );
+        assert_eq!(bucket.ok, 1);
+        assert_eq!(
+            bucket.failed, 6,
+            "gate rejections count as failures, SlowInflight does not"
+        );
+        assert_eq!(
+            bucket.avg_latency_ms, 100,
+            "the average covers the ok outcome only"
+        );
+        let b = &snap.series["b"][0];
+        assert_eq!((b.dispatched, b.ok, b.failed), (0, 0, 1));
+    }
+
+    #[test]
+    fn reset_provider_drops_counters_and_series() {
+        let metrics = TranslationMetrics::default();
+        metrics.record_dispatch("a");
+        metrics.record_attempt("a", ProviderEventKind::Ok, 100);
+        metrics.reset_provider("a");
+
+        let snap = metrics.snapshot();
+        assert!(!snap.providers.contains_key("a"));
+        assert!(!snap.series.contains_key("a"));
+
+        // A later event recreates the entry from scratch.
+        metrics.record_attempt("a", ProviderEventKind::Ok, 50);
+        let snap = metrics.snapshot();
+        assert_eq!(snap.series["a"].len(), 1);
+        assert_eq!(
+            (snap.series["a"][0].dispatched, snap.series["a"][0].ok),
+            (0, 1)
+        );
     }
 }

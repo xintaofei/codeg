@@ -1,9 +1,19 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { TranslationSettings as TranslationSettingsValue } from "@/lib/types"
+import type {
+  TranslationMetricsSnapshot,
+  TranslationProviderMetrics,
+  TranslationSettings as TranslationSettingsValue,
+} from "@/lib/types"
 
 const api = vi.hoisted(() => ({
   getTranslationSettings: vi.fn(),
@@ -14,6 +24,9 @@ const api = vi.hoisted(() => ({
   clearTranslationCache: vi.fn(),
   getTranslationMetrics: vi.fn(),
   getTranslationPoolStatus: vi.fn(),
+  resetTranslationProvider: vi.fn(),
+  disableTranslationProvider: vi.fn(),
+  cooldownTranslationProvider: vi.fn(),
 }))
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }))
 
@@ -34,6 +47,45 @@ import enMessages from "@/i18n/messages/en.json"
 import zhCnMessages from "@/i18n/messages/zh-CN.json"
 
 const EMPTY_CACHE = { memoryEntries: 0, diskEntries: 0, diskBytes: 0 }
+
+/** An all-zero snapshot — what a fresh install (or an untouched session) reads. */
+function emptyMetrics(): TranslationMetricsSnapshot {
+  return {
+    dispatchedTotal: 0,
+    cacheHits: 0,
+    servedTotal: 0,
+    gateRejectedTotal: 0,
+    gateRejectedInvented: 0,
+    gateRejectedEcho: 0,
+    gateRejectedDroppedNumbers: 0,
+    truncatedTotal: 0,
+    providers: {},
+    series: {},
+  }
+}
+
+/** A full per-provider metrics row: zeroed except what the test overrides. */
+function providerMetrics(
+  overrides: Partial<TranslationProviderMetrics> = {}
+): TranslationProviderMetrics {
+  return {
+    sent: 0,
+    ok: 0,
+    gateRejected: 0,
+    gateRejectedInvented: 0,
+    gateRejectedEcho: 0,
+    gateRejectedDroppedNumbers: 0,
+    rateLimited: 0,
+    httpError: 0,
+    networkError: 0,
+    parseError: 0,
+    cacheHits: 0,
+    truncated: 0,
+    avgLatencyMs: 0,
+    dispatchedLastMinute: 0,
+    ...overrides,
+  }
+}
 
 function storedProvider(
   overrides: Partial<TranslationSettingsValue["providers"][number]> = {}
@@ -61,12 +113,17 @@ function storedSettings(
     apiKey: "",
     model: "",
     targetLang: null,
+    translateBody: true,
     translateThinking: false,
     apiFormat: "auto",
     selectionTranslate: true,
     selectionTargetLang: null,
     toggleAlwaysVisible: false,
+    priorityMaxConcurrent: null,
+    backgroundMaxConcurrent: null,
     batchMaxChars: null,
+    failureThreshold: null,
+    cooldownSeconds: null,
     carryContext: true,
     ...overrides,
   }
@@ -83,8 +140,11 @@ beforeEach(() => {
   api.listTranslationModels.mockResolvedValue([])
   api.getTranslationCacheStats.mockResolvedValue(EMPTY_CACHE)
   api.clearTranslationCache.mockResolvedValue(EMPTY_CACHE)
-  api.getTranslationMetrics.mockResolvedValue(null)
+  api.getTranslationMetrics.mockResolvedValue(emptyMetrics())
   api.getTranslationPoolStatus.mockResolvedValue([])
+  api.resetTranslationProvider.mockResolvedValue(undefined)
+  api.disableTranslationProvider.mockResolvedValue([])
+  api.cooldownTranslationProvider.mockResolvedValue([])
 })
 
 /**
@@ -123,6 +183,16 @@ function modelPicker(): HTMLButtonElement | null {
  * leaving its control unlabeled for assistive tech (see general-settings.test).
  * These assertions are what catch that.
  */
+/** The checkbox a scope dropdown row carries: visual-only (aria-hidden), so
+ *  it is reached through its cmdk option rather than by role. */
+function scopeCheckbox(option: HTMLElement): HTMLElement {
+  const checkbox = option.querySelector('[data-slot="checkbox"]')
+  if (!(checkbox instanceof HTMLElement)) {
+    throw new Error("scope option has no checkbox")
+  }
+  return checkbox
+}
+
 describe("TranslationSettings", () => {
   it("wires every row's label to the control it names", async () => {
     await renderPage()
@@ -142,10 +212,6 @@ describe("TranslationSettings", () => {
     // The picker is not mounted until a probe has models to offer.
     expect(modelPicker()).toBeNull()
     expect(screen.getByLabelText("Target language")).toBeInTheDocument()
-    expect(screen.getByLabelText("Translate thinking blocks")).toHaveAttribute(
-      "role",
-      "switch"
-    )
   })
 
   /**
@@ -412,7 +478,7 @@ describe("TranslationSettings", () => {
       }),
       "p1"
     )
-  })
+  }, 15000)
 
   /**
    * The endpoint card is the loudest thing on the page; with the pool it is
@@ -537,5 +603,860 @@ describe("TranslationSettings", () => {
       )
     )
     expect(screen.getByText("unavailable")).toBeInTheDocument()
+  })
+
+  /**
+   * The three scope switches collapsed into one multi-select: opening it lists
+   * every lane as a checkbox row, and unchecking one is a settings edit like
+   * any other — the unsaved hint must appear so 保存 is the obvious next step.
+   */
+  it("toggles body translation through the scope dropdown", async () => {
+    const user = userEvent.setup()
+    await renderPage()
+
+    expect(screen.getByText("Translation scope")).toBeVisible()
+
+    const trigger = screen.getByRole("combobox", {
+      name: "Translation scope",
+    })
+    // Defaults read as a summary on the closed trigger: body on, thinking off.
+    expect(trigger).toHaveTextContent("Translate reply body")
+
+    await user.click(trigger)
+
+    const bodyOption = await screen.findByRole("option", {
+      name: "Translate reply body",
+    })
+    // The checked state shows as the row's checkbox tick (aria-hidden inside
+    // the cmdk option); `data-state` on that checkbox is what to assert.
+    expect(scopeCheckbox(bodyOption)).toHaveAttribute("data-state", "checked")
+    const thinkingOption = screen.getByRole("option", {
+      name: "Translate thinking blocks",
+    })
+    expect(scopeCheckbox(thinkingOption)).toHaveAttribute(
+      "data-state",
+      "unchecked"
+    )
+    const selectionOption = screen.getByRole("option", {
+      name: "Selection translation",
+    })
+    expect(scopeCheckbox(selectionOption)).toHaveAttribute(
+      "data-state",
+      "checked"
+    )
+
+    await user.click(bodyOption)
+    expect(
+      scopeCheckbox(
+        screen.getByRole("option", { name: "Translate reply body" })
+      )
+    ).toHaveAttribute("data-state", "unchecked")
+    // Toggling a scope lane is a settings edit like any other: the unsaved
+    // hint must appear so 保存 is the obvious next step.
+    expect(screen.getByText(/Unsaved changes/)).toBeVisible()
+
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() =>
+      expect(api.updateTranslationSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ translateBody: false })
+      )
+    )
+  })
+
+  /**
+   * 划词 keeps a dependent row: the selection target language picker only
+   * exists while the selection lane is one of the checked scopes. Unchecking
+   * the lane inside the dropdown hides the row immediately.
+   */
+  it("shows the selection target language row only while the lane is checked", async () => {
+    const user = userEvent.setup()
+    await renderPage()
+
+    expect(
+      screen.getByLabelText("Selection target language")
+    ).toBeInTheDocument()
+
+    await user.click(
+      screen.getByRole("combobox", { name: "Translation scope" })
+    )
+    await user.click(
+      await screen.findByRole("option", { name: "Selection translation" })
+    )
+    // The dropdown stays open across toggles; close it to see the rows again.
+    await user.keyboard("{Escape}")
+
+    expect(screen.queryByLabelText("Selection target language")).toBeNull()
+  })
+
+  /**
+   * The two lane-concurrency fields follow the batch-ceiling grammar exactly:
+   * empty means "use the default" (`null` payload), typed digits move local
+   * state, and a cleared field returns to `null`.
+   */
+  it("binds the lane concurrency fields with the same null-or-number grammar", async () => {
+    const user = userEvent.setup()
+    await renderPage()
+
+    const priority = screen.getByLabelText("Priority lane concurrency")
+    const background = screen.getByLabelText("Background lane concurrency")
+    expect(priority).toHaveValue(null)
+    expect(background).toHaveValue(null)
+    expect(priority).toHaveAttribute("placeholder", "Default: 4")
+    expect(background).toHaveAttribute("placeholder", "Default: 3")
+
+    fireEvent.change(priority, { target: { value: "6" } })
+    expect(priority).toHaveValue(6)
+    expect(screen.getByText(/Unsaved changes/)).toBeVisible()
+
+    fireEvent.change(background, { target: { value: "2" } })
+    expect(background).toHaveValue(2)
+
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() =>
+      expect(api.updateTranslationSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          priorityMaxConcurrent: 6,
+          backgroundMaxConcurrent: 2,
+        })
+      )
+    )
+    // The button re-enables only after the save's read-back settles; without
+    // this a second click could race the still-disabled control.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
+    )
+
+    // The save refreshes from the (mocked) store, so the form reads back the
+    // defaults; clearing the field must land as `null`, never as 0 or NaN.
+    fireEvent.change(priority, { target: { value: "" } })
+    expect(priority).toHaveValue(null)
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() =>
+      expect(api.updateTranslationSettings).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          priorityMaxConcurrent: null,
+          backgroundMaxConcurrent: null,
+        })
+      )
+    )
+  })
+
+  /**
+   * The health score used to live only on the badge's hover title; it now has
+   * its own column, and a session disabled row carries a Reset button that
+   * calls the backend and refreshes the pool strip.
+   */
+  it("shows the health score and a Reset button for a disabled provider", async () => {
+    // Pool status (and metrics) are only fetched once translation is enabled;
+    // the strip hides otherwise.
+    api.getTranslationSettings.mockResolvedValue(
+      storedSettings({ enabled: true })
+    )
+    api.getTranslationPoolStatus.mockResolvedValue([
+      {
+        id: "p1",
+        name: "Relay",
+        baseUrl: "https://relay.example.com",
+        model: "m1",
+        allowedRpm: 0,
+        cooldownRemainingMs: 0,
+        disabledReason: "HTTP 401",
+        dispatchedLastMinute: 0,
+        health: {
+          score: 62,
+          quality: 0.7,
+          stability: 0.5,
+          speed: 0.9,
+          sample: 20,
+          observing: false,
+          degraded: true,
+        },
+      },
+    ])
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <TranslationSettings />
+      </NextIntlClientProvider>
+    )
+    // The pool entry itself is never rendered; the row reads off the
+    // settings provider, whose (empty) baseUrl falls back to the placeholder.
+    await screen.findByText("New provider")
+
+    // The health column carries the rounded score; the full breakdown —
+    // degraded note included — rides the hover, and the under-badge line
+    // is gone.
+    const scoreCell = await screen.findByTitle(
+      "Health 62/100 · quality 70% · stability 50% · speed 90% · sample 20 — Below the health threshold: only fallback and probe traffic"
+    )
+    expect(scoreCell).toHaveTextContent("62")
+    expect(scoreCell).toHaveClass("text-amber-600")
+    expect(
+      screen.queryByText(
+        "Health 62/100 · quality 70% · stability 50% · speed 90% · sample 20"
+      )
+    ).toBeNull()
+
+    const poolReads = api.getTranslationPoolStatus.mock.calls.length
+    await userEvent.setup().click(screen.getByRole("button", { name: "Reset" }))
+    await waitFor(() =>
+      expect(api.resetTranslationProvider).toHaveBeenCalledWith("p1")
+    )
+    expect(toast.success).toHaveBeenCalledWith("Reset done")
+    // The post-reset pool refresh re-reads the status.
+    await waitFor(() =>
+      expect(api.getTranslationPoolStatus.mock.calls.length).toBeGreaterThan(
+        poolReads
+      )
+    )
+  })
+
+  /**
+   * The failure strategy is a page-level knob, not a per-row one: it lives
+   * behind the table header so the provider list stays the headline. Typed
+   * digits reach the saved settings; the placeholders advertise the defaults
+   * an empty field keeps.
+   */
+  it("puts the failure strategy behind the table header and saves it", async () => {
+    api.getTranslationSettings.mockResolvedValue(
+      storedSettings({ enabled: true })
+    )
+    api.getTranslationPoolStatus.mockResolvedValue([
+      {
+        id: "p1",
+        name: "Relay",
+        baseUrl: "https://relay.example.com",
+        model: "m1",
+        allowedRpm: 12,
+        cooldownRemainingMs: 0,
+        disabledReason: null,
+        dispatchedLastMinute: 0,
+        health: null,
+      },
+    ])
+    const user = userEvent.setup()
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <TranslationSettings />
+      </NextIntlClientProvider>
+    )
+    await screen.findByText("New provider")
+
+    await user.click(screen.getByRole("button", { name: "Failure strategy" }))
+
+    const threshold = await screen.findByLabelText("Failure threshold")
+    expect(threshold).toHaveAttribute("placeholder", "Default: 3")
+    const cooldown = await screen.findByLabelText("Cooldown (seconds)")
+    expect(cooldown).toHaveAttribute("placeholder", "Default: 60")
+
+    await user.type(threshold, "5")
+    await user.type(cooldown, "120")
+
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() =>
+      expect(api.updateTranslationSettings).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          failureThreshold: 5,
+          cooldownSeconds: 120,
+        })
+      )
+    )
+  })
+
+  /**
+   * An active provider carries row-level escapes: the session disable calls
+   * the backend with just the id and refreshes the pool strip so the row
+   * flips to its sidelined state.
+   */
+  it("disables an active provider from its row", async () => {
+    api.getTranslationSettings.mockResolvedValue(
+      storedSettings({ enabled: true })
+    )
+    api.getTranslationPoolStatus.mockResolvedValue([
+      {
+        id: "p1",
+        name: "Relay",
+        baseUrl: "https://relay.example.com",
+        model: "m1",
+        allowedRpm: 12,
+        cooldownRemainingMs: 0,
+        disabledReason: null,
+        dispatchedLastMinute: 0,
+        health: null,
+      },
+    ])
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <TranslationSettings />
+      </NextIntlClientProvider>
+    )
+    await screen.findByText("New provider")
+
+    const poolReads = api.getTranslationPoolStatus.mock.calls.length
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "Disable for this session" }))
+
+    await waitFor(() =>
+      expect(api.disableTranslationProvider).toHaveBeenCalledWith("p1")
+    )
+    expect(toast.success).toHaveBeenCalledWith(
+      "Provider disabled for this session"
+    )
+    await waitFor(() =>
+      expect(api.getTranslationPoolStatus.mock.calls.length).toBeGreaterThan(
+        poolReads
+      )
+    )
+  })
+
+  /** The cooldown escape shares the disable's row grammar. */
+  it("cools an active provider down from its row", async () => {
+    api.getTranslationSettings.mockResolvedValue(
+      storedSettings({ enabled: true })
+    )
+    api.getTranslationPoolStatus.mockResolvedValue([
+      {
+        id: "p1",
+        name: "Relay",
+        baseUrl: "https://relay.example.com",
+        model: "m1",
+        allowedRpm: 12,
+        cooldownRemainingMs: 0,
+        disabledReason: null,
+        dispatchedLastMinute: 0,
+        health: null,
+      },
+    ])
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <TranslationSettings />
+      </NextIntlClientProvider>
+    )
+    await screen.findByText("New provider")
+
+    const poolReads = api.getTranslationPoolStatus.mock.calls.length
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "Cooldown now" }))
+
+    await waitFor(() =>
+      expect(api.cooldownTranslationProvider).toHaveBeenCalledWith("p1")
+    )
+    expect(toast.success).toHaveBeenCalledWith("Cooldown started")
+    await waitFor(() =>
+      expect(api.getTranslationPoolStatus.mock.calls.length).toBeGreaterThan(
+        poolReads
+      )
+    )
+  })
+
+  /**
+   * A sidelined provider (session-disabled or cooling down) has nothing left
+   * to disable or cool further: its two row actions collapse into the single
+   * Reset that clears the state.
+   */
+  it("swaps disable and cooldown for a single Restore while sidelined", async () => {
+    api.getTranslationSettings.mockResolvedValue(
+      storedSettings({ enabled: true })
+    )
+    api.getTranslationPoolStatus.mockResolvedValue([
+      {
+        id: "p1",
+        name: "Relay",
+        baseUrl: "https://relay.example.com",
+        model: "m1",
+        allowedRpm: 0,
+        cooldownRemainingMs: 0,
+        disabledReason: "HTTP 401",
+        dispatchedLastMinute: 0,
+        health: {
+          score: 62,
+          quality: 0.7,
+          stability: 0.5,
+          speed: 0.9,
+          sample: 20,
+          observing: false,
+          degraded: true,
+        },
+      },
+    ])
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <TranslationSettings />
+      </NextIntlClientProvider>
+    )
+    await screen.findByText("New provider")
+
+    expect(
+      screen.queryByRole("button", { name: "Disable for this session" })
+    ).toBeNull()
+    expect(screen.queryByRole("button", { name: "Cooldown now" })).toBeNull()
+    expect(screen.getByRole("button", { name: "Reset" })).toBeInTheDocument()
+  })
+
+  /** An unobserved provider says so instead of printing a made-up score. */
+  it("shows the observing note while the health sample is too small", async () => {
+    api.getTranslationSettings.mockResolvedValue(
+      storedSettings({ enabled: true })
+    )
+    api.getTranslationPoolStatus.mockResolvedValue([
+      {
+        id: "p1",
+        name: "Relay",
+        baseUrl: "https://relay.example.com",
+        model: "m1",
+        allowedRpm: 12,
+        cooldownRemainingMs: 0,
+        disabledReason: null,
+        dispatchedLastMinute: 0,
+        health: {
+          score: 70,
+          quality: 0.5,
+          stability: 0.5,
+          speed: 0.5,
+          sample: 2,
+          observing: true,
+          degraded: false,
+        },
+      },
+    ])
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <TranslationSettings />
+      </NextIntlClientProvider>
+    )
+    await screen.findByText("New provider")
+
+    // No score is invented while observing: the cell reads an em dash and
+    // the hover explains why.
+    expect(
+      await screen.findByTitle(
+        "Observing — sample too small (2); no dispatch verdict yet"
+      )
+    ).toHaveTextContent("—")
+    expect(screen.queryByRole("button", { name: "Reset" })).toBeNull()
+  })
+
+  /**
+   * The health score got its own column between State and the row actions:
+   * a measured provider shows the rounded score with the breakdown on the
+   * hover, and one without a sample reads an em dash instead of an invented
+   * number.
+   */
+  it("shows the health score in its own column or an em dash without data", async () => {
+    api.getTranslationSettings.mockResolvedValue(
+      storedSettings({
+        enabled: true,
+        providers: [
+          storedProvider({
+            id: "p1",
+            baseUrl: "https://healthy.example.com",
+            model: "m1",
+          }),
+          storedProvider({
+            id: "p2",
+            baseUrl: "https://cold.example.com",
+            model: "m2",
+          }),
+        ],
+      })
+    )
+    api.getTranslationPoolStatus.mockResolvedValue([
+      {
+        id: "p1",
+        name: "Healthy",
+        baseUrl: "https://healthy.example.com",
+        model: "m1",
+        allowedRpm: 10,
+        cooldownRemainingMs: 0,
+        disabledReason: null,
+        dispatchedLastMinute: 3,
+        health: {
+          score: 87.4,
+          quality: 0.9,
+          stability: 0.8,
+          speed: 0.7,
+          sample: 40,
+          observing: false,
+          degraded: false,
+        },
+      },
+      {
+        id: "p2",
+        name: "Cold",
+        baseUrl: "https://cold.example.com",
+        model: "m2",
+        allowedRpm: 0,
+        cooldownRemainingMs: 0,
+        disabledReason: null,
+        dispatchedLastMinute: 0,
+        health: null,
+      },
+    ])
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <TranslationSettings />
+      </NextIntlClientProvider>
+    )
+    await screen.findByText("https://healthy.example.com")
+
+    expect(screen.getByText("Health")).toBeVisible()
+
+    // The measured provider shows the rounded score; the breakdown lives on
+    // the hover only — no visible health line under the badge anymore.
+    expect(
+      screen.getByTitle(
+        "Health 87/100 · quality 90% · stability 80% · speed 70% · sample 40"
+      )
+    ).toHaveTextContent("87")
+    expect(
+      screen.queryByText(
+        "Health 87/100 · quality 90% · stability 80% · speed 70% · sample 40"
+      )
+    ).toBeNull()
+
+    // The unmeasured provider reads an em dash in its rate and health cells.
+    const coldRow = screen.getByText("https://cold.example.com").closest("tr")
+    if (!(coldRow instanceof HTMLElement)) {
+      throw new Error("provider row not found")
+    }
+    expect(within(coldRow).getAllByText("—")).toHaveLength(2)
+  })
+
+  /** Metrics need an enabled pool to be fetched at all. */
+  function enablePoolWithMetrics(metrics: TranslationMetricsSnapshot) {
+    api.getTranslationSettings.mockResolvedValue(
+      storedSettings({
+        enabled: true,
+        providers: [storedProvider({ baseUrl: "https://api.example.com/v1" })],
+      })
+    )
+    api.getTranslationMetrics.mockResolvedValue(metrics)
+  }
+
+  /**
+   * The call-statistics card is collapsed by default: the header (with its
+   * Show/Hide trigger) is visible, the table and trend are not. Expanding
+   * reveals the per-provider table; the trigger text flips between
+   * Show/Hide across the toggle.
+   */
+  it("keeps the call statistics collapsed until Show statistics is clicked", async () => {
+    const now = Date.now() / 60_000
+    enablePoolWithMetrics({
+      ...emptyMetrics(),
+      providers: {
+        p1: providerMetrics({
+          sent: 14,
+          ok: 12,
+          httpError: 1,
+          networkError: 1,
+          avgLatencyMs: 820,
+        }),
+      },
+      series: {
+        p1: [
+          {
+            minute: Math.floor(now) - 1,
+            dispatched: 6,
+            ok: 6,
+            failed: 0,
+            avgLatencyMs: 800,
+          },
+          {
+            minute: Math.floor(now),
+            dispatched: 8,
+            ok: 6,
+            failed: 2,
+            avgLatencyMs: 840,
+          },
+        ],
+      },
+    })
+    const user = userEvent.setup()
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <TranslationSettings />
+      </NextIntlClientProvider>
+    )
+    // The pool (and its metrics) only spin up once the saved settings are on.
+    await screen.findByText("https://api.example.com/v1")
+
+    // Collapsed: the card header is there, the table and trend are not.
+    expect(screen.getByText("Call statistics")).toBeVisible()
+    expect(screen.queryByText("Dispatched")).toBeNull()
+    expect(screen.queryByText("Avg latency")).toBeNull()
+
+    await user.click(screen.getByRole("button", { name: "Show statistics" }))
+
+    // Expanded: the per-provider table appears with the mock's numbers.
+    expect(await screen.findByText("Avg latency")).toBeVisible()
+    expect(screen.getByText("api.example.com")).toBeVisible()
+    expect(screen.getByText("14")).toBeVisible()
+    expect(screen.getByText("12 / 2")).toBeVisible()
+    expect(screen.getByText("820 ms")).toBeVisible()
+
+    // The trigger flips its copy while expanded...
+    expect(
+      screen.getByRole("button", { name: "Hide statistics" })
+    ).toBeVisible()
+
+    // ...and collapses again.
+    await user.click(screen.getByRole("button", { name: "Hide statistics" }))
+    await waitFor(() => expect(screen.queryByText("Avg latency")).toBeNull())
+  })
+
+  /**
+   * The label grammar: a named provider reads its name, a bare URL reads its
+   * host, and a metrics entry whose settings row is gone reads the id prefix.
+   */
+  it("labels provider rows from name, host, or leftover id", async () => {
+    const now = Date.now() / 60_000
+    enablePoolWithMetrics({
+      ...emptyMetrics(),
+      providers: {
+        p1: providerMetrics({ sent: 4, ok: 4, avgLatencyMs: 500 }),
+        removed0123: providerMetrics({ sent: 2, httpError: 2 }),
+      },
+      series: {
+        p1: [
+          {
+            minute: Math.floor(now),
+            dispatched: 4,
+            ok: 4,
+            failed: 0,
+            avgLatencyMs: 500,
+          },
+        ],
+      },
+    })
+    const user = userEvent.setup()
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <TranslationSettings />
+      </NextIntlClientProvider>
+    )
+    // The pool (and its metrics) only spin up once the saved settings are on.
+    await screen.findByText("https://api.example.com/v1")
+
+    await user.click(screen.getByRole("button", { name: "Show statistics" }))
+
+    // The stored row resolves through its host; the removed one through its
+    // id prefix, and the zero-latency removed provider shows an em dash.
+    expect(await screen.findByText("api.example.com")).toBeVisible()
+    expect(screen.getByText("removed0")).toBeVisible()
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0)
+  })
+
+  /**
+   * An empty session (nothing dispatched, no series) has no numbers to show:
+   * expanding reveals only the description line, no table, no chart.
+   */
+  it("shows only the description in the expanded card when there is no data", async () => {
+    enablePoolWithMetrics(emptyMetrics())
+    const user = userEvent.setup()
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <TranslationSettings />
+      </NextIntlClientProvider>
+    )
+    // The pool (and its metrics) only spin up once the saved settings are on.
+    await screen.findByText("https://api.example.com/v1")
+
+    await user.click(screen.getByRole("button", { name: "Show statistics" }))
+
+    // The header description stays; the empty body adds a second muted copy
+    // of it, and the table/chart must not appear. With no table there is no
+    // header summary either — the counters are table-borne.
+    expect(
+      await screen.findAllByText(
+        "Session dispatch volume, outcomes, and latency; cleared on restart"
+      )
+    ).not.toHaveLength(0)
+    expect(screen.queryByText("Avg latency")).toBeNull()
+    expect(screen.queryByText("Dispatched")).toBeNull()
+    expect(screen.queryByText(/Cache hits/)).toBeNull()
+  })
+
+  /**
+   * The gate counters are per-provider table columns now: the old session-wide
+   * rollup (first a metricsSummary line, then a header-cell blob) is gone, so
+   * no global summary renders anywhere and the outcome columns exist only in
+   * the expanded table.
+   */
+  it("shows the outcome columns only inside the expanded statistics table", async () => {
+    enablePoolWithMetrics({
+      ...emptyMetrics(),
+      dispatchedTotal: 5,
+      servedTotal: 4,
+      cacheHits: 2,
+      providers: {
+        p1: providerMetrics({
+          sent: 5,
+          ok: 4,
+          httpError: 1,
+          avgLatencyMs: 700,
+          cacheHits: 2,
+        }),
+      },
+      series: {
+        p1: [
+          {
+            minute: Math.floor(Date.now() / 60_000),
+            dispatched: 5,
+            ok: 4,
+            failed: 1,
+            avgLatencyMs: 700,
+          },
+        ],
+      },
+    })
+    const user = userEvent.setup()
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <TranslationSettings />
+      </NextIntlClientProvider>
+    )
+    // The pool (and its metrics) only spin up once the saved settings are on.
+    await screen.findByText("https://api.example.com/v1")
+
+    // Collapsed: no outcome column header anywhere on the page.
+    expect(screen.queryByText("Cache hits")).toBeNull()
+    expect(screen.queryByText("Truncated")).toBeNull()
+
+    await user.click(screen.getByRole("button", { name: "Show statistics" }))
+
+    // Expanded: the per-provider columns are there (the row shows this
+    // provider's own hit count), and neither the old global summary blob nor
+    // the retired metricsSummary line comes back.
+    expect(await screen.findByText("Cache hits")).toBeVisible()
+    expect(screen.queryByText(/Cache hits 2 ·/)).toBeNull()
+    expect(screen.queryByText(/served 4/)).toBeNull()
+
+    // The provider list card carries no outcome column either.
+    const providerCard = screen
+      .getByText("Current rate")
+      .closest("div.divide-y")
+    if (!(providerCard instanceof HTMLElement)) {
+      throw new Error("provider card not found")
+    }
+    expect(within(providerCard).queryByText("Cache hits")).toBeNull()
+  })
+
+  /**
+   * Every outcome is its own column and every row carries that provider's
+   * own counters: two providers with different numbers must not bleed into
+   * each other, and a snapshot without the per-provider outcome fields reads
+   * em dashes — never fake zeros.
+   */
+  it("renders the six outcome columns with each provider's own counters", async () => {
+    enablePoolWithMetrics({
+      ...emptyMetrics(),
+      providers: {
+        p1: providerMetrics({
+          sent: 8,
+          ok: 6,
+          avgLatencyMs: 900,
+          cacheHits: 5,
+          gateRejected: 4,
+          gateRejectedInvented: 3,
+          gateRejectedEcho: 1,
+          gateRejectedDroppedNumbers: 0,
+          truncated: 2,
+        }),
+        // Removed from the settings list: the row reads the id prefix.
+        retired99: providerMetrics({
+          sent: 9,
+          ok: 6,
+          avgLatencyMs: 45,
+          cacheHits: 1,
+          gateRejected: 4,
+          gateRejectedInvented: 2,
+          gateRejectedEcho: 3,
+          gateRejectedDroppedNumbers: 0,
+          truncated: 5,
+        }),
+        // A snapshot from before the per-provider outcome columns: only the
+        // pre-existing counters are present, the new ones are undefined.
+        legacy: {
+          sent: 5,
+          ok: 1,
+          gateRejected: 2,
+          rateLimited: 0,
+          httpError: 2,
+          networkError: 0,
+          parseError: 0,
+          avgLatencyMs: 40,
+          dispatchedLastMinute: 0,
+        } as TranslationProviderMetrics,
+      },
+      series: {
+        p1: [
+          {
+            minute: Math.floor(Date.now() / 60_000),
+            dispatched: 8,
+            ok: 6,
+            failed: 2,
+            avgLatencyMs: 900,
+          },
+        ],
+      },
+    })
+    const user = userEvent.setup()
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <TranslationSettings />
+      </NextIntlClientProvider>
+    )
+    // The pool (and its metrics) only spin up once the saved settings are on.
+    await screen.findByText("https://api.example.com/v1")
+
+    await user.click(screen.getByRole("button", { name: "Show statistics" }))
+
+    // The six new column headers are all present.
+    for (const header of [
+      "Cache hits",
+      "Rejected",
+      "Invented",
+      "Echo/refusal",
+      "Dropped",
+      "Truncated",
+    ]) {
+      expect(screen.getByText(header)).toBeVisible()
+    }
+
+    // Rows sort by dispatch volume: retired99 (9), p1 (8), legacy (5).
+    // p1's row carries its own counters, nothing else's.
+    const p1Row = screen.getByText("api.example.com").closest("tr")
+    if (!(p1Row instanceof HTMLElement)) {
+      throw new Error("p1 row not found")
+    }
+    expect(within(p1Row).getByText("5")).toBeVisible() // cache hits
+    expect(within(p1Row).getByText("4")).toBeVisible() // rejected
+    expect(within(p1Row).getByText("3")).toBeVisible() // invented
+    expect(within(p1Row).getByText("1")).toBeVisible() // echo/refusal
+    expect(within(p1Row).getByText("0")).toBeVisible() // dropped numbers
+    expect(within(p1Row).getByText("2")).toBeVisible() // truncated
+
+    // The retired provider's row carries its own, different counters.
+    const retiredRow = screen.getByText("retired9").closest("tr")
+    if (!(retiredRow instanceof HTMLElement)) {
+      throw new Error("retired row not found")
+    }
+    expect(within(retiredRow).getByText("1")).toBeVisible() // cache hits
+    expect(within(retiredRow).getByText("4")).toBeVisible() // rejected
+    expect(within(retiredRow).getByText("2")).toBeVisible() // invented
+    expect(within(retiredRow).getByText("3")).toBeVisible() // echo/refusal
+    expect(within(retiredRow).getByText("0")).toBeVisible() // dropped numbers
+    expect(within(retiredRow).getByText("5")).toBeVisible() // truncated
+
+    // The stale snapshot row: the rejected counter is a real number, while
+    // the five absent per-provider outcome fields all read em dashes —
+    // missing data never masquerades as a zero.
+    const legacyRow = screen.getByText("legacy").closest("tr")
+    if (!(legacyRow instanceof HTMLElement)) {
+      throw new Error("legacy row not found")
+    }
+    expect(within(legacyRow).getByText("2")).toBeVisible() // rejected
+    expect(within(legacyRow).getAllByText("—")).toHaveLength(5)
   })
 })

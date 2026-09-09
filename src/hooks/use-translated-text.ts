@@ -8,6 +8,7 @@ import {
 } from "@/components/ai-elements/markdown-mask"
 import { getTranslationSettings, translateTexts } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
+import { subscribe } from "@/lib/platform"
 import {
   buildContextPrefix,
   buildNumberedRequest,
@@ -37,12 +38,17 @@ const DISABLED_SETTINGS: TranslationSettings = {
   model: "",
   targetLang: null,
   translateThinking: false,
+  translateBody: true,
+  priorityMaxConcurrent: null,
+  backgroundMaxConcurrent: null,
   apiFormat: "auto",
   selectionTranslate: true,
   selectionTargetLang: null,
   toggleAlwaysVisible: false,
   batchMaxChars: null,
   carryContext: false,
+  failureThreshold: null,
+  cooldownSeconds: null,
 }
 
 /** The grouped-request width when the user left the setting empty. */
@@ -66,6 +72,7 @@ const MAX_TRANSLATED_ENTRIES = 500
 let cachedSettings: TranslationSettings | null = null
 let settingsInflight: Promise<TranslationSettings> | null = null
 let settingsGeneration = 0
+let settingsEventBound = false
 const settingsListeners = new Set<(settings: TranslationSettings) => void>()
 const translatedCache = new Map<string, string>()
 const translationInflight = new Map<string, Promise<TranslationAttempt>>()
@@ -105,6 +112,7 @@ export function primeTranslationSettings(settings: TranslationSettings): void {
 }
 
 function ensureSettingsLoaded(): Promise<TranslationSettings> {
+  bindSettingsChangeEvent()
   if (cachedSettings) return Promise.resolve(cachedSettings)
   if (settingsInflight) return settingsInflight
 
@@ -122,6 +130,33 @@ function ensureSettingsLoaded(): Promise<TranslationSettings> {
       settingsInflight = null
     })
   return settingsInflight
+}
+
+/**
+ * One-time subscription to the backend's settings-save broadcast. The
+ * settings page primes only its own window; every other window or page holds
+ * a mount-time snapshot, and this event is what keeps their gates (e.g. a
+ * freshly re-enabled `translateBody`) from staying stale until reload.
+ *
+ * Registered once for the module's lifetime — the transport's unsubscribe is
+ * deliberately ignored. The handler fetches once and re-primes through
+ * `primeTranslationSettings`, so a same-value echo (the saving window's own
+ * broadcast) is a harmless no-op and no save is ever triggered from here:
+ * the notification chain cannot loop. A failed re-fetch keeps the current
+ * snapshot rather than tearing the feature down to DISABLED_SETTINGS.
+ */
+function bindSettingsChangeEvent(): void {
+  if (settingsEventBound) return
+  settingsEventBound = true
+  void subscribe("translation-settings-changed", () => {
+    void getTranslationSettings()
+      .then((settings) => {
+        primeTranslationSettings(settings)
+      })
+      .catch(() => {
+        // Keep the current snapshot; the next save broadcasts again.
+      })
+  })
 }
 
 export function useTranslationSettingsSnapshot(): TranslationSettings {
@@ -709,8 +744,14 @@ export function useTranslatedText({
   const [originalKey, setOriginalKey] = useState<string | null>(null)
   const [lastError, setLastError] = useState<string | null>(null)
 
+  // Thinking blocks answer to the `translateThinking` opt-in; reply body
+  // prose answers to `translateBody` — the two switches never bleed into
+  // each other's traffic. `!== false` (not truthiness) keeps the body gate
+  // OPEN while an old backend row still omits the key: absent must read as
+  // the field's default (on), never as "the user turned it off".
   const enabled =
-    settings.enabled && (!isThinking || settings.translateThinking)
+    settings.enabled &&
+    (isThinking ? settings.translateThinking : settings.translateBody !== false)
   const key = useMemo(
     () => translationCacheKey({ blockKey, text, uiLocale, settings }),
     [blockKey, text, uiLocale, settings]
@@ -786,8 +827,8 @@ export function useTranslatedText({
 /**
  * Whether translation is switched on at all, for callers that offer it as an
  * explicit action (selection translation) rather than rendering a block. The
- * `translateThinking` opt-in does not gate this: asking for a translation by
- * hand is not the same as translating thinking automatically.
+ * `translateThinking` and `translateBody` opt-ins do not gate this: asking
+ * for a translation by hand is not the same as translating automatically.
  */
 export function useTranslationEnabled(): boolean {
   return useTranslationSettingsSnapshot().enabled

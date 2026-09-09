@@ -2256,14 +2256,15 @@ const TextPart = memo(function TextPart({
   // The body text rides the same incremental machine as thinking: sealed
   // units translate line by line while the reply streams, and a settled block
   // flushes its remainder once. Reply prose is the thing the reader is
-  // waiting on, so it queues on the backend's priority lane.
+  // waiting on, so it queues on the backend's priority lane. The body switch
+  // (`translateBody`) gates here, not the thinking opt-in.
   const view = useStreamingTranslatedText({
     text,
     isStreaming,
     shouldLoad,
     uiLocale,
     blockKey,
-    enabled: settings.enabled && !isUser,
+    enabled: settings.enabled && settings.translateBody && !isUser,
     priority: true,
   })
 

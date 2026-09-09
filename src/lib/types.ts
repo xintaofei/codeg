@@ -3549,11 +3549,38 @@ export interface TranslationSettings {
   /** Show translation toggle buttons without waiting for a hover. */
   toggleAlwaysVisible: boolean
   /**
+   * Whether reply body prose translates automatically. Thinking has its own
+   * opt-in (`translateThinking`); the body is the default-on switch. The
+   * Rust side applies `serde(default)`, so stored settings without the
+   * field read back as `true` — existing configurations keep translating.
+   */
+  translateBody: boolean
+  /**
+   * Concurrency ceiling for the priority (reader-facing prose) lane.
+   * `null` keeps the built-in default (4).
+   */
+  priorityMaxConcurrent: number | null
+  /**
+   * Concurrency ceiling for the background (thinking polish) lane.
+   * `null` keeps the built-in default (3).
+   */
+  backgroundMaxConcurrent: number | null
+  /**
    * Character ceiling for one outbound request when small adjacent segments
    * are coalesced into one numbered request. `null` keeps the built-in
    * default (3000); the backend clamps to 500-20000.
    */
   batchMaxChars: number | null
+  /**
+   * Consecutive failed dispatches before the provider is auto-sidelined
+   * out of the rotation. `null` keeps the built-in default (3).
+   */
+  failureThreshold: number | null
+  /**
+   * How long an auto-sidelined provider stays out of the rotation, in
+   * seconds. `null` keeps the built-in default (60).
+   */
+  cooldownSeconds: number | null
   /**
    * Prepend the previous segment's source and translation as a read-only
    * terminology reference (at most 500+500 chars), so the independent
@@ -3595,6 +3622,12 @@ export interface TranslationPoolStatus {
    * rate is what the limiter grants; this is what the endpoint really
    * serves — the number "rate is high but nothing translates" turns on. */
   dispatchedLastMinute: number
+  /** Failed dispatches in a row; the first success resets it. Reaching the
+   * settings' failure threshold auto-sidelines the member. */
+  consecutiveFailures: number
+  /** Milliseconds since the member's last dispatch; `null` before the
+   * first one. */
+  lastDispatchAgoMs: number | null
   /** The member's current health, when its window has anything in it. */
   health: TranslationProviderHealth | null
 }
@@ -3620,12 +3653,31 @@ export interface TranslationProviderMetrics {
   sent: number
   ok: number
   gateRejected: number
+  /** Rejections by gate verdict, mirroring the global buckets; the older
+   * flat fields below stay transport-level. */
+  gateRejectedInvented: number
+  gateRejectedEcho: number
+  gateRejectedDroppedNumbers: number
   rateLimited: number
   httpError: number
   networkError: number
   parseError: number
+  /** Cache slots served under this provider's cache-key partition. */
+  cacheHits: number
+  /** Slots this provider cut off mid-translation. */
+  truncated: number
   avgLatencyMs: number
   dispatchedLastMinute: number
+}
+
+/** One minute bucket of per-provider dispatch outcome history. */
+export interface TranslationSeriesPoint {
+  /** Wall-clock minute start, epoch milliseconds. */
+  minute: number
+  dispatched: number
+  ok: number
+  failed: number
+  avgLatencyMs: number
 }
 
 /** Process-wide translation counters, mirroring the Rust
@@ -3641,6 +3693,9 @@ export interface TranslationMetricsSnapshot {
   truncatedTotal: number
   /** Keyed by the provider id, joinable with `TranslationPoolStatus.id`. */
   providers: Record<string, TranslationProviderMetrics>
+  /** Per-provider per-minute history, keyed by the provider id (a Rust
+   * `HashMap<String, Vec<…>>` serialized camelCase). */
+  series: Record<string, TranslationSeriesPoint[]>
 }
 
 export interface TranslationCacheStats {

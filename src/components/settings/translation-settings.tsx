@@ -1,13 +1,18 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  Ban,
+  ChevronDown,
   HelpCircle,
   Languages,
   Loader2,
   Pencil,
   Plus,
   RefreshCw,
+  RotateCcw,
+  SlidersHorizontal,
+  Timer,
   Trash2,
 } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
@@ -15,7 +20,18 @@ import { toast } from "sonner"
 
 import { SettingsSection } from "@/components/shared/settings-section"
 import { SettingCard, SettingRow } from "@/components/shared/setting-card"
+import {
+  ACCENT,
+  INK,
+  TrendChart,
+  type TrendDatum,
+} from "@/components/token-usage/charts"
 import { Button } from "@/components/ui/button"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Switch } from "@/components/ui/switch"
@@ -32,12 +48,23 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 import {
+  Command,
+  CommandGroup,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
+import { Checkbox } from "@/components/ui/checkbox"
+import { cn } from "@/lib/utils"
+import {
   clearTranslationCache,
+  cooldownTranslationProvider,
+  disableTranslationProvider,
   getTranslationCacheStats,
   getTranslationMetrics,
   getTranslationPoolStatus,
   getTranslationSettings,
   listTranslationModels,
+  resetTranslationProvider,
   testTranslationSettings,
   updateTranslationSettings,
 } from "@/lib/api"
@@ -76,6 +103,126 @@ const API_FORMAT_OPTIONS: { value: TranslationApiFormat; label: string }[] = [
 /** Soft client-side bounds for the numeric fields; the backend clamps too. */
 const RPM_CAP_BOUNDS = { min: 2, max: 600 }
 const BATCH_CHARS_BOUNDS = { min: 500, max: 20_000 }
+/** Per-lane concurrency ceilings (priority / background); backend clamps too. */
+const LANE_BOUNDS = { min: 1, max: 16 }
+/** Failure-strategy ceilings: consecutive-failure trigger and parking window. */
+const FAILURE_THRESHOLD_BOUNDS = { min: 1, max: 20 }
+const COOLDOWN_SECONDS_BOUNDS = { min: 5, max: 3600 }
+
+/**
+ * The lanes the scope multi-select offers, in the order their old switches
+ * stacked. `key`/`labelKey` drive the checkbox row; `label` (read off the
+ * current translator for the trigger summary) is resolved at render time
+ * inside the component, where the translator lives.
+ */
+const SCOPE_OPTIONS = [
+  { key: "translateBody", value: "body", labelKey: "translateBodyLabel" },
+  {
+    key: "translateThinking",
+    value: "thinking",
+    labelKey: "translateThinkingLabel",
+  },
+  {
+    key: "selectionTranslate",
+    value: "selection",
+    labelKey: "selectionTranslateLabel",
+  },
+] as const
+
+/** `api.example.com/v1` → `api.example.com`: host only, scheme and path off.
+ *  Used by the key-waiver check below. */
+function hostOf(baseUrl: string): string {
+  const afterScheme = baseUrl.trim().split("://").pop() ?? ""
+  return afterScheme.split(/[/?#]/)[0] ?? ""
+}
+
+/**
+ * One numeric cell of the per-provider stats table: the count in tabular
+ * monospace, or an em dash when the snapshot predates the field (so a
+ * missing counter never masquerades as a real zero).
+ */
+function MetricCell({ value }: { value: number | undefined }) {
+  return (
+    <td
+      className="truncate px-3 py-1.5 text-right font-mono tabular-nums"
+      title={value === undefined ? undefined : String(value)}
+    >
+      {value ?? "—"}
+    </td>
+  )
+}
+
+/** Trend window: the backend keeps 360 one-minute buckets per provider. */
+const TREND_WINDOW_MINUTES = 360
+/** Pool trend granularity: five-minute bars over that window. */
+const TREND_BUCKET_MINUTES = 5
+
+/** One summed 5-minute bucket of pool-wide dispatch history. */
+interface PoolTrendBucket {
+  minute: number
+  dispatched: number
+  ok: number
+  failed: number
+}
+
+/**
+ * Pool-wide trend buckets: every provider's per-minute series summed by
+ * minute, then folded into 5-minute buckets (`Math.floor(minute / 5)`) and
+ * clipped to the last six hours of activity. Empty buckets are dropped, so
+ * quiet stretches read as gaps — the same grammar the token dashboard's
+ * trend chart speaks.
+ */
+function buildPoolTrendBuckets(
+  series: TranslationMetricsSnapshot["series"]
+): PoolTrendBucket[] {
+  const perMinute = new Map<number, PoolTrendBucket>()
+  let maxMinute = -Infinity
+  for (const points of Object.values(series)) {
+    for (const point of points) {
+      maxMinute = Math.max(maxMinute, point.minute)
+      const bucket = perMinute.get(point.minute) ?? {
+        minute: point.minute,
+        dispatched: 0,
+        ok: 0,
+        failed: 0,
+      }
+      bucket.dispatched += point.dispatched
+      bucket.ok += point.ok
+      bucket.failed += point.failed
+      perMinute.set(point.minute, bucket)
+    }
+  }
+  if (perMinute.size === 0) return []
+  const windowStart = maxMinute - TREND_WINDOW_MINUTES + 1
+  const folded = new Map<number, PoolTrendBucket>()
+  for (const bucket of perMinute.values()) {
+    if (bucket.minute < windowStart) continue
+    const key = Math.floor(bucket.minute / TREND_BUCKET_MINUTES)
+    const slot = folded.get(key) ?? {
+      minute: key * TREND_BUCKET_MINUTES,
+      dispatched: 0,
+      ok: 0,
+      failed: 0,
+    }
+    slot.dispatched += bucket.dispatched
+    slot.ok += bucket.ok
+    slot.failed += bucket.failed
+    folded.set(key, slot)
+  }
+  return [...folded.values()].sort((a, b) => a.minute - b.minute)
+}
+
+/**
+ * `statsLegendOkFailed` is one "OK / Failed" string, but the tooltip and the
+ * legend each need the two words apart to pin them to their colour dots.
+ * A legend without a slash degrades to the whole string on both sides
+ * rather than losing a label.
+ */
+function splitOkFailedLegend(legend: string): [string, string] {
+  const slash = legend.indexOf("/")
+  if (slash === -1) return [legend, legend]
+  return [legend.slice(0, slash).trim(), legend.slice(slash + 1).trim()]
+}
 
 /**
  * A new pool row's identity. Generated client-side so the "test connection"
@@ -116,7 +263,10 @@ function formFingerprint(
     settings.providers,
     settings.batchMaxChars,
     settings.carryContext,
+    settings.translateBody,
     settings.translateThinking,
+    settings.priorityMaxConcurrent,
+    settings.backgroundMaxConcurrent,
     settings.selectionTranslate,
     settings.selectionTargetLang,
     settings.toggleAlwaysVisible,
@@ -148,8 +298,7 @@ function keyIsWaived(
 ): boolean {
   if (apiFormat === "ollama") return true
   if (apiFormat !== "auto") return false
-  const afterScheme = baseUrl.trim().split("://").pop() ?? ""
-  const hostAndPort = (afterScheme.split(/[/?#]/)[0] ?? "").toLowerCase()
+  const hostAndPort = hostOf(baseUrl).toLowerCase()
   return hostAndPort.includes("ollama") || hostAndPort.endsWith(":11434")
 }
 
@@ -161,14 +310,6 @@ function canProbeModels(provider: TranslationProvider): boolean {
     provider.apiKey.trim().length > 0
   )
 }
-
-/** The shared column grid for the provider table: header row and data rows
- * both carry it, so 供应商 / 模型 / 当前速率 / 状态 line up exactly. The
- * rate, state, and action tracks are FIXED rem widths — auto tracks size
- * per grid, and each row is its own grid, so content-sized columns would
- * drift out from under their headers row by row. */
-const PROVIDER_GRID_COLS =
-  "grid-cols-[minmax(0,1.15fr)_minmax(0,0.95fr)_7.5rem_9rem_3.25rem]"
 
 /**
  * `Language` is keyed by language name, not by locale code, so an `AppLocale`
@@ -244,12 +385,17 @@ export function TranslationSettings() {
     apiKey: "",
     model: "",
     targetLang: null,
+    translateBody: true,
     translateThinking: false,
     apiFormat: "auto",
     selectionTranslate: true,
     selectionTargetLang: null,
     toggleAlwaysVisible: false,
+    priorityMaxConcurrent: null,
+    backgroundMaxConcurrent: null,
     batchMaxChars: null,
+    failureThreshold: null,
+    cooldownSeconds: null,
     carryContext: true,
   })
   /**
@@ -300,6 +446,14 @@ export function TranslationSettings() {
   const [providerTestState, setProviderTestState] = useState<
     Record<string, { state: "testing" | "ok" | "failed"; message?: string }>
   >({})
+  /** The pool row whose manual reset is in flight; blocks a double click. */
+  const [resettingId, setResettingId] = useState<string | null>(null)
+  /** The pool row whose disable / cooldown call is in flight; same guard. */
+  const [busyId, setBusyId] = useState<string | null>(null)
+  /** The pool refresh the push event runs; a manual reset rides it too. */
+  const poolRefetchRef = useRef<(() => void) | null>(null)
+  /** Whether the translation-scope multi-select popover is expanded. */
+  const [scopeOpen, setScopeOpen] = useState(false)
 
   const loadCacheStats = useCallback(async () => {
     try {
@@ -371,6 +525,7 @@ export function TranslationSettings() {
         })
     }
     refetch()
+    poolRefetchRef.current = refetch
     let unsubscribe: (() => void) | null = null
     void subscribe("translation-pool-changed", () => refetch()).then((un) => {
       if (active) {
@@ -398,6 +553,7 @@ export function TranslationSettings() {
     }, 1_000)
     return () => {
       active = false
+      poolRefetchRef.current = null
       unsubscribe?.()
       window.clearInterval(safety)
       window.clearInterval(countdown)
@@ -463,6 +619,70 @@ export function TranslationSettings() {
   }, [])
 
   const closeEditor = useCallback(() => setEditingIndex(null), [])
+
+  /**
+   * Manual un-retire: clear one provider's session disable / cooldown so it
+   * rejoins the rotation without waiting for the backend to reconsider. The
+   * pool refresh after success is the same refetch the push event runs (the
+   * backend also broadcasts `translation-pool-changed`; the explicit refetch
+   * covers transports where the event is slower than the toast).
+   */
+  const handleResetProvider = useCallback(
+    async (providerId: string) => {
+      setResettingId(providerId)
+      try {
+        await resetTranslationProvider(providerId)
+        // Same refresh the backend's own push event triggers; run it eagerly so
+        // the badge flips even if the broadcast lags behind the toast.
+        poolRefetchRef.current?.()
+        toast.success(t("resetProviderDone"))
+      } catch (err) {
+        toast.error(localizeBackendError(err))
+      } finally {
+        setResettingId(null)
+      }
+    },
+    [t, localizeBackendError]
+  )
+
+  /**
+   * Manual opt-out: force one provider out of the rotation until its
+   * cooldown window elapses. The pool refresh after success is the same
+   * eager refetch the reset path rides — the badge flips even when the
+   * backend's `translation-pool-changed` broadcast lags behind the toast.
+   */
+  const handleDisableProvider = useCallback(
+    async (providerId: string) => {
+      setBusyId(providerId)
+      try {
+        await disableTranslationProvider(providerId)
+        poolRefetchRef.current?.()
+        toast.success(t("disableProviderDone"))
+      } catch (err) {
+        toast.error(localizeBackendError(err))
+      } finally {
+        setBusyId(null)
+      }
+    },
+    [t, localizeBackendError]
+  )
+
+  /** Manual cooldown: park one provider for the configured window now. */
+  const handleCooldownProvider = useCallback(
+    async (providerId: string) => {
+      setBusyId(providerId)
+      try {
+        await cooldownTranslationProvider(providerId)
+        poolRefetchRef.current?.()
+        toast.success(t("cooldownProviderDone"))
+      } catch (err) {
+        toast.error(localizeBackendError(err))
+      } finally {
+        setBusyId(null)
+      }
+    },
+    [t, localizeBackendError]
+  )
 
   const handleTestConnection = useCallback(async () => {
     setTesting(true)
@@ -622,6 +842,82 @@ export function TranslationSettings() {
         targetLang === "__interface__" ? null : targetLang
       )
 
+  /** Whether the call-statistics card is expanded; collapsed by default so
+   *  the page keeps its shape until the numbers are wanted. */
+  const [statsOpen, setStatsOpen] = useState(false)
+
+  /**
+   * Pool-wide trend for the expanded statistics card: all providers'
+   * per-minute series summed, folded into 5-minute buckets, and mapped onto
+   * the token dashboard's trend grammar — ok in the accent, failed in ink.
+   * The in-flight delta (dispatched minus settled) is deliberately visible
+   * only in the tooltip's detail line.
+   */
+  const poolTrend = useMemo<TrendDatum[]>(() => {
+    if (!metrics) return []
+    const timeFmt = new Intl.DateTimeFormat(locale, {
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+    return buildPoolTrendBuckets(metrics.series).map((bucket) => ({
+      key: `pool-${bucket.minute}`,
+      label: timeFmt.format(bucket.minute * 60_000),
+      cache: bucket.ok,
+      fresh: bucket.failed,
+      detail: [
+        {
+          label: t("statsColDispatched"),
+          value: String(bucket.dispatched),
+        },
+      ],
+    }))
+  }, [metrics, locale, t])
+
+  /**
+   * Per-provider summary rows for the expanded table: only providers that
+   * dispatched at least once, loudest first. Removed providers that still
+   * carry counters fall back to the id prefix, since their settings row is
+   * gone.
+   */
+  const providerStatRows = useMemo(() => {
+    const rows: {
+      id: string
+      label: string
+      sent: number
+      ok: number
+      avgLatencyMs: number
+      cacheHits?: number
+      gateRejected?: number
+      gateRejectedInvented?: number
+      gateRejectedEcho?: number
+      gateRejectedDroppedNumbers?: number
+      truncated?: number
+    }[] = []
+    for (const [id, p] of Object.entries(metrics?.providers ?? {})) {
+      if (p.sent <= 0) continue
+      const stored = settings.providers.find((row) => row.id === id)
+      rows.push({
+        id,
+        label: stored
+          ? stored.name || hostOf(stored.baseUrl) || id.slice(0, 8)
+          : id.slice(0, 8),
+        sent: p.sent,
+        ok: p.ok,
+        avgLatencyMs: p.avgLatencyMs,
+        // A snapshot from before the per-provider columns may omit these;
+        // undefined renders as an em dash rather than a fake zero.
+        cacheHits: p.cacheHits,
+        gateRejected: p.gateRejected,
+        gateRejectedInvented: p.gateRejectedInvented,
+        gateRejectedEcho: p.gateRejectedEcho,
+        gateRejectedDroppedNumbers: p.gateRejectedDroppedNumbers,
+        truncated: p.truncated,
+      })
+    }
+    return rows.sort((a, b) => b.sent - a.sent)
+  }, [metrics, settings.providers])
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -634,6 +930,18 @@ export function TranslationSettings() {
     localeKey === null
       ? t("targetLangFollowInterface")
       : tLanguage(LANGUAGE_LABEL_KEYS[localeKey])
+
+  // The legend string is one "OK / Failed" blob; the chart tooltip and the
+  // legend row each need the two words pinned to their own colour dot.
+  const [trendOkLabel, trendFailedLabel] = splitOkFailedLegend(
+    t("statsLegendOkFailed")
+  )
+
+  /** The checked lanes, for the trigger summary. Labels resolve through the
+   *  translator here — the module-level option list only carries keys. */
+  const selectedScopes = SCOPE_OPTIONS.filter(
+    (scope) => settings[scope.key]
+  ).map((scope) => ({ key: scope.key, label: t(scope.labelKey) }))
 
   const statusForProvider = (id: string | undefined) =>
     id ? poolStatus.find((entry) => entry.id === id) : undefined
@@ -727,38 +1035,74 @@ export function TranslationSettings() {
                 </SelectContent>
               </Select>
             </SettingRow>
+            {/* The three scope choices read as one decision, so they share a
+                row: the multi-select names every lane that is on, and the
+                selection target only matters while 划词 is one of them. */}
             <SettingRow
-              title={t("translateThinkingLabel")}
-              description={t("translateThinkingDescription")}
-              htmlFor="translation-thinking"
+              title={t("scopeTitle")}
+              description={t("scopeDescription")}
+              htmlFor="translation-scope-trigger"
               control={
-                <Switch
-                  id="translation-thinking"
-                  checked={settings.translateThinking}
-                  onCheckedChange={(checked) =>
-                    setSettings((prev) => ({
-                      ...prev,
-                      translateThinking: checked,
-                    }))
-                  }
-                />
-              }
-            />
-            <SettingRow
-              title={t("selectionTranslateLabel")}
-              description={t("selectionTranslateDescription")}
-              htmlFor="translation-selection"
-              control={
-                <Switch
-                  id="translation-selection"
-                  checked={settings.selectionTranslate}
-                  onCheckedChange={(checked) =>
-                    setSettings((prev) => ({
-                      ...prev,
-                      selectionTranslate: checked,
-                    }))
-                  }
-                />
+                <Popover open={scopeOpen} onOpenChange={setScopeOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      id="translation-scope-trigger"
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      role="combobox"
+                      aria-expanded={scopeOpen}
+                      aria-label={t("scopeAriaLabel")}
+                      className={cn(
+                        "w-56 justify-between gap-1 px-3 font-normal",
+                        selectedScopes.length === 0 && "text-muted-foreground"
+                      )}
+                    >
+                      <span className="min-w-0 truncate text-start text-xs">
+                        {selectedScopes.length > 0
+                          ? selectedScopes
+                              .map((scope) => scope.label)
+                              .join("、")
+                          : t("scopeNoneSelected")}
+                      </span>
+                      <ChevronDown
+                        className="size-3.5 shrink-0 text-muted-foreground/60"
+                        aria-hidden="true"
+                      />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="end" className="w-56 p-1">
+                    <Command>
+                      <CommandList>
+                        <CommandGroup>
+                          {SCOPE_OPTIONS.map((scope) => {
+                            const checked = settings[scope.key]
+                            return (
+                              <CommandItem
+                                key={scope.key}
+                                value={scope.value}
+                                onSelect={() =>
+                                  setSettings((prev) => ({
+                                    ...prev,
+                                    [scope.key]: !prev[scope.key],
+                                  }))
+                                }
+                              >
+                                <Checkbox
+                                  checked={checked}
+                                  aria-hidden="true"
+                                />
+                                <span className="min-w-0 flex-1 text-xs">
+                                  {t(scope.labelKey)}
+                                </span>
+                              </CommandItem>
+                            )
+                          })}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               }
             />
             {settings.selectionTranslate && (
@@ -842,6 +1186,46 @@ export function TranslationSettings() {
               </div>
             </SettingRow>
             <SettingRow
+              title={t("priorityConcurrentLabel")}
+              description={t("priorityConcurrentDescription")}
+              htmlFor="translation-priority-concurrent"
+            >
+              <Input
+                id="translation-priority-concurrent"
+                className="h-8 w-32 text-xs"
+                {...bindNumber(
+                  settings.priorityMaxConcurrent,
+                  LANE_BOUNDS,
+                  (value) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      priorityMaxConcurrent: value,
+                    })),
+                  t("priorityConcurrentDefaultHint")
+                )}
+              />
+            </SettingRow>
+            <SettingRow
+              title={t("backgroundConcurrentLabel")}
+              description={t("backgroundConcurrentDescription")}
+              htmlFor="translation-background-concurrent"
+            >
+              <Input
+                id="translation-background-concurrent"
+                className="h-8 w-32 text-xs"
+                {...bindNumber(
+                  settings.backgroundMaxConcurrent,
+                  LANE_BOUNDS,
+                  (value) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      backgroundMaxConcurrent: value,
+                    })),
+                  t("backgroundConcurrentDefaultHint")
+                )}
+              />
+            </SettingRow>
+            <SettingRow
               title={t("carryContextLabel")}
               description={t("carryContextDescription")}
               htmlFor="translation-carry-context"
@@ -860,178 +1244,335 @@ export function TranslationSettings() {
 
         <SettingsSection title={t("providersTitle")}>
           <SettingCard className="divide-y">
-            {metrics && (
-              // The session-wide counters: this is the line that answers
-              // "is anything translating, and what is the endpoint doing to
-              // my chunks" without opening the logs.
-              <div className="px-3 py-2 text-xs text-muted-foreground">
-                {t("metricsSummary", {
-                  dispatched: metrics.dispatchedTotal,
-                  served: metrics.servedTotal,
-                  cacheHits: metrics.cacheHits,
-                  rejected: metrics.gateRejectedTotal,
-                  invented: metrics.gateRejectedInvented,
-                  echo: metrics.gateRejectedEcho,
-                  dropped: metrics.gateRejectedDroppedNumbers,
-                  truncated: metrics.truncatedTotal,
-                })}
-              </div>
-            )}
             {/*
-              One shared grid so the column headers and every data row align:
-              供应商 | 模型 | 当前速率 | 状态 | (行操作). The rate/state/action
-              tracks are fixed rem widths (see PROVIDER_GRID_COLS) — auto
-              tracks size per grid and each row is its own grid, so headers
-              would drift off their columns row by row. Headers and values
-              share left edges inside their tracks.
+              A real table so the column headers and every data row align:
+              供应商 | 模型 | 当前速率 | 状态 | 健康分 | (行操作). `table-fixed`
+              sizes the columns off the header widths — each row used to be
+              its own grid, so content-sized tracks drifted out from under
+              their headers row by row.
             */}
-            <div
-              className={`grid items-center gap-3 bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground ${PROVIDER_GRID_COLS}`}
-            >
-              <span className="min-w-0 truncate">{t("colProvider")}</span>
-              <span className="min-w-0 truncate">{t("colModel")}</span>
-              {/* The badge cells carry px-1.5 of their own, so the headers
-                  over them take the same inset and the text lines align. */}
-              <span className="min-w-0 truncate pl-2">{t("colRate")}</span>
-              <span className="min-w-0 truncate pl-2">{t("colState")}</span>
-              <span aria-hidden="true" />
-            </div>
-            {settings.providers.map((row, index) => {
-              const entry = statusForProvider(row.id)
-              const disabled = Boolean(entry?.disabledReason)
-              const cooling = !disabled && (entry?.cooldownRemainingMs ?? 0) > 0
-              // A member below the health threshold only receives fallback
-              // (or probe) traffic; the amber state badge is how the reader
-              // learns their relay is quietly refusing translations.
-              const degraded =
-                !disabled && !cooling && (entry?.health?.degraded ?? false)
-              const test = providerTestState[row.id]
-              // The test verdict wins while it exists: a fresh draft row has
-              // no pool state at all, and "the test just failed" must survive
-              // the next status refresh regardless of limiter side effects.
-              const testing = test?.state === "testing"
-              const failed = test?.state === "failed"
-              const testedOk = test?.state === "ok"
-              const stateText = testing
-                ? t("testStateTesting")
-                : failed
-                  ? t("testStateUnavailable")
-                  : testedOk
-                    ? t("poolStateOk")
-                    : disabled
-                      ? t("poolDisabledShort")
-                      : cooling
-                        ? t("poolCooldownShort", {
-                            seconds: Math.ceil(
-                              (entry?.cooldownRemainingMs ?? 0) / 1000
-                            ),
+            <table className="w-full table-fixed text-xs">
+              <thead>
+                <tr className="bg-muted/30 text-muted-foreground">
+                  <th className="w-[22%] truncate px-3 py-2.5 text-left font-normal">
+                    {t("colProvider")}
+                  </th>
+                  <th className="w-[18%] truncate px-3 py-2.5 text-left font-normal">
+                    {t("colModel")}
+                  </th>
+                  <th className="w-[16%] truncate px-3 py-2.5 text-left font-normal">
+                    {t("colRate")}
+                  </th>
+                  <th className="w-[18%] truncate px-3 py-2.5 text-left font-normal">
+                    {t("colState")}
+                  </th>
+                  <th className="w-[12%] truncate px-3 py-2.5 text-left font-normal">
+                    {t("colHealth")}
+                  </th>
+                  {/* The failure strategy lives behind a header popover: pool
+                      tuning is rare, and a dedicated dialog would outweigh
+                      two numbers. */}
+                  <th className="w-[14%] px-3 py-2.5 text-right font-normal">
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="xs"
+                          aria-label={t("failureStrategy")}
+                        >
+                          <SlidersHorizontal className="size-3.5" />
+                          {t("failureStrategy")}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="end" className="w-64 space-y-2">
+                        <div className="space-y-1">
+                          <label
+                            htmlFor="translation-failure-threshold"
+                            className="text-xs text-muted-foreground"
+                          >
+                            {t("failureThresholdLabel")}
+                          </label>
+                          <Input
+                            id="translation-failure-threshold"
+                            className="h-8 w-full text-xs"
+                            {...bindNumber(
+                              settings.failureThreshold,
+                              FAILURE_THRESHOLD_BOUNDS,
+                              (value) =>
+                                setSettings((prev) => ({
+                                  ...prev,
+                                  failureThreshold: value,
+                                })),
+                              t("failureThresholdHint")
+                            )}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label
+                            htmlFor="translation-cooldown-seconds"
+                            className="text-xs text-muted-foreground"
+                          >
+                            {t("cooldownSecondsLabel")}
+                          </label>
+                          <Input
+                            id="translation-cooldown-seconds"
+                            className="h-8 w-full text-xs"
+                            {...bindNumber(
+                              settings.cooldownSeconds,
+                              COOLDOWN_SECONDS_BOUNDS,
+                              (value) =>
+                                setSettings((prev) => ({
+                                  ...prev,
+                                  cooldownSeconds: value,
+                                })),
+                              t("cooldownSecondsHint")
+                            )}
+                          />
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {settings.providers.map((row, index) => {
+                  const entry = statusForProvider(row.id)
+                  const disabled = Boolean(entry?.disabledReason)
+                  const cooling =
+                    !disabled && (entry?.cooldownRemainingMs ?? 0) > 0
+                  // A member below the health threshold only receives fallback
+                  // (or probe) traffic; the amber state badge is how the reader
+                  // learns their relay is quietly refusing translations.
+                  const degraded =
+                    !disabled && !cooling && (entry?.health?.degraded ?? false)
+                  const test = providerTestState[row.id]
+                  // The test verdict wins while it exists: a fresh draft row has
+                  // no pool state at all, and "the test just failed" must survive
+                  // the next status refresh regardless of limiter side effects.
+                  const testing = test?.state === "testing"
+                  const failed = test?.state === "failed"
+                  const testedOk = test?.state === "ok"
+                  const stateText = testing
+                    ? t("testStateTesting")
+                    : failed
+                      ? t("testStateUnavailable")
+                      : testedOk
+                        ? t("poolStateOk")
+                        : disabled
+                          ? t("poolDisabledShort")
+                          : cooling
+                            ? t("poolCooldownShort", {
+                                seconds: Math.ceil(
+                                  (entry?.cooldownRemainingMs ?? 0) / 1000
+                                ),
+                              })
+                            : degraded
+                              ? t("poolStateDegraded")
+                              : (entry?.allowedRpm ?? 0) > 0
+                                ? t("poolStateOk")
+                                : t("poolIdle")
+                  // The hover hint answers "why is it amber": a failed test shows
+                  // the endpoint's own words; otherwise the health breakdown.
+                  const stateTitle =
+                    failed && test?.message
+                      ? test.message
+                      : entry?.health && !entry.health.observing
+                        ? t("poolHealth", {
+                            score: Math.round(entry.health.score),
+                            quality: Math.round(entry.health.quality * 100),
+                            stability: Math.round(entry.health.stability * 100),
+                            speed: Math.round(entry.health.speed * 100),
+                            sample: entry.health.sample,
                           })
-                        : degraded
-                          ? t("poolStateDegraded")
-                          : (entry?.allowedRpm ?? 0) > 0
-                            ? t("poolStateOk")
-                            : t("poolIdle")
-              // The hover hint answers "why is it amber": a failed test shows
-              // the endpoint's own words; otherwise the health breakdown.
-              const stateTitle =
-                failed && test?.message
-                  ? test.message
-                  : entry?.health && !entry.health.observing
-                    ? t("poolHealth", {
-                        score: Math.round(entry.health.score),
-                        quality: Math.round(entry.health.quality * 100),
-                        stability: Math.round(entry.health.stability * 100),
-                        speed: Math.round(entry.health.speed * 100),
-                        sample: entry.health.sample,
-                      })
-                    : undefined
-              return (
-                <div
-                  key={row.id || index}
-                  className={`grid items-center gap-3 px-3 py-3 text-xs ${
-                    index === editingIndex
-                      ? "bg-accent/60"
-                      : "hover:bg-accent/30"
-                  } ${PROVIDER_GRID_COLS}`}
-                >
-                  <button
-                    type="button"
-                    className="min-w-0 truncate text-left font-medium"
-                    onClick={() => setEditingIndex(index)}
-                    title={row.name || row.baseUrl || undefined}
-                  >
-                    {row.name || row.baseUrl || t("providerNamePlaceholder")}
-                  </button>
-                  <span className="min-w-0 truncate text-muted-foreground">
-                    {row.model || "—"}
-                  </span>
-                  <span className="min-w-0">
-                    {!disabled && (entry?.allowedRpm ?? 0) > 0 ? (
-                      <span
-                        // The allowed rate and the served rate are different
-                        // facts: the limiter may grant 21/min while the lane
-                        // caps and the endpoint's own latency deliver far
-                        // less. "High rate but nothing translates" reports
-                        // read the second number.
-                        title={t("poolRateHint", {
-                          rpm: Math.round(entry!.allowedRpm),
-                          count: entry?.dispatchedLastMinute ?? 0,
-                        })}
-                        className="inline-block max-w-full truncate rounded-md border border-border/70 bg-background/60 px-2 py-0.5 font-medium text-foreground/80"
-                      >
-                        {t("poolRateShort", {
-                          rpm: Math.round(entry!.allowedRpm),
-                        })}
-                        {(entry?.dispatchedLastMinute ?? 0) > 0
-                          ? ` · ${t("poolDispatchShort", {
-                              count: entry!.dispatchedLastMinute,
-                            })}`
-                          : ""}
-                      </span>
-                    ) : (
-                      <span className="text-muted-foreground/60">—</span>
-                    )}
-                  </span>
-                  <span className="min-w-0">
-                    <span
-                      title={stateTitle}
-                      className={`inline-block max-w-full truncate rounded-md border px-2 py-0.5 ${
-                        failed || disabled
-                          ? "border-destructive/40 bg-destructive/5 text-destructive"
-                          : testing
-                            ? "border-border/70 bg-background/60 text-muted-foreground"
-                            : cooling || degraded
-                              ? "border-amber-500/40 bg-amber-500/5 text-amber-600 dark:text-amber-400"
-                              : "border-border/70 text-muted-foreground"
-                      }`}
+                        : undefined
+                  // The health score lives in its own column; the hover carries
+                  // the full breakdown — the same strings the edit card's health
+                  // line renders, degraded verdict included. An unobserved or
+                  // unmeasured member shows an em dash: a blank is more honest
+                  // than a made-up 70.
+                  const health = entry?.health ?? null
+                  const healthTitle = !health
+                    ? undefined
+                    : health.observing
+                      ? t("poolHealthObserving", { sample: health.sample })
+                      : t("poolHealthLine", {
+                          score: Math.round(health.score),
+                          quality: Math.round(health.quality * 100),
+                          stability: Math.round(health.stability * 100),
+                          speed: Math.round(health.speed * 100),
+                          sample: health.sample,
+                        }) +
+                        (health.degraded
+                          ? ` — ${t("poolHealthDegradedNote")}`
+                          : "")
+                  return (
+                    <tr
+                      key={row.id || index}
+                      className={
+                        index === editingIndex
+                          ? "bg-accent/60"
+                          : "hover:bg-accent/30"
+                      }
                     >
-                      {stateText}
-                    </span>
-                  </span>
-                  <span className="flex items-center justify-end gap-0.5">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={t("editProvider")}
-                      onClick={() => setEditingIndex(index)}
-                    >
-                      <Pencil className="size-3.5" />
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={t("removeProvider")}
-                      disabled={settings.providers.length <= 1}
-                      onClick={() => removeProvider(index)}
-                    >
-                      <Trash2 className="size-3.5" />
-                    </Button>
-                  </span>
-                </div>
-              )
-            })}
+                      <td className="truncate px-3 py-3">
+                        <button
+                          type="button"
+                          className="block max-w-full truncate text-left font-medium"
+                          onClick={() => setEditingIndex(index)}
+                          title={row.name || row.baseUrl || undefined}
+                        >
+                          {row.name ||
+                            row.baseUrl ||
+                            t("providerNamePlaceholder")}
+                        </button>
+                      </td>
+                      <td className="truncate px-3 py-3 text-muted-foreground">
+                        {row.model || "—"}
+                      </td>
+                      <td className="truncate px-3 py-3">
+                        {!disabled && (entry?.allowedRpm ?? 0) > 0 ? (
+                          <span
+                            // The allowed rate and the served rate are different
+                            // facts: the limiter may grant 21/min while the lane
+                            // caps and the endpoint's own latency deliver far
+                            // less. "High rate but nothing translates" reports
+                            // read the second number.
+                            title={t("poolRateHint", {
+                              rpm: Math.round(entry!.allowedRpm),
+                              count: entry?.dispatchedLastMinute ?? 0,
+                            })}
+                            className="inline-block max-w-full truncate rounded-md border border-border/70 bg-background/60 px-2 py-0.5 font-medium text-foreground/80"
+                          >
+                            {t("poolRateShort", {
+                              rpm: Math.round(entry!.allowedRpm),
+                            })}
+                            {(entry?.dispatchedLastMinute ?? 0) > 0
+                              ? ` · ${t("poolDispatchShort", {
+                                  count: entry!.dispatchedLastMinute,
+                                })}`
+                              : ""}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground/60">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3">
+                        <span className="flex min-w-0 flex-col items-start gap-1">
+                          <span
+                            title={stateTitle}
+                            className={`inline-block max-w-full truncate rounded-md border px-2 py-0.5 ${
+                              failed || disabled
+                                ? "border-destructive/40 bg-destructive/5 text-destructive"
+                                : testing
+                                  ? "border-border/70 bg-background/60 text-muted-foreground"
+                                  : cooling || degraded
+                                    ? "border-amber-500/40 bg-amber-500/5 text-amber-600 dark:text-amber-400"
+                                    : "border-border/70 text-muted-foreground"
+                            }`}
+                          >
+                            {stateText}
+                          </span>
+                        </span>
+                      </td>
+                      <td className="truncate px-3 py-3">
+                        {health && !health.observing ? (
+                          <span
+                            // Degraded is the one verdict the reader must not
+                            // miss: the score itself goes amber, and the hover
+                            // spells out what the low score costs.
+                            title={healthTitle}
+                            className={
+                              health.degraded
+                                ? "font-medium text-amber-600 dark:text-amber-400"
+                                : undefined
+                            }
+                          >
+                            {Math.round(health.score)}
+                          </span>
+                        ) : (
+                          <span
+                            title={healthTitle}
+                            className="text-muted-foreground/60"
+                          >
+                            —
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3">
+                        <span className="flex items-center justify-end gap-0.5">
+                          {/* Pool actions only exist for rows the backend
+                              knows: a draft row has no session state to
+                              disable, park, or restore. */}
+                          {entry && !disabled && !cooling && (
+                            <>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon-sm"
+                                aria-label={t("disableProvider")}
+                                title={t("disableProvider")}
+                                disabled={busyId === row.id}
+                                onClick={() =>
+                                  void handleDisableProvider(row.id)
+                                }
+                              >
+                                <Ban className="size-3.5" />
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon-sm"
+                                aria-label={t("cooldownProvider")}
+                                title={t("cooldownProvider")}
+                                disabled={busyId === row.id}
+                                onClick={() =>
+                                  void handleCooldownProvider(row.id)
+                                }
+                              >
+                                <Timer className="size-3.5" />
+                              </Button>
+                            </>
+                          )}
+                          {(disabled || cooling) && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label={t("resetProvider")}
+                              title={t("resetProviderHint")}
+                              disabled={resettingId === row.id}
+                              onClick={() => void handleResetProvider(row.id)}
+                            >
+                              <RotateCcw className="size-3.5" />
+                            </Button>
+                          )}
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label={t("editProvider")}
+                            onClick={() => setEditingIndex(index)}
+                          >
+                            <Pencil className="size-3.5" />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label={t("removeProvider")}
+                            disabled={settings.providers.length <= 1}
+                            onClick={() => removeProvider(index)}
+                          >
+                            <Trash2 className="size-3.5" />
+                          </Button>
+                        </span>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
             <div className="px-3 py-2">
               <Button
                 type="button"
@@ -1249,6 +1790,175 @@ export function TranslationSettings() {
             </div>
           )}
         </SettingsSection>
+
+        {/*
+          Call statistics: collapsed by default so the page keeps its shape;
+          expanding reveals the pool-wide trend and the per-provider table.
+          The whole header row is the trigger — a real second <Button> inside
+          it would be a nested interactive element, so the ghost-styled span
+          only looks like the lightweight control.
+        */}
+        <Collapsible open={statsOpen} onOpenChange={setStatsOpen}>
+          <SettingCard className="divide-y">
+            <CollapsibleTrigger asChild>
+              <button
+                type="button"
+                // A concise accessible name: the row's visible content is
+                // title + description + trigger copy, which concatenates into
+                // an unusable name for assistive tech.
+                aria-label={statsOpen ? t("statsCollapse") : t("statsExpand")}
+                aria-expanded={statsOpen}
+                className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left"
+              >
+                <span className="min-w-0">
+                  <span className="block text-xs font-medium">
+                    {t("statsTitle")}
+                  </span>
+                  <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                    {t("statsDescription")}
+                  </span>
+                </span>
+                <span className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+                  {statsOpen ? t("statsCollapse") : t("statsExpand")}
+                  <ChevronDown
+                    aria-hidden="true"
+                    className={cn(
+                      "size-3.5 transition-transform",
+                      statsOpen && "rotate-180"
+                    )}
+                  />
+                </span>
+              </button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="divide-y">
+              {poolTrend.length > 0 && (
+                <div className="px-3 py-3">
+                  <TrendChart
+                    data={poolTrend}
+                    label={t("statsTitle")}
+                    cacheLabel={trendOkLabel}
+                    freshLabel={trendFailedLabel}
+                    emptyLabel=""
+                  />
+                  {/* One legend group for both series: accent means ok, ink
+                      means failed — the chart's own colour contract. */}
+                  <div className="mt-2 flex items-center justify-end gap-1.5 text-xs text-muted-foreground">
+                    <span
+                      aria-hidden="true"
+                      className="size-2 rounded-[2px]"
+                      style={{ backgroundColor: ACCENT }}
+                    />
+                    <span>{trendOkLabel}</span>
+                    <span aria-hidden="true" className="mx-0.5">
+                      /
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      className="size-2 rounded-[2px]"
+                      style={{ backgroundColor: INK }}
+                    />
+                    <span>{trendFailedLabel}</span>
+                  </div>
+                </div>
+              )}
+              {providerStatRows.length > 0 && metrics && (
+                <div className="max-h-72 overflow-auto">
+                  <table className="w-full table-fixed text-xs">
+                    {/* Ten fixed-width columns: one row per provider, every
+                        outcome its own column, each row carrying that
+                        provider's real counters — no global rollup cell, the
+                        columns answer "which provider did what" directly. */}
+                    <thead>
+                      <tr className="bg-muted/30 text-muted-foreground text-[0.6875rem]">
+                        <th className="w-[16%] px-3 py-1.5 text-left font-normal">
+                          {t("statsColProvider")}
+                        </th>
+                        <th className="w-[9%] px-3 py-1.5 text-right font-normal">
+                          {t("statsColDispatched")}
+                        </th>
+                        <th className="w-[12%] px-3 py-1.5 text-right font-normal">
+                          {t("statsColOkFailed")}
+                        </th>
+                        <th className="w-[10%] px-3 py-1.5 text-right font-normal">
+                          {t("statsColLatency")}
+                        </th>
+                        <th className="w-[10%] px-3 py-1.5 text-right font-normal">
+                          {t("colCacheHits")}
+                        </th>
+                        <th className="w-[8%] px-3 py-1.5 text-right font-normal">
+                          {t("colRejected")}
+                        </th>
+                        <th className="w-[9%] px-3 py-1.5 text-right font-normal">
+                          {t("colInvented")}
+                        </th>
+                        <th className="w-[11%] px-3 py-1.5 text-right font-normal">
+                          {t("colEcho")}
+                        </th>
+                        <th className="w-[8%] px-3 py-1.5 text-right font-normal">
+                          {t("colDropped")}
+                        </th>
+                        <th className="w-[7%] px-3 py-1.5 text-right font-normal">
+                          {t("colTruncated")}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {providerStatRows.map((row) => (
+                        <tr key={row.id}>
+                          <td
+                            className="truncate px-3 py-1.5"
+                            title={row.label}
+                          >
+                            {row.label}
+                          </td>
+                          <td
+                            className="truncate px-3 py-1.5 text-right font-mono tabular-nums"
+                            title={String(row.sent)}
+                          >
+                            {row.sent}
+                          </td>
+                          <td
+                            className="truncate px-3 py-1.5 text-right font-mono tabular-nums"
+                            title={`${row.ok} / ${row.sent - row.ok}`}
+                          >
+                            {row.ok} / {row.sent - row.ok}
+                          </td>
+                          <td
+                            className="truncate px-3 py-1.5 text-right font-mono tabular-nums"
+                            title={
+                              row.avgLatencyMs > 0
+                                ? t("statsLatencyValue", {
+                                    ms: Math.round(row.avgLatencyMs),
+                                  })
+                                : "—"
+                            }
+                          >
+                            {row.avgLatencyMs > 0
+                              ? t("statsLatencyValue", {
+                                  ms: Math.round(row.avgLatencyMs),
+                                })
+                              : "—"}
+                          </td>
+                          <MetricCell value={row.cacheHits} />
+                          <MetricCell value={row.gateRejected} />
+                          <MetricCell value={row.gateRejectedInvented} />
+                          <MetricCell value={row.gateRejectedEcho} />
+                          <MetricCell value={row.gateRejectedDroppedNumbers} />
+                          <MetricCell value={row.truncated} />
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {poolTrend.length === 0 && providerStatRows.length === 0 && (
+                <p className="px-3 py-3 text-xs text-muted-foreground">
+                  {t("statsDescription")}
+                </p>
+              )}
+            </CollapsibleContent>
+          </SettingCard>
+        </Collapsible>
 
         <SettingsSection title={t("cacheTitle")}>
           <SettingCard className="p-3">

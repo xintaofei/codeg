@@ -1,6 +1,8 @@
 import { act, renderHook } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { STREAM_FAILURE_RETRY_MS } from "@/lib/translation"
+
 const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   translate: vi.fn(),
@@ -11,6 +13,10 @@ vi.mock("@/lib/api", () => ({
   translateTexts: mocks.translate,
 }))
 
+vi.mock("@/lib/platform", () => ({
+  subscribe: vi.fn(() => Promise.resolve(() => {})),
+}))
+
 const ENABLED = {
   enabled: true,
   providers: [],
@@ -19,12 +25,17 @@ const ENABLED = {
   model: "translator",
   targetLang: null,
   translateThinking: true,
+  translateBody: true,
+  priorityMaxConcurrent: null,
+  backgroundMaxConcurrent: null,
   apiFormat: "auto" as const,
   selectionTranslate: true,
   selectionTargetLang: null,
   toggleAlwaysVisible: false,
   batchMaxChars: null,
   carryContext: true,
+  failureThreshold: null,
+  cooldownSeconds: null,
 }
 
 type Texts = string[]
@@ -810,6 +821,157 @@ describe("useStreamingTranslatedText", () => {
 
     act(() => result.current.showTranslation())
     expect(result.current.display).toBe("译:p1\n\np2")
+  })
+
+  it("resumes translating a settled block after enabled toggles off and back on", async () => {
+    // The user's toggle path: translation off (settings page save), then on.
+    // A block mounted while OFF must translate once the switch returns — the
+    // effect re-runs on the enabled flip and the whole block goes out.
+    const mod = await setup()
+    mocks.translate.mockImplementation(ok)
+    const full = "one\n\ntwo\n\n"
+    const { rerender, result } = renderHook(
+      ({
+        text,
+        isStreaming,
+        on,
+      }: {
+        text: string
+        isStreaming: boolean
+        on: boolean
+      }) =>
+        mod.useStreamingTranslatedText({
+          text,
+          isStreaming,
+          shouldLoad: true,
+          uiLocale: "zh-CN",
+          blockKey: "resume",
+          enabled: on,
+        }),
+      { initialProps: { text: full, isStreaming: false, on: false } }
+    )
+    await flush()
+    await advance(WINDOW)
+    expect(mocks.translate).not.toHaveBeenCalled()
+    expect(result.current.display).toBe(full)
+
+    // Switch back on (settings save → primeTranslationSettings + rerender).
+    // The block is one merged span, so the endpoint sees it whole and the
+    // mock prefixes the whole body once.
+    rerender({ text: full, isStreaming: false, on: true })
+    await flush()
+    expect(mocks.translate).toHaveBeenCalled()
+    await advance(WINDOW)
+    expect(result.current.display).toBe("译:one\n\ntwo\n\n")
+    expect(result.current.hasTranslation).toBe(true)
+  })
+
+  it("replays a failed gap after the enabled switch flips off and back on", async () => {
+    // A settle-flush request failed (not yet given up: fewer failures than
+    // the abandonment budget), the user switched translation off, then back
+    // on with the endpoint recovered. The failed region must re-request:
+    // neither the settle boundary nor the replay scan may treat the disabled
+    // window as "already covered".
+    const mod = await setup()
+    let failing = true
+    mocks.translate.mockImplementation(async (texts: Texts) => {
+      if (failing) {
+        return texts.map((raw) => ({
+          key: raw,
+          text: "",
+          error: "RATE",
+          fromCache: false,
+        }))
+      }
+      return ok(texts)
+    })
+    const full = "one\n\ntwo\n\n"
+    const { rerender, result } = renderHook(
+      ({
+        text,
+        isStreaming,
+        on,
+      }: {
+        text: string
+        isStreaming: boolean
+        on: boolean
+      }) =>
+        mod.useStreamingTranslatedText({
+          text,
+          isStreaming,
+          shouldLoad: true,
+          uiLocale: "zh-CN",
+          blockKey: "resume-gap",
+          enabled: on,
+        }),
+      { initialProps: { text: full, isStreaming: false, on: true } }
+    )
+    await flush()
+    // The first flush fails; let its first backoff retry fire and fail too
+    // (still below the give-up budget of three).
+    await advance(WINDOW)
+    await advance(STREAM_FAILURE_RETRY_MS + WINDOW)
+    const spent = mocks.translate.mock.calls.length
+    expect(spent).toBeGreaterThanOrEqual(2)
+    expect(result.current.display).toBe(full)
+
+    // Off, then on (the user's toggle), and the endpoint recovers.
+    rerender({ text: full, isStreaming: false, on: false })
+    await flush()
+    failing = false
+    rerender({ text: full, isStreaming: false, on: true })
+    await flush()
+    await advance(WINDOW)
+    expect(mocks.translate.mock.calls.length).toBeGreaterThan(spent)
+    expect(result.current.display).toContain("译:")
+    expect(result.current.hasTranslation).toBe(true)
+  })
+
+  it("resumes translating after the body switch flips off and back on while streaming", async () => {
+    // TextPart passes `enabled: settings.enabled && settings.translateBody`:
+    // flipping translateBody re-renders with enabled=false mid-stream and
+    // enabled=true again. The stream must keep converging afterwards.
+    const mod = await setup()
+    mocks.translate.mockImplementation(ok)
+    const { rerender, result } = renderHook(
+      ({
+        text,
+        isStreaming,
+        on,
+      }: {
+        text: string
+        isStreaming: boolean
+        on: boolean
+      }) =>
+        mod.useStreamingTranslatedText({
+          text,
+          isStreaming,
+          shouldLoad: true,
+          uiLocale: "zh-CN",
+          blockKey: "resume-stream",
+          enabled: on,
+        }),
+      { initialProps: { text: "p1\n\n", isStreaming: true, on: true } }
+    )
+    await advance(WINDOW)
+    expect(result.current.display).toContain("译:p1")
+
+    // Body switch off mid-stream, save.
+    rerender({ text: "p1\n\np2\n\n", isStreaming: true, on: false })
+    await advance(2 * WINDOW)
+    const spent = mocks.translate.mock.calls.length
+
+    // Body switch back on, save.
+    rerender({ text: "p1\n\np2\n\n", isStreaming: true, on: true })
+    await flush()
+    await advance(WINDOW)
+    expect(mocks.translate.mock.calls.length).toBeGreaterThan(spent)
+    expect(result.current.display).toBe("译:p1\n\n译:p2\n\n")
+
+    rerender({ text: "p1\n\np2\n\n", isStreaming: false, on: true })
+    await flush()
+    await advance(WINDOW)
+    expect(result.current.display).toBe("译:p1\n\n译:p2\n\n")
   })
 })
 
