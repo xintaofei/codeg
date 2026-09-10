@@ -1325,6 +1325,19 @@ pub async fn browser_list_downloads(
     Ok(downloads.list())
 }
 
+/// Show a finished download in the file manager. Only reachable for a record
+/// this run made, and it is the record's path that is shown — the caller
+/// names a download, not a path. The frontend falls back to this when the
+/// opener plugin cannot take the path (a network location on Windows).
+#[tauri::command]
+pub async fn browser_reveal_download(
+    downloads: State<'_, BrowserDownloads>,
+    id: String,
+) -> Result<(), AppCommandError> {
+    crate::browser::downloads::reveal(&downloads, &id)
+        .map_err(|e| window_err("Failed to show the download", e))
+}
+
 /// Forget the records (the "dismiss" of the download bar). The files stay.
 #[tauri::command]
 pub async fn browser_clear_downloads(

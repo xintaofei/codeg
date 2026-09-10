@@ -124,15 +124,37 @@ export async function openPath(path: string): Promise<void> {
   }
 }
 
+/** The directory a native path lives in, or null when what is left is a root
+ *  rather than a folder — `\`, `\\server` with no share, `C:`. Both
+ *  separators, because the paths come from whichever host owns the
+ *  workspace. */
+function containingDirectory(path: string): string | null {
+  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"))
+  if (cut < 0) return null
+  const dir = path.slice(0, cut)
+  return /^([\\/]{0,2}|[\\/]{2}[^\\/]+|[A-Za-z]:)$/.test(dir) ? null : dir
+}
+
 /**
  * Reveal a file/directory in the system file manager (desktop only).
  * No-op in web mode.
+ *
+ * Falls back to opening the containing folder: the plugin resolves the path
+ * before handing it to the shell, which on Windows turns a network location
+ * into the extended `\\?\UNC\…` form that `ILCreateFromPath` refuses — so
+ * "show in folder" is otherwise dead for anyone whose downloads land on a
+ * share or a redirected folder. The fallback loses the selection, not the
+ * errand.
  */
 export async function revealItemInDir(path: string): Promise<void> {
-  if (isDesktop() && getActiveRemoteConnectionId() === null) {
-    const { revealItemInDir: tauriReveal } =
-      await import("@tauri-apps/plugin-opener")
-    await tauriReveal(path)
+  if (!isDesktop() || getActiveRemoteConnectionId() !== null) return
+  const opener = await import("@tauri-apps/plugin-opener")
+  try {
+    await opener.revealItemInDir(path)
+  } catch (error) {
+    const dir = containingDirectory(path)
+    if (!dir) throw error
+    await opener.openPath(dir)
   }
 }
 

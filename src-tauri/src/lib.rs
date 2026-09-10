@@ -1213,6 +1213,7 @@ mod tauri_app {
                 browser_commands::browser_clear_data,
                 browser_commands::browser_find,
                 browser_commands::browser_list_downloads,
+                browser_commands::browser_reveal_download,
                 browser_commands::browser_clear_downloads,
                 browser_commands::browser_set_host_rules,
                 browser_commands::browser_set_sign_in_user_agent,

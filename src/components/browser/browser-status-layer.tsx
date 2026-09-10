@@ -17,7 +17,7 @@ import { useTranslations } from "next-intl"
 
 import type { BrowserWorkspaceTab } from "@/contexts/workspace-context"
 import { useOptionalWorkspaceActions } from "@/contexts/workspace-context"
-import { browserReload } from "@/lib/browser/browser-api"
+import { browserReload, browserRevealDownload } from "@/lib/browser/browser-api"
 import {
   dismissBrowserDownload,
   useBrowserTabDownloads,
@@ -28,7 +28,11 @@ import {
   type BrowserTabNotice,
 } from "@/lib/browser/browser-tab-store"
 import { displayHostPort } from "@/lib/browser/browser-url"
-import type { BrowserErrorInfo, BrowserTabState } from "@/lib/browser/types"
+import type {
+  BrowserDownload,
+  BrowserErrorInfo,
+  BrowserTabState,
+} from "@/lib/browser/types"
 import { browserTabBackendId } from "@/lib/file-tab-id"
 import { getAllowedExternalProtocol } from "@/lib/link-classify"
 import { openWithOsHandler } from "@/lib/link-open"
@@ -310,6 +314,22 @@ export function BrowserOwnedWindowCard({
 }
 
 /**
+ * "Show in folder" for a downloaded file. The opener plugin first, because it
+ * is the one path that works everywhere; the backend second, because the
+ * plugin resolves the path before handing it to the shell and a Windows
+ * network location comes out as `\\?\UNC\…`, which the shell refuses. The
+ * backend reveals the path IT recorded for that download, so nothing new is
+ * reachable through the fallback.
+ */
+async function revealDownload(download: BrowserDownload): Promise<void> {
+  try {
+    await revealItemInDir(download.path)
+  } catch {
+    await browserRevealDownload(download.id)
+  }
+}
+
+/**
  * Downloads of this tab, above the page. A download is never opened for the
  * user — the bar offers "show in folder", which is what a file arriving from
  * the web deserves; running it is their decision, in their file manager.
@@ -346,7 +366,7 @@ export function BrowserDownloadBar({ tab }: { tab: BrowserWorkspaceTab }) {
             <button
               type="button"
               className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-medium text-primary hover:bg-primary/8"
-              onClick={() => void revealItemInDir(download.path)}
+              onClick={() => void revealDownload(download)}
             >
               <FolderOpen className="h-3.5 w-3.5" />
               {t("reveal")}

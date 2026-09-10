@@ -125,6 +125,15 @@ impl BrowserDownloads {
         self.lock().clone()
     }
 
+    /// The file one record points at, if it finished and still names a path.
+    fn path_of(&self, id: &str) -> Option<PathBuf> {
+        let entries = self.lock();
+        let entry = entries
+            .iter()
+            .find(|d| d.id == id && d.state == DownloadState::Completed)?;
+        (!entry.path.is_empty()).then(|| PathBuf::from(&entry.path))
+    }
+
     pub fn clear(&self) {
         self.lock().clear();
     }
@@ -313,6 +322,73 @@ pub fn finished(app: &AppHandle, url: &str, path: Option<PathBuf>, success: bool
 /// Where a tab's downloads go, for the settings section.
 pub fn downloads_dir_display() -> String {
     downloads_dir().to_string_lossy().to_string()
+}
+
+/// Show a finished download in the file manager, selected where the platform
+/// can select. The path comes from the record and never from the caller, so
+/// the only thing this can point the file manager at is a file the browser
+/// itself wrote.
+///
+/// The opener plugin normally does this, and normally should: this exists
+/// because it resolves the path first, which on Windows turns a network
+/// location into the extended `\\?\UNC\…` form that the shell's
+/// `ILCreateFromPath` refuses — leaving "show in folder" dead for anyone
+/// whose downloads land on a share or a redirected folder.
+pub fn reveal(downloads: &BrowserDownloads, id: &str) -> Result<(), String> {
+    let path = downloads
+        .path_of(id)
+        .ok_or_else(|| format!("no finished download {id}"))?;
+    if !path.exists() {
+        return Err(format!("{} is no longer there", path.display()));
+    }
+    // The Windows arm builds a command line by hand (`/select,` needs the
+    // path quoted inside one argument), so a quote in the path would end it.
+    // A downloaded name cannot contain one — `safe_file_name` and Windows
+    // itself both refuse — which is what makes the check cheap to keep.
+    if path.to_string_lossy().contains('"') {
+        return Err("the path contains a quote".to_string());
+    }
+    let mut command = reveal_command(&path);
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("cannot show {}: {e}", path.display()))
+}
+
+/// The file manager invocation that selects `path` (or, where selecting is
+/// not a thing, opens the folder it is in). Not waited on: Explorer answers
+/// with a non-zero exit code even when it did open the window.
+fn reveal_command(path: &Path) -> std::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut command = std::process::Command::new("explorer.exe");
+        let text = path.display().to_string();
+        // `/select,` is one argument, comma and all, with the path quoted
+        // INSIDE it — a shape `arg` cannot produce, hence the raw command
+        // line. And Explorer does not follow it into a UNC path: it drops the
+        // argument and lands on a default folder, so a network location gets
+        // the folder it is in, opened rather than selected in.
+        if text.starts_with(r"\\") {
+            let dir = path.parent().unwrap_or(path);
+            command.raw_arg(format!("\"{}\"", dir.display()));
+        } else {
+            command.raw_arg(format!("/select,\"{text}\""));
+        }
+        command
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = std::process::Command::new("open");
+        command.arg("-R").arg(path);
+        command
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(path.parent().unwrap_or(path));
+        command
+    }
 }
 
 #[cfg(test)]

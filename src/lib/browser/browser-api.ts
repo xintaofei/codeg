@@ -281,6 +281,12 @@ export function browserListDownloads(): Promise<BrowserDownload[]> {
   return getTransport().call<BrowserDownload[]>("browser_list_downloads", {})
 }
 
+/** Show a finished download in the file manager. The backend reveals the path
+ *  it recorded for that download, so this cannot point anywhere else. */
+export function browserRevealDownload(id: string): Promise<void> {
+  return getTransport().call<void>("browser_reveal_download", { id })
+}
+
 /** Forget the records; the downloaded files stay where they are. */
 export function browserClearDownloads(): Promise<void> {
   return getTransport().call<void>("browser_clear_downloads", {})
