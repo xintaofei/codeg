@@ -19,11 +19,11 @@ use crate::db::entities::{conversation, delegation_task, folder};
 use crate::db::error::DbError;
 use crate::models::AgentType;
 
-/// The exact agent/session/config identity used by a child execution.
+/// The session identity and selector preferences captured for a child execution.
 ///
-/// This is serialized into the ledger as one JSON value so a future strict
-/// resume can validate the complete binding before admission. `working_dir`
-/// is the canonical directory actually used by the child, while
+/// This is serialized into the ledger as one JSON value so a future resume can
+/// validate agent/session/cwd identity and best-effort restore its selectors.
+/// `working_dir` is the canonical directory actually used by the child, while
 /// `requested_working_dir` on [`AdmissionInput`] preserves the caller's raw
 /// request for retry correlation.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -38,6 +38,8 @@ pub struct ResumeBinding {
     pub preferred_mode_id: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub preferred_config_values: BTreeMap<String, String>,
+    /// Historical launch snapshot for diagnostics; configuration is not
+    /// session identity and may legitimately change between continuations.
     pub config_fingerprint: String,
 }
 

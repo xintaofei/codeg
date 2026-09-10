@@ -2780,9 +2780,8 @@ impl ConnectionManager {
         }
     }
 
-    /// Wait until strict recovery has published its final selectors, then
-    /// verify every immutable binding before a continuation prompt is allowed
-    /// onto the command channel.
+    /// Wait until recovery has applied its selector preferences, then verify
+    /// the immutable session identity before a continuation prompt is sent.
     #[allow(clippy::too_many_arguments)]
     async fn wait_for_strict_resume_ready(
         &self,
@@ -2838,16 +2837,22 @@ impl ConnectionManager {
                     ));
                 }
                 if mode_id.is_some_and(|expected| actual_mode.as_deref() != Some(expected)) {
-                    return Err(AcpError::protocol(
-                        "strict resume could not restore the source task's mode",
-                    ));
+                    tracing::warn!(
+                        task_id,
+                        expected_mode = ?mode_id,
+                        actual_mode = ?actual_mode.as_deref(),
+                        "[delegation] continuation resumed with a different mode"
+                    );
                 }
                 let options = options.unwrap_or_default();
                 for (id, expected) in config_values {
                     let Some(option) = options.iter().find(|option| option.id == *id) else {
-                        return Err(AcpError::protocol(format!(
-                            "strict resume did not expose required config option {id}"
-                        )));
+                        tracing::warn!(
+                            task_id,
+                            config_id = id,
+                            "[delegation] continuation did not expose a preferred config option"
+                        );
+                        continue;
                     };
                     let matches = match &option.kind {
                         SessionConfigKindInfo::Select(select) => select.current_value == *expected,
@@ -2856,9 +2861,11 @@ impl ConnectionManager {
                         }
                     };
                     if !matches {
-                        return Err(AcpError::protocol(format!(
-                            "strict resume could not restore config option {id}"
-                        )));
+                        tracing::warn!(
+                            task_id,
+                            config_id = id,
+                            "[delegation] continuation resumed with a different config value"
+                        );
                     }
                 }
                 return Ok(());
@@ -4332,15 +4339,6 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
         )
         .await
         .map_err(|e| SpawnerError::Spawn(e.to_string()))?;
-        let fingerprint = crate::commands::acp::fingerprint_config(agent_type, &runtime_env);
-        if resume_binding
-            .as_ref()
-            .is_some_and(|binding| binding.config_fingerprint != fingerprint)
-        {
-            return Err(SpawnerError::Spawn(
-                "source task configuration changed; strict continuation refused".into(),
-            ));
-        }
         let (session_id, policy) = match resume_binding.as_ref() {
             Some(binding) => (
                 Some(binding.external_session_id.clone()),
@@ -5063,6 +5061,37 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, AcpError::SessionBusy(_)));
         assert!(mgr.connections.lock().await.contains_key("human"));
+    }
+
+    #[tokio::test]
+    async fn strict_resume_allows_mode_and_config_drift_after_identity_matches() {
+        let mgr = ConnectionManager::new();
+        let mut conn = fake_connection("continued", None);
+        conn.delegation_task_id = Some("task-2".into());
+        {
+            let mut state = conn.state.write().await;
+            state.working_dir = Some(PathBuf::from("/workspace/project"));
+            state.external_id = Some("session-2".into());
+            state.current_mode = Some("new-mode".into());
+            state.config_options = None;
+            state.selectors_ready = true;
+        }
+        mgr.connections
+            .lock()
+            .await
+            .insert("continued".into(), conn);
+
+        mgr.wait_for_strict_resume_ready(
+            "continued",
+            "task-2",
+            AgentType::ClaudeCode,
+            Some(&PathBuf::from("/workspace/project")),
+            "session-2",
+            Some("old-mode"),
+            &BTreeMap::from([("model".into(), "old-model".into())]),
+        )
+        .await
+        .expect("mode and config are preferences, not session identity");
     }
 
     /// Spawn a two-level process tree: `sh` (the stand-in for the agent CLI)
