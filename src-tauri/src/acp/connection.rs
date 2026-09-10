@@ -1276,7 +1276,6 @@ struct DelegationReleaseBarrier {
     connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
     connection_id: String,
     task_id: Option<String>,
-    requested_session_id: Option<String>,
     broker: Option<Arc<crate::acp::delegation::broker::DelegationBroker>>,
 }
 
@@ -1313,17 +1312,14 @@ impl DelegationReleaseBarrier {
         let connections = Arc::clone(&self.connections);
         let connection_id = self.connection_id.clone();
         let task_id = self.task_id.clone();
-        let requested_session_id = self.requested_session_id.clone();
         let broker = self.broker.clone();
         self.runtime.spawn(async move {
             let removed = {
                 let mut map = connections.lock().await;
-                let owns_slot =
+                let owns_slot = task_id.as_deref().is_some_and(|task_id| {
                     map.get(&connection_id)
-                        .is_some_and(|conn| match task_id.as_deref() {
-                            Some(task_id) => conn.delegation_task_id.as_deref() == Some(task_id),
-                            None => conn.requested_session_id == requested_session_id,
-                        });
+                        .is_some_and(|conn| conn.delegation_task_id.as_deref() == Some(task_id))
+                });
                 owns_slot
                     .then(|| map.remove(&connection_id))
                     .flatten()
@@ -2274,7 +2270,7 @@ pub async fn spawn_agent_connection(
     // before `ChildGuard::drop` can run. 0 = not spawned yet / unknown.
     let child_pid = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let connection_runtime = tokio::runtime::Handle::current();
-    let delegation_release = (delegation_task_id.is_some() || session_id.is_some()).then(|| {
+    let delegation_release = delegation_task_id.is_some().then(|| {
         Arc::new(DelegationReleaseBarrier {
             driver_done: std::sync::atomic::AtomicBool::new(false),
             reaped: std::sync::atomic::AtomicBool::new(false),
@@ -2284,7 +2280,6 @@ pub async fn spawn_agent_connection(
             connections: Arc::clone(&connections),
             connection_id: connection_id.clone(),
             task_id: delegation_task_id.clone(),
-            requested_session_id: session_id.clone(),
             broker: delegation_injection
                 .as_ref()
                 .map(|injection| Arc::clone(&injection.broker)),
@@ -13979,7 +13974,6 @@ mod tests {
             connections: Arc::clone(&connections),
             connection_id: connection_id.to_string(),
             task_id: Some(task_id),
-            requested_session_id: None,
             broker: None,
         });
         (connections, barrier)

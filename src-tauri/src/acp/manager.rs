@@ -370,6 +370,7 @@ async fn wait_for_session_started(
 /// A connection that has left the map while its process may still be running.
 struct DrainingChild {
     agent: AgentType,
+    requested_session_id: Option<String>,
     /// The connection's live pid cell. `on_spawn` publishes the pid and
     /// `on_exit` zeroes it on a real reap.
     pid: Arc<std::sync::atomic::AtomicU32>,
@@ -845,6 +846,13 @@ impl ConnectionManager {
                 }
                 return Err(AcpError::SessionBusy(format!(
                     "session {sid} already has connection {existing} ({status:?}); wait for it to be released"
+                )));
+            }
+            if recovery_policy == SessionRecoveryPolicy::Strict
+                && !self.settle_draining_session(agent_type, sid).await
+            {
+                return Err(AcpError::SessionBusy(format!(
+                    "session {sid} still has a process being released"
                 )));
             }
         }
@@ -2497,9 +2505,9 @@ impl ConnectionManager {
     pub async fn disconnect(&self, conn_id: &str) -> Result<(), AcpError> {
         let (cmd_tx, driver_cancel, retained) = {
             let mut connections = self.connections.lock().await;
-            let retained = connections.get(conn_id).is_some_and(|conn| {
-                conn.delegation_task_id.is_some() || conn.requested_session_id.is_some()
-            });
+            let retained = connections
+                .get(conn_id)
+                .is_some_and(|conn| conn.delegation_task_id.is_some());
             let cmd_tx = if retained {
                 connections
                     .get(conn_id)
@@ -2539,9 +2547,41 @@ impl ConnectionManager {
         prune_reaped(&mut draining);
         draining.push(DrainingChild {
             agent: conn.agent_type,
+            requested_session_id: conn.requested_session_id.clone(),
             pid: conn.child_pid.clone(),
             parked_at: std::time::Instant::now(),
         });
+    }
+
+    /// A strict continuation must not start a second writer for a session that
+    /// a normal UI teardown has only just removed from the live map.
+    async fn settle_draining_session(&self, agent: AgentType, session_id: &str) -> bool {
+        let pid_cells: Vec<Arc<std::sync::atomic::AtomicU32>> = {
+            let mut draining = self.draining.lock().await;
+            prune_reaped(&mut draining);
+            draining
+                .iter()
+                .filter(|child| {
+                    child.agent == agent
+                        && child.requested_session_id.as_deref() == Some(session_id)
+                })
+                .map(|child| Arc::clone(&child.pid))
+                .collect()
+        };
+        if pid_cells.is_empty() {
+            return true;
+        }
+
+        tokio::time::sleep(DISCONNECT_ALL_GRACE).await;
+        tokio::task::spawn_blocking(move || {
+            pid_cells
+                .iter()
+                .filter(|cell| !kill_tree_and_wait(cell.as_ref()))
+                .count()
+                == 0
+        })
+        .await
+        .unwrap_or(false)
     }
 
     /// Every agent that could still be writing to its own files: connected or
@@ -2925,9 +2965,9 @@ impl ConnectionManager {
 
             let mut txs = Vec::with_capacity(ids.len());
             for id in ids {
-                let retained = connections.get(&id).is_some_and(|conn| {
-                    conn.delegation_task_id.is_some() || conn.requested_session_id.is_some()
-                });
+                let retained = connections
+                    .get(&id)
+                    .is_some_and(|conn| conn.delegation_task_id.is_some());
                 if retained {
                     if let Some(conn) = connections.get(&id) {
                         txs.push((conn.cmd_tx.clone(), Some(conn.driver_cancel.clone())));
@@ -4970,6 +5010,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resumed_human_teardown_is_not_retained_as_a_delegation() {
+        let mgr = ConnectionManager::new();
+
+        let mut direct = fake_connection("human-direct", None);
+        direct.requested_session_id = Some("session-direct".into());
+        let direct_cancel = direct.driver_cancel.clone();
+        mgr.connections
+            .lock()
+            .await
+            .insert("human-direct".into(), direct);
+
+        mgr.disconnect("human-direct").await.unwrap();
+        assert!(!direct_cancel.is_cancelled());
+        assert!(!mgr.connections.lock().await.contains_key("human-direct"));
+
+        let mut window = fake_connection("human-window", None);
+        window.requested_session_id = Some("session-window".into());
+        let window_cancel = window.driver_cancel.clone();
+        mgr.connections
+            .lock()
+            .await
+            .insert("human-window".into(), window);
+
+        assert_eq!(mgr.disconnect_by_owner_window("test-window").await, 1);
+        assert!(!window_cancel.is_cancelled());
+        assert!(!mgr.connections.lock().await.contains_key("human-window"));
+        assert_eq!(mgr.draining.lock().await.len(), 2);
+    }
+
+    #[tokio::test]
     async fn strict_delegation_resume_reports_live_human_session_as_busy() {
         let mgr = ConnectionManager::new();
         let mut conn = fake_connection("human", None);
@@ -5040,6 +5110,40 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         false
+    }
+
+    /// A normal tab teardown removes a resumed session immediately, but its
+    /// process can still be exiting. Strict delegation must settle that exact
+    /// session before it is allowed to start a second writer for it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn strict_resume_settles_a_matching_draining_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut child, gpid) = spawn_process_tree(&dir.path().join("g.pid")).await;
+
+        let mgr = ConnectionManager::new();
+        let mut conn = fake_connection("human", None);
+        conn.requested_session_id = Some("session-1".into());
+        conn.child_pid
+            .store(child.id(), std::sync::atomic::Ordering::SeqCst);
+        let pid_cell = Arc::clone(&conn.child_pid);
+        mgr.connections.lock().await.insert("human".into(), conn);
+        mgr.disconnect("human").await.unwrap();
+
+        let reaper = tokio::task::spawn_blocking(move || {
+            let _ = child.wait();
+            pid_cell.store(0, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        assert!(
+            mgr.settle_draining_session(AgentType::ClaudeCode, "session-1")
+                .await
+        );
+        assert!(
+            wait_until_dead(gpid).await,
+            "strict resume left the previous session process alive"
+        );
+        reaper.await.unwrap();
     }
 
     #[cfg(unix)]
