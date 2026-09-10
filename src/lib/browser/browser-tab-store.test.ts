@@ -35,6 +35,7 @@ function state(over: Partial<BrowserTabState> = {}): BrowserTabState {
     kind: "page",
     surface: "child",
     channel: "native",
+    channelError: null,
     url: "https://example.com/",
     requestedUrl: "https://example.com/",
     title: "Example",

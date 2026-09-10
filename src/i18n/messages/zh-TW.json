@@ -5910,7 +5910,9 @@
       "navigationBlockedScheme": "此類位址不能在這裡開啟",
       "navigationBlockedOpenSystem": "用系統應用程式開啟",
       "errorBlockedHint": "站點規則阻止了這個位址。規則在「設定 → 內建瀏覽器」中管理。",
-      "popupDeniedBlockedHost": "被站點規則阻止"
+      "popupDeniedBlockedHost": "被站點規則阻止",
+      "channelDegraded": "此分頁的彈出視窗與頁內導覽功能受限",
+      "channelDegradedHint": "codeg 未能載入頁面指令碼。此頁面開啟的彈出視窗會被攔截，網址列不會跟隨頁內導覽，在頁面中按尋找快速鍵也不會開啟尋找列。重新開啟此分頁會再試一次。"
     },
     "tab": {
       "untitled": "新分頁"

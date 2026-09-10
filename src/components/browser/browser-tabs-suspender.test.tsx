@@ -55,6 +55,7 @@ function loaded(id: string) {
     kind: "page",
     surface: "child",
     channel: "native",
+    channelError: null,
     url: "https://example.com/",
     requestedUrl: "https://example.com/",
     title: "Example",

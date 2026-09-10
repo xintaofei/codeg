@@ -20,6 +20,7 @@ describe("browser wire types", () => {
       kind: "page",
       surface: "child",
       channel: "native",
+      channelError: null,
       url: "https://example.com/",
       requestedUrl: "https://example.com/",
       title: "Example Domain",

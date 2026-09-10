@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const mocks = vi.hoisted(() => ({
   actions: null as null | { openBrowserTab: ReturnType<typeof vi.fn> },
@@ -37,7 +37,7 @@ import {
   resetBrowserDownloadsForTests,
   setBrowserDownload,
 } from "@/lib/browser/browser-downloads-store"
-import type { BrowserDownload } from "@/lib/browser/types"
+import type { BrowserDownload, BrowserTabState } from "@/lib/browser/types"
 
 const tab = {
   id: "browser:abc",
@@ -196,6 +196,103 @@ describe("BrowserNoticeBar — refused navigations", () => {
     renderBar()
     expect(screen.getByText(/blocked by a site rule/)).toBeInTheDocument()
     expect(screen.queryByText("Open anyway")).not.toBeInTheDocument()
+  })
+})
+
+function tabState(over: Partial<BrowserTabState> = {}): BrowserTabState {
+  return {
+    tabId: "abc",
+    ownerWindow: "main",
+    kind: "page",
+    surface: "child",
+    channel: "degraded",
+    channelError: null,
+    url: "https://example.com/",
+    requestedUrl: "https://example.com/",
+    title: "Example",
+    favicon: null,
+    loading: false,
+    canGoBack: false,
+    canGoForward: false,
+    origin: "https://example.com",
+    zoom: 1,
+    error: null,
+    remoteHost: null,
+    openerTabId: null,
+    profile: "default",
+    ...over,
+  }
+}
+
+function renderState(state: BrowserTabState) {
+  return render(
+    <NextIntlClientProvider locale="en" messages={enMessages}>
+      <BrowserNoticeBar tab={tab} state={state} />
+    </NextIntlClientProvider>
+  )
+}
+
+const degradedText = /Pop-ups and in-page navigation are limited/
+
+describe("BrowserNoticeBar — page channel", () => {
+  beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }))
+  afterEach(() => vi.useRealTimers())
+
+  // Every tab is `degraded` between opening and the helper's first message,
+  // so the bar has to wait before calling that a fault.
+  it("keeps quiet while the page loads and through the grace period", () => {
+    const { rerender } = renderState(tabState({ loading: true }))
+    act(() => vi.advanceTimersByTime(5000))
+    expect(screen.queryByText(degradedText)).not.toBeInTheDocument()
+
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <BrowserNoticeBar tab={tab} state={tabState()} />
+      </NextIntlClientProvider>
+    )
+    expect(screen.queryByText(degradedText)).not.toBeInTheDocument()
+    act(() => vi.advanceTimersByTime(1600))
+    expect(screen.getByText(degradedText)).toBeInTheDocument()
+  })
+
+  it("carries the engine's own words for a bug report, not on the bar", () => {
+    renderState(tabState({ channelError: "Runtime.addBinding failed: 0x1" }))
+    act(() => vi.advanceTimersByTime(1600))
+    expect(screen.getByText(degradedText).parentElement).toHaveAttribute(
+      "title",
+      expect.stringContaining("Runtime.addBinding failed: 0x1")
+    )
+    expect(
+      screen.queryByText(/Runtime\.addBinding failed/)
+    ).not.toBeInTheDocument()
+  })
+
+  it("says nothing once the helper reports in, nor for a page-world channel", () => {
+    const { unmount } = renderState(tabState({ channel: "native" }))
+    act(() => vi.advanceTimersByTime(5000))
+    expect(screen.queryByText(degradedText)).not.toBeInTheDocument()
+    unmount()
+
+    renderState(tabState({ channel: "legacy" }))
+    act(() => vi.advanceTimersByTime(5000))
+    expect(screen.queryByText(degradedText)).not.toBeInTheDocument()
+  })
+
+  // An owned window has no channel by design, and an error page is not the
+  // page whose helper we are waiting for.
+  it("stays out of an owned window and off an error page", () => {
+    const { unmount } = renderState(tabState({ surface: "window" }))
+    act(() => vi.advanceTimersByTime(5000))
+    expect(screen.queryByText(degradedText)).not.toBeInTheDocument()
+    unmount()
+
+    renderState(
+      tabState({
+        error: { kind: "dns", message: "", url: "https://example.com/" },
+      })
+    )
+    act(() => vi.advanceTimersByTime(5000))
+    expect(screen.queryByText(degradedText)).not.toBeInTheDocument()
   })
 })
 

@@ -5910,7 +5910,9 @@
       "navigationBlockedScheme": "이 종류의 주소는 여기서 열 수 없습니다",
       "navigationBlockedOpenSystem": "시스템 앱으로 열기",
       "errorBlockedHint": "사이트 규칙이 이 주소를 차단합니다. 규칙은 설정 → 내장 브라우저에서 관리합니다.",
-      "popupDeniedBlockedHost": "사이트 규칙으로 차단됨"
+      "popupDeniedBlockedHost": "사이트 규칙으로 차단됨",
+      "channelDegraded": "이 탭에서는 팝업과 페이지 내 이동이 제한됩니다",
+      "channelDegradedHint": "codeg가 페이지 스크립트를 설치하지 못했습니다. 이 페이지가 여는 팝업은 차단되고, 주소 표시줄은 페이지 내 이동을 따라가지 않으며, 페이지에서 찾기 단축키를 눌러도 찾기 막대가 열리지 않습니다. 탭을 다시 열면 재시도합니다."
     },
     "tab": {
       "untitled": "새 탭"

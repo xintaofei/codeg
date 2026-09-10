@@ -44,9 +44,10 @@ fn platform_name() -> &'static str {
     }
 }
 
-/// What this build can do on this machine. `channel` stays `degraded` until
-/// the isolated-world channel installer lands; the frontend keys off
-/// `available` and `surface`. An administrator's policy can turn the whole
+/// What this build can do on this machine. `channel` is what a new tab will
+/// be given, not what any tab currently has: a tab reports its own, and a
+/// per-tab install that fails lands in its `channel_error`. The frontend keys
+/// off `available` and `surface`. An administrator's policy can turn the whole
 /// feature off, in which case every link goes to the system browser.
 pub fn capabilities(policy: &BrowserPolicy) -> BrowserCapabilities {
     let mut reasons = Vec::new();
@@ -64,12 +65,20 @@ pub fn capabilities(policy: &BrowserPolicy) -> BrowserCapabilities {
         });
         SurfaceKind::Window
     };
-    reasons.push("page channel not installed yet".to_string());
+    // The installer ships with the embedded surface. On macOS before 11 it
+    // falls back to the page world, which only the live controller can tell,
+    // so a tab there answers `legacy` while this still says `native`.
+    let channel = if CHILD_SURFACE_COMPILED {
+        ChannelKind::Native
+    } else {
+        reasons.push("no page channel without the embedded surface".to_string());
+        ChannelKind::Degraded
+    };
     BrowserCapabilities {
         available: enabled,
         surface: enabled.then_some(surface),
         platform: platform_name().to_string(),
-        channel: ChannelKind::Degraded,
+        channel,
         reasons,
         isolated_storage: crate::browser::profile::isolated_storage(),
         proxy: crate::browser::profile::proxy_status(),
@@ -227,6 +236,7 @@ pub fn open_tab_core(
         kind: TabKind::Page,
         surface: surface.kind(),
         channel: ChannelKind::Degraded,
+        channel_error: None,
         url: String::new(),
         requested_url: url.to_string(),
         title: String::new(),
@@ -274,6 +284,11 @@ pub fn open_tab_core(
                     "[browser] tab {}: page channel unavailable ({err}); continuing degraded",
                     params.tab_id
                 );
+                if let Some(next) = registry.update_state(&params.tab_id, |s| {
+                    s.channel_error = Some(err.to_string())
+                }) {
+                    state = next;
+                }
             }
         }
     }
@@ -395,6 +410,7 @@ pub fn doc_open_core(
         kind: TabKind::Document,
         surface: surface.kind(),
         channel: ChannelKind::Degraded,
+        channel_error: None,
         url: String::new(),
         requested_url: url.clone(),
         title: String::new(),
@@ -438,6 +454,11 @@ pub fn doc_open_core(
                 "[browser] document {}: page channel unavailable ({err}); continuing degraded",
                 params.tab_id
             );
+            if let Some(next) = registry
+                .update_state(&params.tab_id, |s| s.channel_error = Some(err.to_string()))
+            {
+                state = next;
+            }
         }
     }
     if params.background {
@@ -1351,6 +1372,21 @@ mod tests {
         assert!(!caps.platform.is_empty());
         assert!(caps.policy.enabled);
         assert_eq!(caps.doc_guest, doc_guest::supported());
+    }
+
+    /// The page channel travels with the embedded surface: where there is no
+    /// embedded surface the answer is `degraded`, and it says why rather than
+    /// leaving the settings section to guess.
+    #[test]
+    fn capabilities_report_the_page_channel_the_surface_brings() {
+        let caps = capabilities(&BrowserPolicy::default());
+        if CHILD_SURFACE_COMPILED {
+            assert_eq!(caps.channel, ChannelKind::Native);
+            assert!(!caps.reasons.iter().any(|r| r.contains("page channel")));
+        } else {
+            assert_eq!(caps.channel, ChannelKind::Degraded);
+            assert!(caps.reasons.iter().any(|r| r.contains("page channel")));
+        }
     }
 
     /// An administrator can turn the feature off: no surface is offered and

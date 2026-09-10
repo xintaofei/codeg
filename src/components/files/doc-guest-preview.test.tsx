@@ -86,6 +86,7 @@ function tabState(tabId: string): BrowserTabState {
     kind: "document",
     surface: "child",
     channel: "degraded",
+    channelError: null,
     url: "",
     requestedUrl: "codeg-doc://doc/report.html",
     title: "",

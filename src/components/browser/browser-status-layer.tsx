@@ -1,5 +1,7 @@
 "use client"
 
+import { useEffect, useState } from "react"
+
 import {
   AlertTriangle,
   Check,
@@ -8,6 +10,7 @@ import {
   FolderOpen,
   RotateCw,
   ShieldAlert,
+  Unplug,
   X,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -62,8 +65,45 @@ function noticeText(
     : t("popupDenied", { host })
 }
 
+/** How long a finished page may sit on the fallback channel before it counts
+ *  as degraded. The helper says hello at document start, long before the load
+ *  ends, so this only absorbs the delivery of that one message. */
+const CHANNEL_GRACE_MS = 1500
+
+/**
+ * True once this tab is knowably stuck without its page channel: the page is
+ * done loading, it is not an error page (our helper does not run in one), and
+ * `hello` still has not arrived. Held for a grace period so the ordinary
+ * open — degraded until the first hello — never flashes the bar.
+ *
+ * `legacy` is not degraded: the page-world helper works, it is only
+ * unprotected from the page. An owned window has no channel by design.
+ */
+function useChannelDegraded(state: BrowserTabState | null): boolean {
+  const degraded =
+    state?.surface === "child" &&
+    state.channel === "degraded" &&
+    !state.loading &&
+    !state.error
+  const [settled, setSettled] = useState(false)
+  // Cleared during render, not in the effect, so a channel that comes up
+  // takes the bar away in the same paint.
+  const [wasDegraded, setWasDegraded] = useState(degraded)
+  if (wasDegraded !== degraded) {
+    setWasDegraded(degraded)
+    setSettled(false)
+  }
+  useEffect(() => {
+    if (!degraded) return
+    const timer = setTimeout(() => setSettled(true), CHANNEL_GRACE_MS)
+    return () => clearTimeout(timer)
+  }, [degraded])
+  return degraded && settled
+}
+
 /** Bars that sit OUTSIDE the native surface's rect (a native view paints over
- *  any DOM placed on top of it): blocked popups, remote-egress banner. */
+ *  any DOM placed on top of it): blocked popups, remote-egress banner, a page
+ *  channel that never came up. */
 export function BrowserNoticeBar({
   tab,
   state,
@@ -76,9 +116,24 @@ export function BrowserNoticeBar({
   // Null outside the workspace providers (the viewer drawer on a full-screen
   // route); the bar then only reports the block.
   const actions = useOptionalWorkspaceActions()
-  if (!notice && !state?.remoteHost) return null
+  const channelDegraded = useChannelDegraded(state)
+  if (!notice && !state?.remoteHost && !channelDegraded) return null
   return (
     <div className="flex flex-col">
+      {channelDegraded ? (
+        <div
+          className="flex h-7 items-center gap-2 border-b border-border/60 bg-muted/60 px-3 text-xs text-muted-foreground"
+          // The engine's own words are for a bug report, not for the bar.
+          title={[t("channelDegradedHint"), state?.channelError]
+            .filter(Boolean)
+            .join("\n\n")}
+        >
+          <Unplug className="h-3.5 w-3.5 shrink-0 text-amber-600" />
+          <span className="min-w-0 flex-1 truncate">
+            {t("channelDegraded")}
+          </span>
+        </div>
+      ) : null}
       {state?.remoteHost ? (
         <div className="flex h-7 items-center gap-2 border-b border-border/60 bg-muted/60 px-3 text-xs text-muted-foreground">
           {t("remoteBanner", { host: state.remoteHost })}

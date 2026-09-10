@@ -70,6 +70,9 @@ pub fn handle_message(app: &AppHandle, tab_id: &str, raw: String, main_frame: bo
                 if state.channel != ChannelKind::Legacy {
                     state.channel = ChannelKind::Native;
                 }
+                // The helper is talking, so whatever the install reported is
+                // no longer the tab's condition.
+                state.channel_error = None;
             });
             if let Some(state) = state {
                 events::emit_state(app, &state);

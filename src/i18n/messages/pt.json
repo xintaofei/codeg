@@ -5910,7 +5910,9 @@
       "navigationBlockedScheme": "este tipo de endereço não pode ser aberto aqui",
       "navigationBlockedOpenSystem": "Abrir com o app do sistema",
       "errorBlockedHint": "Uma regra de site bloqueia este endereço. As regras são geridas em Configurações → Navegador integrado.",
-      "popupDeniedBlockedHost": "bloqueada por uma regra de site"
+      "popupDeniedBlockedHost": "bloqueada por uma regra de site",
+      "channelDegraded": "Pop-ups e navegação dentro da página estão limitados nesta aba",
+      "channelDegradedHint": "O codeg não conseguiu instalar seu script de página. Os pop-ups que esta página abrir são bloqueados, a barra de endereço não acompanhará a navegação dentro da página e o atalho de busca pressionado na página não abrirá a barra de busca. Reabrir a aba tenta de novo."
     },
     "tab": {
       "untitled": "Nova aba"

@@ -74,6 +74,7 @@ function state(id = "abc"): BrowserTabState {
     kind: "page",
     surface: "child",
     channel: "degraded",
+    channelError: null,
     url: "",
     requestedUrl: "https://example.com/",
     title: "",

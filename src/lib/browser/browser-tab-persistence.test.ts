@@ -56,6 +56,7 @@ function state(over: Partial<BrowserTabState> = {}): BrowserTabState {
     kind: "page",
     surface: "child",
     channel: "native",
+    channelError: null,
     url: "https://example.com/deep",
     requestedUrl: "https://example.com/deep",
     title: "Deep page",

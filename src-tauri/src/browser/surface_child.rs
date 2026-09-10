@@ -1033,12 +1033,12 @@ fn new_window_handler(
             // practice, so this is a no-op that still reports the channel
             // kind. Windows: a webview of its own, so a full install. Either
             // way it happens before the engine loads anything.
-            let channel = match handle.install_channel() {
-                Ok(true) => ChannelKind::Degraded, // native once `hello` arrives
-                Ok(false) => ChannelKind::Legacy,
+            let (channel, channel_error) = match handle.install_channel() {
+                Ok(true) => (ChannelKind::Degraded, None), // native once `hello` arrives
+                Ok(false) => (ChannelKind::Legacy, None),
                 Err(err) => {
                     tracing::warn!("[browser] popup {tab_id}: page channel unavailable ({err})");
-                    ChannelKind::Degraded
+                    (ChannelKind::Degraded, Some(err.to_string()))
                 }
             };
             let state = BrowserTabState {
@@ -1047,6 +1047,7 @@ fn new_window_handler(
                 kind: TabKind::Page,
                 surface: SurfaceKind::Child,
                 channel,
+                channel_error,
                 url: String::new(),
                 requested_url: parsed.to_string(),
                 title: String::new(),

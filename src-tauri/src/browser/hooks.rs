@@ -422,6 +422,7 @@ mod tests {
             kind: TabKind::Page,
             surface: SurfaceKind::Child,
             channel: ChannelKind::Native,
+            channel_error: None,
             url: url.into(),
             requested_url: requested.into(),
             title: "Listing".into(),

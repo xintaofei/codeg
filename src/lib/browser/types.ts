@@ -39,6 +39,10 @@ export interface BrowserTabState {
   kind: TabKind
   surface: SurfaceKind
   channel: ChannelKind
+  /** Why the page channel could not be installed, in the engine's own words.
+   *  Null while it is fine — and also while it is merely still coming up,
+   *  which is what `channel: "degraded"` means until the helper says hello. */
+  channelError: string | null
   /** Last committed URL ("" until the first document commits). */
   url: string
   /** URL the last navigation asked for. */

@@ -119,6 +119,7 @@ describe("BrowserTabsPersistence", () => {
       kind: "page",
       surface: "child",
       channel: "native",
+      channelError: null,
       url: "https://example.com/a/deep",
       requestedUrl: "https://example.com/a/deep",
       title: "Deep",

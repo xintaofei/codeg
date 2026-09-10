@@ -291,6 +291,7 @@ describe("BrowserEventsBridge", () => {
       kind: "page",
       surface: "child",
       channel: "native",
+      channelError: null,
       url: "",
       requestedUrl: "https://example.com/popup",
       title: "",

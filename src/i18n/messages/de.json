@@ -5910,7 +5910,9 @@
       "navigationBlockedScheme": "diese Adressart kann hier nicht geöffnet werden",
       "navigationBlockedOpenSystem": "Mit System-App öffnen",
       "errorBlockedHint": "Eine Site-Regel blockiert diese Adresse. Regeln werden unter Einstellungen → Integrierter Browser verwaltet.",
-      "popupDeniedBlockedHost": "durch eine Site-Regel blockiert"
+      "popupDeniedBlockedHost": "durch eine Site-Regel blockiert",
+      "channelDegraded": "Pop-ups und Navigation innerhalb der Seite sind in diesem Tab eingeschränkt",
+      "channelDegradedHint": "codeg konnte sein Seitenskript nicht einsetzen. Von dieser Seite geöffnete Pop-ups werden blockiert, die Adressleiste folgt der Navigation innerhalb der Seite nicht, und das Suchkürzel in der Seite öffnet die Suchleiste nicht. Ein erneutes Öffnen des Tabs versucht es noch einmal."
     },
     "tab": {
       "untitled": "Neuer Tab"

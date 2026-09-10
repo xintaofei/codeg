@@ -79,6 +79,11 @@ pub struct BrowserTabState {
     pub kind: TabKind,
     pub surface: SurfaceKind,
     pub channel: ChannelKind,
+    /// Why the page channel could not be installed, in the engine's own words.
+    /// `None` while the channel is fine — and also while it is merely still
+    /// coming up, which is what `channel: degraded` means until the helper's
+    /// `hello` arrives. A tab with this set stays degraded for good.
+    pub channel_error: Option<String>,
     /// Last committed URL.
     pub url: String,
     /// URL the last navigation was asked for (differs from `url` while loading
@@ -264,6 +269,7 @@ mod tests {
             kind: TabKind::Page,
             surface: SurfaceKind::Child,
             channel: ChannelKind::Native,
+            channel_error: Some("Runtime.addBinding failed".into()),
             url: "about:blank".into(),
             requested_url: "https://example.com/".into(),
             title: String::new(),
@@ -285,6 +291,7 @@ mod tests {
         assert_eq!(json["kind"], "page");
         assert_eq!(json["surface"], "child");
         assert_eq!(json["channel"], "native");
+        assert_eq!(json["channelError"], "Runtime.addBinding failed");
         assert_eq!(json["requestedUrl"], "https://example.com/");
         assert_eq!(json["canGoBack"], false);
 
