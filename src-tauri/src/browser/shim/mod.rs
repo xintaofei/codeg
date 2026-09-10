@@ -7,3 +7,37 @@
 
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(all(target_os = "windows", feature = "browser-child"))]
+pub mod windows;
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod navigation {
+    //! What the engines report about a navigation and wry does not: where a
+    //! page-initiated load is heading, that it was redirected, that it ended
+    //! without being the page's fault, and how it failed. One shape for every
+    //! platform, so `surface_child` handles them in one place.
+
+    use std::sync::Arc;
+
+    use super::super::hooks::LoadFailure;
+
+    /// Events a platform's navigation hooks report, on the main thread.
+    pub enum NavigationEvent {
+        /// A main-frame navigation started; the URL it is heading for.
+        Started(String),
+        /// The provisional navigation was redirected by the server; the URL it
+        /// is heading for now.
+        Redirected(String),
+        /// The provisional navigation was ended by policy — the host refused
+        /// the address it was redirected to, or the response became a download
+        /// — so no page is coming for it, and that is not a failure of the
+        /// page.
+        Interrupted,
+        Failed(LoadFailure),
+    }
+
+    pub type NavigationSink = Arc<dyn Fn(NavigationEvent) + Send + Sync>;
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub use navigation::{NavigationEvent, NavigationSink};

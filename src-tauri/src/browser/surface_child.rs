@@ -20,7 +20,6 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-#[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
@@ -34,33 +33,28 @@ use tauri_runtime_wry::wry::{
     self, dpi, NewWindowFeatures, NewWindowResponse, PageLoadEvent, Rect, WebViewBuilder,
 };
 
-#[cfg(target_os = "macos")]
 use super::channel::{self, MessageSink};
 use super::doc_guest::{self, DocGrant, DocGuests, GuestNavigation};
 use super::events;
 use super::hooks;
 use super::policy::{self, BrowserPolicy};
 use super::profile;
-use super::registry::BrowserRegistry;
-#[cfg(target_os = "macos")]
-use super::registry::BrowserTab;
-#[cfg(target_os = "macos")]
+use super::registry::{BrowserRegistry, BrowserTab};
 use super::surface::BrowserSurface;
-#[cfg(target_os = "macos")]
-use super::types::{BrowserTabState, ChannelKind, SurfaceKind, TabKind};
 use super::types::{
-    Bounds, BrowserOpenRequestPayload, BrowserPopupPayload, NavigationBlockReason,
-    PopupPresentation,
+    Bounds, BrowserOpenRequestPayload, BrowserPopupPayload, BrowserTabState, ChannelKind,
+    NavigationBlockReason, PopupPresentation, SurfaceKind, TabKind,
 };
 #[cfg(target_os = "macos")]
 use super::shim::macos as shim;
+#[cfg(target_os = "windows")]
+use super::shim::windows as shim;
 
 thread_local! {
     static SURFACES: RefCell<HashMap<String, wry::WebView>> = RefCell::new(HashMap::new());
 }
 
 static MAIN_THREAD: OnceLock<ThreadId> = OnceLock::new();
-#[cfg(target_os = "macos")]
 static POPUP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// How far back a page-initiated new-window request may look for a user
@@ -112,7 +106,6 @@ fn rect(bounds: Bounds) -> Rect {
 
 /// Main thread only: which tab owns the platform webview behind `pointer`
 /// (see `channel::MessageSink`).
-#[cfg(target_os = "macos")]
 fn tab_id_for_webview(pointer: usize) -> Option<String> {
     SURFACES.with(|s| {
         s.borrow()
@@ -123,8 +116,7 @@ fn tab_id_for_webview(pointer: usize) -> Option<String> {
 }
 
 /// One sink for every tab: messages are attributed by source webview, because
-/// an adopted popup shares its opener's user-content controller.
-#[cfg(target_os = "macos")]
+/// an adopted popup shares its opener's user-content controller (macOS).
 fn message_sink(app: &AppHandle) -> MessageSink {
     let app = app.clone();
     Arc::new(move |raw, main_frame, source| match tab_id_for_webview(source) {
@@ -135,7 +127,6 @@ fn message_sink(app: &AppHandle) -> MessageSink {
 
 /// Where the platform delegate's navigation events go: the registry, via
 /// the hooks (main thread).
-#[cfg(target_os = "macos")]
 fn navigation_sink(app: &AppHandle, tab_id: &str) -> shim::NavigationSink {
     let app = app.clone();
     let tab_id = tab_id.to_string();
@@ -155,20 +146,73 @@ fn navigation_sink(app: &AppHandle, tab_id: &str) -> shim::NavigationSink {
     })
 }
 
-/// Main thread only. Wrap the engine's navigation delegate so failures and
+/// Main thread only. Hook the engine's navigation reporting so failures and
 /// provisional starts reach the registry. Not fatal when it cannot be done:
 /// the load watcher still notices a failed load, only later and untyped.
-#[cfg(target_os = "macos")]
-fn attach_navigation_delegate(app: &AppHandle, tab_id: &str, webview: &wry::WebView) {
-    if let Err(err) = shim::install_navigation_delegate(webview, navigation_sink(app, tab_id)) {
+fn attach_navigation_delegate(
+    app: &AppHandle,
+    tab_id: &str,
+    kind: &ChildKind,
+    webview: &wry::WebView,
+) {
+    #[cfg(target_os = "macos")]
+    let installed = {
+        let _ = kind;
+        shim::install_navigation_delegate(webview, navigation_sink(app, tab_id))
+    };
+    #[cfg(target_os = "windows")]
+    let installed = shim::install_navigation_hooks(
+        webview,
+        navigation_sink(app, tab_id),
+        frame_navigation_sink(app, tab_id, kind),
+    );
+    if let Err(err) = installed {
         tracing::warn!(
-            "[browser] tab {tab_id}: navigation delegate not installed ({err}); failures are detected by polling"
+            "[browser] tab {tab_id}: navigation hooks not installed ({err}); failures are detected by polling"
         );
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn attach_navigation_delegate(_app: &AppHandle, _tab_id: &str, _webview: &wry::WebView) {}
+/// Windows only: whether a SUBFRAME may navigate to an address. WebView2's
+/// `NavigationStarting` — the event wry turns into the navigation handler —
+/// fires for the main frame alone, so without this an iframe would be outside
+/// the scheme list and the `block` site rules altogether. The same decision
+/// the main handler makes for a non-main frame, asked per frame.
+#[cfg(target_os = "windows")]
+fn frame_navigation_sink(
+    app: &AppHandle,
+    tab_id: &str,
+    kind: &ChildKind,
+) -> shim::FrameNavigationSink {
+    let app = app.clone();
+    let tab_id = tab_id.to_string();
+    let document = matches!(kind, ChildKind::Document(_));
+    Arc::new(move |url: &str| {
+        let Ok(parsed) = Url::parse(url) else {
+            return false;
+        };
+        if document {
+            return matches!(
+                doc_guest::guest_navigation(&parsed, false),
+                GuestNavigation::Allow
+            );
+        }
+        if !policy::subframe_navigation_allowed(&parsed) {
+            tracing::debug!("[browser] tab {tab_id} blocked frame navigation to {url}");
+            return false;
+        }
+        // A `block` site rule applies to every frame: a page must not be able
+        // to load a blocked host by embedding it.
+        if app
+            .try_state::<BrowserPolicy>()
+            .is_some_and(|policy| policy.blocked(&parsed))
+        {
+            tracing::debug!("[browser] tab {tab_id} blocked frame navigation to {url} (site rule)");
+            return false;
+        }
+        true
+    })
+}
 
 /// Inside a navigation handler: is the action being decided for the main
 /// frame? Where the platform cannot say, the strict answer.
@@ -188,7 +232,6 @@ fn current_navigation_is_main_frame() -> bool {
 fn drop_surface(id: &str) -> bool {
     SURFACES.with(|s| {
         let removed = s.borrow_mut().remove(id);
-        #[cfg(target_os = "macos")]
         if let Some(webview) = &removed {
             shim::forget_navigation_delegate(webview);
         }
@@ -241,30 +284,13 @@ impl ChildHandle {
     /// wry's `url()`, whose `unwrap` of a nil `WKWebView.URL` panics the
     /// main thread.
     pub fn url(&self) -> Result<String, ChildError> {
-        #[cfg(target_os = "macos")]
-        {
-            self.with(shim::current_url)?
-                .ok_or_else(|| ChildError::Op("no committed URL yet".into()))
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            self.with(|wv| wv.url().map_err(|e| e.to_string()))?
-                .map_err(ChildError::Op)
-        }
+        self.with(shim::current_url)?
+            .ok_or_else(|| ChildError::Op("no committed URL yet".into()))
     }
 
     /// Whether the engine still has a navigation in flight.
     pub fn is_loading(&self) -> Result<bool, ChildError> {
-        #[cfg(target_os = "macos")]
-        {
-            self.with(shim::is_loading)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Err(ChildError::Op(
-                "load state is not implemented on this platform yet".into(),
-            ))
-        }
+        self.with(shim::is_loading)
     }
 
     pub fn evaluate_script(&self, js: &str) -> Result<(), ChildError> {
@@ -308,19 +334,29 @@ impl ChildHandle {
     /// Install the isolated-world helper and the native message handler.
     /// `Ok(true)` = isolated world, `Ok(false)` = page-world fallback.
     pub fn install_channel(&self) -> Result<bool, ChildError> {
+        let sink = message_sink(&self.app);
         #[cfg(target_os = "macos")]
         {
-            let sink = message_sink(&self.app);
             self.with(move |wv| {
                 shim::install_world(wv, &[channel::PREFIX_SCRIPT, channel::HELPER_JS], sink)
             })?
             .map_err(ChildError::Op)
         }
-        #[cfg(not(target_os = "macos"))]
+        // Windows needs no prefix script: the CDP binding IS the send
+        // primitive the helper looks for. The install waits for the engine's
+        // completions by pumping the message loop, so the engine object is
+        // taken out of the surface map first — anything that pump dispatches
+        // (a tab closing, another opening) needs the map free.
+        #[cfg(target_os = "windows")]
         {
-            Err(ChildError::Op(
-                "page channel is not implemented on this platform yet".into(),
-            ))
+            let id = self.tab_id.clone();
+            run_on_main(&self.app, move || {
+                SURFACES
+                    .with(|s| s.borrow().get(&id).map(shim::engine_webview))
+                    .map(|wv| shim::install_world(wv, channel::HELPER_JS, sink))
+            })?
+            .ok_or_else(|| ChildError::Gone(self.tab_id.clone()))?
+            .map_err(ChildError::Op)
         }
     }
 
@@ -331,37 +367,17 @@ impl ChildHandle {
         expression: &str,
         callback: impl Fn(Result<String, String>) + Send + 'static,
     ) -> Result<(), ChildError> {
-        #[cfg(target_os = "macos")]
-        {
-            let expression = expression.to_string();
-            self.with(move |wv| shim::eval_in_world(wv, &expression, callback))?
-                .map_err(ChildError::Op)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (expression, callback);
-            Err(ChildError::Op(
-                "world evaluation is not implemented on this platform yet".into(),
-            ))
-        }
+        let expression = expression.to_string();
+        self.with(move |wv| shim::eval_in_world(wv, &expression, callback))?
+            .map_err(ChildError::Op)
     }
 
     pub fn snapshot_png(
         &self,
         callback: impl Fn(Result<Vec<u8>, String>) + Send + 'static,
     ) -> Result<(), ChildError> {
-        #[cfg(target_os = "macos")]
-        {
-            self.with(move |wv| shim::snapshot_png(wv, callback))?
-                .map_err(ChildError::Op)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = callback;
-            Err(ChildError::Op(
-                "snapshots are not implemented on this platform yet".into(),
-            ))
-        }
+        self.with(move |wv| shim::snapshot_png(wv, callback))?
+            .map_err(ChildError::Op)
     }
 
     /// The frame as displayed now, JPEG-encoded, for the freeze frame.
@@ -370,18 +386,8 @@ impl ChildHandle {
         quality: f64,
         callback: impl Fn(Result<(Vec<u8>, u32, u32), String>) + Send + 'static,
     ) -> Result<(), ChildError> {
-        #[cfg(target_os = "macos")]
-        {
-            self.with(move |wv| shim::snapshot_jpeg(wv, quality, callback))?
-                .map_err(ChildError::Op)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (quality, callback);
-            Err(ChildError::Op(
-                "snapshots are not implemented on this platform yet".into(),
-            ))
-        }
+        self.with(move |wv| shim::snapshot_jpeg(wv, quality, callback))?
+            .map_err(ChildError::Op)
     }
 
     /// Highlight the next / previous match of `query`; the callback gets
@@ -392,19 +398,9 @@ impl ChildHandle {
         forward: bool,
         callback: impl Fn(bool) + Send + 'static,
     ) -> Result<(), ChildError> {
-        #[cfg(target_os = "macos")]
-        {
-            let query = query.to_string();
-            self.with(move |wv| shim::find_string(wv, &query, forward, callback))?
-                .map_err(ChildError::Op)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (query, forward, callback);
-            Err(ChildError::Op(
-                "find in page is not implemented on this platform yet".into(),
-            ))
-        }
+        let query = query.to_string();
+        self.with(move |wv| shim::find_string(wv, &query, forward, callback))?
+            .map_err(ChildError::Op)
     }
 
     /// Re-decide the identity for the page the webview shows right now (the
@@ -412,107 +408,43 @@ impl ChildHandle {
     /// not from a state snapshot: a tab id can name a newer incarnation by
     /// the time a snapshot is acted on.
     pub fn refresh_user_agent(&self) -> Result<(), ChildError> {
-        #[cfg(target_os = "macos")]
-        {
-            self.with(shim::refresh_user_agent)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Ok(())
-        }
+        self.with(shim::refresh_user_agent)
     }
 
     pub fn clear_find(&self) -> Result<(), ChildError> {
-        #[cfg(target_os = "macos")]
-        {
-            self.with(shim::clear_find)?.map_err(ChildError::Op)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Err(ChildError::Op(
-                "find in page is not implemented on this platform yet".into(),
-            ))
-        }
+        self.with(shim::clear_find)?.map_err(ChildError::Op)
     }
 
     pub fn go_back(&self) -> Result<(), ChildError> {
-        #[cfg(target_os = "macos")]
-        {
-            self.with(shim::go_back)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Err(ChildError::Op(
-                "history navigation is not implemented on this platform yet".into(),
-            ))
-        }
+        self.with(shim::go_back)
     }
 
     pub fn go_forward(&self) -> Result<(), ChildError> {
-        #[cfg(target_os = "macos")]
-        {
-            self.with(shim::go_forward)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Err(ChildError::Op(
-                "history navigation is not implemented on this platform yet".into(),
-            ))
-        }
+        self.with(shim::go_forward)
     }
 
     pub fn can_go_back(&self) -> Result<bool, ChildError> {
-        #[cfg(target_os = "macos")]
-        {
-            self.with(shim::can_go_back)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Ok(false)
-        }
+        self.with(shim::can_go_back)
     }
 
     pub fn can_go_forward(&self) -> Result<bool, ChildError> {
-        #[cfg(target_os = "macos")]
-        {
-            self.with(shim::can_go_forward)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Ok(false)
-        }
+        self.with(shim::can_go_forward)
     }
 
     pub fn stop(&self) -> Result<(), ChildError> {
-        #[cfg(target_os = "macos")]
-        {
-            self.with(shim::stop_loading)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Err(ChildError::Op(
-                "stop is not implemented on this platform yet".into(),
-            ))
-        }
+        self.with(shim::stop_loading)
     }
 
     /// Dev puppet only: native-side state for a tab.
     pub fn debug_view(&self) -> Result<serde_json::Value, ChildError> {
-        #[cfg(target_os = "macos")]
-        {
-            self.with(|wv| {
-                let mut v = shim::debug_view(wv);
-                v["wryBounds"] = wv
-                    .bounds()
-                    .map(|b| serde_json::json!(format!("{b:?}")))
-                    .unwrap_or(serde_json::Value::Null);
-                v
-            })
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Ok(serde_json::Value::Null)
-        }
+        self.with(|wv| {
+            let mut v = shim::debug_view(wv);
+            v["wryBounds"] = wv
+                .bounds()
+                .map(|b| serde_json::json!(format!("{b:?}")))
+                .unwrap_or(serde_json::Value::Null);
+            v
+        })
     }
 
     /// Detach and drop the webview (on the main thread; wry removes the
@@ -528,11 +460,13 @@ impl ChildHandle {
     }
 }
 
-/// Opener-provided platform configuration for a popup webview.
+/// Opener-provided platform configuration for a popup webview: what carries
+/// the opener's data store on macOS, and the environment WebView2 insists a
+/// new window be created from on Windows.
 #[cfg(target_os = "macos")]
 type OpenerConfiguration = objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>;
-#[cfg(not(target_os = "macos"))]
-type OpenerConfiguration = ();
+#[cfg(target_os = "windows")]
+type OpenerConfiguration = webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment;
 
 /// What a child webview is for. A page gets the browser's policy (scheme
 /// lists, site rules, popups, downloads); a document guest gets the guest's
@@ -585,6 +519,27 @@ fn build_child(
 ) -> Result<wry::WebView, String> {
     #[cfg(target_os = "windows")]
     {
+        // A popup is built into the environment its opener handed over —
+        // WebView2 refuses a new window created from any other one — and that
+        // environment already carries the opener's profile directory. Only a
+        // regular tab picks its own.
+        if configuration.is_some() {
+            return configure_child(
+                WebViewBuilder::new(),
+                app,
+                owner,
+                tab_id,
+                label,
+                bounds,
+                visible,
+                devtools,
+                configuration,
+                kind,
+                profile,
+            )?
+            .build_as_child(owner)
+            .map_err(|e| e.to_string());
+        }
         WEB_CONTEXTS.with(|contexts| {
             let mut contexts = contexts.borrow_mut();
             let context = contexts
@@ -874,13 +829,19 @@ fn configure_child<'a>(
     #[cfg(target_os = "windows")]
     {
         use tauri_runtime_wry::wry::WebViewBuilderExtWindows;
-        let _ = (configuration, profile);
+        let _ = profile;
         // WebView2 takes the proxy (and everything else) from the environment's
         // browser arguments: one string for every browser webview of the
         // process, see `profile::windows_browser_args`.
         builder = builder.with_additional_browser_args(profile::windows_browser_args(
             profile::frozen_proxy().as_ref(),
         ));
+        // A popup: the opener's environment, arguments and user-data folder
+        // included, which is what makes `NewWindowResponse::Create` acceptable
+        // to the engine.
+        if let Some(environment) = configuration {
+            builder = builder.with_environment(environment);
+        }
         // A document guest keeps nothing: an in-private profile of the same
         // environment. (Not exercised yet — `doc_guest::supported()` is false
         // here until it is.)
@@ -917,8 +878,9 @@ pub fn create(
     let label = label.to_string();
     let profile = profile.to_string();
     run_on_main(&app.clone(), move || -> Result<(), String> {
-        let webview = build_child(&app, &owner, &id, &label, bounds, !background, devtools, None, &ChildKind::Page, &profile)?;
-        attach_navigation_delegate(&app, &id, &webview);
+        let kind = ChildKind::Page;
+        let webview = build_child(&app, &owner, &id, &label, bounds, !background, devtools, None, &kind, &profile)?;
+        attach_navigation_delegate(&app, &id, &kind, &webview);
         SURFACES.with(|s| s.borrow_mut().insert(id, webview));
         Ok(())
     })?
@@ -954,7 +916,7 @@ pub fn create_document(
         // A guest's store is its own (non-persistent); the profile only names
         // the WebView2 environment it would share on Windows.
         let webview = build_child(&app, &owner, &id, &label, bounds, !background, devtools, None, &kind, profile::DEFAULT_PROFILE_ID)?;
-        attach_navigation_delegate(&app, &id, &webview);
+        attach_navigation_delegate(&app, &id, &kind, &webview);
         SURFACES.with(|s| s.borrow_mut().insert(id, webview));
         Ok(())
     })?
@@ -1014,7 +976,6 @@ fn new_window_handler(
             return deny(&app, &opener_tab_id, &url, &features, "no-gesture");
         }
 
-        #[cfg(target_os = "macos")]
         {
             // A fresh id: the counter is process-wide, but an id could still
             // be taken (the frontend names its own tabs), and inserting over
@@ -1030,38 +991,48 @@ fn new_window_handler(
             let (bounds, devtools) = registry
                 .update(&opener_tab_id, |tab| (tab.last_bounds, tab.devtools))
                 .unwrap_or_default();
+            // macOS: the opener's configuration carries the opener's data
+            // store. Windows: its environment, which the engine insists the
+            // new window be created from. Either way the popup lives in the
+            // opener's profile — the one its webview was built in — whatever
+            // the registry says about the opener by now; the state says the
+            // same so the frontend can show it.
+            #[cfg(target_os = "macos")]
             let configuration = features.opener.target_configuration.clone();
-            // The opener's configuration carries the opener's data store, so
-            // the popup lives in the opener's profile — the one its webview
-            // was built in — whatever the registry says about the opener by
-            // now; the state says the same so the frontend can show it.
+            #[cfg(target_os = "windows")]
+            let configuration = features.opener.environment.clone();
             let profile = opener_profile.clone();
             // Held until the popup is registered: a deletion of the profile
             // that has begun refuses it, and one that begins now waits.
             let Ok(_admission) = profile::admit(&profile) else {
                 return deny(&app, &opener_tab_id, &url, &features, "profile-deleting");
             };
-            let webview = match build_child(&app, &owner, &tab_id, &label, bounds, true, devtools, Some(configuration), &ChildKind::Page, &profile) {
+            let kind = ChildKind::Page;
+            let webview = match build_child(&app, &owner, &tab_id, &label, bounds, true, devtools, Some(configuration), &kind, &profile) {
                 Ok(webview) => webview,
                 Err(err) => {
                     tracing::warn!("[browser] popup webview creation failed: {err}");
                     return deny(&app, &opener_tab_id, &url, &features, "create-failed");
                 }
             };
-            // The platform object WebKit will load the request into.
+            // The platform object the engine will load the request into.
+            #[cfg(target_os = "macos")]
             let platform = objc2::rc::Retained::into_super(
                 tauri_runtime_wry::wry::WebViewExtMacOS::webview(&webview),
             );
-            attach_navigation_delegate(&app, &tab_id, &webview);
+            #[cfg(target_os = "windows")]
+            let platform = tauri_runtime_wry::wry::WebViewExtWindows::webview(&webview);
+            attach_navigation_delegate(&app, &tab_id, &kind, &webview);
             SURFACES.with(|s| s.borrow_mut().insert(tab_id.clone(), webview));
             let handle = ChildHandle {
                 tab_id: tab_id.clone(),
                 label,
                 app: app.clone(),
             };
-            // Same controller as the opener in practice, so this is a no-op
-            // that still reports the channel kind; a fresh controller gets the
-            // full install. Either way it happens before WebKit loads anything.
+            // macOS: the same user-content controller as the opener in
+            // practice, so this is a no-op that still reports the channel
+            // kind. Windows: a webview of its own, so a full install. Either
+            // way it happens before the engine loads anything.
             let channel = match handle.install_channel() {
                 Ok(true) => ChannelKind::Degraded, // native once `hello` arrives
                 Ok(false) => ChannelKind::Legacy,
@@ -1118,11 +1089,6 @@ fn new_window_handler(
                 },
             );
             NewWindowResponse::Create { webview: platform }
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (&owner, parsed, &opener_profile);
-            deny(&app, &opener_tab_id, &url, &features, "unsupported-platform")
         }
     }
 }

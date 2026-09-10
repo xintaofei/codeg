@@ -46,7 +46,7 @@ test-utils = []
 # `tauri::WebviewWindow` argument fails — and it needs no `unstable` feature.
 # Only macOS and Windows compile the child surface; Linux uses owned windows
 # (wry's child build is X11-only and cannot be positioned on Wayland).
-browser-child = ["dep:tauri-runtime-wry"]
+browser-child = ["dep:tauri-runtime-wry", "dep:webview2-com", "dep:windows"]
 # Dev-only puppet driven by a JSON control file (see src/browser/smoke.rs).
 browser-smoke = []
 
@@ -192,6 +192,12 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Threading"] }
 junction = "1"
+# Built-in browser Windows shim (isolated world over CDP, world-scoped eval,
+# snapshots, find, history, the sign-in identity, the subframe fence).
+# Versions track the ones wry 0.55 uses so the types line up with the handles
+# wry hands out — a second copy of either crate would make them distinct types.
+webview2-com = { version = "0.38", optional = true }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

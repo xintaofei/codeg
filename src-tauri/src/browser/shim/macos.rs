@@ -9,7 +9,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ptr::NonNull;
-use std::sync::Arc;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -429,21 +428,7 @@ pub fn debug_view(webview: &wry::WebView) -> serde_json::Value {
 // ours. The wrapper is dropped together with the webview: keeping it longer
 // would keep wry's delegate, and through it the `WKWebView`, alive.
 
-/// Events the wrapper reports, on the main thread.
-pub enum NavigationEvent {
-    /// A main-frame navigation started; the URL it is heading for.
-    Started(String),
-    /// The provisional navigation was redirected by the server; the URL it
-    /// is heading for now.
-    Redirected(String),
-    /// The provisional navigation was ended by policy — the host refused the
-    /// address it was redirected to, or the response became a download — so
-    /// no page is coming for it, and that is not a failure of the page.
-    Interrupted,
-    Failed(LoadFailure),
-}
-
-pub type NavigationSink = Arc<dyn Fn(NavigationEvent) + Send + Sync>;
+pub use super::{NavigationEvent, NavigationSink};
 
 thread_local! {
     /// Wrappers by `WKWebView` pointer, kept alive here (`navigationDelegate`

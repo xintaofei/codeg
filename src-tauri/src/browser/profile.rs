@@ -576,10 +576,14 @@ pub fn user_agent_for(url: &Url) -> Option<&'static str> {
         .map(|_| SIGN_IN_USER_AGENT)
 }
 
-/// Whether this platform switches the user agent per navigation. It takes
-/// the navigation-delegate wrapper, which embedded tabs on macOS have.
+/// Whether this platform switches the user agent per navigation. It takes a
+/// hook on the navigation decision, which embedded tabs have on macOS
+/// (`decidePolicyForNavigationAction:`) and on Windows (`NavigationStarting`).
 pub fn sign_in_user_agent_supported() -> bool {
-    cfg!(all(target_os = "macos", feature = "browser-child"))
+    cfg!(all(
+        any(target_os = "macos", target_os = "windows"),
+        feature = "browser-child"
+    ))
 }
 
 /// An unusable proxy (unsupported scheme) means direct connections, not a
