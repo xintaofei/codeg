@@ -575,6 +575,17 @@ describe("deriveBadge", () => {
     })
   })
 
+  it("preserves the interrupted code from an unknown status report", () => {
+    const report = parseStatusReport(
+      envelope({ task_id: "x", status: "unknown", error_code: "interrupted" }),
+      null
+    )
+    expect(deriveBadge("status", report, "output-available", false)).toEqual({
+      status: "err",
+      errorCode: "interrupted",
+    })
+  })
+
   it("treats canceled as success for cancel, terminal error for a status query", () => {
     const report = parseStatusReport(
       envelope({ task_id: "x", status: "canceled", error_code: "canceled" }),
