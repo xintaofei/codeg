@@ -371,6 +371,7 @@ async fn wait_for_session_started(
 struct DrainingChild {
     agent: AgentType,
     requested_session_id: Option<String>,
+    pid_was_published: bool,
     /// The connection's live pid cell. `on_spawn` publishes the pid and
     /// `on_exit` zeroes it on a real reap.
     pid: Arc<std::sync::atomic::AtomicU32>,
@@ -2548,6 +2549,7 @@ impl ConnectionManager {
         draining.push(DrainingChild {
             agent: conn.agent_type,
             requested_session_id: conn.requested_session_id.clone(),
+            pid_was_published: conn.child_pid.load(std::sync::atomic::Ordering::SeqCst) != 0,
             pid: conn.child_pid.clone(),
             parked_at: std::time::Instant::now(),
         });
@@ -2556,7 +2558,7 @@ impl ConnectionManager {
     /// A strict continuation must not start a second writer for a session that
     /// a normal UI teardown has only just removed from the live map.
     async fn settle_draining_session(&self, agent: AgentType, session_id: &str) -> bool {
-        let pid_cells: Vec<Arc<std::sync::atomic::AtomicU32>> = {
+        let children: Vec<(Arc<std::sync::atomic::AtomicU32>, bool)> = {
             let mut draining = self.draining.lock().await;
             prune_reaped(&mut draining);
             draining
@@ -2565,20 +2567,27 @@ impl ConnectionManager {
                     child.agent == agent
                         && child.requested_session_id.as_deref() == Some(session_id)
                 })
-                .map(|child| Arc::clone(&child.pid))
+                .map(|child| (Arc::clone(&child.pid), child.pid_was_published))
                 .collect()
         };
-        if pid_cells.is_empty() {
+        if children.is_empty() {
             return true;
         }
 
         tokio::time::sleep(DISCONNECT_ALL_GRACE).await;
         tokio::task::spawn_blocking(move || {
-            pid_cells
-                .iter()
-                .filter(|cell| !kill_tree_and_wait(cell.as_ref()))
-                .count()
-                == 0
+            let mut settled = true;
+            for (cell, was_published) in children {
+                if !was_published && cell.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                    // Still ambiguous: the old connection may publish its pid
+                    // after this check. Refuse this attempt; a retry can settle
+                    // it once the pid appears or the drain grace expires.
+                    settled = false;
+                } else if !kill_tree_and_wait(cell.as_ref()) {
+                    settled = false;
+                }
+            }
+            settled
         })
         .await
         .unwrap_or(false)
@@ -5173,6 +5182,24 @@ mod tests {
             "strict resume left the previous session process alive"
         );
         reaper.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn strict_resume_refuses_a_drainer_that_has_not_published_its_pid() {
+        let mgr = ConnectionManager::new();
+        let mut conn = fake_connection("human-connecting", None);
+        conn.requested_session_id = Some("session-connecting".into());
+        mgr.connections
+            .lock()
+            .await
+            .insert("human-connecting".into(), conn);
+        mgr.disconnect("human-connecting").await.unwrap();
+
+        assert!(
+            !mgr.settle_draining_session(AgentType::ClaudeCode, "session-connecting")
+                .await,
+            "an unpublished pid is not proof that the previous process is gone"
+        );
     }
 
     #[cfg(unix)]

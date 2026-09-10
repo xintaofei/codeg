@@ -398,7 +398,7 @@ pub async fn mark_released(
 
 /// Reconcile execution ownership from a previous process. No ACP child or
 /// release barrier survives a restart, so every unreleased row is now released;
-/// a row still marked running is frozen as an interrupted failure.
+/// a row still marked running is frozen with an unknown interrupted outcome.
 pub async fn boot_reconcile_interrupted(conn: &DatabaseConnection) -> Result<u64, DbError> {
     let txn = conn.begin().await?;
     let rows = delegation_task::Entity::find()
@@ -418,7 +418,7 @@ pub async fn boot_reconcile_interrupted(conn: &DatabaseConnection) -> Result<u64
             })?;
             let report = DelegationTaskReport {
                 task_id: Some(row.task_id.clone()),
-                status: TaskStatus::Failed,
+                status: TaskStatus::Unknown,
                 child_conversation_id: Some(row.child_conversation_id),
                 agent_type: Some(binding.agent_type),
                 text: None,
@@ -430,7 +430,7 @@ pub async fn boot_reconcile_interrupted(conn: &DatabaseConnection) -> Result<u64
                 duration_ms: None,
                 blocked_on: None,
             };
-            active.status = Set(status_string(TaskStatus::Failed));
+            active.status = Set(status_string(TaskStatus::Unknown));
             active.terminal_report = Set(Some(serde_json::to_string(&report).map_err(|e| {
                 DbError::Validation(format!("cannot serialize interrupted report: {e}"))
             })?));
@@ -685,7 +685,7 @@ fn is_terminal(status: TaskStatus) -> bool {
 }
 
 fn is_terminal_status(status: &str) -> bool {
-    matches!(status, "completed" | "failed" | "canceled")
+    matches!(status, "completed" | "failed" | "canceled" | "unknown")
 }
 
 fn status_string(status: TaskStatus) -> String {
@@ -866,7 +866,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(interrupted.status, TaskStatus::Failed);
+        assert_eq!(interrupted.status, TaskStatus::Unknown);
         assert!(interrupted.released);
         assert_eq!(interrupted.report.error_code.as_deref(), Some("interrupted"));
 
