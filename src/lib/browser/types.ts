@@ -108,13 +108,13 @@ export interface BrowserCapabilities {
   downloadsDir: string
   policy: BrowserPolicyStatus
   /** Local HTML files can be shown through the document guest (an embedded
-   *  surface with a handler for `codeg-doc:`; macOS for now). */
+   *  surface with a handler for `codeg-doc:`). */
   docGuest: boolean
   /** More than the default browser profile can exist (macOS 14+, Windows,
    *  Linux); the settings offer to create, clear and delete them. */
   profiles: boolean
   /** Tabs present the sign-in user agent to Google's sign-in hosts when the
-   *  preference is on (macOS embedded tabs). */
+   *  preference is on (embedded tabs). */
   signInUserAgent: boolean
 }
 

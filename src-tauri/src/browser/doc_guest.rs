@@ -71,13 +71,37 @@ pub fn doc_label(tab_id: &str) -> String {
 }
 
 /// Whether this build can host document guests: the embedded surface with a
-/// per-webview scheme handler exists on macOS; the Windows and Linux shims
-/// have not been exercised, and the inline preview stays in place there.
+/// per-webview scheme handler. Linux has no embedded surface, and the inline
+/// preview stays in place there.
 pub fn supported() -> bool {
     cfg!(all(
         feature = "browser-child",
-        target_os = "macos"
+        any(target_os = "macos", target_os = "windows")
     ))
+}
+
+/// The address to hand the engine for a document URL. WebView2 has no custom
+/// schemes, so wry serves ours from `http://<scheme>.<host>/…` and reverts
+/// the spelling before the handler sees the request — but it only rewrites a
+/// webview's INITIAL url, and a guest is built empty and navigated once its
+/// grant is bound. Without this the engine is handed a scheme it does not
+/// know and the guest sits on `about:blank`.
+///
+/// Only the address given to the engine changes: the guest's own state, the
+/// CSP's `'self'` and `is_document_url` all read both spellings already.
+pub fn engine_url(url: &Url) -> Url {
+    #[cfg(target_os = "windows")]
+    if url.scheme() == DOC_SCHEME {
+        let rewritten = url.as_str().replacen(
+            &format!("{DOC_SCHEME}://"),
+            &format!("http://{DOC_SCHEME}."),
+            1,
+        );
+        if let Ok(parsed) = Url::parse(&rewritten) {
+            return parsed;
+        }
+    }
+    url.clone()
 }
 
 /// A URL that addresses this guest's own root. wry maps a custom scheme to
@@ -1164,6 +1188,17 @@ mod tests {
         assert!(is_document_url(&doc));
         assert!(is_document_url(&Url::parse("https://codeg-doc.doc/x").unwrap()));
         assert!(!is_document_url(&Url::parse("https://example.com/").unwrap()));
+        // The spelling the engine is given: rewritten where the engine has no
+        // custom schemes, and still a document URL either way.
+        let engine = engine_url(&doc);
+        assert!(is_document_url(&engine));
+        if cfg!(target_os = "windows") {
+            assert_eq!(engine.as_str(), "http://codeg-doc.doc/other.html");
+        } else {
+            assert_eq!(engine, doc);
+        }
+        let web = Url::parse("https://example.com/x").unwrap();
+        assert_eq!(engine_url(&web), web);
         assert_eq!(guest_navigation(&doc, true), GuestNavigation::Allow);
         assert_eq!(
             guest_navigation(&Url::parse("https://example.com/").unwrap(), true),

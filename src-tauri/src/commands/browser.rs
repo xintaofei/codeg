@@ -363,7 +363,7 @@ pub fn doc_open_core(
     }
     if !doc_guest::supported() {
         return Err(AppCommandError::invalid_input(
-            "document guests need the embedded browser surface (macOS for now)",
+            "document guests need the embedded browser surface",
         ));
     }
     let (root, entry) = doc_guest::resolve_document(&params.path, params.root.as_deref())
@@ -399,7 +399,7 @@ pub fn doc_open_core(
         {
             let _ = (owner, &label, reservation);
             return Err(AppCommandError::invalid_input(
-                "document guests need the embedded browser surface (macOS for now)",
+                "document guests need the embedded browser surface",
             ));
         }
     };
@@ -466,7 +466,7 @@ pub fn doc_open_core(
     }
     let parsed = Url::parse(&url)
         .map_err(|e| AppCommandError::invalid_input(format!("bad document url {url:?}: {e}")))?;
-    if let Err(err) = surface.navigate(parsed) {
+    if let Err(err) = surface.navigate(doc_guest::engine_url(&parsed)) {
         registry.remove(&params.tab_id);
         guests.unbind(&params.tab_id);
         let _ = surface.close();
@@ -525,7 +525,7 @@ fn reload_document(
             AppCommandError::invalid_input(format!("bad document url {document_url:?}: {e}"))
         })?;
         surface
-            .navigate(url)
+            .navigate(doc_guest::engine_url(&url))
             .map_err(|e| window_err("Failed to load the document", e))?;
     }
     hooks::begin_load(app, tab_id);

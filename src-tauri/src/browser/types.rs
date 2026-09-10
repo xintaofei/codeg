@@ -127,13 +127,13 @@ pub struct BrowserCapabilities {
     /// whether the browser is enabled at all).
     pub policy: crate::browser::policy::BrowserPolicyStatus,
     /// Local HTML files can be shown through the `codeg-doc:` document guest
-    /// (an embedded surface with a handler for that scheme; macOS for now).
+    /// (an embedded surface with a handler for that scheme).
     pub doc_guest: bool,
     /// More than the default browser profile can exist (macOS 14+, Windows,
     /// Linux); the settings offer to create, clear and delete them.
     pub profiles: bool,
     /// Tabs present the sign-in user agent to Google's sign-in hosts when the
-    /// preference is on (needs the navigation delegate: macOS embedded tabs).
+    /// preference is on (needs the navigation delegate: embedded tabs).
     pub sign_in_user_agent: bool,
 }
 
