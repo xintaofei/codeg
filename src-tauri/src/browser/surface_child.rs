@@ -165,6 +165,7 @@ fn attach_navigation_delegate(
         webview,
         navigation_sink(app, tab_id),
         frame_navigation_sink(app, tab_id, kind),
+        download_permission_sink(app, tab_id, kind),
     );
     if let Err(err) = installed {
         tracing::warn!(
@@ -211,6 +212,58 @@ fn frame_navigation_sink(
             return false;
         }
         true
+    })
+}
+
+/// How far back a page that wants to download several files at once may look
+/// for a click. Longer than the popup's second: a "download all" button fires
+/// its requests over the time the server takes to answer each one, and the
+/// engine only asks once the second download is already on its way.
+#[cfg(target_os = "windows")]
+const DOWNLOAD_GESTURE_WINDOW: Duration = Duration::from_secs(5);
+
+/// Windows only: the answer to WebView2's multiple-downloads permission,
+/// which the engine would otherwise put to the user in a bubble of its own
+/// drawn over the page — and hold `DownloadStarting` back until it is
+/// answered, so a click would appear to do nothing and codeg's download bar
+/// would stay empty.
+///
+/// The same test the popup blocker applies: a page that was clicked recently
+/// is doing what the user asked, and every file it takes shows up in the
+/// download bar; one that was not is refused and says so. A document guest
+/// does not download at all.
+#[cfg(target_os = "windows")]
+fn download_permission_sink(
+    app: &AppHandle,
+    tab_id: &str,
+    kind: &ChildKind,
+) -> shim::DownloadPermissionSink {
+    let app = app.clone();
+    let id = tab_id.to_string();
+    let document = matches!(kind, ChildKind::Document(_));
+    Arc::new(move |url: &str, user_initiated: bool| {
+        if document {
+            return false;
+        }
+        // The engine's own reading of "the user asked for this" counts too:
+        // it is all a tab with no page channel has, since a gesture reaches
+        // the ring through the channel.
+        let gesture = app
+            .try_state::<BrowserRegistry>()
+            .is_some_and(|registry| {
+                registry
+                    .recent_gestures(&id)
+                    .iter()
+                    .any(|g| g.received.elapsed() <= DOWNLOAD_GESTURE_WINDOW)
+            });
+        if gesture || user_initiated {
+            tracing::info!(
+                "[browser] tab {id}: several downloads from {url} allowed (gesture {gesture}, engine {user_initiated})"
+            );
+            return true;
+        }
+        hooks::navigation_blocked(&app, &id, url, NavigationBlockReason::Download);
+        false
     })
 }
 

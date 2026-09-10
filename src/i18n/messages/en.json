@@ -5912,7 +5912,9 @@
       "errorBlockedHint": "A site rule blocks this address. Rules are managed in Settings → Built-in browser.",
       "popupDeniedBlockedHost": "blocked by a site rule",
       "channelDegraded": "Pop-ups and in-page navigation are limited in this tab",
-      "channelDegradedHint": "codeg could not install its page script. Pop-ups this page opens are blocked, the address bar will not follow navigation inside the page, and the find shortcut pressed in the page will not open the find bar. Reopening the tab tries again."
+      "channelDegradedHint": "codeg could not install its page script. Pop-ups this page opens are blocked, the address bar will not follow navigation inside the page, and the find shortcut pressed in the page will not open the find bar. Reopening the tab tries again.",
+      "downloadsDenied": "Downloads blocked: {host}",
+      "downloadsDeniedNoGesture": "several files, not started by a click"
     },
     "tab": {
       "untitled": "New tab"

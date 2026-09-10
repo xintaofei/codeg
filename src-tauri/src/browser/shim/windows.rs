@@ -34,8 +34,11 @@ use tauri_runtime_wry::wry::{self, WebViewExtWindows};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2DevToolsProtocolEventReceiver, ICoreWebView2Environment15,
     ICoreWebView2Find, ICoreWebView2Frame, ICoreWebView2Frame2, ICoreWebView2Frame7,
+    ICoreWebView2PermissionRequestedEventArgs3,
     ICoreWebView2Settings2, ICoreWebView2_28, ICoreWebView2_4,
     COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT, COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG,
+    COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS,
+    COREWEBVIEW2_PERMISSION_STATE_ALLOW, COREWEBVIEW2_PERMISSION_STATE_DENY,
     COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG, COREWEBVIEW2_WEB_ERROR_STATUS,
     COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT,
     COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED,
@@ -50,7 +53,8 @@ use webview2_com::{
     take_pwstr, CallDevToolsProtocolMethodCompletedHandler, CapturePreviewCompletedHandler,
     DevToolsProtocolEventReceivedEventHandler, FindStartCompletedHandler, FrameChildFrameCreatedEventHandler,
     FrameCreatedEventHandler, FrameNavigationStartingEventHandler, NavigationCompletedEventHandler,
-    NavigationStartingEventHandler, WebResourceRequestedEventHandler,
+    NavigationStartingEventHandler, PermissionRequestedEventHandler,
+    WebResourceRequestedEventHandler,
 };
 use windows::core::{Interface, BOOL, HSTRING, PWSTR};
 use windows::Win32::Foundation::RECT;
@@ -74,6 +78,14 @@ pub const BINDING_NAME: &str = "__codegSend";
 /// main frame's navigation handler makes, asked for a frame WebView2 would
 /// otherwise never report. `surface_child` provides it; `false` cancels.
 pub type FrameNavigationSink = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// Whether a page may start SEVERAL downloads at once (the address it asks
+/// from, and whether the engine considers the request user-initiated).
+/// `false` refuses. Answered by the host so the engine keeps its own prompt
+/// — drawn inside the page's rectangle, in nobody's design language, and
+/// invisible to codeg — out of an embedded tab.
+pub type DownloadPermissionSink =
+    std::sync::Arc<dyn Fn(&str, bool) -> bool + Send + Sync>;
 
 #[derive(Default)]
 struct SurfaceState {
@@ -851,11 +863,13 @@ fn apply_request_user_agent(
 // frames — and asked the same question.
 
 /// Install the navigation hooks. `navigation` receives what wry does not
-/// report; `frames` decides subframe navigations. Idempotent per webview.
+/// report; `frames` decides subframe navigations; `downloads` answers the
+/// engine's multiple-downloads permission. Idempotent per webview.
 pub fn install_navigation_hooks(
     webview: &wry::WebView,
     navigation: NavigationSink,
     frames: FrameNavigationSink,
+    downloads: DownloadPermissionSink,
 ) -> Result<(), String> {
     let webview2 = core(webview);
     let key = webview2.as_raw() as usize;
@@ -921,6 +935,46 @@ pub fn install_navigation_hooks(
                 &mut token,
             );
         }
+    }
+    // The second download from the same page raises a permission request, and
+    // until it is answered the engine draws its own bubble over the page and
+    // holds `DownloadStarting` back — so a user who clicked would see nothing
+    // happen and codeg would have no idea there was anything to show. Only
+    // this one kind is taken over: a camera or a microphone is the user's to
+    // grant, and the engine's prompt is the right place to do it.
+    // SAFETY: main thread, live webview; the handler is owned by it.
+    unsafe {
+        let _ = webview2.add_PermissionRequested(
+            &PermissionRequestedEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else {
+                    return Ok(());
+                };
+                let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+                args.PermissionKind(&mut kind)?;
+                if kind != COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS {
+                    return Ok(());
+                }
+                // Every request is decided fresh. The engine would otherwise
+                // write the first answer into the profile and stop asking,
+                // freezing whichever way one page happened to be treated —
+                // and the test here is about the click that came before this
+                // request, not about the site.
+                if let Ok(args3) = args.cast::<ICoreWebView2PermissionRequestedEventArgs3>() {
+                    let _ = args3.SetSavesInProfile(false);
+                }
+                let uri = pwstr_out(|out| args.Uri(out)).unwrap_or_default();
+                let mut initiated = BOOL::default();
+                let _ = args.IsUserInitiated(&mut initiated);
+                let allowed = downloads(&uri, initiated.as_bool());
+                args.SetState(if allowed {
+                    COREWEBVIEW2_PERMISSION_STATE_ALLOW
+                } else {
+                    COREWEBVIEW2_PERMISSION_STATE_DENY
+                })?;
+                Ok(())
+            })),
+            &mut token,
+        );
     }
     // Subframes: only reachable through the frame objects, and only for frames
     // created after this subscription — which is why it goes in before the

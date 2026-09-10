@@ -45,8 +45,13 @@ function noticeText(
       // has a host of `file`): name the whole thing, as typed by the page.
       return `${t("navigationBlocked", { host: notice.url })} · ${t("navigationBlockedScheme")}`
     }
-    // `external` / `download` are raised by document guests, which have a
-    // notice bar of their own; a browser tab only ever sees a site rule.
+    // Windows: the page asked to take several files at once without having
+    // been clicked, and the host answered the engine's permission for it.
+    if (notice.reason === "download") {
+      return `${t("downloadsDenied", { host })} · ${t("downloadsDeniedNoGesture")}`
+    }
+    // `external` is raised by document guests, which have a notice bar of
+    // their own; a browser tab otherwise only ever sees a site rule.
     if (notice.reason !== "host-rule") {
       return t("navigationBlocked", { host })
     }

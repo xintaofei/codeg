@@ -186,6 +186,24 @@ describe("BrowserNoticeBar — refused navigations", () => {
     expect(screen.queryByText("Open with system app")).not.toBeInTheDocument()
   })
 
+  // Windows: the engine asked whether the page may take several files at
+  // once, and the host answered for it. Nothing to click — the page is free
+  // to ask again once the user actually clicks something.
+  it("names the host that wanted several files without being clicked", () => {
+    setBrowserTabNotice("browser:abc", {
+      kind: "navigation-blocked",
+      url: "https://files.example/bundle.zip",
+      reason: "download",
+    })
+    renderBar()
+    expect(
+      screen.getByText(
+        /Downloads blocked: files\.example · several files, not started by a click/
+      )
+    ).toBeInTheDocument()
+    expect(screen.queryByText("Open anyway")).not.toBeInTheDocument()
+  })
+
   it("does not offer to open a pop-up a site rule refused", () => {
     mocks.actions = { openBrowserTab: vi.fn() }
     setBrowserTabNotice("browser:abc", {

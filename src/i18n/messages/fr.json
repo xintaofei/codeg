@@ -5912,7 +5912,9 @@
       "errorBlockedHint": "Une règle de site bloque cette adresse. Les règles se gèrent dans Réglages → Navigateur intégré.",
       "popupDeniedBlockedHost": "bloquée par une règle de site",
       "channelDegraded": "Les fenêtres contextuelles et la navigation à l'intérieur de la page sont limitées dans cet onglet",
-      "channelDegradedHint": "codeg n'a pas pu installer son script de page. Les fenêtres contextuelles ouvertes par cette page sont bloquées, la barre d'adresse ne suivra pas la navigation à l'intérieur de la page, et le raccourci de recherche pressé dans la page n'ouvrira pas la barre de recherche. Rouvrir l'onglet fait une nouvelle tentative."
+      "channelDegradedHint": "codeg n'a pas pu installer son script de page. Les fenêtres contextuelles ouvertes par cette page sont bloquées, la barre d'adresse ne suivra pas la navigation à l'intérieur de la page, et le raccourci de recherche pressé dans la page n'ouvrira pas la barre de recherche. Rouvrir l'onglet fait une nouvelle tentative.",
+      "downloadsDenied": "Téléchargements bloqués : {host}",
+      "downloadsDeniedNoGesture": "plusieurs fichiers, non déclenchés par un clic"
     },
     "tab": {
       "untitled": "Nouvel onglet"
