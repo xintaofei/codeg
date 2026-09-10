@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef } from "react"
 import { toast } from "sonner"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabStore, useTabActions } from "@/contexts/tab-context"
+import { conversationWindowTarget } from "@/lib/conversation-window"
 import type { AgentType } from "@/lib/types"
 
 /**
@@ -22,6 +23,11 @@ export function DeepLinkBootstrap() {
     ranRef.current = true
 
     if (typeof window === "undefined") return
+
+    // A conversation window carries the same folder/conversation/agent query,
+    // but the tab store already seeded that tab from it — and the URL has to
+    // survive, because it is what marks this webview as detached. Leave it be.
+    if (conversationWindowTarget()) return
 
     const params = new URLSearchParams(window.location.search)
     const rawFolderId = params.get("folderId")

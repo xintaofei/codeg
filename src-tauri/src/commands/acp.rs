@@ -10116,6 +10116,7 @@ pub async fn acp_connect(
     db: State<'_, AppDatabase>,
     app_handle: tauri::AppHandle,
     window: tauri::WebviewWindow,
+    conversation_windows: State<'_, crate::commands::windows::ConversationWindowState>,
 ) -> Result<String, AcpError> {
     // Resolve through the effective data dir so a custom `CODEG_DATA_DIR`
     // reaches the credential helper script the agent's git subprocess
@@ -10136,13 +10137,17 @@ pub async fn acp_connect(
     verify_agent_installed(agent_type).await?;
 
     let emitter = EventEmitter::Tauri(app_handle);
+    // Not `window.label()` directly: a conversation window is a view the user
+    // can close mid-turn, so the connection it starts is owned by the workspace
+    // that opened it. Every other window resolves to itself.
+    let owner_window_label = conversation_windows.resolve_owner_window(window.label());
     manager
         .spawn_agent(
             agent_type,
             working_dir,
             session_id,
             runtime_env,
-            window.label().to_string(),
+            owner_window_label,
             emitter,
             preferred_mode_id,
             preferred_config_values.unwrap_or_default(),

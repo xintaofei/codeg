@@ -9,6 +9,7 @@ import {
 } from "@/lib/api"
 import { resolveDefaultAgent } from "@/lib/resolve-default-agent"
 import { formatConversationTitle } from "@/lib/conversation-title"
+import { conversationWindowTarget } from "@/lib/conversation-window"
 import {
   firstLeafId,
   isLayoutNode,
@@ -333,6 +334,27 @@ const TAB_GROUPS_STORAGE_KEY = "workspace:tab-groups:v1"
  *  suppression). Regenerated each load — it identifies the window for echo
  *  suppression, not the user, so nothing about it needs to persist. */
 const TAB_ORIGIN = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+
+/**
+ * True in a window opened by "Open in New Window" (`?conversationWindow=1`).
+ *
+ * `opened_tabs` is ONE shared, CAS-versioned list broadcast to every client, and
+ * focus is mirrored across them (see `applyRemoteSnapshot`). A detached window
+ * that took part in that would show the workspace's whole tab set and follow it
+ * onto whatever conversation the workspace focused next — the opposite of
+ * having the conversation in its own window. So it seeds its one tab in
+ * `hydrate` and stays out of the sync entirely: no save, no snapshot apply, no
+ * refetch, and no device-local writes (`persistLastActiveContext` here, plus
+ * everything already parked behind `tabsSnapshotLoaded` — the group blob and
+ * the composer-draft sweep, which are localStorage and therefore shared with
+ * the workspace window).
+ *
+ * The workspace keeps its own tab for the conversation, which is what makes
+ * closing this window a non-event: the session is still open over there.
+ */
+function isDetachedConversationWindow(): boolean {
+  return conversationWindowTarget() !== null
+}
 
 // ── React-land dependencies, injected by TabRuntimeEffects ─────────────────────
 // Kept out of the reactive store state so updating them never notifies
@@ -691,6 +713,11 @@ function readPersistedGroupState(): {
     tileByGroup: {} as Record<string, boolean>,
   })
   if (typeof window === "undefined") return fallback()
+  // A detached conversation window shows exactly one tab, so the workspace's
+  // split tree would only give it empty groups — and it never writes the blob
+  // back (`persistGroupState` stays parked behind `tabsSnapshotLoaded`), so
+  // there is nothing to restore for it either.
+  if (isDetachedConversationWindow()) return fallback()
   try {
     const raw = localStorage.getItem(TAB_GROUPS_STORAGE_KEY)
     if (raw) {
@@ -2048,6 +2075,34 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   },
 
   hydrate: () => {
+    // Detached window: seed the one tab it was opened for and stop. Nothing
+    // here is async, so there is no cancellation to hand back. `tabsSnapshot-
+    // Loaded` deliberately stays false — the paths it parks (the group-blob
+    // write, the composer-draft sweep) are shared localStorage that belongs to
+    // the workspace window. See `isDetachedConversationWindow`.
+    const detached = conversationWindowTarget()
+    if (detached) {
+      const seeded: TabItemInternal = {
+        id: makeConversationTabId(
+          detached.folderId,
+          detached.agentType,
+          detached.conversationId
+        ),
+        kind: "conversation",
+        folderId: detached.folderId,
+        conversationId: detached.conversationId,
+        agentType: detached.agentType,
+        title: runtime.labels.loadingConversation,
+        // The window exists for this conversation; nothing should be able to
+        // preview-replace it out from under itself.
+        isPinned: true,
+      }
+      set({ rawTabs: [seeded], activeTabId: seeded.id, tabsHydrated: true })
+      recomputeTabs()
+      applyGroupInvariants()
+      return () => {}
+    }
+
     let cancelled = false
     void (async () => {
       let snapshotLoaded = false
@@ -2187,6 +2242,9 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   },
 
   runSaveEffect: () => {
+    // A detached window's tab set is its own; pushing it would replace the
+    // workspace's list with this single conversation on every other client.
+    if (isDetachedConversationWindow()) return
     const st = get()
     if (!st.tabsHydrated) return
 
@@ -2377,6 +2435,10 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   },
 
   handleTabsChanged: (change) => {
+    // Inbound half of the same rule: adopting the workspace's snapshot would
+    // pull its whole tab set in here AND mirror its focus, dragging this window
+    // off the conversation it was opened for.
+    if (isDetachedConversationWindow()) return
     if (change.origin === TAB_ORIGIN) {
       // Our own accepted save, echoed back: nothing to apply, but the snapshot
       // is authoritative — record it as the merge ancestor in case it beats the
@@ -2399,6 +2461,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   },
 
   refetchTabs: async () => {
+    if (isDetachedConversationWindow()) return
     try {
       const snap = await listOpenedTabs()
       const change: TabsChanged = {
@@ -2593,6 +2656,9 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   },
 
   persistLastActiveContext: () => {
+    // Device-local and shared with the workspace window: the next cold start
+    // should resume what the WORKSPACE was last on, not a detached view.
+    if (isDetachedConversationWindow()) return
     const st = get()
     if (!st.tabsHydrated) return
     const active = st.rawTabs.find((t) => t.id === st.activeTabId)

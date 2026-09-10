@@ -1222,6 +1222,184 @@ pub async fn open_project_boot_window(
     Ok(())
 }
 
+// ─── Conversation windows ───────────────────────────────────────────────
+//
+// One window per conversation, so a session can sit on a second monitor next
+// to the workspace instead of only in a split group. The window loads the
+// same `/workspace` route (query parameters, not a dynamic route — the
+// frontend is a static export) and the tab store treats
+// `?conversationWindow=1` as a detached view: it seeds the one tab it was
+// opened for and never reads, writes or mirrors the shared `opened_tabs`
+// (see `src/lib/conversation-window.ts`).
+
+/// Owner tracking for the per-conversation windows. Two things ride on it.
+///
+/// Closing a conversation window hands focus back to the workspace it was
+/// opened from, for the same reason the settings / commit / merge windows do:
+/// the workspace close button *hides* `main` to the tray, so an auxiliary
+/// window can end up being the only thing on screen.
+///
+/// And `acp_connect` / `terminal_spawn` resolve their owner label through it,
+/// so work started from a conversation window belongs to that workspace rather
+/// than to the window looking at it — see [`Self::resolve_owner_window`].
+pub struct ConversationWindowState {
+    owner_by_conversation_label: Mutex<HashMap<String, String>>,
+}
+
+impl ConversationWindowState {
+    pub fn new() -> Self {
+        Self {
+            owner_by_conversation_label: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn set_owner(&self, conversation_label: String, owner_label: String) {
+        if let Ok(mut owners) = self.owner_by_conversation_label.lock() {
+            owners.insert(conversation_label, owner_label);
+        }
+    }
+
+    fn take_owner(&self, conversation_label: &str) -> Option<String> {
+        self.owner_by_conversation_label
+            .lock()
+            .ok()
+            .and_then(|mut owners| owners.remove(conversation_label))
+    }
+
+    /// Which window should own an agent connection or a terminal a webview
+    /// starts: a conversation window's opener, and every other window itself.
+    ///
+    /// A conversation window is a VIEW, and the user can close it while the
+    /// agent is mid-turn. Nothing sweeps by owner when a non-`main` window
+    /// closes (`lib.rs` runs `disconnect_by_owner_window` only for `main`, and
+    /// only on a real quit), so a connection owned by the view would outlive
+    /// its window with nothing left to reach it. Owned by the workspace it was
+    /// opened from, it stays reachable from the tab that is still open there,
+    /// and it is swept on quit like any other session — which is also what
+    /// makes closing the window safe while the conversation keeps running.
+    pub fn resolve_owner_window(&self, window_label: &str) -> String {
+        self.owner_by_conversation_label
+            .lock()
+            .ok()
+            .and_then(|owners| owners.get(window_label).cloned())
+            .unwrap_or_else(|| window_label.to_string())
+    }
+}
+
+impl Default for ConversationWindowState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Window label for a conversation, keyed by its (backend-unique) conversation
+/// id. Re-invoking "Open in New Window" on the same conversation therefore
+/// focuses the window that already exists instead of stacking duplicates.
+pub(crate) fn conversation_window_label(
+    conversation_id: i32,
+    remote_connection_id: Option<i32>,
+) -> String {
+    match remote_connection_id {
+        Some(remote_id) => format!("remote-conversation-{remote_id}-{conversation_id}"),
+        None => format!("conversation-{conversation_id}"),
+    }
+}
+
+/// True for the labels [`conversation_window_label`] produces, and nothing
+/// else — `lib.rs` uses it to pick the windows whose close hands the owner
+/// back.
+pub(crate) fn is_conversation_window_label(label: &str) -> bool {
+    label.starts_with("conversation-") || label.starts_with("remote-conversation-")
+}
+
+/// The `/workspace` route a conversation window loads.
+fn conversation_window_route(folder_id: i32, conversation_id: i32, agent: &str) -> String {
+    format!(
+        "workspace?conversationWindow=1&folderId={folder_id}\
+         &conversationId={conversation_id}&agent={agent}"
+    )
+}
+
+/// Window title. The conversation title comes from the caller's tab, so an
+/// untitled conversation simply falls back to the app name.
+fn conversation_window_title(title: Option<&str>) -> String {
+    match title.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => format!("Codeg - {t}"),
+        None => "Codeg".to_string(),
+    }
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[allow(clippy::too_many_arguments)]
+pub async fn open_conversation_window(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, ConversationWindowState>,
+    folder_id: i32,
+    conversation_id: i32,
+    agent: crate::models::agent::AgentType,
+    title: Option<String>,
+    remote_connection_id: Option<i32>,
+) -> Result<(), AppCommandError> {
+    let owner_label = window.label().to_string();
+    let label = conversation_window_label(conversation_id, remote_connection_id);
+
+    if let Some(existing) = app.get_webview_window(&label) {
+        post_window_setup(&existing);
+        // Re-point the owner: the window is reachable from every workspace, so
+        // the restore has to follow the one the user last came from.
+        state.set_owner(label, owner_label);
+        let _ = existing.unminimize();
+        let _ = existing.show();
+        existing.set_focus().map_err(|e| {
+            AppCommandError::window("Failed to focus conversation window", e.to_string())
+        })?;
+        return Ok(());
+    }
+
+    let (url_str, remote_window_id) = route_with_new_remote_window(
+        conversation_window_route(folder_id, conversation_id, &agent.as_wire()),
+        remote_connection_id,
+    );
+    let builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url_str.into()))
+        .title(conversation_window_title(title.as_deref()))
+        .inner_size(1100.0, 820.0)
+        .min_inner_size(400.0, 600.0)
+        .center();
+    // Deliberately NOT `.parent(&window)`: on macOS that attaches the window
+    // via `addChildWindow`, which would make it move and minimize with the
+    // workspace — the opposite of what a second-monitor view is for. Focus
+    // returns to the owner on close via `restore_window_after_conversation`.
+    let builder = apply_platform_window_style(builder);
+    // Loads `/workspace`, so it wears the taller h-10 title bar's traffic-light
+    // position rather than the shorter auxiliary-window default.
+    #[cfg(target_os = "macos")]
+    let builder = builder.traffic_light_position(workspace_window_traffic_light_position());
+    let conversation_window = builder.build().map_err(|e| {
+        AppCommandError::window("Failed to open conversation window", e.to_string())
+    })?;
+    register_remote_window_cleanup(&app, &conversation_window, remote_window_id.as_deref());
+    post_window_setup(&conversation_window);
+    state.set_owner(label, owner_label);
+    conversation_window.set_focus().map_err(|e| {
+        AppCommandError::window("Failed to focus conversation window", e.to_string())
+    })?;
+
+    Ok(())
+}
+
+/// Hand focus back to the workspace a conversation window was opened from.
+pub fn restore_window_after_conversation(
+    app: &AppHandle,
+    state: &ConversationWindowState,
+    conversation_window_label: &str,
+) {
+    if let Some(owner_label) = state.take_owner(conversation_window_label) {
+        show_and_focus_window(app, &owner_label);
+    }
+}
+
 // ─── Desktop pet window ─────────────────────────────────────────────────
 
 const PET_WINDOW_LABEL: &str = "pet";
@@ -2155,7 +2333,7 @@ pub async fn set_tray_locale(
 
 #[cfg(test)]
 mod owner_window_tests {
-    use super::SettingsWindowState;
+    use super::{ConversationWindowState, SettingsWindowState};
 
     // `lib.rs` runs the restore on both `CloseRequested` and `Destroyed`, so the
     // owner has to be handed back exactly once. That mattered less while the
@@ -2179,6 +2357,163 @@ mod owner_window_tests {
         state.set_owner("settings".to_string(), "remote-workspace-3".to_string());
 
         assert_eq!(state.take_owner("settings").as_deref(), Some("remote-workspace-3"));
+    }
+
+    // Same hand-back-once contract for the conversation windows.
+    #[test]
+    fn conversation_owner_is_handed_back_once() {
+        let state = ConversationWindowState::new();
+        state.set_owner("conversation-7".to_string(), "main".to_string());
+
+        assert_eq!(state.take_owner("conversation-7").as_deref(), Some("main"));
+        assert_eq!(state.take_owner("conversation-7"), None);
+    }
+
+    // One map for every conversation window, so closing one must leave the
+    // others' owners alone.
+    #[test]
+    fn conversation_owners_are_kept_per_window_label() {
+        let state = ConversationWindowState::new();
+        state.set_owner("conversation-7".to_string(), "main".to_string());
+        state.set_owner(
+            "remote-conversation-3-7".to_string(),
+            "remote-workspace-3".to_string(),
+        );
+
+        assert_eq!(state.take_owner("conversation-7").as_deref(), Some("main"));
+        assert_eq!(
+            state.take_owner("remote-conversation-3-7").as_deref(),
+            Some("remote-workspace-3")
+        );
+    }
+
+    // Re-opening from another workspace re-points the owner: the window is
+    // reused across workspaces, so the restore has to follow the window the
+    // user last came from.
+    #[test]
+    fn reopening_a_conversation_window_repoints_the_owner() {
+        let state = ConversationWindowState::new();
+        state.set_owner("conversation-7".to_string(), "main".to_string());
+        state.set_owner("conversation-7".to_string(), "remote-workspace-3".to_string());
+
+        assert_eq!(
+            state.take_owner("conversation-7").as_deref(),
+            Some("remote-workspace-3")
+        );
+    }
+
+    // Ownership resolution for `acp_connect` / `terminal_spawn`: a conversation
+    // window hands its work to the workspace it was opened from, and every
+    // other window owns its own. Registration is what distinguishes them, so an
+    // unregistered label — including a conversation window whose owner was
+    // already handed back — resolves to itself rather than to nothing.
+    #[test]
+    fn work_started_in_a_conversation_window_is_owned_by_its_workspace() {
+        let state = ConversationWindowState::new();
+        state.set_owner("conversation-7".to_string(), "main".to_string());
+        state.set_owner(
+            "remote-conversation-3-9".to_string(),
+            "remote-workspace-3".to_string(),
+        );
+
+        assert_eq!(state.resolve_owner_window("conversation-7"), "main");
+        assert_eq!(
+            state.resolve_owner_window("remote-conversation-3-9"),
+            "remote-workspace-3"
+        );
+        for label in ["main", "pet", "settings", "commit-7", "remote-workspace-3"] {
+            assert_eq!(state.resolve_owner_window(label), label, "{label} owns itself");
+        }
+    }
+
+    // The resolve is a PEEK: `acp_connect` runs many times over a window's life
+    // and must keep getting the same answer, and the close-time hand-back is
+    // the only thing allowed to consume the entry.
+    #[test]
+    fn resolving_an_owner_does_not_consume_it() {
+        let state = ConversationWindowState::new();
+        state.set_owner("conversation-7".to_string(), "main".to_string());
+
+        assert_eq!(state.resolve_owner_window("conversation-7"), "main");
+        assert_eq!(state.resolve_owner_window("conversation-7"), "main");
+        assert_eq!(state.take_owner("conversation-7").as_deref(), Some("main"));
+    }
+}
+
+#[cfg(test)]
+mod conversation_window_tests {
+    use super::{
+        conversation_window_label, conversation_window_route, conversation_window_title,
+        is_conversation_window_label,
+    };
+
+    // The label is keyed by conversation id alone, so a second "Open in New
+    // Window" on the same conversation finds the window that already exists.
+    // Remote windows get their own namespace: the ids are per-backend.
+    #[test]
+    fn conversation_labels_are_unique_per_conversation_and_backend() {
+        let local = conversation_window_label(7, None);
+        assert_eq!(local, "conversation-7");
+        // Stable across calls — that is what makes the second invocation find
+        // the window rather than build another one.
+        assert_eq!(local, conversation_window_label(7, None));
+        assert_ne!(
+            conversation_window_label(7, None),
+            conversation_window_label(8, None)
+        );
+        assert_eq!(
+            conversation_window_label(7, Some(3)),
+            "remote-conversation-3-7"
+        );
+        assert_ne!(
+            conversation_window_label(7, Some(3)),
+            conversation_window_label(7, Some(4))
+        );
+    }
+
+    // `lib.rs` asks this of EVERY closing window, so it has to recognise the
+    // conversation windows and nothing else — `remote-commit-3-7` in particular
+    // must not be mistaken for one.
+    #[test]
+    fn only_conversation_windows_are_recognised() {
+        assert!(is_conversation_window_label(&conversation_window_label(7, None)));
+        assert!(is_conversation_window_label(&conversation_window_label(
+            7,
+            Some(3)
+        )));
+        for label in [
+            "main",
+            "pet",
+            "settings",
+            "commit-7",
+            "remote-commit-3-7",
+            "merge-7",
+            "remote-workspace-3",
+            "project-boot",
+        ] {
+            assert!(
+                !is_conversation_window_label(label),
+                "{label} is not a conversation window"
+            );
+        }
+    }
+
+    // Static export: the target is a query on `/workspace`, never a dynamic
+    // route. `conversationWindow=1` is what puts the tab store in its detached
+    // mode, so it must ride along with the identity.
+    #[test]
+    fn the_route_carries_the_detached_marker_and_the_identity() {
+        assert_eq!(
+            conversation_window_route(4, 7, "claude_code"),
+            "workspace?conversationWindow=1&folderId=4&conversationId=7&agent=claude_code"
+        );
+    }
+
+    #[test]
+    fn an_untitled_conversation_falls_back_to_the_app_name() {
+        assert_eq!(conversation_window_title(Some("Fix the parser")), "Codeg - Fix the parser");
+        assert_eq!(conversation_window_title(Some("   ")), "Codeg");
+        assert_eq!(conversation_window_title(None), "Codeg");
     }
 }
 

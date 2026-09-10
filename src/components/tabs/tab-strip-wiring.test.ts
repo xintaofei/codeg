@@ -28,6 +28,11 @@ describe("tab strip draft gating", () => {
     // register a drop target (no ghost, no highlight, no move).
     expect(tabBar).toMatch(/onTabDrag=\{\s*crossDragEnabled && !isDraft/)
     expect(tabBar).toMatch(/onTabDragEnd=\{\s*crossDragEnabled && !isDraft/)
+    // A draft has no conversation for a window to show, so the strip withholds
+    // the handler entirely rather than offering an inert menu item.
+    expect(tabBar).toContain(
+      "onOpenInNewWindow={isDraft ? undefined : handleOpenInNewWindow}"
+    )
   })
 
   it("gates only the move items, so a draft keeps the group-management menu", () => {
@@ -35,6 +40,24 @@ describe("tab strip draft gating", () => {
     // `moveTargets` still drives the Unsplit All gate — passing an empty array
     // for drafts (instead of this flag) would have hidden that item too.
     expect(tabItem).toContain("{moveTargets.length >= 2 && (")
+  })
+})
+
+describe("open in new window wiring", () => {
+  it("passes the tab's own identity and title to the window opener", () => {
+    // The window is keyed by conversation id, and the title only names the
+    // taskbar entry — everything else the view reads back for itself.
+    expect(tabBar).toMatch(
+      /openConversationWindow\(\s*\{\s*folderId: tab\.folderId,\s*conversationId: tab\.conversationId,\s*agentType: tab\.agentType,\s*\},\s*tab\.title\s*\)/
+    )
+  })
+
+  it("leaves the tab where it is", () => {
+    // `opened_tabs` is the workspace's own list and the new window is a
+    // detached view that never writes to it, so there is no close here — a
+    // removal would have to be pushed to every client and would take the
+    // conversation out of the workspace for good.
+    expect(tabBar).not.toMatch(/handleOpenInNewWindow[\s\S]{0,400}closeTab\(/)
   })
 })
 

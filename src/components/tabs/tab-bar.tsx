@@ -6,6 +6,7 @@ import type { PanInfo } from "motion/react"
 import { SquarePen } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { cn } from "@/lib/utils"
+import { openConversationWindow } from "@/lib/api"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
@@ -116,6 +117,23 @@ export function TabBar({ groupId }: TabBarProps) {
     () => dissolveGroup(stripGroupId),
     [dissolveGroup, stripGroupId]
   )
+
+  // The tab stays here: `opened_tabs` is the workspace's own list, and the new
+  // window is a detached view that never writes to it. Closing the window
+  // therefore leaves the conversation exactly where it was.
+  const handleOpenInNewWindow = useCallback((tab: TabItemData) => {
+    if (tab.conversationId == null) return
+    void openConversationWindow(
+      {
+        folderId: tab.folderId,
+        conversationId: tab.conversationId,
+        agentType: tab.agentType,
+      },
+      tab.title
+    ).catch((err) => {
+      console.error("[TabBar] open conversation window failed:", err)
+    })
+  }, [])
 
   // ── Cross-group drag & drop (split-group strips only) ────────────────────
   // The dragged tab itself is axis-locked to its own strip (Reorder drag="x" +
@@ -344,6 +362,7 @@ export function TabBar({ groupId }: TabBarProps) {
             folderBranch={branches.get(tab.folderId) ?? null}
             isSplit={isSplit}
             canSplitMove={canSplitMove && !isDraft}
+            onOpenInNewWindow={isDraft ? undefined : handleOpenInNewWindow}
             canMoveToGroup={!isDraft}
             moveTargets={moveTargets}
             onTabDrag={crossDragEnabled && !isDraft ? handleTabDrag : undefined}

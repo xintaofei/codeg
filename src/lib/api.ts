@@ -10,6 +10,11 @@ import { getCodegToken } from "./transport/web-auth"
 import { notifyWebUnauthorized } from "./transport/web-connection-store"
 import { getCurrentEffectiveAppLocale } from "./i18n"
 import {
+  conversationWindowName,
+  conversationWindowRoute,
+  type ConversationWindowTarget,
+} from "./conversation-window"
+import {
   DEFAULT_FORGE_COMMENT_PAGE_SIZE,
   DEFAULT_FORGE_FILES_PAGE_SIZE,
   DEFAULT_FORGE_PAGE_SIZE,
@@ -3143,6 +3148,38 @@ export async function openImportSessionsWindow(
   return openAppWindow("import-sessions", () =>
     getTransport().call<{ path: string }>("open_import_sessions_window", {
       focusPath,
+    })
+  )
+}
+
+/**
+ * Open one conversation in its own window, or focus the window it is already
+ * in — the label/name is keyed by conversation id, so this never stacks
+ * duplicates. `title` is only used for the window title (the taskbar entry);
+ * the view reads everything else back from the conversation itself.
+ *
+ * Web mode has no backend round trip to make: the target is `/workspace` with
+ * the conversation in the query string, which the caller's own click can open
+ * directly. See `src/lib/conversation-window.ts` for what that URL means.
+ */
+export async function openConversationWindow(
+  target: ConversationWindowTarget,
+  title?: string | null
+): Promise<void> {
+  if (isDesktop()) {
+    return getShellTransport().call("open_conversation_window", {
+      folderId: target.folderId,
+      conversationId: target.conversationId,
+      agent: target.agentType,
+      title: title ?? null,
+      remoteConnectionId: getActiveRemoteConnectionId(),
+    })
+  }
+  const path = conversationWindowRoute(target)
+  return openAppWindow(
+    conversationWindowName(target.conversationId),
+    async () => ({
+      path,
     })
   )
 }

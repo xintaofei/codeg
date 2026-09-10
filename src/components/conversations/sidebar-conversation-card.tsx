@@ -8,6 +8,7 @@ import {
   type FocusEvent,
 } from "react"
 import {
+  AppWindow,
   AtSign,
   Pencil,
   Trash2,
@@ -25,6 +26,7 @@ import {
 import { useTranslations } from "next-intl"
 import { useImeGuard } from "@/hooks/use-ime-guard"
 import { useTabStore } from "@/contexts/tab-context"
+import { openConversationWindow } from "@/lib/api"
 import { emitAttachSessionToSession } from "@/lib/session-attachment-events"
 import type { DbConversationSummary, ConversationStatus } from "@/lib/types"
 import { STATUS_ORDER } from "@/lib/types"
@@ -273,6 +275,27 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
     if (!tabId) return
     emitAttachSessionToSession({ tabId, conversation })
   }, [conversation])
+
+  const handleOpenInNewWindow = useCallback(() => {
+    void openConversationWindow(
+      {
+        folderId: conversation.folder_id,
+        conversationId: conversation.id,
+        agentType: conversation.agent_type,
+      },
+      conversation.title
+    ).catch((err) => {
+      console.error(
+        "[SidebarConversationCard] open conversation window failed:",
+        err
+      )
+    })
+  }, [
+    conversation.folder_id,
+    conversation.id,
+    conversation.agent_type,
+    conversation.title,
+  ])
 
   const handleRenameOpen = useCallback(() => {
     setRenameValue(conversation.title || "")
@@ -658,6 +681,10 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
             <ContextMenuItem onSelect={() => setDetailsOpen(true)}>
               <Info className="h-4 w-4" />
               {tDetails("menuLabel")}
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={handleOpenInNewWindow}>
+              <AppWindow className="h-4 w-4" />
+              {t("openInNewWindow")}
             </ContextMenuItem>
             {/* Mirrors the file tree's "add to session": inserts an `@`-style
               mention of THIS conversation into the active session's composer.

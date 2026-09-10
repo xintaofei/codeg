@@ -396,6 +396,7 @@ mod tauri_app {
             .manage(windows::SettingsWindowState::new())
             .manage(windows::CommitWindowState::new())
             .manage(windows::MergeWindowState::new())
+            .manage(windows::ConversationWindowState::new())
             .manage(web::WebServerState::new())
             // Remote-workspace IPC proxy. Routes HTTP / WS for windows
             // opened against a remote codeg-server through Rust so we
@@ -1123,6 +1124,22 @@ mod tauri_app {
                     }
                 }
 
+                if windows::is_conversation_window_label(&label)
+                    && matches!(
+                        event,
+                        tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+                    )
+                {
+                    // Focus only. The conversation keeps running: its agent is
+                    // owned by the workspace this window was opened from (see
+                    // `ConversationWindowState::resolve_owner_window`), and the
+                    // tab it is still open in lives there too.
+                    let app = window.app_handle();
+                    if let Some(state) = app.try_state::<windows::ConversationWindowState>() {
+                        windows::restore_window_after_conversation(app, &state, &label);
+                    }
+                }
+
                 if label == windows::PET_PANEL_LABEL
                     && matches!(event, tauri::WindowEvent::Focused(false))
                 {
@@ -1315,6 +1332,7 @@ mod tauri_app {
                 windows::open_push_window,
                 windows::open_project_boot_window,
                 windows::open_import_sessions_window,
+                windows::open_conversation_window,
                 remote_workspace_commands::list_remote_workspace_connections,
                 remote_workspace_commands::create_remote_workspace_connection,
                 remote_workspace_commands::update_remote_workspace_connection,

@@ -64,6 +64,7 @@ pub(crate) fn prepare_credential_env(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[allow(clippy::too_many_arguments)]
 pub async fn terminal_spawn(
     working_dir: String,
     shell: Option<String>,
@@ -72,6 +73,7 @@ pub async fn terminal_spawn(
     manager: State<'_, TerminalManager>,
     app_handle: tauri::AppHandle,
     window: tauri::WebviewWindow,
+    conversation_windows: State<'_, crate::commands::windows::ConversationWindowState>,
 ) -> Result<String, TerminalError> {
     let terminal_id = terminal_id
         .filter(|id| !id.is_empty() && id.len() <= 256)
@@ -94,7 +96,10 @@ pub async fn terminal_spawn(
         SpawnOptions {
             terminal_id,
             working_dir,
-            owner_window_label: window.label().to_string(),
+            // A conversation window's shells belong to the workspace that
+            // opened it, so closing the view doesn't strand them (only `main`
+            // is swept by owner on close). See `resolve_owner_window`.
+            owner_window_label: conversation_windows.resolve_owner_window(window.label()),
             shell,
             initial_command,
             extra_env,
