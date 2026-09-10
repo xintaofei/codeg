@@ -19632,8 +19632,13 @@ wire_api = "chat"
             fs::write(skill.join("SKILL.md"), "---\nname: demo\n---\n").expect("write skill");
             fs::create_dir_all(&codex_home).expect("create Codex home");
             let content_path = fs::canonicalize(skill.join("SKILL.md")).unwrap();
+            let unrelated_path = fs::canonicalize(tmp.path())
+                .unwrap()
+                .join("unrelated/SKILL.md");
             let encoded_path =
                 toml_edit::Value::from(content_path.to_string_lossy().as_ref()).to_string();
+            let encoded_unrelated_path =
+                toml_edit::Value::from(unrelated_path.to_string_lossy().as_ref()).to_string();
             fs::write(
                 codex_home.join("config.toml"),
                 format!(
@@ -19641,7 +19646,7 @@ wire_api = "chat"
                      [[skills.config]]\npath = {encoded_path}\nenabled = false\n\n\
                      [[skills.config]]\nname = \"demo\"\nenabled = false\n\n\
                      [[skills.config]]\npath = {encoded_path}\nname = \"demo\"\nenabled = false\n\n\
-                     [[skills.config]]\npath = \"/unrelated/SKILL.md\"\nenabled = false\n"
+                     [[skills.config]]\npath = {encoded_unrelated_path}\nenabled = false\n"
                 ),
             )
             .expect("write config");
@@ -19675,7 +19680,10 @@ wire_api = "chat"
             }));
             assert!(parsed.entries.iter().any(|entry| {
                 entry.name.is_none()
-                    && entry.path.as_deref() == Some(Path::new("/unrelated/SKILL.md"))
+                    && entry
+                        .path
+                        .as_deref()
+                        .is_some_and(|path| same_skill_config_path(path, &unrelated_path))
                     && !entry.enabled
             }));
             assert!(!parsed.entries.iter().any(|entry| {
