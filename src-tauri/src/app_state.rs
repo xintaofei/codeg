@@ -97,6 +97,18 @@ pub fn default_chat_channel_manager() -> ChatChannelManager {
     ChatChannelManager::new()
 }
 
+/// A restarted process owns none of the previous process's delegation children.
+/// Reconcile their durable rows before the listener can accept new work.
+pub async fn reconcile_interrupted_delegations(conn: &sea_orm::DatabaseConnection) {
+    match crate::db::service::delegation_task_service::boot_reconcile_interrupted(conn).await {
+        Ok(n) if n > 0 => {
+            tracing::info!("[delegation] boot reconcile settled {n} interrupted task(s)")
+        }
+        Ok(_) => {}
+        Err(error) => tracing::error!(%error, "[delegation] boot reconcile failed"),
+    }
+}
+
 /// Build the delegation broker + token registry + per-process UDS socket
 /// path. Shared between codeg-server bootstrap and the Tauri `setup` block
 /// so both modes apply identical depth limit + timeout defaults.

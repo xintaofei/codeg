@@ -790,6 +790,7 @@ mod tauri_app {
                     let session_info_for_init = session_info_config.clone();
                     let chat_authoring_for_init = chat_authoring_config.clone();
                     tauri::async_runtime::block_on(async move {
+                        crate::app_state::reconcile_interrupted_delegations(&db_for_init).await;
                         delegation_commands::apply_persisted_config(
                             &db_for_init,
                             &broker_for_init,

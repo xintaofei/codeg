@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, Condition, ConnectionTrait,
-    DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
+    DatabaseConnection, EntityTrait, IntoActiveModel, QueryFilter, QueryOrder, Set,
+    TransactionTrait,
 };
 
 use crate::acp::delegation::types::{DelegationTaskReport, TaskStatus};
@@ -391,6 +392,54 @@ pub async fn mark_released(
         .exec(conn)
         .await?;
     Ok(result.rows_affected == 1)
+}
+
+/// Reconcile execution ownership from a previous process. No ACP child or
+/// release barrier survives a restart, so every unreleased row is now released;
+/// a row still marked running is frozen as an interrupted failure.
+pub async fn boot_reconcile_interrupted(conn: &DatabaseConnection) -> Result<u64, DbError> {
+    let txn = conn.begin().await?;
+    let rows = delegation_task::Entity::find()
+        .filter(delegation_task::Column::Released.eq(false))
+        .all(&txn)
+        .await?;
+    let count = rows.len() as u64;
+
+    for row in rows {
+        let mut active = row.clone().into_active_model();
+        if row.status == status_string(TaskStatus::Running) {
+            let binding: ResumeBinding = serde_json::from_str(&row.resume_binding).map_err(|e| {
+                DbError::Migration(format!(
+                    "invalid resume binding for {}: {e}",
+                    row.task_id
+                ))
+            })?;
+            let report = DelegationTaskReport {
+                task_id: Some(row.task_id.clone()),
+                status: TaskStatus::Failed,
+                child_conversation_id: Some(row.child_conversation_id),
+                agent_type: Some(binding.agent_type),
+                text: None,
+                error_code: Some("interrupted".into()),
+                message: Some(
+                    "The application stopped while this delegation was running; its outcome is unknown."
+                        .into(),
+                ),
+                duration_ms: None,
+                blocked_on: None,
+            };
+            active.status = Set(status_string(TaskStatus::Failed));
+            active.terminal_report = Set(Some(serde_json::to_string(&report).map_err(|e| {
+                DbError::Validation(format!("cannot serialize interrupted report: {e}"))
+            })?));
+        }
+        active.released = Set(true);
+        active.updated_at = Set(Utc::now());
+        active.update(&txn).await?;
+    }
+
+    txn.commit().await?;
+    Ok(count)
 }
 
 async fn reconcile_insert_race<C: ConnectionTrait>(
@@ -784,6 +833,55 @@ mod tests {
             .expect("lookup t1")
             .expect("t1 entry");
         assert_eq!(successor_entry.report.text.as_deref(), Some("follow-up"));
+        reopened.close().await.expect("close reopened db");
+    }
+
+    #[tokio::test]
+    async fn boot_reconcile_repairs_unreleased_rows_after_disk_reopen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = fresh_disk_db(dir.path()).await;
+        let (parent, child) = conversations(&db).await;
+        admit(&db.conn, input("running", parent, child, None, "running task"))
+            .await
+            .expect("admit running");
+        admit(&db.conn, input("done", parent, child, None, "done task"))
+            .await
+            .expect("admit done");
+        let done_report = report("done", child, "finished", TaskStatus::Completed);
+        assert!(finish(&db.conn, parent, "done", &done_report)
+            .await
+            .expect("finish done"));
+        db.conn.close().await.expect("close disk db");
+
+        let path = dir.path().join("source.db");
+        let reopened = Database::connect(format!("sqlite:{}?mode=rwc", path.to_string_lossy()))
+            .await
+            .expect("reopen disk db");
+        assert_eq!(boot_reconcile_interrupted(&reopened).await.unwrap(), 2);
+        assert_eq!(boot_reconcile_interrupted(&reopened).await.unwrap(), 0);
+
+        let interrupted = lookup(&reopened, parent, "running")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(interrupted.status, TaskStatus::Failed);
+        assert!(interrupted.released);
+        assert_eq!(interrupted.report.error_code.as_deref(), Some("interrupted"));
+
+        let done = lookup(&reopened, parent, "done").await.unwrap().unwrap();
+        assert_eq!(done.status, TaskStatus::Completed);
+        assert!(done.released);
+        assert_eq!(done.report.text.as_deref(), Some("finished"));
+
+        assert!(matches!(
+            admit_continuation(
+                &reopened,
+                input("continued", parent, child, Some("running"), "continue"),
+            )
+            .await
+            .unwrap(),
+            AdmissionResult::New { .. }
+        ));
         reopened.close().await.expect("close reopened db");
     }
 
