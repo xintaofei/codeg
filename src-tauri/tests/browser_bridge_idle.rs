@@ -72,7 +72,11 @@ async fn listeners_close_when_released_and_idle() {
         .await;
     assert!(result.is_err(), "closed listener still answered: {result:?}");
 
-    // A held listener still closes after two hours without a request.
+    // A held listener still closes after two hours without a request. The
+    // clock starts again here: the request above waits on a port that was
+    // just closed, which Windows refuses only after ~2 s (macOS in
+    // milliseconds), and the margin the sweep below leaves is one second.
+    let now = Instant::now();
     let held = browser_bridge::open(upstream, "tab-held").await.unwrap();
     assert_ne!(held.bridge_port, 0);
     assert_eq!(browser_bridge::sweep(now + Duration::from_secs(60 * 60)), 0);
