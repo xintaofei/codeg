@@ -89,6 +89,7 @@ pub fn capabilities(policy: &BrowserPolicy) -> BrowserCapabilities {
         doc_guest: enabled && doc_guest::supported(),
         profiles: enabled && profile::profiles_supported(),
         sign_in_user_agent: enabled && profile::sign_in_user_agent_supported(),
+        owned_window_controls: cfg!(target_os = "linux"),
     }
 }
 

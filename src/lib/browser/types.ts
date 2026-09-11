@@ -114,8 +114,12 @@ export interface BrowserCapabilities {
    *  Linux); the settings offer to create, clear and delete them. */
   profiles: boolean
   /** Tabs present the sign-in user agent to Google's sign-in hosts when the
-   *  preference is on (embedded tabs). */
+   *  preference is on (embedded tabs, and the owned window on Linux). */
   signInUserAgent: boolean
+  /** A tab shown in an owned window still answers find, history, stop and
+   *  snapshots, and its page still talks to the host — true where the owned
+   *  window is the surface the platform shim is written for (Linux). */
+  ownedWindowControls: boolean
 }
 
 /** How a document guest serves its file: as a picture of itself (no script,

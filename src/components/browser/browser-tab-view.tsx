@@ -8,6 +8,7 @@ import {
   useBrowserFindRequest,
   useBrowserTabState,
 } from "@/lib/browser/browser-tab-store"
+import { useBrowserCapabilities } from "@/lib/browser/use-browser-capabilities"
 import { browserTabBackendId } from "@/lib/file-tab-id"
 
 import { isDesktop } from "@/lib/transport"
@@ -36,6 +37,7 @@ export function BrowserTabView({ tab }: { tab: BrowserWorkspaceTab }) {
 
 function NativeBrowserTabView({ tab }: { tab: BrowserWorkspaceTab }) {
   const state = useBrowserTabState(tab.id)
+  const capabilities = useBrowserCapabilities()
   const backendId = browserTabBackendId(tab.id)
   const [findOpen, setFindOpen] = useState(false)
   // ⌘F pressed while the PAGE had keyboard focus: the app's DOM never sees
@@ -66,13 +68,16 @@ function NativeBrowserTabView({ tab }: { tab: BrowserWorkspaceTab }) {
   const url = state?.url || state?.requestedUrl || tab.browser.initialUrl
   const error = state?.error ?? null
   const ownedWindow = state?.surface === "window"
+  // Find searches the page, which is in the other window — worth offering
+  // when that window answers, and not when the host has no hold on it.
+  const canFind = !ownedWindow || (capabilities?.ownedWindowControls ?? false)
 
   return (
     <div className="flex h-full min-h-0 flex-col" onKeyDown={onKeyDown}>
       <BrowserToolbar tab={tab} state={state} />
       <BrowserFindBar
         tab={tab}
-        open={findOpen && !ownedWindow}
+        open={findOpen && canFind}
         focusToken={findRequest + localFindRequest}
         onClose={() => setFindOpen(false)}
       />

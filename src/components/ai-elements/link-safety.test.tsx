@@ -24,6 +24,7 @@ const DESKTOP_WITHOUT_BROWSER = {
   docGuest: false,
   profiles: false,
   signInUserAgent: false,
+  ownedWindowControls: false,
   policy: { enabled: true, managedRules: [], managedSource: null },
 }
 

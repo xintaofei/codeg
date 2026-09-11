@@ -30,6 +30,7 @@ const UNAVAILABLE: BrowserCapabilities = {
   docGuest: false,
   profiles: false,
   signInUserAgent: false,
+  ownedWindowControls: false,
 }
 
 let capabilitiesPromise: Promise<BrowserCapabilities> | null = null

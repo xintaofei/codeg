@@ -57,6 +57,7 @@ function capabilitiesWith(proxy: {
     docGuest: true,
     profiles: true,
     signInUserAgent: true,
+    ownedWindowControls: false,
     policy: { enabled: true, managedRules: [], managedSource: null },
   }
 }
@@ -68,6 +69,7 @@ function capabilitiesWithoutProfiles() {
     ...capabilitiesWith({ url: null, applies: "live", reason: null }),
     profiles: false,
     signInUserAgent: false,
+    ownedWindowControls: false,
   }
 }
 
@@ -223,6 +225,7 @@ describe("BrowserSettingsSection", () => {
       docGuest: false,
       profiles: false,
       signInUserAgent: false,
+      ownedWindowControls: false,
     })
     renderSection()
     expandSection()

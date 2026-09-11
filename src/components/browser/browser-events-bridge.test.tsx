@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => {
           docGuest: false,
           profiles: false,
           signInUserAgent: false,
+          ownedWindowControls: false,
           policy: { enabled: true, managedRules: [], managedSource: null },
         })
     ),
@@ -340,6 +341,7 @@ describe("BrowserEventsBridge", () => {
       docGuest: false,
       profiles: false,
       signInUserAgent: false,
+      ownedWindowControls: false,
       policy: { enabled: true, managedRules: [], managedSource: null },
     })
     render(<BrowserEventsBridge />)
@@ -427,6 +429,7 @@ describe("BrowserEventsBridge", () => {
         docGuest: false,
         profiles: false,
         signInUserAgent: false,
+        ownedWindowControls: false,
         policy: { enabled: true, managedRules: [], managedSource: null },
       })
       await Promise.resolve()

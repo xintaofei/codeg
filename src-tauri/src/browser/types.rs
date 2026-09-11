@@ -133,8 +133,14 @@ pub struct BrowserCapabilities {
     /// Linux); the settings offer to create, clear and delete them.
     pub profiles: bool,
     /// Tabs present the sign-in user agent to Google's sign-in hosts when the
-    /// preference is on (needs the navigation delegate: embedded tabs).
+    /// preference is on (needs a navigation hook: the embedded tabs' delegate,
+    /// or the owned window's navigation decision on Linux).
     pub sign_in_user_agent: bool,
+    /// A tab shown in an owned window still answers find, history, stop and
+    /// snapshots, and its page still talks to the host. True where the owned
+    /// window is the surface the platform shim is written for (Linux); false
+    /// where it is the fallback and the host does not hold its webview.
+    pub owned_window_controls: bool,
 }
 
 /// The last frame of a page, handed back by `browser_set_visible` when the

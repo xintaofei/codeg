@@ -55,6 +55,7 @@ describe("browser wire types", () => {
       docGuest: false,
       profiles: false,
       signInUserAgent: false,
+      ownedWindowControls: false,
       policy: {
         enabled: true,
         managedRules: [{ pattern: "*.internal.example", action: "block" }],
