@@ -40,6 +40,10 @@ export interface SessionSelectorSetting {
   /** When set, the detail pane renders a searchable + virtualized list instead
    *  of the plain button list — used for long model lists that otherwise jank. */
   search?: SessionSelectorSearch
+  /** When set, a trailing row below the options opens free-text entry (the
+   *  model picker's "Use custom model ID..."). The label is passed in so this
+   *  panel stays translation-free, like the rest of its strings. */
+  customEntry?: { label: string; onSelect: () => void }
 }
 
 interface SessionSelectorsPanelProps {
@@ -125,7 +129,9 @@ export function SessionSelectorsPanel({
           honest pattern as the left rail. */}
       {active.search ? (
         // Long model lists: a searchable + virtualized list (its own scroller),
-        // so no surrounding `overflow-y-auto` wrapper here.
+        // so no surrounding `overflow-y-auto` wrapper here. The custom-entry
+        // row is pinned BELOW the list so it stays reachable even when a
+        // search leaves no matching rows — the very case a brand-new id hits.
         <div className="flex min-w-0 flex-1 flex-col pl-1">
           <ModelOptionList
             groups={active.groups}
@@ -139,6 +145,14 @@ export function SessionSelectorsPanel({
             listAriaLabel={active.search.listLabel}
             emptyLabel={active.search.empty}
           />
+          {active.customEntry && (
+            <div className="shrink-0 border-t p-1">
+              <CustomEntryButton
+                entry={active.customEntry}
+                onAfterSelect={onAfterSelect}
+              />
+            </div>
+          )}
         </div>
       ) : (
         <div
@@ -188,8 +202,42 @@ export function SessionSelectorsPanel({
               })}
             </div>
           ))}
+          {active.customEntry && (
+            <div className="mt-1 border-t pt-1">
+              <CustomEntryButton
+                entry={active.customEntry}
+                onAfterSelect={onAfterSelect}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>
+  )
+}
+
+// The free-text escape hatch under the option rows ("Use custom model ID...").
+// A plain <button> like every other row here (see the WKWebView note above),
+// styled as an option minus the check column — it opens an entry surface
+// rather than committing a value, but it still closes the popover the same way
+// a pick does (the entry dialog lives outside this layer).
+function CustomEntryButton({
+  entry,
+  onAfterSelect,
+}: {
+  entry: NonNullable<SessionSelectorSetting["customEntry"]>
+  onAfterSelect?: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        entry.onSelect()
+        onAfterSelect?.()
+      }}
+      className="w-full rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+    >
+      {entry.label}
+    </button>
   )
 }

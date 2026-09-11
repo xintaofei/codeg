@@ -184,6 +184,47 @@ function autoApproveOption(current: boolean): SessionConfigOptionInfo {
   }
 }
 
+describe("InlineSessionConfigSelector — custom model entry", () => {
+  afterEach(() => cleanup())
+
+  it("appends the entry row when provided, and fires its opener", async () => {
+    const user = userEvent.setup()
+    const onOpen = vi.fn()
+    const option = modelOption(
+      [
+        { value: "default", name: "Default" },
+        { value: "opus", name: "Opus" },
+      ],
+      "default"
+    )
+    render(
+      <InlineSessionConfigSelector
+        option={option}
+        onSelect={vi.fn()}
+        customModelEntry={{ label: "Use custom model ID...", onOpen }}
+      />
+    )
+
+    await user.click(screen.getByRole("button", { name: "Model: Default" }))
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Use custom model ID..." })
+    )
+    expect(onOpen).toHaveBeenCalledTimes(1)
+  })
+
+  it("renders no entry row when the prop is absent", async () => {
+    const user = userEvent.setup()
+    const option = modelOption([{ value: "opus", name: "Opus" }], "opus")
+    render(<InlineSessionConfigSelector option={option} onSelect={vi.fn()} />)
+
+    await user.click(screen.getByRole("button", { name: "Model: Opus" }))
+    expect(
+      await screen.findByRole("menuitemradio", { name: /Opus/ })
+    ).toBeInTheDocument()
+    expect(screen.queryByRole("menuitem")).toBeNull()
+  })
+})
+
 describe("InlineSessionConfigToggle", () => {
   afterEach(() => cleanup())
 

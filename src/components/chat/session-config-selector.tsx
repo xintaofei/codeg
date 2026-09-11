@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
@@ -28,12 +29,21 @@ interface SessionConfigSelectorProps {
    * means "no grouping" — fall back to server groups, else the flat list.
    */
   derivedGroups?: ModelOptionGroup[] | null
+  /**
+   * When set, a trailing row (the model picker's "Use custom model ID...")
+   * opens free-text entry — passed only for the MODEL option (the caller
+   * gates on `isModelConfigOption`), never for other selects. The label rides
+   * along like the toggle's on/off labels, keeping this component
+   * translation-free.
+   */
+  customModelEntry?: { label: string; onOpen: () => void }
 }
 
 export function InlineSessionConfigSelector({
   option,
   onSelect,
   derivedGroups,
+  customModelEntry,
 }: SessionConfigSelectorProps) {
   if (option.kind.type !== "select") return null
 
@@ -127,6 +137,17 @@ export function InlineSessionConfigSelector({
                 </DropdownMenuRadioItem>
               ))}
         </DropdownMenuRadioGroup>
+        {customModelEntry && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className="text-muted-foreground"
+              onSelect={() => customModelEntry.onOpen()}
+            >
+              {customModelEntry.label}
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )
