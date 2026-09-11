@@ -400,18 +400,20 @@ fn watch_load(app: AppHandle, tab_id: String, seq: u64) {
 /// over a perfectly good page for every redirected download, which is the
 /// common case.
 ///
-/// Owned windows have no load watcher at all (`is_loading` has no handle to
-/// answer from), so nothing would ever consume the mark: they settle here and
-/// now, or the tab would spin for ever.
+/// A surface that cannot answer a load state has no watcher — the one it was
+/// given exits at its first tick — so nothing there would ever consume the
+/// mark: those tabs settle here and now, or they would spin for ever. That is
+/// the owned window on macOS and Windows, where the host has no hold on the
+/// engine webview, and NOT the owned window on Linux, which answers like an
+/// embedded tab; asking the surface keeps the two apart without naming either.
 pub fn navigation_became_download(app: &AppHandle, tab_id: &str) {
     let Some(registry) = app.try_state::<BrowserRegistry>() else {
         return;
     };
-    let embedded = registry
+    let watched = registry
         .surface(tab_id)
-        .map(|surface| surface.is_embedded())
-        .unwrap_or(false);
-    if embedded {
+        .is_some_and(|surface| surface.is_loading().is_ok());
+    if watched {
         registry.update(tab_id, |tab| tab.download_seq = Some(tab.load_seq));
         return;
     }
