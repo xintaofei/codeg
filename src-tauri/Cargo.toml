@@ -216,7 +216,13 @@ windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com"
 # features, so `--no-default-features` would still run the gtk-sys / gdk-sys /
 # atk-sys pkg-config probes while compiling none of the code that needs them.
 # Neither the codeg-server CI cell nor the Docker backend stage installs GTK.
-webkit2gtk = { version = "=2.0.2", features = ["v2_38"], optional = true }
+#
+# `v2_40` is not an independent floor we are choosing: tauri-runtime-wry turns
+# on wry's `linux-body`, which enables it already. Declaring it states the API
+# level this crate compiles against instead of borrowing another crate's
+# feature — if wry ever stops asking for it, the failure is a version error
+# here rather than a missing symbol somewhere in the shim.
+webkit2gtk = { version = "=2.0.2", features = ["v2_40"], optional = true }
 gtk = { version = "0.18", optional = true }
 javascriptcore-rs = { version = "=1.1.2", optional = true }
 
