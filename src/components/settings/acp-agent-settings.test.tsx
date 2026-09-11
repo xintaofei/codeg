@@ -23,6 +23,7 @@ import {
   patchCodexConfigTomlText,
   patchEnvByImportantKey,
   patchImportantConfigText,
+  providerToRebindTo,
   codexSandboxSeedsAcpPreset,
   rebaseDeepSeekDraft,
   setAdapterChannel,
@@ -35,6 +36,7 @@ import type {
   AcpAgentInfo,
   AdapterInfo,
   AgentType,
+  ModelProviderInfo,
   PreflightResult,
 } from "@/lib/types"
 
@@ -147,6 +149,42 @@ function codexSandboxDraft(
     codexSandboxBaseline: codexSandboxBaselineOf(seeded),
   }
 }
+
+// #628: providers arrive ordered by row id, so falling straight to the head of
+// the list rebound the agent to its OLDEST provider whenever the auth-mode
+// dropdown round-tripped through another mode, and the rebind copies that
+// provider's model names over the one the user was on.
+describe("providerToRebindTo", () => {
+  function provider(id: number): ModelProviderInfo {
+    return {
+      id,
+      name: `provider-${id}`,
+      agent_type: "claude_code" as AgentType,
+      api_url: "",
+      api_key: "",
+      model: null,
+    } as ModelProviderInfo
+  }
+
+  it("returns to the provider the user was on, not the first one", () => {
+    const available = [provider(1), provider(2)]
+    expect(providerToRebindTo(available, 2)?.id).toBe(2)
+  })
+
+  it("falls back to the head for a first-time pick", () => {
+    const available = [provider(1), provider(2)]
+    expect(providerToRebindTo(available, null)?.id).toBe(1)
+    expect(providerToRebindTo(available, undefined)?.id).toBe(1)
+  })
+
+  it("falls back to the head when the remembered provider is gone", () => {
+    expect(providerToRebindTo([provider(3), provider(4)], 2)?.id).toBe(3)
+  })
+
+  it("has nothing to bind to when no provider exists", () => {
+    expect(providerToRebindTo([], 2)).toBeNull()
+  })
+})
 
 describe("buildCodexSandboxConfig — Codex sandbox/approval save patch", () => {
   // The core contract. The panel also sends the raw config.toml text and the
