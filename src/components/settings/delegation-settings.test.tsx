@@ -127,6 +127,7 @@ describe("DelegationSettingsSection", () => {
       await screen.findByLabelText("Maximum delegation depth")
     ).toBeInTheDocument()
     expect(screen.getByLabelText("Enable delegation")).toBeInTheDocument()
+    expect(screen.getByLabelText("Allow spawn without @")).toBeInTheDocument()
     expect(
       screen.getByLabelText("Completed-result cache (MB)")
     ).toBeInTheDocument()
@@ -195,6 +196,7 @@ describe("DelegationSettingsSection", () => {
     await waitFor(() => {
       expect(mockSetDelegationSettings).toHaveBeenCalledWith({
         enabled: true,
+        allow_self_initiate: true,
         depth_limit: 1,
         completed_cache_max_mb: 0,
         agent_defaults: {},
@@ -219,6 +221,7 @@ describe("DelegationSettingsSection", () => {
     await waitFor(() => {
       expect(mockSetDelegationSettings).toHaveBeenCalledWith({
         enabled: true,
+        allow_self_initiate: true,
         depth_limit: 1,
         completed_cache_max_mb: 512,
         agent_defaults: {},
@@ -241,6 +244,7 @@ describe("DelegationSettingsSection", () => {
     await waitFor(() => {
       expect(mockSetDelegationSettings).toHaveBeenCalledWith({
         enabled: true,
+        allow_self_initiate: true,
         depth_limit: 5,
         completed_cache_max_mb: 512,
         agent_defaults: {},

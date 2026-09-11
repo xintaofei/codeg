@@ -4536,6 +4536,9 @@ fn is_executable_file(path: &Path) -> bool {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct CompanionFeatureFlags {
     delegation: bool,
+    /// When true (with delegation), the tool description is @-mention only.
+    /// Unknown to older companions (ignored).
+    mention_only: bool,
     feedback: bool,
     ask: bool,
     sessions: bool,
@@ -4558,6 +4561,9 @@ fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<String> {
     let mut features: Vec<&str> = Vec::new();
     if flags.delegation {
         features.push("delegation");
+        if flags.mention_only {
+            features.push("mention_only");
+        }
     }
     if flags.feedback {
         features.push("feedback");
@@ -4667,6 +4673,7 @@ where
     };
     let flags = CompanionFeatureFlags {
         delegation: delegation_enabled,
+        mention_only: delegation_enabled && !injection.broker.allow_self_initiate(),
         feedback: feedback_enabled,
         ask: injection.ask.is_enabled().await,
         sessions: injection.sessions.is_enabled().await,
@@ -21924,6 +21931,7 @@ mod tests {
         assert_eq!(
             companion_features_arg(CompanionFeatureFlags {
                 delegation: true,
+                mention_only: false,
                 feedback: true,
                 ask: true,
                 sessions: true,
@@ -21932,6 +21940,13 @@ mod tests {
                 taskboard: true,
             }),
             Some("delegation,feedback,ask,sessions,tasks,automations,taskboard".to_string())
+        );
+        assert_eq!(
+            only(|f| {
+                f.delegation = true;
+                f.mention_only = true;
+            }),
+            Some("delegation,mention_only".to_string())
         );
     }
 
