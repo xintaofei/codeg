@@ -9,6 +9,20 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 pub const WS_EVENT_PROTOCOL: &str = "codeg-events";
 const WS_TOKEN_PROTOCOL_PREFIX: &str = "codeg-token.";
 
+/// Length-aware compare so a wrong token cannot be probed by timing.
+fn token_eq(provided: &str, expected: &str) -> bool {
+    let a = provided.as_bytes();
+    let b = expected.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 fn token_from_ws_protocols(value: &str) -> Option<String> {
     value
         .split(',')
@@ -27,7 +41,10 @@ pub async fn require_token(request: Request, next: Next, token: String) -> Respo
 
     if let Some(auth_header) = request.headers().get("authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
-            if auth_str.strip_prefix("Bearer ").is_some_and(|t| t == token) {
+            if auth_str
+                .strip_prefix("Bearer ")
+                .is_some_and(|t| token_eq(t, &token))
+            {
                 return next.run(request).await;
             }
         }
@@ -35,7 +52,7 @@ pub async fn require_token(request: Request, next: Next, token: String) -> Respo
 
     if let Some(protocol_header) = request.headers().get("sec-websocket-protocol") {
         if let Ok(protocols) = protocol_header.to_str() {
-            if token_from_ws_protocols(protocols).is_some_and(|t| t == token) {
+            if token_from_ws_protocols(protocols).is_some_and(|t| token_eq(&t, &token)) {
                 return next.run(request).await;
             }
         }
@@ -62,5 +79,14 @@ mod tests {
     #[test]
     fn ignores_invalid_ws_protocol_token() {
         assert!(token_from_ws_protocols("codeg-events, codeg-token.not-valid-@@@@").is_none());
+    }
+
+    #[test]
+    fn token_eq_is_length_and_value_sensitive() {
+        assert!(token_eq("secret", "secret"));
+        assert!(!token_eq("secret", "Secret"));
+        assert!(!token_eq("secret", "secre"));
+        assert!(!token_eq("secret", "secrets"));
+        assert!(!token_eq("", "x"));
     }
 }

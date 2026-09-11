@@ -120,6 +120,38 @@ function main() {
     chmodSync(dest, 0o755)
   }
   log(`sidecar staged at ${dest}`)
+  stageTsnet(target, ext, isWindows)
+}
+
+function stageTsnet(target, ext, isWindows) {
+  const goDir = resolve(SRC_TAURI, "..", "codeg-tsnet")
+  if (!existsSync(join(goDir, "main.go"))) {
+    log("codeg-tsnet source missing — skip")
+    return
+  }
+  try {
+    execFileSync("go", ["version"], { encoding: "utf8" })
+  } catch {
+    log("go not on PATH — skip codeg-tsnet sidecar")
+    return
+  }
+  log("building codeg-tsnet (latest pinned tailscale.com)")
+  execFileSync("go", ["mod", "tidy"], { stdio: "inherit", cwd: goDir })
+  const outName = `codeg-tsnet${ext}`
+  execFileSync("go", ["build", "-o", outName, "."], {
+    stdio: "inherit",
+    cwd: goDir,
+    env: { ...process.env, CGO_ENABLED: "0" },
+  })
+  const built = join(goDir, outName)
+  if (!existsSync(built)) {
+    die(`expected ${built} after go build`)
+  }
+  mkdirSync(BINARIES_DIR, { recursive: true })
+  const dest = join(BINARIES_DIR, `codeg-tsnet-${target}${ext}`)
+  copyFileSync(built, dest)
+  if (!isWindows) chmodSync(dest, 0o755)
+  log(`sidecar staged at ${dest}`)
 }
 
 main()

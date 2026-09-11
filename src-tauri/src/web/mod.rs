@@ -1,4 +1,6 @@
 pub mod auth;
+pub mod funnel;
+pub mod tsnet_sidecar;
 pub mod compression;
 pub mod event_bridge;
 pub mod handlers;
@@ -28,7 +30,41 @@ use crate::db::service::app_metadata_service;
 const WEB_SERVICE_TOKEN_KEY: &str = "web_service_token";
 const WEB_SERVICE_PORT_KEY: &str = "web_service_port";
 const WEB_SERVICE_AUTO_START_KEY: &str = "web_service_auto_start";
+const WEB_SERVICE_BIND_MODE_KEY: &str = "web_service_bind_mode";
 pub const DEFAULT_WEB_SERVICE_PORT: u16 = 3080;
+
+/// Where the desktop Web Service listens when the caller does not pass a host.
+/// Loopback is the default so "Start" is not a LAN-wide bind.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebServiceBindMode {
+    #[default]
+    Loopback,
+    Lan,
+}
+
+impl WebServiceBindMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Loopback => "loopback",
+            Self::Lan => "lan",
+        }
+    }
+
+    fn host(self) -> &'static str {
+        match self {
+            Self::Loopback => "127.0.0.1",
+            Self::Lan => "0.0.0.0",
+        }
+    }
+}
+
+fn parse_bind_mode(value: Option<String>) -> WebServiceBindMode {
+    match value.as_deref().map(str::trim) {
+        Some("lan") | Some("0.0.0.0") | Some("*") => WebServiceBindMode::Lan,
+        _ => WebServiceBindMode::Loopback,
+    }
+}
 
 pub struct WebServerState {
     handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -62,7 +98,7 @@ impl WebServerState {
             shutdown_signal: Arc::new(ShutdownSignal::new()),
             port: AtomicU16::new(0),
             token: Mutex::new(String::new()),
-            host: Mutex::new("0.0.0.0".to_string()),
+            host: Mutex::new("127.0.0.1".to_string()),
             running: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -190,6 +226,24 @@ async fn resolve_web_service_port(
     Ok(port)
 }
 
+async fn resolve_web_service_host(
+    conn: &DatabaseConnection,
+    override_host: Option<String>,
+) -> Result<String, AppCommandError> {
+    if let Some(host) = override_host
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(host);
+    }
+    let mode = parse_bind_mode(
+        app_metadata_service::get_value(conn, WEB_SERVICE_BIND_MODE_KEY)
+            .await
+            .map_err(AppCommandError::from)?,
+    );
+    Ok(mode.host().to_string())
+}
+
 /// Persist token and port atomically so a partial failure cannot leave
 /// `app_metadata` in a mixed old/new state.
 async fn persist_web_service_config(
@@ -234,6 +288,8 @@ pub struct WebServiceConfig {
     pub token: Option<String>,
     pub port: Option<u16>,
     pub auto_start: bool,
+    #[serde(default)]
+    pub bind_mode: WebServiceBindMode,
 }
 
 pub async fn load_web_service_config(
@@ -252,10 +308,16 @@ pub async fn load_web_service_config(
             .await
             .map_err(AppCommandError::from)?,
     );
+    let bind_mode = parse_bind_mode(
+        app_metadata_service::get_value(conn, WEB_SERVICE_BIND_MODE_KEY)
+            .await
+            .map_err(AppCommandError::from)?,
+    );
     Ok(WebServiceConfig {
         token: token.filter(|value| !value.trim().is_empty()),
         port,
         auto_start,
+        bind_mode,
     })
 }
 
@@ -266,6 +328,7 @@ pub async fn update_web_service_config_core(
     let token = config.token.unwrap_or_default().trim().to_string();
     let port = config.port.unwrap_or(DEFAULT_WEB_SERVICE_PORT);
     let auto_start = if config.auto_start { "true" } else { "false" }.to_string();
+    let bind_mode = config.bind_mode.as_str().to_string();
     let port_str = port.to_string();
 
     conn.transaction::<_, (), AppCommandError>(move |txn| {
@@ -277,6 +340,9 @@ pub async fn update_web_service_config_core(
                 .await
                 .map_err(AppCommandError::from)?;
             app_metadata_service::upsert_value(txn, WEB_SERVICE_AUTO_START_KEY, &auto_start)
+                .await
+                .map_err(AppCommandError::from)?;
+            app_metadata_service::upsert_value(txn, WEB_SERVICE_BIND_MODE_KEY, &bind_mode)
                 .await
                 .map_err(AppCommandError::from)?;
             Ok(())
@@ -424,12 +490,11 @@ fn is_advertisable_ipv4(ip: std::net::Ipv4Addr) -> bool {
 /// service. Loopback is always listed first (a safe default target), then
 /// every advertisable local IPv4 (see [`is_advertisable_ipv4`]).
 ///
-/// In the desktop settings flow the listener binds `0.0.0.0`, so each
-/// advertised address is reachable and the UI lets the user pick which one
-/// to display / open — that choice is display-only and never changes what
-/// the service binds to. If interface enumeration is unavailable we fall
-/// back to the default-route UDP probe so the result never regresses below
-/// the previous single-LAN-IP behavior.
+/// Loopback binds advertise only that address. A LAN (`0.0.0.0`) bind
+/// enumerates every local IPv4 so the UI can pick which URL to show.
+/// If interface enumeration is unavailable we fall back to the
+/// default-route UDP probe so the result never regresses below the
+/// previous single-LAN-IP behavior.
 pub fn get_local_addresses(port: u16) -> Vec<String> {
     use std::net::{IpAddr, Ipv4Addr};
 
@@ -536,7 +601,7 @@ pub(crate) async fn do_start_web_server_with_state(
     };
 
     let port = resolve_web_service_port(&app_state.db.conn, port).await?;
-    let host = host.unwrap_or_else(|| "0.0.0.0".to_string());
+    let host = resolve_web_service_host(&app_state.db.conn, host).await?;
     let token = resolve_web_service_token(&app_state.db.conn, token).await?;
 
     // Validate the upload-quota strict-mode posture before any I/O. A
@@ -629,6 +694,8 @@ pub(crate) async fn do_start_web_server_with_state(
 }
 
 pub(crate) async fn do_stop_web_server(state: &WebServerState) {
+    // Drop the public HTTPS URL before the local listener dies.
+    funnel::funnel_disable_best_effort().await;
     let handle_opt = state.handle.lock().unwrap().take();
     let shutdown_tx = state.shutdown_tx.lock().unwrap().take();
 
@@ -661,7 +728,7 @@ pub(crate) async fn do_stop_web_server(state: &WebServerState) {
     // so a concurrent start() cannot race into a bind() while the old socket lingers.
     state.port.store(0, Ordering::Relaxed);
     *state.token.lock().unwrap() = String::new();
-    *state.host.lock().unwrap() = "0.0.0.0".to_string();
+    *state.host.lock().unwrap() = "127.0.0.1".to_string();
     state.running.store(false, Ordering::Release);
     tracing::info!("[WEB] Web server stopped");
 }
@@ -722,7 +789,7 @@ pub(crate) async fn do_start_web_server_tauri(
 
     let db = app.state::<crate::db::AppDatabase>();
     let port_val = resolve_web_service_port(&db.conn, port).await?;
-    let host_val = host.unwrap_or_else(|| "0.0.0.0".to_string());
+    let host_val = resolve_web_service_host(&db.conn, host).await?;
     let token = resolve_web_service_token(&db.conn, token).await?;
 
     // Same strict-mode validation as `do_start_web_server_with_state`:
@@ -962,6 +1029,7 @@ pub async fn probe_web_service_port(
 mod local_address_tests {
     use super::{
         addresses_for_bind, advertise_host, get_local_addresses, is_advertisable_ipv4,
+        parse_bind_mode, WebServiceBindMode,
     };
     use std::net::{Ipv4Addr, SocketAddr};
 
@@ -1063,6 +1131,19 @@ mod local_address_tests {
         // `0.0.0.0` is the bind address, never a reachable target — it must
         // never leak into the list the UI offers for "open".
         assert!(!addrs.iter().any(|a| a.contains("0.0.0.0")));
+
+        assert_eq!(
+            parse_bind_mode(None),
+            WebServiceBindMode::Loopback
+        );
+        assert_eq!(
+            parse_bind_mode(Some("lan".into())),
+            WebServiceBindMode::Lan
+        );
+        assert_eq!(
+            parse_bind_mode(Some("loopback".into())),
+            WebServiceBindMode::Loopback
+        );
 
         // Every entry uses the http scheme, carries the requested port, and
         // is unique (enumeration de-dupes addresses seen on multiple ifaces).

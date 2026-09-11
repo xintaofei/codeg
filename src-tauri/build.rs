@@ -39,34 +39,33 @@ fn ensure_sidecar_placeholder() {
         ""
     };
     let dir = PathBuf::from("binaries");
-    let path = dir.join(format!("codeg-mcp-{triple}{ext}"));
-
-    println!("cargo:rerun-if-changed={}", path.display());
-
-    let needs_placeholder = match fs::metadata(&path) {
-        Ok(meta) => meta.len() == 0,
-        Err(_) => true,
-    };
-
-    if needs_placeholder {
-        if let Err(e) = fs::create_dir_all(&dir) {
-            panic!("failed to create {}: {e}", dir.display());
-        }
-        if let Err(e) = fs::write(&path, b"") {
-            panic!(
-                "failed to write sidecar placeholder {}: {e}",
+    for name in ["codeg-mcp", "codeg-tsnet"] {
+        let path = dir.join(format!("{name}-{triple}{ext}"));
+        println!("cargo:rerun-if-changed={}", path.display());
+        let needs_placeholder = match fs::metadata(&path) {
+            Ok(meta) => meta.len() == 0,
+            Err(_) => true,
+        };
+        if needs_placeholder {
+            if let Err(e) = fs::create_dir_all(&dir) {
+                panic!("failed to create {}: {e}", dir.display());
+            }
+            if let Err(e) = fs::write(&path, b"") {
+                panic!(
+                    "failed to write sidecar placeholder {}: {e}",
+                    path.display()
+                );
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o755));
+            }
+            println!(
+                "cargo:warning={name} sidecar missing at {}; wrote 0-byte placeholder. \
+                 Run `pnpm tauri:prepare-sidecars` before `tauri build` to ship a working binary.",
                 path.display()
             );
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o755));
-        }
-        println!(
-            "cargo:warning=codeg-mcp sidecar missing at {}; wrote 0-byte placeholder. \
-             Run `pnpm tauri:prepare-sidecars` before `tauri build` to ship a working binary.",
-            path.display()
-        );
     }
 }
