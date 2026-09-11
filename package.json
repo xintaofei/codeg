@@ -14,6 +14,10 @@
     "test:coverage": "vitest run --coverage",
     "server:build": "cd src-tauri && cargo build --release --bin codeg-server --no-default-features",
     "server:dev": "cd src-tauri && cargo run --bin codeg-server --no-default-features",
+    "browser:agent": "node scripts/build-browser-agent.mjs",
+    "browser:agent:check": "node scripts/build-browser-agent.mjs --check",
+    "browser:agent:types": "tsc -p browser-agent/tsconfig.json",
+    "browser:agent:probe": "node browser-agent/probe.mjs",
     "tauri:prepare-sidecars": "node src-tauri/scripts/prepare-sidecars.mjs",
     "tauri:before-dev": "pnpm tauri:prepare-sidecars && pnpm dev",
     "tauri:before-build": "pnpm build && pnpm tauri:prepare-sidecars",
@@ -101,6 +105,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "@vitest/coverage-v8": "^2.1.8",
     "@vitest/ui": "^2.1.8",
+    "esbuild": "^0.28.2",
     "eslint": "^9.39.2",
     "eslint-config-next": "^16.1.6",
     "eslint-config-prettier": "^10.1.8",
@@ -113,6 +118,7 @@
     "typescript": "~5.8.3",
     "unified": "^11.0.5",
     "unist-util-visit": "^5.0.0",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "yaml": "^2.9.0"
   }
 }
