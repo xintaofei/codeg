@@ -30,6 +30,12 @@ tauri-runtime = [
     "dep:tauri-plugin-single-instance",
     "dep:tauri-plugin-autostart",
     "dep:keyring",
+    # `src/browser` is compiled under this feature and reaches WebKitGTK
+    # directly on Linux. These three exist only on Linux targets; naming them
+    # here is a no-op everywhere else.
+    "dep:webkit2gtk",
+    "dep:gtk",
+    "dep:javascriptcore-rs",
 ]
 # Exposes test scaffolding (`AppState::new_for_test`, `EventEmitter::test_web_only`,
 # `ConnectionManager::insert_test_connection`, parser `with_base_dir`, the
@@ -201,14 +207,18 @@ windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Built-in browser Linux shim (isolated world, world-scoped eval, snapshots,
-# find, history, typed load failures, the sign-in identity, the subframe
-# fence). Pinned to the exact versions and feature set wry 0.55 uses: these
-# types are the ones tauri's `with_webview` hands out, and a second copy of the
-# crate — or the same crate with a wider feature set, which would link symbols
-# the distribution's WebKitGTK may not have — would not line up with them.
-webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
-gtk = "0.18"
-javascriptcore-rs = "=1.1.2"
+# find, history, typed load failures, the subframe fence). Pinned to the exact
+# versions wry 0.55 resolves: these types are the ones tauri's `with_webview`
+# hands out, and a second copy of either crate would make them distinct types.
+#
+# Optional, and carried by `tauri-runtime` alone, because `src/browser` is
+# gated on that feature: a plain target dependency is unconditional on
+# features, so `--no-default-features` would still run the gtk-sys / gdk-sys /
+# atk-sys pkg-config probes while compiling none of the code that needs them.
+# Neither the codeg-server CI cell nor the Docker backend stage installs GTK.
+webkit2gtk = { version = "=2.0.2", features = ["v2_38"], optional = true }
+gtk = { version = "0.18", optional = true }
+javascriptcore-rs = { version = "=1.1.2", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
