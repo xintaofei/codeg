@@ -157,6 +157,7 @@ Step away from your desk, not your work. The native iOS and Android clients conn
 - **[To-dos](https://docs.codeg.app/guide/tasks)** — write down what needs doing and agents work through the queue, each task in its own worktree, landing on your branch only after you've reviewed it
 - **[Custom Agents](https://docs.codeg.app/guide/custom-agents)** — register any other ACP-compatible agent from the public registry or its distribution JSON; Codeg installs it, records its history, and treats it like a built-in
 - **[The Workspace](https://docs.codeg.app/guide/workspace)** — the full engineering loop next to the agent: file tree, editor and diff, git changes, commit, an embedded terminal, and [several folders linked into one workspace](https://docs.codeg.app/guide/workspace#work-across-several-folders)
+- **[URL scheme](docs/url-scheme.md)** — `codeg://session/<id>` opens a conversation from another app (desktop)
 - **[Split View](https://docs.codeg.app/guide/workspace#split-the-conversation-view-into-groups)** — split the conversation area into as many tab groups as you like, drag tabs and dividers between them, and get the layout back — drafts included — on restart
 - **[Git & Worktrees](https://docs.codeg.app/guide/git)** — review and commit changes, manage Git remote accounts, and run work in parallel with built-in `git worktree` flows
 - **[Token Usage](https://docs.codeg.app/guide/token-usage)** — a full report behind the status-bar counter: trends and cache hit rate, an activity heatmap, and breakdowns by folder, agent, model, and session

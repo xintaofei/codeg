@@ -1198,6 +1198,54 @@ pub async fn get_by_id(
     Ok(summary)
 }
 
+/// Resolve a `codeg://session/<ref>` path to a live (non-deleted) conversation.
+///
+/// `session_ref` is either Codeg's numeric primary key (what MCP and the
+/// `codeg://session/<id>` markdown mentions use) or the agent's own session
+/// id stored as `external_id` (a Grok UUID, a Codex thread id, …). Several
+/// rows can share an `external_id` across agents; the most recently updated
+/// live row wins. Missing rows return `Ok(None)` — a stale deep link is not
+/// an error.
+pub async fn find_live_by_session_ref(
+    conn: &DatabaseConnection,
+    session_ref: &str,
+) -> Result<Option<DbConversationSummary>, DbError> {
+    let session_ref = session_ref.trim();
+    if session_ref.is_empty() {
+        return Ok(None);
+    }
+    if let Ok(id) = session_ref.parse::<i32>() {
+        if id > 0 {
+            let conv = conversation::Entity::find_by_id(id)
+                .filter(conversation::Column::DeletedAt.is_null())
+                .one(conn)
+                .await?;
+            return match conv {
+                Some(conv) => {
+                    let mut summary = conv_to_summary(conv);
+                    fill_child_counts(conn, std::slice::from_mut(&mut summary)).await?;
+                    Ok(Some(summary))
+                }
+                None => Ok(None),
+            };
+        }
+    }
+    let conv = conversation::Entity::find()
+        .filter(conversation::Column::ExternalId.eq(session_ref))
+        .filter(conversation::Column::DeletedAt.is_null())
+        .order_by_desc(conversation::Column::UpdatedAt)
+        .one(conn)
+        .await?;
+    match conv {
+        Some(conv) => {
+            let mut summary = conv_to_summary(conv);
+            fill_child_counts(conn, std::slice::from_mut(&mut summary)).await?;
+            Ok(Some(summary))
+        }
+        None => Ok(None),
+    }
+}
+
 /// Look up a child conversation by its `delegation_call_id` (the broker's
 /// `task_id`). Returns `Ok(None)` when no row matches — used by the broker's
 /// `ChildStatusLookup` DB fallback to recover a delegation task's terminal

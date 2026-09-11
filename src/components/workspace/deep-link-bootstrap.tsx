@@ -8,7 +8,10 @@ import type { AgentType } from "@/lib/types"
 
 /**
  * Handles `/workspace?folderId=X&conversationId=Y&agent=Z` URLs.
- * Runs once after both folders and tabs have hydrated.
+ * Runs once after both folders and tabs have hydrated. The desktop app
+ * also registers the `codeg://` OS scheme; a cold-start `codeg://session/<id>`
+ * is resolved in Rust and lands here as this query string so the tab opens
+ * after hydration instead of racing the webview subscription.
  */
 export function DeepLinkBootstrap() {
   const foldersHydrated = useAppWorkspaceStore((s) => s.foldersHydrated)
