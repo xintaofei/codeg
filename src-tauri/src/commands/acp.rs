@@ -10842,6 +10842,42 @@ pub async fn acp_clear_binary_cache(agent_type: AgentType) -> Result<(), AcpErro
     Ok(())
 }
 
+/// What an uninstall actually achieved, so the completion line can say it
+/// instead of always claiming success.
+///
+/// `removed_managed` is whether codeg deleted a binary tree it owns.
+/// `remaining_version` is what a re-probe found AFTER that removal: it is
+/// `Some` exactly when an installation codeg does not manage survived and is
+/// still what a connection would launch. The two are independent: an agent
+/// installed only outside codeg reports `false` / `Some(..)`, which is the
+/// case that used to be reported as "uninstalled successfully" while nothing
+/// had been removed and the agent still worked (#631).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentUninstallOutcome {
+    pub removed_managed: bool,
+    pub remaining_version: Option<String>,
+}
+
+/// The install-stream completion line for an uninstall. Pure so the four
+/// outcomes can be pinned by a test; every branch has to survive a re-probe
+/// that can still find the agent.
+fn uninstall_completion_message(agent_name: &str, outcome: &AgentUninstallOutcome) -> String {
+    match (outcome.removed_managed, outcome.remaining_version.as_deref()) {
+        (true, None) => format!("{agent_name} uninstalled successfully"),
+        (true, Some(version)) => format!(
+            "Removed the copy of {agent_name} codeg manages. Version {version} is still \
+             installed outside codeg and is what a connection will launch; remove it with \
+             whatever installed it."
+        ),
+        (false, Some(version)) => format!(
+            "Nothing to uninstall: codeg never installed {agent_name}. Version {version} \
+             comes from outside codeg and is what a connection will launch; remove it with \
+             whatever installed it."
+        ),
+        (false, None) => format!("Nothing to uninstall: codeg has no copy of {agent_name}"),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn acp_update_agent_preferences_core(
     agent_type: AgentType,
@@ -12436,34 +12472,44 @@ pub(crate) async fn acp_uninstall_agent_core(
         format!("Uninstalling {}...", meta.name),
     );
 
-    let result: Result<(), AcpError> = async {
-        match meta.distribution {
+    let result: Result<AgentUninstallOutcome, AcpError> = async {
+        let removed_managed = match meta.distribution {
             registry::AgentDistribution::Binary { .. } => {
-                binary_cache::clear_agent_cache(agent_type)?;
+                binary_cache::clear_agent_cache(agent_type)?
             }
             registry::AgentDistribution::Npx { package, .. } => {
                 uninstall_npm_global_package(package).await?;
+                true
             }
             registry::AgentDistribution::Uvx { .. } => {
                 binary_cache::clear_uvx_agent_prepared(agent_type)?;
+                true
             }
-        }
+        };
 
         agent_setting_service::set_installed_version(&db.conn, agent_type, None)
             .await
             .map_err(|e| AcpError::protocol(e.to_string()))?;
         emit_acp_agents_updated(emitter, "agent_uninstalled", Some(agent_type));
-        Ok(())
+        // Re-probe AFTER the removal, exactly like the status / list paths do.
+        // A version still answering here is an install codeg does not manage
+        // and did not touch, and it is what the next connection will launch,
+        // so the completion line has to say so rather than report a clean
+        // uninstall the user never got (#631).
+        Ok(AgentUninstallOutcome {
+            removed_managed,
+            remaining_version: detect_local_version(agent_type).await,
+        })
     }
     .await;
 
     match &result {
-        Ok(()) => {
+        Ok(outcome) => {
             emit_agent_install_event(
                 emitter,
                 &task_id,
                 AgentInstallEventKind::Completed,
-                format!("{} uninstalled successfully", meta.name),
+                uninstall_completion_message(meta.name, outcome),
             );
         }
         Err(e) => {
@@ -12475,7 +12521,7 @@ pub(crate) async fn acp_uninstall_agent_core(
             );
         }
     }
-    result
+    result.map(|_| ())
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -16172,6 +16218,55 @@ wire_api = "chat"
     #[test]
     fn build_npm_install_spec_rejects_invalid_override() {
         assert!(build_npm_install_spec("cline@3.0.9", Some("latest")).is_err());
+    }
+
+    /// #631: an uninstall used to report "uninstalled successfully" whatever
+    /// happened, including for an agent codeg had never installed and did not
+    /// touch: the reporter's OpenCode came from `~/.local/bin` and stayed
+    /// there, fully launchable, behind a success toast. Only the one outcome
+    /// that really is a clean uninstall may claim it; the other three have to
+    /// name the version that survived so the user knows what still runs.
+    #[test]
+    fn uninstall_completion_message_reports_what_actually_happened() {
+        let clean = AgentUninstallOutcome {
+            removed_managed: true,
+            remaining_version: None,
+        };
+        assert_eq!(
+            uninstall_completion_message("OpenCode", &clean),
+            "OpenCode uninstalled successfully"
+        );
+
+        for outcome in [
+            AgentUninstallOutcome {
+                removed_managed: true,
+                remaining_version: Some("1.18.25".into()),
+            },
+            AgentUninstallOutcome {
+                removed_managed: false,
+                remaining_version: Some("1.18.25".into()),
+            },
+        ] {
+            let message = uninstall_completion_message("OpenCode", &outcome);
+            assert!(
+                message.contains("1.18.25"),
+                "a surviving install must be named: {message}"
+            );
+            assert!(
+                !message.contains("uninstalled successfully"),
+                "an agent that is still installed must not read as uninstalled: {message}"
+            );
+        }
+
+        let nothing = AgentUninstallOutcome {
+            removed_managed: false,
+            remaining_version: None,
+        };
+        let message = uninstall_completion_message("OpenCode", &nothing);
+        assert!(
+            !message.contains("uninstalled successfully"),
+            "removing nothing must not read as an uninstall: {message}"
+        );
     }
 
     // The pinned default is byte-identical to what `build_npm_install_spec`

@@ -1364,6 +1364,7 @@
       "uninstallCompleted": "{name} 제거 완료",
       "uninstallFailed": "{name} 제거 실패",
       "localVersionRemoved": "로컬 버전이 제거되었습니다",
+      "unmanagedInstallRemains": "버전 {version}이(가) codeg 외부에 그대로 설치되어 있어 연결 시 계속 사용됩니다",
       "saveAgentOrderFailed": "Agent 순서 저장 실패",
       "saveAgentSwitchFailed": "Agent 스위치 저장 실패",
       "saveEnvFailed": "환경 변수 저장 실패",

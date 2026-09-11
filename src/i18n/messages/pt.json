@@ -1364,6 +1364,7 @@
       "uninstallCompleted": "Desinstalação de {name} concluída",
       "uninstallFailed": "Desinstalação de {name} falhou",
       "localVersionRemoved": "Versão local removida",
+      "unmanagedInstallRemains": "A versão {version} continua instalada fora do codeg e continuará sendo usada",
       "saveAgentOrderFailed": "Falha ao salvar a ordem dos Agents",
       "saveAgentSwitchFailed": "Falha ao salvar o switch dos Agents",
       "saveEnvFailed": "Falha ao salvar variáveis de ambiente",

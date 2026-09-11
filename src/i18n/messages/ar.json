@@ -1364,6 +1364,7 @@
       "uninstallCompleted": "اكتملت إزالة تثبيت {name}",
       "uninstallFailed": "فشلت إزالة تثبيت {name}",
       "localVersionRemoved": "تمت إزالة الإصدار المحلي",
+      "unmanagedInstallRemains": "الإصدار {version} لا يزال مثبتًا خارج codeg وسيستمر استخدامه",
       "saveAgentOrderFailed": "فشل حفظ ترتيب Agent",
       "saveAgentSwitchFailed": "فشل حفظ مفتاح Agent",
       "saveEnvFailed": "فشل حفظ متغيرات البيئة",

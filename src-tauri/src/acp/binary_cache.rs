@@ -214,15 +214,24 @@ pub(crate) fn binary_dir(agent_id: &str, version: &str) -> Result<PathBuf, AcpEr
         .join(registry::current_platform()))
 }
 
-pub fn clear_agent_cache(agent_type: AgentType) -> Result<(), AcpError> {
+/// Remove the managed binary tree for `agent_type`.
+///
+/// `Ok(true)` means codeg actually removed something it owned; `Ok(false)`
+/// means there was nothing of codeg's to remove. That distinction is the whole
+/// point of the return value: an agent whose binary came from somewhere codeg
+/// does not manage (PATH, `~/.local/bin`, a package manager) leaves no managed
+/// tree, so clearing the cache removes NOTHING and the agent stays installed
+/// and launchable. Reporting that as a successful uninstall is what issue #631
+/// is about, so the caller needs to be able to tell the two apart.
+pub fn clear_agent_cache(agent_type: AgentType) -> Result<bool, AcpError> {
     let agent_id = agent_cache_key(agent_type);
     let dir = cache_dir()?.join(&agent_id);
     if !dir.exists() {
-        return Ok(());
+        return Ok(false);
     }
 
     if std::fs::remove_dir_all(&dir).is_ok() {
-        return Ok(());
+        return Ok(true);
     }
 
     // Windows: a running `<cmd>.exe` (ours or anti-virus scanning it) keeps the
@@ -242,7 +251,7 @@ pub fn clear_agent_cache(agent_type: AgentType) -> Result<(), AcpError> {
         .map_err(|e| AcpError::DownloadFailed(format!("failed to clear cache: {e}")))?;
 
     let _ = std::fs::remove_dir_all(&aside);
-    Ok(())
+    Ok(true)
 }
 
 /// Best-effort cleanup of trash directories left behind by

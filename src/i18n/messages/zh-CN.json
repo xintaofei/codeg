@@ -1364,6 +1364,7 @@
       "uninstallCompleted": "{name}卸载完成",
       "uninstallFailed": "{name}卸载失败",
       "localVersionRemoved": "本地版本已移除",
+      "unmanagedInstallRemains": "版本 {version} 仍安装在 codeg 之外，连接时仍会使用它",
       "saveAgentOrderFailed": "保存 Agent 排序失败",
       "saveAgentSwitchFailed": "保存 Agent 开关失败",
       "saveEnvFailed": "保存环境变量失败",
