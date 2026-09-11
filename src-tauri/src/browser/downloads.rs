@@ -341,10 +341,14 @@ pub fn reveal(downloads: &BrowserDownloads, id: &str) -> Result<(), String> {
     if !path.exists() {
         return Err(format!("{} is no longer there", path.display()));
     }
-    // The Windows arm builds a command line by hand (`/select,` needs the
-    // path quoted inside one argument), so a quote in the path would end it.
-    // A downloaded name cannot contain one — `safe_file_name` and Windows
-    // itself both refuse — which is what makes the check cheap to keep.
+    // Windows only: that arm builds a command line by hand (`/select,` needs
+    // the path quoted inside one argument), so a quote in the path would end
+    // it. A downloaded name cannot contain one there — `safe_file_name` and
+    // Windows itself both refuse — which is what makes the check cheap to
+    // keep. Elsewhere a quote is an ordinary character in a file name and the
+    // argument is passed structurally, so refusing it would only break the
+    // button for a file that is perfectly fine.
+    #[cfg(target_os = "windows")]
     if path.to_string_lossy().contains('"') {
         return Err("the path contains a quote".to_string());
     }

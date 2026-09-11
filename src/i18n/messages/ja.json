@@ -5911,7 +5911,7 @@
       "navigationBlockedOpenSystem": "システムアプリで開く",
       "errorBlockedHint": "サイトルールがこのアドレスをブロックしています。ルールは「設定 → 内蔵ブラウザ」で管理します。",
       "popupDeniedBlockedHost": "サイトルールによりブロック",
-      "channelDegraded": "このタブではポップアップとページ内ナビゲーションが制限されています",
+      "channelDegraded": "このタブではポップアップがブロックされ、アドレスバーがページに追従しないことがあります",
       "channelDegradedHint": "codeg がページスクリプトを組み込めませんでした。このページが開くポップアップはブロックされ、アドレスバーはページ内のナビゲーションに追従せず、ページ内で検索ショートカットを押しても検索バーは開きません。タブを開き直すと再試行します。",
       "downloadsDenied": "ダウンロードをブロックしました: {host}",
       "downloadsDeniedNoGesture": "複数のファイル、クリックによるものではありません"

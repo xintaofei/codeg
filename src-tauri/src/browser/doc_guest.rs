@@ -105,13 +105,17 @@ pub fn engine_url(url: &Url) -> Url {
 }
 
 /// A URL that addresses this guest's own root. wry maps a custom scheme to
-/// `http(s)://<scheme>.<host>` on Windows, so both spellings count.
+/// `http(s)://<scheme>.<host>` on Windows, so both spellings count — but only
+/// that one host: `codeg-doc.` as a PREFIX would make every registrable
+/// domain someone owns a guest address (`https://codeg-doc.example.com/`),
+/// and a guest is allowed to navigate to its own addresses, which is how a
+/// document with scripts would send what it read to its author.
 pub fn is_document_url(url: &Url) -> bool {
     url.scheme() == DOC_SCHEME
         || (matches!(url.scheme(), "http" | "https")
             && url
                 .host_str()
-                .is_some_and(|host| host.starts_with(&format!("{DOC_SCHEME}."))))
+                .is_some_and(|host| host == format!("{DOC_SCHEME}.{DOC_HOST}")))
 }
 
 /// What a guest may navigate to.
@@ -1188,6 +1192,18 @@ mod tests {
         assert!(is_document_url(&doc));
         assert!(is_document_url(&Url::parse("https://codeg-doc.doc/x").unwrap()));
         assert!(!is_document_url(&Url::parse("https://example.com/").unwrap()));
+        // Not every host that merely begins with the mapped prefix: that one
+        // is registrable by anyone, and a guest may navigate to its own.
+        assert!(!is_document_url(
+            &Url::parse("https://codeg-doc.example.com/steal").unwrap()
+        ));
+        assert_eq!(
+            guest_navigation(
+                &Url::parse("https://codeg-doc.example.com/steal").unwrap(),
+                true
+            ),
+            GuestNavigation::External
+        );
         // The spelling the engine is given: rewritten where the engine has no
         // custom schemes, and still a document URL either way.
         let engine = engine_url(&doc);

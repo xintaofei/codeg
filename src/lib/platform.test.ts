@@ -116,6 +116,15 @@ describe("revealItemInDir", () => {
     expect(mocks.tauriOpenPath).toHaveBeenCalledWith("\\\\Mac\\Home\\Downloads")
   })
 
+  // A POSIX name may contain a backslash; the folder is the one before the
+  // last slash, not the one before the backslash.
+  it("does not cut a unix path at a backslash in the file name", async () => {
+    mocks.isDesktop.mockReturnValue(true)
+    mocks.tauriReveal.mockRejectedValue(new Error("nope"))
+    await revealItemInDir("/Users/me/Downloads/report\\2026.pdf")
+    expect(mocks.tauriOpenPath).toHaveBeenCalledWith("/Users/me/Downloads")
+  })
+
   it("rethrows when there is no folder to fall back to", async () => {
     mocks.isDesktop.mockReturnValue(true)
     mocks.tauriReveal.mockRejectedValue(new Error("nope"))

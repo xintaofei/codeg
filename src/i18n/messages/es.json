@@ -5911,7 +5911,7 @@
       "navigationBlockedOpenSystem": "Abrir con la app del sistema",
       "errorBlockedHint": "Una regla de sitio bloquea esta dirección. Las reglas se gestionan en Ajustes → Navegador integrado.",
       "popupDeniedBlockedHost": "bloqueada por una regla de sitio",
-      "channelDegraded": "Las ventanas emergentes y la navegación dentro de la página están limitadas en esta pestaña",
+      "channelDegraded": "En esta pestaña se bloquean las ventanas emergentes y la barra de direcciones puede quedarse atrás",
       "channelDegradedHint": "codeg no pudo instalar su script de página. Las ventanas emergentes que abra esta página se bloquean, la barra de direcciones no seguirá la navegación dentro de la página y el atajo de búsqueda pulsado en la página no abrirá la barra de búsqueda. Volver a abrir la pestaña lo intenta de nuevo.",
       "downloadsDenied": "Descargas bloqueadas: {host}",
       "downloadsDeniedNoGesture": "varios archivos, no iniciados por un clic"

@@ -125,11 +125,17 @@ export async function openPath(path: string): Promise<void> {
 }
 
 /** The directory a native path lives in, or null when what is left is a root
- *  rather than a folder — `\`, `\\server` with no share, `C:`. Both
- *  separators, because the paths come from whichever host owns the
- *  workspace. */
+ *  rather than a folder — `\`, `\\server` with no share, `C:`.
+ *
+ *  A backslash counts as a separator only where nothing else does: the paths
+ *  come from whichever host owns the workspace, so a Windows one has to be
+ *  understood on macOS — but a POSIX file may legitimately be named
+ *  `report\2026.pdf`, and cutting there would name a folder that is not the
+ *  one the file is in. */
 function containingDirectory(path: string): string | null {
-  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"))
+  const cut = path.includes("/")
+    ? path.lastIndexOf("/")
+    : path.lastIndexOf("\\")
   if (cut < 0) return null
   const dir = path.slice(0, cut)
   return /^([\\/]{0,2}|[\\/]{2}[^\\/]+|[A-Za-z]:)$/.test(dir) ? null : dir

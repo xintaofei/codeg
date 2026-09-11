@@ -5911,7 +5911,7 @@
       "navigationBlockedOpenSystem": "用系统应用打开",
       "errorBlockedHint": "站点规则阻止了这个地址。规则在「设置 → 内置浏览器」中管理。",
       "popupDeniedBlockedHost": "被站点规则阻止",
-      "channelDegraded": "此标签页的弹窗与页内导航功能受限",
+      "channelDegraded": "此标签页的弹窗会被拦截，地址栏可能跟不上页面",
       "channelDegradedHint": "codeg 未能装入页面脚本。此页面打开的弹窗会被拦截，地址栏不会跟随页内导航，在页面中按查找快捷键也不会打开查找栏。重新打开该标签页会再试一次。",
       "downloadsDenied": "已拦截下载：{host}",
       "downloadsDeniedNoGesture": "多个文件，不是由点击触发"
