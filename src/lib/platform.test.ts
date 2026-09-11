@@ -125,6 +125,14 @@ describe("revealItemInDir", () => {
     expect(mocks.tauriOpenPath).toHaveBeenCalledWith("/Users/me/Downloads")
   })
 
+  // Windows takes either separator, and a path may mix them.
+  it("cuts a windows path at whichever separator comes last", async () => {
+    mocks.isDesktop.mockReturnValue(true)
+    mocks.tauriReveal.mockRejectedValue(new Error("nope"))
+    await revealItemInDir("C:\\Users/me\\Downloads\\file.zip")
+    expect(mocks.tauriOpenPath).toHaveBeenCalledWith("C:\\Users/me\\Downloads")
+  })
+
   it("rethrows when there is no folder to fall back to", async () => {
     mocks.isDesktop.mockReturnValue(true)
     mocks.tauriReveal.mockRejectedValue(new Error("nope"))
