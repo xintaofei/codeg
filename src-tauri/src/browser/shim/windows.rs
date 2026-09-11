@@ -579,17 +579,19 @@ fn recover_world(webview: &ICoreWebView2, key: usize) {
                     .ok()?["executionContextId"]
                     .as_i64()
             });
-            let Some(context) = context else {
-                // Nothing was built — most likely the document this was for is
-                // gone. Whoever was turned away meanwhile gets their look now.
-                if turned_away {
-                    ensure_world_for_current_document(&webview, key);
-                }
-                return;
-            };
-            tracing::debug!("[browser] page channel recovered in context {context}");
-            let params = json!({ "expression": helper, "contextId": context }).to_string();
-            let _ = call_async(&webview, "Runtime.evaluate", &params, |_| {});
+            if let Some(context) = context {
+                tracing::debug!("[browser] page channel recovered in context {context}");
+                let params = json!({ "expression": helper, "contextId": context }).to_string();
+                let _ = call_async(&webview, "Runtime.evaluate", &params, |_| {});
+            }
+            // Whoever was turned away while this was in flight gets their look
+            // now — and gets it whether or not a world came back, because a
+            // world that came back is one built for the document that was on
+            // screen when the engine ran the command, which is not necessarily
+            // the one on screen now.
+            if turned_away {
+                ensure_world(&webview, key, true);
+            }
         },
     );
     if issued.is_err() {
@@ -607,8 +609,19 @@ fn recover_world(webview: &ICoreWebView2, key: usize) {
 /// that has never navigated is the other case and must be left alone: it is
 /// still on the empty document it was created with, its first navigation has
 /// not started, and the injection will reach that one and everything after it.
-fn needs_world(state: &SurfaceState, showing: Option<&str>) -> bool {
-    if !state.binding_ready.get() || main_world_context(state).is_some() {
+fn needs_world(state: &SurfaceState, showing: Option<&str>, again: bool) -> bool {
+    if !state.binding_ready.get() {
+        return false;
+    }
+    // `again` is the look that was turned away while an attempt was in flight.
+    // That attempt may have built its world in a document that has since been
+    // replaced, and the replaced one's context can still be in the map when
+    // this runs: the engine answers commands on one channel and reports a
+    // context's death on another, and they need not arrive in that order. So
+    // this one look does not trust "the main frame already has a world" —
+    // building a second time is a world of the same NAME, which is the same
+    // world, and a helper that has already run is one the guard turns away.
+    if !again && main_world_context(state).is_some() {
         return false;
     }
     // An adopted popup has a document whatever it says its address is: the
@@ -621,6 +634,10 @@ fn needs_world(state: &SurfaceState, showing: Option<&str>) -> bool {
 /// Build the world for the document on screen if it has none. Cheap to ask and
 /// safe to ask twice, so it is asked wherever the answer can have changed.
 fn ensure_world_for_current_document(webview: &ICoreWebView2, key: usize) {
+    ensure_world(webview, key, false);
+}
+
+fn ensure_world(webview: &ICoreWebView2, key: usize, again: bool) {
     let Some(state) = state(key) else {
         return;
     };
@@ -632,7 +649,7 @@ fn ensure_world_for_current_document(webview: &ICoreWebView2, key: usize) {
     }
     // SAFETY: main thread, live webview; WebView2 hands back an owned string.
     let showing = pwstr_out(|out| unsafe { webview.Source(out) });
-    if !needs_world(&state, showing.as_deref()) {
+    if !needs_world(&state, showing.as_deref(), again) {
         return;
     }
     recover_world(webview, key);
@@ -1536,6 +1553,11 @@ mod tests {
     /// binding exists — a world built then would have no send primitive in it,
     /// the helper would give up, and a world that exists is one nothing builds
     /// again.
+    /// The ordinary look, which trusts a world that is already there.
+    fn needs_world_now(state: &SurfaceState, showing: Option<&str>) -> bool {
+        needs_world(state, showing, false)
+    }
+
     #[test]
     fn only_a_document_the_injection_could_not_reach_is_recovered() {
         let surface = Surface::new(0x5f3);
@@ -1547,31 +1569,38 @@ mod tests {
         // even a document that plainly needs it. The end of the install asks
         // again, by which time the binding is there.
         assert!(!state.binding_ready.get());
-        assert!(!needs_world(&state, Some("https://example.com/popup")));
+        assert!(!needs_world_now(&state, Some("https://example.com/popup")));
         state.adopted.set(true);
-        assert!(!needs_world(&state, Some("about:blank")));
+        assert!(!needs_world_now(&state, Some("about:blank")));
         state.adopted.set(false);
 
         state.binding_ready.set(true);
         // A tab straight after `install_world`: the caller has not navigated it
         // yet, and the engine says what a fresh webview says.
-        assert!(!needs_world(&state, Some("about:blank")));
-        assert!(!needs_world(&state, Some("")));
-        assert!(!needs_world(&state, None));
+        assert!(!needs_world_now(&state, Some("about:blank")));
+        assert!(!needs_world_now(&state, Some("")));
+        assert!(!needs_world_now(&state, None));
         // A document the engine had already put there.
-        assert!(needs_world(&state, Some("https://example.com/popup")));
+        assert!(needs_world_now(&state, Some("https://example.com/popup")));
         // One it committed while the install was pumping the message loop.
         state.committed.set(true);
-        assert!(needs_world(&state, Some("about:blank")));
+        assert!(needs_world_now(&state, Some("about:blank")));
         state.committed.set(false);
         // An adopted popup has one whatever its address says — `window.open()`
         // with no address commits `about:blank`, which nothing else here can
         // tell from a webview that has never navigated.
         state.adopted.set(true);
-        assert!(needs_world(&state, Some("about:blank")));
+        assert!(needs_world_now(&state, Some("about:blank")));
         // ...but not once the main frame has a world of its own.
         surface.world(4, "F-main");
-        assert!(!needs_world(&state, Some("https://example.com/popup")));
+        assert!(!needs_world_now(&state, Some("https://example.com/popup")));
+        // Except for the look that was turned away while an attempt was in
+        // flight: the world it can see may belong to a document that is gone,
+        // and the engine has not necessarily said so yet.
+        assert!(needs_world(&state, Some("https://example.com/popup"), true));
+        // That look is still not a way around the binding.
+        state.binding_ready.set(false);
+        assert!(!needs_world(&state, Some("https://example.com/popup"), true));
     }
 
     /// The engine's statuses, by kind — and the one that is NOT a page failure.
