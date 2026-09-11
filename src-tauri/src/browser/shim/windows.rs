@@ -278,15 +278,22 @@ pub fn install_world(
     {
         *state.main_frame.borrow_mut() = Some(id);
     }
-    call_and_wait(
-        &webview2,
-        "Page.addScriptToEvaluateOnNewDocument",
-        &json!({ "source": helper, "worldName": WORLD_NAME }).to_string(),
-    )?;
+    // The binding goes in first. It is registered by world NAME and needs no
+    // world to exist yet, while the injection below starts building that world
+    // for every document that commits from here on — including one that commits
+    // inside the message pump this very call waits on, which an adopted popup's
+    // first document is already close enough to do. The other order leaves that
+    // document with the helper in a world that has nothing to send through, and
+    // a world that exists is one `recover_world` will not build again.
     call_and_wait(
         &webview2,
         "Runtime.addBinding",
         &json!({ "name": BINDING_NAME, "executionContextName": WORLD_NAME }).to_string(),
+    )?;
+    call_and_wait(
+        &webview2,
+        "Page.addScriptToEvaluateOnNewDocument",
+        &json!({ "source": helper, "worldName": WORLD_NAME }).to_string(),
     )?;
     state.channel_installed.set(true);
     Ok(true)
