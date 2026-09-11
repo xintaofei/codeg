@@ -388,6 +388,7 @@ export function MessageInput({
     containerRef,
     disabled,
     promptCapabilities,
+    agentType,
     attachmentTabId,
     defaultPath,
     logLabel: "MessageInput",
