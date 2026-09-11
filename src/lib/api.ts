@@ -377,6 +377,77 @@ export async function acpFork(
   }
 }
 
+export type HandoffPath = "native" | "summary"
+
+/** What the handoff dialog shows before the user confirms (`acp_handoff_plan`). */
+export interface HandoffPlan {
+  sourceAgentType: AgentType
+  targetAgentType: AgentType
+  path: HandoffPath
+  /** The same-family path was demoted to a summary: `"transcript_missing"`. */
+  nativeReason?: string
+  /** Stable code when the handoff cannot run: `same_agent`, `no_session`,
+   *  `not_installed`, `disabled`. */
+  blocked?: string
+  blockedMessage?: string
+  turnCount: number
+  briefingChars: number
+  briefingTruncated: boolean
+  verbatimTurns: number
+}
+
+export interface HandoffResult {
+  conversationId: number
+  folderId: number
+  fromAgentType: AgentType
+  toAgentType: AgentType
+  /** The session the conversation is bound to now. */
+  externalId: string
+  path: HandoffPath
+  connectionId: string
+  briefingTruncated: boolean
+}
+
+export async function acpHandoffPlan(
+  conversationId: number,
+  targetAgentType: AgentType
+): Promise<HandoffPlan> {
+  return getTransport().call("acp_handoff_plan", {
+    conversationId,
+    targetAgentType,
+  })
+}
+
+/**
+ * Hand a conversation to another agent in place. The backend stops the current
+ * agent, moves the transcript (same family) or seeds a briefing (otherwise),
+ * spawns the target, verifies it took the session, and only then moves the
+ * conversation row; a failure leaves the row where it was. A turn still in
+ * flight is rejected the same way a fork is (`TurnBusyError`).
+ */
+export async function acpHandoff(
+  conversationId: number,
+  targetAgentType: AgentType,
+  note: string | null,
+  // The TARGET agent's own saved selector preferences, so the handoff never
+  // carries the source agent's model over.
+  preferredModeId?: string | null,
+  preferredConfigValues?: Record<string, string> | null
+): Promise<HandoffResult> {
+  try {
+    return await getTransport().call("acp_handoff", {
+      conversationId,
+      targetAgentType,
+      note: note ?? null,
+      preferredModeId: preferredModeId ?? null,
+      preferredConfigValues: preferredConfigValues ?? null,
+    })
+  } catch (e) {
+    if (isTurnInProgressRejection(e)) throw new TurnBusyError()
+    throw e
+  }
+}
+
 /**
  * Stop one AIR async task (`_session/async_task/stop`).
  *

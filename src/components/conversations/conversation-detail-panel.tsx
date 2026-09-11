@@ -51,6 +51,8 @@ import { SessionConfigStaleBanner } from "@/components/chat/session-config-stale
 import { PiProjectTrustBanner } from "@/components/chat/pi-project-trust-banner"
 import { FeedbackNotesDisplay } from "@/components/chat/feedback-notes-display"
 import { FeedbackDialog } from "@/components/chat/feedback-dialog"
+import { AgentHandoffDialog } from "@/components/conversations/agent-handoff-dialog"
+import { isHandoffBriefingText } from "@/lib/agent-handoff"
 import { AgentDiagnosticsDialog } from "@/components/settings/agent-diagnostics-dialog"
 import { useFeedbackEnabled } from "@/hooks/use-feedback-enabled"
 import { useSessionFeedback } from "@/hooks/use-session-feedback"
@@ -203,6 +205,13 @@ function buildOptimisticUserTurnFromDraft(
   }
 }
 
+/** True for the backend-seeded briefing that opens a summary handoff: its
+ *  first text block starts with the handoff marker. Never a real user prompt. */
+function isSeededBriefing(blocks: UserMessageBlock[]): boolean {
+  const first = blocks.find((b) => b.type === "text")
+  return first?.type === "text" && isHandoffBriefingText(first.text)
+}
+
 /** Build a user `MessageTurn` from a broadcast `user_message` (event or
  *  snapshot `pending_user_message`). Used by cross-client VIEWERS to render the
  *  sender's prompt. The turn `id` is the broadcast `message_id` so the runtime
@@ -322,6 +331,7 @@ const ConversationTabView = memo(function ConversationTabView({
     getSavedModeId(agentType)
   )
   const [sendSignal, setSendSignal] = useState(0)
+  const [handoffOpen, setHandoffOpen] = useState(false)
   const [agentsLoaded, setAgentsLoaded] = useState(false)
   const [usableAgentCount, setUsableAgentCount] = useState(0)
   const [composerDiagnosticsOpen, setComposerDiagnosticsOpen] = useState(false)
@@ -867,6 +877,10 @@ const ConversationTabView = memo(function ConversationTabView({
   useEffect(() => {
     const pending = conn.pendingUserMessage
     if (!pending) return
+    // The prompt that seeds a summary handoff is folded into the divider on
+    // every detail read; mirroring it here would flash a screen of briefing
+    // as a user bubble until the refetch lands.
+    if (isSeededBriefing(pending.blocks)) return
     appendViewerUserTurn(
       effectiveConversationId,
       buildUserTurnFromMessageBlocks(pending.messageId, pending.blocks)
@@ -883,6 +897,7 @@ const ConversationTabView = memo(function ConversationTabView({
       (envelope: EventEnvelope) => {
         if (envelope.type !== "user_message") return
         if (envelope.connection_id !== conn.connectionId) return
+        if (isSeededBriefing(envelope.blocks)) return
         appendViewerUserTurn(
           effectiveConversationId,
           buildUserTurnFromMessageBlocks(envelope.message_id, envelope.blocks)
@@ -2133,6 +2148,13 @@ const ConversationTabView = memo(function ConversationTabView({
           : undefined
       }
       steerChannel={feedback.channel}
+      // A persisted conversation's agent control offers the handoff; a draft
+      // still picks its agent through the selector and has nothing to move.
+      onHandoff={
+        hasPersistedConversation && dbConversationId != null
+          ? () => setHandoffOpen(true)
+          : undefined
+      }
     >
       {isWelcomeMode ? (
         // Same overlay scrollbar as the sidebar / file lists (os-theme-codeg)
@@ -2277,6 +2299,16 @@ const ConversationTabView = memo(function ConversationTabView({
         </div>
       ) : (
         messageListNode
+      )}
+      {handoffOpen && dbConversationId != null && (
+        <AgentHandoffDialog
+          open
+          onOpenChange={setHandoffOpen}
+          conversationId={dbConversationId}
+          folderId={folderId}
+          sourceAgentType={selectedAgent}
+          title={ownTab?.title}
+        />
       )}
       <FeedbackDialog
         open={feedback.dialogOpen}
@@ -2805,6 +2837,7 @@ export function ConversationDetailPanel() {
           >
             <ConversationDetailHeader
               tabId={selTab.id}
+              agentType={selTab.agentType}
               conversationId={selTab.conversationId}
               runtimeConversationId={selTab.runtimeConversationId ?? null}
               folderId={selTab.folderId}
@@ -2853,6 +2886,7 @@ export function ConversationDetailPanel() {
         {!isSplit && activeTab && (
           <ConversationDetailHeader
             tabId={activeTab.id}
+            agentType={activeTab.agentType}
             conversationId={activeTab.conversationId}
             runtimeConversationId={activeTab.runtimeConversationId ?? null}
             folderId={activeTab.folderId}

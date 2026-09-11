@@ -865,6 +865,98 @@ pub async fn bind_external_id(
     }
 }
 
+/// Move a conversation to a different agent AND session in one write, for an
+/// in-place handoff (`acp::handoff`).
+///
+/// This is deliberately not [`bind_external_id`]: that primitive keeps the
+/// outgoing session reachable by splitting it onto a fresh row, because for it
+/// a session change means "unrelated session landed here". A handoff is the
+/// opposite promise. The previous `(agent_type, external_id)` pair is recorded
+/// in `conversation_handoff` BEFORE this runs, so the earlier history stays
+/// reachable through the same row and a split would produce exactly the
+/// duplicate conversation the chain exists to avoid.
+///
+/// Refuses with [`DbError::Conflict`] when another row (live or soft-deleted;
+/// the unique index counts both) already holds the incoming pair. Nothing is
+/// written then, so the caller's session stays where it is. `model` is
+/// cleared for the same reason `bind_external_id` clears it: it described the
+/// previous agent's session and `seed_model_if_empty` would never correct it.
+pub async fn rebind_for_handoff(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    agent_type: AgentType,
+    external_id: &str,
+) -> Result<(), DbError> {
+    use sea_orm::sea_query::Expr;
+    use sea_orm::TransactionTrait;
+
+    let agent_type_str = agent_type.as_wire().into_owned();
+    let external_id = external_id.to_string();
+    let requested = (agent_type_str.clone(), external_id.clone());
+    let outcome = conn
+        .transaction::<_, Option<i32>, sea_orm::DbErr>(|txn| {
+            Box::pin(async move {
+                // Write first, as in `bind_external_id`: a self-assignment takes
+                // the SQLite writer lock without a deferred read snapshot.
+                let claimed = conversation::Entity::update_many()
+                    .col_expr(
+                        conversation::Column::UpdatedAt,
+                        Expr::col(conversation::Column::UpdatedAt).into(),
+                    )
+                    .filter(conversation::Column::Id.eq(conversation_id))
+                    .filter(conversation::Column::DeletedAt.is_null())
+                    .exec(txn)
+                    .await?;
+                if claimed.rows_affected == 0 {
+                    return Err(sea_orm::DbErr::RecordNotFound(format!(
+                        "conversation {conversation_id} not found"
+                    )));
+                }
+                let holder = conversation::Entity::find()
+                    .filter(conversation::Column::ExternalId.eq(external_id.clone()))
+                    .filter(conversation::Column::AgentType.eq(agent_type_str.clone()))
+                    .filter(conversation::Column::Id.ne(conversation_id))
+                    .one(txn)
+                    .await?;
+                if let Some(holder) = holder {
+                    return Ok(Some(holder.id));
+                }
+                let current = conversation::Entity::find_by_id(conversation_id)
+                    .one(txn)
+                    .await?
+                    .ok_or_else(|| {
+                        sea_orm::DbErr::RecordNotFound(format!(
+                            "conversation {conversation_id} not found"
+                        ))
+                    })?;
+                let mut active: conversation::ActiveModel = current.into();
+                active.agent_type = Set(agent_type_str);
+                active.external_id = Set(Some(external_id));
+                active.model = Set(None);
+                active.updated_at = Set(Utc::now());
+                active.update(txn).await?;
+                Ok(None)
+            })
+        })
+        .await
+        .map_err(|e| match e {
+            sea_orm::TransactionError::Connection(sea_orm::DbErr::RecordNotFound(msg))
+            | sea_orm::TransactionError::Transaction(sea_orm::DbErr::RecordNotFound(msg)) => {
+                DbError::NotFound(msg)
+            }
+            sea_orm::TransactionError::Connection(e)
+            | sea_orm::TransactionError::Transaction(e) => DbError::Database(e),
+        })?;
+    match outcome {
+        None => Ok(()),
+        Some(holder_row_id) => Err(DbError::Conflict(format!(
+            "agent session {} is already bound to conversation {holder_row_id} for {}; \
+             refusing to hand conversation {conversation_id} off onto it",
+            requested.1, requested.0
+        ))),
+    }
+}
+
 /// What [`bind_external_id`]'s transaction concluded.
 ///
 /// A refusal has to leave the closure as a distinct VALUE rather than an early
@@ -1792,6 +1884,133 @@ mod tests {
             .all(conn)
             .await
             .expect("query by external_id")
+    }
+
+    #[tokio::test]
+    async fn rebind_for_handoff_moves_agent_and_session_in_place() {
+        // A handoff moves the SAME row to a new agent and session: no sibling
+        // row, no split, the model cleared for the new session to seed.
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-handoff-rebind").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("Retry loop".into()),
+            Some("main".into()),
+        )
+        .await
+        .expect("create");
+        bind_external_id(&db.conn, row.id, "S1", &[])
+            .await
+            .expect("bind S1");
+        seed_model_if_empty(&db.conn, row.id, "claude-sonnet")
+            .await
+            .expect("seed model");
+
+        rebind_for_handoff(&db.conn, row.id, AgentType::Codex, "S2")
+            .await
+            .expect("rebind");
+
+        let current = raw_row(&db.conn, row.id).await;
+        assert_eq!(current.agent_type, "codex");
+        assert_eq!(current.external_id.as_deref(), Some("S2"));
+        assert!(
+            current.model.is_none(),
+            "the model described the Claude session and must not survive onto Codex"
+        );
+        assert_eq!(
+            current.title.as_deref(),
+            Some("Retry loop"),
+            "the row keeps its identity"
+        );
+        assert_eq!(current.git_branch.as_deref(), Some("main"));
+        let rows = conversation::Entity::find()
+            .filter(conversation::Column::DeletedAt.is_null())
+            .all(&db.conn)
+            .await
+            .expect("list");
+        assert_eq!(rows.len(), 1, "a handoff never splits a conversation");
+        assert!(
+            rows_holding(&db.conn, "S1").await.is_empty(),
+            "the outgoing pair is reachable through conversation_handoff, not a row"
+        );
+
+        // A native transfer keeps the session id and only changes the agent.
+        rebind_for_handoff(
+            &db.conn,
+            row.id,
+            AgentType::custom("codex-2").unwrap(),
+            "S2",
+        )
+        .await
+        .expect("same-session rebind");
+        let current = raw_row(&db.conn, row.id).await;
+        assert_eq!(current.agent_type, "custom:codex-2");
+        assert_eq!(current.external_id.as_deref(), Some("S2"));
+    }
+
+    #[tokio::test]
+    async fn rebind_for_handoff_refuses_a_pair_another_row_holds() {
+        // The unique index is over (external_id, agent_type). Taking a pair
+        // another row holds would orphan THAT row's history, so the handoff is
+        // refused and the row left exactly as it was.
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-handoff-conflict").await;
+        let holder = create(&db.conn, folder, AgentType::Codex, None, None)
+            .await
+            .expect("holder");
+        bind_external_id(&db.conn, holder.id, "S2", &[])
+            .await
+            .expect("bind holder");
+        let row = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("row");
+        bind_external_id(&db.conn, row.id, "S1", &[])
+            .await
+            .expect("bind row");
+        let before = raw_row(&db.conn, row.id).await;
+
+        let err = rebind_for_handoff(&db.conn, row.id, AgentType::Codex, "S2")
+            .await
+            .expect_err("must refuse");
+        assert!(matches!(err, DbError::Conflict(_)), "got {err:?}");
+        let after = raw_row(&db.conn, row.id).await;
+        assert_eq!(after.agent_type, before.agent_type);
+        assert_eq!(after.external_id, before.external_id);
+        assert_eq!(after.updated_at, before.updated_at);
+
+        // The same pair on a DIFFERENT agent is free: the index is per agent.
+        rebind_for_handoff(&db.conn, row.id, AgentType::Grok, "S2")
+            .await
+            .expect("different agent, same id");
+        assert_eq!(raw_row(&db.conn, row.id).await.agent_type, "grok");
+    }
+
+    #[tokio::test]
+    async fn rebind_for_handoff_ignores_deleted_and_missing_rows() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-handoff-deleted").await;
+        let row = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("row");
+        bind_external_id(&db.conn, row.id, "S1", &[])
+            .await
+            .expect("bind");
+        soft_delete(&db.conn, row.id).await.expect("delete");
+
+        let err = rebind_for_handoff(&db.conn, row.id, AgentType::Codex, "S2")
+            .await
+            .expect_err("a deleted row is not a handoff target");
+        assert!(matches!(err, DbError::NotFound(_)), "got {err:?}");
+        let after = raw_row(&db.conn, row.id).await;
+        assert_eq!(after.agent_type, "claude_code");
+        assert_eq!(after.external_id.as_deref(), Some("S1"));
+
+        let err = rebind_for_handoff(&db.conn, 999_999, AgentType::Codex, "S3")
+            .await
+            .expect_err("unknown row");
+        assert!(matches!(err, DbError::NotFound(_)), "got {err:?}");
     }
 
     #[tokio::test]

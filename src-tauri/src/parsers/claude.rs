@@ -1115,7 +1115,7 @@ pub(crate) fn resolve_claude_config_dir() -> PathBuf {
     resolve_claude_config_dir_from(std::env::var_os("CLAUDE_CONFIG_DIR"), dirs::home_dir())
 }
 
-fn resolve_claude_config_dir_from(
+pub(crate) fn resolve_claude_config_dir_from(
     claude_config_dir_env: Option<std::ffi::OsString>,
     home_dir: Option<PathBuf>,
 ) -> PathBuf {

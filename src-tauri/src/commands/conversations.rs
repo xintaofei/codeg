@@ -3,10 +3,13 @@ use std::collections::{HashMap, HashSet};
 #[cfg(feature = "tauri-runtime")]
 use tauri::Manager;
 
+use crate::acp::handoff::{self, HandoffLink};
 use crate::app_error::AppCommandError;
 use crate::db::entities::conversation;
 use crate::db::entities::folder::FolderKind;
-use crate::db::service::{conversation_service, folder_service, import_service, tab_service};
+use crate::db::service::{
+    conversation_service, folder_service, handoff_service, import_service, tab_service,
+};
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
 use crate::models::*;
@@ -1466,6 +1469,42 @@ pub async fn get_folder_conversation_core(
             new_ext_id,
         )
         .await;
+    }
+
+    // A conversation that was handed off to another agent keeps its earlier
+    // segments reachable through `conversation_handoff`. Each uncarried
+    // segment is read from the agent that ran it (its own store, its own
+    // parser) and spliced in front of the current session behind a divider;
+    // a carried segment already lives in the current session's store and only
+    // gets the divider. A segment whose store is gone renders as nothing
+    // rather than failing the whole detail: the current session still loads.
+    let handoffs = handoff_service::list_for_conversation(conn, conversation_id)
+        .await
+        .unwrap_or_default();
+    if !handoffs.is_empty() {
+        let links: Vec<HandoffLink> = handoffs.iter().filter_map(HandoffLink::from_row).collect();
+        let mut segments: Vec<Vec<MessageTurn>> = Vec::with_capacity(links.len());
+        for link in &links {
+            if link.carried {
+                segments.push(Vec::new());
+                continue;
+            }
+            let Some(eid) = link.from_external_id.clone() else {
+                segments.push(Vec::new());
+                continue;
+            };
+            let at = link.from_agent_type;
+            let segment = tokio::task::spawn_blocking(move || {
+                build_agent_parser(at)
+                    .get_conversation(&eid)
+                    .map(|d| d.turns)
+                    .unwrap_or_default()
+            })
+            .await
+            .unwrap_or_default();
+            segments.push(segment);
+        }
+        turns = handoff::splice_handoffs(&links, segments, turns);
     }
 
     let mut summary = summary;

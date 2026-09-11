@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useState } from "react"
 import {
+  ArrowRightLeft,
   ChevronRight,
   Circle,
   EllipsisVertical,
@@ -25,7 +26,7 @@ import { ConversationHeaderFolderPicker } from "@/components/chat/conversation-c
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions } from "@/contexts/tab-context"
 import { getRuntimeSession } from "@/stores/conversation-runtime-store"
-import type { ConversationStatus } from "@/lib/types"
+import type { AgentType, ConversationStatus } from "@/lib/types"
 import { STATUS_ORDER } from "@/lib/types"
 import { ConversationStatusDot } from "@/components/conversations/conversation-status-dot"
 import {
@@ -62,6 +63,7 @@ import {
   type ActiveSessionDetails,
 } from "./active-session-details"
 import { SessionDetailsDialog } from "./session-details-dialog"
+import { AgentHandoffDialog } from "./agent-handoff-dialog"
 
 interface ConversationDetailHeaderProps {
   tabId: string
@@ -75,6 +77,9 @@ interface ConversationDetailHeaderProps {
   folderPath: string | undefined
   title: string
   status: ConversationStatus | undefined
+  /** The agent this tab runs on; names the source of a handoff. Absent on
+   *  surfaces that do not know it, which simply hides that entry. */
+  agentType?: AgentType | null
 }
 
 /**
@@ -99,12 +104,14 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
   folderPath,
   title,
   status,
+  agentType,
 }: ConversationDetailHeaderProps) {
   const t = useTranslations("Folder.conversationCard")
   const ime = useImeGuard()
   const tConv = useTranslations("Folder.conversation")
   const tStatus = useTranslations("Folder.statusLabels")
   const tDetails = useTranslations("Folder.sessionDetails")
+  const tHandoff = useTranslations("Folder.chat.agentHandoff")
   const { closeTab, openNewConversationTab } = useTabActions()
   const updateConversationLocal = useAppWorkspaceStore(
     (s) => s.updateConversationLocal
@@ -138,6 +145,8 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
     title: string
   } | null>(null)
   const [renameValue, setRenameValue] = useState("")
+  const [handoffOpen, setHandoffOpen] = useState(false)
+  const tabAgentType = agentType ?? null
   const [deleteTarget, setDeleteTarget] = useState<{
     id: number
     tabId: string
@@ -300,6 +309,13 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
               <Info className="h-4 w-4" />
               {tDetails("menuLabel")}
             </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={!persisted || tabAgentType == null}
+              onSelect={() => setHandoffOpen(true)}
+            >
+              <ArrowRightLeft className="h-4 w-4" />
+              {tHandoff("menuLabel")}
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuSub>
               <DropdownMenuSubTrigger disabled={!persisted}>
@@ -383,6 +399,17 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {handoffOpen && conversationId != null && tabAgentType != null && (
+        <AgentHandoffDialog
+          open
+          onOpenChange={setHandoffOpen}
+          conversationId={conversationId}
+          folderId={folderId}
+          sourceAgentType={tabAgentType}
+          title={title}
+        />
+      )}
 
       {details?.summary && (
         <SessionDetailsDialog
