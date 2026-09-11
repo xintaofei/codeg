@@ -55,6 +55,13 @@ pub struct BrowserTab {
     /// released tab is brought back). An operation that spans an await
     /// captures it and stands down if the id now names a later incarnation.
     pub generation: u64,
+    /// How many navigations the host has learned of in this incarnation —
+    /// documents from the engine, same-document route changes from the
+    /// helper's poll. Together with `generation` this is the epoch a page
+    /// snapshot is stamped with, so that a ref read from one page is not
+    /// answered against another; see `agent::epoch` for what the host can and
+    /// cannot see here.
+    pub nav_epoch: u64,
     /// URL of the main-frame navigation the engine reported as started and
     /// has neither committed nor failed yet (platforms with a navigation
     /// delegate only). Lets a commit of `about:blank` in its place be
@@ -81,6 +88,7 @@ impl BrowserTab {
             download_seq: None,
             visible_seq: 0,
             generation: 0,
+            nav_epoch: 0,
             provisional_url: None,
             gestures: VecDeque::with_capacity(GESTURE_RING_CAPACITY),
         }
@@ -205,6 +213,15 @@ impl BrowserRegistry {
 
     pub fn state(&self, tab_id: &str) -> Option<BrowserTabState> {
         self.lock().get(tab_id).map(|t| t.state.clone())
+    }
+
+    /// Read several things about one tab under a single lock. For callers
+    /// that need a surface AND what was true of the tab when they took it —
+    /// two separate lookups can straddle a close and reopen, and answer about
+    /// two different tabs that happen to share an id. Keep the closure free
+    /// of surface calls, like `update`.
+    pub fn read<R>(&self, tab_id: &str, f: impl FnOnce(&BrowserTab) -> R) -> Option<R> {
+        self.lock().get(tab_id).map(f)
     }
 
     pub fn list(&self) -> Vec<BrowserTabState> {

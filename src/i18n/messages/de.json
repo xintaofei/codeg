@@ -5981,5 +5981,12 @@
       "schemeBlocked": "{url} kann hier nicht geöffnet werden",
       "cannotShow": "Dieses Dokument kann nicht angezeigt werden"
     }
+  },
+  "browser": {
+    "agent": {
+      "error": {
+        "grantRequired": "Dieser Tab wurde nicht für einen Agenten freigegeben. Gib ihn frei, damit der Agent die Seite lesen kann."
+      }
+    }
   }
 }

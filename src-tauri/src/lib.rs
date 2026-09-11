@@ -1222,6 +1222,8 @@ mod tauri_app {
                 browser_commands::browser_doc_open,
                 browser_commands::browser_doc_set_mode,
                 browser_commands::browser_doc_state,
+                browser_commands::browser_agent_grant,
+                browser_commands::browser_agent_snapshot,
                 conversations::list_conversations,
                 conversations::get_conversation,
                 conversations::list_all_conversations,

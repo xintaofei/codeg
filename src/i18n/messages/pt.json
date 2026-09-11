@@ -5981,5 +5981,12 @@
       "schemeBlocked": "{url} não pode ser aberto aqui",
       "cannotShow": "Este documento não pode ser exibido"
     }
+  },
+  "browser": {
+    "agent": {
+      "error": {
+        "grantRequired": "Esta aba não foi compartilhada com um agente. Compartilhe-a para que o agente possa ler a página."
+      }
+    }
   }
 }

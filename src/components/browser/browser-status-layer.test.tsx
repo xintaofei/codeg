@@ -238,6 +238,7 @@ function tabState(over: Partial<BrowserTabState> = {}): BrowserTabState {
     remoteHost: null,
     openerTabId: null,
     profile: "default",
+    agentGrant: null,
     ...over,
   }
 }

@@ -5981,5 +5981,12 @@
       "schemeBlocked": "{url} 不能在这里打开",
       "cannotShow": "无法显示此文档"
     }
+  },
+  "browser": {
+    "agent": {
+      "error": {
+        "grantRequired": "这个标签页还没有共享给智能体。共享后智能体才能读取页面。"
+      }
+    }
   }
 }

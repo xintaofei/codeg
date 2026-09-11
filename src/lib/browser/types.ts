@@ -32,6 +32,54 @@ export interface BrowserErrorInfo {
   url: string | null
 }
 
+/** What an agent may do with a tab. Nothing is ever granted automatically —
+ *  not by address, not by which process is listening, not by an allow-list,
+ *  and not for a tab the agent opened itself. The only way in is a person
+ *  sharing the tab. Reading counts: an unshared page leaks through a snapshot
+ *  exactly as much as through a click. */
+export type GrantLevel = "none" | "read" | "control"
+
+/** A grant in force on one tab. Absent means none. */
+export interface AgentGrant {
+  /** Never `"none"`: a tab with no grant carries no `AgentGrant`. */
+  level: GrantLevel
+  /** The origin the tab was showing when it was shared. The grant ends the
+   *  moment the page leaves it, so one share covers a whole dev loop —
+   *  reloads and route changes on the same site — and nothing beyond it. */
+  origin: string
+  /** Unix milliseconds. */
+  grantedAt: number
+}
+
+/** Why a tab's grant changed (`browser://agent-grant`). The level itself
+ *  travels with the tab on `browser://state`, which stays the one place to
+ *  read what it is now; this says what the state cannot — that the change was
+ *  the page's doing rather than the user's. */
+export type GrantChange = "granted" | "revoked" | "navigated"
+
+export interface AgentGrantPayload {
+  tabId: string
+  change: GrantChange
+  level: GrantLevel
+  /** The origin just granted, or the one just lost. */
+  origin: string | null
+}
+
+/** A page as an agent reads it (`browser_agent_snapshot`). */
+export interface PageSnapshot {
+  /** Opaque token a later ref must quote. */
+  generation: string
+  /** The address the page was at when it was walked. */
+  url: string
+  title: string
+  viewport: { width: number; height: number; dpr: number }
+  /** The aria tree, in Playwright's `ai` rendering. */
+  tree: string
+  refsCount: number
+  /** The tree stops at `maxChars` rather than at the end of the page. */
+  truncated: boolean
+}
+
 /** Full per-tab state; every `browser://state` event carries one. */
 export interface BrowserTabState {
   tabId: string
@@ -61,6 +109,9 @@ export interface BrowserTabState {
   /** The browser profile (cookie jar, storage) the tab lives in; a popup
    *  shares its opener's. Null for a document guest. */
   profile: string | null
+  /** What an agent may do with this tab. Null is the default and the resting
+   *  state. */
+  agentGrant: AgentGrant | null
 }
 
 /** How the platform takes a change of the app's proxy setting. */

@@ -292,14 +292,12 @@ function shallowEqualState(a: BrowserTabState, b: BrowserTabState): boolean {
     const x = a[key]
     const y = b[key]
     if (x === y) continue
-    // `error` is the only nested object; compare it structurally.
-    if (
-      key === "error" &&
-      x &&
-      y &&
-      typeof x === "object" &&
-      typeof y === "object"
-    ) {
+    // Nested fields (`error`, `agentGrant`) are rebuilt by the deserializer
+    // on every event, so identity says nothing about them; compare them
+    // structurally. Deliberately by shape rather than by naming the fields:
+    // the third one to be added would otherwise make every `browser://state`
+    // look like a change, and a loading page emits a lot of them.
+    if (x && y && typeof x === "object" && typeof y === "object") {
       if (JSON.stringify(x) === JSON.stringify(y)) continue
     }
     return false

@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest"
 
 import type {
+  AgentGrant,
+  AgentGrantPayload,
   BrowserCapabilities,
   BrowserNavigationBlockedPayload,
   BrowserPopupPayload,
   BrowserTabState,
   FrozenFrame,
+  PageSnapshot,
 } from "./types"
 
 // These literals are copied from what the Rust side serializes (see the
@@ -34,6 +37,7 @@ describe("browser wire types", () => {
       remoteHost: null,
       openerTabId: null,
       profile: "default",
+      agentGrant: null,
     } satisfies BrowserTabState
     expect(state.surface).toBe("child")
   })
@@ -72,6 +76,37 @@ describe("browser wire types", () => {
       profile: "p-work",
     } satisfies BrowserPopupPayload
     expect(caps.available && popup.presentation === "adopted").toBe(true)
+  })
+
+  it("matches the Rust serialization of an agent grant and what it unlocks", () => {
+    const shared = {
+      level: "read",
+      origin: "https://example.com",
+      grantedAt: 1_700_000_000_000,
+    } satisfies AgentGrant
+    // The page left the origin it was shared for, so the grant ended without
+    // anyone pressing anything: `level` says what it is now, `change` says
+    // that the user did not choose it, `origin` says what was lost.
+    const revoked = {
+      tabId: "t1",
+      change: "navigated",
+      level: "none",
+      origin: "https://example.com",
+    } satisfies AgentGrantPayload
+    const snapshot = {
+      generation: "3.1.nav-7",
+      url: "https://example.com/orders",
+      title: "Orders",
+      viewport: { width: 1280, height: 800, dpr: 2 },
+      tree: '- button "Export" [ref=e4]',
+      refsCount: 1,
+      truncated: false,
+    } satisfies PageSnapshot
+    expect([shared.level, revoked.level, snapshot.refsCount]).toEqual([
+      "read",
+      "none",
+      1,
+    ])
   })
 
   it("matches the Rust serialization of the blocked-navigation event and the freeze frame", () => {

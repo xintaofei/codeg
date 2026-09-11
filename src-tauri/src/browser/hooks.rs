@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager, Url};
 
+use super::agent;
 use super::events;
 use super::registry::BrowserRegistry;
 use super::types::{BrowserErrorInfo, BrowserErrorKind, NavigationBlockReason};
@@ -83,6 +84,12 @@ pub fn page_load(app: &AppHandle, tab_id: &str, url: &Url, started: bool) {
         let substituted = failed_address.is_some();
         if started {
             tab.provisional_url = None;
+            // A document has been put in place of the old one, so every ref
+            // an agent holds names an element of a page that is gone. The
+            // world draws a new generation of its own for exactly this, but
+            // the host counts too: `nav_epoch` is also what distinguishes two
+            // route changes inside one document, where the world cannot tell.
+            tab.nav_epoch += 1;
         }
         let state = &mut tab.state;
         state.url = url.to_string();
@@ -111,12 +118,24 @@ pub fn page_load(app: &AppHandle, tab_id: &str, url: &Url, started: bool) {
             state.can_go_back = back;
             state.can_go_forward = forward;
         }
-        (state.clone(), substituted)
+        // After the origin is written, never before: the question is whether
+        // the grant covers the page that is on screen now.
+        let lost = agent::revoke_if_departed(state);
+        (state.clone(), substituted, lost)
     });
-    let Some((state, substituted)) = state else {
+    let Some((state, substituted, lost)) = state else {
         return;
     };
     events::emit_state(app, &state);
+    if let Some(lost) = lost {
+        events::emit_agent_grant(
+            app,
+            tab_id,
+            agent::GrantChange::Navigated,
+            agent::GrantLevel::None,
+            Some(&lost.origin),
+        );
+    }
     if started && !substituted {
         begin_load(app, tab_id);
     }
@@ -467,6 +486,7 @@ mod tests {
             remote_host: None,
             opener_tab_id: None,
             profile: Some("default".into()),
+            agent_grant: None,
         }
     }
 

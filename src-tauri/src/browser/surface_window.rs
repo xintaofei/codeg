@@ -466,6 +466,7 @@ mod platform {
             remote_host: None,
             opener_tab_id: Some(opener_tab_id.to_string()),
             profile: Some(profile.to_string()),
+            agent_grant: None,
         };
         // Before the engine loads anything into it.
         if let Err(err) = install_channel(&window) {

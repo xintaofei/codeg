@@ -14,6 +14,8 @@ import type {
   DocGuestState,
   DocMode,
   FrozenFrame,
+  GrantLevel,
+  PageSnapshot,
   SurfaceChoice,
 } from "./types"
 
@@ -240,6 +242,35 @@ export function browserGetState(tabId: string): Promise<BrowserTabState> {
 
 export function browserListTabs(): Promise<BrowserTabState[]> {
   return getTransport().call<BrowserTabState[]>("browser_list_tabs", {})
+}
+
+/** Share this tab with agents at `level`, or take it back with `"none"`.
+ *
+ *  Only ever called for a person. There is no path by which an agent grants
+ *  itself anything, and adding one would empty the model of its content: the
+ *  backend refuses a tab with no web origin to bind to, and drops the grant
+ *  by itself the moment the page leaves that origin. */
+export function browserAgentGrant(
+  tabId: string,
+  level: GrantLevel
+): Promise<BrowserTabState> {
+  return getTransport().call<BrowserTabState>("browser_agent_grant", {
+    tabId,
+    level,
+  })
+}
+
+/** Read a shared page as the tree an agent operates on. Rejects with a
+ *  permission error when the tab has not been shared, or when the page moved
+ *  off the shared origin while the read was in flight. */
+export function browserAgentSnapshot(
+  tabId: string,
+  maxChars?: number
+): Promise<PageSnapshot> {
+  return getTransport().call<PageSnapshot>("browser_agent_snapshot", {
+    tabId,
+    maxChars: maxChars ?? null,
+  })
 }
 
 /** Wipe cookies, caches and storage shared by every tab of a profile. */

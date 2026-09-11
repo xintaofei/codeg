@@ -69,6 +69,7 @@ function loaded(id: string) {
     remoteHost: null,
     openerTabId: null,
     profile: "default",
+    agentGrant: null,
   })
 }
 

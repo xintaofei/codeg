@@ -3705,6 +3705,7 @@ describe("browser tabs", () => {
         remoteHost: null,
         openerTabId: null,
         profile: "p-work",
+        agentGrant: null,
       })
     )
     act(() => setBrowserProfiles([]))
@@ -3741,6 +3742,7 @@ describe("browser tabs", () => {
         remoteHost: null,
         openerTabId: null,
         profile: "p-work",
+        agentGrant: null,
       })
     )
     act(() => setBrowserProfiles([]))
@@ -3842,6 +3844,7 @@ describe("browser tabs", () => {
         remoteHost: null,
         openerTabId: null,
         profile: "default",
+        agentGrant: null,
       })
     )
     // Only a tab that is off screen may be released; the suspender's own
@@ -3893,6 +3896,7 @@ describe("browser tabs", () => {
         remoteHost: null,
         openerTabId: null,
         profile: "default",
+        agentGrant: null,
       })
     )
     act(() => screen.getByText("close-active").click())

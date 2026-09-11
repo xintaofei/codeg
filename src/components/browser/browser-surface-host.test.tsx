@@ -88,6 +88,7 @@ function state(id = "abc"): BrowserTabState {
     remoteHost: null,
     openerTabId: null,
     profile: "default",
+    agentGrant: null,
   }
 }
 

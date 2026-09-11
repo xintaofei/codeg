@@ -5981,5 +5981,12 @@
       "schemeBlocked": "{url} 無法在這裡開啟",
       "cannotShow": "無法顯示此文件"
     }
+  },
+  "browser": {
+    "agent": {
+      "error": {
+        "grantRequired": "這個分頁尚未共享給智慧體。共享後智慧體才能讀取頁面。"
+      }
+    }
   }
 }

@@ -134,6 +134,7 @@ describe("BrowserTabsPersistence", () => {
       remoteHost: null,
       openerTabId: null,
       profile: "default",
+      agentGrant: null,
     })
     rerender(<BrowserTabsPersistence />)
     await act(async () => {

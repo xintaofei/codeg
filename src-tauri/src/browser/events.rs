@@ -5,6 +5,7 @@ use tauri::AppHandle;
 
 use crate::web::event_bridge::{emit_event, EventEmitter};
 
+use super::agent::{AgentGrantPayload, GrantChange, GrantLevel, AGENT_GRANT_EVENT};
 use super::doc_guest::DocGuestState;
 use super::downloads::{BrowserDownload, DOWNLOAD_EVENT};
 use super::types::{
@@ -54,6 +55,29 @@ pub fn emit_doc_state(app: &AppHandle, state: &DocGuestState) {
 
 pub fn emit_download(app: &AppHandle, download: &BrowserDownload) {
     emit_event(&EventEmitter::Tauri(app.clone()), DOWNLOAD_EVENT, download);
+}
+
+/// A tab's agent grant changed, and why. The level itself also travels with
+/// the tab on `browser://state`, which stays the one place to read "what is
+/// it now"; this event exists for the half the state cannot express — that
+/// the change was the page's doing rather than the user's.
+pub fn emit_agent_grant(
+    app: &AppHandle,
+    tab_id: &str,
+    change: GrantChange,
+    level: GrantLevel,
+    origin: Option<&str>,
+) {
+    emit_event(
+        &EventEmitter::Tauri(app.clone()),
+        AGENT_GRANT_EVENT,
+        AgentGrantPayload {
+            tab_id: tab_id.to_string(),
+            change,
+            level,
+            origin: origin.map(str::to_string),
+        },
+    );
 }
 
 pub fn emit_navigation_blocked(app: &AppHandle, tab_id: &str, url: &str, reason: NavigationBlockReason) {

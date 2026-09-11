@@ -13,6 +13,7 @@
 //! Module map:
 //! - `types`      — wire types shared with `src/lib/browser/types.ts`
 //! - `policy`     — pure decisions (scheme allow-list, …)
+//! - `agent`      — what an agent may read of a page, and on whose say-so
 //! - `doc_guest`  — the `codeg-doc:` guest that shows a local HTML file
 //! - `profile`    — the tabs' own data store / directory and their proxy
 //! - `downloads`  — destination policy and records for page downloads
@@ -26,6 +27,7 @@
 //! - `smoke`      — dev-only puppet driven by a JSON control file (feature
 //!   `browser-smoke`, never in a release build)
 
+pub mod agent;
 pub mod channel;
 pub mod doc_guest;
 pub mod downloads;

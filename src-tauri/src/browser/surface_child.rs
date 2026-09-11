@@ -1102,6 +1102,7 @@ fn new_window_handler(
                 remote_host: None,
                 opener_tab_id: Some(opener_tab_id.clone()),
                 profile: Some(profile.clone()),
+                agent_grant: None,
             };
             if let Err(err) = registry.insert(BrowserTab::new(
                 state.clone(),

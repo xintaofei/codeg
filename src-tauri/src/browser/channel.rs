@@ -13,6 +13,7 @@ use tauri::{AppHandle, Manager, Url};
 
 use crate::web::event_bridge::{emit_event, EventEmitter};
 
+use super::agent;
 use super::events;
 use super::hooks;
 use super::registry::BrowserRegistry;
@@ -107,11 +108,22 @@ pub fn handle_message(app: &AppHandle, tab_id: &str, raw: String, main_frame: bo
                 .map(str::to_string);
             let changed = registry.update(tab_id, |tab| {
                 let mut changed = false;
+                let mut lost = None;
                 if let Some(url) = &href {
                     let text = url.to_string();
                     if tab.state.url != text {
                         tab.state.url = text;
                         tab.state.origin = hooks::origin_of(url);
+                        // The document did not change, so the world kept its
+                        // generation and every ref it handed out still names
+                        // a live element — of the page the agent is no longer
+                        // looking at. This is the transition the host exists
+                        // to notice; see `agent::epoch` for how late it can
+                        // be. The re-check cannot widen a grant, only end
+                        // one, which is why it is safe to drive from a
+                        // message the page could in principle influence.
+                        tab.nav_epoch += 1;
+                        lost = agent::revoke_if_departed(&mut tab.state);
                         changed = true;
                     }
                 }
@@ -121,10 +133,19 @@ pub fn handle_message(app: &AppHandle, tab_id: &str, raw: String, main_frame: bo
                         changed = true;
                     }
                 }
-                changed.then(|| tab.state.clone())
+                changed.then(|| (tab.state.clone(), lost))
             });
-            if let Some(Some(state)) = changed {
+            if let Some(Some((state, lost))) = changed {
                 events::emit_state(app, &state);
+                if let Some(lost) = lost {
+                    events::emit_agent_grant(
+                        app,
+                        tab_id,
+                        agent::GrantChange::Navigated,
+                        agent::GrantLevel::None,
+                        Some(&lost.origin),
+                    );
+                }
             }
         }
         // A browser shortcut the page had focus for. The set is closed here,

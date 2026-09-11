@@ -10,6 +10,7 @@ use tauri::{AppHandle, Manager, State, WebviewWindow};
 use tauri::Url;
 
 use crate::app_error::AppCommandError;
+use crate::browser::agent::{self, GrantLevel};
 use crate::browser::doc_guest::{self, DocGuestState, DocGuests, DocMode};
 use crate::browser::downloads::{BrowserDownload, BrowserDownloads};
 use crate::browser::policy::{BrowserPolicy, HostRule};
@@ -253,6 +254,7 @@ pub fn open_tab_core(
         remote_host: None,
         opener_tab_id: None,
         profile: Some(params.profile.clone()),
+        agent_grant: None,
     };
     if let Err(err) = registry.insert_reserved(
         BrowserTab::new(
@@ -440,6 +442,7 @@ pub fn doc_open_core(
         remote_host: None,
         opener_tab_id: None,
         profile: None,
+        agent_grant: None,
     };
     if let Err(err) = registry.insert_reserved(
         BrowserTab::new(
@@ -1069,6 +1072,183 @@ pub fn state_core(registry: &BrowserRegistry, tab_id: &str) -> Result<BrowserTab
         .ok_or_else(|| AppCommandError::not_found(format!("browser tab {tab_id} not found")))
 }
 
+// ---------------------------------------------------------------------------
+// Agent access
+// ---------------------------------------------------------------------------
+
+/// The error an agent tool turns into `browser_grant_required{tabId}`: this
+/// tab has not been shared, or the page it was shared for is gone.
+///
+/// One error for both, on purpose. To the agent they are the same instruction
+/// — ask the user to share this tab — and telling the two apart would report
+/// on a page it is not allowed to read.
+fn grant_required(tab_id: &str) -> AppCommandError {
+    AppCommandError::permission_denied(format!(
+        "browser tab {tab_id} has not been shared with agents"
+    ))
+    .with_i18n(BROWSER_I18N_KEY_GRANT_REQUIRED, std::collections::BTreeMap::new())
+}
+
+/// Emitted whenever an agent is refused a page. The frontend turns it into
+/// the prompt that offers to share the tab.
+pub const BROWSER_I18N_KEY_GRANT_REQUIRED: &str = "browser.agent.error.grantRequired";
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+/// Share a tab with agents, change the level, or take it back.
+///
+/// Only ever called for a person: nothing reachable by an agent leads here,
+/// which is the entire model (`browser::agent`). The check and the write
+/// happen under one lock so a grant cannot be bound to an origin the tab left
+/// while the request was in the air.
+pub fn set_agent_grant_core(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    tab_id: &str,
+    level: GrantLevel,
+) -> Result<BrowserTabState, AppCommandError> {
+    let now = now_millis();
+    let applied = registry
+        .update(tab_id, |tab| {
+            agent::apply_grant(&mut tab.state, level, now).map(|change| (tab.state.clone(), change))
+        })
+        .ok_or_else(|| AppCommandError::not_found(format!("browser tab {tab_id} not found")))?;
+    let (state, change) = applied.map_err(|reason| match reason {
+        agent::NotGrantable::NoOrigin => AppCommandError::invalid_input(
+            "This tab has no web address to share: an agent's access is tied to one site, \
+             and there is nothing here to tie it to.",
+        ),
+        agent::NotGrantable::DocumentGuest => AppCommandError::invalid_input(
+            "A document view cannot be shared with an agent. It is showing a local file, \
+             which an agent reads from disk.",
+        ),
+    })?;
+    events::emit_state(app, &state);
+    if let Some(change) = change {
+        events::emit_agent_grant(
+            app,
+            tab_id,
+            change.change,
+            change.level,
+            change.origin.as_deref(),
+        );
+    }
+    Ok(state)
+}
+
+/// Read a shared page, as the tree an agent operates on.
+///
+/// The grant is checked twice, and the second time is the one that decides.
+/// Reading a page is not instantaneous: between the first check and the
+/// answer the user can revoke, the tab can be closed and another opened under
+/// the same id, and the page can go anywhere. So the tree is handed over only
+/// if the grant *as it stands now* still allows reading and still covers the
+/// address the world reports having walked — not the address the host last
+/// heard about, which is the one that can be out of date.
+///
+/// That address is `location.href` read inside the isolated world, which the
+/// page cannot dress up: `location` is unforgeable, and a page-level
+/// redefinition would not be visible from the world in any case.
+///
+/// Refusing costs an agent a round trip and the instruction to ask again.
+/// Not refusing hands it a page nobody shared.
+pub async fn agent_snapshot_core(
+    registry: &BrowserRegistry,
+    tab_id: &str,
+    request: &agent::SnapshotRequest,
+) -> Result<agent::PageSnapshot, AppCommandError> {
+    let Some((surface, generation, epoch, level)) = registry.read(tab_id, |tab| {
+        (
+            tab.surface.clone(),
+            tab.generation,
+            agent::epoch(tab.generation, tab.nav_epoch),
+            agent::level_of(tab.state.agent_grant.as_ref()),
+        )
+    }) else {
+        return Err(AppCommandError::not_found(format!(
+            "browser tab {tab_id} not found"
+        )));
+    };
+    // Before touching the page at all: an unshared tab is never read, not
+    // even to find out that the read would have been refused.
+    if !level.allows(GrantLevel::Read) {
+        return Err(grant_required(tab_id));
+    }
+
+    let answer = eval_in_world_string(&surface, &agent::probe_and_snapshot(request, &epoch)).await?;
+    // The engine is not in this document — a page that has just loaded, or
+    // one loaded before the tab was ever shared. Put it there and take the
+    // snapshot in the same evaluation, so the two cannot straddle a
+    // navigation.
+    let answer = if answer == agent::ENGINE_ABSENT {
+        eval_in_world_string(&surface, &agent::install_and_snapshot(request, &epoch)).await?
+    } else {
+        answer
+    };
+    let snapshot: agent::PageSnapshot = serde_json::from_str(&answer)
+        .map_err(|e| window_err("Failed to read the page", format!("unreadable snapshot: {e}")))?;
+
+    let walked = Url::parse(&snapshot.url).ok();
+    let walked_origin = walked.as_ref().and_then(hooks::origin_of);
+    let allowed = registry
+        .read(tab_id, |tab| {
+            tab.generation == generation
+                && tab.state.agent_grant.as_ref().is_some_and(|grant| {
+                    grant.level.allows(GrantLevel::Read)
+                        && grant.covers(walked_origin.as_deref())
+                })
+        })
+        .unwrap_or(false);
+    if !allowed {
+        return Err(grant_required(tab_id));
+    }
+    Ok(snapshot)
+}
+
+/// Evaluate an expression in a tab's isolated world and unwrap the shim's
+/// `{ok, value}` envelope. The value is always a string here: every caller in
+/// this module asks for `JSON.stringify(…)` or for a literal.
+async fn eval_in_world_string(surface: &BrowserSurface, js: &str) -> Result<String, AppCommandError> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
+    let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+    surface
+        .eval_in_world(js, move |result| {
+            if let Some(tx) = tx.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                let _ = tx.send(result);
+            }
+        })
+        .map_err(|e| window_err("Failed to read the page", e))?;
+    // Long enough that a big page's tree is not mistaken for a hung engine.
+    // It bounds how long a caller waits for an answer that is not coming, not
+    // how large a page may be.
+    let raw = match tokio::time::timeout(Duration::from_secs(15), rx).await {
+        Ok(Ok(Ok(raw))) => raw,
+        Ok(Ok(Err(err))) => return Err(window_err("Failed to read the page", err)),
+        Ok(Err(_)) => {
+            return Err(window_err("Failed to read the page", "the request was dropped"))
+        }
+        Err(_) => return Err(window_err("Failed to read the page", "the page did not answer")),
+    };
+    let envelope: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| window_err("Failed to read the page", format!("unreadable answer: {e}")))?;
+    if envelope["ok"] == serde_json::Value::Bool(true) {
+        envelope["value"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| window_err("Failed to read the page", "the page answered with no value"))
+    } else {
+        Err(window_err(
+            "Failed to read the page",
+            envelope["error"].as_str().unwrap_or("evaluation failed"),
+        ))
+    }
+}
+
 #[tauri::command]
 pub async fn browser_capabilities(
     policy: State<'_, BrowserPolicy>,
@@ -1332,6 +1512,32 @@ pub async fn browser_list_tabs(
     Ok(registry.list_for_owner(window.label()))
 }
 
+/// The share control in a tab's toolbar. A person, always.
+#[tauri::command]
+pub async fn browser_agent_grant(
+    app: AppHandle,
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+    level: GrantLevel,
+) -> Result<BrowserTabState, AppCommandError> {
+    set_agent_grant_core(&app, &registry, &tab_id, level)
+}
+
+/// Read a shared page on an agent's behalf.
+///
+/// A command rather than only a `_core` function because the smoke puppet
+/// drives commands, and because the tool surface in `codeg-mcp` reaches the
+/// backend the same way the frontend does. It is not a way around the grant:
+/// the check is inside `agent_snapshot_core`, so every caller gets it.
+#[tauri::command]
+pub async fn browser_agent_snapshot(
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+    max_chars: Option<usize>,
+) -> Result<agent::PageSnapshot, AppCommandError> {
+    agent_snapshot_core(&registry, &tab_id, &agent::SnapshotRequest { max_chars }).await
+}
+
 /// Downloads this run started, oldest first. The frontend hydrates from it on
 /// mount; afterwards `browser://download` keeps it current.
 #[tauri::command]
@@ -1391,6 +1597,35 @@ mod tests {
         assert!(parse_web_url("file:///etc/hosts").is_err());
         assert!(parse_web_url("javascript:1").is_err());
         assert!(parse_web_url("not a url").is_err());
+    }
+
+    /// The refusal an agent gets is the same one whether the tab was never
+    /// shared or the page has since left the shared origin. Distinguishing
+    /// them would report on a page the caller is not allowed to read, and the
+    /// instruction is identical either way: ask the user to share this tab.
+    #[test]
+    fn the_refusal_carries_the_key_the_frontend_branches_on() {
+        let err = grant_required("t1");
+        assert!(matches!(err.code, crate::app_error::AppErrorCode::PermissionDenied));
+        assert_eq!(
+            err.i18n_key.as_deref(),
+            Some("browser.agent.error.grantRequired")
+        );
+        // …and that key has a message. A stamped key with nothing behind it
+        // silently degrades to the English `message`, which is the kind of
+        // thing nobody notices until a user reports it in their own language.
+        let messages = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../src/i18n/messages/en.json");
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&messages).expect("en.json")).unwrap();
+        let mut node = &json;
+        for segment in BROWSER_I18N_KEY_GRANT_REQUIRED.split('.') {
+            node = &node[segment];
+        }
+        assert!(
+            node.as_str().is_some_and(|s| !s.is_empty()),
+            "{BROWSER_I18N_KEY_GRANT_REQUIRED} has no message in en.json"
+        );
     }
 
     #[test]

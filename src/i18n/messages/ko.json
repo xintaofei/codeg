@@ -5981,5 +5981,12 @@
       "schemeBlocked": "{url}은(는) 여기서 열 수 없습니다",
       "cannotShow": "이 문서를 표시할 수 없습니다"
     }
+  },
+  "browser": {
+    "agent": {
+      "error": {
+        "grantRequired": "이 탭은 에이전트와 공유되지 않았습니다. 공유하면 에이전트가 페이지를 읽을 수 있습니다."
+      }
+    }
   }
 }

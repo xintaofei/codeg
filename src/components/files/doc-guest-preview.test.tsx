@@ -100,6 +100,7 @@ function tabState(tabId: string): BrowserTabState {
     remoteHost: null,
     openerTabId: null,
     profile: "default",
+    agentGrant: null,
   }
 }
 

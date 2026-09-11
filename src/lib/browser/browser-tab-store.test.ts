@@ -26,7 +26,7 @@ import {
   subscribeBrowserTabs,
   useBrowserTabState,
 } from "./browser-tab-store"
-import type { BrowserTabState } from "./types"
+import type { AgentGrant, BrowserTabState } from "./types"
 
 function state(over: Partial<BrowserTabState> = {}): BrowserTabState {
   return {
@@ -49,6 +49,7 @@ function state(over: Partial<BrowserTabState> = {}): BrowserTabState {
     remoteHost: null,
     openerTabId: null,
     profile: "default",
+    agentGrant: null,
     ...over,
   }
 }
@@ -82,6 +83,29 @@ describe("browser tab store", () => {
     removeBrowserTabState("browser:abc")
     expect(listener).toHaveBeenCalledTimes(3)
     removeBrowserTabState("browser:abc")
+    expect(listener).toHaveBeenCalledTimes(3)
+  })
+
+  /// The nested fields arrive as fresh objects in every event, so identity
+  /// cannot be the test. A tab whose page is loading emits a stream of
+  /// `browser://state`, and an unchanged grant in each of them must not make
+  /// every one of them look like news.
+  it("an unchanged nested field is not a change", () => {
+    const grant: AgentGrant = {
+      level: "read",
+      origin: "https://example.com",
+      grantedAt: 1,
+    }
+    const listener = vi.fn()
+    subscribeBrowserTabs(listener)
+    setBrowserTabState(state({ agentGrant: { ...grant } }))
+    expect(listener).toHaveBeenCalledTimes(1)
+    setBrowserTabState(state({ agentGrant: { ...grant } }))
+    expect(listener).toHaveBeenCalledTimes(1)
+    // …and a real one still is, in both directions.
+    setBrowserTabState(state({ agentGrant: { ...grant, level: "control" } }))
+    expect(listener).toHaveBeenCalledTimes(2)
+    setBrowserTabState(state({ agentGrant: null }))
     expect(listener).toHaveBeenCalledTimes(3)
   })
 

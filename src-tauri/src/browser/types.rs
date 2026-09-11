@@ -106,6 +106,11 @@ pub struct BrowserTabState {
     /// shares its opener's. `None` for a document guest, whose store dies
     /// with it.
     pub profile: Option<String>,
+    /// What an agent may do with this tab, if a person has shared it. `None`
+    /// is the default and the resting state — see `agent`. It rides on the
+    /// tab's state rather than in a store of its own so that the code which
+    /// notices a tab changed origin is the code that revokes.
+    pub agent_grant: Option<crate::browser::agent::AgentGrant>,
 }
 
 /// Answer to `browser_capabilities`: what this build on this machine can do.
@@ -289,9 +294,16 @@ mod tests {
             remote_host: None,
             opener_tab_id: None,
             profile: Some("default".into()),
+            agent_grant: Some(crate::browser::agent::AgentGrant {
+                level: crate::browser::agent::GrantLevel::Read,
+                origin: "https://example.com".into(),
+                granted_at: 1_700_000_000_000,
+            }),
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(json["tabId"], "t1");
+        assert_eq!(json["agentGrant"]["level"], "read");
+        assert_eq!(json["agentGrant"]["grantedAt"], 1_700_000_000_000i64);
         assert_eq!(json["profile"], "default");
         assert_eq!(json["ownerWindow"], "main");
         assert_eq!(json["kind"], "page");

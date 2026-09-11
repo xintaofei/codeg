@@ -367,6 +367,41 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
             Ok(json!(state))
         }
         "browser_list" => Ok(json!(registry.list())),
+        // The two halves of agent access, so that the grant model can be
+        // exercised against a real engine rather than only against its own
+        // unit tests: share a tab, read it, navigate it away, watch the read
+        // be refused. `level` is the wire spelling (`none` / `read` /
+        // `control`), the same one the frontend sends.
+        "browser_agent_grant" => {
+            let level = serde_json::from_value(
+                cmd.get("level").cloned().unwrap_or(Value::String("none".into())),
+            )
+            .map_err(err_string)?;
+            let state = browser_commands::set_agent_grant_core(
+                app,
+                &registry,
+                &str_arg(cmd, "tab_id")?,
+                level,
+            )
+            .map_err(err_string)?;
+            Ok(json!(state))
+        }
+        "browser_agent_snapshot" => {
+            let request = crate::browser::agent::SnapshotRequest {
+                max_chars: cmd
+                    .get("max_chars")
+                    .and_then(Value::as_u64)
+                    .map(|n| n as usize),
+            };
+            let snapshot = browser_commands::agent_snapshot_core(
+                &registry,
+                &str_arg(cmd, "tab_id")?,
+                &request,
+            )
+            .await
+            .map_err(err_string)?;
+            Ok(json!(snapshot))
+        }
         "browser_url" => {
             let surface = registry
                 .surface(&str_arg(cmd, "tab_id")?)

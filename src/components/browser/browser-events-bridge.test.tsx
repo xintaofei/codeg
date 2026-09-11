@@ -306,6 +306,7 @@ describe("BrowserEventsBridge", () => {
       remoteHost: null,
       openerTabId: "abc",
       profile: "default",
+      agentGrant: null,
     })
     mocks.handlers.get("browser://closed")!({
       tabId: "abc-p1",
