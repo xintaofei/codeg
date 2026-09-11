@@ -38,7 +38,9 @@ const PAGE = `<!doctype html><html><head><title>Probe</title></head><body>
   <h1>Orders</h1>
   <label>Search <input type="search" name="q"></label>
   <button id="exp" style="cursor:pointer">Export</button>
-  <div id="clickable" style="cursor:pointer" onclick="void 0">A div nobody gave a role</div>
+  <div id="pointer" style="cursor:pointer">Pointer but no handler</div>
+  <div id="handler" onclick="void 0">Handler but no pointer</div>
+  <div id="focusable" tabindex="0">Focusable but neither</div>
   <div id="hidden" style="display:none"><button>Invisible</button></div>
   <ul><li>alpha</li><li>beta</li></ul>
 </main></body></html>`
@@ -129,15 +131,33 @@ try {
   console.log("\n=== tree ===\n" + snap.tree + "\n")
   console.log(`url=${snap.url} title=${snap.title} refs=${snap.refsCount}\n`)
 
-  // A roleless div that behaves like a button has to be namable, or an agent
-  // cannot act on the many pages that are built out of them.
+  // Roleless divs that behave like controls have to be namable, or an agent
+  // cannot act on the many pages that are built out of them. This is the whole
+  // reason there is no promotion pass of our own: `ai` mode refs everything
+  // visible that receives pointer events, so each of these is already named,
+  // whichever single attribute makes it interesting. Kept as three separate
+  // elements so that one of them regressing cannot hide behind another.
+  const named = (id, text) =>
+    check(
+      `a roleless div is namable — ${id}`,
+      new RegExp(`generic \\[ref=e\\d+\\][^\\n]*: ${text}`).test(snap.tree),
+      true
+    )
+  named("cursor:pointer only", "Pointer but no handler")
+  named("onclick only", "Handler but no pointer")
+  named("tabindex only", "Focusable but neither")
+
+  // …and `cursor: pointer` is additionally marked, which is how an agent tells
+  // "this looks clickable" from "this is merely visible".
   check(
-    "a clickable div gets a ref",
-    /generic \[ref=e\d+\] \[cursor=pointer\]: A div nobody gave a role/.test(
-      snap.tree
-    ),
-    true
+    "cursor:pointer is reported, and only where it applies",
+    [
+      /\[cursor=pointer\][^\n]*: Pointer but no handler/.test(snap.tree),
+      /\[cursor=pointer\][^\n]*: Handler but no pointer/.test(snap.tree),
+    ],
+    [true, false]
   )
+
   check(
     "a display:none subtree is left out",
     snap.tree.includes("Invisible"),
@@ -162,26 +182,123 @@ try {
   check("a capped tree reports the cut", cut.truncated, true)
   check("a capped tree ends on a line boundary", cut.tree.endsWith(":"), true)
 
-  const ref = snap.tree.match(/\[ref=(e\d+)\]/)[1]
   const g = JSON.stringify(snap.generation)
-  const r = JSON.stringify(ref)
+  // Two refs: one to spend on the removal case, one that must stay in the page
+  // so the same-document case cannot pass for the wrong reason.
+  const kept = JSON.stringify(
+    snap.tree.match(/button "Export" \[ref=(e\d+)\]/)[1]
+  )
+  const spent = JSON.stringify(
+    snap.tree.match(/listitem \[ref=(e\d+)\]: alpha/)[1]
+  )
+
   check(
     "a live ref resolves",
-    await run(`!!__codegAgent.elementForRef(${g}, ${r})`),
+    await run(`!!__codegAgent.elementForRef(${g}, ${kept})`),
     true
   )
   check(
     "a ref from another document does not",
-    await run(`__codegAgent.elementForRef("other", ${r})`),
+    await run(`__codegAgent.elementForRef("other", ${kept})`),
     null
   )
   check(
     "a ref for a removed element does not",
     await run(
-      `(() => { __codegAgent.elementForRef(${g}, ${r}).remove();
-                return __codegAgent.elementForRef(${g}, ${r}) })()`
+      `(() => { __codegAgent.elementForRef(${g}, ${spent}).remove();
+                return __codegAgent.elementForRef(${g}, ${spent}) })()`
     ),
     null
+  )
+
+  // A single-page app's route change: same document, same world, same
+  // generation, and the element is still in the page. Only the address moved.
+  // Asserting that it is still connected is the point — otherwise a `null`
+  // here would prove nothing about the address and everything about the node.
+  check(
+    "a ref does not survive a pushState, though its element does",
+    await run(
+      `(() => { const el = __codegAgent.elementForRef(${g}, ${kept});
+                history.pushState({}, "", "?routed");
+                return [el.isConnected, __codegAgent.elementForRef(${g}, ${kept})] })()`
+    ),
+    [true, null]
+  )
+  check(
+    "and a snapshot at the new address hands out refs that work again",
+    await run(
+      `(() => { const s = __codegAgent.snapshot({});
+                const m = s.tree.match(/button "Export" \\[ref=(e\\d+)\\]/);
+                return !!__codegAgent.elementForRef(s.generation, m[1]) })()`
+    ),
+    true
+  )
+
+  // The boundary of what this world can know, pinned so that it reads as
+  // known rather than as overlooked. An address is not an identity: a route
+  // that leaves and comes back arrives at a string that matches, and a
+  // framework may have kept the node and changed what it means. The world
+  // cannot see the transition — the page's own `pushState` is invisible from
+  // an isolated world — so the ref still resolves here.
+  check(
+    "an address that leaves and returns defeats the address check",
+    await run(
+      `(() => { const here = location.href;
+                const s = __codegAgent.snapshot({});
+                const m = s.tree.match(/button "Export" \\[ref=(e\\d+)\\]/);
+                history.pushState({}, "", "?elsewhere");
+                history.pushState({}, "", here);
+                return !!__codegAgent.elementForRef(s.generation, m[1]) })()`
+    ),
+    true
+  )
+
+  // …which is why the token carries whatever the host puts in it. The host
+  // does see the transition, and a ref quoting an epoch it has moved past is
+  // refused — by the host on the spot, and by this world from the next
+  // snapshot on, which is what these two assert.
+  check(
+    "a host epoch reaches the token an agent echoes",
+    await run(
+      `__codegAgent.snapshot({epoch: "nav-7"}).generation.endsWith(".nav-7")`
+    ),
+    true
+  )
+  check(
+    "and a ref from an earlier epoch dies at the next snapshot",
+    await run(
+      `(() => { const s = __codegAgent.snapshot({epoch: "nav-7"});
+                const m = s.tree.match(/button "Export" \\[ref=(e\\d+)\\]/);
+                __codegAgent.snapshot({epoch: "nav-8"});
+                return __codegAgent.elementForRef(s.generation, m[1]) })()`
+    ),
+    null
+  )
+
+  // The premise the whole design rests on, measured instead of assumed: this
+  // world cannot intercept the page's own history calls, which is why
+  // deciding when refs die has to be the host's job. Patch
+  // `History.prototype.pushState` here, then have the *page* navigate, and
+  // watch the patch not fire. Last, because it leaves the page elsewhere.
+  await run(`globalThis.__patchFired = false;
+             History.prototype.pushState = new Proxy(History.prototype.pushState, {
+               apply(t, self, args) { globalThis.__patchFired = true;
+                                      return Reflect.apply(t, self, args) } })`)
+  const before = await run("location.href")
+  await send("Runtime.evaluate", {
+    // No contextId: the page's own world, holding its own History.prototype.
+    expression: 'history.pushState({}, "", "?from-the-page")',
+    returnByValue: true,
+  })
+  check(
+    "a page's own pushState is invisible to a patch in this world",
+    [
+      await run("globalThis.__patchFired"),
+      (await run("location.href")) !== before,
+    ],
+    // Did not fire, yet the address did move — so the page really navigated
+    // and the patch really did not see it.
+    [false, true]
   )
 
   console.log(failures ? `\n${failures} failed` : "\nall checks passed")

@@ -30,13 +30,45 @@ writing that promotion ourselves; upstream had already made it unnecessary.
 the module, so a fresh document starts again at `e1` — two pages use the same
 names for different elements. Each world here draws a random `generation` and
 reports it with every snapshot; `elementForRef` refuses a ref that quotes an
-older one. A navigation destroys the world, so the next snapshot is a new
+older one. A new document destroys the world, so the next snapshot is a new
 generation and every ref an agent still holds is refused rather than resolved
 onto whatever now happens to be `e1`.
 
+A new document is not the only kind of navigation, and the other kind is the
+common one here: `pushState`, `replaceState` and hash changes leave the
+document, the world and the generation exactly as they were while the page
+becomes a different page. That is a route change in a single-page app — which
+is most of what a dev server serves — and the elements a framework keeps
+across one, the header and its buttons, are exactly the ones that would still
+resolve. So a snapshot also records the address it was taken at, and a ref is
+refused once the page has moved. The error runs in the safe direction: a
+caller told to snapshot again loses a round trip, a caller handed the wrong
+element loses the user's page.
+
+**Where that stops, and who takes over.** An address is not an identity. A
+route that goes A → B → A arrives back at a string that matches, on a page
+whose framework may have kept the DOM node and given it new meaning, and this
+world cannot see that it happened: the page's own `history.pushState` is
+invisible from an isolated world, because patching `History.prototype` here
+patches _this_ world's prototype while the page calls a different function
+object — the same isolation that keeps `__codegAgent` out of the page's reach.
+
+So the world enforces three floors it can check by looking — a new document, a
+moved address, a departed element — and `snapshot({ epoch })` mixes a host
+token into the generation an agent echoes back. Deciding _when_ refs die is
+the host's, because the host is the only party that sees the navigation.
+
+The probe measures the world's side of that, including the A → B → A case that
+the floors do not catch, and the premise underneath it: it patches
+`History.prototype.pushState` in the world, has the _page_ navigate, and
+checks that the patch never fired while the address moved anyway. It cannot
+measure the host's side, because there is no host here yet.
+
 **The tree can be capped.** `maxChars` cuts on a line boundary, so an agent
 never reads half a node, and the result says `truncated` so it knows to narrow
-the question rather than believe the page ended.
+the question rather than believe the page ended. A cap that lands inside the
+very first line has no boundary to use; the cap wins there and the line is cut
+where it falls.
 
 ## What is not here
 

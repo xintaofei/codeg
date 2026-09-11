@@ -2801,6 +2801,8 @@
     return `${buf[0].toString(36)}${buf[1].toString(36)}`;
   }
   var refs = /* @__PURE__ */ new Map();
+  var refsTakenAt = "";
+  var refsToken = "";
   function snapshot(options = {}) {
     const root = document.body ?? document.documentElement;
     const next = /* @__PURE__ */ new Map();
@@ -2812,10 +2814,12 @@
       rendered = renderAriaSnapshotAsYaml(json);
     }
     refs = next;
+    refsTakenAt = location.href;
+    refsToken = options.epoch !== void 0 ? `${GENERATION}.${options.epoch}` : GENERATION;
     const { text, truncated } = truncate(rendered, options.maxChars);
     return {
-      generation: GENERATION,
-      url: location.href,
+      generation: refsToken,
+      url: refsTakenAt,
       title: document.title,
       viewport: {
         width: window.innerWidth,
@@ -2828,7 +2832,8 @@
     };
   }
   function elementForRef(generation, ref) {
-    if (generation !== GENERATION) return null;
+    if (!refsToken || generation !== refsToken) return null;
+    if (location.href !== refsTakenAt) return null;
     const element = refs.get(ref);
     if (!element?.isConnected) return null;
     return element;

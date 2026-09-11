@@ -31,9 +31,10 @@ describe("truncate", () => {
       expect(tree.split("\n")).toContain(line)
   })
 
-  it("keeps the first line whole when it alone is over the cap", () => {
-    // Cutting to nothing would say less than one node does, and an empty tree
-    // reads as an empty page rather than as a tree that was cut.
+  it("obeys the cap even where there is no line boundary to cut on", () => {
+    // A cap inside the first line has no boundary to fall back to. The cap is
+    // the caller's own bound, so it wins; returning nothing would read as an
+    // empty page rather than as a tree that was too long.
     const { text, truncated } = truncate(tree, 5)
     expect(truncated).toBe(true)
     expect(text).toBe("- gen")
