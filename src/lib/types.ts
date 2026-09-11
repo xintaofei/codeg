@@ -4414,6 +4414,8 @@ export interface OpenCodeCatalogModel {
   context: number | null
   cost_in: number | null
   cost_out: number | null
+  cost_cache_read: number | null
+  cost_cache_write: number | null
 }
 
 /**
