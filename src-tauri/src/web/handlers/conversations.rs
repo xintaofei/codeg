@@ -381,6 +381,26 @@ pub async fn update_conversation_pinned(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct HideConversationTurnsParams {
+    pub conversation_id: i32,
+    pub hidden_timestamps_ms: Vec<i64>,
+}
+
+pub async fn hide_conversation_turns(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<HideConversationTurnsParams>,
+) -> Result<Json<()>, AppCommandError> {
+    conv_commands::hide_conversation_turns_core(
+        &state.db.conn,
+        params.conversation_id,
+        params.hidden_timestamps_ms,
+    )
+    .await?;
+    Ok(Json(()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteConversationParams {
     pub conversation_id: i32,
 }
