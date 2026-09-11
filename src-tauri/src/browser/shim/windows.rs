@@ -405,7 +405,18 @@ fn on_event(key: usize, event: &str, raw: &str) {
             ) else {
                 return;
             };
-            state.contexts.borrow_mut().insert(id, frame.to_string());
+            let mut contexts = state.contexts.borrow_mut();
+            // A frame holds one `codeg` world at a time, so an older entry
+            // naming this frame is a context that is already gone — its
+            // document was replaced, or the renderer that owed us its
+            // `executionContextDestroyed` went away without sending one. It is
+            // retired here rather than left to be believed later: the id a
+            // context is known by is handed out per renderer process and starts
+            // over in each, so an id nobody retired can come back naming a
+            // frame that is not the one that first held it — and this map is
+            // what decides whether a message came from the main frame.
+            contexts.retain(|_, held| held.as_str() != frame);
+            contexts.insert(id, frame.to_string());
         }
         "Runtime.executionContextDestroyed" => {
             if let Some(id) = value["executionContextId"].as_i64() {
@@ -1245,12 +1256,106 @@ fn classify_web_error(status: COREWEBVIEW2_WEB_ERROR_STATUS) -> Option<BrowserEr
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT, COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT,
         COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN,
         COREWEBVIEW2_WEB_ERROR_STATUS_VALID_AUTHENTICATION_CREDENTIALS_REQUIRED,
     };
+
+    /// A surface whose CDP events can be fed by hand. No webview: everything
+    /// the event side touches is the thread-local state, and a test thread has
+    /// its own.
+    struct Surface {
+        key: usize,
+        heard: Arc<Mutex<Vec<(String, bool)>>>,
+    }
+
+    impl Surface {
+        fn new(key: usize) -> Self {
+            let heard: Arc<Mutex<Vec<(String, bool)>>> = Arc::default();
+            let recorder = heard.clone();
+            let sink: MessageSink = Arc::new(move |payload, main_frame, _| {
+                recorder.lock().unwrap().push((payload, main_frame));
+            });
+            *state_of(key).sink.borrow_mut() = Some(sink);
+            Self { key, heard }
+        }
+
+        fn event(&self, event: &str, params: Value) {
+            on_event(self.key, event, &params.to_string());
+        }
+
+        fn world(&self, id: i64, frame: &str) {
+            self.event(
+                "Runtime.executionContextCreated",
+                json!({ "context": {
+                    "id": id,
+                    "name": WORLD_NAME,
+                    "auxData": { "frameId": frame },
+                } }),
+            );
+        }
+
+        /// What the main-frame decision came out as for a message sent from
+        /// `context`.
+        fn spoke_as_main_frame(&self, context: i64) -> bool {
+            self.event(
+                "Runtime.bindingCalled",
+                json!({ "name": BINDING_NAME, "payload": "{}", "executionContextId": context }),
+            );
+            self.heard.lock().unwrap().pop().expect("a message").1
+        }
+    }
+
+    /// Which frame a message came from is decided by the execution context the
+    /// engine reports it in, and a context id is handed out per renderer
+    /// process — so an id that outlived its context can come back naming a
+    /// frame that is not the one it was recorded for. A frame's newer world
+    /// therefore retires the entry its older one left behind, and a context
+    /// nobody knows is nobody's main frame.
+    #[test]
+    fn a_frames_newer_world_retires_the_one_it_replaced() {
+        let surface = Surface::new(0x5f1);
+        surface.event(
+            "Page.frameNavigated",
+            json!({ "frame": { "id": "F-main", "parentId": Value::Null } }),
+        );
+        surface.world(1, "F-main");
+        surface.world(2, "F-sub");
+        assert!(surface.spoke_as_main_frame(1));
+        assert!(!surface.spoke_as_main_frame(2));
+        // The main frame's next document builds its world again. Whether the
+        // old context's destruction was ever reported or not, context 1 is not
+        // the main frame any more.
+        surface.world(9, "F-main");
+        assert!(surface.spoke_as_main_frame(9));
+        assert!(!surface.spoke_as_main_frame(1));
+        assert_eq!(main_world_context(&state_of(surface.key)), Some(9));
+        // An id from a renderer that never reported its contexts is nobody.
+        assert!(!surface.spoke_as_main_frame(7));
+    }
+
+    /// A subframe reusing the id a retired main-frame context was known by
+    /// speaks for itself and not for the page.
+    #[test]
+    fn a_reused_context_id_speaks_for_the_frame_that_has_it_now() {
+        let surface = Surface::new(0x5f2);
+        surface.event(
+            "Page.frameNavigated",
+            json!({ "frame": { "id": "F-main", "parentId": Value::Null } }),
+        );
+        surface.world(3, "F-main");
+        assert!(surface.spoke_as_main_frame(3));
+        surface.event(
+            "Runtime.executionContextDestroyed",
+            json!({ "executionContextId": 3 }),
+        );
+        surface.world(3, "F-sub");
+        assert!(!surface.spoke_as_main_frame(3));
+    }
 
     /// The engine's statuses, by kind — and the one that is NOT a page failure.
     #[test]
