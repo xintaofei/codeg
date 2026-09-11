@@ -15,6 +15,11 @@ use tauri::Url;
 /// else — `file:`, `tauri:`, `javascript:`, `data:` documents, custom schemes —
 /// is refused: a tab must never be able to reach the app's own origin or the
 /// local filesystem.
+/// How far back a page-initiated new-window request may look for a user
+/// gesture before it counts as an unsolicited popup. Both surfaces ask it:
+/// the embedded one on macOS and Windows, the owned window on Linux.
+pub const POPUP_GESTURE_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+
 pub fn navigation_allowed(url: &Url) -> bool {
     match url.scheme() {
         "http" | "https" => true,

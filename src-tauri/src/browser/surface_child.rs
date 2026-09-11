@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 use std::thread::ThreadId;
+#[cfg(target_os = "windows")]
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager, Url, WebviewWindow};
@@ -56,10 +57,6 @@ thread_local! {
 
 static MAIN_THREAD: OnceLock<ThreadId> = OnceLock::new();
 static POPUP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-/// How far back a page-initiated new-window request may look for a user
-/// gesture before it counts as an unsolicited popup.
-pub const POPUP_GESTURE_WINDOW: Duration = Duration::from_secs(1);
 
 /// Must be called once from the main thread (tauri's `setup` hook) before any
 /// surface is created; lets `ChildHandle` run inline instead of deadlocking
@@ -763,7 +760,7 @@ fn configure_child<'a>(
             // JS involved: a page can always add a later listener, so only
             // the navigation itself is a reliable signal.)
             if let Some(registry) = nav_app.try_state::<BrowserRegistry>() {
-                if registry.take_modifier_click(&nav_id, &url, POPUP_GESTURE_WINDOW) {
+                if registry.take_modifier_click(&nav_id, &url, policy::POPUP_GESTURE_WINDOW) {
                     events::emit_open_request(
                         &nav_app,
                         &BrowserOpenRequestPayload {
@@ -1003,7 +1000,7 @@ fn new_window_handler(
         let has_gesture = registry
             .recent_gestures(&opener_tab_id)
             .iter()
-            .any(|g| g.received.elapsed() <= POPUP_GESTURE_WINDOW);
+            .any(|g| g.received.elapsed() <= policy::POPUP_GESTURE_WINDOW);
         if !has_gesture {
             return deny(&app, &opener_tab_id, &url, &features, "no-gesture");
         }

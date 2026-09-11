@@ -33,6 +33,25 @@ pub fn create(
     devtools: bool,
     profile: &str,
 ) -> tauri::Result<WebviewWindow> {
+    build(app, owner, tab_id, label, title, background, devtools, profile, None)
+}
+
+/// The window a page asked for, built from the one that asked: same profile,
+/// same hooks, and — where the engine insists on it — related to the opener,
+/// which is what keeps `window.opener`, `Referer` and `noopener` the page's
+/// own business rather than the host's.
+#[allow(clippy::too_many_arguments)]
+fn build(
+    app: &AppHandle,
+    owner: &WebviewWindow,
+    tab_id: &str,
+    label: &str,
+    title: &str,
+    background: bool,
+    devtools: bool,
+    profile: &str,
+    opener: Option<platform::OpenerView>,
+) -> tauri::Result<WebviewWindow> {
     let blank = Url::parse("about:blank").expect("static url");
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(blank))
         .title(title)
@@ -136,6 +155,11 @@ pub fn create(
             }
         }
     };
+    let builder = platform::relate(builder, opener);
+    // Every browser window answers `window.open` the same way: the popup
+    // blocker's decision, and then a window of its own registered as a tab
+    // beside the one that asked (see `platform::new_window`).
+    let builder = platform::watch_new_windows(builder, app, owner, tab_id, profile);
     let builder = builder.parent(owner)?;
     let window = builder.build()?;
 
@@ -179,18 +203,35 @@ pub fn create(
 mod platform {
     use std::cell::RefCell;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;
     use std::sync::{Arc, OnceLock};
     use std::thread::ThreadId;
     use std::time::Duration;
 
-    use tauri::{AppHandle, Manager, Url, WebviewWindow};
+    use tauri::webview::{NewWindowFeatures, NewWindowResponse};
+    use tauri::{AppHandle, Manager, Url, WebviewWindow, WebviewWindowBuilder, Wry};
     use webkit2gtk::WebView;
 
     use super::super::channel;
+    use super::super::events;
     use super::super::hooks;
+    use super::super::policy::{self, BrowserPolicy};
+    use super::super::profile;
+    use super::super::registry::{BrowserRegistry, BrowserTab};
     use super::super::shim::linux as shim;
-    use super::super::surface::SurfaceError;
+    use super::super::surface::{BrowserSurface, SurfaceError};
+    use super::super::types::{
+        BrowserPopupPayload, BrowserTabState, ChannelKind, PopupPresentation, SurfaceKind, TabKind,
+    };
+    use super::super::tab_label;
+
+    /// The opener a new window must be built from: WebKitGTK refuses to open
+    /// one for a page unless the webview it is given is RELATED to the webview
+    /// that asked, which is also what carries `window.opener` across.
+    pub type OpenerView = WebView;
+
+    static POPUP_SEQ: AtomicU64 = AtomicU64::new(0);
 
     struct Live {
         webview: WebView,
@@ -289,6 +330,186 @@ mod platform {
         if let Some(live) = live {
             shim::forget(&live.webview);
         }
+    }
+
+    /// Build the new window from the one that asked for it.
+    pub(super) fn relate<'a>(
+        builder: WebviewWindowBuilder<'a, Wry, AppHandle>,
+        opener: Option<OpenerView>,
+    ) -> WebviewWindowBuilder<'a, Wry, AppHandle> {
+        match opener {
+            Some(view) => builder.with_related_view(view),
+            None => builder,
+        }
+    }
+
+    /// Answer `window.open` the way the embedded surfaces do: the scheme list,
+    /// then the site rules, then a user gesture the page can point at — and
+    /// only then a window of its own, registered as a tab beside the one that
+    /// asked. The engine navigates that window itself, so `window.opener`,
+    /// `Referer` and `noopener` are what the page asked for; the host only
+    /// decides whether there is a window at all.
+    pub(super) fn watch_new_windows<'a>(
+        builder: WebviewWindowBuilder<'a, Wry, AppHandle>,
+        app: &AppHandle,
+        owner: &WebviewWindow,
+        tab_id: &str,
+        profile: &str,
+    ) -> WebviewWindowBuilder<'a, Wry, AppHandle> {
+        let app = app.clone();
+        let owner_label = owner.label().to_string();
+        let opener_tab_id = tab_id.to_string();
+        let profile = profile.to_string();
+        builder.on_new_window(move |url, features| {
+            new_window(&app, &owner_label, &opener_tab_id, &profile, url, features)
+        })
+    }
+
+    fn new_window(
+        app: &AppHandle,
+        owner_label: &str,
+        opener_tab_id: &str,
+        profile: &str,
+        url: Url,
+        features: NewWindowFeatures,
+    ) -> NewWindowResponse<Wry> {
+        let Some(registry) = app.try_state::<BrowserRegistry>() else {
+            return NewWindowResponse::Deny;
+        };
+        if !policy::navigation_allowed(&url) {
+            return deny(app, opener_tab_id, &url, &features, "blocked-scheme");
+        }
+        if app
+            .try_state::<BrowserPolicy>()
+            .is_some_and(|policy| policy.blocked(&url))
+        {
+            return deny(app, opener_tab_id, &url, &features, "blocked-host");
+        }
+        let has_gesture = registry
+            .recent_gestures(opener_tab_id)
+            .iter()
+            .any(|g| g.received.elapsed() <= policy::POPUP_GESTURE_WINDOW);
+        if !has_gesture {
+            return deny(app, opener_tab_id, &url, &features, "no-gesture");
+        }
+        let Some(owner) = app.get_webview_window(owner_label) else {
+            return deny(app, opener_tab_id, &url, &features, "owner-gone");
+        };
+        // A fresh id: the counter is process-wide, but an id could still be
+        // taken (the frontend names its own tabs), and a label already in use
+        // would fail the build.
+        let tab_id = loop {
+            let seq = POPUP_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+            let candidate = format!("{opener_tab_id}-p{seq}");
+            if !registry.contains(&candidate) {
+                break candidate;
+            }
+        };
+        let label = tab_label(&tab_id);
+        // Held until the popup is registered: a deletion of the profile that
+        // has begun refuses it, and one that begins now waits.
+        let Ok(_admission) = profile::admit(profile) else {
+            return deny(app, opener_tab_id, &url, &features, "profile-deleting");
+        };
+        let window = match super::build(
+            app,
+            &owner,
+            &tab_id,
+            &label,
+            &crate::commands::browser::origin_title(&url),
+            false,
+            registry
+                .update(opener_tab_id, |tab| tab.devtools)
+                .unwrap_or(false),
+            profile,
+            Some(features.opener().webview.clone()),
+        ) {
+            Ok(window) => window,
+            Err(err) => {
+                tracing::warn!("[browser] popup window creation failed: {err}");
+                return deny(app, opener_tab_id, &url, &features, "create-failed");
+            }
+        };
+        let surface = BrowserSurface::Window(Box::new(window.clone()));
+        let mut state = BrowserTabState {
+            tab_id: tab_id.clone(),
+            owner_window: owner_label.to_string(),
+            kind: TabKind::Page,
+            surface: SurfaceKind::Window,
+            channel: ChannelKind::Degraded, // native once `hello` arrives
+            channel_error: None,
+            url: String::new(),
+            requested_url: url.to_string(),
+            title: String::new(),
+            favicon: None,
+            loading: true,
+            can_go_back: false,
+            can_go_forward: false,
+            origin: None,
+            zoom: 1.0,
+            error: None,
+            remote_host: None,
+            opener_tab_id: Some(opener_tab_id.to_string()),
+            profile: Some(profile.to_string()),
+        };
+        // Before the engine loads anything into it.
+        if let Err(err) = install_channel(&window) {
+            tracing::warn!("[browser] popup {tab_id}: page channel unavailable ({err})");
+            state.channel_error = Some(err.to_string());
+        }
+        if let Err(err) = registry.insert(BrowserTab::new(
+            state.clone(),
+            surface.clone(),
+            Default::default(),
+            true,
+            false,
+        )) {
+            tracing::warn!("[browser] popup registry insert failed: {err}");
+            let _ = surface.close();
+            return deny(app, opener_tab_id, &url, &features, "registry");
+        }
+        // The engine navigates this window itself; arm the failed-load watcher
+        // since a never-committing load reports nothing.
+        hooks::begin_load(app, &tab_id);
+        events::emit_state(app, &state);
+        events::emit_popup(
+            app,
+            &BrowserPopupPayload {
+                presentation: PopupPresentation::Adopted,
+                opener_tab_id: opener_tab_id.to_string(),
+                tab_id: Some(tab_id),
+                url: url.to_string(),
+                requested_size: features.size().map(|s| [s.width, s.height]),
+                reason: None,
+                profile: Some(profile.to_string()),
+            },
+        );
+        NewWindowResponse::Create { window }
+    }
+
+    fn deny(
+        app: &AppHandle,
+        opener_tab_id: &str,
+        url: &Url,
+        features: &NewWindowFeatures,
+        reason: &str,
+    ) -> NewWindowResponse<Wry> {
+        tracing::info!(
+            "[browser] tab {opener_tab_id}: new-window request for {url} denied ({reason})"
+        );
+        events::emit_popup(
+            app,
+            &BrowserPopupPayload {
+                presentation: PopupPresentation::Denied,
+                opener_tab_id: opener_tab_id.to_string(),
+                tab_id: None,
+                url: url.to_string(),
+                requested_size: features.size().map(|s| [s.width, s.height]),
+                reason: Some(reason.to_string()),
+                profile: None,
+            },
+        );
+        NewWindowResponse::Deny
     }
 
     /// Main thread. Give the page the identity `profile` wants for where it is
@@ -417,15 +638,38 @@ mod platform {
 /// platforms. Nothing here fails silently: each call says what it needs.
 #[cfg(not(target_os = "linux"))]
 mod platform {
-    use tauri::{AppHandle, Url, WebviewWindow};
+    use tauri::{AppHandle, Url, WebviewWindow, WebviewWindowBuilder, Wry};
 
     use super::super::surface::SurfaceError;
+
+    /// Nothing is needed to relate an owned window to its opener here: the
+    /// embedded surface is where a popup is adopted on both platforms.
+    pub type OpenerView = ();
 
     fn embedded_only(what: &str) -> SurfaceError {
         SurfaceError(format!("{what} needs an embedded surface on this platform"))
     }
 
     pub fn init_main_thread() {}
+
+    pub(super) fn relate<'a>(
+        builder: WebviewWindowBuilder<'a, Wry, AppHandle>,
+        _opener: Option<OpenerView>,
+    ) -> WebviewWindowBuilder<'a, Wry, AppHandle> {
+        builder
+    }
+
+    /// `surface_child` answers `window.open` for the embedded surface, which is
+    /// the one a page runs in here.
+    pub(super) fn watch_new_windows<'a>(
+        builder: WebviewWindowBuilder<'a, Wry, AppHandle>,
+        _app: &AppHandle,
+        _owner: &WebviewWindow,
+        _tab_id: &str,
+        _profile: &str,
+    ) -> WebviewWindowBuilder<'a, Wry, AppHandle> {
+        builder
+    }
 
     pub(super) fn adopt(_app: &AppHandle, _window: &WebviewWindow, _tab_id: &str) {}
 
