@@ -96,14 +96,8 @@ pub fn normalize_models_dev(raw: &str) -> Result<Vec<CatalogProvider>, AppComman
             .filter(|s| !s.is_empty())
             .unwrap_or(&id)
             .to_string();
-        let npm = p
-            .get("npm")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let doc = p
-            .get("doc")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let npm = p.get("npm").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let doc = p.get("doc").and_then(|v| v.as_str()).map(|s| s.to_string());
         let env = p
             .get("env")
             .and_then(|v| v.as_array())
@@ -113,7 +107,12 @@ pub fn normalize_models_dev(raw: &str) -> Result<Vec<CatalogProvider>, AppComman
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let auth_kind = if is_oauth_provider(&id) { "oauth" } else { "api" }.to_string();
+        let auth_kind = if is_oauth_provider(&id) {
+            "oauth"
+        } else {
+            "api"
+        }
+        .to_string();
 
         let mut models = Vec::new();
         if let Some(model_obj) = p.get("models").and_then(|v| v.as_object()) {
@@ -135,8 +134,14 @@ pub fn normalize_models_dev(raw: &str) -> Result<Vec<CatalogProvider>, AppComman
                 models.push(CatalogModel {
                     id: model_id,
                     name: model_name,
-                    reasoning: m.get("reasoning").and_then(|v| v.as_bool()).unwrap_or(false),
-                    tool_call: m.get("tool_call").and_then(|v| v.as_bool()).unwrap_or(false),
+                    reasoning: m
+                        .get("reasoning")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    tool_call: m
+                        .get("tool_call")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
                     context: m
                         .get("limit")
                         .and_then(|v| v.get("context"))
@@ -181,7 +186,10 @@ pub fn bundled_catalog() -> Vec<CatalogProvider> {
 }
 
 fn cache_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("cache").join("opencode").join("models-dev.json")
+    data_dir
+        .join("cache")
+        .join("opencode")
+        .join("models-dev.json")
 }
 
 fn read_cache(data_dir: &Path, require_fresh: bool) -> Option<Vec<CatalogProvider>> {
@@ -224,11 +232,9 @@ async fn fetch_live() -> Result<Vec<CatalogProvider>, AppCommandError> {
         .map_err(|e| {
             AppCommandError::network(format!("failed to build models.dev http client: {e}"))
         })?;
-    let response = client
-        .get(MODELS_DEV_URL)
-        .send()
-        .await
-        .map_err(|e| AppCommandError::network(format!("failed to fetch models.dev catalog: {e}")))?;
+    let response = client.get(MODELS_DEV_URL).send().await.map_err(|e| {
+        AppCommandError::network(format!("failed to fetch models.dev catalog: {e}"))
+    })?;
     if !response.status().is_success() {
         return Err(AppCommandError::network(format!(
             "failed to fetch models.dev catalog: HTTP {}",
@@ -272,7 +278,10 @@ mod tests {
             catalog.len()
         );
         let openai = catalog.iter().find(|p| p.id == "openai");
-        assert!(openai.is_some(), "snapshot must include the openai provider");
+        assert!(
+            openai.is_some(),
+            "snapshot must include the openai provider"
+        );
         let openai = openai.unwrap();
         assert_eq!(openai.auth_kind, "oauth");
         assert!(!openai.models.is_empty());

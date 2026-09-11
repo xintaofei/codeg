@@ -62,6 +62,7 @@ tauri-plugin-dialog = { version = "2", optional = true }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+indexmap = { version = "2", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 # Host IANA zone name (e.g. `Asia/Shanghai`) — chrono only exposes the offset.

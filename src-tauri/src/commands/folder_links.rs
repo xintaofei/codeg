@@ -254,8 +254,7 @@ fn validate_target(
     if trimmed.is_empty() {
         return Err(FolderLinkRejection::NotFound);
     }
-    let canonical =
-        std::fs::canonicalize(trimmed).map_err(|_| FolderLinkRejection::NotFound)?;
+    let canonical = std::fs::canonicalize(trimmed).map_err(|_| FolderLinkRejection::NotFound)?;
     if !canonical.is_dir() {
         return Err(FolderLinkRejection::NotADirectory);
     }
@@ -282,8 +281,11 @@ fn validate_target(
 #[cfg(unix)]
 fn create_dir_symlink(target: &Path, link: &Path) -> Result<(), AppCommandError> {
     std::os::unix::fs::symlink(target, link).map_err(|e| {
-        AppCommandError::io_error("Failed to create the folder link")
-            .with_detail(format!("{} -> {}: {e}", link.display(), target.display()))
+        AppCommandError::io_error("Failed to create the folder link").with_detail(format!(
+            "{} -> {}: {e}",
+            link.display(),
+            target.display()
+        ))
     })
 }
 
@@ -396,9 +398,12 @@ fn git_exclude_line(toplevel: &Path, root: &Path, name: &str) -> String {
     let rel = std::fs::canonicalize(root)
         .ok()
         .and_then(|canonical_root| {
-            std::fs::canonicalize(toplevel)
-                .ok()
-                .and_then(|top| canonical_root.strip_prefix(&top).map(Path::to_path_buf).ok())
+            std::fs::canonicalize(toplevel).ok().and_then(|top| {
+                canonical_root
+                    .strip_prefix(&top)
+                    .map(Path::to_path_buf)
+                    .ok()
+            })
         })
         .unwrap_or_default();
     let prefix = rel.to_string_lossy().replace('\\', "/");
@@ -443,7 +448,10 @@ async fn add_to_git_exclude(root: &Path, name: &str) {
     next.push_str(&line);
     next.push('\n');
     if let Err(e) = std::fs::write(&exclude_path, next) {
-        tracing::debug!("[folder-link] could not update {}: {e}", exclude_path.display());
+        tracing::debug!(
+            "[folder-link] could not update {}: {e}",
+            exclude_path.display()
+        );
     }
 }
 
@@ -1083,10 +1091,7 @@ mod tests {
         std::fs::create_dir_all(&nested).expect("mkdir");
 
         assert_eq!(git_exclude_line(&top, &top, "api"), "/api");
-        assert_eq!(
-            git_exclude_line(&top, &nested, "api"),
-            "/packages/app/api"
-        );
+        assert_eq!(git_exclude_line(&top, &nested, "api"), "/packages/app/api");
 
         let _ = std::fs::remove_dir_all(&top);
     }
@@ -1267,11 +1272,7 @@ mod lifecycle_tests {
         let mut names: Vec<String> = std::fs::read_dir(root)
             .expect("read_dir")
             .flatten()
-            .filter(|e| {
-                e.file_type()
-                    .map(|ft| ft.is_symlink())
-                    .unwrap_or(false)
-            })
+            .filter(|e| e.file_type().map(|ft| ft.is_symlink()).unwrap_or(false))
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
         names.sort();
@@ -1283,12 +1284,10 @@ mod lifecycle_tests {
         targets: &[&Path],
     ) -> (crate::db::AppDatabase, i32, Vec<FolderLinkDetail>) {
         let db = fresh_in_memory_db().await;
-        let folder = crate::commands::folders::open_folder_core(
-            &db,
-            root.to_string_lossy().into_owned(),
-        )
-        .await
-        .expect("open folder");
+        let folder =
+            crate::commands::folders::open_folder_core(&db, root.to_string_lossy().into_owned())
+                .await
+                .expect("open folder");
         let items = targets
             .iter()
             .map(|t| FolderLinkRequest {
@@ -1311,14 +1310,9 @@ mod lifecycle_tests {
         let link_id = created[0].id;
         let original = created[0].name.clone();
 
-        let renamed = rename_folder_link_core(
-            &emitter(),
-            &db,
-            link_id,
-            original.to_uppercase(),
-        )
-        .await
-        .expect("case-only rename");
+        let renamed = rename_folder_link_core(&emitter(), &db, link_id, original.to_uppercase())
+            .await
+            .expect("case-only rename");
 
         assert_eq!(renamed.name, original.to_uppercase());
         // The row must describe something that is actually there. Skipping the
@@ -1332,9 +1326,7 @@ mod lifecycle_tests {
         // Exactly one link, whatever the filesystem's case sensitivity.
         assert_eq!(link_names(root.path()).len(), 1);
 
-        let listed = list_folder_links_core(&db, folder_id)
-            .await
-            .expect("list");
+        let listed = list_folder_links_core(&db, folder_id).await.expect("list");
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].status, FolderLinkStatus::Ok);
     }
@@ -1394,10 +1386,13 @@ mod lifecycle_tests {
     async fn the_same_directory_submitted_twice_links_once() {
         let root = tempfile::tempdir().expect("root");
         let linked = tempfile::tempdir().expect("linked");
-        let (_db, _folder_id, created) =
-            setup(root.path(), &[linked.path(), linked.path()]).await;
+        let (_db, _folder_id, created) = setup(root.path(), &[linked.path(), linked.path()]).await;
 
-        assert_eq!(created.len(), 1, "no `api` + `api-2` pair for one directory");
+        assert_eq!(
+            created.len(),
+            1,
+            "no `api` + `api-2` pair for one directory"
+        );
         assert_eq!(link_names(root.path()).len(), 1);
     }
 

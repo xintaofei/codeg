@@ -482,8 +482,9 @@ pub async fn ensure_binary_for_agent_with_progress(
 /// Hex SHA-256 of a file, streamed so a large archive never lands in memory.
 fn file_sha256(path: &std::path::Path) -> Result<String, AcpError> {
     use sha2::{Digest, Sha256};
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| AcpError::DownloadFailed(format!("failed to open archive for hashing: {e}")))?;
+    let mut file = std::fs::File::open(path).map_err(|e| {
+        AcpError::DownloadFailed(format!("failed to open archive for hashing: {e}"))
+    })?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {

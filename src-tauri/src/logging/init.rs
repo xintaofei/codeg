@@ -376,9 +376,9 @@ fn is_valid_target(target: &str) -> bool {
     {
         return false;
     }
-    target.split("::").all(|seg| {
-        !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-    })
+    target
+        .split("::")
+        .all(|seg| !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
 }
 
 /// Build a reload handle not attached to any installed subscriber, for tests
@@ -835,9 +835,10 @@ mod tests {
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let subscriber = Registry::default()
-            .with(EnvFilter::builder().parse_lossy(
-                "trace,tungstenite::handshake::client[{message}]=trace",
-            ))
+            .with(
+                EnvFilter::builder()
+                    .parse_lossy("trace,tungstenite::handshake::client[{message}]=trace"),
+            )
             .with(filter_fn(|meta| !is_credential_dump_target(meta.target())))
             .with(CaptureTargets(seen.clone()));
 
@@ -994,7 +995,10 @@ mod tests {
         assert_eq!(env_level_for_target("other=trace", "sacp"), LogLevel::Off);
         assert_eq!(env_level_for_target("", "sacp"), LogLevel::Off);
         // Case is tolerated in a level.
-        assert_eq!(env_level_for_target("INFO,sacp=WARN", "sacp"), LogLevel::Warn);
+        assert_eq!(
+            env_level_for_target("INFO,sacp=WARN", "sacp"),
+            LogLevel::Warn
+        );
         // Malformed `=level` is dropped, like `parse_lossy` does.
         assert_eq!(env_level_for_target("=info", "sacp"), LogLevel::Off);
     }
@@ -1032,11 +1036,11 @@ mod tests {
 
         // The unpadded spelling of the same intent still works normally, so this
         // is fidelity to EnvFilter rather than a blanket refusal.
+        assert_eq!(env_level_for_target("info,sacp=off", "sacp"), LogLevel::Off);
         assert_eq!(
-            env_level_for_target("info,sacp=off", "sacp"),
-            LogLevel::Off
+            env_level_for_target("info,other=off", "sacp"),
+            LogLevel::Info
         );
-        assert_eq!(env_level_for_target("info,other=off", "sacp"), LogLevel::Info);
     }
 
     /// `parse_lossy` DROPS a directive whose level is invalid — it does not
@@ -1189,13 +1193,10 @@ mod tests {
             },
         );
         // Both empty / whitespace-only → no override.
-        temp_env::with_vars(
-            [("CODEG_LOG", Some("  ")), ("RUST_LOG", Some(""))],
-            || {
-                assert_eq!(env_level_override(), None);
-                assert!(!env_level_is_set());
-            },
-        );
+        temp_env::with_vars([("CODEG_LOG", Some("  ")), ("RUST_LOG", Some(""))], || {
+            assert_eq!(env_level_override(), None);
+            assert!(!env_level_is_set());
+        });
         // CODEG_LOG wins when both are non-empty.
         temp_env::with_vars(
             [("CODEG_LOG", Some("trace")), ("RUST_LOG", Some("debug"))],

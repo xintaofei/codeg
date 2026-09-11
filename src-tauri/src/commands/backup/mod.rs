@@ -111,10 +111,9 @@ mod tauri_commands {
     }
 
     fn resolve_data_dir(app: &AppHandle) -> Result<PathBuf, AppCommandError> {
-        let fallback = app
-            .path()
-            .app_data_dir()
-            .map_err(|e| AppCommandError::io_error("Resolve app data dir").with_detail(e.to_string()))?;
+        let fallback = app.path().app_data_dir().map_err(|e| {
+            AppCommandError::io_error("Resolve app data dir").with_detail(e.to_string())
+        })?;
         Ok(crate::paths::resolve_effective_data_dir(&fallback))
     }
 
@@ -136,9 +135,15 @@ mod tauri_commands {
             app_version: APP_VERSION,
             runtime_label: "desktop",
         };
-        let result =
-            create_backup_core(inputs, options.into(), Path::new(&dest_path), &emitter, &op_id, &cancel)
-                .await;
+        let result = create_backup_core(
+            inputs,
+            options.into(),
+            Path::new(&dest_path),
+            &emitter,
+            &op_id,
+            &cancel,
+        )
+        .await;
         transfer.finish_transfer(&op_id).await;
         result
     }

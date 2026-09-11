@@ -587,7 +587,9 @@ async fn end_to_end_uds_ask_revoked_after_register_declines() {
                 .await
         }
         async fn cancel_questions_by_parent(&self, parent_connection_id: &str) {
-            self.inner.cancel_questions_by_parent(parent_connection_id).await
+            self.inner
+                .cancel_questions_by_parent(parent_connection_id)
+                .await
         }
     }
 

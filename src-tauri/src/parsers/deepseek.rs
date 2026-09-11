@@ -946,14 +946,18 @@ fn parse_session_events(text: &str, attachments: Option<&Path>) -> SessionParse 
             // stopped remembering them.
             "compaction/start" => {
                 let Some(data) = data else { continue };
-                let Some(id) = compaction_id(data) else { continue };
+                let Some(id) = compaction_id(data) else {
+                    continue;
+                };
                 let entry = open_compactions.entry(id).or_default();
                 entry.started_at = ts;
                 entry.manual = data.get("sourceCommandId").is_some();
             }
             "compaction/summary" => {
                 let Some(data) = data else { continue };
-                let Some(id) = compaction_id(data) else { continue };
+                let Some(id) = compaction_id(data) else {
+                    continue;
+                };
                 // `or_default` rather than a lookup: a log can begin AFTER the
                 // opening marker (a fork seed, or a truncated prefix from a
                 // half-written final frame), and a compaction with no visible
@@ -971,7 +975,9 @@ fn parse_session_events(text: &str, attachments: Option<&Path>) -> SessionParse 
             }
             "compaction/end" => {
                 let Some(data) = data else { continue };
-                let Some(id) = compaction_id(data) else { continue };
+                let Some(id) = compaction_id(data) else {
+                    continue;
+                };
                 let entry = open_compactions.remove(&id).unwrap_or_default();
                 let error = data
                     .get("error")
@@ -1166,7 +1172,10 @@ mod tests {
         // Upstream `resolveDshHome` treats a WHITESPACE-only override as unset
         // too ("a blank override never resolves the home to the cwd").
         assert_eq!(
-            resolve_dsh_home_from(Some(OsString::from("   ")), Some(PathBuf::from("/home/demo"))),
+            resolve_dsh_home_from(
+                Some(OsString::from("   ")),
+                Some(PathBuf::from("/home/demo"))
+            ),
             PathBuf::from("/home/demo/.dsh")
         );
         // ... and expands a leading `~` (`expandHomePath`) before use, so a
@@ -1185,7 +1194,10 @@ mod tests {
         );
         // `~user` is NOT a prefix upstream expands — kept verbatim.
         assert_eq!(
-            resolve_dsh_home_from(Some(OsString::from("~root/x")), Some(PathBuf::from("/home/demo"))),
+            resolve_dsh_home_from(
+                Some(OsString::from("~root/x")),
+                Some(PathBuf::from("/home/demo"))
+            ),
             PathBuf::from("~root/x")
         );
     }
@@ -2032,10 +2044,7 @@ mod tests {
         )));
         // The compaction's replacement message is plugin-sourced, so no user
         // turn was invented out of the summary text.
-        assert!(!sp
-            .turns
-            .iter()
-            .any(|t| matches!(t.role, TurnRole::User)));
+        assert!(!sp.turns.iter().any(|t| matches!(t.role, TurnRole::User)));
     }
 
     #[test]
@@ -2054,10 +2063,11 @@ mod tests {
         assert!(marker.get("preTokens").is_none());
         assert!(marker.get("postTokens").is_none());
 
-        assert!(sp.turns.iter().flat_map(|t| &t.blocks).any(|b| matches!(
-            b,
-            ContentBlock::ToolResult { is_error: true, .. }
-        )));
+        assert!(sp
+            .turns
+            .iter()
+            .flat_map(|t| &t.blocks)
+            .any(|b| matches!(b, ContentBlock::ToolResult { is_error: true, .. })));
     }
 
     // A log can begin after the opening marker (a fork seed, or a prefix left

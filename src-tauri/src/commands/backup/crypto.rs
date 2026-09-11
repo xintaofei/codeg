@@ -103,9 +103,14 @@ pub fn is_encrypted(path: &Path) -> Result<bool, AppCommandError> {
     Ok(n >= ENVELOPE_MAGIC.len() && &head[..ENVELOPE_MAGIC.len()] == ENVELOPE_MAGIC)
 }
 
-fn derive_key(passphrase: &str, salt: &[u8], params: &KdfParams) -> Result<[u8; 32], AppCommandError> {
-    let p = Params::new(params.m_cost, params.t_cost, params.p_cost, Some(32))
-        .map_err(|e| AppCommandError::task_execution_failed("Invalid KDF parameters").with_detail(e.to_string()))?;
+fn derive_key(
+    passphrase: &str,
+    salt: &[u8],
+    params: &KdfParams,
+) -> Result<[u8; 32], AppCommandError> {
+    let p = Params::new(params.m_cost, params.t_cost, params.p_cost, Some(32)).map_err(|e| {
+        AppCommandError::task_execution_failed("Invalid KDF parameters").with_detail(e.to_string())
+    })?;
     let version = if params.version == 0x10 {
         Version::V0x10
     } else {
@@ -115,7 +120,10 @@ fn derive_key(passphrase: &str, salt: &[u8], params: &KdfParams) -> Result<[u8; 
     let mut key = [0u8; 32];
     argon2
         .hash_password_into(passphrase.as_bytes(), salt, &mut key)
-        .map_err(|e| AppCommandError::task_execution_failed("Key derivation failed").with_detail(e.to_string()))?;
+        .map_err(|e| {
+            AppCommandError::task_execution_failed("Key derivation failed")
+                .with_detail(e.to_string())
+        })?;
     Ok(key)
 }
 
@@ -151,14 +159,19 @@ pub fn encrypt_file(
 
     // Write the cleartext header.
     out.write_all(ENVELOPE_MAGIC).map_err(AppCommandError::io)?;
-    out.write_all(&[ENVELOPE_HEADER_VERSION]).map_err(AppCommandError::io)?;
-    let header_json = serde_json::to_vec(&header)
-        .map_err(|e| AppCommandError::task_execution_failed("Serialize envelope header").with_detail(e.to_string()))?;
-    out.write_all(&(header_json.len() as u32).to_le_bytes()).map_err(AppCommandError::io)?;
+    out.write_all(&[ENVELOPE_HEADER_VERSION])
+        .map_err(AppCommandError::io)?;
+    let header_json = serde_json::to_vec(&header).map_err(|e| {
+        AppCommandError::task_execution_failed("Serialize envelope header")
+            .with_detail(e.to_string())
+    })?;
+    out.write_all(&(header_json.len() as u32).to_le_bytes())
+        .map_err(AppCommandError::io)?;
     out.write_all(&header_json).map_err(AppCommandError::io)?;
 
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|e| AppCommandError::task_execution_failed("Cipher init failed").with_detail(e.to_string()))?;
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| {
+        AppCommandError::task_execution_failed("Cipher init failed").with_detail(e.to_string())
+    })?;
     let nonce = GenericArray::from_slice(&nonce_prefix);
     let mut enc = EncryptorBE32::from_aead(cipher, nonce);
 
@@ -217,8 +230,9 @@ pub fn decrypt_file(
     }
 
     let key = derive_key(passphrase, &salt, &header.kdf_params)?;
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|e| AppCommandError::task_execution_failed("Cipher init failed").with_detail(e.to_string()))?;
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| {
+        AppCommandError::task_execution_failed("Cipher init failed").with_detail(e.to_string())
+    })?;
     let nonce = GenericArray::from_slice(&nonce_prefix);
     let mut dec = DecryptorBE32::from_aead(cipher, nonce);
 
@@ -404,6 +418,9 @@ mod tests {
 
         encrypt_file(&src, &enc, "correct horse", &cancel).unwrap();
         let err = decrypt_file(&enc, &dec, "battery staple", &cancel).unwrap_err();
-        assert_eq!(err.i18n_key.as_deref(), Some(BACKUP_I18N_KEY_BAD_PASSPHRASE));
+        assert_eq!(
+            err.i18n_key.as_deref(),
+            Some(BACKUP_I18N_KEY_BAD_PASSPHRASE)
+        );
     }
 }

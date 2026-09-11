@@ -296,10 +296,7 @@ mod tests {
         });
         let m = goal_marker(&goal).expect("goal marker");
         assert_eq!(m.tool_name, "update_goal");
-        assert_eq!(
-            m.title,
-            "Goal updated (budget_limited): Fix the login bug"
-        );
+        assert_eq!(m.title, "Goal updated (budget_limited): Fix the login bug");
         let out: Value = serde_json::from_str(&m.output_json).unwrap();
         assert_eq!(out["goal"]["status"], "budget_limited");
         assert_eq!(out["goal"]["tokensUsed"], 5200);
@@ -380,9 +377,11 @@ mod tests {
     #[test]
     fn active_then_clear_closes_one_card_with_objective() {
         let mut open = None;
-        let create =
-            next_goal_marker(&mut open, &json!({ "objective": "Ship it", "status": "active" }))
-                .unwrap();
+        let create = next_goal_marker(
+            &mut open,
+            &json!({ "objective": "Ship it", "status": "active" }),
+        )
+        .unwrap();
         assert_eq!(create.tool_name, "create_goal");
         assert_eq!(open.as_deref(), Some("Ship it"));
 
@@ -399,9 +398,11 @@ mod tests {
         // a no-op (no stray standalone "complete" card).
         let mut open = None;
         next_goal_marker(&mut open, &json!({ "objective": "Y", "status": "active" })).unwrap();
-        let terminal =
-            next_goal_marker(&mut open, &json!({ "objective": "Y", "status": "budgetLimited" }))
-                .unwrap();
+        let terminal = next_goal_marker(
+            &mut open,
+            &json!({ "objective": "Y", "status": "budgetLimited" }),
+        )
+        .unwrap();
         assert_eq!(terminal.tool_name, "update_goal");
         assert_eq!(status_of(&terminal), "budget_limited");
         assert_eq!(open, None);

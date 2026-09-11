@@ -1,6 +1,14 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+} from "react"
 import { useTranslations } from "next-intl"
 import { isImeCompositionKey } from "@/lib/ime-composition"
 import { Button } from "@/components/ui/button"
@@ -81,6 +89,7 @@ import {
   InlineSessionConfigToggle,
 } from "@/components/chat/session-config-selector"
 import { ModelOptionPicker } from "@/components/chat/model-option-picker"
+import { ModelProviderPicker } from "@/components/chat/model-provider-picker"
 import { SelectorTooltip } from "@/components/chat/selector-tooltip"
 import {
   SessionSelectorsPanel,
@@ -95,6 +104,7 @@ import {
   type ModelOptionGroup,
 } from "@/lib/model-config-groups"
 import { useAgentSkills } from "@/hooks/use-agent-skills"
+import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { useScrollbarSafeDismiss } from "@/hooks/use-scrollbar-safe-dismiss"
 import {
   clearMessageInputDraftV2,
@@ -716,9 +726,28 @@ export function MessageInput({
     hasModes && Boolean(effectiveModeId) && !hasConfigOptions
   const showModeLoading = modeLoading && !hasConfigOptions && !showModeSelector
   const showConfigLoading = configOptionsLoading && !hasConfigOptions
+  // Shared Model Provider mode: the conversation's agent has its model source
+  // set to "provider" in Agent Settings, so the native model dropdown is
+  // replaced by the two-level provider → model picker. Resolved from the shared
+  // agent registry (agent-level `model_source`); a conversation-level selection
+  // is then read/written through the picker itself.
+  const { agents: providerSourceAgents } = useAcpAgents()
+  const modelProviderMode = useMemo(
+    () =>
+      agentType != null &&
+      providerSourceAgents.find((agent) => agent.agent_type === agentType)
+        ?.model_source === "provider",
+    [agentType, providerSourceAgents]
+  )
+  const showProviderPicker = modelProviderMode
   const hasAnySelector =
-    showConfigLoading || hasConfigOptions || showModeLoading || showModeSelector
-  const hasInlineSelectors = hasConfigOptions || showModeSelector
+    showProviderPicker ||
+    showConfigLoading ||
+    hasConfigOptions ||
+    showModeLoading ||
+    showModeSelector
+  const hasInlineSelectors =
+    showProviderPicker || hasConfigOptions || showModeSelector
   const hasFolderBranchPicker = useConversationFolderBranchPickerVisible(
     attachmentTabId,
     folderPickerOverride
@@ -1482,14 +1511,17 @@ export function MessageInput({
 
   const inlineSelectorItems = (
     <>
+      {showProviderPicker && (
+        <ModelProviderPicker agentType={agentType} tabId={attachmentTabId} />
+      )}
       {hasConfigOptions &&
         availableConfigOptions.map((option) => {
           // On/off options flip in place — a dropdown for a binary choice is a
           // wasted interaction.
+          let selector: ReactElement
           if (option.kind.type === "boolean") {
-            return (
+            selector = (
               <InlineSessionConfigToggle
-                key={option.id}
                 option={option}
                 onLabel={t("toggleOn")}
                 offLabel={t("toggleOff")}
@@ -1498,33 +1530,35 @@ export function MessageInput({
                 }
               />
             )
-          }
-          // Long model lists get the searchable + virtualized popover (a Radix
-          // menu of hundreds of items is the scroll jank); every other option —
-          // and short model lists — keep the lightweight inline dropdown.
-          const listGroups = modelPickerGroups(option)
-          if (listGroups) {
-            return (
+          } else {
+            // Long model lists get the searchable + virtualized popover (a Radix
+            // menu of hundreds of items is the scroll jank); every other option —
+            // and short model lists — keep the lightweight inline dropdown.
+            const listGroups = modelPickerGroups(option)
+            selector = listGroups ? (
               <ModelOptionPicker
-                key={option.id}
                 option={option}
                 groups={listGroups}
                 onSelect={(configId, valueId) =>
                   onConfigOptionChange?.(configId, valueId)
                 }
               />
+            ) : (
+              <InlineSessionConfigSelector
+                option={option}
+                derivedGroups={deriveModelGroups(option)}
+                onSelect={(configId, valueId) =>
+                  onConfigOptionChange?.(configId, valueId)
+                }
+              />
             )
           }
-          return (
-            <InlineSessionConfigSelector
-              key={option.id}
-              option={option}
-              derivedGroups={deriveModelGroups(option)}
-              onSelect={(configId, valueId) =>
-                onConfigOptionChange?.(configId, valueId)
-              }
-            />
-          )
+          // In Shared Model Provider mode the native model option is hidden;
+          // the standalone picker above owns the model choice.
+          if (showProviderPicker && isModelConfigOption(option)) {
+            return <Fragment key={option.id} />
+          }
+          return <Fragment key={option.id}>{selector}</Fragment>
         })}
       {showModeSelector && (
         <InlineModeSelector
@@ -1544,6 +1578,9 @@ export function MessageInput({
     const result: SessionSelectorSetting[] = []
     if (hasConfigOptions) {
       for (const option of availableConfigOptions) {
+        // Provider mode owns the model choice; native model entries would only
+        // suggest they can override it.
+        if (modelProviderMode && isModelConfigOption(option)) continue
         // An on/off option becomes a two-item headerless group — the same shape
         // the mode picker below uses — so the panel needs no toggle affordance
         // of its own.
@@ -1660,6 +1697,7 @@ export function MessageInput({
   }, [
     hasConfigOptions,
     availableConfigOptions,
+    modelProviderMode,
     showModeSelector,
     availableModes,
     effectiveModeId,
@@ -1978,6 +2016,15 @@ export function MessageInput({
                         hasInlineSelectors && "@[30rem]:hidden"
                       )}
                     >
+                      {modelProviderMode && (
+                        <ModelProviderPicker
+                          agentType={agentType}
+                          tabId={attachmentTabId}
+                          side="top"
+                          align="end"
+                          className="max-w-40"
+                        />
+                      )}
                       <Popover
                         open={collapsedSelectorsOpen}
                         onOpenChange={setCollapsedSelectorsOpen}

@@ -271,7 +271,10 @@ mod tests {
         assert_eq!(settings.standing_prompt("fix"), None);
         assert_eq!(with_prompts(&[("fix", "   ")]).standing_prompt("fix"), None);
         // Another scenario's text is not this scenario's.
-        assert_eq!(with_prompts(&[("review_only", "x")]).standing_prompt("fix"), None);
+        assert_eq!(
+            with_prompts(&[("review_only", "x")]).standing_prompt("fix"),
+            None
+        );
     }
 
     /// `all` first, then the scenario's own — the reading order of a policy:
@@ -310,7 +313,10 @@ mod tests {
         assert_eq!(stored.default_issue_scenario.as_deref(), Some("plan_first"));
         assert_eq!(stored.default_pr_scenario, None);
         assert!(!stored.writeback_default);
-        assert_eq!(stored.scenario_prompts.get("all").map(String::as_str), Some("keep me"));
+        assert_eq!(
+            stored.scenario_prompts.get("all").map(String::as_str),
+            Some("keep me")
+        );
         assert!(!stored.scenario_prompts.contains_key("fix"));
     }
 
@@ -349,14 +355,23 @@ mod tests {
             .apply(None, Some(with_prompts(&[("all", "Reply in English.")])))
             .expect("global");
         // Nothing of its own yet — it follows.
-        assert_eq!(store.effective(7).standing_prompt("fix").as_deref(), Some("Reply in English."));
+        assert_eq!(
+            store.effective(7).standing_prompt("fix").as_deref(),
+            Some("Reply in English.")
+        );
 
         store
             .apply(Some(7), Some(with_prompts(&[("fix", "Run the tests.")])))
             .expect("folder 7");
-        assert_eq!(store.effective(7).standing_prompt("fix").as_deref(), Some("Run the tests."));
+        assert_eq!(
+            store.effective(7).standing_prompt("fix").as_deref(),
+            Some("Run the tests.")
+        );
         // Every other folder is untouched by folder 7's save.
-        assert_eq!(store.effective(8).standing_prompt("fix").as_deref(), Some("Reply in English."));
+        assert_eq!(
+            store.effective(8).standing_prompt("fix").as_deref(),
+            Some("Reply in English.")
+        );
     }
 
     /// "Use the global defaults" is a DELETE, and the global row is the one
@@ -364,17 +379,30 @@ mod tests {
     #[test]
     fn dropping_a_folders_row_puts_it_back_on_the_global_one() {
         let mut store = ForgeSettingsStore::default();
-        store.apply(None, Some(with_prompts(&[("all", "global")]))).expect("global");
-        store.apply(Some(3), Some(with_prompts(&[("all", "mine")]))).expect("folder 3");
-        assert_eq!(store.effective(3).standing_prompt("fix").as_deref(), Some("mine"));
+        store
+            .apply(None, Some(with_prompts(&[("all", "global")])))
+            .expect("global");
+        store
+            .apply(Some(3), Some(with_prompts(&[("all", "mine")])))
+            .expect("folder 3");
+        assert_eq!(
+            store.effective(3).standing_prompt("fix").as_deref(),
+            Some("mine")
+        );
 
         store.apply(Some(3), None).expect("follow the global row");
         assert!(!store.folders.contains_key(&3));
-        assert_eq!(store.effective(3).standing_prompt("fix").as_deref(), Some("global"));
+        assert_eq!(
+            store.effective(3).standing_prompt("fix").as_deref(),
+            Some("global")
+        );
         // Idempotent: a folder that already follows stays following.
         store.apply(Some(3), None).expect("still fine");
 
-        assert!(store.apply(None, None).is_err(), "the global row has no fallback");
+        assert!(
+            store.apply(None, None).is_err(),
+            "the global row has no fallback"
+        );
     }
 
     /// The cap applies to a folder's own row too — a per-folder save is not a
@@ -406,8 +434,14 @@ mod tests {
         )
         .expect("unknown fields are ignored");
         assert!(!future.global.writeback_default);
-        assert_eq!(future.effective(1).standing_prompt("fix").as_deref(), Some("a"));
-        assert_eq!(future.effective(12).standing_prompt("fix").as_deref(), Some("b"));
+        assert_eq!(
+            future.effective(1).standing_prompt("fix").as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            future.effective(12).standing_prompt("fix").as_deref(),
+            Some("b")
+        );
 
         // The shape this key held before scopes existed. It has none of the
         // store's field names, so it has to be recognized by their ABSENCE —
@@ -418,7 +452,10 @@ mod tests {
                 .expect("the un-scoped shape still decodes");
         assert!(!legacy.global.writeback_default);
         assert!(legacy.folders.is_empty());
-        assert_eq!(legacy.effective(9).standing_prompt("fix").as_deref(), Some("Reply in zh."));
+        assert_eq!(
+            legacy.effective(9).standing_prompt("fix").as_deref(),
+            Some("Reply in zh.")
+        );
 
         // Anything that is not JSON at all is the defaults, not an error.
         assert!(decode("not json").is_none());
@@ -430,7 +467,9 @@ mod tests {
     #[test]
     fn folder_keys_survive_the_json_round_trip() {
         let mut store = ForgeSettingsStore::default();
-        store.apply(Some(42), Some(with_prompts(&[("fix", "mine")]))).expect("folder 42");
+        store
+            .apply(Some(42), Some(with_prompts(&[("fix", "mine")])))
+            .expect("folder 42");
         let encoded = serde_json::to_string(&store).expect("serializable");
         assert!(encoded.contains("\"42\""), "{encoded}");
         assert_eq!(decode(&encoded).expect("decodes"), store);
@@ -445,19 +484,32 @@ mod tests {
         let db = crate::db::test_helpers::fresh_in_memory_db().await;
 
         // Nothing stored is the defaults, not an error.
-        assert_eq!(load(&db.conn).await.expect("empty"), ForgeSettingsStore::default());
+        assert_eq!(
+            load(&db.conn).await.expect("empty"),
+            ForgeSettingsStore::default()
+        );
 
         save(&db.conn, None, Some(with_prompts(&[("all", "global")])))
             .await
             .expect("global");
-        save(&db.conn, Some(2), Some(with_prompts(&[("all", "folder two")])))
-            .await
-            .expect("folder 2");
+        save(
+            &db.conn,
+            Some(2),
+            Some(with_prompts(&[("all", "folder two")])),
+        )
+        .await
+        .expect("folder 2");
         // Saving folder 2 must not have taken the global row with it, and a
         // third folder still follows.
         let store = load(&db.conn).await.expect("reload");
-        assert_eq!(store.effective(2).standing_prompt("fix").as_deref(), Some("folder two"));
-        assert_eq!(store.effective(3).standing_prompt("fix").as_deref(), Some("global"));
+        assert_eq!(
+            store.effective(2).standing_prompt("fix").as_deref(),
+            Some("folder two")
+        );
+        assert_eq!(
+            store.effective(3).standing_prompt("fix").as_deref(),
+            Some("global")
+        );
         assert_eq!(
             load_effective(&db.conn, 2).await.expect("effective"),
             *store.effective(2)
@@ -465,12 +517,20 @@ mod tests {
 
         // A refused save leaves storage exactly as it was.
         let huge = with_prompts(&[("fix", &"x".repeat(PROMPT_CAP + 1))]);
-        save(&db.conn, Some(2), Some(huge)).await.expect_err("over the cap");
+        save(&db.conn, Some(2), Some(huge))
+            .await
+            .expect_err("over the cap");
         assert_eq!(load(&db.conn).await.expect("unchanged"), store);
 
-        save(&db.conn, Some(2), None).await.expect("follow the global row");
+        save(&db.conn, Some(2), None)
+            .await
+            .expect("follow the global row");
         assert_eq!(
-            load_effective(&db.conn, 2).await.expect("effective").standing_prompt("fix").as_deref(),
+            load_effective(&db.conn, 2)
+                .await
+                .expect("effective")
+                .standing_prompt("fix")
+                .as_deref(),
             Some("global")
         );
     }
@@ -491,7 +551,11 @@ mod tests {
         .expect("seed the old shape");
 
         assert_eq!(
-            load_effective(&db.conn, 5).await.expect("read").standing_prompt("fix").as_deref(),
+            load_effective(&db.conn, 5)
+                .await
+                .expect("read")
+                .standing_prompt("fix")
+                .as_deref(),
             Some("Reply in zh.")
         );
 
@@ -501,7 +565,10 @@ mod tests {
             .await
             .expect("folder 5");
         assert!(!store.global.writeback_default);
-        assert_eq!(store.effective(6).standing_prompt("fix").as_deref(), Some("Reply in zh."));
+        assert_eq!(
+            store.effective(6).standing_prompt("fix").as_deref(),
+            Some("Reply in zh.")
+        );
         assert_eq!(load(&db.conn).await.expect("reload"), store);
     }
 }

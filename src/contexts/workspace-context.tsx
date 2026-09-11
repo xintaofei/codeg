@@ -12,6 +12,7 @@ import {
 } from "react"
 import { useTranslations } from "next-intl"
 import { useActiveFolder } from "@/contexts/active-folder-context"
+import { useBrowserBackWindow } from "@/contexts/workspace-window-history"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { buildFileTabId } from "@/lib/file-tab-id"
 import {
@@ -46,6 +47,7 @@ import {
   isHiddenPath,
   isHtmlPreviewable,
   isImageFile,
+  isOpenFileViewable,
   isOfficeOwnerFile,
   isOfficePreviewable,
   languageFromPath,
@@ -126,7 +128,9 @@ interface WorkspaceActionsValue {
   switchFileTab: (tabId: string) => void
   closeFileTab: (tabId: string) => void
   closeOtherFileTabs: (tabId: string) => void
-  closeAllFileTabs: () => void
+  /** Returns false when the user vetoes the dirty-tabs confirm, so the
+   *  browser-back integration can restore the history entry it consumed. */
+  closeAllFileTabs: () => boolean
   reorderFileTabs: (tabs: FileWorkspaceTab[]) => void
   // Open a file tab. Accepts absolute paths, `~/` paths (expanded via the
   // backend home dir), and paths relative to a folder root. `folderId` is
@@ -329,6 +333,111 @@ const IMAGE_MIME: Record<string, string> = {
   bmp: "image/bmp",
   ico: "image/x-icon",
 }
+
+// Rough MIME hints for open-file-viewer ("ofv") files. The library sniffs real
+// signatures itself (zip/CFB magic bytes), so this only needs to be close
+// enough for its format detection and blob typing.
+const OPEN_FILE_VIEWER_MIME: Record<string, string> = {
+  pdf: "application/pdf",
+  doc: "application/msword",
+  dot: "application/msword",
+  docm: "application/vnd.ms-word.document.macroenabled.12",
+  xls: "application/vnd.ms-excel",
+  xlt: "application/vnd.ms-excel",
+  xlsm: "application/vnd.ms-excel.sheet.macroenabled.12",
+  xlsb: "application/vnd.ms-excel.sheet.binary.macroenabled.12",
+  ppt: "application/vnd.ms-powerpoint",
+  pps: "application/vnd.ms-powerpoint",
+  ppsx: "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+  pot: "application/vnd.ms-powerpoint",
+  potx: "application/vnd.openxmlformats-officedocument.presentationml.template",
+  odp: "application/vnd.oasis.opendocument.presentation",
+  odt: "application/vnd.oasis.opendocument.text",
+  ods: "application/vnd.oasis.opendocument.spreadsheet",
+  fodt: "application/vnd.oasis.opendocument.text-flat-xml",
+  fods: "application/vnd.oasis.opendocument.spreadsheet-flat-xml",
+  fodp: "application/vnd.oasis.opendocument.presentation-flat-xml",
+  numbers: "application/x-iwork-numbers-sffnumbers",
+  key: "application/x-iwork-keynote-sffkey",
+  wps: "application/vnd.ms-works",
+  et: "application/vnd.ms-works",
+  dps: "application/vnd.ms-works",
+  zip: "application/zip",
+  rar: "application/vnd.rar",
+  "7z": "application/x-7z-compressed",
+  tar: "application/x-tar",
+  gz: "application/gzip",
+  tgz: "application/gzip",
+  bz2: "application/x-bzip2",
+  xz: "application/x-xz",
+  eml: "message/rfc822",
+  msg: "application/vnd.ms-outlook",
+  epub: "application/epub+zip",
+  ofd: "application/ofd",
+  xps: "application/oxps",
+  xmind: "application/x-xmind",
+  psd: "image/vnd.adobe.photoshop",
+  heic: "image/heic",
+  heif: "image/heif",
+  avif: "image/avif",
+  jxl: "image/jxl",
+  tif: "image/tiff",
+  tiff: "image/tiff",
+  jfif: "image/jpeg",
+  cur: "image/x-icon",
+  apng: "image/apng",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  ogg: "audio/ogg",
+  oga: "audio/ogg",
+  aac: "audio/aac",
+  m4a: "audio/mp4",
+  flac: "audio/flac",
+  opus: "audio/opus",
+  aiff: "audio/aiff",
+  aif: "audio/aiff",
+  amr: "audio/amr",
+  mid: "audio/midi",
+  midi: "audio/midi",
+  wma: "audio/x-ms-wma",
+  mp4: "video/mp4",
+  webm: "video/webm",
+  mov: "video/quicktime",
+  m4v: "video/x-m4v",
+  mkv: "video/x-matroska",
+  avi: "video/x-msvideo",
+  mpg: "video/mpeg",
+  mpeg: "video/mpeg",
+  flv: "video/x-flv",
+  wmv: "video/x-ms-wmv",
+  "3gp": "video/3gpp",
+  "3g2": "video/3gpp2",
+  ogv: "video/ogg",
+  m2ts: "video/mp2t",
+  m3u8: "application/vnd.apple.mpegurl",
+  drawio: "application/vnd.jgraph.mxfile",
+  dio: "application/vnd.jgraph.mxfile",
+  excalidraw: "application/vnd.excalidraw+json",
+  tldraw: "application/vnd.tldraw+json",
+  ttf: "font/ttf",
+  otf: "font/otf",
+  woff: "font/woff",
+  woff2: "font/woff2",
+  eot: "application/vnd.ms-fontobject",
+  psb: "image/vnd.adobe.photoshop",
+  ai: "application/illustrator",
+  eps: "application/postscript",
+  ps: "application/postscript",
+  sqlite: "application/vnd.sqlite3",
+  sqlite3: "application/vnd.sqlite3",
+  wasm: "application/wasm",
+  parquet: "application/vnd.apache.parquet",
+  avro: "application/avro",
+}
+
+// An "ofv" tab holds its whole payload as base64 in memory — refuse anything
+// bigger rather than ballooning the webview heap.
+const OPEN_FILE_VIEWER_MAX_BYTES = 64 * 1024 * 1024
 
 function loadingTab(
   id: string,
@@ -929,16 +1038,22 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       if (inFlightLoadsRef.current.has(tabId)) return
 
       const image = isImageFile(absPath)
+      const ofv = !image && isOpenFileViewable(absPath)
 
       markTabRefreshing(tabId)
       const gen = beginFetchGeneration(tabId)
 
       try {
-        if (image) {
+        if (image || ofv) {
           const ext = absPath.split(".").pop()?.toLowerCase() ?? ""
-          const mime = IMAGE_MIME[ext] ?? "image/png"
+          const mime = image
+            ? (IMAGE_MIME[ext] ?? "image/png")
+            : (OPEN_FILE_VIEWER_MIME[ext] ?? "application/octet-stream")
           const b64 = await withTimeout(
-            readFileBase64(absPath),
+            readFileBase64(
+              absPath,
+              image ? undefined : OPEN_FILE_VIEWER_MAX_BYTES
+            ),
             15_000,
             t("previewRequestTimedOut")
           )
@@ -1235,6 +1350,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const tabId = buildFileTabId({ kind: "file", path: absPath })
         const image = isImageFile(absPath)
         const office = !image && isOfficePreviewable(absPath)
+        const ofv = !image && !office && isOpenFileViewable(absPath)
         const seed = loadingTab(
           tabId,
           null,
@@ -1242,7 +1358,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           fileName(absPath),
           absPath,
           absPath,
-          image ? "image" : office ? "office" : languageFromPath(absPath)
+          image
+            ? "image"
+            : office
+              ? "office"
+              : ofv
+                ? "ofv"
+                : languageFromPath(absPath)
         )
 
         const decision = decideLoad(
@@ -1266,6 +1388,38 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
                   ? {
                       ...tab,
                       content: "",
+                      readonly: true,
+                      loading: false,
+                      saveState: "idle",
+                      saveError: null,
+                      stale: false,
+                    }
+                  : tab
+              )
+            )
+            return
+          }
+
+          // open-file-viewer formats (PDF, legacy .doc/.ppt, archives, …) are
+          // binary too — fetch the bytes as a data: URL exactly like images, so
+          // OpenFileViewerPreview builds its File from tab content and the
+          // external-reload path works unchanged.
+          if (ofv) {
+            const ext = absPath.split(".").pop()?.toLowerCase() ?? ""
+            const mime =
+              OPEN_FILE_VIEWER_MIME[ext] ?? "application/octet-stream"
+            const b64 = await withTimeout(
+              readFileBase64(absPath, OPEN_FILE_VIEWER_MAX_BYTES),
+              15_000,
+              t("previewRequestTimedOut")
+            )
+            if (!settleFetch(tabId, gen)) return
+            setFileTabs((prev) =>
+              prev.map((tab) =>
+                tab.id === tabId
+                  ? {
+                      ...tab,
+                      content: `data:${mime};base64,${b64}`,
                       readonly: true,
                       loading: false,
                       saveState: "idle",
@@ -2419,13 +2573,15 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     [activateFilePane, t]
   )
 
-  const closeAllFileTabs = useCallback(() => {
-    setFileTabs((prev) => {
-      if (prev.some(isDirtyFileTab)) {
-        const confirmed = window.confirm(t("confirmCloseAllDirtyTabs"))
-        if (!confirmed) return prev
-      }
+  const closeAllFileTabs = useCallback((): boolean => {
+    // Confirm outside the state updater: the browser-back handler needs the
+    // veto synchronously to decide whether to restore the history entry.
+    if (fileTabsRef.current.some(isDirtyFileTab)) {
+      const confirmed = window.confirm(t("confirmCloseAllDirtyTabs"))
+      if (!confirmed) return false
+    }
 
+    setFileTabs((prev) => {
       for (const [tab, slot] of batchCloseSlots(prev)) {
         const closed = snapshotFileTab(tab, slot)
         if (closed) pushClosedTab(closed)
@@ -2437,7 +2593,14 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       activateConversationPane()
       return []
     })
+    return true
   }, [activateConversationPane, t])
+
+  useBrowserBackWindow({
+    open: fileTabs.length > 0,
+    onClose: closeAllFileTabs,
+    key: "file-workspace",
+  })
 
   const reorderFileTabs = useCallback((tabs: FileWorkspaceTab[]) => {
     setFileTabs(tabs)

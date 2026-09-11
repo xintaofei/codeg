@@ -30,9 +30,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sacp::schema::{
-    CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction, ElicitationAction,
-    ElicitationContentValue, ElicitationMode, ElicitationPropertySchema, ElicitationScope,
-    MultiSelectItems, StringPropertySchema,
+    CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction,
+    ElicitationAction, ElicitationContentValue, ElicitationMode, ElicitationPropertySchema,
+    ElicitationScope, MultiSelectItems, StringPropertySchema,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -352,7 +352,9 @@ pub fn validate_specs(specs: &[QuestionSpec]) -> Result<(), String> {
         let mut seen_labels = std::collections::HashSet::new();
         for (oi, o) in q.options.iter().enumerate() {
             if o.label.trim().is_empty() {
-                return Err(format!("questions[{qi}].options[{oi}] has an empty `label`"));
+                return Err(format!(
+                    "questions[{qi}].options[{oi}] has an empty `label`"
+                ));
             }
             if o.label.chars().count() > MAX_QUESTION_TEXT_CHARS {
                 return Err(format!(
@@ -885,7 +887,10 @@ fn is_other_companion(id: &str) -> bool {
     let Some(pos) = id.rfind("__other") else {
         return false;
     };
-    pos > 0 && id[pos + "__other".len()..].chars().all(|c| c.is_ascii_digit())
+    pos > 0
+        && id[pos + "__other".len()..]
+            .chars()
+            .all(|c| c.is_ascii_digit())
 }
 
 /// True when the raw schema property carries the shared custom-answer marker
@@ -1056,7 +1061,11 @@ fn approval_from_form(
                 label: if c.label.trim().is_empty() {
                     value.to_string()
                 } else {
-                    c.label.trim().chars().take(MAX_QUESTION_TEXT_CHARS).collect()
+                    c.label
+                        .trim()
+                        .chars()
+                        .take(MAX_QUESTION_TEXT_CHARS)
+                        .collect()
                 },
                 kind: if value == "once" {
                     "allow_once"
@@ -1273,7 +1282,13 @@ pub fn build_elicitation_response(
         let mapped: Vec<String> = item
             .selected
             .iter()
-            .map(|l| field.value_by_label.get(l).cloned().unwrap_or_else(|| l.clone()))
+            .map(|l| {
+                field
+                    .value_by_label
+                    .get(l)
+                    .cloned()
+                    .unwrap_or_else(|| l.clone())
+            })
             .collect();
         let value = match field.kind {
             ElicitationFieldKind::Text => match mapped.into_iter().next() {
@@ -1526,7 +1541,11 @@ mod tests {
         assert_eq!(q.specs[0].header, "Approach");
         assert!(!q.specs[0].multi_select);
         assert!(!q.specs[0].is_secret);
-        let labels: Vec<_> = q.specs[0].options.iter().map(|o| o.label.as_str()).collect();
+        let labels: Vec<_> = q.specs[0]
+            .options
+            .iter()
+            .map(|o| o.label.as_str())
+            .collect();
         assert_eq!(labels, ["Incremental", "Rewrite"]);
         assert_eq!(q.fields[0].kind, ElicitationFieldKind::Text);
         // The elicitation's toolCallId rides along so the connection handler can
@@ -1652,7 +1671,11 @@ mod tests {
         assert_eq!(q.specs.len(), 1);
         assert!(q.specs[0].multi_select);
         // Titles display; consts ride back on accept.
-        let labels: Vec<_> = q.specs[0].options.iter().map(|o| o.label.as_str()).collect();
+        let labels: Vec<_> = q.specs[0]
+            .options
+            .iter()
+            .map(|o| o.label.as_str())
+            .collect();
         assert_eq!(labels, ["Rust", "TS"]);
         let answer = QuestionAnswer {
             answers: vec![QuestionAnswerItem {
@@ -1680,7 +1703,11 @@ mod tests {
         assert_eq!(q.specs.len(), 3);
         // Booleans render as Yes/No; numbers as free text.
         let confirm = q.specs.iter().position(|s| s.id == "confirm").unwrap();
-        let labels: Vec<_> = q.specs[confirm].options.iter().map(|o| o.label.as_str()).collect();
+        let labels: Vec<_> = q.specs[confirm]
+            .options
+            .iter()
+            .map(|o| o.label.as_str())
+            .collect();
         assert_eq!(labels, ["Yes", "No"]);
 
         let answer = QuestionAnswer {
@@ -1775,16 +1802,22 @@ mod tests {
         assert_eq!(approval.message, "Allow tool call?");
         assert_eq!(approval.tool_call_id.as_deref(), Some("call-1"));
         assert!(approval.persist_in_content);
-        let ids: Vec<_> = approval.options.iter().map(|o| o.option_id.as_str()).collect();
-        assert_eq!(ids, ["once", "session", "always", ELICITATION_DECLINE_OPTION_ID]);
+        let ids: Vec<_> = approval
+            .options
+            .iter()
+            .map(|o| o.option_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            ["once", "session", "always", ELICITATION_DECLINE_OPTION_ID]
+        );
         assert_eq!(approval.options[0].label, "Allow once");
         assert_eq!(approval.options[0].kind, "allow_once");
         assert_eq!(approval.options[1].kind, "allow_always");
 
         // Accepting echoes the chosen persist back in content…
-        let v =
-            serde_json::to_value(build_elicitation_approval_response(&approval, "session"))
-                .unwrap();
+        let v = serde_json::to_value(build_elicitation_approval_response(&approval, "session"))
+            .unwrap();
         assert_eq!(v["action"], "accept");
         assert_eq!(v["content"]["persist"], "session");
         // …declining (or an unknown option) maps to decline.
@@ -1794,8 +1827,8 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(v["action"], "decline");
-        let v = serde_json::to_value(build_elicitation_approval_response(&approval, "bogus"))
-            .unwrap();
+        let v =
+            serde_json::to_value(build_elicitation_approval_response(&approval, "bogus")).unwrap();
         assert_eq!(v["action"], "decline");
     }
 
@@ -1814,10 +1847,14 @@ mod tests {
         });
         let approval = expect_approval(classify_elicitation(&raw).unwrap());
         assert!(!approval.persist_in_content);
-        let ids: Vec<_> = approval.options.iter().map(|o| o.option_id.as_str()).collect();
+        let ids: Vec<_> = approval
+            .options
+            .iter()
+            .map(|o| o.option_id.as_str())
+            .collect();
         assert_eq!(ids, ["accept", ELICITATION_DECLINE_OPTION_ID]);
-        let v = serde_json::to_value(build_elicitation_approval_response(&approval, "accept"))
-            .unwrap();
+        let v =
+            serde_json::to_value(build_elicitation_approval_response(&approval, "accept")).unwrap();
         assert_eq!(v["action"], "accept");
         assert!(
             v.get("content").is_none() || v["content"].is_null(),
@@ -1832,7 +1869,11 @@ mod tests {
         let raw = elicitation_raw(json!({}), json!([]));
         let approval = expect_approval(classify_elicitation(&raw).unwrap());
         assert_eq!(approval.message, "Input requested");
-        let ids: Vec<_> = approval.options.iter().map(|o| o.option_id.as_str()).collect();
+        let ids: Vec<_> = approval
+            .options
+            .iter()
+            .map(|o| o.option_id.as_str())
+            .collect();
         assert_eq!(ids, ["accept", ELICITATION_DECLINE_OPTION_ID]);
     }
 
@@ -1939,7 +1980,10 @@ mod tests {
             validate_specs(&[spec("ok", 2, MAX_QUESTION_TEXT_CHARS + 1)]).is_err(),
             "oversized option label"
         );
-        assert!(validate_specs(&[spec("   ", 2, 0)]).is_err(), "blank question");
+        assert!(
+            validate_specs(&[spec("   ", 2, 0)]).is_err(),
+            "blank question"
+        );
 
         // Duplicate question id across the set (spec() hardcodes id "q") — answer
         // routing + UI state key on id, so duplicates must be rejected.
@@ -2081,7 +2125,13 @@ mod tests {
                 labels: vec!["x".into()],
             });
         }
-        let outcome = build_outcome(&qs, &QuestionAnswer { answers: items, declined: false });
+        let outcome = build_outcome(
+            &qs,
+            &QuestionAnswer {
+                answers: items,
+                declined: false,
+            },
+        );
         assert_eq!(outcome.answers.len(), 1);
         // Cap = options.len() + 1 = 3 (every real option plus one "Other"); the
         // FIRST three are kept (early break — labels past the cap and the 10k
@@ -2222,7 +2272,10 @@ mod tests {
             .collect();
         let specs = parse_grok_ext_questions(&grok_params(json!(many))).unwrap();
         assert_eq!(specs.len(), MAX_QUESTIONS, "questions clamped");
-        assert!(specs.iter().all(|s| s.options.len() == MAX_OPTIONS), "options clamped");
+        assert!(
+            specs.iter().all(|s| s.options.len() == MAX_OPTIONS),
+            "options clamped"
+        );
         validate_specs(&specs).unwrap();
     }
 
@@ -2449,8 +2502,14 @@ mod tests {
             answers: vec![],
             declined: true,
         };
-        assert_eq!(build_grok_ext_response(&outcome), json!({ "outcome": "skip_interview" }));
-        assert_eq!(grok_ext_skip_response(), json!({ "outcome": "skip_interview" }));
+        assert_eq!(
+            build_grok_ext_response(&outcome),
+            json!({ "outcome": "skip_interview" })
+        );
+        assert_eq!(
+            grok_ext_skip_response(),
+            json!({ "outcome": "skip_interview" })
+        );
     }
 
     #[test]
@@ -2545,7 +2604,10 @@ mod tests {
         );
         let input = grok_result_card_input(&specs);
         let output = grok_result_card_output(&outcome);
-        assert_eq!(input["questions"][0]["question"], output["answers"][0]["question"]);
+        assert_eq!(
+            input["questions"][0]["question"],
+            output["answers"][0]["question"]
+        );
         assert_eq!(output["answers"][0]["header"], "");
     }
 }

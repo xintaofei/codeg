@@ -615,7 +615,12 @@ impl WatchState {
             return;
         }
         let before = self.resolved_title();
-        capture_title_record(value, record_type, &mut self.custom_title, &mut self.ai_title);
+        capture_title_record(
+            value,
+            record_type,
+            &mut self.custom_title,
+            &mut self.ai_title,
+        );
         let after = self.resolved_title();
         // `capture_title_record` ignores blank values, so `after` is `None`
         // only when nothing has ever been captured — never a clear.
@@ -850,8 +855,7 @@ impl WatchState {
         });
 
         let outstanding = self.tasks.len() as u32;
-        let accounting_changed =
-            expired_any || self.last_emitted_outstanding != Some(outstanding);
+        let accounting_changed = expired_any || self.last_emitted_outstanding != Some(outstanding);
         if changed_turns.is_empty() && settled.is_empty() && !accounting_changed {
             return None;
         }
@@ -1056,8 +1060,7 @@ impl WatchState {
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
                         {
-                            let status =
-                                task.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                            let status = task.get("status").and_then(|s| s.as_str()).unwrap_or("");
                             if is_terminal_task_status(status) && self.tasks.remove(id).is_some() {
                                 self.settled_ids.insert(id.to_string());
                                 tracing::info!(
@@ -1124,8 +1127,7 @@ impl WatchState {
                         // again — the notification's own <note> documents
                         // multi-notify).
                         "SendMessage" => {
-                            let Some(to) =
-                                input.and_then(|i| i.get("to")).and_then(|t| t.as_str())
+                            let Some(to) = input.and_then(|i| i.get("to")).and_then(|t| t.as_str())
                             else {
                                 continue;
                             };
@@ -1268,8 +1270,7 @@ impl WatchState {
                 // Cosmetic re-basing of the SAME continuous out-of-turn
                 // stretch (not a new initiator record) — the origin carries
                 // over unchanged.
-                let inherited_origin =
-                    self.episode.as_ref().and_then(|e| e.origin_task_id.clone());
+                let inherited_origin = self.episode.as_ref().and_then(|e| e.origin_task_id.clone());
                 self.episode = Some(Episode {
                     start_offset: self.next_episode_base(),
                     acc: ClaudeRecordAccumulator::new(
@@ -1638,9 +1639,7 @@ mod tests {
         ws.tick(ledger, "/tmp", "conn-test", false, true)
     }
 
-    fn unpack(
-        event: AcpEvent,
-    ) -> (Vec<MessageTurn>, u32, Vec<BackgroundSettledInfo>, u64) {
+    fn unpack(event: AcpEvent) -> (Vec<MessageTurn>, u32, Vec<BackgroundSettledInfo>, u64) {
         match event {
             AcpEvent::BackgroundActivity {
                 turns,
@@ -1756,7 +1755,8 @@ mod tests {
         let path = temp_session(&dir);
         // Fork-time metadata at the head (post-epoch stamp), then the copied
         // history (original pre-fork stamps), then the genuinely-new prompt.
-        let queue_op = r#"{"type":"queue-operation","timestamp":"2026-07-07T03:50:00.100Z","uuid":"q-1"}"#;
+        let queue_op =
+            r#"{"type":"queue-operation","timestamp":"2026-07-07T03:50:00.100Z","uuid":"q-1"}"#;
         let copied_user = r#"{"type":"user","timestamp":"2026-07-07T03:46:00.000Z","uuid":"u-hi","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#;
         let copied_asst = r#"{"type":"assistant","timestamp":"2026-07-07T03:46:05.000Z","uuid":"a-hi","message":{"role":"assistant","content":[{"type":"text","text":"Hi!"}]}}"#;
         let new_user = r#"{"type":"user","timestamp":"2026-07-07T03:50:10.000Z","uuid":"u-hello","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}"#;
@@ -1801,8 +1801,7 @@ mod tests {
         // The flush completes: the reconstructed ack must account.
         append_raw(&path, tail);
         append_raw(&path, "\n");
-        let (_, outstanding, ..) =
-            unpack(tick_now(&mut ws, &ledger).expect("ack event"));
+        let (_, outstanding, ..) = unpack(tick_now(&mut ws, &ledger).expect("ack event"));
         assert_eq!(outstanding, 1, "mid-flush ack must survive discovery");
     }
 
@@ -1836,8 +1835,7 @@ mod tests {
         // ahead of the baseline and re-arms the accounting.
         ws.rearm("s2".into(), epoch("2026-07-07T03:50:00.000Z"));
         ws.adopt_file(forked.clone());
-        let (_, outstanding, ..) =
-            unpack(tick_now(&mut ws, &ledger).expect("resume event"));
+        let (_, outstanding, ..) = unpack(tick_now(&mut ws, &ledger).expect("resume event"));
         assert_eq!(
             outstanding, 1,
             "a resume written before the watcher noticed the fork must re-arm"
@@ -1877,8 +1875,7 @@ mod tests {
         assert_eq!(outstanding, 1, "post-fork resume must re-arm");
 
         write_lines(&forked, &[&notification("agentX", "completed")]);
-        let (_, outstanding, settled, _) =
-            unpack(tick_now(&mut ws, &ledger).unwrap());
+        let (_, outstanding, settled, _) = unpack(tick_now(&mut ws, &ledger).unwrap());
         assert_eq!(outstanding, 0);
         assert_eq!(settled.len(), 1);
     }
@@ -1995,8 +1992,7 @@ mod tests {
                 &assistant_text("a2", "resuming"),
             ],
         );
-        let (turns, ..) =
-            unpack(tick_prompting(&mut ws, &ledger).expect("turns event"));
+        let (turns, ..) = unpack(tick_prompting(&mut ws, &ledger).expect("turns event"));
         assert!(
             !turns.is_empty(),
             "an autonomous initiator after the reply is out-of-turn as before"
@@ -2106,8 +2102,7 @@ mod tests {
             &path,
             &[command, cron, &assistant_text("a1", "Working on it.")],
         );
-        let (turns, ..) =
-            unpack(tick_prompting(&mut ws, &ledger).expect("turns event"));
+        let (turns, ..) = unpack(tick_prompting(&mut ws, &ledger).expect("turns event"));
         assert!(
             !turns.is_empty(),
             "a different submission is not this one's side record"
@@ -2146,8 +2141,7 @@ mod tests {
                 &assistant_text("a1", "Build finished cleanly."),
             ],
         );
-        let (turns, ..) =
-            unpack(tick_prompting(&mut ws, &ledger).expect("settle event"));
+        let (turns, ..) = unpack(tick_prompting(&mut ws, &ledger).expect("settle event"));
         // Not just "an episode opened": the settlement's own follow-up is what
         // has nowhere else to render, so it must be IN the emitted turn.
         assert!(
@@ -2275,8 +2269,7 @@ mod tests {
             &path,
             &[&cron_prompt("new pass"), &assistant_text("a9", "hi")],
         );
-        let (turns, outstanding, ..) =
-            unpack(tick_now(&mut ws, &ledger).expect("turns event"));
+        let (turns, outstanding, ..) = unpack(tick_now(&mut ws, &ledger).expect("turns event"));
         assert_eq!(outstanding, 0, "historical ack must NOT register");
         assert_eq!(turns.len(), 1);
     }
@@ -2527,11 +2520,18 @@ mod tests {
         let _ = tick_now(&mut ws, &ledger);
         write_lines(
             &path,
-            &[&notification("shell1", "completed"), &assistant_text("a1", "Done.")],
+            &[
+                &notification("shell1", "completed"),
+                &assistant_text("a1", "Done."),
+            ],
         );
         let (turns, outstanding, settled, _) =
             unpack(tick_now(&mut ws, &ledger).expect("settle event"));
-        assert_eq!(turns.len(), 1, "a shell follow-up has nowhere else to render");
+        assert_eq!(
+            turns.len(),
+            1,
+            "a shell follow-up has nowhere else to render"
+        );
         assert_eq!(outstanding, 0);
         assert_eq!(
             settled.len(),
@@ -2612,8 +2612,7 @@ mod tests {
                 &assistant_text("a1", "Working on it."),
             ],
         );
-        let (turns, ..) =
-            unpack(tick_prompting(&mut ws, &ledger).expect("turns event"));
+        let (turns, ..) = unpack(tick_prompting(&mut ws, &ledger).expect("turns event"));
         assert_eq!(
             turns.len(),
             1,
@@ -2648,8 +2647,7 @@ mod tests {
                 &assistant_text("a1", "Build finished cleanly."),
             ],
         );
-        let (turns, ..) =
-            unpack(tick_prompting(&mut ws, &ledger).expect("settle event"));
+        let (turns, ..) = unpack(tick_prompting(&mut ws, &ledger).expect("settle event"));
         assert_eq!(
             turns.len(),
             1,
@@ -2810,7 +2808,10 @@ mod tests {
         let more = assistant_text("a2", "step two");
         let (head, tail) = more.split_at(more.len() / 2);
         {
-            let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
             f.write_all(head.as_bytes()).unwrap();
         }
         assert!(
@@ -2819,7 +2820,10 @@ mod tests {
         );
 
         {
-            let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
             f.write_all(tail.as_bytes()).unwrap();
             f.write_all(b"\n").unwrap();
         }
@@ -2903,7 +2907,9 @@ mod tests {
         // cron prompt (isMeta + string): initiates with the prompt text.
         let cron: serde_json::Value = serde_json::from_str(&cron_prompt("check weather")).unwrap();
         assert_eq!(
-            turn_initiator_text(&cron).as_ref().map(|text| text.as_str()),
+            turn_initiator_text(&cron)
+                .as_ref()
+                .map(|text| text.as_str()),
             Some("check weather")
         );
 
@@ -2965,7 +2971,10 @@ mod tests {
 
         write_lines(&path, &[&ai_title("Fix the login flow")]);
         let _ = tick_now(&mut ws, &ledger);
-        assert_eq!(ws.pending_title.take().as_deref(), Some("Fix the login flow"));
+        assert_eq!(
+            ws.pending_title.take().as_deref(),
+            Some("Fix the login flow")
+        );
 
         // Claude Code re-emits the record; the resolved name did not change.
         write_lines(&path, &[&ai_title("Fix the login flow")]);
@@ -2975,7 +2984,10 @@ mod tests {
         // A genuinely new name is queued again.
         write_lines(&path, &[&ai_title("Fix the signup flow")]);
         let _ = tick_now(&mut ws, &ledger);
-        assert_eq!(ws.pending_title.take().as_deref(), Some("Fix the signup flow"));
+        assert_eq!(
+            ws.pending_title.take().as_deref(),
+            Some("Fix the signup flow")
+        );
     }
 
     /// `customTitle ?? aiTitle` — Claude Code's own precedence, and the one
@@ -2996,8 +3008,7 @@ mod tests {
         write_lines(&path, &[&ai_title("Concise AI Summary")]);
         let _ = tick_now(&mut ws, &ledger);
         assert_eq!(
-            ws.pending_title,
-            None,
+            ws.pending_title, None,
             "the generated title must not displace the user's own name"
         );
         assert_eq!(ws.resolved_title().as_deref(), Some("auth-refactor"));

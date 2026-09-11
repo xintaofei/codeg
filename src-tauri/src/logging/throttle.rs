@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(
             t.record_at(t0 + Duration::from_secs(10), 4),
             Some(LagSummary {
-                occurrences: 4,        // the 3 suppressed + this one
+                occurrences: 4, // the 3 suppressed + this one
                 dropped: 5 + 2 + 1 + 4,
             })
         );
@@ -199,7 +199,11 @@ mod tests {
             .record_at(t0 + Duration::from_secs(11), 5)
             .expect("post-window hit emits");
         assert_eq!(summary.occurrences, 2);
-        assert_eq!(summary.dropped, u64::MAX, "sum saturates rather than wrapping");
+        assert_eq!(
+            summary.dropped,
+            u64::MAX,
+            "sum saturates rather than wrapping"
+        );
     }
 
     #[test]

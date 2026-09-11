@@ -173,11 +173,7 @@ impl MigrationTrait for Migration {
                             .null(),
                     )
                     // In-process ACP connection UUID (not durable across restart).
-                    .col(
-                        ColumnDef::new(AutomationRun::ConnectionId)
-                            .string()
-                            .null(),
-                    )
+                    .col(ColumnDef::new(AutomationRun::ConnectionId).string().null())
                     // Worktree folder minted for this run (for GC / open).
                     .col(
                         ColumnDef::new(AutomationRun::WorktreeFolderId)
@@ -249,10 +245,20 @@ impl MigrationTrait for Migration {
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
-            .drop_table(Table::drop().table(AutomationRun::Table).if_exists().to_owned())
+            .drop_table(
+                Table::drop()
+                    .table(AutomationRun::Table)
+                    .if_exists()
+                    .to_owned(),
+            )
             .await?;
         manager
-            .drop_table(Table::drop().table(Automation::Table).if_exists().to_owned())
+            .drop_table(
+                Table::drop()
+                    .table(Automation::Table)
+                    .if_exists()
+                    .to_owned(),
+            )
             .await?;
         Ok(())
     }

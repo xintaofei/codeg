@@ -741,7 +741,7 @@ impl PendingAssistant {
             duration_ms: None,
             model: self.model.take(),
             completed_at: self.last_ts,
-        agent_message_id: None,
+            agent_message_id: None,
         }
     }
 }
@@ -847,7 +847,7 @@ fn project_steps(steps: &[Step]) -> SessionParse {
                 duration_ms: None,
                 model: None,
                 completed_at: None,
-            agent_message_id: None,
+                agent_message_id: None,
             });
             parsed.message_count = parsed.message_count.saturating_add(1);
             continue;
@@ -868,7 +868,10 @@ fn project_steps(steps: &[Step]) -> SessionParse {
         if let Some(usage) = step.metadata.as_ref().and_then(|m| m.model_usage.as_ref()) {
             // Per-step usage SUMS into the turn (cost accounting) while the
             // window gauge tracks only the latest step's input side.
-            pending.usage.input_tokens = pending.usage.input_tokens.saturating_add(usage.input_tokens);
+            pending.usage.input_tokens = pending
+                .usage
+                .input_tokens
+                .saturating_add(usage.input_tokens);
             pending.usage.output_tokens = pending
                 .usage
                 .output_tokens
@@ -1207,7 +1210,10 @@ fn step_outcome(step: &Step) -> Option<StepOutcome> {
         }
         let mut body = String::new();
         if !grep.query.is_empty() {
-            body.push_str(&format!("{} ({} results)\n", grep.query, grep.total_results));
+            body.push_str(&format!(
+                "{} ({} results)\n",
+                grep.query, grep.total_results
+            ));
         }
         body.push_str(&grep.raw_output);
         return Some(StepOutcome {
@@ -1763,10 +1769,7 @@ mod tests {
             conversation_history: "ignored too".into(),
         };
         let decoded = Step::decode(wide.encode_to_vec().as_slice()).expect("decode subset");
-        assert_eq!(
-            decoded.user_input.as_ref().unwrap().query,
-            "still readable"
-        );
+        assert_eq!(decoded.user_input.as_ref().unwrap().query, "still readable");
         assert!(decoded.metadata.unwrap().created_at.is_some());
     }
 
@@ -1861,7 +1864,10 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&truncate_str(&input, TOOL_INPUT_CAP)).expect("still valid JSON");
         assert_eq!(parsed["arguments"]["prompt"].as_str(), Some(&*long_prompt));
-        assert!(parsed.get("prompt").is_none(), "the derived copy is dropped");
+        assert!(
+            parsed.get("prompt").is_none(),
+            "the derived copy is dropped"
+        );
     }
 
     #[test]
@@ -1979,7 +1985,10 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            step_outcome(&genuine).expect("an outcome").output.as_deref(),
+            step_outcome(&genuine)
+                .expect("an outcome")
+                .output
+                .as_deref(),
             Some("from the impostor")
         );
     }

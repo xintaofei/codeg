@@ -1,12 +1,8 @@
 "use client"
 
 import { memo, useCallback, useState, type RefObject } from "react"
-import {
-  ChevronDownIcon,
-  ChevronRight,
-  FileIcon,
-  MapPinned,
-} from "lucide-react"
+import { ChevronDownIcon, ChevronRight, MapPinned } from "lucide-react"
+import { FileTypeIcon } from "@/components/files/file-type-icon"
 import { useTranslations } from "next-intl"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useWorkspaceActions } from "@/contexts/workspace-context"
@@ -238,7 +234,8 @@ export const ConversationMessageNav = memo(function ConversationMessageNav({
                                 : "border-border bg-transparent hover:bg-accent/40"
                             )}
                           >
-                            <FileIcon
+                            <FileTypeIcon
+                              filename={file.path}
                               className={cn(
                                 "h-3.5 w-3.5 shrink-0",
                                 isRemoved

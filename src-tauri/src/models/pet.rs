@@ -433,7 +433,7 @@ mod tests {
         let payload = PetSessionsPayload::from_entries(vec![
             session_entry(ConnectionStatus::Prompting, false), // running
             session_entry(ConnectionStatus::Prompting, true), // waiting: pending outranks prompting
-            session_entry(ConnectionStatus::Error, false),     // error
+            session_entry(ConnectionStatus::Error, false),    // error
             session_entry(ConnectionStatus::Connected, false), // idle-ish: counted nowhere
         ]);
         assert_eq!(payload.running_count, 1);
@@ -456,7 +456,10 @@ mod tests {
     fn pet_session_entry_omits_pending_when_absent() {
         let entry = session_entry(crate::acp::types::ConnectionStatus::Prompting, false);
         let v = serde_json::to_value(&entry).unwrap();
-        assert!(v.get("pending").is_none(), "pending must be omitted when None");
+        assert!(
+            v.get("pending").is_none(),
+            "pending must be omitted when None"
+        );
         assert_eq!(v["connectionId"], "c");
     }
 }

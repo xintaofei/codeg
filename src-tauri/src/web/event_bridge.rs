@@ -755,7 +755,11 @@ mod tests {
         assert_eq!(p["kind"], "deleted");
         assert_eq!(p["id"], 3);
 
-        emit_event(&emitter, FOLDER_GROUP_CHANGED_EVENT, FolderGroupChange::Layout);
+        emit_event(
+            &emitter,
+            FOLDER_GROUP_CHANGED_EVENT,
+            FolderGroupChange::Layout,
+        );
         let evt = rx.try_recv().expect("layout nudge should broadcast");
         let p = &*evt.payload;
         assert_eq!(p["kind"], "layout");

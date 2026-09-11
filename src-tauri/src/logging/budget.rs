@@ -146,7 +146,10 @@ pub enum Notice {
     /// The ceiling was just crossed; file logging is off for the rest of the day.
     Exhausted { limit: u64, written: u64 },
     /// A new day opened the budget again; reports what the closed day lost.
-    Reopened { dropped_lines: u64, dropped_bytes: u64 },
+    Reopened {
+        dropped_lines: u64,
+        dropped_bytes: u64,
+    },
 }
 
 impl Notice {
@@ -379,7 +382,6 @@ impl<W: Write, C: DayClock, S: NoticeSink> BudgetedWriter<W, C, S> {
             budget,
         }
     }
-
 }
 
 impl<W: Write, C: DayClock, S: NoticeSink> Write for BudgetedWriter<W, C, S> {
@@ -444,11 +446,7 @@ mod tests {
     #[test]
     fn exhaustion_is_announced_once_and_latches_the_day_off() {
         let mut b = DayBudget::new(Some(10));
-        assert_eq!(
-            b.admit(DAY, 20).0,
-            Verdict::Drop,
-            "oversized first line"
-        );
+        assert_eq!(b.admit(DAY, 20).0, Verdict::Drop, "oversized first line");
         // Only the first drop carries the notice, and the latch keeps dropping
         // lines that would otherwise still fit under the ceiling.
         for _ in 0..50 {
@@ -517,7 +515,10 @@ mod tests {
                         dropped_lines: 1,
                         dropped_bytes: 7,
                     },
-                    Notice::Exhausted { limit: 10, written: 0 },
+                    Notice::Exhausted {
+                        limit: 10,
+                        written: 0
+                    },
                 ]
             ),
             "rollover first, then exhaustion: {notices:?}"
@@ -736,7 +737,11 @@ mod tests {
         let now = chrono::Utc::now();
         let today = now.format("%Y-%m-%d").to_string();
         // Same naming scheme tracing_appender uses for Rotation::DAILY.
-        std::fs::write(dir.path().join(format!("codeg.{today}.log")), vec![b'x'; 77]).unwrap();
+        std::fs::write(
+            dir.path().join(format!("codeg.{today}.log")),
+            vec![b'x'; 77],
+        )
+        .unwrap();
         // A different day's file, and an unrelated file, must not be counted.
         std::fs::write(dir.path().join("codeg.1999-01-01.log"), vec![b'x'; 5000]).unwrap();
         std::fs::write(dir.path().join("codeg-server.log"), vec![b'x'; 5000]).unwrap();

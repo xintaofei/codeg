@@ -211,7 +211,11 @@ impl CursorParser {
                 })
             });
         let sidecar = read_sidecar_meta(chat_dir);
-        let title = meta.name.clone().or_else(|| sidecar.title.clone()).or(title);
+        let title = meta
+            .name
+            .clone()
+            .or_else(|| sidecar.title.clone())
+            .or(title);
         let summary = summary_from(chat_id, &meta, &state, &sidecar, title);
 
         Some(ConversationDetail {
@@ -358,9 +362,10 @@ struct ChatMeta {
 
 fn open_store(path: &Path) -> Option<Connection> {
     // Prefer a read-only handle — codeg never mutates cursor's stores.
-    if let Some(conn) =
-        try_open_store(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
-    {
+    if let Some(conn) = try_open_store(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
         return Some(conn);
     }
     // The CLI keeps live stores in WAL mode with most data in `-wal`; after a
@@ -445,9 +450,7 @@ fn read_chat_meta(conn: &Connection) -> Option<ChatMeta> {
             .get("latestRootBlobId")
             .and_then(Value::as_str)
             .and_then(hex_decode),
-        is_subagent: v
-            .get("subagentInfo")
-            .is_some_and(|s| !s.is_null()),
+        is_subagent: v.get("subagentInfo").is_some_and(|s| !s.is_null()),
     })
 }
 
@@ -586,7 +589,10 @@ mod wire {
                     let end = self.pos.checked_add(8)?;
                     let raw = self.buf.get(self.pos..end)?;
                     self.pos = end;
-                    Some((field_no, Val::Fixed64(u64::from_le_bytes(raw.try_into().ok()?))))
+                    Some((
+                        field_no,
+                        Val::Fixed64(u64::from_le_bytes(raw.try_into().ok()?)),
+                    ))
                 }
                 2 => {
                     let len = usize::try_from(self.varint()?).ok()?;
@@ -820,10 +826,8 @@ fn decode_state(buf: &[u8]) -> DecodedState {
             21 => {
                 if let Some(b) = val.bytes() {
                     if state.repo_path.is_none() {
-                        state.repo_path =
-                            wire::first_str(b, 1).filter(|s| !s.trim().is_empty());
-                        state.git_branch =
-                            wire::first_str(b, 2).filter(|s| !s.trim().is_empty());
+                        state.repo_path = wire::first_str(b, 1).filter(|s| !s.trim().is_empty());
+                        state.git_branch = wire::first_str(b, 2).filter(|s| !s.trim().is_empty());
                     }
                 }
             }
@@ -883,12 +887,10 @@ fn decode_user_images(conn: &Connection, msg: &[u8]) -> Vec<ContentBlock> {
         let Some(image) = wire::first_message(attachment, 1) else {
             continue;
         };
-        let Some(mime_type) = wire::first_str(&image, 7).filter(|m| m.starts_with("image/"))
-        else {
+        let Some(mime_type) = wire::first_str(&image, 7).filter(|m| m.starts_with("image/")) else {
             continue;
         };
-        let Some(bytes) = wire::first_bytes(&image, 1).and_then(|id| read_blob(conn, &id))
-        else {
+        let Some(bytes) = wire::first_bytes(&image, 1).and_then(|id| read_blob(conn, &id)) else {
             continue;
         };
         if bytes.is_empty() {
@@ -947,7 +949,9 @@ fn build_turns(
                 if no != 2 {
                     continue;
                 }
-                let Some(step_ref) = val.bytes() else { continue };
+                let Some(step_ref) = val.bytes() else {
+                    continue;
+                };
                 let step = read_blob(conn, step_ref).unwrap_or_else(|| step_ref.to_vec());
                 if want_span {
                     fold_tool_span(&step, &mut span);
@@ -959,10 +963,9 @@ fn build_turns(
             // text steps carry no clock at all, so a tool-free turn stays
             // clockless rather than borrowing a wrong timestamp.
             let ts = span.and_then(|(lo, _)| ms_to_utc(lo)).unwrap_or(ts);
-            let completed_at =
-                completed_at.or_else(|| span.and_then(|(_, hi)| ms_to_utc(hi)));
-            let duration_ms = duration_ms
-                .or_else(|| span.and_then(|(lo, hi)| (hi > lo).then_some(hi - lo)));
+            let completed_at = completed_at.or_else(|| span.and_then(|(_, hi)| ms_to_utc(hi)));
+            let duration_ms =
+                duration_ms.or_else(|| span.and_then(|(lo, hi)| (hi > lo).then_some(hi - lo)));
 
             // --- user prompt (text + attached images) ---
             if let Some(user_ref) = wire::first_bytes(&agent_turn, 1) {
@@ -986,7 +989,7 @@ fn build_turns(
                         duration_ms: None,
                         model: None,
                         completed_at: None,
-                    agent_message_id: None,
+                        agent_message_id: None,
                     });
                 }
             }
@@ -1003,7 +1006,7 @@ fn build_turns(
                     duration_ms,
                     model: meta.last_used_model.clone(),
                     completed_at,
-                agent_message_id: None,
+                    agent_message_id: None,
                 });
             }
         } else if let Some(shell_turn) = wire::first_message(&turn_bytes, 2) {
@@ -1038,7 +1041,7 @@ fn build_turns(
                 duration_ms: None,
                 model: None,
                 completed_at: None,
-            agent_message_id: None,
+                agent_message_id: None,
             });
             let tool_id = format!("cursor-shell-{i}");
             let (preview, exit_code) = output.unwrap_or((None, 0));
@@ -1071,7 +1074,7 @@ fn build_turns(
                 duration_ms,
                 model: None,
                 completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
         }
     }
@@ -1211,7 +1214,10 @@ fn apply_turn_timing_journal(
         let assistant_idx = (user_idx + 1 < turns.len()
             && matches!(turns[user_idx + 1].role, TurnRole::Assistant))
         .then_some(user_idx + 1);
-        if assistant_idx.map(|a| store_clocked.contains(&a)).unwrap_or(false) {
+        if assistant_idx
+            .map(|a| store_clocked.contains(&a))
+            .unwrap_or(false)
+        {
             continue; // store-native root timing present — journal only corroborates
         }
         let Some(a) = assistant_idx else { continue };
@@ -1587,9 +1593,8 @@ fn decode_tool_variant(
                     .filter(|(no, _)| *no == 1)
                     .filter_map(|(_, v)| v.bytes().map(<[u8]>::to_vec))
                     .filter_map(|item| {
-                        wire::first_str(&item, 2).map(|content| {
-                            serde_json::json!({ "content": content })
-                        })
+                        wire::first_str(&item, 2)
+                            .map(|content| serde_json::json!({ "content": content }))
                     })
                     .collect();
                 tool.input = Some(serde_json::json!({ "todos": todos }));
@@ -2047,7 +2052,13 @@ mod tests {
         // AgentConversationTurnStructure
         let mut agent_turn = Vec::new();
         field_bytes(1, &user_id, &mut agent_turn);
-        for id in [&step_thinking_id, &step_text_id, &step_shell_id, &step_edit_id, &step_mcp_id] {
+        for id in [
+            &step_thinking_id,
+            &step_text_id,
+            &step_shell_id,
+            &step_edit_id,
+            &step_mcp_id,
+        ] {
             field_bytes(2, id, &mut agent_turn);
         }
         let mut turn = Vec::new();
@@ -2111,9 +2122,7 @@ mod tests {
 
         let user = &detail.turns[0];
         assert!(matches!(user.role, TurnRole::User));
-        assert!(
-            matches!(&user.blocks[0], ContentBlock::Text { text } if text == "帮我构建项目")
-        );
+        assert!(matches!(&user.blocks[0], ContentBlock::Text { text } if text == "帮我构建项目"));
 
         let assistant = &detail.turns[1];
         assert!(matches!(assistant.role, TurnRole::Assistant));
@@ -2191,7 +2200,10 @@ mod tests {
             .expect("mcp tool present");
         assert_eq!(mcp_name, "codeg-mcp__delegate_to_agent");
         let mcp_json: Value = serde_json::from_str(&mcp_input.unwrap()).unwrap();
-        assert_eq!(mcp_json.get("task").and_then(Value::as_str), Some("run build"));
+        assert_eq!(
+            mcp_json.get("task").and_then(Value::as_str),
+            Some("run build")
+        );
         assert_eq!(
             mcp_json.get("agent_type").and_then(Value::as_str),
             Some("codex")
@@ -2365,7 +2377,10 @@ mod tests {
         // two-hop path and return the text verbatim.
         let report_text = "\n# 构建结果\n\n退出码 0：共 3 个路由全部静态预渲染成功，\
                            无警告无错误，构建产物完整可用，总耗时约四十秒。";
-        assert!(report_text.len() > 128, "report must use a two-byte length prefix");
+        assert!(
+            report_text.len() > 128,
+            "report must use a two-byte length prefix"
+        );
         let mut report_inner = Vec::new();
         field_str(1, report_text, &mut report_inner);
         let mut report_wrap = Vec::new();

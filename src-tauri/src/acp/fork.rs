@@ -500,7 +500,11 @@ mod tests {
     #[test]
     fn other_agents_have_no_fork_point() {
         let turns = vec![turn("turn-1", TurnRole::Assistant, "hello", Some("msg_01"))];
-        for agent in [AgentType::Gemini, AgentType::Grok, AgentType::Custom("acme")] {
+        for agent in [
+            AgentType::Gemini,
+            AgentType::Grok,
+            AgentType::Custom("acme"),
+        ] {
             assert!(resolve_fork_point(&turns, "turn-1", agent).is_none());
         }
     }

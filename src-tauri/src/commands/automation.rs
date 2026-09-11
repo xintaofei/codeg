@@ -176,9 +176,7 @@ pub async fn automation_delete(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn automation_mark_seen(
-    db: tauri::State<'_, AppDatabase>,
-) -> Result<(), DbError> {
+pub async fn automation_mark_seen(db: tauri::State<'_, AppDatabase>) -> Result<(), DbError> {
     automation_mark_seen_core(&db).await
 }
 

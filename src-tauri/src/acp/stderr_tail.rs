@@ -752,7 +752,10 @@ mod tests {
     #[test]
     fn redacts_known_token_shapes() {
         let cases = [
-            ("key sk-live-abcdefghijklmno here", "sk-live-abcdefghijklmno"),
+            (
+                "key sk-live-abcdefghijklmno here",
+                "sk-live-abcdefghijklmno",
+            ),
             (
                 "token ghp_abcdefghijklmnopqrstuvwxyz01",
                 "ghp_abcdefghijklmnopqrstuvwxyz01",
@@ -942,7 +945,10 @@ mod tests {
         let slice = tail.tail_since(0, 10, 8192);
         let line = &slice.lines[0];
         assert!(!line.contains("sk-live"), "leaked fragment in {line:?}");
-        assert!(line.contains("sk-***"), "expected redaction marker in {line:?}");
+        assert!(
+            line.contains("sk-***"),
+            "expected redaction marker in {line:?}"
+        );
     }
 
     #[test]

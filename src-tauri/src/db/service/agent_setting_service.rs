@@ -9,7 +9,7 @@ use sea_orm::{
 
 use crate::db::entities::agent_setting;
 use crate::db::error::DbError;
-use crate::models::agent::AgentType;
+use crate::models::agent::{AgentModelSource, AgentType};
 
 #[derive(Debug, Clone)]
 pub struct AgentDefaultInput {
@@ -23,6 +23,7 @@ pub struct AgentSettingsUpdate {
     pub enabled: bool,
     pub env_json: Option<String>,
     pub model_provider_id: Option<i32>,
+    pub model_source: String,
 }
 
 fn default_enabled(agent_type: AgentType) -> bool {
@@ -80,6 +81,7 @@ pub async fn ensure_defaults(
             installed_version: Set(None),
             env_json: Set(None),
             model_provider_id: Set(None),
+            model_source: Set(default_model_source()),
             created_at: Set(now),
             updated_at: Set(now),
         };
@@ -147,6 +149,7 @@ pub async fn update(
     active.enabled = Set(patch.enabled);
     active.env_json = Set(patch.env_json);
     active.model_provider_id = Set(patch.model_provider_id);
+    active.model_source = Set(normalize_model_source(&patch.model_source)?);
     active.updated_at = Set(Utc::now());
     active.update(conn).await?;
     Ok(())
@@ -227,7 +230,80 @@ pub async fn find_by_model_provider_id(
     Ok(rows)
 }
 
+fn default_model_source() -> String {
+    AgentModelSource::Native.as_str().to_string()
+}
+
+fn normalize_model_source(value: &str) -> Result<String, DbError> {
+    let parsed = AgentModelSource::parse(value)
+        .ok_or_else(|| DbError::Migration(format!("invalid agent model_source: {value}")))?;
+    Ok(parsed.as_str().to_string())
+}
+
 fn is_sqlite_full_error(err: &DbError) -> bool {
     let message = err.to_string();
     message.contains("database or disk is full") || message.contains("(code: 13)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_helpers::fresh_in_memory_db;
+
+    #[tokio::test]
+    async fn agent_settings_default_to_native_source() {
+        let db = fresh_in_memory_db().await;
+        ensure_defaults(
+            &db.conn,
+            &[AgentDefaultInput {
+                agent_type: AgentType::Cline,
+                registry_id: "cline".to_string(),
+                default_sort_order: 0,
+            }],
+        )
+        .await
+        .expect("defaults");
+
+        let row = get_by_agent_type(&db.conn, AgentType::Cline)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(row.model_source, "native");
+    }
+
+    #[tokio::test]
+    async fn update_persists_provider_source_without_other_fields() {
+        let db = fresh_in_memory_db().await;
+        ensure_defaults(
+            &db.conn,
+            &[AgentDefaultInput {
+                agent_type: AgentType::Cline,
+                registry_id: "cline".to_string(),
+                default_sort_order: 0,
+            }],
+        )
+        .await
+        .expect("defaults");
+
+        update(
+            &db.conn,
+            AgentType::Cline,
+            AgentSettingsUpdate {
+                enabled: true,
+                env_json: Some(r#"{"CLINE_API_KEY":"test"}"#.to_string()),
+                model_provider_id: Some(12),
+                model_source: "provider".to_string(),
+            },
+        )
+        .await
+        .expect("update");
+
+        let row = get_by_agent_type(&db.conn, AgentType::Cline)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(row.model_source, "provider");
+        assert_eq!(row.model_provider_id, Some(12));
+        assert!(row.enabled);
+    }
 }

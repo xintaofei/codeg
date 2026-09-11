@@ -2007,6 +2007,7 @@ mod tests {
                 enabled: false,
                 env_json: None,
                 model_provider_id: None,
+                model_source: "native".to_string(),
             },
         )
         .await

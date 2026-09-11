@@ -246,7 +246,8 @@ pub fn spawn_forwarder(
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!(
                         "[WS attach] subscription {} lagged ({} events dropped); detaching",
-                        subscription_id, n
+                        subscription_id,
+                        n
                     );
                     metrics
                         .forwarder_lagged_count

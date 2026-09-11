@@ -105,10 +105,7 @@ pub fn prefix_fingerprint(turns: &[MessageTurn]) -> String {
 /// 0), bounded by [`ROUND_ALIGN_CAP`]. Alignment only ever ADDS earlier turns.
 fn round_align_backward(turns: &[MessageTurn], mut start: usize) -> usize {
     let mut steps = 0;
-    while start > 0
-        && steps < ROUND_ALIGN_CAP
-        && !matches!(turns[start].role, TurnRole::User)
-    {
+    while start > 0 && steps < ROUND_ALIGN_CAP && !matches!(turns[start].role, TurnRole::User) {
         start -= 1;
         steps += 1;
     }
@@ -172,7 +169,7 @@ mod tests {
             duration_ms: None,
             model: None,
             completed_at: None,
-        agent_message_id: None,
+            agent_message_id: None,
         }
     }
 
@@ -243,10 +240,7 @@ mod tests {
         assert_eq!(meta.offset, 3);
         assert_eq!(meta.total, 5);
         assert_eq!(meta.assistant_before, 2);
-        assert_eq!(
-            meta.uncovered_prefix_max_ts,
-            Some(turns[2].timestamp)
-        );
+        assert_eq!(meta.uncovered_prefix_max_ts, Some(turns[2].timestamp));
 
         let full = window_meta(&turns, 0);
         assert_eq!(full.assistant_before, 0);

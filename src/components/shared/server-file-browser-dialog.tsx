@@ -5,12 +5,12 @@ import { useTranslations } from "next-intl"
 import {
   ChevronRight,
   ChevronUp,
-  FileIcon,
   FolderIcon,
   FolderOpenIcon,
   Home,
   Loader2,
 } from "lucide-react"
+import { FileTypeIcon } from "@/components/files/file-type-icon"
 import {
   Dialog,
   DialogContent,
@@ -267,7 +267,10 @@ export function ServerFileBrowserDialog({
                 <FolderIcon className="size-4 shrink-0 text-blue-500" />
               )
             ) : (
-              <FileIcon className="size-4 shrink-0 text-muted-foreground" />
+              <FileTypeIcon
+                filename={entry.name}
+                className="size-4 shrink-0 text-muted-foreground"
+              />
             )}
             <span className="truncate">{entry.name}</span>
           </button>

@@ -1072,8 +1072,8 @@ mod tests {
         // `link` component is a symlink that would carry create_dir_all
         // out of the root.
         let target = root.path().join("link").join("sub");
-        let err = resolve_upload_chain(root.path(), &target)
-            .expect_err("should reject symlink in chain");
+        let err =
+            resolve_upload_chain(root.path(), &target).expect_err("should reject symlink in chain");
         assert!(
             err.message.contains("symlink"),
             "unexpected error: {}",

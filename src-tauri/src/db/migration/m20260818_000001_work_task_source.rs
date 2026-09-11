@@ -65,10 +65,17 @@ impl MigrationTrait for Migration {
                     .to_owned(),
             )
             .await?;
-        for col in [WorkTask::SourceMeta, WorkTask::SourceKey, WorkTask::SourceKind] {
+        for col in [
+            WorkTask::SourceMeta,
+            WorkTask::SourceKey,
+            WorkTask::SourceKind,
+        ] {
             manager
                 .alter_table(
-                    Table::alter().table(WorkTask::Table).drop_column(col).to_owned(),
+                    Table::alter()
+                        .table(WorkTask::Table)
+                        .drop_column(col)
+                        .to_owned(),
                 )
                 .await?;
         }

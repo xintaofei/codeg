@@ -226,10 +226,7 @@ pub trait SessionFeedbackAccess: Send + Sync {
     /// per-launch token) WITHOUT marking it delivered. Returns an immediate
     /// snapshot. Read-only: abandoning it (peer-close) leaves state untouched.
     /// Empty when the connection is gone or nothing is pending.
-    async fn read_pending_feedback(
-        &self,
-        parent_connection_id: &str,
-    ) -> Vec<PendingFeedback>;
+    async fn read_pending_feedback(&self, parent_connection_id: &str) -> Vec<PendingFeedback>;
 
     /// Mark the named notes `Delivered` and broadcast the consumption. Called by
     /// the listener ONLY after the tool response was written to the companion.

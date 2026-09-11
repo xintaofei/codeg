@@ -472,10 +472,7 @@ pub(crate) fn ensure_pushable_branch_name(branch: &str) -> Result<(), AppCommand
 /// `show-ref --verify` deliberately, NOT `rev-parse --verify`: the latter takes
 /// a revision EXPRESSION, so `main^` and `main@{1}` would both resolve and slip
 /// through. `show-ref --verify` only accepts an exact ref path.
-async fn ensure_local_branch_exists(
-    path: &str,
-    branch: &str,
-) -> Result<(), AppCommandError> {
+async fn ensure_local_branch_exists(path: &str, branch: &str) -> Result<(), AppCommandError> {
     let output = crate::process::tokio_command("git")
         .args([
             "show-ref",
@@ -488,8 +485,9 @@ async fn ensure_local_branch_exists(
         .await
         .map_err(AppCommandError::io)?;
     if !output.status.success() {
-        return Err(AppCommandError::not_found("Branch not found")
-            .with_detail(format!("branch={branch}")));
+        return Err(
+            AppCommandError::not_found("Branch not found").with_detail(format!("branch={branch}"))
+        );
     }
     Ok(())
 }
@@ -965,7 +963,10 @@ pub async fn delete_folder_group_core(
     if !removed {
         return Err(AppCommandError::not_found("Folder group not found"));
     }
-    emit_folder_group_change(emitter, crate::web::event_bridge::FolderGroupChange::Deleted { id: group_id });
+    emit_folder_group_change(
+        emitter,
+        crate::web::event_bridge::FolderGroupChange::Deleted { id: group_id },
+    );
     // Members moved back to the top level, so their rows changed too.
     emit_folder_group_change(emitter, crate::web::event_bridge::FolderGroupChange::Layout);
     Ok(())
@@ -1377,10 +1378,7 @@ pub struct GitHeadInfo {
     pub short_sha: Option<String>,
 }
 
-async fn git_output(
-    path: &str,
-    args: &[&str],
-) -> Result<std::process::Output, AppCommandError> {
+async fn git_output(path: &str, args: &[&str]) -> Result<std::process::Output, AppCommandError> {
     crate::process::tokio_command("git")
         .args(args)
         .current_dir(path)
@@ -3271,8 +3269,8 @@ pub async fn git_remove_worktree_core(
     };
 
     if let Some(worktree_path) = hosting {
-        let canonical = std::fs::canonicalize(&worktree_path)
-            .unwrap_or_else(|_| PathBuf::from(&worktree_path));
+        let canonical =
+            std::fs::canonicalize(&worktree_path).unwrap_or_else(|_| PathBuf::from(&worktree_path));
         if main_path.as_deref() == Some(worktree_path.as_str()) {
             return Err(
                 AppCommandError::invalid_input("The main working tree cannot be removed")
@@ -3410,11 +3408,13 @@ async fn reparent_target(
         .and_then(|f| f.parent_id);
     let target = match recorded {
         Some(parent_id) => Some(parent_id),
-        None if source_folder_id > 0 => folder_service::get_folder_by_id(&db.conn, source_folder_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|source| source.parent_id.unwrap_or(source.id)),
+        None if source_folder_id > 0 => {
+            folder_service::get_folder_by_id(&db.conn, source_folder_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|source| source.parent_id.unwrap_or(source.id))
+        }
         None => None,
     };
     target.filter(|id| *id != worktree_folder_id)
@@ -3475,7 +3475,9 @@ async fn converge_removed_worktree_folder(
     let folder_gone = match folder_service::soft_delete_folder(&db.conn, worktree_folder_id).await {
         Ok(()) => true,
         Err(e) => {
-            tracing::warn!("[folders] worktree folder {worktree_folder_id} soft-delete failed: {e}");
+            tracing::warn!(
+                "[folders] worktree folder {worktree_folder_id} soft-delete failed: {e}"
+            );
             false
         }
     };
@@ -3985,10 +3987,7 @@ fn unquote_git_path(path: &str) -> String {
     }
 }
 
-pub(crate) fn resolve_tree_path(
-    root: &Path,
-    rel_path: &str,
-) -> Result<PathBuf, AppCommandError> {
+pub(crate) fn resolve_tree_path(root: &Path, rel_path: &str) -> Result<PathBuf, AppCommandError> {
     let rel = Path::new(rel_path);
     if rel.is_absolute() {
         return Err(AppCommandError::invalid_input("Path must be relative"));
@@ -5194,17 +5193,14 @@ pub async fn read_workspace_file_base64(
         // read race: the original `target` symlink can't be re-resolved (we use
         // the canonical path), a final-component symlink swapped in after the
         // check makes the open fail, and metadata/read never re-look-up the path.
-        let canonical_root =
-            std::fs::canonicalize(&root).map_err(AppCommandError::io)?;
-        let canonical_target =
-            std::fs::canonicalize(&target).map_err(AppCommandError::io)?;
+        let canonical_root = std::fs::canonicalize(&root).map_err(AppCommandError::io)?;
+        let canonical_target = std::fs::canonicalize(&target).map_err(AppCommandError::io)?;
         if !is_within_workspace(&canonical_root, &canonical_target) {
             return Err(AppCommandError::invalid_input(
                 "Path is outside workspace root",
             ));
         }
-        let mut file =
-            open_no_follow(&canonical_target).map_err(AppCommandError::io)?;
+        let mut file = open_no_follow(&canonical_target).map_err(AppCommandError::io)?;
         let metadata = file.metadata().map_err(AppCommandError::io)?;
         if !metadata.is_file() {
             return Err(AppCommandError::invalid_input("Path is not a file"));
@@ -6296,10 +6292,7 @@ async fn get_unpushed_hashes(
             .current_dir(path)
             .output()
             .await
-            .map(|o| {
-                o.status.success()
-                    && !String::from_utf8_lossy(&o.stdout).trim().is_empty()
-            })
+            .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
             .unwrap_or(false);
         let mut rev_args = vec!["rev-list".to_string(), limit_arg.clone()];
         if let Some(a) = author.filter(|a| !a.is_empty()) {
@@ -6537,10 +6530,7 @@ mod tests {
         // BRE metacharacters are backslash-escaped...
         assert_eq!(git_author_match_pattern("a.b*c"), "^a\\.b\\*c <");
         assert_eq!(git_author_match_pattern("na[me]"), "^na\\[me\\] <");
-        assert_eq!(
-            git_author_match_pattern("back\\slash"),
-            "^back\\\\slash <"
-        );
+        assert_eq!(git_author_match_pattern("back\\slash"), "^back\\\\slash <");
         // ...but `|` is literal in BRE, so a name like `程相|cx` is left as-is.
         assert_eq!(git_author_match_pattern("程相|cx"), "^程相|cx <");
     }
@@ -6669,9 +6659,9 @@ mod tests {
         // Intermediate directory entries are emitted alongside files — the
         // `@`-mention picker relies on directories being present.
         assert!(
-            entries.iter().any(
-                |e| e.path == "a" && matches!(e.kind, WorkspaceEntryKind::Dir)
-            ),
+            entries
+                .iter()
+                .any(|e| e.path == "a" && matches!(e.kind, WorkspaceEntryKind::Dir)),
             "directory entries must be present"
         );
     }
@@ -6950,7 +6940,7 @@ mod tests {
 
         let result = git_log(
             p.to_string_lossy().to_string(),
-            Some(5),                   // limit → status window is `-5`
+            Some(5), // limit → status window is `-5`
             None,
             None,
             None,
@@ -6989,7 +6979,14 @@ mod tests {
         // combination that made the literal-HEAD comparison wrong. Remote-tracking
         // refs are faked with update-ref so the test needs no network.
         git_run(p, &["update-ref", "refs/remotes/origin/main", &base]);
-        git_run(p, &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+        git_run(
+            p,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
         git_run(p, &["checkout", "-q", "-b", "feature"]);
         git_run(p, &["commit", "-q", "--allow-empty", "-m", "f1"]);
         let f1 = git_capture(p, &["rev-parse", "HEAD"]);
@@ -7068,7 +7065,14 @@ mod tests {
         git_run(p, &["commit", "-q", "--allow-empty", "-m", "c1"]);
         let c1 = git_capture(p, &["rev-parse", "HEAD"]);
         git_run(p, &["update-ref", "refs/remotes/origin/main", &c1]);
-        git_run(p, &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+        git_run(
+            p,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
         git_run(p, &["commit", "-q", "--allow-empty", "-m", "c2"]);
         git_run(p, &["checkout", "-q", "--detach"]);
 
@@ -7446,7 +7450,10 @@ mod tests {
             .await
             .expect("ensure folder");
 
-        assert_eq!(entry.id, opened.id, "the same row is revived, not a new one");
+        assert_eq!(
+            entry.id, opened.id,
+            "the same row is revived, not a new one"
+        );
         assert!(
             folder_service::get_folder_by_id(&db.conn, opened.id)
                 .await
@@ -8211,9 +8218,7 @@ branch refs/heads/main";
         assert_eq!(cleared.default_agent_type, None);
         // Clearing it changes the inherited value just as much as setting it.
         assert_eq!(
-            rx.try_recv()
-                .expect("clearing should nudge too")
-                .payload["kind"],
+            rx.try_recv().expect("clearing should nudge too").payload["kind"],
             "settings"
         );
     }
@@ -8267,7 +8272,10 @@ branch refs/heads/main";
             "src/inner".to_string(),
         )
         .await;
-        assert!(res.is_err(), "moving a dir into its own descendant must fail");
+        assert!(
+            res.is_err(),
+            "moving a dir into its own descendant must fail"
+        );
         assert!(root.path().join("src/inner").is_dir(), "source untouched");
     }
 
@@ -8346,8 +8354,7 @@ mod workspace_confinement_tests {
         let root = tempfile::tempdir().expect("root");
         let outside = tempfile::tempdir().expect("outside");
         std::fs::write(outside.path().join("secret"), b"top").expect("write");
-        symlink(outside.path().join("secret"), root.path().join("link"))
-            .expect("symlink");
+        symlink(outside.path().join("secret"), root.path().join("link")).expect("symlink");
         // The canonical target resolves outside the root, so the read is denied
         // even though `root/link` is lexically inside the workspace.
         let res = read_workspace_file_base64(
@@ -8356,7 +8363,10 @@ mod workspace_confinement_tests {
             None,
         )
         .await;
-        assert!(res.is_err(), "symlink escaping the workspace must be rejected");
+        assert!(
+            res.is_err(),
+            "symlink escaping the workspace must be rejected"
+        );
     }
 
     /// The strict predicate, applied the way the guarded call sites apply it:
@@ -8402,7 +8412,10 @@ mod workspace_confinement_tests {
             "sub".to_string(),
         )
         .await;
-        assert!(res.is_err(), "must not clobber a dangling destination symlink");
+        assert!(
+            res.is_err(),
+            "must not clobber a dangling destination symlink"
+        );
         assert!(
             std::fs::symlink_metadata(root.path().join("sub/a.txt")).is_ok(),
             "dangling symlink must remain intact",
@@ -8414,11 +8427,7 @@ mod workspace_confinement_tests {
     async fn move_file_tree_entry_moves_a_symlink_entry() {
         let root = tempfile::tempdir().expect("root");
         std::fs::write(root.path().join("target.txt"), b"x").expect("write");
-        symlink(
-            root.path().join("target.txt"),
-            root.path().join("link.txt"),
-        )
-        .expect("symlink");
+        symlink(root.path().join("target.txt"), root.path().join("link.txt")).expect("symlink");
         std::fs::create_dir(root.path().join("sub")).expect("mkdir");
 
         let new_rel = move_file_tree_entry(
@@ -8430,8 +8439,8 @@ mod workspace_confinement_tests {
         .expect("move symlink");
         assert_eq!(new_rel.replace('\\', "/"), "sub/link.txt");
         // The moved entry is still a symlink (the link itself moved, not its target).
-        let meta = std::fs::symlink_metadata(root.path().join("sub/link.txt"))
-            .expect("moved link exists");
+        let meta =
+            std::fs::symlink_metadata(root.path().join("sub/link.txt")).expect("moved link exists");
         assert!(meta.file_type().is_symlink(), "entry stays a symlink");
         assert!(!root.path().join("link.txt").exists(), "old link gone");
     }

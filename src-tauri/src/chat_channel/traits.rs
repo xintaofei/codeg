@@ -41,10 +41,7 @@ pub trait ChatChannelBackend: Send + Sync + 'static {
     }
 
     /// Create a provider-specific thread/topic target.
-    async fn create_thread(
-        &self,
-        _title: &str,
-    ) -> Result<ChannelMessageTarget, ChatChannelError> {
+    async fn create_thread(&self, _title: &str) -> Result<ChannelMessageTarget, ChatChannelError> {
         Err(ChatChannelError::Unsupported(
             "thread creation is not supported by this channel".to_string(),
         ))

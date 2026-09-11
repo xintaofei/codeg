@@ -77,7 +77,13 @@ fn enum_spec_for(key: &str) -> Option<EnumSpec> {
         "default_reasoning_summary" => spec(&["auto", "concise", "detailed", "none"], false),
         "default_verbosity" => spec(&["low", "medium", "high"], true),
         "shell_type" => spec(
-            &["default", "local", "unified_exec", "disabled", "shell_command"],
+            &[
+                "default",
+                "local",
+                "unified_exec",
+                "disabled",
+                "shell_command",
+            ],
             false,
         ),
         // Only `freeform` is a variant; `function` would reject the whole catalog.
@@ -215,7 +221,11 @@ pub fn bundled_snapshot_models() -> Vec<Value> {
 pub fn fallback_base_slug(snapshot: &[Value]) -> Option<String> {
     snapshot
         .iter()
-        .min_by_key(|m| m.get("priority").and_then(Value::as_i64).unwrap_or(i64::MAX))
+        .min_by_key(|m| {
+            m.get("priority")
+                .and_then(Value::as_i64)
+                .unwrap_or(i64::MAX)
+        })
         .and_then(|m| m.get("slug").and_then(Value::as_str))
         .map(str::to_owned)
 }
@@ -228,27 +238,21 @@ fn is_listable(model: &Value) -> bool {
     model.get("visibility").and_then(Value::as_str) == Some("list")
 }
 
-/// Expand a compact config into a full `{"models":[ ModelInfo, ... ]}` catalog.
+/// Build the per-custom ModelInfo objects for an expansion. Each custom
+/// clones its declared `base` snapshot entry (falling back to the
+/// highest-priority entry when the base is missing or the snapshot is
+/// unavailable), applies **sanitized** overrides, and is forced
+/// `visibility:"list"` + `supported_in_api:true` + `upgrade:null` so a custom
+/// always lands as a picker-visible model codex can target. Priority is
+/// inherited from the base — the caller decides whether to renumber.
 ///
-/// Because `model_catalog_json` is a whole-table replace, the output contains
-/// **all** official models (verbatim, so codex's hidden entries such as
-/// `codex-auto-review` stay hidden) minus the ones the user removed, plus the
-/// user's custom entries. Custom entries clone their `base` snapshot ModelInfo
-/// (falling back to the highest-priority entry when `base` is unknown), apply
-/// **sanitized** overrides, and are forced `visibility:"list"` +
-/// `supported_in_api:true`. Priority is renumbered by final order (customs
-/// first) so the picker ordering is deterministic without colliding official
-/// priorities.
-pub fn expand_to_catalog(config: &CodexModelConfig, snapshot: &[Value]) -> Value {
-    let excluded: HashSet<&str> = config
-        .excluded_officials
-        .iter()
-        .map(String::as_str)
-        .collect();
+/// This is the shared core of [`expand_to_catalog`] (customs + officials) and
+/// [`expand_customs_only`] (customs only). Keeping it in one place guarantees
+/// the per-custom fields, sanitization, and force-set flags stay in lockstep
+/// across the two entry points.
+fn build_customs(config: &CodexModelConfig, snapshot: &[Value]) -> Vec<Value> {
     let fallback = fallback_base_slug(snapshot);
-    let mut out: Vec<Value> = Vec::with_capacity(config.customs.len() + snapshot.len());
-
-    // Customs first — surface the user's own models at the top of the picker.
+    let mut out: Vec<Value> = Vec::with_capacity(config.customs.len());
     for c in &config.customs {
         let base = snapshot
             .iter()
@@ -282,6 +286,27 @@ pub fn expand_to_catalog(config: &CodexModelConfig, snapshot: &[Value]) -> Value
         obj.insert("upgrade".into(), Value::Null);
         out.push(Value::Object(obj));
     }
+    out
+}
+
+/// Expand a compact config into a full `{"models":[ ModelInfo, ... ]}` catalog.
+///
+/// Because `model_catalog_json` is a whole-table replace, the output contains
+/// **all** official models (verbatim, so codex's hidden entries such as
+/// `codex-auto-review` stay hidden) minus the ones the user removed, plus the
+/// user's custom entries. Custom entries clone their `base` snapshot ModelInfo
+/// (falling back to the highest-priority entry when `base` is unknown), apply
+/// **sanitized** overrides, and are forced `visibility:"list"` +
+/// `supported_in_api:true`. Priority is renumbered by final order (customs
+/// first) so the picker ordering is deterministic without colliding official
+/// priorities.
+pub fn expand_to_catalog(config: &CodexModelConfig, snapshot: &[Value]) -> Value {
+    let excluded: HashSet<&str> = config
+        .excluded_officials
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let mut out = build_customs(config, snapshot);
 
     // Then every official verbatim, minus the ones the user removed. A removal
     // only applies to models codex actually *lists*: codex retires a model by
@@ -307,6 +332,21 @@ pub fn expand_to_catalog(config: &CodexModelConfig, snapshot: &[Value]) -> Value
     Value::Object(Map::from_iter([("models".to_string(), Value::Array(out))]))
 }
 
+/// Expand a compact config into a `{"models":[ ModelInfo, ... ]}` catalog
+/// containing **only** the user's customs — no auto-included officials and no
+/// priority renumbering. Use when the caller has already determined the
+/// relevant model set (e.g. a per-conversation Codex workspace where only the
+/// selected model should be listed).
+///
+/// The customs still inherit the same sanitization, base-cloning, and force-set
+/// flags as [`expand_to_catalog`], so the only difference is what the surrounding
+/// list contains. An empty `customs` produces `{"models": []}` rather than
+/// `None` — the caller is responsible for treating the empty case as "feature
+/// off" if that's the right semantics (see [`is_effectively_empty`]).
+pub fn expand_customs_only(config: &CodexModelConfig, snapshot: &[Value]) -> Value {
+    let out = build_customs(config, snapshot);
+    Value::Object(Map::from_iter([("models".to_string(), Value::Array(out))]))
+}
 /// The default model slug written as codex's root `model`: the explicit
 /// `default` when it names a listed model, else the first custom, else the first
 /// non-excluded listable official, else `None`.
@@ -332,9 +372,7 @@ pub fn default_slug(config: &CodexModelConfig, snapshot: &[Value]) -> Option<Str
     }
     snapshot
         .iter()
-        .find(|m| {
-            slug_of(m).map(|s| !excluded.contains(s)).unwrap_or(false) && is_listable(m)
-        })
+        .find(|m| slug_of(m).map(|s| !excluded.contains(s)).unwrap_or(false) && is_listable(m))
         .and_then(|m| slug_of(m).map(str::to_owned))
 }
 
@@ -581,9 +619,10 @@ pub fn write_catalog_files(
     }
 
     std::fs::create_dir_all(codex_home).map_err(|e| io_err("create codex home", e))?;
-    let catalog = serde_json::to_string_pretty(&expand_to_catalog(&config, snapshot)).map_err(|e| {
-        AppCommandError::new(AppErrorCode::IoError, format!("serialize catalog: {e}"))
-    })?;
+    let catalog =
+        serde_json::to_string_pretty(&expand_to_catalog(&config, snapshot)).map_err(|e| {
+            AppCommandError::new(AppErrorCode::IoError, format!("serialize catalog: {e}"))
+        })?;
     std::fs::write(&catalog_path, catalog).map_err(|e| io_err("write catalog file", e))?;
     std::fs::write(&source_path, raw_compact).map_err(|e| io_err("write catalog source", e))?;
 
@@ -750,7 +789,10 @@ mod tests {
         // A removal that still applies keeps the takeover.
         assert!(!is_effectively_empty(&excluding(&["gpt-5.2"]), &s));
         // Mixed: the live one wins.
-        assert!(!is_effectively_empty(&excluding(&["gpt-5.4", "gpt-5.2"]), &s));
+        assert!(!is_effectively_empty(
+            &excluding(&["gpt-5.4", "gpt-5.2"]),
+            &s
+        ));
         // A custom always counts.
         let with_custom = CodexModelConfig {
             customs: vec![CodexCustomEntry {
@@ -779,12 +821,21 @@ mod tests {
                 overrides: Map::from_iter([
                     // Invalid → must be dropped (would reject the whole catalog).
                     ("shell_type".into(), Value::String("bogus".into())),
-                    ("default_verbosity".into(), Value::String("screaming".into())),
+                    (
+                        "default_verbosity".into(),
+                        Value::String("screaming".into()),
+                    ),
                     // `function` is NOT a valid apply_patch variant on codex 0.144.
-                    ("apply_patch_tool_type".into(), Value::String("function".into())),
+                    (
+                        "apply_patch_tool_type".into(),
+                        Value::String("function".into()),
+                    ),
                     // Valid → must be kept.
                     ("supports_search_tool".into(), Value::Bool(true)),
-                    ("default_reasoning_summary".into(), Value::String("concise".into())),
+                    (
+                        "default_reasoning_summary".into(),
+                        Value::String("concise".into()),
+                    ),
                 ]),
             }],
             excluded_officials: Vec::new(),
@@ -827,8 +878,15 @@ mod tests {
         };
         let cat = expand_to_catalog(&config, &snap());
         let x = find(&cat, "gw/n").expect("present");
-        for key in ["default_reasoning_summary", "web_search_tool_type", "shell_type"] {
-            assert!(!x.get(key).unwrap().is_null(), "{key} must keep the base value");
+        for key in [
+            "default_reasoning_summary",
+            "web_search_tool_type",
+            "shell_type",
+        ] {
+            assert!(
+                !x.get(key).unwrap().is_null(),
+                "{key} must keep the base value"
+            );
         }
         for key in ["apply_patch_tool_type", "tool_mode", "multi_agent_version"] {
             assert!(x.get(key).unwrap().is_null(), "{key} must accept null");
@@ -1001,7 +1059,10 @@ mod tests {
         gw.insert("slug".into(), Value::String("gw/opus".into()));
         // A field that genuinely differs from the clone base (its own description),
         // so import must capture it as an override.
-        gw.insert("description".into(), Value::String("My private gateway".into()));
+        gw.insert(
+            "description".into(),
+            Value::String("My private gateway".into()),
+        );
         let kept = s
             .iter()
             .find(|m| slug_of(m) == Some("gpt-5.5"))
@@ -1022,7 +1083,10 @@ mod tests {
         assert!(cfg.excluded_officials.iter().any(|x| x == "gpt-5.6-sol"));
         assert!(!cfg.excluded_officials.iter().any(|x| x == "gpt-5.5"));
         // Hidden official is never inferred-excluded.
-        assert!(!cfg.excluded_officials.iter().any(|x| x == "codex-auto-review"));
+        assert!(!cfg
+            .excluded_officials
+            .iter()
+            .any(|x| x == "codex-auto-review"));
         assert_eq!(cfg.default.as_deref(), Some("gpt-5.5"));
 
         // Round-trip: expanding reproduces gpt-5.5 + the custom, drops the
@@ -1054,7 +1118,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(dir.join(CATALOG_REL)).unwrap()).unwrap();
         assert!(find(&cat, "gw/x").is_some());
         assert!(find(&cat, "gpt-5.6-sol").is_some()); // official auto-included
-        // Empty config clears files + signals key removal.
+                                                      // Empty config clears files + signals key removal.
         assert!(write_catalog_files(r#"{"customs":[]}"#, &dir, &s)
             .unwrap()
             .is_none());
@@ -1064,14 +1128,129 @@ mod tests {
         // A ghost-only config (removals of officials codex has since hidden)
         // behaves the same: the files go away and the caller is told to drop the
         // `model_catalog_json` key, so the two never get out of sync.
-        write_catalog_files(r#"{"customs":[{"slug":"gw/y","base":"gpt-5.6-sol"}]}"#, &dir, &s)
-            .unwrap()
-            .expect("seeded");
+        write_catalog_files(
+            r#"{"customs":[{"slug":"gw/y","base":"gpt-5.6-sol"}]}"#,
+            &dir,
+            &s,
+        )
+        .unwrap()
+        .expect("seeded");
         assert!(dir.join(CATALOG_REL).exists());
         let ghosts = r#"{"customs":[],"excludedOfficials":["gpt-5.4","gpt-5.4-mini"]}"#;
         assert!(write_catalog_files(ghosts, &dir, &s).unwrap().is_none());
         assert!(!dir.join(CATALOG_REL).exists());
         assert!(!dir.join(SOURCE_REL).exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `expand_customs_only` is the per-conversation catalog path: it must
+    /// emit *only* the customs (no officials, no priority renumber) so a
+    /// workspace `"model_catalog_json"` can target one specific model without
+    /// inheriting the bundled 11 OpenAI models.
+    #[test]
+    fn expand_customs_only_omits_officials_and_keeps_only_customs() {
+        let config = CodexModelConfig {
+            customs: vec![CodexCustomEntry {
+                slug: "deepseek-v4-flash".into(),
+                display_name: Some("DeepSeek V4 Flash".into()),
+                context_window: Some(128_000),
+                base: "gpt-5.6-sol".into(),
+                overrides: Map::new(),
+            }],
+            excluded_officials: Vec::new(),
+            default: None,
+        };
+        let cat = expand_customs_only(&config, &snap());
+        let models = cat.get("models").and_then(Value::as_array).expect("models array");
+        // The only entry is the custom — no bundled officials auto-included.
+        assert_eq!(models.len(), 1, "expand_customs_only must not auto-include officials");
+        let entry = &models[0];
+        // Custom is forced listable + visible + cleared upgrade, same as the
+        // full-expansion path.
+        assert_eq!(entry.get("slug").unwrap(), "deepseek-v4-flash");
+        assert_eq!(entry.get("display_name").unwrap(), "DeepSeek V4 Flash");
+        assert_eq!(entry.get("visibility").unwrap(), "list");
+        assert_eq!(entry.get("supported_in_api").unwrap(), &Value::Bool(true));
+        assert!(entry.get("upgrade").unwrap().is_null());
+        // context_window from the custom lands verbatim; max_context_window is
+        // the larger of base's value and the custom's, so a smaller custom does
+        // not shrink the upper bound the base advertised.
+        assert_eq!(entry.get("context_window").unwrap().as_u64(), Some(128_000));
+        assert!(
+            entry.get("max_context_window").unwrap().as_u64().unwrap() >= 128_000,
+            "max_context_window must be at least the custom's value"
+        );
+        // Priority inherits from the base (gpt-5.6-sol) — no renumbering
+        // happens in the customs-only path. We only assert it's a number; the
+        // exact value depends on the bundled snapshot and can drift.
+        assert!(entry.get("priority").unwrap().is_i64());
+        // Required ModelInfo fields from the clone base are present.
+        assert!(entry.get("base_instructions").and_then(Value::as_str).is_some());
+    }
+
+    #[test]
+    fn expand_customs_only_with_no_customs_returns_empty_models() {
+        let config = CodexModelConfig::default();
+        let cat = expand_customs_only(&config, &snap());
+        let models = cat.get("models").and_then(Value::as_array).expect("models array");
+        assert!(models.is_empty(), "empty customs → empty models array");
+    }
+
+    /// Sanitization is shared with the full-expansion path: invalid enum /
+    /// boolean override values get dropped (the base's value wins) so the
+    /// catalog stays parseable. A regression here would also break
+    /// `expand_to_catalog`, but pinning the behavior on the customs-only path
+    /// catches drift.
+    #[test]
+    fn expand_customs_only_sanitizes_bad_overrides() {
+        let config = CodexModelConfig {
+            customs: vec![CodexCustomEntry {
+                slug: "gw/x".into(),
+                display_name: None,
+                context_window: None,
+                base: "gpt-5.6-sol".into(),
+                overrides: Map::from_iter([
+                    // Bad enum → must fall back to base's value.
+                    ("shell_type".into(), Value::String("bogus".into())),
+                    // Non-boolean in a bool slot → must fall back to base.
+                    ("use_responses_lite".into(), Value::String("yes".into())),
+                    // Valid boolean override → must be kept.
+                    ("supports_search_tool".into(), Value::Bool(true)),
+                ]),
+            }],
+            excluded_officials: Vec::new(),
+            default: None,
+        };
+        let cat = expand_customs_only(&config, &snap());
+        let entry = find(&cat, "gw/x").expect("present");
+        assert_ne!(entry.get("shell_type").unwrap(), "bogus");
+        assert_eq!(entry.get("use_responses_lite").unwrap(), &Value::Bool(true));
+        assert_eq!(entry.get("supports_search_tool").unwrap(), &Value::Bool(true));
+    }
+
+    /// Falls back to the highest-priority snapshot entry when the declared
+    /// `base` is unknown, so a stale or hand-written config still expands to a
+    /// parseable model. Same fallback behavior as `expand_to_catalog` — the
+    /// shared `build_customs` core makes the two paths agree.
+    #[test]
+    fn expand_customs_only_falls_back_when_base_unknown() {
+        let config = CodexModelConfig {
+            customs: vec![CodexCustomEntry {
+                slug: "deepseek-v4-flash".into(),
+                display_name: None,
+                context_window: None,
+                base: "no-such-base".into(),
+                overrides: Map::new(),
+            }],
+            excluded_officials: Vec::new(),
+            default: None,
+        };
+        let cat = expand_customs_only(&config, &snap());
+        let entry = find(&cat, "deepseek-v4-flash").expect("present");
+        // A required field from the clone base lands even when the declared
+        // base is missing — proves the fallback fired.
+        assert!(entry.get("base_instructions").is_some());
+        assert_eq!(entry.get("slug").unwrap(), "deepseek-v4-flash");
+        assert_eq!(entry.get("display_name").unwrap(), "deepseek-v4-flash");
     }
 }

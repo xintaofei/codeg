@@ -442,10 +442,7 @@ mod tests {
         set_ready(&h, &e, None, None, None, None);
         // Staged: the claim succeeds and flips to Restarting…
         assert!(try_claim_restart(&h, &e));
-        assert_eq!(
-            snapshot(&h).status,
-            AppUpdateLifecycle::Restarting
-        );
+        assert_eq!(snapshot(&h).status, AppUpdateLifecycle::Restarting);
         // …and a second (concurrent) restart click can no longer claim it.
         assert!(!try_claim_restart(&h, &e));
     }

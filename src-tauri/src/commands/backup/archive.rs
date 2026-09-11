@@ -116,8 +116,9 @@ impl ArchiveBuilder {
             if cancel.is_cancelled() {
                 return Err(cancelled_error());
             }
-            let entry = entry
-                .map_err(|e| AppCommandError::io_error("Failed to walk directory").with_detail(e.to_string()))?;
+            let entry = entry.map_err(|e| {
+                AppCommandError::io_error("Failed to walk directory").with_detail(e.to_string())
+            })?;
             let ft = entry.file_type();
             if !ft.is_file() {
                 // Skip directories, symlinks, and special files.
@@ -144,10 +145,14 @@ impl ArchiveBuilder {
 
     /// Write `manifest.json` (uncompressed) as the last entry and close the
     /// archive. Returns the manifest with its `entries` populated.
-    pub fn finish(mut self, mut manifest: BackupManifest) -> Result<BackupManifest, AppCommandError> {
+    pub fn finish(
+        mut self,
+        mut manifest: BackupManifest,
+    ) -> Result<BackupManifest, AppCommandError> {
         manifest.entries = std::mem::take(&mut self.entries);
-        let json = serde_json::to_vec_pretty(&manifest)
-            .map_err(|e| AppCommandError::task_execution_failed("Serialize manifest").with_detail(e.to_string()))?;
+        let json = serde_json::to_vec_pretty(&manifest).map_err(|e| {
+            AppCommandError::task_execution_failed("Serialize manifest").with_detail(e.to_string())
+        })?;
         let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
         self.writer
             .start_file(MANIFEST_ENTRY_NAME, opts)
@@ -240,7 +245,11 @@ pub fn extract_all(
     // path -> manifest-declared size, used to bound each entry's decompressed
     // output (a decompression bomb stops at the declared size + 1 and is
     // rejected, rather than filling the disk before checksum verification).
-    let sizes: HashMap<&str, u64> = manifest.entries.iter().map(|e| (e.path.as_str(), e.size)).collect();
+    let sizes: HashMap<&str, u64> = manifest
+        .entries
+        .iter()
+        .map(|e| (e.path.as_str(), e.size))
+        .collect();
     let f = File::open(zip_path).map_err(AppCommandError::io)?;
     let mut ar = ZipArchive::new(BufReader::new(f)).map_err(|_| unknown_format_error())?;
     let mut processed = 0u64;
@@ -399,10 +408,7 @@ mod tests {
 
         // Manifest captured 3 files, excluded the .tmp one.
         assert_eq!(manifest.entries.len(), 3);
-        assert!(manifest
-            .entries
-            .iter()
-            .all(|e| !e.path.contains(".tmp")));
+        assert!(manifest.entries.iter().all(|e| !e.path.contains(".tmp")));
 
         let reread = read_manifest(&zip_path).unwrap();
         assert_eq!(reread.entries.len(), 3);

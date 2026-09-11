@@ -1,9 +1,9 @@
 pub mod acp;
 pub mod app_update;
 pub mod automation;
-pub mod canvas;
 pub mod background;
 pub mod backup;
+pub mod canvas;
 pub mod chat_authoring;
 pub mod chat_channel;
 pub mod conversations;
@@ -23,6 +23,7 @@ pub mod logging;
 pub mod mcp;
 pub mod mcp_service;
 pub mod model_provider;
+pub mod model_provider_file;
 pub mod office_tools;
 pub mod office_watch_proxy;
 pub mod pet;

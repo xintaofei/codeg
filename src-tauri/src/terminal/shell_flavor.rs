@@ -136,7 +136,10 @@ mod tests {
         );
         // A cmd-compatible replacement reached through COMSPEC must still get
         // cmd's `/C` convention, not POSIX `-c`.
-        assert_eq!(classify_shell_family("C:\\tools\\tcc.exe"), ShellFamily::Cmd);
+        assert_eq!(
+            classify_shell_family("C:\\tools\\tcc.exe"),
+            ShellFamily::Cmd
+        );
         assert_eq!(
             classify_shell_family("C:\\Program Files\\Git\\bin\\bash.exe"),
             ShellFamily::Posix

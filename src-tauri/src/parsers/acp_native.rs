@@ -106,15 +106,14 @@ impl AgentParser for AcpNativeParser {
         // under the previous session id.
         let transcript = acp_transcript::read_chain_in(&self.root, dir, conversation_id);
         if transcript.header.is_none() && transcript.is_empty() {
-            return Err(ParseError::ConversationNotFound(conversation_id.to_string()));
+            return Err(ParseError::ConversationNotFound(
+                conversation_id.to_string(),
+            ));
         }
         let turns = project_turns(&transcript.entries);
         let (used, size) = latest_context_window(&transcript.entries);
-        let session_stats = crate::parsers::merge_context_window_stats(
-            session_stats(&turns),
-            used,
-            size,
-        );
+        let session_stats =
+            crate::parsers::merge_context_window_stats(session_stats(&turns), used, size);
         Ok(ConversationDetail {
             summary: self.summarize(conversation_id, &transcript),
             turns,
@@ -172,7 +171,9 @@ impl AcpNativeParser {
 }
 
 fn epoch_ms_to_utc(ms: u64) -> DateTime<Utc> {
-    Utc.timestamp_millis_opt(ms as i64).single().unwrap_or_else(Utc::now)
+    Utc.timestamp_millis_opt(ms as i64)
+        .single()
+        .unwrap_or_else(Utc::now)
 }
 
 fn first_prompt_title(entries: &[TranscriptEntry]) -> Option<String> {
@@ -210,7 +211,10 @@ fn prompt_blocks(payload: &serde_json::Value) -> Vec<ContentBlock> {
     for item in items {
         match item.get("type").and_then(|t| t.as_str()) {
             Some("image") => {
-                let data = item.get("data").and_then(|d| d.as_str()).unwrap_or_default();
+                let data = item
+                    .get("data")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or_default();
                 let mime_type = item
                     .get("mimeType")
                     .or_else(|| item.get("mime_type"))
@@ -220,10 +224,7 @@ fn prompt_blocks(payload: &serde_json::Value) -> Vec<ContentBlock> {
                     blocks.push(ContentBlock::Image {
                         data: data.to_string(),
                         mime_type: mime_type.to_string(),
-                        uri: item
-                            .get("uri")
-                            .and_then(|u| u.as_str())
-                            .map(str::to_string),
+                        uri: item.get("uri").and_then(|u| u.as_str()).map(str::to_string),
                     });
                 }
             }
@@ -384,7 +385,7 @@ pub fn project_turns(entries: &[TranscriptEntry]) -> Vec<MessageTurn> {
                     duration_ms: None,
                     model: None,
                     completed_at: None,
-                agent_message_id: None,
+                    agent_message_id: None,
                 });
                 seq += 1;
                 prompt_just_recorded = true;
@@ -444,7 +445,7 @@ fn flush(pending: &mut Option<PendingTurn>, turns: &mut Vec<MessageTurn>, seq: &
             .or_else(|| p.last_at_ms.checked_sub(p.started_at_ms)),
         model: p.model,
         completed_at: Some(epoch_ms_to_utc(p.last_at_ms)),
-    agent_message_id: None,
+        agent_message_id: None,
     });
     *seq += 1;
 }
@@ -542,7 +543,7 @@ fn apply_update(
                         duration_ms: None,
                         model: None,
                         completed_at: None,
-                    agent_message_id: None,
+                        agent_message_id: None,
                     });
                     *seq += 1;
                 }
@@ -654,8 +655,7 @@ fn upsert_tool_call(
     meta: Option<serde_json::Value>,
 ) {
     pending.has_content = true;
-    let own_input =
-        json_value_to_text(&raw_input.cloned()).filter(|t| !t.trim().is_empty());
+    let own_input = json_value_to_text(&raw_input.cloned()).filter(|t| !t.trim().is_empty());
     let synthesized_edit = if own_input.is_none() {
         synthesize_edit_input_from_diffs(content)
     } else {
@@ -691,7 +691,9 @@ fn upsert_tool_call(
             }
         }
         None => {
-            pending.tool_use_index.insert(id.to_string(), pending.blocks.len());
+            pending
+                .tool_use_index
+                .insert(id.to_string(), pending.blocks.len());
             pending.blocks.push(ContentBlock::ToolUse {
                 tool_use_id: Some(id.to_string()),
                 // ACP has no tool *name* channel — `title` is what the agent
@@ -1110,7 +1112,11 @@ mod tests {
             .iter()
             .filter(|b| matches!(b, ContentBlock::ToolUse { tool_name, .. } if tool_name == "TodoWrite"))
             .collect();
-        assert_eq!(plan_blocks.len(), 1, "the plan card is replaced, not repeated");
+        assert_eq!(
+            plan_blocks.len(),
+            1,
+            "the plan card is replaced, not repeated"
+        );
         match plan_blocks[0] {
             ContentBlock::ToolUse { input_preview, .. } => {
                 let v: serde_json::Value =
@@ -1222,8 +1228,8 @@ mod tests {
             let parsed: SessionUpdate = serde_json::from_value(payload.clone())
                 .unwrap_or_else(|e| panic!("sample is not a valid SessionUpdate: {payload} ({e})"));
             let entry = [update(1, payload.clone())];
-            let read = !project_turns(&entry).is_empty()
-                || latest_context_window(&entry) != (None, None);
+            let read =
+                !project_turns(&entry).is_empty() || latest_context_window(&entry) != (None, None);
             assert_eq!(
                 is_recorded_update(&parsed),
                 read,
@@ -1236,9 +1242,15 @@ mod tests {
     fn the_last_usage_update_becomes_the_context_window_footer() {
         let entries = vec![
             prompt(1, "hi"),
-            update(2, serde_json::json!({"sessionUpdate":"usage_update","used":100,"size":1000})),
+            update(
+                2,
+                serde_json::json!({"sessionUpdate":"usage_update","used":100,"size":1000}),
+            ),
             update(3, text_chunk("agent_message_chunk", "ok")),
-            update(4, serde_json::json!({"sessionUpdate":"usage_update","used":250,"size":1000})),
+            update(
+                4,
+                serde_json::json!({"sessionUpdate":"usage_update","used":250,"size":1000}),
+            ),
         ];
         assert_eq!(latest_context_window(&entries), (Some(250), Some(1000)));
         // Occupancy is NOT a turn's token usage: recording it must not put
@@ -1246,7 +1258,10 @@ mod tests {
         assert!(project_turns(&entries).iter().all(|t| t.usage.is_none()));
 
         // A window of zero is an agent reporting nothing, not a reading.
-        let zero = [update(5, serde_json::json!({"sessionUpdate":"usage_update","used":9,"size":0}))];
+        let zero = [update(
+            5,
+            serde_json::json!({"sessionUpdate":"usage_update","used":9,"size":0}),
+        )];
         assert_eq!(latest_context_window(&zero), (None, None));
         assert_eq!(latest_context_window(&[prompt(1, "hi")]), (None, None));
     }

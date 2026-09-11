@@ -89,8 +89,8 @@ pub(crate) async fn publish_native_title(
 ) {
     let admit = {
         let mut s = state.write().await;
-        let admit = s.conversation_id.is_some()
-            && s.last_native_title.as_deref() != Some(title.as_str());
+        let admit =
+            s.conversation_id.is_some() && s.last_native_title.as_deref() != Some(title.as_str());
         if admit {
             s.last_native_title = Some(title.clone());
         }
@@ -242,12 +242,7 @@ mod tests {
         ] {
             let record = serde_json::json!({ "type": "ai-title", "aiTitle": raw });
             let (mut custom, mut ai) = (None, None);
-            crate::parsers::claude::capture_title_record(
-                &record,
-                "ai-title",
-                &mut custom,
-                &mut ai,
-            );
+            crate::parsers::claude::capture_title_record(&record, "ai-title", &mut custom, &mut ai);
             assert_eq!(
                 native_title_from_session_info(Some(raw)),
                 ai,

@@ -746,7 +746,10 @@ mod tests {
             child_row.connection_id, "conn-child",
             "the row must answer through the CHILD connection, not the parent"
         );
-        let parent_ref = child_row.parent.as_ref().expect("sub-agent row names its parent");
+        let parent_ref = child_row
+            .parent
+            .as_ref()
+            .expect("sub-agent row names its parent");
         assert_eq!(parent_ref.conversation_id, parent_id);
         assert_eq!(parent_ref.folder_id, folder_id);
         assert_eq!(parent_ref.agent_type, AgentType::ClaudeCode);

@@ -22,6 +22,7 @@ import {
   Upload,
   X,
 } from "lucide-react"
+import { FileTypeIcon } from "@/components/files/file-type-icon"
 import {
   Dialog,
   DialogContent,
@@ -760,8 +761,8 @@ export function WorkspaceUploadDialog({
     : rootPath
   const canSelectFolder = remoteDesktop || folderUploadSupported
 
-  const renderStatusIcon = (status: QueueStatus) => {
-    switch (status) {
+  const renderStatusIcon = (item: QueueItem) => {
+    switch (item.status) {
       case "uploading":
         return <Loader2 className="size-4 shrink-0 animate-spin text-primary" />
       case "success":
@@ -771,7 +772,12 @@ export function WorkspaceUploadDialog({
       case "cancelled":
         return <AlertCircle className="size-4 shrink-0 text-muted-foreground" />
       default:
-        return <FileIcon className="size-4 shrink-0 text-muted-foreground" />
+        return (
+          <FileTypeIcon
+            filename={item.source.relativePath || item.source.displayName}
+            className="size-4 shrink-0 text-muted-foreground"
+          />
+        )
     }
   }
 
@@ -927,9 +933,7 @@ export function WorkspaceUploadDialog({
                         key={item.id}
                         className="flex items-start gap-3 px-3 py-2 text-sm"
                       >
-                        <div className="pt-1">
-                          {renderStatusIcon(item.status)}
-                        </div>
+                        <div className="pt-1">{renderStatusIcon(item)}</div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
                             <span

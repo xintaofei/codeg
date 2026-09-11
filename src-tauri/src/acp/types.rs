@@ -215,7 +215,10 @@ impl AsyncTaskDelta {
     pub fn to_record(&self) -> AsyncTaskRecord {
         AsyncTaskRecord {
             task_id: self.task_id.clone(),
-            name: self.name.clone().unwrap_or_else(|| "Background task".into()),
+            name: self
+                .name
+                .clone()
+                .unwrap_or_else(|| "Background task".into()),
             task_type: self.task_type.clone().unwrap_or_else(|| "task".into()),
             description: self.description.clone().unwrap_or_default(),
             show_in_transcript: self.show_in_transcript.unwrap_or(true),
@@ -712,10 +715,7 @@ pub enum AcpEvent {
     /// clear its "restart to apply" banner. Carried into `SessionState` so a
     /// snapshot attach (web reconnect, window refresh, new tile) recovers the
     /// staleness the one-shot event won't replay for it.
-    SessionConfigStale {
-        stale: bool,
-        kind: ConfigStaleKind,
-    },
+    SessionConfigStale { stale: bool, kind: ConfigStaleKind },
 }
 
 /// One background task settled by a `<task-notification>` transcript record,
@@ -1096,6 +1096,7 @@ pub struct AcpAgentInfo {
     /// for `AgentType::Cursor`. Derived from `cursor_cli_config_json`.
     pub cursor_settings: Option<CursorSettings>,
     pub model_provider_id: Option<i32>,
+    pub model_source: String,
     /// Display icon for a custom ACP agent — normally an inlined
     /// `data:image/…;base64,…` URL (see
     /// `crate::acp::custom_registry::CustomAgentDef::icon_url`). Always `None`

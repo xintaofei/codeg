@@ -24,6 +24,7 @@ import {
   useCommandTerminalLinkStore,
 } from "@/stores/command-terminal-link-store"
 import { cn } from "@/lib/utils"
+import { useLongPressAction } from "@/hooks/use-long-press-action"
 import { CommandManageDialog } from "./command-manage-dialog"
 
 function getSelectedCommandId(folderId: number): number | null {
@@ -43,6 +44,44 @@ function setSelectedCommandId(folderId: number, cmdId: number) {
   }
 }
 
+interface CommandMenuItemProps {
+  cmd: FolderCommand
+  isActive: boolean
+  onSelect: () => void
+  onRun: () => void
+}
+
+/**
+ * One row of the command menu. Short press keeps the long-standing behavior —
+ * select the command (the pill next to the trigger then exposes run/stop);
+ * a long press skips straight to running the command, which also selects it
+ * (`runCommand` → `selectCommand`), so the pill follows the launched command.
+ */
+function CommandMenuItem({
+  cmd,
+  isActive,
+  onSelect,
+  onRun,
+}: CommandMenuItemProps) {
+  const { handlers } = useLongPressAction({
+    onPress: onSelect,
+    onLongPress: onRun,
+  })
+  return (
+    <DropdownMenuItem
+      {...handlers}
+      className={`flex items-center justify-between gap-4 ${
+        isActive ? "bg-accent/60" : ""
+      }`}
+    >
+      <span className="truncate">{cmd.name}</span>
+      <span className="text-xs text-muted-foreground font-mono truncate max-w-32">
+        {cmd.command}
+      </span>
+    </DropdownMenuItem>
+  )
+}
+
 export function CommandDropdown() {
   const t = useTranslations("Folder.commandDropdown")
   const { activeFolder: folder } = useActiveFolder()
@@ -53,6 +92,8 @@ export function CommandDropdown() {
   } = useTerminalContext()
   const [commands, setCommands] = useState<FolderCommand[]>([])
   const [manageOpen, setManageOpen] = useState(false)
+  // Controlled so a long-press run can close the menu programmatically.
+  const [menuOpen, setMenuOpen] = useState(false)
   const [bootstrapping, setBootstrapping] = useState(false)
   const [selectedCommandId, setSelectedCommandIdState] = useState<
     number | null
@@ -264,7 +305,7 @@ export function CommandDropdown() {
         // `--muted`, so a `bg-muted`/`bg-accent` hover would be invisible against
         // it in light mode.
         <div className="group/cmd flex items-center rounded-full text-xs transition-colors hover:bg-foreground/10">
-          <DropdownMenu>
+          <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
@@ -276,18 +317,16 @@ export function CommandDropdown() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-56">
               {commands.map((cmd) => (
-                <DropdownMenuItem
+                <CommandMenuItem
                   key={cmd.id}
-                  onClick={() => handleSelectCommand(cmd)}
-                  className={`flex items-center justify-between gap-4 ${
-                    cmd.id === activeCmd?.id ? "bg-accent/60" : ""
-                  }`}
-                >
-                  <span className="truncate">{cmd.name}</span>
-                  <span className="text-xs text-muted-foreground font-mono truncate max-w-32">
-                    {cmd.command}
-                  </span>
-                </DropdownMenuItem>
+                  cmd={cmd}
+                  isActive={cmd.id === activeCmd?.id}
+                  onSelect={() => handleSelectCommand(cmd)}
+                  onRun={() => {
+                    setMenuOpen(false)
+                    void runCommand(cmd)
+                  }}
+                />
               ))}
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => setManageOpen(true)}>

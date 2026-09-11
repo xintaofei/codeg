@@ -1043,6 +1043,12 @@
   font-size: 0.625rem; /* 10px @100% */
 }
 
+/* 保持 input type 为 text，用 WebKit 的 text-security 做密钥视觉遮蔽
+   （pios ModelConfigModal 同款；眼睛按钮只切换这个遮蔽类）。 */
+@utility masked-key {
+  -webkit-text-security: disc;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

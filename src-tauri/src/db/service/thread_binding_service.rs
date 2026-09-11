@@ -88,7 +88,10 @@ pub async fn upsert_for_target(
         created_by_sender_id: Set(created_by_sender_id.to_string()),
         display_title: Set(display_title),
         title_sync_enabled: Set(true),
-        provider_payload_json: Set(target.provider_payload.as_ref().map(serde_json::Value::to_string)),
+        provider_payload_json: Set(target
+            .provider_payload
+            .as_ref()
+            .map(serde_json::Value::to_string)),
         created_at: Set(now),
         updated_at: Set(now),
     };

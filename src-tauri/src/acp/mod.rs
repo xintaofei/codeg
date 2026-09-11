@@ -28,8 +28,8 @@ pub mod question;
 pub mod registry;
 pub mod remote_registry;
 pub mod session_info;
-pub mod session_title;
 pub mod session_state;
+pub mod session_title;
 pub mod stderr_tail;
 pub mod terminal_runtime;
 pub mod types;
@@ -66,7 +66,10 @@ pub use types::{
 /// Empty — and free — for every built-in agent: their history lives in the
 /// agent's own store, codeg records no transcript, and so nothing can ever be
 /// carried forward. Only custom agents can produce a non-empty answer.
-pub fn continued_session_ids(agent_type: crate::models::AgentType, session_id: &str) -> Vec<String> {
+pub fn continued_session_ids(
+    agent_type: crate::models::AgentType,
+    session_id: &str,
+) -> Vec<String> {
     if agent_type.custom_id().is_none() {
         return Vec::new();
     }

@@ -460,7 +460,9 @@ pub async fn install_hyperframes_skills(agents: Vec<String>) -> Result<(), AppCo
     // `~/.agents/skills`, so one satisfied install covers all that read it.
     for &agent in &ran_ok {
         if !hyperframes_skill_installed(agent) {
-            tracing::info!("[ProjectBoot] {agent}: install exited 0 but no HyperFrames skill detected");
+            tracing::info!(
+                "[ProjectBoot] {agent}: install exited 0 but no HyperFrames skill detected"
+            );
             failures.push(format!(
                 "{agent}: install reported success but no HyperFrames skill was detected"
             ));
