@@ -1857,7 +1857,14 @@ pub(crate) fn background_keepalive_max_age() -> chrono::Duration {
         std::env::var("CODEG_ACP_BACKGROUND_KEEPALIVE_MAX_SECS")
             .ok()
             .and_then(|v| v.trim().parse::<i64>().ok())
-            .filter(|v| *v >= 0)
+            // `chrono::Duration::seconds` below is an `expect` over
+            // `try_seconds`, so it PANICS past `i64::MAX / 1000`. This value is
+            // read on the 60-second idle sweep and on every background-watch
+            // tick, so an out-of-range env value would abort the process from a
+            // timer with nobody at the keyboard, and a panic there leaves no
+            // trace of which setting caused it. Out of range is invalid input
+            // like any other, so it takes the documented default.
+            .filter(|v| *v >= 0 && chrono::Duration::try_seconds(*v).is_some())
             .unwrap_or(3600)
     });
     chrono::Duration::seconds(secs)

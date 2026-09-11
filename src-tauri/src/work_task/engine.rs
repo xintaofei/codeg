@@ -6780,12 +6780,18 @@ async fn outstanding_instruction(
 struct LaunchSeq(std::sync::Mutex<Option<i32>>);
 
 impl LaunchSeq {
+    // Poison-tolerant, matching the locks in `office_watch` and
+    // `background_watch`. The guarded value is a plain `Option<i32>` that
+    // cannot be left half-written, so a panic elsewhere in the launch has
+    // nothing to corrupt here, while `expect` would turn that unrelated panic
+    // into a permanent failure of every later launch. The schedule tick reaches
+    // this with nobody at the keyboard.
     fn set(&self, run_seq: i32) {
-        *self.0.lock().expect("launch seq mutex") = Some(run_seq);
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(run_seq);
     }
 
     fn get(&self) -> Option<i32> {
-        *self.0.lock().expect("launch seq mutex")
+        *self.0.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
 
@@ -6808,7 +6814,11 @@ impl DispatchSignal {
     }
 
     fn fire(&self, result: Result<(), String>) {
-        let sender = self.0.lock().expect("dispatch signal mutex").take();
+        // Poison-tolerant for the same reason as `LaunchSeq`: the fire-once
+        // guarantee is the `take()`, not the lock's poison flag, and refusing
+        // to fire after an unrelated panic would leave the caller waiting on a
+        // oneshot that is never sent.
+        let sender = self.0.lock().unwrap_or_else(|p| p.into_inner()).take();
         if let Some(sender) = sender {
             let _ = sender.send(result);
         }
