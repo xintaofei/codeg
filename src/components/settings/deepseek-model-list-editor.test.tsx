@@ -11,7 +11,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   DeepSeekModelListEditor,
   deepSeekAcceptsImages,
+  deepSeekImageBudgetMode,
   pruneEmpty,
+  setDeepSeekImageBudgetMode,
   setDeepSeekImageSupport,
   validateDeepSeekModels,
 } from "./deepseek-model-list-editor"
@@ -28,21 +30,21 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }))
 
+/** The catalog `deepseek-acp` 0.9.0 declares, which is what a session inherits
+ *  when the settings document stores none. A third row is kept so the list
+ *  tests still exercise more than a pair. */
 const DEFAULTS: DeepSeekCatalogModel[] = [
   {
-    id: "deepseek-v4-flash",
-    name: "DeepSeek-V4-Flash",
-    contextWindow: 1_000_000,
-  },
-  { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro", contextWindow: 1_000_000 },
-  {
-    id: "deepseek-v4-flash-vision-exp",
-    name: "DeepSeek-V4-Flash-Vision-Exp",
+    id: "deepseek-flash",
+    name: "DeepSeek-V4.1-Flash",
     contextWindow: 1_000_000,
     inputModalities: ["text", "image"],
     imagePixelBudget: 640_000,
     imageMaxBytes: 1_048_576,
+    systemPromptUpdate: "in-history",
   },
+  { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro", contextWindow: 1_000_000 },
+  { id: "gw-internal", name: "Internal gateway", contextWindow: 128_000 },
 ]
 
 function catalog(
@@ -86,7 +88,13 @@ describe("validateDeepSeekModels", () => {
           inputModalities: ["text", "image"],
           imagePixelBudget: 3,
           imageMaxBytes: 4,
-          imageDetail: "low",
+        },
+        // The named tier the agent takes in place of a count. No numeric check
+        // can judge it, so it has to be let through by name.
+        {
+          id: "d",
+          inputModalities: ["text", "image"],
+          imagePixelBudget: "low",
         },
       ])
     ).toBeNull()
@@ -132,6 +140,12 @@ describe("validateDeepSeekModels", () => {
         { id: "a", inputModalities: ["text", "image"], imageMaxBytes: 0 },
       ])
     ).toEqual({ kind: "badImageLimit", index: 0, id: "a" })
+    // A count of zero is still a count, named tier or not.
+    expect(
+      validateDeepSeekModels([
+        { id: "a", inputModalities: ["text", "image"], imagePixelBudget: 0 },
+      ])
+    ).toEqual({ kind: "badImageLimit", index: 0, id: "a" })
   })
 })
 
@@ -141,19 +155,44 @@ describe("setDeepSeekImageSupport", () => {
     expect(deepSeekAcceptsImages(on)).toBe(true)
     expect(on.inputModalities).toEqual(["text", "image"])
 
-    // Turning images off drops the three fields the agent refuses on a
-    // text-only entry — leaving them would make it reject the whole catalog.
+    // Turning images off drops the fields the agent refuses on a text-only
+    // entry — leaving them would make it reject the whole catalog.
     const off = setDeepSeekImageSupport(
       {
         id: "a",
         inputModalities: ["text", "image"],
         imagePixelBudget: 1,
         imageMaxBytes: 2,
-        imageDetail: "low",
       },
       false
     )
     expect(off).toEqual({ id: "a" })
+  })
+})
+
+describe("the image pixel budget's two kinds", () => {
+  it("reads a count, the named tier, and nothing at all", () => {
+    expect(deepSeekImageBudgetMode({ id: "a" })).toBe("pixels")
+    expect(deepSeekImageBudgetMode({ id: "a", imagePixelBudget: 1 })).toBe(
+      "pixels"
+    )
+    expect(deepSeekImageBudgetMode({ id: "a", imagePixelBudget: "low" })).toBe(
+      "low"
+    )
+  })
+
+  it("survives a move to the named tier and back", () => {
+    // Moving to a count CLEARS the field rather than seeding a number: empty
+    // is "inherit the agent's default" throughout this editor, and seeding
+    // would store a budget the user never picked.
+    const low = setDeepSeekImageBudgetMode(
+      { id: "a", imagePixelBudget: 262_144 },
+      "low"
+    )
+    expect(low.imagePixelBudget).toBe("low")
+    const back = setDeepSeekImageBudgetMode(low, "pixels")
+    expect(back).toEqual({ id: "a" })
+    expect(deepSeekImageBudgetMode(back)).toBe("pixels")
   })
 })
 
@@ -195,13 +234,13 @@ describe("DeepSeekModelListEditor", () => {
 
   it("blocks the save while a row is unusable, and says which model", async () => {
     await renderEditor(catalog())
-    fireEvent.change(idField(1), { target: { value: "deepseek-v4-flash" } })
+    fireEvent.change(idField(1), { target: { value: "deepseek-flash" } })
 
     expect(
       screen.getByRole("button", { name: /save model list/i })
     ).toBeDisabled()
     expect(
-      screen.getByText(/Two models share the id .deepseek-v4-flash./)
+      screen.getByText(/Two models share the id .deepseek-flash./)
     ).toBeInTheDocument()
     expect(idField(1)).toHaveAttribute("aria-invalid", "true")
   })
@@ -226,7 +265,7 @@ describe("DeepSeekModelListEditor", () => {
     // it is missing here.
     await renderEditor(catalog({ models: [{ id: "gw-only" }] }))
     expect(
-      screen.getByText(/New sessions start on .deepseek-v4-flash./)
+      screen.getByText(/New sessions start on .deepseek-flash./)
     ).toBeInTheDocument()
   })
 
@@ -295,6 +334,28 @@ describe("DeepSeekModelListEditor", () => {
     ])
   })
 
+  it("shows a named pixel budget as the tier it is, not as an empty box", async () => {
+    // `"low"` is not a number, so the count input cannot hold it. Rendering it
+    // there would show an empty field over a budget that IS set, and the first
+    // keystroke would overwrite the tier with a count.
+    await renderEditor(
+      catalog({
+        models: [
+          { id: "gw", inputModalities: ["text", "image"] },
+          {
+            id: "gw-low",
+            inputModalities: ["text", "image"],
+            imagePixelBudget: "low",
+          },
+        ],
+      })
+    )
+    fireEvent.click(screen.getAllByRole("button", { name: /more/i })[1])
+
+    expect(screen.getByText(/Low detail \(512×512\)/)).toBeInTheDocument()
+    expect(screen.queryByLabelText("Pixel count")).toBeNull()
+  })
+
   it("freezes the rows while a save is in flight", async () => {
     // The request carries a snapshot of the draft and the response reseeds it,
     // so an edit typed during the save would be written over with no dirty
@@ -343,9 +404,10 @@ describe("pruneEmpty", () => {
     expect(
       pruneEmpty({ id: "a", inputModalities: ["image"] }).inputModalities
     ).toEqual(["image"])
-    // Image limits never survive on a text-only entry.
+    // Image limits never survive on a text-only entry — including the named
+    // pixel tier, which the agent refuses there just as firmly as a count.
     expect(
-      pruneEmpty({ id: "a", imageMaxBytes: 5, imageDetail: "low" })
+      pruneEmpty({ id: "a", imageMaxBytes: 5, imagePixelBudget: "low" })
     ).toEqual({ id: "a" })
   })
 
@@ -353,6 +415,25 @@ describe("pruneEmpty", () => {
     expect(pruneEmpty({ id: " a ", name: "  ", description: " d " })).toEqual({
       id: "a",
       description: "d",
+    })
+  })
+
+  it("carries through the prompt-update mode it has no control for", () => {
+    // The editor never shows this field, so nothing would flag its loss — and
+    // losing it does not fail either, it just moves that model to the other
+    // system-prompt delivery mode. It has to ride along untouched.
+    expect(
+      pruneEmpty({
+        id: "a",
+        inputModalities: ["text", "image"],
+        imagePixelBudget: "low",
+        systemPromptUpdate: "in-history",
+      })
+    ).toEqual({
+      id: "a",
+      inputModalities: ["text", "image"],
+      imagePixelBudget: "low",
+      systemPromptUpdate: "in-history",
     })
   })
 })

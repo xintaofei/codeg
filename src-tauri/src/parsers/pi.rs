@@ -124,7 +124,10 @@ fn expand_pi_tilde(value: &str, home_dir: Option<&Path>) -> PathBuf {
 ///
 /// `None` for a missing / unreadable / non-object file, for an absent, empty or
 /// non-string `sessionDir`, and for any value that is not absolute after tilde
-/// expansion — so every uncertainty falls through to the default.
+/// expansion — so every uncertainty falls through to the default. "Not absolute"
+/// is the HOST's grammar, which on Windows also covers a drive-relative `\srv\x`
+/// / `/srv/x` (root, no drive prefix): that resolves against whatever drive the
+/// pi process's cwd sits on, and that cwd is again the per-session workspace.
 fn session_dir_from_settings(agent_dir: &Path, home_dir: Option<&Path>) -> Option<PathBuf> {
     let raw = fs::read_to_string(agent_dir.join("settings.json")).ok()?;
     let settings: Value = serde_json::from_str(&raw).ok()?;
@@ -1345,6 +1348,24 @@ mod tests {
     use std::io::Write;
     use tempfile::tempdir;
 
+    /// Same fixture — and same reason — as `acp::file_system_runtime`'s tests: a
+    /// unix-shaped `/srv/x` has a root but NO drive prefix on Windows, so
+    /// `Path::is_absolute` (the gate in [`session_dir_from_settings`]) calls it
+    /// drive-relative and declines it. Hard-coding the unix shape made the
+    /// honored-path assertions quietly exercise the FALLBACK there.
+    #[cfg(windows)]
+    const ABS_PREFIX: &str = "C:";
+    #[cfg(not(windows))]
+    const ABS_PREFIX: &str = "";
+
+    /// An absolute path for the HOST platform, built from unix-style segments —
+    /// as the STRING a settings file or env var carries, which is how every
+    /// caller here needs it. Nothing opens these paths, so the synthetic drive
+    /// letter needs no counterpart on disk.
+    fn absolute_path(segments: &str) -> String {
+        format!("{ABS_PREFIX}/{segments}")
+    }
+
     #[test]
     fn resolve_sessions_dir_prefers_session_dir_env() {
         let resolved = resolve_pi_sessions_dir_from(
@@ -2316,45 +2337,47 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let agent_dir = dir.path().join("agent");
         std::fs::create_dir_all(&agent_dir).expect("agent dir");
+        let home = PathBuf::from(absolute_path("home/demo"));
+        // Serialized, never hand-written: a Windows path's `\` is not a legal
+        // JSON escape, and an unparseable file falls through to the default.
+        let write_settings = |session_dir: &str| {
+            std::fs::write(
+                agent_dir.join("settings.json"),
+                serde_json::to_string(&json!({ "sessionDir": session_dir })).expect("json"),
+            )
+            .expect("settings");
+        };
 
         // Absolute.
-        std::fs::write(
-            agent_dir.join("settings.json"),
-            r#"{"sessionDir": "/srv/pi-sessions"}"#,
-        )
-        .expect("settings");
+        write_settings(&absolute_path("srv/pi-sessions"));
         assert_eq!(
             resolve_pi_sessions_dir_from(
                 None,
                 Some(agent_dir.clone().into_os_string()),
-                Some(PathBuf::from("/home/demo")),
+                Some(home.clone()),
             ),
-            PathBuf::from("/srv/pi-sessions"),
+            PathBuf::from(absolute_path("srv/pi-sessions")),
         );
 
         // `~`-rooted.
-        std::fs::write(
-            agent_dir.join("settings.json"),
-            r#"{"sessionDir": "~/pi-sessions"}"#,
-        )
-        .expect("settings");
+        write_settings("~/pi-sessions");
         assert_eq!(
             resolve_pi_sessions_dir_from(
                 None,
                 Some(agent_dir.clone().into_os_string()),
-                Some(PathBuf::from("/home/demo")),
+                Some(home.clone()),
             ),
-            PathBuf::from("/home/demo/pi-sessions"),
+            home.join("pi-sessions"),
         );
 
         // The env var still outranks it.
         assert_eq!(
             resolve_pi_sessions_dir_from(
-                Some(OsString::from("/env/sessions")),
+                Some(OsString::from(absolute_path("env/sessions"))),
                 Some(agent_dir.clone().into_os_string()),
-                Some(PathBuf::from("/home/demo")),
+                Some(home),
             ),
-            PathBuf::from("/env/sessions"),
+            PathBuf::from(absolute_path("env/sessions")),
         );
     }
 
@@ -2389,6 +2412,38 @@ mod tests {
                 ),
                 default,
                 "relative sessionDir {relative:?} must not shadow the default"
+            );
+        }
+    }
+
+    /// A DRIVE-relative `sessionDir` falls through for the same reason a plain
+    /// relative one does: `\srv\x` (and `/srv/x`) carries a root but no drive
+    /// prefix, so Windows resolves it against whatever drive the pi process's cwd
+    /// sits on — and that cwd is the per-session workspace pi-acp passes. Widening
+    /// the gate from `is_absolute` to `has_root` would name a directory codeg
+    /// cannot know AND shadow the history in `<agent_dir>\sessions`.
+    #[test]
+    #[cfg(windows)]
+    fn drive_relative_settings_session_dir_falls_back_to_the_default() {
+        let dir = tempdir().expect("tempdir");
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).expect("agent dir");
+        let default = agent_dir.join("sessions");
+
+        for rooted in [r"\srv\pi-sessions", "/srv/pi-sessions"] {
+            std::fs::write(
+                agent_dir.join("settings.json"),
+                serde_json::to_string(&json!({ "sessionDir": rooted })).expect("json"),
+            )
+            .expect("settings");
+            assert_eq!(
+                resolve_pi_sessions_dir_from(
+                    None,
+                    Some(agent_dir.clone().into_os_string()),
+                    Some(PathBuf::from(absolute_path("home/demo"))),
+                ),
+                default,
+                "drive-relative sessionDir {rooted:?} must not shadow the default"
             );
         }
     }

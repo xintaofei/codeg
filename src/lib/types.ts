@@ -4889,12 +4889,18 @@ export interface DeepSeekCatalogModel {
   /** Accepted request modalities; absent means text-only, and sending an image
    *  to a model without `image` here is refused by the agent. */
   inputModalities?: ("text" | "image")[]
-  /** Total-pixel budget for one request preview. Vision entries only. */
-  imagePixelBudget?: number
+  /** Total-pixel budget for one request preview, or `"low"` for the agent's
+   *  named low-detail tier (512×512). Vision entries only. */
+  imagePixelBudget?: number | "low"
   /** Encoded-byte cap for one request preview. Vision entries only. */
   imageMaxBytes?: number
-  /** Provider detail tier. Vision entries only. */
-  imageDetail?: "auto" | "low"
+  /** How the system prompt is delivered to this route; the agent accepts only
+   *  `"in-history"`, and its own default entry declares it.
+   *
+   *  The editor has no control for this — it carries the value through
+   *  untouched. Dropping it does not fail: it silently moves that model to the
+   *  other delivery mode, which is why it must survive a round trip. */
+  systemPromptUpdate?: "in-history"
 }
 
 /** What the settings panel reads about the stored catalog. */

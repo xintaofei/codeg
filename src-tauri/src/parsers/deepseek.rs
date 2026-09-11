@@ -118,8 +118,11 @@ pub(crate) fn resolve_deepseek_attachments_root() -> PathBuf {
 /// - `assistant/message` — the ASSEMBLED assistant message for one step
 ///   (`content[]` of `text` / `reasoning` / `tool-call {id, name, arguments}`
 ///   blocks) plus that step's `usage` (`inputTokens` / `outputTokens` /
-///   `cacheReadTokens` / `reasoningTokens`). The raw stream duplicates it as
-///   `assistant/chunk` / `*-chunks` rows, which are skipped.
+///   `cacheReadTokens` / `reasoningTokens`). Through 0.8.0 the raw stream
+///   duplicated it as `assistant/chunk` / `*-chunks` ROWS; 0.9.0 stopped
+///   persisting those and moved the compacted stream into this event's own
+///   `stream` field, which is read as part of the event rather than as a row.
+///   Either way only `message.content` is read — see the skip below.
 /// - `tool/result` — the paired result (`message.content[0]` is a
 ///   `tool-result` with `toolCallId` / `content[]` / `isError`).
 /// - `turn/start` / `turn/end` — authoritative turn boundaries; `turn/end`
@@ -635,6 +638,11 @@ fn parse_session_events(text: &str, attachments: Option<&Path>) -> SessionParse 
         let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
         // Raw stream chunks duplicate `assistant/message` content (and the
         // compacted `*-chunks` rows carry `seq0`/`time0` instead of `time`).
+        //
+        // `deepseek-acp` 0.9.0 stopped writing these rows — the compacted
+        // stream rides inside `assistant/message` now. The skip STAYS: logs
+        // written before that upgrade still hold them, and they are still the
+        // same duplicate content.
         if matches!(
             event_type,
             "assistant/chunk" | "tool-call-chunks" | "reasoning-chunks" | "text-chunks"

@@ -5,8 +5,8 @@
 //! (`$DSH_HOME/settings.yaml`, default `~/.dsh/settings.yaml`). Its `models`
 //! key is the catalog the adapter's `listModels` returns verbatim, which the
 //! bridge turns into the ACP `model` config option — i.e. the model dropdown
-//! codeg's composer shows for a DeepSeek session. Absent, the adapter falls
-//! back to its three built-in entries ([`DEFAULT_MODELS`]).
+//! codeg's composer shows for a DeepSeek session. Absent, the session inherits
+//! the catalog the agent's own composition declares ([`default_models`]).
 //!
 //! The catalog is *advisory*: a request naming a model outside it still goes
 //! out (the harness only reads the entry for context window, output cap and
@@ -50,7 +50,7 @@ const MODELS_KEY: &str = "models";
 /// `DEFAULT_CONTEXT_WINDOW` in the adapter (1,000,000 tokens).
 const DEFAULT_CONTEXT_WINDOW: u64 = 1_000_000;
 /// `DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET` (640,000 px) — the budget the adapter
-/// materializes for a vision entry that declares none at `auto` detail.
+/// materializes for a vision entry that declares none.
 const DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET: u64 = 640_000;
 /// `DEFAULT_REQUEST_IMAGE_MAX_BYTES` (1 MiB).
 const DEFAULT_REQUEST_IMAGE_MAX_BYTES: u64 = 1_048_576;
@@ -63,6 +63,29 @@ const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 /// The two request modalities the adapter models.
 const MODALITY_TEXT: &str = "text";
 const MODALITY_IMAGE: &str = "image";
+
+/// The one named pixel budget the adapter accepts in place of a count
+/// (`"low"` → its `DEFAULT_LOW_DETAIL_IMAGE_PIXEL_BUDGET`, 512×512).
+const IMAGE_PIXEL_BUDGET_LOW: &str = "low";
+
+/// The only value the adapter's `systemPromptUpdate` accepts when present.
+const SYSTEM_PROMPT_UPDATE_IN_HISTORY: &str = "in-history";
+
+/// A vision entry's per-request pixel budget: a count, or the adapter's named
+/// low-detail tier. `z.union([z.number(), "low"])` upstream.
+///
+/// Untagged, so a YAML scalar lands on the arm its own type picks: `640000`
+/// deserializes as [`Self::Pixels`], the bare word `low` falls through to
+/// [`Self::Named`]. A misspelled word is therefore a `Named` that validation
+/// rejects by name rather than an opaque "unusable entry" parse failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DeepSeekImagePixelBudget {
+    /// Total pixels for one request preview.
+    Pixels(u64),
+    /// A named tier; only `"low"` is one the adapter knows.
+    Named(String),
+}
 
 /// One entry of the advisory catalog, mirroring the adapter's
 /// `DeepSeekCatalogModel`. Field names are the YAML/JSON ones verbatim, so the
@@ -95,26 +118,46 @@ pub struct DeepSeekCatalogModel {
     pub input_modalities: Option<Vec<String>>,
     /// Total-pixel budget for one request preview. Vision entries only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image_pixel_budget: Option<u64>,
+    pub image_pixel_budget: Option<DeepSeekImagePixelBudget>,
     /// Encoded-byte cap for one request preview. Vision entries only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_max_bytes: Option<u64>,
-    /// Provider detail tier (`auto` | `low`). Vision entries only.
+    /// How the system prompt is delivered to this route. The adapter accepts
+    /// only `"in-history"`, and its own catalog entry for the default model
+    /// declares it — which is why this is carried through rather than dropped:
+    /// omitting it does not fail, it silently moves that model to the other
+    /// delivery mode.
+    ///
+    /// Deliberately not editable in the panel: it is an internal of how the
+    /// route is driven, not a choice a deployment makes per model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_update: Option<String>,
+    /// The retired detail tier. Read-only on purpose, and NEVER serialized:
+    /// `deepseek-acp` 0.9.0 refuses a catalog entry that so much as carries the
+    /// key (`resolveModels` throws on `Object.hasOwn(model, "imageDetail")`),
+    /// and a refused section takes the whole catalog with it.
+    ///
+    /// Kept in the shape so a document an older codeg wrote still PARSES: the
+    /// panel then reports it through [`DeepSeekModelCatalog::invalid`] and the
+    /// next save writes the entry without it. Dropping the field instead would
+    /// trip the unknown-key guard and refuse to edit a document codeg itself
+    /// produced.
+    #[serde(default, skip_serializing)]
     pub image_detail: Option<String>,
 }
 
 impl DeepSeekCatalogModel {
-    fn text_only(id: &str, name: &str) -> Self {
+    fn text_only(id: &str, name: &str, description: &str) -> Self {
         Self {
             id: id.to_string(),
             name: Some(name.to_string()),
-            description: None,
+            description: Some(description.to_string()),
             context_window: Some(DEFAULT_CONTEXT_WINDOW),
             max_tokens: None,
             input_modalities: None,
             image_pixel_budget: None,
             image_max_bytes: None,
+            system_prompt_update: None,
             image_detail: None,
         }
     }
@@ -128,27 +171,54 @@ impl DeepSeekCatalogModel {
     }
 }
 
-/// The adapter's built-in catalog (`DEFAULT_MODELS`), used when the section
-/// declares no `models`. Kept here so the panel can show what a DeepSeek
-/// session actually offers today rather than an empty list.
+/// The catalog a DeepSeek session inherits when the section declares no
+/// `models`, so the panel shows what it actually offers rather than an empty
+/// list.
+///
+/// **This is `deepseek-acp`'s own `DEEPSEEK_MODELS`, not the adapter's
+/// `DEFAULT_MODELS`** — a distinction that only became visible in 0.9.0.
+/// `dsh-settings` layers *schema default → the registrant's composition `base`
+/// → the user document section*, and `boot.ts` now passes a catalog as that
+/// `base` (`ctx.plugin(LlmDeepSeek, { models: DEEPSEEK_MODELS })`), which
+/// shadows the adapter's schema default. The adapter's list still carries
+/// `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp`, both retired by
+/// DeepSeek and neither reachable from a stock launch — copying from there
+/// (which is what this used to do) shows the user models that do not exist.
+///
+/// Fields the upstream entries leave out are written here at the values the
+/// adapter would resolve them to, because saving from the panel PINS this list
+/// and a pin should not silently re-resolve later.
+///
+/// `deepseek-v4-pro` is listed because the agent still advertises it. Upstream
+/// has announced its retirement (2026-09-14, requests routed to V4.1 Flash);
+/// it leaves this list when it leaves `DEEPSEEK_MODELS`, not before — the
+/// panel's job is to mirror the agent, not to predict it.
 pub fn default_models() -> Vec<DeepSeekCatalogModel> {
     vec![
-        DeepSeekCatalogModel::text_only("deepseek-v4-flash", "DeepSeek-V4-Flash"),
-        DeepSeekCatalogModel::text_only("deepseek-v4-pro", "DeepSeek-V4-Pro"),
         DeepSeekCatalogModel {
-            id: "deepseek-v4-flash-vision-exp".to_string(),
-            name: Some("DeepSeek-V4-Flash-Vision-Exp".to_string()),
-            description: None,
+            id: "deepseek-flash".to_string(),
+            name: Some("DeepSeek-V4.1-Flash".to_string()),
+            description: Some(
+                "更快更省，且在各项指标上超越 V4 Pro；支持图像理解。日常编码的默认档。".to_string(),
+            ),
             context_window: Some(DEFAULT_CONTEXT_WINDOW),
             max_tokens: None,
             input_modalities: Some(vec![
                 MODALITY_TEXT.to_string(),
                 MODALITY_IMAGE.to_string(),
             ]),
-            image_pixel_budget: Some(DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET),
+            image_pixel_budget: Some(DeepSeekImagePixelBudget::Pixels(
+                DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET,
+            )),
             image_max_bytes: Some(DEFAULT_REQUEST_IMAGE_MAX_BYTES),
+            system_prompt_update: Some(SYSTEM_PROMPT_UPDATE_IN_HISTORY.to_string()),
             image_detail: None,
         },
+        DeepSeekCatalogModel::text_only(
+            "deepseek-v4-pro",
+            "DeepSeek-V4-Pro",
+            "旧的高价档，官方已宣布有序下线；除非有特定理由，优先用 Flash。",
+        ),
     ]
 }
 
@@ -238,6 +308,11 @@ fn load_deepseek_model_catalog_at(path: &Path) -> DeepSeekModelCatalog {
 /// A stored entry carrying anything else is reported rather than parsed: this
 /// module rewrites the whole `models` block, so a key it does not model would
 /// be silently dropped by the first save.
+///
+/// `imageDetail` is listed even though the agent no longer accepts it — see
+/// [`DeepSeekCatalogModel::image_detail`]. It is a key codeg once wrote, so
+/// reading it and reporting it is the repair path; treating it as unknown here
+/// would refuse to edit the very documents that need fixing.
 const KNOWN_FIELDS: &[&str] = &[
     "id",
     "name",
@@ -247,6 +322,7 @@ const KNOWN_FIELDS: &[&str] = &[
     "inputModalities",
     "imagePixelBudget",
     "imageMaxBytes",
+    "systemPromptUpdate",
     "imageDetail",
 ];
 
@@ -351,8 +427,52 @@ fn validate_models(models: &[DeepSeekCatalogModel]) -> Result<Vec<DeepSeekCatalo
         };
         let context_window = bounded(model.context_window, "context window")?;
         let max_tokens = bounded(model.max_tokens, "max output tokens")?;
-        let image_pixel_budget = bounded(model.image_pixel_budget, "image pixel budget")?;
         let image_max_bytes = bounded(model.image_max_bytes, "image byte cap")?;
+
+        // The pixel budget takes a count OR the named `"low"` tier, so it is
+        // judged on both arms rather than through `bounded`.
+        let image_pixel_budget = match &model.image_pixel_budget {
+            None => None,
+            Some(DeepSeekImagePixelBudget::Pixels(pixels)) => {
+                bounded(Some(*pixels), "image pixel budget")?
+                    .map(DeepSeekImagePixelBudget::Pixels)
+            }
+            Some(DeepSeekImagePixelBudget::Named(named)) => {
+                let named = named.trim();
+                if named != IMAGE_PIXEL_BUDGET_LOW {
+                    return Err(format!(
+                        "model \"{id}\" has an image pixel budget of \"{named}\"; it must be \
+                         \"{IMAGE_PIXEL_BUDGET_LOW}\" or a whole number above 0"
+                    ));
+                }
+                Some(DeepSeekImagePixelBudget::Named(named.to_string()))
+            }
+        };
+
+        // Retired in `deepseek-acp` 0.9.0, and not by being ignored: the
+        // adapter throws on the key's mere presence and keeps its last good
+        // configuration, so ONE of these takes down the whole catalog. Saying
+        // which key and what replaced it is the difference between a fixable
+        // notice and "my models stopped applying".
+        if model.image_detail.is_some() {
+            return Err(format!(
+                "model \"{id}\" still sets an image detail tier, which the agent no longer \
+                 accepts; use the image pixel budget instead (saving from here removes it)"
+            ));
+        }
+
+        let system_prompt_update = match model.system_prompt_update.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(SYSTEM_PROMPT_UPDATE_IN_HISTORY) => {
+                Some(SYSTEM_PROMPT_UPDATE_IN_HISTORY.to_string())
+            }
+            Some(mode) => {
+                return Err(format!(
+                    "model \"{id}\" has an unknown system prompt update mode \"{mode}\"; the \
+                     agent accepts only \"{SYSTEM_PROMPT_UPDATE_IN_HISTORY}\""
+                ))
+            }
+        };
 
         let input_modalities = match model.input_modalities.as_deref() {
             None => None,
@@ -376,16 +496,6 @@ fn validate_models(models: &[DeepSeekCatalogModel]) -> Result<Vec<DeepSeekCatalo
             }
         };
 
-        let image_detail = match model.image_detail.as_deref().map(str::trim) {
-            None | Some("") => None,
-            Some(detail) if detail == "auto" || detail == "low" => Some(detail.to_string()),
-            Some(detail) => {
-                return Err(format!(
-                    "model \"{id}\" has an unknown image detail \"{detail}\""
-                ))
-            }
-        };
-
         let normalized = DeepSeekCatalogModel {
             id,
             name,
@@ -395,15 +505,16 @@ fn validate_models(models: &[DeepSeekCatalogModel]) -> Result<Vec<DeepSeekCatalo
             input_modalities,
             image_pixel_budget,
             image_max_bytes,
-            image_detail,
+            system_prompt_update,
+            // Rejected above; carrying it into the normalized entry would put
+            // it back on the write path, and the field is never serialized.
+            image_detail: None,
         };
 
         // The adapter refuses image request limits on a text-only entry
         // outright — the whole section would be dropped, not just the field.
         if !normalized.accepts_images()
-            && (normalized.image_pixel_budget.is_some()
-                || normalized.image_max_bytes.is_some()
-                || normalized.image_detail.is_some())
+            && (normalized.image_pixel_budget.is_some() || normalized.image_max_bytes.is_some())
         {
             return Err(format!(
                 "model \"{}\" is text-only, so it cannot declare image limits",
@@ -1116,6 +1227,7 @@ mod tests {
             input_modalities: None,
             image_pixel_budget: None,
             image_max_bytes: None,
+            system_prompt_update: None,
             image_detail: None,
         }
     }
@@ -1130,6 +1242,7 @@ mod tests {
             input_modalities: Some(vec!["text".into(), "image".into()]),
             image_pixel_budget: None,
             image_max_bytes: None,
+            system_prompt_update: None,
             image_detail: None,
         }
     }
@@ -1141,23 +1254,30 @@ mod tests {
     }
 
     #[test]
-    fn defaults_mirror_the_adapters_built_in_catalog() {
+    fn defaults_mirror_the_catalog_the_agents_composition_declares() {
         let defaults = default_models();
         let ids: Vec<&str> = defaults.iter().map(|m| m.id.as_str()).collect();
+        // `deepseek-acp`'s own `DEEPSEEK_MODELS`, which shadows the adapter's
+        // schema default. The two ids that list retires — `deepseek-v4-flash`
+        // and `deepseek-v4-flash-vision-exp` — must not come back: no stock
+        // launch can reach them, so offering them is offering nothing.
+        assert_eq!(ids, vec!["deepseek-flash", "deepseek-v4-pro"]);
+
+        // The default model takes images, and says so with the request limits
+        // the adapter would materialize anyway. Getting this wrong is not
+        // cosmetic: image admission is judged against this entry, so a
+        // text-only default refuses a picture the endpoint would have taken.
+        assert!(defaults[0].accepts_images());
         assert_eq!(
-            ids,
-            vec![
-                "deepseek-v4-flash",
-                "deepseek-v4-pro",
-                "deepseek-v4-flash-vision-exp"
-            ]
+            defaults[0].image_pixel_budget,
+            Some(DeepSeekImagePixelBudget::Pixels(640_000))
         );
-        // Only the vision entry declares image input, and it carries the
-        // adapter's own materialized request limits.
-        assert!(!defaults[0].accepts_images());
-        assert!(defaults[2].accepts_images());
-        assert_eq!(defaults[2].image_pixel_budget, Some(640_000));
-        assert_eq!(defaults[2].image_max_bytes, Some(1_048_576));
+        assert_eq!(defaults[0].image_max_bytes, Some(1_048_576));
+        // Upstream copies this onto the same entry and warns that dropping it
+        // moves the model to the other system-prompt delivery mode silently.
+        assert_eq!(defaults[0].system_prompt_update.as_deref(), Some("in-history"));
+        assert!(!defaults[1].accepts_images());
+
         // Every default has to survive the same validation a user edit does.
         validate_models(&defaults).expect("defaults are valid");
     }
@@ -1202,6 +1322,10 @@ mod tests {
             "      inputModalities: [text, image]\n",
             "      imagePixelBudget: 3\n",
             "      imageMaxBytes: 4\n",
+            "      systemPromptUpdate: in-history\n",
+            // Retired upstream, but still a key codeg itself once wrote — so it
+            // stays READABLE here. Refusing it as unknown would lock the panel
+            // out of exactly the documents that need repairing.
             "      imageDetail: low\n",
         );
         assert_eq!(models_of(doc).len(), 1);
@@ -1327,20 +1451,137 @@ mod tests {
         assert!(validate_models(&[text_only_with_limits]).is_err());
         let ok = DeepSeekCatalogModel {
             image_max_bytes: Some(1024),
-            image_detail: Some("low".into()),
+            image_pixel_budget: Some(DeepSeekImagePixelBudget::Pixels(262_144)),
             ..vision("v")
         };
         assert!(validate_models(&[ok]).is_ok());
-        let bad_detail = DeepSeekCatalogModel {
-            image_detail: Some("ultra".into()),
-            ..vision("v")
-        };
-        assert!(validate_models(&[bad_detail]).is_err());
         let zero_budget = DeepSeekCatalogModel {
-            image_pixel_budget: Some(0),
+            image_pixel_budget: Some(DeepSeekImagePixelBudget::Pixels(0)),
             ..vision("v")
         };
         assert!(validate_models(&[zero_budget]).is_err());
+
+        // The named tier the adapter accepts in place of a count, and anything
+        // else spelled where it goes.
+        let low = DeepSeekCatalogModel {
+            image_pixel_budget: Some(DeepSeekImagePixelBudget::Named("low".into())),
+            ..vision("v")
+        };
+        assert!(validate_models(&[low]).is_ok());
+        let unknown_tier = DeepSeekCatalogModel {
+            image_pixel_budget: Some(DeepSeekImagePixelBudget::Named("high".into())),
+            ..vision("v")
+        };
+        assert!(validate_models(&[unknown_tier]).is_err());
+
+        // `systemPromptUpdate` has exactly one legal value upstream.
+        let in_history = DeepSeekCatalogModel {
+            system_prompt_update: Some("in-history".into()),
+            ..model("a")
+        };
+        assert!(validate_models(&[in_history]).is_ok());
+        let other_mode = DeepSeekCatalogModel {
+            system_prompt_update: Some("each-request".into()),
+            ..model("a")
+        };
+        assert!(validate_models(&[other_mode]).is_err());
+    }
+
+    #[test]
+    fn validation_refuses_the_retired_image_detail_and_names_its_replacement() {
+        // `resolveModels` throws on the KEY's presence, not on its value, and a
+        // section it throws on is dropped whole — one leftover `imageDetail`
+        // silently takes the user's entire catalog with it. Both spellings the
+        // old panel could produce have to be caught.
+        for detail in ["auto", "low"] {
+            let stale = DeepSeekCatalogModel {
+                image_detail: Some(detail.into()),
+                ..vision("v")
+            };
+            let err = validate_models(&[stale]).expect_err("the retired key is refused");
+            assert!(err.contains("image detail"), "{err}");
+            assert!(err.contains("image pixel budget"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_stored_image_detail_is_reported_shown_without_it_and_dropped_on_save() {
+        // The full repair path for a document an older codeg wrote. Each step
+        // carries its own half: the panel must be able to OPEN it (so the key
+        // stays readable), must SAY it is not in effect (so nobody hunts for
+        // why their models are missing), must not hand the key back to the
+        // editor (which would send it straight back on save), and a save must
+        // leave the document clean.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.yaml");
+        fs::write(
+            &path,
+            concat!(
+                "llm-deepseek:\n",
+                "  models:\n",
+                "    - id: gateway-vision\n",
+                "      inputModalities: [text, image]\n",
+                "      imageDetail: low\n",
+            ),
+        )
+        .expect("write");
+
+        let stored = load_deepseek_model_catalog_at(&path);
+        assert!(stored.error.is_none(), "the document still parses");
+        assert!(stored.configured);
+        let invalid = stored.invalid.clone().expect("the retired key is reported");
+        assert!(invalid.contains("image detail"), "{invalid}");
+
+        // What the panel receives is the entry WITHOUT the key, so its draft
+        // cannot round-trip it back into the document.
+        let wire = serde_json::to_value(&stored.models).expect("serializes");
+        assert_eq!(wire[0]["id"], "gateway-vision");
+        assert!(
+            wire[0].get("imageDetail").is_none(),
+            "the retired key must not reach the panel: {wire}"
+        );
+
+        // Saving that same list back is the repair. It goes through the wire
+        // shape rather than the parsed structs, because that is the only way a
+        // save ever arrives — and the difference matters: the parsed entry
+        // still carries the key in memory, and `validate_models` refuses it.
+        let draft: Vec<DeepSeekCatalogModel> =
+            serde_json::from_value(wire).expect("the panel's shape parses back");
+        update_deepseek_model_catalog_at(&path, Some(draft)).expect("save");
+        let repaired = load_deepseek_model_catalog_at(&path);
+        assert!(repaired.invalid.is_none(), "{:?}", repaired.invalid);
+        assert_eq!(repaired.models.len(), 1);
+        assert!(!fs::read_to_string(&path)
+            .expect("read")
+            .contains("imageDetail"));
+    }
+
+    #[test]
+    fn a_named_pixel_budget_and_the_prompt_update_mode_survive_a_round_trip() {
+        // Both are shapes only a hand-written document (or the agent's own
+        // defaults) produces — the panel has no control for the second at all.
+        // Read-modify-write must give them back byte for byte, or saving an
+        // unrelated edit would quietly re-tune someone's deployment.
+        let doc = concat!(
+            "llm-deepseek:\n",
+            "  models:\n",
+            "    - id: gateway-vision\n",
+            "      inputModalities: [text, image]\n",
+            "      imagePixelBudget: low\n",
+            "      systemPromptUpdate: in-history\n",
+        );
+        let models = models_of(doc);
+        assert_eq!(
+            models[0].image_pixel_budget,
+            Some(DeepSeekImagePixelBudget::Named("low".into()))
+        );
+        assert_eq!(models[0].system_prompt_update.as_deref(), Some("in-history"));
+
+        let patched = patch_settings_models(doc, Some(&models)).expect("patch");
+        assert_eq!(models_of(&patched), models);
+        // Written as the bare word, which is what the adapter's union reads —
+        // a quoted or numeric spelling would land on the other arm.
+        assert!(patched.contains("imagePixelBudget: low"), "{patched}");
     }
 
     #[test]
@@ -1503,9 +1744,10 @@ mod tests {
             context_window: None,
             max_tokens: None,
             input_modalities: Some(vec!["text".into(), "image".into()]),
-            image_pixel_budget: Some(262_144),
+            image_pixel_budget: Some(DeepSeekImagePixelBudget::Pixels(262_144)),
             image_max_bytes: None,
-            image_detail: Some("low".into()),
+            system_prompt_update: None,
+            image_detail: None,
         };
         let patched =
             patch_settings_models("", Some(std::slice::from_ref(&entry))).expect("patch");
@@ -1551,20 +1793,23 @@ mod tests {
 
     #[test]
     fn round_trips_the_shape_the_harness_documents() {
+        // The agent's own catalog as it would be written out by hand.
         let existing = concat!(
             "llm-deepseek:\n",
             "  models:\n",
-            "    - id: deepseek-v4-flash\n",
-            "      name: DeepSeek-V4-Flash\n",
-            "      contextWindow: 1000000\n",
-            "    - id: deepseek-v4-flash-vision-exp\n",
-            "      name: DeepSeek-V4-Flash-Vision-Exp\n",
+            "    - id: deepseek-flash\n",
+            "      name: DeepSeek-V4.1-Flash\n",
             "      contextWindow: 1000000\n",
             "      inputModalities: [text, image]\n",
+            "      systemPromptUpdate: in-history\n",
+            "    - id: deepseek-v4-pro\n",
+            "      name: DeepSeek-V4-Pro\n",
+            "      contextWindow: 1000000\n",
         );
         let models = models_of(existing);
         assert_eq!(models.len(), 2);
-        assert!(models[1].accepts_images());
+        assert!(models[0].accepts_images());
+        assert!(!models[1].accepts_images());
         // Writing them straight back leaves the same catalog in place.
         let patched = patch_settings_models(existing, Some(&models)).expect("patch");
         assert_eq!(models_of(&patched), models);
