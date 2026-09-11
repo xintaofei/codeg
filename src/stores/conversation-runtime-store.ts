@@ -2782,6 +2782,10 @@ interface TimelinePrefixDeps {
   delegationKickoffText: string | null
   hasLiveMessage: boolean
   liveStartedAt: number | null
+  /** The steered-copy set, flattened for the `===` comparison below. `""` in
+   *  an ordinary turn — see `computeTimelinePrefix`. */
+  steeredCopyKey: string
+  liveStreamedRoundStart: boolean
 }
 interface TimelinePrefixEntry {
   deps: TimelinePrefixDeps
@@ -3030,7 +3034,9 @@ function timelinePrefixDepsEqual(
     a.liveOwnsActiveTurn === b.liveOwnsActiveTurn &&
     a.delegationKickoffText === b.delegationKickoffText &&
     a.hasLiveMessage === b.hasLiveMessage &&
-    a.liveStartedAt === b.liveStartedAt
+    a.liveStartedAt === b.liveStartedAt &&
+    a.steeredCopyKey === b.steeredCopyKey &&
+    a.liveStreamedRoundStart === b.liveStreamedRoundStart
   )
 }
 
@@ -3078,9 +3084,29 @@ function collectInFlightPersistedToolCalls(
   return out
 }
 
+/**
+ * @param steeredCopyIds the detail's own copies of this turn's mid-turn
+ * messages (see `collectSteeredPersistedCopyIds`). A steered message is a USER
+ * turn that the agent writes into the MIDDLE of a round, so both round anchors
+ * below — the viewer's persisted-tail strip and the in-flight partial
+ * suppression — have to look straight through it. Anchored on it instead, they
+ * read the round as having ended at the interruption and leave the reply's
+ * already-persisted first half beside the live copy of the same text, which
+ * `mergeConsecutiveAssistantTurns` then glues into one run-on bubble.
+ * @param liveStreamedRoundStart whether this session's live message carries the
+ * reply from BEFORE the first mid-turn message, i.e. it holds the whole round
+ * and can stand in for every persisted turn of it. Both anchor adjustments are
+ * gated on it: they hide persisted assistant turns, so they may only run where
+ * the live stream is provably re-showing them. False for a session that first
+ * saw this turn from a snapshot (which carries no steering block at all, so no
+ * copies are identified either) and for one whose live message opens on the
+ * interruption itself.
+ */
 function computeTimelinePrefix(
   session: ConversationRuntimeSession,
-  conversationId: number
+  conversationId: number,
+  steeredCopyIds: ReadonlySet<string> | null,
+  liveStreamedRoundStart: boolean
 ): TimelinePrefixEntry {
   const detail = session.detail
   // Everything Phases 1–3 read, snapshotted for the `===` validity check.
@@ -3096,6 +3122,10 @@ function computeTimelinePrefix(
     delegationKickoffText: session.delegationKickoffText,
     hasLiveMessage: session.liveMessage !== null,
     liveStartedAt: session.liveMessage?.startedAt ?? null,
+    // Content, not identity: the set is rebuilt on every streaming batch, and
+    // an ordinary turn's `""` keeps the cache hitting exactly as before.
+    steeredCopyKey: steeredCopyIds ? [...steeredCopyIds].join(" ") : "",
+    liveStreamedRoundStart,
   }
   if (detail) {
     const cached = timelinePrefixCache.get(detail)
@@ -3119,6 +3149,16 @@ function computeTimelinePrefix(
   // anchor, so fall back to the first assistant turn: the only assistant
   // content that can exist is the reply being streamed.
   const rawPersistedTurns = session.detail?.turns ?? []
+  // A persisted copy of a message the user sent mid-turn is NOT a round
+  // boundary: it sits inside the round it interrupted, so the anchors below
+  // step over it. Only while the live stream provably holds the round from
+  // before that interruption — stepping over one hides the persisted turns
+  // between it and the real prompt, which is only sound where the live copy is
+  // showing them.
+  const roundAnchorSkipIds =
+    liveStreamedRoundStart && steeredCopyIds ? steeredCopyIds : null
+  const isRoundBoundaryUserTurn = (turn: MessageTurn): boolean =>
+    turn.role === "user" && !roundAnchorSkipIds?.has(turn.id)
   const hasLiveOrLocalReply =
     session.liveOwnsActiveTurn &&
     (session.liveMessage !== null || session.localTurns.length > 0)
@@ -3126,7 +3166,7 @@ function computeTimelinePrefix(
   if (hasLiveOrLocalReply) {
     let lastUserIdx = -1
     for (let i = rawPersistedTurns.length - 1; i >= 0; i--) {
-      if (rawPersistedTurns[i]!.role === "user") {
+      if (isRoundBoundaryUserTurn(rawPersistedTurns[i]!)) {
         lastUserIdx = i
         break
       }
@@ -3169,15 +3209,34 @@ function computeTimelinePrefix(
   // client clock on the streaming path — neither can locate the prompt across
   // machines. When the new prompt isn't persisted yet the backend reports no
   // id, so an earlier completed round's reply is never mistaken for a partial.
+  //
+  // A mid-turn message is the one thing that takes that id away. The backend
+  // finds the prompt at the transcript TAIL (`apply_in_flight_message_id`
+  // matches the trailing user turn, or the one before a single trailing
+  // assistant turn); once the agent has written a steered message the tail is
+  // that message, whose content is not the prompt's, so nothing is stamped and
+  // the suppression switched itself off in the middle of the round it exists
+  // for. Fall back to the last persisted turn this client can still prove
+  // opened the round: the newest user turn that is not one of those copies.
+  // Reachable only once a copy is actually in `detail.turns` — i.e. exactly in
+  // the shape that loses the stamp — and only while the live stream holds the
+  // round from before the interruption.
   const inFlightPromptId = session.detail?.in_flight_user_turn_id ?? null
-  const inFlightPromptIdx =
-    !hasLiveOrLocalReply &&
-    session.liveMessage !== null &&
-    inFlightPromptId !== null
-      ? persistedTurns.findIndex(
-          (t) => t.role === "user" && t.id === inFlightPromptId
-        )
-      : -1
+  const canSuppressInFlightPartial =
+    !hasLiveOrLocalReply && session.liveMessage !== null
+  let inFlightPromptIdx = -1
+  if (canSuppressInFlightPartial && inFlightPromptId !== null) {
+    inFlightPromptIdx = persistedTurns.findIndex(
+      (t) => t.role === "user" && t.id === inFlightPromptId
+    )
+  } else if (canSuppressInFlightPartial && roundAnchorSkipIds) {
+    for (let i = persistedTurns.length - 1; i >= 0; i--) {
+      if (isRoundBoundaryUserTurn(persistedTurns[i]!)) {
+        inFlightPromptIdx = i
+        break
+      }
+    }
+  }
   const visiblePersistedTurns =
     inFlightPromptIdx === -1
       ? persistedTurns
@@ -3318,27 +3377,25 @@ function computeTimelinePrefix(
 }
 
 /**
- * Hide the persisted copy of a message the user sent mid-turn, when the live
- * stream is already showing it.
+ * Ids of the DETAIL's own copies of the messages the user sent mid-turn, i.e.
+ * the persisted user turns that the live stream is already showing as steered
+ * messages. `null` when this turn steered nothing (the overwhelmingly common
+ * case), so every caller below is free in an ordinary turn.
  *
  * The agent writes a steered message into its own transcript, so a detail
  * fetch that lands DURING the turn brings it back as an ordinary user turn —
- * under a parser id, which no id-keyed dedup can match to the live copy. Both
- * would render.
- *
- * The live copy is the one to keep: it sits between the two halves of the
- * reply, where the message was actually sent, while the persisted copy is
- * appended after the in-flight prompt with the reply's first half suppressed
- * around it (see `visiblePersistedTurns`), which would put the interruption
- * before the text it interrupted.
+ * under a parser id, which no id-keyed dedup can match to the live copy. Three
+ * separate rules need to know which persisted turns those are:
+ * `suppressPersistedSteeredPrompts` hides them, and the two round anchors in
+ * `computeTimelinePrefix` must not mistake one for the start of a new round.
  *
  * Matched on CONTENT, the same way `APPEND_VIEWER_USER_TURN` reconciles the two
  * id namespaces of one prompt — but content ALONE cannot say which message it
  * matched. Steered text is short and repeatable ("continue", "stop", "not
- * done"), so a bare content match reaches back and hides the identical prompt
- * the user sent three rounds ago, for as long as the turn runs. Suppressing a
- * user turn is the one failure that hides a message rather than duplicating
- * it, so the match is bounded by WHEN:
+ * done"), so a bare content match reaches back and finds the identical prompt
+ * the user sent three rounds ago. Suppressing a user turn is the one failure
+ * that hides a message rather than duplicating it, so the match is bounded by
+ * WHEN:
  *
  *   - each `steering` block carries the note's `created_at`, taken on the
  *     agent's machine BEFORE the backend handed it the text (an invariant of
@@ -3348,23 +3405,16 @@ function computeTimelinePrefix(
  *     including this round's own prompt, which the agent wrote before the user
  *     steered.
  *
- * Candidates are further limited to turns the DETAIL projected, so every
- * timestamp compared comes from the agent's own clock; a promoted `localTurns`
- * copy (client clock, and kept across a mid-turn refetch by `preserveLive`) is
- * never a candidate. Anything unreadable — no parseable instant on either side
- * — suppresses nothing, leaving the two copies to coexist: a visible duplicate,
+ * Candidates are limited to turns the DETAIL projected, so every timestamp
+ * compared comes from the agent's own clock; a promoted `localTurns` copy
+ * (client clock, and kept across a mid-turn refetch by `preserveLive`) is never
+ * a candidate. Anything unreadable — no parseable instant on either side —
+ * matches nothing, leaving the two copies to coexist: a visible duplicate,
  * never a hidden message.
- *
- * Deliberately NOT anchored on `detail.in_flight_user_turn_id`: the backend
- * stamps that by matching the pending prompt against the transcript TAIL (see
- * `apply_in_flight_message_id`), and once the agent has written the steered
- * message the tail is that message, not the prompt — so the stamp is gone in
- * exactly the shape this function exists for.
  */
-function suppressPersistedSteeredPrompts(
-  prefix: ConversationTimelineTurn[],
+function collectSteeredPersistedCopyIds(
   session: ConversationRuntimeSession
-): ConversationTimelineTurn[] {
+): Set<string> | null {
   // Content key → the earliest instant a copy of it could have been written.
   // Read from the blocks rather than from the built turns: a block with no
   // readable stamp shows under the turn's start time, and treating THAT as the
@@ -3381,27 +3431,83 @@ function suppressPersistedSteeredPrompts(
     if (known === undefined || at < known) steeredAt.set(key, at)
     if (at < earliestSteerAt) earliestSteerAt = at
   }
-  if (!steeredAt) return prefix
+  if (!steeredAt) return null
   const detailTurns = session.detail?.turns
-  if (!detailTurns) return prefix
-  // Ids are unique across the timeline's phases (a same-id copy in another
-  // phase is the same turn — see `dedupeTimeline`), so membership alone tells
-  // a detail-projected turn from a locally promoted one.
-  const detailUserIds = new Set<string>()
+  if (!detailTurns) return null
+  let ids: Set<string> | null = null
   for (const turn of detailTurns) {
-    if (turn.role === "user") detailUserIds.add(turn.id)
-  }
-  const filtered = prefix.filter((item) => {
-    if (item.phase !== "persisted" || item.turn.role !== "user") return true
-    if (!detailUserIds.has(item.turn.id)) return true
+    if (turn.role !== "user") continue
     // Cheap gate first: everything written before the earliest steer is out,
     // so history never reaches the content key (which serializes full text and
-    // full image data, and this runs on every streaming batch).
-    const at = Date.parse(item.turn.timestamp)
-    if (!Number.isFinite(at) || at < earliestSteerAt) return true
-    const steered = steeredAt.get(userTurnContentKey(item.turn))
-    return steered === undefined || at < steered
-  })
+    // full image data, and this runs whenever the prefix is rebuilt).
+    const at = Date.parse(turn.timestamp)
+    if (!Number.isFinite(at) || at < earliestSteerAt) continue
+    const steered = steeredAt.get(userTurnContentKey(turn))
+    if (steered === undefined || at < steered) continue
+    ids ??= new Set<string>()
+    ids.add(turn.id)
+  }
+  return ids
+}
+
+/**
+ * Whether this session's live message opens on the reply rather than on the
+ * interruption: it holds at least one block from BEFORE the first mid-turn
+ * message, so it is showing the round from its start and can stand in for
+ * every persisted turn of it.
+ *
+ * The gate on moving a round anchor past a steered copy, because doing that
+ * hides the persisted turns between the copy and the real prompt. A live
+ * message that begins at the interruption is not evidence for them: a session
+ * that adopts a snapshot mid-turn starts from the backend's live message, which
+ * carries no `steering` block at all (see `snapshot-denormalize`), so a steer
+ * arriving afterwards can be the first thing this client ever saw of the turn.
+ * Hiding the reply's persisted first half there would put it nowhere.
+ */
+function liveMessageOpensBeforeFirstSteer(
+  liveMessage: LiveMessage | null
+): boolean {
+  for (const block of liveMessage?.content ?? []) {
+    if (block.type === "steering") return false
+    // Parented subagent output never reaches the main thread (see
+    // `buildStreamingTurnsFromLiveMessage`), so it is not evidence that this
+    // client holds the reply either.
+    if (
+      (block.type === "text" || block.type === "thinking") &&
+      block.parentToolUseId
+    ) {
+      continue
+    }
+    return true
+  }
+  return false
+}
+
+/**
+ * Hide the persisted copies of the messages the user sent mid-turn, since the
+ * live stream is already showing them.
+ *
+ * The live copy is the one to keep: it sits between the two halves of the
+ * reply, where the message was actually sent, while the persisted copy is
+ * appended after the in-flight prompt with the reply's first half suppressed
+ * around it (see `visiblePersistedTurns`), which would put the interruption
+ * before the text it interrupted.
+ *
+ * Ids are unique across the timeline's phases (a same-id copy in another phase
+ * is the same turn — see `dedupeTimeline`), so id membership alone tells a
+ * detail-projected turn from a locally promoted one.
+ */
+function suppressPersistedSteeredPrompts(
+  prefix: ConversationTimelineTurn[],
+  steeredCopyIds: ReadonlySet<string> | null
+): ConversationTimelineTurn[] {
+  if (!steeredCopyIds) return prefix
+  const filtered = prefix.filter(
+    (item) =>
+      item.phase !== "persisted" ||
+      item.turn.role !== "user" ||
+      !steeredCopyIds.has(item.turn.id)
+  )
   return filtered.length === prefix.length ? prefix : filtered
 }
 
@@ -3415,8 +3521,23 @@ function computeTimeline(
   const cached = timelineCache.get(session)
   if (cached) return cached
 
+  // The detail's own copies of this turn's mid-turn messages, and whether the
+  // live stream can stand in for the round they interrupted. Derived once and
+  // shared: the prefix's two round anchors and the suppression below must
+  // agree on which persisted user turns are steered copies, or one of them
+  // hides a turn another is still anchoring on.
+  const steeredCopyIds = collectSteeredPersistedCopyIds(session)
+  const liveStreamedRoundStart = steeredCopyIds
+    ? liveMessageOpensBeforeFirstSteer(session.liveMessage)
+    : false
+
   // Phases 1–3 (already deduped), reused across streaming batches.
-  const { prefix, prefixKeys } = computeTimelinePrefix(session, conversationId)
+  const { prefix, prefixKeys } = computeTimelinePrefix(
+    session,
+    conversationId,
+    steeredCopyIds,
+    liveStreamedRoundStart
+  )
 
   // Phase 4: Streaming turns (live agent response, split into rounds)
   const streamingMessage = session.liveMessage
@@ -3453,7 +3574,7 @@ function computeTimeline(
       }
       seenTailKeys?.add(key)
     }
-    const head = suppressPersistedSteeredPrompts(prefix, session)
+    const head = suppressPersistedSteeredPrompts(prefix, steeredCopyIds)
     deduped = collides ? dedupeTimeline(head.concat(tail)) : head.concat(tail)
   }
 
