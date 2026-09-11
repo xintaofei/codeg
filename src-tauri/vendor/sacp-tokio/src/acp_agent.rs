@@ -377,8 +377,9 @@ impl AcpAgent {
     /// Register a callback invoked once with the OS process id (pid) of the
     /// spawned agent process, right after it launches.
     ///
-    /// The child is otherwise owned entirely by [`connect_to`]'s internal
-    /// `ChildGuard`, which kills the whole process tree on drop. But that drop
+    /// The child is otherwise owned entirely by
+    /// [`sacp::ConnectTo::connect_to`]'s internal `ChildGuard`, which kills the
+    /// whole process tree on drop. But that drop
     /// only runs when the driving future completes — during a host-process
     /// shutdown the driver may be torn down before it can, leaking the agent
     /// (and its own child processes) as orphans. Exposing the pid lets the host
@@ -656,12 +657,32 @@ fn append_limited_utf8(output: &mut String, chunk: &str, limit: usize) -> bool {
 /// Waits for a child process and returns an error if it exits with non-zero status.
 ///
 /// The error message includes any stderr output collected by the background task.
-/// When dropped, the child process is killed.
+/// Dropping the returned future drops a [`ChildGuard`], which signals the
+/// child's process tree and — given a runtime to reap on — keeps owning the
+/// child until it is really gone. Neither half is unconditional: see
+/// [`AcpAgent::on_exit`] for why the kill is only a signal, and
+/// `ChildGuard::drop` for why a drop outside a runtime stays silent.
+///
+/// That much has to survive a drop landing *before the first poll*, which is
+/// why this is deliberately NOT an `async fn`: an `async fn` body does not run
+/// until it is first polled, so the guard below would not exist yet and the
+/// captured raw `Child` would be dropped on its own instead. Tokio never kills
+/// on that path and reaps the child out of sight (at once if it has already
+/// exited, via the orphan queue otherwise), so a live agent survives as an
+/// orphan, `exit_callback` never fires, and the host is left publishing a pid
+/// the OS may since have reassigned. The test
+/// `dropping_an_unpolled_child_monitor_still_reaps_and_reports_exit` is what
+/// catches a change back to `async fn`.
+///
+/// `+ Send` is stated rather than left to auto-trait leakage because
+/// `sacp::ConnectTo::connect_to` promises a `Send` future and holds this one
+/// across an await: without the bound, a non-`Send` capture added here would be
+/// reported against that impl rather than against this function.
 fn monitor_child(
     child: Child,
     stderr_rx: tokio::sync::oneshot::Receiver<String>,
     exit_callback: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
-) -> impl Future<Output = Result<(), sacp::Error>> {
+) -> impl Future<Output = Result<(), sacp::Error>> + Send {
     // Construct the guard before returning the future. `connect_to` races this
     // future against the protocol driver; when that driver wins before the
     // child monitor's first poll, dropping the future must still drop a guard

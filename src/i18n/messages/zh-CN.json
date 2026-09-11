@@ -1516,6 +1516,7 @@
       "installing": "安装中…",
       "recheck": "重新检测",
       "configDirSkillsNote": "设置了自定义配置目录后，设置页中管理的技能、专家与办公工具将不会作用于该 pi；请直接在该目录中管理其技能。",
+      "dirHistoryNote": "这两个目录只对 pi 进程生效。codeg 的历史会话列表读取的是 pi 的默认位置，写入自定义目录的会话不会出现在列表中。",
       "projectTrustTitle": "项目信任",
       "projectTrustDescription": "你允许 pi 从中加载项目文件的目录。被信任的目录会让该仓库的 .pi/extensions 在 pi 启动时执行代码，且对其下所有子目录同样生效，你在终端里运行 pi 时也会沿用。",
       "projectTrustLoading": "加载中…",

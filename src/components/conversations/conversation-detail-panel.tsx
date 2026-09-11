@@ -1950,6 +1950,7 @@ const ConversationTabView = memo(function ConversationTabView({
     <GoalControlProvider value={goalControlValue}>
       <MessageListView
         conversationId={effectiveConversationId}
+        imageRoot={workingDirForConnection ?? null}
         agentType={selectedAgent}
         connStatus={connStatus}
         isActive={isActive}

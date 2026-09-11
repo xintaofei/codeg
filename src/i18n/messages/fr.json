@@ -1516,6 +1516,7 @@
       "installing": "Installation…",
       "recheck": "Revérifier",
       "configDirSkillsNote": "Avec un répertoire de configuration personnalisé, les compétences, experts et outils bureautiques gérés dans les Paramètres ne s'appliquent pas à ce pi — gérez ses compétences directement dans ce dossier.",
+      "dirHistoryNote": "Ces répertoires ne s'appliquent qu'au processus pi. L'historique des conversations de codeg lit l'emplacement par défaut de pi : les sessions écrites dans un répertoire personnalisé n'apparaîtront donc pas dans la liste.",
       "projectTrustTitle": "Confiance du projet",
       "projectTrustDescription": "Dossiers depuis lesquels vous avez autorisé pi à charger des fichiers de projet. Un dossier de confiance permet aux .pi/extensions de ce dépôt d'exécuter du code au démarrage de pi, s'applique à tous les dossiers qu'il contient et sert aussi lorsque vous lancez pi dans un terminal.",
       "projectTrustLoading": "Chargement…",

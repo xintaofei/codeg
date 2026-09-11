@@ -332,6 +332,19 @@ pub struct SessionState {
     /// Backend-internal — not serialized.
     pub grok_model_specs: Option<std::collections::HashMap<String, GrokModelSpec>>,
 
+    /// pi only: the session prelude pi-acp reports as `_meta.piAcp.startupInfo`
+    /// on `session/new`, held until the matching `agent_message_chunk` arrives
+    /// so that chunk can be recognized and dropped instead of rendering as the
+    /// assistant's opening words (see `pi_take_startup_banner`).
+    ///
+    /// `Some` only between `session/new` and that first chunk: it is taken on
+    /// the match, so a later chunk that happens to repeat the text is prose and
+    /// renders. `None` for every other agent, for `session/load` / `session/fork`
+    /// (pi-acp sets the prelude in `newSession` only), and when pi's
+    /// `quietStartup` setting suppressed the prelude at the source.
+    /// Backend-internal — not serialized.
+    pub pi_startup_banner: Option<String>,
+
     /// Config-option values codeg asserted while establishing this session
     /// (`apply_preferred_session_options`) and the agent confirmed — the user's
     /// saved preferences on a connect, the parent's selectors on a fork.
@@ -633,6 +646,7 @@ impl SessionState {
             current_mode: None,
             config_options: None,
             grok_model_specs: None,
+            pi_startup_banner: None,
             asserted_config_values: BTreeMap::new(),
             prompt_capabilities: None,
             fork_supported: false,

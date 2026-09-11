@@ -1287,9 +1287,40 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // found the stale copy first and reported `sessionCapabilities:
             // {list, resume}` — a phantom regression. Both names are gone from
             // the bundle now, so a single hit is the live one.
+            //
+            // 0.42.0 is the first bump where that check earns its keep. The
+            // release is a large INTERNAL rewrite — the agent loop is rebuilt
+            // on xstate actors and the whole LLM provider layer is replaced
+            // (`KimiChatProvider` and friends are gone as named classes), which
+            // drops ~2.2 MB off `dist/main.mjs` and moves hundreds of symbols.
+            // None of it reaches codeg: every surface we touch is byte-identical
+            // once bundler renumbering (`init_src$7` → `init_src$8`) is ignored.
+            // The mandated check passes verbatim — same absent-`type` stdio arm
+            // with `runtime_id:"local"`, same three entry points routing through
+            // it, no "does not declare a runtime identity" throw, and
+            // `acpMcpServersToConfigs` still absent. Because the rewrite is this
+            // large the source-level check was backed by a live one, as for
+            // 0.39.0: driving `kimi acp` with a stdio server on `session/new`
+            // returns a `sessionId`, and the server is spawned and answers
+            // `initialize` → `notifications/initialized` → `tools/list`. Beyond
+            // it, the entire `packages/acp-server` region set is unchanged
+            // except `convert.ts`, which stops gating image formats at the ACP
+            // edge and defers to the engine's per-provider gate (same
+            // user-visible outcome: rejected parts become a text notice,
+            // accepted MIME aliases are canonicalized). `initialize` still
+            // answers the same capabilities;
+            // config.toml's provider/model Zod schemas are identical (so
+            // `max_context_size` is still mandatory — see `commands/acp.rs`);
+            // `mcp.json`, `KIMI_MODEL_*`, `.kimi-code/skills`, and the
+            // `agents/main/wire.jsonl` event log our parser reads are all
+            // untouched. What is new is inert for us: a `NotifyUser` tool behind
+            // `KIMI_CODE_EXPERIMENTAL_NOTIFY_USER` (default false) and a
+            // remote-control tunnel. The sub-agent story is unmoved too — the
+            // ACP session still follows main-agent events only, so live nested
+            // tool calls remain a history-side concern (`parsers/kimi_code.rs`).
             distribution: AgentDistribution::Npx {
-                version: "0.41.0",
-                package: "@moonshot-ai/kimi-code@0.41.0",
+                version: "0.42.0",
+                package: "@moonshot-ai/kimi-code@0.42.0",
                 cmd: "kimi",
                 args: &["acp"],
                 env: &[],
@@ -2054,8 +2085,8 @@ mod tests {
         // range dies on the codeg-mcp stdio entry (see the registry entry).
         assert_npx_version(
             AgentType::KimiCode,
-            "0.41.0",
-            "@moonshot-ai/kimi-code@0.41.0",
+            "0.42.0",
+            "@moonshot-ai/kimi-code@0.42.0",
             Some("22.19.0"),
         );
         assert_npx_version(

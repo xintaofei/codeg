@@ -11,8 +11,8 @@
 //      blocks the now-hrefless `<a>`. Rewritten to `/C:/…` so `C:` is no longer
 //      in protocol position (see {@link windowsDrivePathToSafe}).
 //
-// Image syntax is intentionally left untouched: harden's "[Image blocked: …]"
-// placeholder is more useful than a broken <img src>.
+// Image destinations are handled by remarkLocalImages, which preserves their
+// original path until the workspace-confined image reader can resolve it.
 
 type MdastNodeLike = {
   type: string

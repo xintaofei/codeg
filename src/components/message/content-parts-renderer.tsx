@@ -888,7 +888,8 @@ function getToolIcon(
   if (name === "edit") return <FilePenLineIcon className={ICON_CLASS} />
   if (name === "write" || name === "notebookedit")
     return <FilePlusIcon className={ICON_CLASS} />
-  if (name === "bash" || name === "exec_command")
+  // `powershell` is pi's Windows stand-in for `bash` — same tool, same icon.
+  if (name === "bash" || name === "exec_command" || name === "powershell")
     return <TerminalIcon className={ICON_CLASS} />
   if (name === CODEX_SCRIPT_TOOL_NAME)
     return <CodeIcon className={ICON_CLASS} />
@@ -903,7 +904,8 @@ function getToolIcon(
     )
   }
   if (name === "apply_patch") return <FilePenLineIcon className={ICON_CLASS} />
-  if (name === "glob" || name === "grep")
+  // pi spells its glob tool `find` and its directory listing `ls`.
+  if (name === "glob" || name === "grep" || name === "find" || name === "ls")
     return <SearchIcon className={ICON_CLASS} />
   if (name === "memory_recall") return <BrainIcon className={ICON_CLASS} />
   if (name === "webfetch" || name === "websearch")

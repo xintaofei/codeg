@@ -1516,6 +1516,7 @@
       "installing": "Instalando…",
       "recheck": "Volver a comprobar",
       "configDirSkillsNote": "Con un directorio de configuración personalizado, las habilidades, los expertos y las herramientas de oficina gestionados en Ajustes no se aplican a este pi; gestiona sus habilidades directamente en esa carpeta.",
+      "dirHistoryNote": "Estos directorios solo llegan al proceso de pi. El historial de conversaciones de codeg lee la ubicación predeterminada de pi, así que las sesiones escritas en un directorio personalizado no aparecerán en la lista.",
       "projectTrustTitle": "Confianza del proyecto",
       "projectTrustDescription": "Carpetas desde las que permitiste que pi cargue archivos del proyecto. Una carpeta de confianza permite que las .pi/extensions de ese repositorio ejecuten código al iniciar pi, se aplica a todas las carpetas que contiene y también se usa cuando ejecutas pi en una terminal.",
       "projectTrustLoading": "Cargando…",

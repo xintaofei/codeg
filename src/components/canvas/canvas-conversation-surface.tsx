@@ -769,6 +769,12 @@ export function CanvasConversationSurface({
           )}
           <MessageListView
             conversationId={effectiveConversationId}
+            // The card's own cwd, which it already knows before any
+            // conversation row exists — a draft's first reply has no persisted
+            // detail to derive a folder from, so without this its screenshots
+            // stay unresolved until a later refetch. `undefined` (never a
+            // wrong guess) leaves MessageListView's folder fallback in place.
+            imageRoot={workingDir}
             agentType={agentType}
             connStatus={connStatus}
             isActive={isActive}

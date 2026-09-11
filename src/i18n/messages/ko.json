@@ -1516,6 +1516,7 @@
       "installing": "설치 중…",
       "recheck": "다시 확인",
       "configDirSkillsNote": "사용자 지정 구성 디렉터리를 설정하면 설정에서 관리하는 스킬, 전문가, 오피스 도구가 이 pi에 적용되지 않습니다. 해당 폴더에서 스킬을 직접 관리하세요.",
+      "dirHistoryNote": "이 디렉터리는 pi 프로세스에만 적용됩니다. codeg의 대화 기록은 pi의 기본 위치를 읽으므로, 사용자 지정 디렉터리에 기록된 세션은 목록에 표시되지 않습니다.",
       "projectTrustTitle": "프로젝트 신뢰",
       "projectTrustDescription": "pi가 프로젝트 파일을 불러오도록 허용한 폴더입니다. 신뢰한 폴더에서는 해당 저장소의 .pi/extensions가 pi 시작 시 코드를 실행하며, 그 아래 모든 폴더에 적용되고 터미널에서 pi를 실행할 때에도 사용됩니다.",
       "projectTrustLoading": "불러오는 중…",

@@ -6100,6 +6100,9 @@ async fn run_connection(
                         };
                         let grok_model_specs = (agent_type == AgentType::Grok)
                             .then(|| parse_grok_model_specs(grok_models_raw.as_ref()));
+                        // Read BEFORE `attach_session` consumes the response.
+                        state.write().await.pi_startup_banner =
+                            pi_startup_banner(agent_type, new_resp.meta.as_ref());
                         let mut session = cx.attach_session(new_resp, Default::default())?;
                         // Same conversation, new agent session: link the fresh
                         // transcript to the one the failed load was for, so the
@@ -6202,6 +6205,9 @@ async fn run_connection(
                 };
                 let grok_model_specs = (agent_type == AgentType::Grok)
                     .then(|| parse_grok_model_specs(grok_models_raw.as_ref()));
+                // Read BEFORE `attach_session` consumes the response.
+                state.write().await.pi_startup_banner =
+                    pi_startup_banner(agent_type, new_resp.meta.as_ref());
                 let mut session = cx.attach_session(new_resp, Default::default())?;
                 record_transcript_header(agent_type, &sid, &cwd.to_string_lossy());
                 emit_with_state(
@@ -10769,10 +10775,13 @@ enum PiChunkRoute {
 /// Two families deliberately stay `Prose`, and must:
 ///
 /// - **Slash-command replies** (pi-acp L2080+: `/compact`, `/session`, `/name`,
-///   `/export`, `/follow-up`, `/steering`, `/changelog`) and the startup prelude
-///   (`sendStartupInfoIfPending`). The user ASKED for those; they ride the same
-///   channel and match no rule here, which is exactly the point of matching
-///   whole literals rather than sniffing for "status-looking" text.
+///   `/export`, `/follow-up`, `/steering`, `/changelog`). The user ASKED for
+///   those; they ride the same channel and match no rule here, which is exactly
+///   the point of matching whole literals rather than sniffing for
+///   "status-looking" text. (The startup prelude — `sendStartupInfoIfPending` —
+///   is NOT in this family: it is dropped, but by
+///   [`pi_take_startup_banner`] against the text pi-acp itself reported, never
+///   by a rule here.)
 /// - **`Pi <method> UI request is not supported in ACP yet; cancelling it.`**
 ///   (L1257). pi asked the user for input and pi-acp auto-cancelled it — a rare,
 ///   actionable failure with no better home today. Dropping it would hide the
@@ -10885,6 +10894,82 @@ fn pi_is_queue_announcement(text: &str) -> bool {
                 .and_then(|rest| rest.strip_suffix(" remaining)"))
         });
     counted.is_some_and(|count| !count.is_empty() && count.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The session prelude pi-acp reports on `session/new`, if this response is
+/// carrying one.
+///
+/// pi-acp builds a markdown banner (`buildStartupInfo`: pi's version, the
+/// project `AGENTS.md`, every discovered skill file, prompts, extensions, an
+/// update notice) and pushes it down the ORDINARY `agent_message_chunk` channel
+/// with no marker of any kind — so codeg rendered it as the assistant's opening
+/// words, before the user had said anything, complete with the absolute paths of
+/// every skill and extension on the machine.
+///
+/// The trustworthy handle is on the `session/new` RESPONSE instead:
+/// `_meta.piAcp.startupInfo` holds the very same string (verified byte-for-byte
+/// against pi-acp 0.0.33 driven over real stdio ACP — `startupInfo === chunk`).
+/// Capturing it there and matching the chunk against it is what lets the drop be
+/// exact rather than a guess about what "looks like a banner" — the same
+/// preference for a structured handle over text that makes the `notify` marker
+/// win outright in [`pi_message_chunk_route`]. A pi with `quietStartup` set
+/// sends neither, and every other agent has no `piAcp` meta at all.
+///
+/// Gated on `AgentType::Pi` for the same reason the terminal-meta bridge is:
+/// `piAcp` is pi-acp's own namespace and must not be read off arbitrary agents.
+fn pi_startup_banner(
+    agent_type: AgentType,
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<String> {
+    if agent_type != AgentType::Pi {
+        return None;
+    }
+    meta?
+        .get("piAcp")?
+        .get("startupInfo")?
+        .as_str()
+        .map(str::trim)
+        .filter(|banner| !banner.is_empty())
+        .map(str::to_string)
+}
+
+/// Whether this `agent_message_chunk` IS the pending startup banner — and, if so,
+/// consume it so only the first match is dropped.
+///
+/// Taking rather than peeking is what keeps this from being a permanent text
+/// filter: pi-acp guards its own emit with `startupInfoSent`, so exactly one
+/// chunk can be the prelude, and a later message that happens to repeat the text
+/// (the user pasting it back, say) is prose and renders.
+///
+/// NOT consulted by [`is_agent_output_update`], which has no session state to
+/// read — and does not need it: pi-acp queues the prelude in a `setTimeout(…, 0)`
+/// fired as `session/new` returns, so it lands on the idle loop, before any
+/// prompt. Were it ever to arrive mid-turn, the probe would count it as output —
+/// the safe direction, since a turn wrongly called "empty" is the failure that
+/// predicate exists to prevent.
+///
+/// Cheap for everyone else: non-pi agents return before touching the lock, and a
+/// pi session whose banner was already taken pays one read lock — the same lock
+/// the emit on this path acquires anyway.
+async fn pi_take_startup_banner(
+    agent_type: AgentType,
+    state: &Arc<RwLock<SessionState>>,
+    text: &str,
+) -> bool {
+    if agent_type != AgentType::Pi {
+        return false;
+    }
+    if state.read().await.pi_startup_banner.is_none() {
+        return false;
+    }
+    let mut guard = state.write().await;
+    match guard.pi_startup_banner.as_deref() {
+        Some(banner) if banner == text.trim() => {
+            guard.pi_startup_banner = None;
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Grok wraps every MCP tool invocation in a generic `use_tool` envelope whose
@@ -13107,14 +13192,22 @@ async fn emit_conversation_update(
             meta,
             ..
         }) => {
+            // pi-acp opens every new session by pushing its markdown startup
+            // banner down this same prose channel. It is recognized against the
+            // text pi-acp itself reported on the `session/new` response, not by
+            // shape — see `pi_take_startup_banner`. No-op for every other agent.
+            let is_pi_startup_banner =
+                pi_take_startup_banner(agent_type, state, &text.text).await;
             // Drop a CodeBuddy sub-agent's interleaved message text — it belongs
             // to the Agent pill, not the main thread (see
             // `should_suppress_subagent_chunk`). No-op for every other agent.
-            if !should_suppress_subagent_chunk(
-                agent_type,
-                !cb_state.open_subagents.is_empty(),
-                meta.as_ref(),
-            ) {
+            if !is_pi_startup_banner
+                && !should_suppress_subagent_chunk(
+                    agent_type,
+                    !cb_state.open_subagents.is_empty(),
+                    meta.as_ref(),
+                )
+            {
                 // pi-acp announces its own lifecycle (extension notifies, auto
                 // retry, compaction, prompt queue) on this same prose channel,
                 // where it splices into the reply — issue #525. Classify before
@@ -20444,6 +20537,55 @@ mod tests {
                 "{text:?} is the agent speaking"
             );
         }
+    }
+
+    /// The startup prelude. pi-acp reports the identical text twice — once as
+    /// `_meta.piAcp.startupInfo` on the `session/new` response and once as a bare
+    /// `agent_message_chunk` — so the chunk is recognized by comparison, never by
+    /// shape. Text captured from pi-acp 0.0.33 driven over real stdio ACP.
+    #[tokio::test]
+    async fn pi_startup_banner_is_captured_and_dropped_exactly_once() {
+        let banner = "pi v0.84.2\n---\n\n## Context\n- /tmp/scratch/AGENTS.md\n\n## Skills\n- /Users/x/.agents/skills/officecli/SKILL.md\n";
+        let meta = serde_json::json!({"piAcp": {"startupInfo": banner}});
+        let meta = meta.as_object().cloned().expect("object meta");
+
+        assert_eq!(
+            pi_startup_banner(AgentType::Pi, Some(&meta)).as_deref(),
+            Some(banner.trim()),
+        );
+        assert_eq!(
+            pi_startup_banner(AgentType::ClaudeCode, Some(&meta)),
+            None,
+            "`piAcp` is pi-acp's namespace; never read it off another agent"
+        );
+        assert_eq!(
+            pi_startup_banner(AgentType::Pi, None),
+            None,
+            "a `quietStartup` pi sends no prelude and no meta"
+        );
+
+        let state = Arc::new(RwLock::new(SessionState::new(
+            "conn".to_string(),
+            AgentType::Pi,
+            None,
+            "main".to_string(),
+            None,
+        )));
+        state.write().await.pi_startup_banner =
+            pi_startup_banner(AgentType::Pi, Some(&meta));
+
+        assert!(
+            !pi_take_startup_banner(AgentType::Pi, &state, "你好，我能帮你做什么？").await,
+            "prose must not be mistaken for the prelude"
+        );
+        assert!(
+            pi_take_startup_banner(AgentType::Pi, &state, banner).await,
+            "the prelude chunk is recognized"
+        );
+        assert!(
+            !pi_take_startup_banner(AgentType::Pi, &state, banner).await,
+            "taken, not filtered: the same text later is the user's, and renders"
+        );
     }
 
     /// Contrast guard: the classifier is pi-gated, so another agent that happens
