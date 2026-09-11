@@ -15,8 +15,9 @@
 //! is no frame to check a message against. What stands in for that check is
 //! WHICH HANDLER it arrived on: the helper is injected twice, once into the top
 //! frame with a primitive that posts through `codegBrowser`, and once into every
-//! frame with one that posts through `codegBrowserFrame`. The top frame sees the
-//! first primitive and keeps it; a subframe only ever sees the second. Messages
+//! frame with one that posts through `codegBrowserFrame` — that second one
+//! leaves the top frame's alone, by asking whether it is the top frame rather
+//! than by running in a particular order. Messages
 //! on the second handler are reported as not-the-main-frame, which is the same
 //! answer macOS gets from `WKFrameInfo`, so `channel.rs` gates them identically:
 //! `hello` and `nav-state` are refused, gestures and shortcuts are not (a

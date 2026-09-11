@@ -38,11 +38,13 @@ pub const PREFIX_SCRIPT: &str = "globalThis.__codegSend = function (m) { window.
 /// handler the host treats as non-main-frame (Linux only — macOS learns the
 /// frame from the engine and needs one handler).
 ///
-/// `||` rather than an assignment: both scripts run in the top frame, this one
-/// second, and there the first one's privileged primitive must stand. A
-/// subframe never saw the first, so it gets this one.
+/// Both scripts run in the top frame, so this one asks whether it IS the top
+/// frame and leaves the privileged primitive alone there. Asking rather than
+/// testing whether one is already set: which of the two runs first is the
+/// engine's business, and a tab whose own page reported itself as a subframe
+/// would lose its address bar and never say hello.
 #[cfg(target_os = "linux")]
-pub const FRAME_PREFIX_SCRIPT: &str = "globalThis.__codegSend = globalThis.__codegSend || function (m) { window.webkit.messageHandlers.codegBrowserFrame.postMessage(String(m)); };";
+pub const FRAME_PREFIX_SCRIPT: &str = "if (window.top !== window) { globalThis.__codegSend = function (m) { window.webkit.messageHandlers.codegBrowserFrame.postMessage(String(m)); }; }";
 
 #[derive(Debug, Deserialize)]
 pub struct Envelope {
