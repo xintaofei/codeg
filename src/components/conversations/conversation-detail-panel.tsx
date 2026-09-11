@@ -2811,6 +2811,7 @@ export function ConversationDetailPanel() {
               folderPath={selTabFolder?.path}
               title={selTab.title}
               status={selTab.status as ConversationStatus | undefined}
+              agentType={selTab.agentType}
             />
           </div>
         )}
@@ -2859,6 +2860,7 @@ export function ConversationDetailPanel() {
             folderPath={activeTabFolder?.path}
             title={activeTab.title}
             status={activeTab.status as ConversationStatus | undefined}
+            agentType={activeTab.agentType}
           />
         )}
         <ContextMenu>
