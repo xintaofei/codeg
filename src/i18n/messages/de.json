@@ -544,6 +544,21 @@
     "noSelectionHint": "Wählen Sie links einen Skill oder klicken Sie auf „Neuer Skill“, um einen zu erstellen.",
     "systemBadge": "System",
     "systemHint": "Integrierter CLI-Skill · schreibgeschützt",
+    "availability": {
+      "enabled": "Aktiviert",
+      "disabled": "Deaktiviert",
+      "toggleAria": "{skill} für {agent} umschalten",
+      "readOnly": "Die Dateien dieses Skills sind schreibgeschützt und können hier nicht umgeschaltet werden.",
+      "sharedRoot": "Dieser Skill liegt in einem von mehreren Agents gemeinsam genutzten Verzeichnis und kann daher nicht nur für diesen Agent deaktiviert werden.",
+      "managedElsewhere": "Dieser Skill wird auf der Seite Experten, Office, Wissenschaft oder Benutzerdefinierte Skills verwaltet.",
+      "storageConflict": "Beheben Sie den doppelten Skill oder den Zielkonflikt vor dem Umschalten.",
+      "unsafeLink": "Dieser Skill enthält einen Link, der sich beim Verschieben ändern oder ungültig werden würde.",
+      "crossFilesystem": "Skill und Deaktivierungsspeicher liegen auf verschiedenen Dateisystemen und können nicht sicher verschoben werden.",
+      "legacyState": "Dieser Skill verwendet ein älteres Deaktivierungslayout und muss vor dem Umschalten manuell wiederhergestellt werden.",
+      "bundledDisabled": "Gebündelte Skills sind durch die globale Codex-Konfiguration deaktiviert.",
+      "configError": "Die Skill-Verfügbarkeitskonfiguration des Agents konnte nicht sicher gelesen werden.",
+      "unavailable": "Dieser Skill kann nicht umgeschaltet werden."
+    },
     "scope": {
       "global": "Global",
       "folder": "Ordner",
@@ -579,7 +594,11 @@
       "created": "Skill erstellt",
       "saveFailed": "Skill konnte nicht gespeichert werden",
       "deleted": "Skill gelöscht",
-      "deleteFailed": "Skill konnte nicht gelöscht werden"
+      "deleteFailed": "Skill konnte nicht gelöscht werden",
+      "enabled": "Skill aktiviert",
+      "disabled": "Skill deaktiviert",
+      "codexNewSession": "Gilt für neue Codex-Sitzungen. Bereits geöffnete Sitzungen können zuvor geladene Skills behalten.",
+      "toggleFailed": "Skill-Verfügbarkeit konnte nicht aktualisiert werden"
     },
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",

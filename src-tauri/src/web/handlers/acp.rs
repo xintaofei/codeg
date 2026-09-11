@@ -8,8 +8,8 @@ use crate::acp::error::AcpError;
 use crate::acp::opencode_plugins::PluginCheckSummary;
 use crate::acp::preflight::PreflightResult;
 use crate::acp::types::{
-    AcpAgentInfo, AcpAgentStatus, AgentDiagnosticsReport, AgentSkillContent, AgentSkillLayout,
-    AgentSkillScope, AgentSkillsListResult, ConnectionInfo, ForkResultInfo,
+    AcpAgentInfo, AcpAgentStatus, AgentDiagnosticsReport, AgentSkillContent, AgentSkillItem,
+    AgentSkillLayout, AgentSkillScope, AgentSkillsListResult, ConnectionInfo, ForkResultInfo,
 };
 use crate::app_error::{AppCommandError, AppErrorCode};
 use crate::app_state::AppState;
@@ -225,11 +225,43 @@ pub struct AcpListAgentSkillsParams {
 }
 
 pub async fn acp_list_agent_skills(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpListAgentSkillsParams>,
 ) -> Result<Json<AgentSkillsListResult>, AppCommandError> {
-    let result = acp_commands::acp_list_agent_skills(params.agent_type, params.workspace_path)
-        .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    let result = acp_commands::acp_list_agent_skills_core(
+        params.agent_type,
+        params.workspace_path,
+        &state.data_dir,
+    )
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpSetAgentSkillEnabledParams {
+    pub agent_type: AgentType,
+    pub scope: AgentSkillScope,
+    pub skill_id: String,
+    pub workspace_path: Option<String>,
+    pub enabled: bool,
+}
+
+pub async fn acp_set_agent_skill_enabled(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpSetAgentSkillEnabledParams>,
+) -> Result<Json<AgentSkillItem>, AppCommandError> {
+    let result = acp_commands::acp_set_agent_skill_enabled_core(
+        params.agent_type,
+        params.scope,
+        params.skill_id,
+        params.workspace_path,
+        params.enabled,
+        &state.data_dir,
+    )
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))
 }
 
@@ -243,13 +275,15 @@ pub struct AcpReadAgentSkillParams {
 }
 
 pub async fn acp_read_agent_skill(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpReadAgentSkillParams>,
 ) -> Result<Json<AgentSkillContent>, AppCommandError> {
-    let result = acp_commands::acp_read_agent_skill(
+    let result = acp_commands::acp_read_agent_skill_core(
         params.agent_type,
         params.scope,
         params.skill_id,
         params.workspace_path,
+        &state.data_dir,
     )
     .await
     .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
@@ -268,15 +302,17 @@ pub struct AcpSaveAgentSkillParams {
 }
 
 pub async fn acp_save_agent_skill(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpSaveAgentSkillParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    acp_commands::acp_save_agent_skill(
+    acp_commands::acp_save_agent_skill_core(
         params.agent_type,
         params.scope,
         params.skill_id,
         params.content,
         params.workspace_path,
         params.layout,
+        &state.data_dir,
     )
     .await
     .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
@@ -293,13 +329,15 @@ pub struct AcpDeleteAgentSkillParams {
 }
 
 pub async fn acp_delete_agent_skill(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpDeleteAgentSkillParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    acp_commands::acp_delete_agent_skill(
+    acp_commands::acp_delete_agent_skill_core(
         params.agent_type,
         params.scope,
         params.skill_id,
         params.workspace_path,
+        &state.data_dir,
     )
     .await
     .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;

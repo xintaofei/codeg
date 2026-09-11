@@ -1,9 +1,11 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 #[cfg(feature = "tauri-runtime")]
 use tauri::{Manager, State};
 
@@ -16,10 +18,10 @@ use crate::acp::preflight::{self, PreflightResult};
 use crate::acp::registry;
 use crate::acp::types::{
     AcpAgentInfo, AgentDiagnosticsReport, AgentSkillContent, AgentSkillItem, AgentSkillLayout,
-    AgentSkillLocation, AgentSkillScope, AgentSkillsListResult, CodexGranularApproval,
-    CodexSandboxSettings, CodexSandboxStructuredConfig, CodexWorkspaceWrite, ConfigStaleKind,
-    ConnectionStatus, DiagCheck, DiagLevel, DiagSection, DiagnosticsVerdict, GrokSettings,
-    GrokStructuredConfig,
+    AgentSkillLocation, AgentSkillScope, AgentSkillToggleReason, AgentSkillsListResult,
+    CodexGranularApproval, CodexSandboxSettings, CodexSandboxStructuredConfig, CodexWorkspaceWrite,
+    ConfigStaleKind, ConnectionStatus, DiagCheck, DiagLevel, DiagSection, DiagnosticsVerdict,
+    GrokSettings, GrokStructuredConfig,
 };
 #[cfg(feature = "tauri-runtime")]
 use crate::acp::types::{ConnectionInfo, ForkResultInfo, PromptInputBlock};
@@ -2675,6 +2677,14 @@ fn codex_config_toml_path() -> PathBuf {
     codex_home_dir().join("config.toml")
 }
 
+static CODEX_CONFIG_MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_codex_config_mutation() -> Result<std::sync::MutexGuard<'static, ()>, AcpError> {
+    CODEX_CONFIG_MUTATION_LOCK
+        .lock()
+        .map_err(|_| AcpError::protocol("codex config mutation lock poisoned"))
+}
+
 fn codex_auth_json_path() -> PathBuf {
     codex_home_dir().join("auth.json")
 }
@@ -3320,6 +3330,7 @@ fn persist_codex_local_config(config_patch_json: Option<&str>) -> Result<(), Acp
         model,
         env,
     } = runtime;
+    let _config_guard = lock_codex_config_mutation()?;
 
     let config_path = codex_config_toml_path();
     let mut toml_value = if config_path.exists() {
@@ -3412,15 +3423,11 @@ fn persist_codex_local_config(config_patch_json: Option<&str>) -> Result<(), Acp
         }
     }
 
-    let serialized_toml = toml::to_string_pretty(&toml_value)
-        .map_err(|e| AcpError::protocol(format!("serialize codex toml failed: {e}")))?;
-    if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            AcpError::protocol(format!("create codex config directory failed: {e}"))
-        })?;
-    }
-    fs::write(&config_path, format!("{serialized_toml}\n"))
-        .map_err(|e| AcpError::protocol(format!("write codex config failed: {e}")))?;
+    let serialized_toml = format!(
+        "{}\n",
+        toml::to_string_pretty(&toml_value)
+            .map_err(|e| AcpError::protocol(format!("serialize codex toml failed: {e}")))?
+    );
 
     let auth_path = codex_auth_json_path();
     let mut auth_value = if auth_path.exists() {
@@ -3448,34 +3455,58 @@ fn persist_codex_local_config(config_patch_json: Option<&str>) -> Result<(), Acp
             auth_obj.remove("OPENAI_API_KEY");
         }
     }
-    let serialized_auth = serde_json::to_string_pretty(&auth_value)
-        .map_err(|e| AcpError::protocol(format!("serialize codex auth failed: {e}")))?;
-    if let Some(parent) = auth_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| AcpError::protocol(format!("create codex auth directory failed: {e}")))?;
-    }
-    fs::write(&auth_path, format!("{serialized_auth}\n"))
-        .map_err(|e| AcpError::protocol(format!("write codex auth failed: {e}")))?;
+    let serialized_auth = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&auth_value)
+            .map_err(|e| AcpError::protocol(format!("serialize codex auth failed: {e}")))?
+    );
 
+    persist_codex_native_config_files_unlocked(Some(&serialized_auth), Some(&serialized_toml))
+}
+
+fn codex_atomic_write_target(path: &Path) -> std::io::Result<PathBuf> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => fs::canonicalize(path),
+        Ok(_) => Ok(path.to_path_buf()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(error) => Err(error),
+    }
+}
+
+fn write_codex_file_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let target = codex_atomic_write_target(path)?;
+    let parent = target.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("codex file has no parent: {}", target.display()),
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+
+    let permissions = fs::metadata(&target)
+        .ok()
+        .map(|metadata| metadata.permissions());
+    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    staged.write_all(contents.as_bytes())?;
+    if let Some(permissions) = permissions {
+        staged.as_file().set_permissions(permissions)?;
+    }
+    staged.as_file_mut().sync_all()?;
+    staged.persist(&target).map_err(|error| error.error)?;
     Ok(())
 }
 
-fn persist_codex_native_config_files(
+fn persist_codex_native_config_files_unlocked(
     codex_auth_json: Option<&str>,
     codex_config_toml: Option<&str>,
 ) -> Result<(), AcpError> {
     if let Some(raw_toml) = codex_config_toml {
         toml::from_str::<toml::Table>(raw_toml)
             .map_err(|e| AcpError::protocol(format!("invalid codex config.toml: {e}")))?;
-        let path = codex_config_toml_path();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| AcpError::protocol(format!("create codex directory failed: {e}")))?;
-        }
-        fs::write(&path, raw_toml)
-            .map_err(|e| AcpError::protocol(format!("write codex config.toml failed: {e}")))?;
     }
-
     if let Some(raw_auth) = codex_auth_json {
         let parsed = serde_json::from_str::<serde_json::Value>(raw_auth)
             .map_err(|e| AcpError::protocol(format!("invalid codex auth.json: {e}")))?;
@@ -3484,16 +3515,29 @@ fn persist_codex_native_config_files(
                 "invalid codex auth.json: root must be a JSON object",
             ));
         }
+    }
+
+    if let Some(raw_toml) = codex_config_toml {
+        let path = codex_config_toml_path();
+        write_codex_file_atomic(&path, raw_toml)
+            .map_err(|e| AcpError::protocol(format!("write codex config.toml failed: {e}")))?;
+    }
+
+    if let Some(raw_auth) = codex_auth_json {
         let path = codex_auth_json_path();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| AcpError::protocol(format!("create codex directory failed: {e}")))?;
-        }
-        fs::write(&path, raw_auth)
+        write_codex_file_atomic(&path, raw_auth)
             .map_err(|e| AcpError::protocol(format!("write codex auth.json failed: {e}")))?;
     }
 
     Ok(())
+}
+
+fn persist_codex_native_config_files(
+    codex_auth_json: Option<&str>,
+    codex_config_toml: Option<&str>,
+) -> Result<(), AcpError> {
+    let _config_guard = lock_codex_config_mutation()?;
+    persist_codex_native_config_files_unlocked(codex_auth_json, codex_config_toml)
 }
 
 /// Read `~/.codex/config.toml` as the base of a structured sandbox merge.
@@ -3672,12 +3716,18 @@ fn remove_codex_catalog_key(
 /// Drop codeg's own `model_catalog_json` reference from the config.toml on disk,
 /// if it carries one. Reads fresh so it also cleans up a key written by an
 /// earlier codeg version or by another window since the panel opened.
-fn drop_codex_catalog_reference() -> Result<(), AcpError> {
+fn drop_codex_catalog_reference_unlocked() -> Result<(), AcpError> {
     let base = read_codex_config_or_empty()?;
     if let Some(next) = remove_codex_catalog_key(&base, &codex_home_dir())? {
-        persist_codex_native_config_files(None, Some(&next))?;
+        persist_codex_native_config_files_unlocked(None, Some(&next))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn drop_codex_catalog_reference() -> Result<(), AcpError> {
+    let _config_guard = lock_codex_config_mutation()?;
+    drop_codex_catalog_reference_unlocked()
 }
 
 /// Apply the Codex panel's sandbox / approval PATCH to the raw config.toml text,
@@ -8363,6 +8413,32 @@ fn skill_name_from_id(id: &str) -> String {
     id.to_string()
 }
 
+fn read_skill_frontmatter_name(content_path: &Path) -> Option<String> {
+    use std::io::Read;
+
+    let mut file = fs::File::open(content_path).ok()?;
+    let mut buf = [0u8; 4096];
+    let n = file.read(&mut buf).ok()?;
+    let head = std::str::from_utf8(&buf[..n]).ok()?;
+    let mut lines = head.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    for line in lines {
+        let trimmed_end = line.trim_end();
+        if trimmed_end == "---" || trimmed_end == "..." {
+            break;
+        }
+        if line.starts_with(|c: char| c.is_whitespace()) {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("name:") {
+            return parse_frontmatter_scalar(rest);
+        }
+    }
+    None
+}
+
 /// Best-effort extraction of a one-line skill description from a markdown
 /// file's YAML frontmatter. Prefers `short-description` (commonly nested under
 /// a `metadata:` block) and falls back to a top-level `description`. Only the
@@ -8437,14 +8513,21 @@ fn build_skill_item(
     scope: AgentSkillScope,
     layout: AgentSkillLayout,
     path: PathBuf,
+    enabled: bool,
 ) -> AgentSkillItem {
-    let description = read_skill_description(&skill_content_path(layout, &path));
+    let content_path = skill_content_path(layout, &path);
+    let description = read_skill_description(&content_path);
+    let name =
+        read_skill_frontmatter_name(&content_path).unwrap_or_else(|| skill_name_from_id(&id));
     AgentSkillItem {
-        name: skill_name_from_id(&id),
+        name,
         id,
         scope,
         layout,
         path: path.to_string_lossy().to_string(),
+        enabled,
+        can_toggle: true,
+        toggle_reason: None,
         description,
         read_only: false,
     }
@@ -8466,9 +8549,20 @@ fn is_read_only_skill_path(agent_type: AgentType, skill_path: &Path) -> bool {
         AgentType::DeepSeek => crate::parsers::deepseek::resolve_dsh_home_dir()
             .join("skills")
             .join(".system"),
+        AgentType::Antigravity => {
+            crate::parsers::antigravity::resolve_antigravity_cli_dir().join("skills")
+        }
         _ => return false,
     };
     skill_path.starts_with(&ro_root)
+}
+
+fn apply_skill_capabilities(agent_type: AgentType, skill: &mut AgentSkillItem) {
+    if is_read_only_skill_path(agent_type, Path::new(&skill.path)) {
+        skill.read_only = true;
+        skill.can_toggle = false;
+        skill.toggle_reason = Some(AgentSkillToggleReason::ReadOnly);
+    }
 }
 
 fn skill_content_path(layout: AgentSkillLayout, skill_path: &Path) -> PathBuf {
@@ -8476,6 +8570,24 @@ fn skill_content_path(layout: AgentSkillLayout, skill_path: &Path) -> PathBuf {
         AgentSkillLayout::SkillDirectory => skill_path.join("SKILL.md"),
         AgentSkillLayout::MarkdownFile => skill_path.to_path_buf(),
     }
+}
+
+fn skill_entry_layout(path: &Path, kind: SkillStorageKind) -> Option<AgentSkillLayout> {
+    if matches!(
+        kind,
+        SkillStorageKind::SkillDirectoryOnly | SkillStorageKind::SkillDirectoryOrMarkdownFile
+    ) && path.is_dir()
+        && path.join("SKILL.md").is_file()
+    {
+        return Some(AgentSkillLayout::SkillDirectory);
+    }
+    if kind == SkillStorageKind::SkillDirectoryOrMarkdownFile
+        && path.is_file()
+        && is_markdown_file(path)
+    {
+        return Some(AgentSkillLayout::MarkdownFile);
+    }
+    None
 }
 
 /// Symlink-safe removal: if `path` is a symlink (to a file or directory),
@@ -8533,6 +8645,35 @@ pub(crate) fn list_skills_from_dir(
     dir: &Path,
     kind: SkillStorageKind,
 ) -> Result<Vec<AgentSkillItem>, AcpError> {
+    list_skills_from_dir_with_state(scope, dir, kind, true)
+}
+
+fn list_skills_from_dir_with_state(
+    scope: AgentSkillScope,
+    dir: &Path,
+    kind: SkillStorageKind,
+    enabled: bool,
+) -> Result<Vec<AgentSkillItem>, AcpError> {
+    let mut by_id: BTreeMap<String, AgentSkillItem> = BTreeMap::new();
+    for skill in scan_skills_from_dir_with_state(scope, dir, kind, enabled)? {
+        match skill.layout {
+            AgentSkillLayout::SkillDirectory => {
+                by_id.insert(skill.id.clone(), skill);
+            }
+            AgentSkillLayout::MarkdownFile => {
+                by_id.entry(skill.id.clone()).or_insert(skill);
+            }
+        }
+    }
+    Ok(by_id.into_values().collect())
+}
+
+fn scan_skills_from_dir_with_state(
+    scope: AgentSkillScope,
+    dir: &Path,
+    kind: SkillStorageKind,
+    enabled: bool,
+) -> Result<Vec<AgentSkillItem>, AcpError> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -8540,7 +8681,7 @@ pub(crate) fn list_skills_from_dir(
     let entries = fs::read_dir(dir)
         .map_err(|e| AcpError::protocol(format!("failed to read skills directory: {e}")))?;
 
-    let mut by_id: BTreeMap<String, AgentSkillItem> = BTreeMap::new();
+    let mut skills = Vec::new();
     for entry in entries {
         let entry = match entry {
             Ok(value) => value,
@@ -8550,44 +8691,129 @@ pub(crate) fn list_skills_from_dir(
         let file_name = entry.file_name();
         let id = file_name.to_string_lossy().to_string();
 
-        if path.is_dir()
-            && matches!(
-                kind,
-                SkillStorageKind::SkillDirectoryOnly
-                    | SkillStorageKind::SkillDirectoryOrMarkdownFile
-            )
-        {
-            let skill_doc = path.join("SKILL.md");
-            if !skill_doc.is_file() {
-                continue;
+        match skill_entry_layout(&path, kind) {
+            Some(AgentSkillLayout::SkillDirectory) => {
+                skills.push(build_skill_item(
+                    id,
+                    scope,
+                    AgentSkillLayout::SkillDirectory,
+                    path,
+                    enabled,
+                ));
             }
-            by_id.insert(
-                id.clone(),
-                build_skill_item(id, scope, AgentSkillLayout::SkillDirectory, path),
-            );
-            continue;
+            Some(AgentSkillLayout::MarkdownFile) => {
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| id.clone());
+                skills.push(build_skill_item(
+                    stem,
+                    scope,
+                    AgentSkillLayout::MarkdownFile,
+                    path,
+                    enabled,
+                ));
+            }
+            None => {}
         }
+    }
+    skills.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(skills)
+}
 
-        if path.is_file()
-            && matches!(kind, SkillStorageKind::SkillDirectoryOrMarkdownFile)
-            && is_markdown_file(&path)
-        {
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| id.clone());
-            if by_id.contains_key(&stem) {
+pub(crate) fn disabled_skill_root(active_root: &Path) -> PathBuf {
+    let cursor_builtin_root = home_dir_or_default().join(".cursor").join("skills-cursor");
+    let vault_name = if active_root == cursor_builtin_root {
+        ".skills-cursor.codeg-disabled"
+    } else {
+        // Keep the original location for existing disabled entries.
+        ".skills.codeg-disabled"
+    };
+    active_root
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(vault_name)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkillResidence {
+    Active,
+    PrivateVault,
+    LegacyVault,
+}
+
+#[derive(Debug, Clone)]
+struct PlannedSkill {
+    item: AgentSkillItem,
+    plan_index: usize,
+    residence: SkillResidence,
+}
+
+#[derive(Debug, Default)]
+struct SkillInventory {
+    listed: Vec<PlannedSkill>,
+    active_by_id: BTreeMap<String, Vec<AgentSkillItem>>,
+}
+
+fn list_skills_from_plans(
+    scope: AgentSkillScope,
+    plans: &[SkillRootPlan],
+    kind: SkillStorageKind,
+) -> Result<SkillInventory, AcpError> {
+    let mut by_id: BTreeMap<String, PlannedSkill> = BTreeMap::new();
+    let mut active_by_id: BTreeMap<String, Vec<AgentSkillItem>> = BTreeMap::new();
+
+    for residence in [
+        SkillResidence::Active,
+        SkillResidence::PrivateVault,
+        SkillResidence::LegacyVault,
+    ] {
+        let mut seen_roots = HashSet::new();
+        for (plan_index, plan) in plans.iter().enumerate() {
+            let (dir, enabled) = match residence {
+                SkillResidence::Active => (&plan.active, true),
+                SkillResidence::PrivateVault => (&plan.vault, false),
+                SkillResidence::LegacyVault => (&plan.legacy_vault, false),
+            };
+            let resolved_dir = match residence {
+                SkillResidence::Active => plan.resolved_active.clone(),
+                SkillResidence::PrivateVault => plan.resolved_vault.clone(),
+                SkillResidence::LegacyVault => resolved_skill_root(&plan.legacy_vault)?,
+            };
+            if !seen_roots.insert(resolved_dir) {
                 continue;
             }
-            by_id.insert(
-                stem.clone(),
-                build_skill_item(stem, scope, AgentSkillLayout::MarkdownFile, path),
-            );
+            for skill in scan_skills_from_dir_with_state(scope, dir, kind, enabled)? {
+                if residence == SkillResidence::Active {
+                    active_by_id
+                        .entry(skill.id.clone())
+                        .or_default()
+                        .push(skill.clone());
+                }
+                by_id.entry(skill.id.clone()).or_insert(PlannedSkill {
+                    item: skill,
+                    plan_index,
+                    residence,
+                });
+            }
         }
     }
 
-    Ok(by_id.into_values().collect())
+    Ok(SkillInventory {
+        listed: by_id.into_values().collect(),
+        active_by_id,
+    })
+}
+
+fn locate_skill_in_inventory<'a>(
+    inventory: &'a SkillInventory,
+    skill_id: &str,
+) -> Option<&'a PlannedSkill> {
+    inventory
+        .listed
+        .iter()
+        .find(|skill| skill.item.id == skill_id)
 }
 
 fn locate_existing_skill(
@@ -8595,6 +8821,7 @@ fn locate_existing_skill(
     kind: SkillStorageKind,
     skill_id: &str,
     scope: AgentSkillScope,
+    enabled: bool,
 ) -> Option<AgentSkillItem> {
     if matches!(
         kind,
@@ -8607,6 +8834,7 @@ fn locate_existing_skill(
                 scope,
                 AgentSkillLayout::SkillDirectory,
                 skill_dir,
+                enabled,
             ));
         }
     }
@@ -8619,6 +8847,7 @@ fn locate_existing_skill(
                 scope,
                 AgentSkillLayout::MarkdownFile,
                 file_path,
+                enabled,
             ));
         }
     }
@@ -8633,11 +8862,1527 @@ pub(crate) fn locate_existing_skill_across_dirs(
     scope: AgentSkillScope,
 ) -> Option<AgentSkillItem> {
     for dir in dirs {
-        if let Some(found) = locate_existing_skill(dir, kind, skill_id, scope) {
+        if let Some(found) = locate_existing_skill(dir, kind, skill_id, scope, true) {
+            return Some(found);
+        }
+    }
+    for dir in dirs {
+        if let Some(found) =
+            locate_existing_skill(&disabled_skill_root(dir), kind, skill_id, scope, false)
+        {
             return Some(found);
         }
     }
     None
+}
+
+#[derive(Debug)]
+struct CodexSkillConfig {
+    entries: Vec<CodexSkillConfigEntry>,
+    bundled_enabled: bool,
+    enabled_plugins: Vec<CodexPluginRef>,
+}
+
+#[derive(Debug)]
+struct CodexSkillConfigEntry {
+    path: Option<PathBuf>,
+    name: Option<String>,
+    enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodexPluginRef {
+    name: String,
+    marketplace: String,
+}
+
+impl Default for CodexSkillConfig {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            bundled_enabled: true,
+            enabled_plugins: Vec::new(),
+        }
+    }
+}
+
+fn resolve_codex_skill_config_path(raw: &str, codex_home: &Path) -> PathBuf {
+    if raw == "~" {
+        return home_dir_or_default();
+    }
+    if let Some(relative) = raw.strip_prefix("~/") {
+        return home_dir_or_default().join(relative);
+    }
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        path
+    } else {
+        codex_home.join(path)
+    }
+}
+
+fn absolute_skill_content_path(skill: &AgentSkillItem) -> Result<PathBuf, AcpError> {
+    let path = skill_content_path(skill.layout, Path::new(&skill.path));
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .map_err(|error| {
+                AcpError::protocol(format!("failed to resolve current directory: {error}"))
+            })
+    }
+}
+
+fn same_skill_config_path(first: &Path, second: &Path) -> bool {
+    first == second
+        || fs::canonicalize(first)
+            .ok()
+            .zip(fs::canonicalize(second).ok())
+            .is_some_and(|(first, second)| first == second)
+}
+
+fn parse_codex_skill_config(
+    raw_toml: &str,
+    codex_home: &Path,
+) -> Result<CodexSkillConfig, AcpError> {
+    let root = raw_toml
+        .parse::<toml::Value>()
+        .map_err(|error| AcpError::protocol(format!("invalid codex config.toml: {error}")))?;
+    let skills = root.get("skills").and_then(toml::Value::as_table);
+    let bundled_enabled = skills
+        .and_then(|skills| skills.get("bundled"))
+        .and_then(toml::Value::as_table)
+        .and_then(|bundled| bundled.get("enabled"))
+        .map(|enabled| {
+            enabled.as_bool().ok_or_else(|| {
+                AcpError::protocol(
+                    "invalid codex config.toml: skills.bundled.enabled must be a boolean",
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or(true);
+
+    let mut entries = Vec::new();
+    if let Some(config) = skills.and_then(|skills| skills.get("config")) {
+        let config = config.as_array().ok_or_else(|| {
+            AcpError::protocol("invalid codex config.toml: skills.config must be an array")
+        })?;
+        entries.reserve(config.len());
+        for entry in config {
+            let table = entry.as_table().ok_or_else(|| {
+                AcpError::protocol("invalid codex config.toml: skills.config entry must be a table")
+            })?;
+            let path = match table.get("path") {
+                Some(value) => Some(
+                    value
+                        .as_str()
+                        .map(|path| resolve_codex_skill_config_path(path, codex_home))
+                        .ok_or_else(|| {
+                            AcpError::protocol(
+                                "invalid codex config.toml: skills.config path must be a string",
+                            )
+                        })?,
+                ),
+                None => None,
+            };
+            let name = match table.get("name") {
+                Some(value) => Some(value.as_str().map(str::to_string).ok_or_else(|| {
+                    AcpError::protocol(
+                        "invalid codex config.toml: skills.config name must be a string",
+                    )
+                })?),
+                None => None,
+            };
+            let enabled = table
+                .get("enabled")
+                .ok_or_else(|| {
+                    AcpError::protocol(
+                        "invalid codex config.toml: skills.config enabled is required",
+                    )
+                })?
+                .as_bool()
+                .ok_or_else(|| {
+                    AcpError::protocol(
+                        "invalid codex config.toml: skills.config enabled must be a boolean",
+                    )
+                })?;
+            entries.push(CodexSkillConfigEntry {
+                path,
+                name,
+                enabled,
+            });
+        }
+    }
+
+    let mut enabled_plugins = Vec::new();
+    if let Some(plugins) = root.get("plugins").and_then(toml::Value::as_table) {
+        for (qualified_name, value) in plugins {
+            let enabled = value
+                .as_table()
+                .and_then(|plugin| plugin.get("enabled"))
+                .and_then(toml::Value::as_bool)
+                .unwrap_or(false);
+            if !enabled {
+                continue;
+            }
+            let Some((name, marketplace)) = qualified_name.rsplit_once('@') else {
+                continue;
+            };
+            if !name.is_empty() && !marketplace.is_empty() {
+                enabled_plugins.push(CodexPluginRef {
+                    name: name.to_string(),
+                    marketplace: marketplace.to_string(),
+                });
+            }
+        }
+    }
+    enabled_plugins.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.marketplace.cmp(&right.marketplace))
+    });
+    enabled_plugins.dedup();
+
+    Ok(CodexSkillConfig {
+        entries,
+        bundled_enabled,
+        enabled_plugins,
+    })
+}
+
+impl CodexSkillConfig {
+    fn skill_enabled(&self, path: &Path, name: &str) -> bool {
+        self.entries.iter().fold(true, |enabled, entry| {
+            if entry.path.is_some() == entry.name.is_some() {
+                return enabled;
+            }
+            let path_matches = entry
+                .path
+                .as_deref()
+                .is_some_and(|configured| same_skill_config_path(configured, path));
+            let name_matches = entry.name.as_deref() == Some(name);
+            if path_matches || name_matches {
+                entry.enabled
+            } else {
+                enabled
+            }
+        })
+    }
+}
+
+fn codex_skill_entries_enabled(
+    entries: &[AgentSkillItem],
+    config: &CodexSkillConfig,
+) -> Result<bool, AcpError> {
+    for skill in entries {
+        if config.skill_enabled(&absolute_skill_content_path(skill)?, &skill.name) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn update_codex_array_of_tables(
+    config: &mut toml_edit::ArrayOfTables,
+    codex_home: &Path,
+    skill_name: &str,
+    paths: &[PathBuf],
+    enabled: bool,
+) {
+    for path in paths {
+        let mut last_matching_path = None;
+        for (index, entry) in config.iter().enumerate() {
+            let has_path = entry.get("path").is_some();
+            let has_name = entry.get("name").is_some();
+            if has_path == has_name {
+                continue;
+            }
+            let path_matches = entry
+                .get("path")
+                .and_then(toml_edit::Item::as_str)
+                .map(|configured| resolve_codex_skill_config_path(configured, codex_home))
+                .is_some_and(|configured| same_skill_config_path(&configured, path));
+            let name_matches =
+                entry.get("name").and_then(toml_edit::Item::as_str) == Some(skill_name);
+            if path_matches || name_matches {
+                last_matching_path = path_matches.then_some(index);
+            }
+        }
+        if let Some(index) = last_matching_path {
+            config
+                .get_mut(index)
+                .expect("matching Codex skill config entry must exist")
+                .insert("enabled", toml_edit::value(enabled));
+        } else {
+            let mut entry = toml_edit::Table::new();
+            entry.insert("path", toml_edit::value(path.to_string_lossy().as_ref()));
+            entry.insert("enabled", toml_edit::value(enabled));
+            config.push(entry);
+        }
+    }
+}
+
+fn update_codex_inline_array(
+    config: &mut toml_edit::Array,
+    codex_home: &Path,
+    skill_name: &str,
+    paths: &[PathBuf],
+    enabled: bool,
+) -> Result<(), AcpError> {
+    for path in paths {
+        let mut last_matching_path = None;
+        for (index, value) in config.iter().enumerate() {
+            let entry = value.as_inline_table().ok_or_else(|| {
+                AcpError::protocol("invalid codex config.toml: skills.config entry must be a table")
+            })?;
+            let has_path = entry.get("path").is_some();
+            let has_name = entry.get("name").is_some();
+            if has_path == has_name {
+                continue;
+            }
+            let path_matches = entry
+                .get("path")
+                .and_then(toml_edit::Value::as_str)
+                .map(|configured| resolve_codex_skill_config_path(configured, codex_home))
+                .is_some_and(|configured| same_skill_config_path(&configured, path));
+            let name_matches =
+                entry.get("name").and_then(toml_edit::Value::as_str) == Some(skill_name);
+            if path_matches || name_matches {
+                last_matching_path = path_matches.then_some(index);
+            }
+        }
+        if let Some(index) = last_matching_path {
+            config
+                .get_mut(index)
+                .and_then(toml_edit::Value::as_inline_table_mut)
+                .expect("matching Codex skill config entry must be an inline table")
+                .insert("enabled", toml_edit::Value::from(enabled));
+        } else {
+            let mut entry = toml_edit::InlineTable::new();
+            entry.insert(
+                "path",
+                toml_edit::Value::from(path.to_string_lossy().as_ref()),
+            );
+            entry.insert("enabled", toml_edit::Value::from(enabled));
+            config.push(toml_edit::Value::InlineTable(entry));
+        }
+    }
+    Ok(())
+}
+
+fn apply_codex_skill_enabled_config(
+    base_toml: &str,
+    codex_home: &Path,
+    skill_name: &str,
+    paths: &[PathBuf],
+    enabled: bool,
+) -> Result<String, AcpError> {
+    parse_codex_skill_config(base_toml, codex_home)?;
+    let mut doc = base_toml
+        .parse::<toml_edit::Document>()
+        .map_err(|error| AcpError::protocol(format!("invalid codex config.toml: {error}")))?;
+    // Match Codex's native `skills/config/write`: persist the resolved
+    // SKILL.md target so symlink aliases collapse to one stable rule.
+    let mut unique_paths = paths
+        .iter()
+        .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
+        .collect::<Vec<_>>();
+    unique_paths.sort();
+    unique_paths.dedup();
+
+    if doc.get("skills").is_none() {
+        doc["skills"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    let skills = doc
+        .get_mut("skills")
+        .ok_or_else(|| AcpError::protocol("invalid codex config.toml: missing skills"))?;
+    match skills {
+        toml_edit::Item::Table(skills) => {
+            if skills.get("config").is_none() {
+                skills.insert(
+                    "config",
+                    toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new()),
+                );
+            }
+            match skills
+                .get_mut("config")
+                .expect("skills.config inserted above")
+            {
+                toml_edit::Item::ArrayOfTables(config) => update_codex_array_of_tables(
+                    config,
+                    codex_home,
+                    skill_name,
+                    &unique_paths,
+                    enabled,
+                ),
+                toml_edit::Item::Value(toml_edit::Value::Array(config)) => {
+                    update_codex_inline_array(
+                        config,
+                        codex_home,
+                        skill_name,
+                        &unique_paths,
+                        enabled,
+                    )?;
+                }
+                _ => {
+                    return Err(AcpError::protocol(
+                        "invalid codex config.toml: skills.config must be an array of tables",
+                    ))
+                }
+            }
+        }
+        toml_edit::Item::Value(toml_edit::Value::InlineTable(skills)) => {
+            if skills.get("config").is_none() {
+                skills.insert("config", toml_edit::Value::Array(toml_edit::Array::new()));
+            }
+            let config = skills
+                .get_mut("config")
+                .and_then(toml_edit::Value::as_array_mut)
+                .ok_or_else(|| {
+                    AcpError::protocol(
+                        "invalid codex config.toml: inline skills.config must be an array",
+                    )
+                })?;
+            update_codex_inline_array(config, codex_home, skill_name, &unique_paths, enabled)?;
+        }
+        _ => {
+            return Err(AcpError::protocol(
+                "invalid codex config.toml: skills must be a table",
+            ))
+        }
+    }
+    Ok(doc.to_string())
+}
+
+fn remove_codex_disabled_skill_path_rules(
+    base_toml: &str,
+    codex_home: &Path,
+    paths: &[PathBuf],
+) -> Result<Option<String>, AcpError> {
+    parse_codex_skill_config(base_toml, codex_home)?;
+    let mut doc = base_toml
+        .parse::<toml_edit::Document>()
+        .map_err(|error| AcpError::protocol(format!("invalid codex config.toml: {error}")))?;
+    let matches_path = |raw: &str| {
+        let configured = resolve_codex_skill_config_path(raw, codex_home);
+        paths
+            .iter()
+            .any(|path| same_skill_config_path(&configured, path))
+    };
+    let Some(skills) = doc.get_mut("skills") else {
+        return Ok(None);
+    };
+    let mut removed = false;
+
+    match skills {
+        toml_edit::Item::Table(skills) => {
+            let Some(config) = skills.get_mut("config") else {
+                return Ok(None);
+            };
+            match config {
+                toml_edit::Item::ArrayOfTables(config) => config.retain(|entry| {
+                    let remove = entry.get("name").is_none()
+                        && entry
+                            .get("path")
+                            .and_then(toml_edit::Item::as_str)
+                            .is_some_and(&matches_path)
+                        && entry.get("enabled").and_then(toml_edit::Item::as_bool) == Some(false);
+                    removed |= remove;
+                    !remove
+                }),
+                toml_edit::Item::Value(toml_edit::Value::Array(config)) => {
+                    config.retain(|value| {
+                        let remove = value.as_inline_table().is_some_and(|entry| {
+                            entry.get("name").is_none()
+                                && entry
+                                    .get("path")
+                                    .and_then(toml_edit::Value::as_str)
+                                    .is_some_and(&matches_path)
+                                && entry.get("enabled").and_then(toml_edit::Value::as_bool)
+                                    == Some(false)
+                        });
+                        removed |= remove;
+                        !remove
+                    });
+                }
+                _ => {
+                    return Err(AcpError::protocol(
+                        "invalid codex config.toml: skills.config must be an array of tables",
+                    ))
+                }
+            }
+        }
+        toml_edit::Item::Value(toml_edit::Value::InlineTable(skills)) => {
+            let Some(config) = skills
+                .get_mut("config")
+                .and_then(toml_edit::Value::as_array_mut)
+            else {
+                return Ok(None);
+            };
+            config.retain(|value| {
+                let remove = value.as_inline_table().is_some_and(|entry| {
+                    entry.get("name").is_none()
+                        && entry
+                            .get("path")
+                            .and_then(toml_edit::Value::as_str)
+                            .is_some_and(&matches_path)
+                        && entry.get("enabled").and_then(toml_edit::Value::as_bool) == Some(false)
+                });
+                removed |= remove;
+                !remove
+            });
+        }
+        _ => {
+            return Err(AcpError::protocol(
+                "invalid codex config.toml: skills must be a table",
+            ))
+        }
+    }
+
+    Ok(removed.then(|| doc.to_string()))
+}
+
+fn set_codex_skill_enabled_native(
+    mut listed: AgentSkillItem,
+    active: &[AgentSkillItem],
+    enabled: bool,
+) -> Result<AgentSkillItem, AcpError> {
+    let _config_guard = lock_codex_config_mutation()?;
+    let codex_home = codex_home_dir();
+    let base = read_codex_config_or_empty()?;
+    let current = parse_codex_skill_config(&base, &codex_home)?;
+    listed.enabled = codex_skill_entries_enabled(active, &current)?;
+    listed.can_toggle = true;
+    if listed.enabled == enabled {
+        return Ok(listed);
+    }
+    let paths = active
+        .iter()
+        .map(absolute_skill_content_path)
+        .collect::<Result<Vec<_>, _>>()?;
+    let next = apply_codex_skill_enabled_config(&base, &codex_home, &listed.name, &paths, enabled)?;
+    let updated = parse_codex_skill_config(&next, &codex_home)?;
+    if codex_skill_entries_enabled(active, &updated)? != enabled {
+        return Err(AcpError::protocol(
+            "requested Codex skill state was not reached",
+        ));
+    }
+    persist_codex_native_config_files_unlocked(None, Some(&next))?;
+    listed.enabled = enabled;
+    Ok(listed)
+}
+
+// All settings mutations share this lock so lookup, preflight and mutation
+// observe one state. No guard is held across an await.
+static SKILL_MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn resolved_skill_root(root: &Path) -> Result<PathBuf, AcpError> {
+    let absolute = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| AcpError::protocol(format!("failed to resolve current directory: {e}")))?
+            .join(root)
+    };
+    let mut ancestor = absolute.as_path();
+    let mut suffix = Vec::new();
+    loop {
+        match fs::canonicalize(ancestor) {
+            Ok(mut resolved) => {
+                for component in suffix.into_iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(resolved);
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && fs::symlink_metadata(ancestor).is_err() =>
+            {
+                let Some(name) = ancestor.file_name() else {
+                    return Err(AcpError::protocol(format!(
+                        "failed to resolve skill root '{}': {error}",
+                        root.display()
+                    )));
+                };
+                suffix.push(name.to_os_string());
+                ancestor = ancestor
+                    .parent()
+                    .ok_or_else(|| AcpError::protocol("skill root has no parent"))?;
+            }
+            Err(error) => {
+                return Err(AcpError::protocol(format!(
+                    "failed to resolve skill root '{}': {error}",
+                    root.display()
+                )))
+            }
+        }
+    }
+}
+
+/// Resolve a path against the filesystem as it would look after one rename.
+/// Destination entries are inspected at their source paths, while symlink
+/// targets are interpreted from their future parents. The old entry is absent.
+fn resolve_skill_path_after_move(
+    path: &Path,
+    source: &Path,
+    destination: &Path,
+    directory: bool,
+    followed_links: usize,
+) -> std::io::Result<PathBuf> {
+    if followed_links > 40 {
+        return Err(std::io::Error::other("too many skill symlinks"));
+    }
+    let mut resolved = PathBuf::new();
+    let mut components = path.components();
+    while let Some(component) = components.next() {
+        match component {
+            std::path::Component::CurDir => continue,
+            std::path::Component::ParentDir => {
+                resolved.pop();
+                continue;
+            }
+            _ => resolved.push(component.as_os_str()),
+        }
+        if matches!(
+            component,
+            std::path::Component::Prefix(_) | std::path::Component::RootDir
+        ) {
+            continue;
+        }
+        // create_dir_all materializes the whole destination root before the
+        // rename. resolved_skill_root has already resolved every existing
+        // ancestor, so simulate the still-missing suffix without probing it.
+        if destination
+            .parent()
+            .is_some_and(|parent| parent.starts_with(&resolved))
+        {
+            continue;
+        }
+        let physical = if resolved == destination {
+            source.to_path_buf()
+        } else if directory && resolved.starts_with(destination) {
+            source.join(
+                resolved
+                    .strip_prefix(destination)
+                    .expect("checked destination prefix"),
+            )
+        } else if resolved == source || (directory && resolved.starts_with(source)) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "target remains in old skill location",
+            ));
+        } else {
+            resolved.clone()
+        };
+        let metadata = fs::symlink_metadata(&physical)?;
+        if metadata.file_type().is_symlink() {
+            let target = fs::read_link(physical)?;
+            let next = if target.is_absolute() {
+                target
+            } else {
+                resolved
+                    .parent()
+                    .unwrap_or_else(|| Path::new(""))
+                    .join(target)
+            };
+            return resolve_skill_path_after_move(
+                &next.join(components.as_path()),
+                source,
+                destination,
+                directory,
+                followed_links + 1,
+            );
+        }
+        if components.clone().next().is_some() && !metadata.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotADirectory,
+                "skill target component is not a directory",
+            ));
+        }
+    }
+    Ok(resolved)
+}
+
+fn preflight_skill_symlink_move(source: &Path, destination_root: &Path) -> Result<(), AcpError> {
+    let source = resolved_skill_root(
+        source
+            .parent()
+            .ok_or_else(|| AcpError::protocol("skill entry has no parent"))?,
+    )?
+    .join(
+        source
+            .file_name()
+            .ok_or_else(|| AcpError::protocol("skill entry has no filename"))?,
+    );
+    let destination =
+        resolved_skill_root(destination_root)?.join(source.file_name().expect("checked filename"));
+    let directory = fs::symlink_metadata(&source)
+        .map_err(|e| AcpError::protocol(format!("failed to inspect skill entry: {e}")))?
+        .is_dir();
+    let mut pending = vec![source.clone()];
+    while let Some(entry) = pending.pop() {
+        let metadata = fs::symlink_metadata(&entry)
+            .map_err(|e| AcpError::protocol(format!("failed to inspect skill entry: {e}")))?;
+        #[cfg(windows)]
+        if !metadata.file_type().is_symlink() && super::experts::path_is_reparse_point(&entry) {
+            return Err(AcpError::protocol(format!(
+                "skill junction or reparse point '{}' cannot be moved safely",
+                entry.display()
+            )));
+        }
+        if metadata.file_type().is_symlink() {
+            let target = fs::read_link(&entry)
+                .map_err(|e| AcpError::protocol(format!("failed to read skill symlink: {e}")))?;
+            let original_target = fs::canonicalize(&entry).map_err(|e| {
+                AcpError::protocol(format!(
+                    "failed to resolve skill symlink '{}': {e}",
+                    entry.display()
+                ))
+            })?;
+            let expected_target = if directory && original_target.starts_with(&source) {
+                destination.join(
+                    original_target
+                        .strip_prefix(&source)
+                        .expect("checked source prefix"),
+                )
+            } else {
+                original_target
+            };
+            let future_entry =
+                destination.join(entry.strip_prefix(&source).expect("entry is in bundle"));
+            let moved_target =
+                resolve_skill_path_after_move(&future_entry, &source, &destination, directory, 0);
+            if moved_target.ok().as_ref() != Some(&expected_target) {
+                return Err(AcpError::protocol(format!(
+                    "{}symlink '{}' would resolve to a different or missing target after moving",
+                    if target.is_relative() {
+                        "relative "
+                    } else {
+                        ""
+                    },
+                    entry.display()
+                )));
+            }
+        } else if metadata.is_dir() {
+            for child in fs::read_dir(&entry)
+                .map_err(|e| AcpError::protocol(format!("failed to inspect skill bundle: {e}")))?
+            {
+                pending.push(
+                    child
+                        .map_err(|e| {
+                            AcpError::protocol(format!("failed to inspect skill bundle entry: {e}"))
+                        })?
+                        .path(),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn nearest_existing_metadata(path: &Path) -> Result<fs::Metadata, AcpError> {
+    let mut current = path;
+    loop {
+        match fs::metadata(current) {
+            Ok(metadata) => return Ok(metadata),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                current = current.parent().ok_or_else(|| {
+                    AcpError::protocol(format!(
+                        "failed to find an existing ancestor for '{}'",
+                        path.display()
+                    ))
+                })?;
+            }
+            Err(error) => {
+                return Err(AcpError::protocol(format!(
+                    "failed to inspect filesystem for '{}': {error}",
+                    current.display()
+                )))
+            }
+        }
+    }
+}
+
+fn skill_move_is_same_filesystem(source: &Path, destination_root: &Path) -> Result<bool, AcpError> {
+    let source_parent = source
+        .parent()
+        .ok_or_else(|| AcpError::protocol("skill entry has no parent"))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(nearest_existing_metadata(source_parent)?.dev()
+            == nearest_existing_metadata(destination_root)?.dev())
+    }
+
+    #[cfg(windows)]
+    {
+        use std::path::Component;
+
+        let prefix = |path: &Path| {
+            resolved_skill_root(path)
+                .ok()?
+                .components()
+                .find_map(|component| match component {
+                    Component::Prefix(prefix) => {
+                        Some(prefix.as_os_str().to_string_lossy().to_lowercase())
+                    }
+                    _ => None,
+                })
+        };
+        Ok(prefix(source_parent)
+            .zip(prefix(destination_root))
+            .is_some_and(|(source, destination)| source == destination))
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (source_parent, destination_root);
+        Ok(true)
+    }
+}
+
+fn is_codeg_managed_skill_at(skill: &AgentSkillItem, central_root: &Path) -> bool {
+    fs::canonicalize(&skill.path)
+        .ok()
+        .zip(fs::canonicalize(central_root).ok())
+        .is_some_and(|(path, central)| path.starts_with(central))
+}
+
+fn is_codeg_managed_skill(skill: &AgentSkillItem) -> bool {
+    is_codeg_managed_skill_at(skill, &super::experts::central_experts_dir())
+}
+
+fn skill_resolves_to_legacy_vault(skill: &AgentSkillItem, topology: &SkillRootTopology) -> bool {
+    fs::canonicalize(&skill.path)
+        .ok()
+        .is_some_and(|path| topology.path_is_in_legacy_vault(&path))
+}
+
+fn classify_non_codex_skill(
+    planned: &PlannedSkill,
+    plan: &SkillRootPlan,
+    inventory: &SkillInventory,
+    topology: &SkillRootTopology,
+) -> Option<AgentSkillToggleReason> {
+    let skill = &planned.item;
+    if is_codeg_managed_skill(skill) {
+        return Some(AgentSkillToggleReason::ManagedElsewhere);
+    }
+    if planned.residence == SkillResidence::LegacyVault
+        || skill_resolves_to_legacy_vault(skill, topology)
+    {
+        return Some(AgentSkillToggleReason::LegacyState);
+    }
+    if skill.read_only {
+        return Some(AgentSkillToggleReason::ReadOnly);
+    }
+    if plan.shared {
+        return Some(AgentSkillToggleReason::SharedRoot);
+    }
+    if inventory
+        .active_by_id
+        .get(&skill.id)
+        .is_some_and(|entries| entries.len() > 1)
+        || plan.vault_conflict
+    {
+        return Some(AgentSkillToggleReason::StorageConflict);
+    }
+
+    let source = Path::new(&skill.path);
+    if topology.has_external_incoming_link(source) {
+        return Some(AgentSkillToggleReason::UnsafeLink);
+    }
+    let destination_root = if skill.enabled {
+        &plan.vault
+    } else {
+        &plan.active
+    };
+    if !skill_root_writable(source.parent().unwrap_or(&plan.active))
+        || !skill_root_writable(destination_root)
+    {
+        return Some(AgentSkillToggleReason::ReadOnly);
+    }
+    if !skill_move_is_same_filesystem(source, destination_root).unwrap_or(false) {
+        return Some(AgentSkillToggleReason::CrossFilesystem);
+    }
+    if preflight_skill_destination(destination_root, &skill.id).is_err() {
+        return Some(AgentSkillToggleReason::StorageConflict);
+    }
+    if preflight_skill_symlink_move(source, destination_root).is_err() {
+        return Some(AgentSkillToggleReason::UnsafeLink);
+    }
+    None
+}
+
+fn set_skill_unavailable(skill: &mut AgentSkillItem, reason: AgentSkillToggleReason) {
+    skill.can_toggle = false;
+    skill.toggle_reason = Some(reason);
+}
+
+fn toggle_reason_error(id: &str, reason: AgentSkillToggleReason) -> AcpError {
+    let explanation = match reason {
+        AgentSkillToggleReason::ReadOnly => "its files are read-only",
+        AgentSkillToggleReason::SharedRoot => {
+            "it is installed in a shared skill root and cannot be changed for one agent"
+        }
+        AgentSkillToggleReason::ManagedElsewhere => "it is managed by another Codeg skill page",
+        AgentSkillToggleReason::StorageConflict => "its storage has a conflicting entry",
+        AgentSkillToggleReason::UnsafeLink => "moving it would change or break a link",
+        AgentSkillToggleReason::CrossFilesystem => {
+            "its active root and disabled vault are on different filesystems"
+        }
+        AgentSkillToggleReason::LegacyState => {
+            "it uses a legacy disabled layout that requires manual recovery"
+        }
+        AgentSkillToggleReason::BundledDisabled => {
+            "bundled skills are disabled by the global Codex configuration"
+        }
+        AgentSkillToggleReason::ConfigError => {
+            "the agent availability configuration could not be read safely"
+        }
+    };
+    AcpError::protocol(format!(
+        "skill '{id}' cannot be toggled because {explanation}"
+    ))
+}
+
+fn set_private_skill_enabled_at(
+    root: &Path,
+    vault: &Path,
+    kind: SkillStorageKind,
+    scope: AgentSkillScope,
+    skill_id: &str,
+    enabled: bool,
+) -> Result<AgentSkillItem, AcpError> {
+    let id = validate_skill_id(skill_id)?;
+    let skill = locate_existing_skill(root, kind, &id, scope, true)
+        .or_else(|| locate_existing_skill(vault, kind, &id, scope, false))
+        .ok_or_else(|| AcpError::protocol(format!("skill not found: {id}")))?;
+    if skill.enabled == enabled {
+        return Ok(skill);
+    }
+
+    let destination_root = if enabled { root } else { vault };
+    let source = Path::new(&skill.path);
+    let file_name = source
+        .file_name()
+        .ok_or_else(|| AcpError::protocol("skill entry has no file name"))?;
+    let destination = destination_root.join(file_name);
+    let mut candidates = vec![destination.clone(), destination_root.join(&id)];
+    if matches!(kind, SkillStorageKind::SkillDirectoryOrMarkdownFile) {
+        candidates.push(destination_root.join(format!("{id}.md")));
+    }
+    for candidate in candidates {
+        match fs::symlink_metadata(&candidate) {
+            Ok(_) => {
+                return Err(AcpError::protocol(format!(
+                    "skill destination collision: '{}' already exists",
+                    candidate.display()
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(AcpError::protocol(format!(
+                    "failed to inspect skill destination '{}': {error}",
+                    candidate.display()
+                )));
+            }
+        }
+    }
+
+    preflight_skill_symlink_move(source, destination_root)?;
+    fs::create_dir_all(destination_root)
+        .map_err(|e| AcpError::protocol(format!("failed to create skills directory: {e}")))?;
+    // Rename the entry itself, including symlinks; never copy/dereference a
+    // bundle whose supporting files may belong to a separate central store.
+    fs::rename(source, &destination)
+        .map_err(|e| AcpError::protocol(format!("failed to move skill '{id}': {e}")))?;
+    Ok(build_skill_item(
+        id,
+        scope,
+        skill.layout,
+        destination,
+        enabled,
+    ))
+}
+
+fn native_skill_roots(workspace_path: Option<&str>) -> Vec<(AgentType, AgentSkillScope, PathBuf)> {
+    let mut roots = Vec::new();
+    for agent in registry::all_acp_agents() {
+        for scope in [AgentSkillScope::Global, AgentSkillScope::Project] {
+            if scope == AgentSkillScope::Project
+                && workspace_path
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .is_none()
+            {
+                continue;
+            }
+            roots.extend(
+                scoped_skill_dirs(agent, scope, workspace_path)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|root| (agent, scope, root)),
+            );
+        }
+    }
+    roots
+}
+
+#[derive(Debug, Clone)]
+struct SkillTopologyRoot {
+    agent: AgentType,
+    scope: AgentSkillScope,
+    active: PathBuf,
+    resolved_active: PathBuf,
+    resolved_legacy_vault: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct SkillRootTopology {
+    roots: Vec<SkillTopologyRoot>,
+    incoming_link_origins: HashMap<PathBuf, Vec<PathBuf>>,
+    incoming_link_scan_complete: bool,
+}
+
+impl SkillRootTopology {
+    fn build(
+        workspace_path: Option<&str>,
+        data_dir: &Path,
+        inspect_incoming_links: bool,
+    ) -> Result<Self, AcpError> {
+        let mut roots = Vec::new();
+        let mut seen = HashSet::new();
+        for (agent, scope, active) in native_skill_roots(workspace_path) {
+            let resolved_active = resolved_skill_root(&active)?;
+            let identity = (agent, scope, resolved_active.clone());
+            if !seen.insert(identity) {
+                continue;
+            }
+            let resolved_legacy_vault = resolved_skill_root(&disabled_skill_root(&active))?;
+            roots.push(SkillTopologyRoot {
+                agent,
+                scope,
+                active,
+                resolved_active,
+                resolved_legacy_vault,
+            });
+        }
+        let mut topology = Self {
+            roots,
+            incoming_link_origins: HashMap::new(),
+            incoming_link_scan_complete: true,
+        };
+        if inspect_incoming_links {
+            topology.scan_incoming_links(workspace_path, data_dir)?;
+        }
+        Ok(topology)
+    }
+
+    fn root_is_shared(
+        &self,
+        agent: AgentType,
+        scope: AgentSkillScope,
+        resolved_root: &Path,
+    ) -> bool {
+        self.roots.iter().any(|other| {
+            (other.agent != agent || other.scope != scope)
+                && skill_roots_overlap(resolved_root, &other.resolved_active)
+        })
+    }
+
+    fn path_overlaps_native_root(&self, path: &Path) -> bool {
+        self.roots
+            .iter()
+            .any(|root| skill_roots_overlap(path, &root.resolved_active))
+    }
+
+    fn path_is_in_legacy_vault(&self, path: &Path) -> bool {
+        self.roots
+            .iter()
+            .any(|root| path.starts_with(&root.resolved_legacy_vault))
+    }
+
+    fn scan_incoming_links(
+        &mut self,
+        workspace_path: Option<&str>,
+        data_dir: &Path,
+    ) -> Result<(), AcpError> {
+        let mut scan_roots = BTreeMap::new();
+        for root in &self.roots {
+            let Some(spec) = skill_storage_spec(root.agent) else {
+                continue;
+            };
+            add_skill_link_scan_root(
+                &mut scan_roots,
+                root.resolved_active.clone(),
+                spec.kind,
+            );
+            add_skill_link_scan_root(
+                &mut scan_roots,
+                root.resolved_legacy_vault.clone(),
+                spec.kind,
+            );
+            let private_vault = private_skill_vault(
+                root.agent,
+                root.scope,
+                workspace_path,
+                data_dir,
+                &root.active,
+            )?;
+            add_skill_link_scan_root(
+                &mut scan_roots,
+                resolved_skill_root(&private_vault)?,
+                spec.kind,
+            );
+        }
+
+        for (scan_root, kind) in scan_roots {
+            if let Err(error) = collect_incoming_skill_links(
+                &scan_root,
+                kind,
+                &mut self.incoming_link_origins,
+            ) {
+                self.incoming_link_scan_complete = false;
+                tracing::warn!(
+                    path = %scan_root.display(),
+                    error = %error,
+                    "skill link topology scan was incomplete"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn has_external_incoming_link(&self, source: &Path) -> bool {
+        if !self.incoming_link_scan_complete {
+            return true;
+        }
+        let Ok(sources) = skill_path_identities(source) else {
+            return true;
+        };
+        sources.iter().any(|source| {
+            self.incoming_link_origins
+                .get(source)
+                .is_some_and(|origins| {
+                    origins
+                        .iter()
+                        .any(|origin| sources.iter().all(|source| !origin.starts_with(source)))
+                })
+        })
+    }
+}
+
+fn add_skill_link_scan_root(
+    roots: &mut BTreeMap<PathBuf, SkillStorageKind>,
+    root: PathBuf,
+    kind: SkillStorageKind,
+) {
+    roots
+        .entry(root)
+        .and_modify(|current| {
+            if kind == SkillStorageKind::SkillDirectoryOrMarkdownFile {
+                *current = kind;
+            }
+        })
+        .or_insert(kind);
+}
+
+fn skill_path_identity(path: &Path) -> Result<PathBuf, AcpError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| AcpError::protocol("skill path has no parent"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| AcpError::protocol("skill path has no filename"))?;
+    let identity = resolved_skill_root(parent)?.join(name);
+    #[cfg(windows)]
+    let identity = PathBuf::from(identity.to_string_lossy().to_lowercase());
+    Ok(identity)
+}
+
+fn lexical_skill_path_identity(path: &Path) -> Result<PathBuf, AcpError> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| {
+                AcpError::protocol(format!("failed to resolve current directory: {error}"))
+            })?
+            .join(path)
+    };
+    let mut identity = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                identity.pop();
+            }
+            _ => identity.push(component.as_os_str()),
+        }
+    }
+    #[cfg(windows)]
+    let identity = PathBuf::from(identity.to_string_lossy().to_lowercase());
+    Ok(identity)
+}
+
+fn skill_path_identities(path: &Path) -> Result<[PathBuf; 2], AcpError> {
+    Ok([
+        skill_path_identity(path)?,
+        lexical_skill_path_identity(path)?,
+    ])
+}
+
+type IncomingSkillLink = Vec<(PathBuf, PathBuf)>;
+
+fn resolve_peer_skill_link_target(path: &Path, target: PathBuf) -> Result<PathBuf, AcpError> {
+    if target.is_absolute() {
+        return Ok(target);
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| AcpError::protocol("peer skill link has no parent"))?;
+    Ok(resolved_skill_root(parent)?.join(target))
+}
+
+fn incoming_skill_link(path: &Path) -> Result<Option<IncomingSkillLink>, AcpError> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        AcpError::protocol(format!(
+            "failed to inspect peer skill link '{}': {error}",
+            path.display()
+        ))
+    })?;
+    let link_like = metadata.file_type().is_symlink()
+        || {
+            #[cfg(windows)]
+            {
+                super::experts::path_is_reparse_point(path)
+            }
+            #[cfg(not(windows))]
+            {
+                false
+            }
+        };
+    if !link_like {
+        return Ok(None);
+    }
+    let target = super::experts::read_link_target(path).ok_or_else(|| {
+        AcpError::protocol(format!(
+            "failed to read peer skill link '{}'",
+            path.display()
+        ))
+    })?;
+    let target = resolve_peer_skill_link_target(path, target)?;
+    let origins = skill_path_identities(path)?;
+    let mut links = Vec::new();
+    let mut seen_pairs = HashSet::new();
+    let mut current = target;
+    for followed_links in 0..=40 {
+        for target in skill_path_identities(&current)? {
+            for origin in &origins {
+                let pair = (origin.clone(), target.clone());
+                if seen_pairs.insert(pair.clone()) {
+                    links.push(pair);
+                }
+            }
+        }
+
+        let metadata = fs::symlink_metadata(&current).map_err(|error| {
+            AcpError::protocol(format!(
+                "failed to inspect peer skill link target '{}': {error}",
+                current.display()
+            ))
+        })?;
+        let link_like = metadata.file_type().is_symlink()
+            || {
+                #[cfg(windows)]
+                {
+                    super::experts::path_is_reparse_point(&current)
+                }
+                #[cfg(not(windows))]
+                {
+                    false
+                }
+            };
+        if !link_like {
+            return Ok(Some(links));
+        }
+        if followed_links == 40 {
+            return Err(AcpError::protocol(format!(
+                "too many peer skill link targets from '{}'",
+                path.display()
+            )));
+        }
+        let next = super::experts::read_link_target(&current).ok_or_else(|| {
+            AcpError::protocol(format!(
+                "failed to read peer skill link target '{}'",
+                current.display()
+            ))
+        })?;
+        current = resolve_peer_skill_link_target(&current, next)?;
+    }
+    unreachable!("peer skill link traversal returns within its bounded loop")
+}
+
+fn index_incoming_skill_link(
+    links: &mut HashMap<PathBuf, Vec<PathBuf>>,
+    origin: PathBuf,
+    target: PathBuf,
+) {
+    let mut current = Some(target.as_path());
+    while let Some(path) = current {
+        links
+            .entry(path.to_path_buf())
+            .or_default()
+            .push(origin.clone());
+        current = path.parent();
+    }
+}
+
+fn collect_incoming_skill_links(
+    root: &Path,
+    kind: SkillStorageKind,
+    links: &mut HashMap<PathBuf, Vec<PathBuf>>,
+) -> Result<(), AcpError> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(AcpError::protocol(format!(
+                "failed to inspect peer skill root '{}': {error}",
+                root.display()
+            )))
+        }
+    };
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| {
+                AcpError::protocol(format!(
+                    "failed to inspect peer skill entry in '{}': {error}",
+                    root.display()
+                ))
+            })?
+            .path();
+        let Some(layout) = skill_entry_layout(&entry, kind) else {
+            continue;
+        };
+        if let Some(incoming) = incoming_skill_link(&entry)? {
+            for (origin, target) in incoming {
+                index_incoming_skill_link(links, origin, target);
+            }
+        }
+        if layout == AgentSkillLayout::SkillDirectory {
+            let content = skill_content_path(layout, &entry);
+            if let Some(incoming) = incoming_skill_link(&content)? {
+                for (origin, target) in incoming {
+                    index_incoming_skill_link(links, origin, target);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct SkillRootPlan {
+    active: PathBuf,
+    resolved_active: PathBuf,
+    vault: PathBuf,
+    resolved_vault: PathBuf,
+    legacy_vault: PathBuf,
+    shared: bool,
+    vault_conflict: bool,
+}
+
+fn hash_skill_identity(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn normalized_skill_identity(path: &Path) -> Result<String, AcpError> {
+    let value = resolved_skill_root(path)?.to_string_lossy().into_owned();
+    #[cfg(windows)]
+    let value = value.to_lowercase();
+    Ok(value)
+}
+
+fn agent_vault_component(agent: AgentType) -> String {
+    let wire = agent.as_wire();
+    let readable = wire
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("{}-{}", readable, &hash_skill_identity(wire.as_ref())[..12])
+}
+
+fn private_skill_vault(
+    agent: AgentType,
+    scope: AgentSkillScope,
+    workspace_path: Option<&str>,
+    data_dir: &Path,
+    active_root: &Path,
+) -> Result<PathBuf, AcpError> {
+    let root_key = hash_skill_identity(&normalized_skill_identity(active_root)?);
+    let agent = agent_vault_component(agent);
+    match scope {
+        AgentSkillScope::Global => {
+            let parent = active_root
+                .parent()
+                .ok_or_else(|| AcpError::protocol("global skill root has no parent"))?;
+            Ok(parent
+                .join(".codeg-skill-vaults")
+                .join("v1")
+                .join(agent)
+                .join(root_key))
+        }
+        AgentSkillScope::Project => {
+            let workspace = workspace_path
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .ok_or_else(|| {
+                    AcpError::protocol("workspace_path is required for project scoped skills")
+                })?;
+            let workspace_key =
+                hash_skill_identity(&normalized_skill_identity(Path::new(workspace))?);
+            Ok(data_dir
+                .join("skill-vaults")
+                .join("v1")
+                .join(workspace_key)
+                .join(agent)
+                .join(root_key))
+        }
+    }
+}
+
+fn skill_root_plans(
+    agent: AgentType,
+    scope: AgentSkillScope,
+    workspace_path: Option<&str>,
+    data_dir: &Path,
+    topology: &SkillRootTopology,
+) -> Result<Vec<SkillRootPlan>, AcpError> {
+    scoped_skill_dirs(agent, scope, workspace_path)?
+        .into_iter()
+        .map(|active| {
+            let resolved_active = resolved_skill_root(&active)?;
+            let legacy_vault = disabled_skill_root(&active);
+            let vault = private_skill_vault(agent, scope, workspace_path, data_dir, &active)?;
+            let resolved_vault = resolved_skill_root(&vault)?;
+            let project_vault_in_workspace = if scope == AgentSkillScope::Project {
+                let workspace = workspace_path.expect("project scope validated above");
+                let resolved_workspace = resolved_skill_root(Path::new(workspace))?;
+                skill_roots_overlap(&resolved_vault, &resolved_workspace)
+            } else {
+                false
+            };
+            Ok(SkillRootPlan {
+                active,
+                resolved_active: resolved_active.clone(),
+                vault,
+                resolved_vault: resolved_vault.clone(),
+                legacy_vault,
+                shared: topology.root_is_shared(agent, scope, &resolved_active),
+                vault_conflict: project_vault_in_workspace
+                    || topology.path_overlaps_native_root(&resolved_vault),
+            })
+        })
+        .collect()
+}
+
+fn skill_roots_overlap(first: &Path, second: &Path) -> bool {
+    first.starts_with(second) || second.starts_with(first)
+}
+
+fn delete_codex_skill_entry(skill_path: &Path, content_path: &Path) -> Result<(), AcpError> {
+    let _config_guard = lock_codex_config_mutation()?;
+    let codex_home = codex_home_dir();
+    let base = read_codex_config_or_empty()?;
+    let content_paths = [content_path.to_path_buf()];
+    let updated = remove_codex_disabled_skill_path_rules(&base, &codex_home, &content_paths)?;
+    if let Some(next) = updated.as_deref() {
+        persist_codex_native_config_files_unlocked(None, Some(next))?;
+    }
+
+    if let Err(delete_error) = remove_skill_entry(skill_path) {
+        if updated.is_some() {
+            if let Err(rollback_error) =
+                persist_codex_native_config_files_unlocked(None, Some(&base))
+            {
+                return Err(AcpError::protocol(format!(
+                    "failed to delete skill entry: {delete_error}; Codex config rollback failed: {rollback_error}"
+                )));
+            }
+        }
+        return Err(AcpError::protocol(format!(
+            "failed to delete skill entry: {delete_error}"
+        )));
+    }
+    Ok(())
+}
+
+fn preflight_skill_destination(root: &Path, id: &str) -> Result<(), AcpError> {
+    // Reserve both layouts, including dangling links and malformed bundles.
+    for path in [root.join(id), root.join(format!("{id}.md"))] {
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                return Err(AcpError::protocol(format!(
+                    "skill destination collision: '{}' already exists",
+                    path.display()
+                )))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(AcpError::protocol(format!(
+                    "failed to inspect skill destination '{}': {e}",
+                    path.display()
+                )))
+            }
+        }
+    }
+    Ok(())
+}
+
+fn skill_root_writable(root: &Path) -> bool {
+    let mut ancestor = root;
+    loop {
+        match fs::metadata(ancestor) {
+            Ok(metadata) => {
+                if !metadata.is_dir() || metadata.permissions().readonly() {
+                    return false;
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::ffi::OsStrExt;
+                    let Ok(path) = std::ffi::CString::new(ancestor.as_os_str().as_bytes()) else {
+                        return false;
+                    };
+                    // access checks search permission and ACLs without creating a probe file.
+                    unsafe {
+                        return libc::access(path.as_ptr(), libc::W_OK | libc::X_OK) == 0;
+                    }
+                }
+                #[cfg(not(unix))]
+                return true;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let Some(parent) = ancestor.parent() else {
+                    return false;
+                };
+                ancestor = parent;
+            }
+            Err(_) => return false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -9595,6 +11340,7 @@ fn cascade_update_agent_config(
             // model-provider endpoint to cascade into.
         }
         AgentType::Codex => {
+            let _config_guard = lock_codex_config_mutation()?;
             let auth_path = codex_auth_json_path();
             let mut auth_obj = if auth_path.exists() {
                 fs::read_to_string(&auth_path)
@@ -9706,7 +11452,7 @@ fn cascade_update_agent_config(
             let toml_str = toml::to_string_pretty(&toml_value)
                 .map_err(|e| AcpError::protocol(e.to_string()))?;
 
-            persist_codex_native_config_files(Some(&auth_str), Some(&toml_str))?;
+            persist_codex_native_config_files_unlocked(Some(&auth_str), Some(&toml_str))?;
         }
         AgentType::OpenCode => {
             let auth_path = opencode_auth_json_path();
@@ -11107,6 +12853,7 @@ fn apply_codex_root_model_action(action: &CodexModelAction) -> Result<(), AcpErr
     if matches!(action, CodexModelAction::NoOp) {
         return Ok(());
     }
+    let _config_guard = lock_codex_config_mutation()?;
     let config_path = codex_config_toml_path();
     let mut toml_value = if config_path.exists() {
         fs::read_to_string(&config_path)
@@ -11131,7 +12878,7 @@ fn apply_codex_root_model_action(action: &CodexModelAction) -> Result<(), AcpErr
     }
     let toml_str =
         toml::to_string_pretty(&toml_value).map_err(|e| AcpError::protocol(e.to_string()))?;
-    persist_codex_native_config_files(None, Some(&toml_str))?;
+    persist_codex_native_config_files_unlocked(None, Some(&toml_str))?;
     Ok(())
 }
 
@@ -11146,6 +12893,7 @@ fn apply_codex_root_model_action(action: &CodexModelAction) -> Result<(), AcpErr
 /// asks the backend to (re)write the catalog *files* (see
 /// `acp_update_agent_config_core`).
 fn apply_codex_catalog_and_model(raw: Option<&str>) -> Result<(), AcpError> {
+    let _config_guard = lock_codex_config_mutation()?;
     let snapshot = crate::acp::codex_catalog_source::cached_or_bundled_snapshot();
     let injection = crate::acp::codex_model_catalog::write_catalog_files(
         raw.unwrap_or_default(),
@@ -11189,7 +12937,7 @@ fn apply_codex_catalog_and_model(raw: Option<&str>) -> Result<(), AcpError> {
     }
     let toml_str =
         toml::to_string_pretty(&toml_value).map_err(|e| AcpError::protocol(e.to_string()))?;
-    persist_codex_native_config_files(None, Some(&toml_str))?;
+    persist_codex_native_config_files_unlocked(None, Some(&toml_str))?;
     Ok(())
 }
 
@@ -11289,6 +13037,7 @@ pub(crate) async fn acp_update_agent_config_core(
     }
 
     if agent_type == AgentType::Codex {
+        let _config_guard = lock_codex_config_mutation()?;
         // Mirrors the Grok/Cursor flow. The advanced raw editor sends the whole
         // file (`codex_config_toml = Some(text)`), so that text is the verbatim
         // base; the sandbox/approval controls send only a patch, merged onto the
@@ -11306,7 +13055,10 @@ pub(crate) async fn acp_update_agent_config_core(
                 }
                 None => codex_config_toml,
             };
-            persist_codex_native_config_files(codex_auth_json.as_deref(), merged_toml.as_deref())?;
+            persist_codex_native_config_files_unlocked(
+                codex_auth_json.as_deref(),
+                merged_toml.as_deref(),
+            )?;
         }
         // The frontend has already patched config.toml's `model_catalog_json` +
         // root `model` into `codex_config_toml` (comment-preserving text patch);
@@ -11324,7 +13076,7 @@ pub(crate) async fn acp_update_agent_config_core(
                 // The frontend only patches that key when the user *edits* the
                 // model editor, so a save that merely lets a stale removal
                 // dissolve would otherwise leave the two out of sync.
-                Ok(None) => drop_codex_catalog_reference()?,
+                Ok(None) => drop_codex_catalog_reference_unlocked()?,
                 Ok(Some(_)) => {}
                 Err(e) => {
                     tracing::error!("[acp_update_agent_config] write codex catalog failed: {e}")
@@ -12615,10 +14367,208 @@ pub async fn acp_reorder_agents(
     acp_reorder_agents_core(&agent_types, &db, &emitter).await
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn acp_list_agent_skills(
+fn load_codex_skill_config() -> Result<CodexSkillConfig, AcpError> {
+    let codex_home = codex_home_dir();
+    read_codex_config_or_empty().and_then(|raw| parse_codex_skill_config(&raw, &codex_home))
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexPluginManifest {
+    name: String,
+    #[serde(default)]
+    version: String,
+    skills: Option<String>,
+}
+
+fn discover_codex_plugin_skills(
+    codex_home: &Path,
+    config: &CodexSkillConfig,
+) -> Result<Vec<AgentSkillItem>, AcpError> {
+    let mut by_id = BTreeMap::new();
+    for plugin in &config.enabled_plugins {
+        let cache_root = codex_home
+            .join("plugins")
+            .join("cache")
+            .join(&plugin.marketplace)
+            .join(&plugin.name);
+        let versions = match fs::read_dir(&cache_root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                tracing::warn!(path = %cache_root.display(), %error, "failed to inspect enabled Codex plugin cache");
+                continue;
+            }
+        };
+        let mut candidates = Vec::new();
+        for version in versions.flatten() {
+            let plugin_root = version.path();
+            let manifest_path = plugin_root.join(".codex-plugin").join("plugin.json");
+            let Ok(raw) = fs::read_to_string(&manifest_path) else {
+                continue;
+            };
+            let Ok(manifest) = serde_json::from_str::<CodexPluginManifest>(&raw) else {
+                tracing::warn!(path = %manifest_path.display(), "ignored invalid Codex plugin manifest");
+                continue;
+            };
+            if manifest.name != plugin.name {
+                continue;
+            }
+            let Some(skills) = manifest
+                .skills
+                .as_deref()
+                .map(str::trim)
+                .filter(|skills| !skills.is_empty())
+            else {
+                continue;
+            };
+            let relative = Path::new(skills);
+            if relative.is_absolute()
+                || relative
+                    .components()
+                    .any(|component| matches!(component, std::path::Component::ParentDir))
+            {
+                tracing::warn!(path = %manifest_path.display(), "ignored unsafe Codex plugin skills path");
+                continue;
+            }
+            let skills_root = plugin_root.join(relative);
+            let Some((resolved_plugin, resolved_skills)) = fs::canonicalize(&plugin_root)
+                .ok()
+                .zip(fs::canonicalize(&skills_root).ok())
+            else {
+                continue;
+            };
+            if !resolved_skills.starts_with(&resolved_plugin) {
+                tracing::warn!(path = %manifest_path.display(), "ignored Codex plugin skills path outside plugin root");
+                continue;
+            }
+            let parsed_version = semver::Version::parse(&manifest.version).ok();
+            candidates.push((
+                parsed_version,
+                version.file_name().to_string_lossy().into_owned(),
+                resolved_skills,
+            ));
+        }
+        let Some((_, _, skills_root)) = candidates
+            .into_iter()
+            .max_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)))
+        else {
+            continue;
+        };
+        for mut skill in list_skills_from_dir(
+            AgentSkillScope::Global,
+            &skills_root,
+            SkillStorageKind::SkillDirectoryOrMarkdownFile,
+        )? {
+            let local_name = skill.name.clone();
+            let namespaced = format!("{}:{local_name}", plugin.name);
+            skill.id = namespaced.clone();
+            skill.name = namespaced.clone();
+            skill.read_only = true;
+            skill.enabled =
+                config.skill_enabled(&absolute_skill_content_path(&skill)?, &namespaced);
+            skill.can_toggle = true;
+            skill.toggle_reason = None;
+            by_id.entry(namespaced).or_insert(skill);
+        }
+    }
+    Ok(by_id.into_values().collect())
+}
+
+fn validate_skill_lookup_id(agent_type: AgentType, raw: &str) -> Result<String, AcpError> {
+    if let Ok(id) = validate_skill_id(raw) {
+        return Ok(id);
+    }
+    if agent_type == AgentType::Codex {
+        if let Some((plugin, skill)) = raw.trim().split_once(':') {
+            let plugin = validate_skill_id(plugin)?;
+            let skill = validate_skill_id(skill)?;
+            return Ok(format!("{plugin}:{skill}"));
+        }
+    }
+    validate_skill_id(raw)
+}
+
+fn codex_plugin_skill_by_id(
+    id: &str,
+    config: &CodexSkillConfig,
+) -> Result<Option<AgentSkillItem>, AcpError> {
+    Ok(discover_codex_plugin_skills(&codex_home_dir(), config)?
+        .into_iter()
+        .find(|skill| skill.id == id))
+}
+
+fn finalize_planned_skill(
+    agent_type: AgentType,
+    planned: &PlannedSkill,
+    plans: &[SkillRootPlan],
+    inventory: &SkillInventory,
+    topology: &SkillRootTopology,
+    codex_config: Option<&Result<CodexSkillConfig, AcpError>>,
+) -> Result<AgentSkillItem, AcpError> {
+    let mut skill = planned.item.clone();
+    apply_skill_capabilities(agent_type, &mut skill);
+
+    if agent_type == AgentType::Codex {
+        let Some(active) = inventory.active_by_id.get(&skill.id) else {
+            set_skill_unavailable(&mut skill, AgentSkillToggleReason::LegacyState);
+            return Ok(skill);
+        };
+        match codex_config {
+            Some(Ok(config)) => {
+                if is_read_only_skill_path(AgentType::Codex, Path::new(&skill.path))
+                    && !config.bundled_enabled
+                {
+                    skill.enabled = false;
+                    set_skill_unavailable(&mut skill, AgentSkillToggleReason::BundledDisabled);
+                } else {
+                    skill.enabled = codex_skill_entries_enabled(active, config)?;
+                    skill.can_toggle = true;
+                    skill.toggle_reason = None;
+                }
+            }
+            _ => set_skill_unavailable(&mut skill, AgentSkillToggleReason::ConfigError),
+        }
+        return Ok(skill);
+    }
+
+    if is_codeg_managed_skill(&skill) {
+        set_skill_unavailable(&mut skill, AgentSkillToggleReason::ManagedElsewhere);
+        return Ok(skill);
+    }
+    if planned.residence == SkillResidence::LegacyVault
+        || skill_resolves_to_legacy_vault(&skill, topology)
+    {
+        set_skill_unavailable(&mut skill, AgentSkillToggleReason::LegacyState);
+        return Ok(skill);
+    }
+
+    let plan = plans
+        .get(planned.plan_index)
+        .ok_or_else(|| AcpError::protocol("skill has no owning root plan"))?;
+    if let Some(reason) = classify_non_codex_skill(planned, plan, inventory, topology) {
+        set_skill_unavailable(&mut skill, reason);
+    } else {
+        skill.can_toggle = true;
+        skill.toggle_reason = None;
+    }
+    Ok(skill)
+}
+
+fn skill_scopes(workspace_path: Option<&str>) -> Vec<AgentSkillScope> {
+    let mut scopes = vec![AgentSkillScope::Global];
+    if workspace_path
+        .map(str::trim)
+        .is_some_and(|workspace| !workspace.is_empty())
+    {
+        scopes.push(AgentSkillScope::Project);
+    }
+    scopes
+}
+
+pub(crate) async fn acp_list_agent_skills_core(
     agent_type: AgentType,
     workspace_path: Option<String>,
+    data_dir: &Path,
 ) -> Result<AgentSkillsListResult, AcpError> {
     let Some(spec) = skill_storage_spec(agent_type) else {
         return Ok(AgentSkillsListResult {
@@ -12631,50 +14581,58 @@ pub async fn acp_list_agent_skills(
 
     let mut locations = Vec::new();
     let mut skills_by_key: BTreeMap<String, AgentSkillItem> = BTreeMap::new();
+    let topology = SkillRootTopology::build(
+        workspace_path.as_deref(),
+        data_dir,
+        agent_type != AgentType::Codex,
+    )?;
+    let codex_skill_config = if agent_type == AgentType::Codex {
+        Some(load_codex_skill_config())
+    } else {
+        None
+    };
 
-    for dir in &spec.global_dirs {
-        locations.push(AgentSkillLocation {
-            scope: AgentSkillScope::Global,
-            path: dir.to_string_lossy().to_string(),
-            exists: dir.exists(),
-        });
-        let listed = list_skills_from_dir(AgentSkillScope::Global, dir, spec.kind)?;
-        for skill in listed {
-            let key = format!("global:{}", skill.id);
+    for scope in skill_scopes(workspace_path.as_deref()) {
+        let plans = skill_root_plans(
+            agent_type,
+            scope,
+            workspace_path.as_deref(),
+            data_dir,
+            &topology,
+        )?;
+        for plan in &plans {
+            locations.push(AgentSkillLocation {
+                scope,
+                path: plan.active.to_string_lossy().into_owned(),
+                exists: plan.active.exists(),
+            });
+        }
+        let inventory = list_skills_from_plans(scope, &plans, spec.kind)?;
+        for planned in &inventory.listed {
+            let skill = finalize_planned_skill(
+                agent_type,
+                planned,
+                &plans,
+                &inventory,
+                &topology,
+                codex_skill_config.as_ref(),
+            )?;
+            let key = format!("{}:{}", scope_rank(scope), skill.id);
             skills_by_key.entry(key).or_insert(skill);
         }
     }
 
-    if let Some(workspace) = workspace_path.as_deref().map(str::trim) {
-        if !workspace.is_empty() {
-            // Same base the WRITE path resolves through `scoped_skill_dirs` —
-            // for DeepSeek that is the repo root, not the workspace. Joining
-            // onto the workspace here instead would make a skill saved from a
-            // nested workspace vanish from the list that is meant to show it.
-            let base = project_skill_base(agent_type, workspace);
-            for relative in &spec.project_rel_dirs {
-                let project_dir = base.join(relative);
-                locations.push(AgentSkillLocation {
-                    scope: AgentSkillScope::Project,
-                    path: project_dir.to_string_lossy().to_string(),
-                    exists: project_dir.exists(),
-                });
-                let listed =
-                    list_skills_from_dir(AgentSkillScope::Project, &project_dir, spec.kind)?;
-                for skill in listed {
-                    let key = format!("project:{}", skill.id);
-                    skills_by_key.entry(key).or_insert(skill);
-                }
-            }
+    // Plugin skills live in Codex's cache rather than one of the mutable
+    // skill roots above. Only an enabled plugin declaration makes its cache
+    // visible to Codex, so do not surface cache contents on config failures.
+    if let Some(Ok(config)) = codex_skill_config.as_ref() {
+        for skill in discover_codex_plugin_skills(&codex_home_dir(), config)? {
+            let key = format!("{}:{}", scope_rank(skill.scope), skill.id);
+            skills_by_key.entry(key).or_insert(skill);
         }
     }
 
     let mut skills = skills_by_key.into_values().collect::<Vec<_>>();
-    for skill in &mut skills {
-        if is_read_only_skill_path(agent_type, Path::new(&skill.path)) {
-            skill.read_only = true;
-        }
-    }
     skills.sort_by(|a, b| {
         scope_rank(a.scope)
             .cmp(&scope_rank(b.scope))
@@ -12689,64 +14647,231 @@ pub async fn acp_list_agent_skills(
     })
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn acp_read_agent_skill(
+pub(crate) async fn acp_set_agent_skill_enabled_core(
     agent_type: AgentType,
     scope: AgentSkillScope,
     skill_id: String,
     workspace_path: Option<String>,
+    enabled: bool,
+    data_dir: &Path,
+) -> Result<AgentSkillItem, AcpError> {
+    let _guard = SKILL_MUTATION_LOCK
+        .lock()
+        .map_err(|_| AcpError::protocol("skill mutation lock poisoned"))?;
+    let spec = skill_storage_spec(agent_type).ok_or_else(|| {
+        AcpError::protocol(format!(
+            "{agent_type} skills are not supported in Settings yet"
+        ))
+    })?;
+    let id = validate_skill_lookup_id(agent_type, &skill_id)?;
+    if agent_type == AgentType::Codex {
+        let config = load_codex_skill_config()?;
+        if let Some(plugin_skill) = codex_plugin_skill_by_id(&id, &config)? {
+            return set_codex_skill_enabled_native(
+                plugin_skill.clone(),
+                std::slice::from_ref(&plugin_skill),
+                enabled,
+            );
+        }
+    }
+    let topology = SkillRootTopology::build(
+        workspace_path.as_deref(),
+        data_dir,
+        agent_type != AgentType::Codex,
+    )?;
+    let plans = skill_root_plans(
+        agent_type,
+        scope,
+        workspace_path.as_deref(),
+        data_dir,
+        &topology,
+    )?;
+    let inventory = list_skills_from_plans(scope, &plans, spec.kind)?;
+    let planned = locate_skill_in_inventory(&inventory, &id)
+        .cloned()
+        .ok_or_else(|| AcpError::protocol(format!("skill not found: {id}")))?;
+    let codex_config = (agent_type == AgentType::Codex).then(load_codex_skill_config);
+    let listed = finalize_planned_skill(
+        agent_type,
+        &planned,
+        &plans,
+        &inventory,
+        &topology,
+        codex_config.as_ref(),
+    )?;
+    if !listed.can_toggle {
+        return Err(toggle_reason_error(
+            &id,
+            listed
+                .toggle_reason
+                .unwrap_or(AgentSkillToggleReason::StorageConflict),
+        ));
+    }
+    if agent_type == AgentType::Codex {
+        let active = inventory
+            .active_by_id
+            .get(&id)
+            .ok_or_else(|| AcpError::protocol("active Codex skill entry not found"))?;
+        return set_codex_skill_enabled_native(listed, active, enabled);
+    }
+
+    let plan = plans
+        .get(planned.plan_index)
+        .ok_or_else(|| AcpError::protocol("skill has no owning root plan"))?;
+    let original = planned.item;
+    let moved =
+        set_private_skill_enabled_at(&plan.active, &plan.vault, spec.kind, scope, &id, enabled)?;
+    let refreshed = list_skills_from_plans(scope, &plans, spec.kind)?;
+    if let Some(authoritative) = locate_skill_in_inventory(&refreshed, &id) {
+        if authoritative.item.enabled == enabled {
+            return finalize_planned_skill(
+                agent_type,
+                authoritative,
+                &plans,
+                &refreshed,
+                &topology,
+                None,
+            );
+        }
+    }
+    if moved.path != original.path {
+        match fs::symlink_metadata(&original.path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => {
+                return Err(AcpError::protocol(format!(
+                    "requested skill state was not reached; rollback refused because original path '{}' is occupied or inaccessible; moved entry remains at '{}'",
+                    original.path, moved.path
+                )))
+            }
+        }
+        fs::rename(&moved.path, &original.path).map_err(|error| {
+            AcpError::protocol(format!(
+                "requested skill state was not reached; rollback from '{}' to '{}' failed: {error}",
+                moved.path, original.path
+            ))
+        })?;
+    }
+    Err(AcpError::protocol(
+        "requested skill state was not reached; skill move rolled back",
+    ))
+}
+
+pub(crate) async fn acp_read_agent_skill_core(
+    agent_type: AgentType,
+    scope: AgentSkillScope,
+    skill_id: String,
+    workspace_path: Option<String>,
+    data_dir: &Path,
 ) -> Result<AgentSkillContent, AcpError> {
+    let _guard = SKILL_MUTATION_LOCK
+        .lock()
+        .map_err(|_| AcpError::protocol("skill mutation lock poisoned"))?;
     let Some(spec) = skill_storage_spec(agent_type) else {
         return Err(AcpError::protocol(format!(
             "{agent_type} skills are not supported in Settings yet"
         )));
     };
-    let id = validate_skill_id(&skill_id)?;
-    let dirs = scoped_skill_dirs(agent_type, scope, workspace_path.as_deref())?;
-
-    let mut skill = locate_existing_skill_across_dirs(&dirs, spec.kind, &id, scope)
-        .ok_or_else(|| AcpError::protocol(format!("skill not found: {id}")))?;
-    if is_read_only_skill_path(agent_type, Path::new(&skill.path)) {
-        skill.read_only = true;
+    let id = validate_skill_lookup_id(agent_type, &skill_id)?;
+    if agent_type == AgentType::Codex {
+        let config = load_codex_skill_config()?;
+        if let Some(skill) = codex_plugin_skill_by_id(&id, &config)? {
+            let content_path = skill_content_path(skill.layout, Path::new(&skill.path));
+            let content = fs::read_to_string(&content_path)
+                .map_err(|e| AcpError::protocol(format!("failed to read skill content: {e}")))?;
+            return Ok(AgentSkillContent { skill, content });
+        }
     }
+    let topology = SkillRootTopology::build(
+        workspace_path.as_deref(),
+        data_dir,
+        agent_type != AgentType::Codex,
+    )?;
+    let plans = skill_root_plans(
+        agent_type,
+        scope,
+        workspace_path.as_deref(),
+        data_dir,
+        &topology,
+    )?;
+    let inventory = list_skills_from_plans(scope, &plans, spec.kind)?;
+    let planned = locate_skill_in_inventory(&inventory, &id)
+        .ok_or_else(|| AcpError::protocol(format!("skill not found: {id}")))?;
+    let codex_config = (agent_type == AgentType::Codex).then(load_codex_skill_config);
+    let skill = finalize_planned_skill(
+        agent_type,
+        planned,
+        &plans,
+        &inventory,
+        &topology,
+        codex_config.as_ref(),
+    )?;
     let content_path = skill_content_path(skill.layout, Path::new(&skill.path));
     let content = fs::read_to_string(&content_path)
         .map_err(|e| AcpError::protocol(format!("failed to read skill content: {e}")))?;
     Ok(AgentSkillContent { skill, content })
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn acp_save_agent_skill(
+pub(crate) async fn acp_save_agent_skill_core(
     agent_type: AgentType,
     scope: AgentSkillScope,
     skill_id: String,
     content: String,
     workspace_path: Option<String>,
     layout: Option<AgentSkillLayout>,
+    data_dir: &Path,
 ) -> Result<AgentSkillItem, AcpError> {
+    let _guard = SKILL_MUTATION_LOCK
+        .lock()
+        .map_err(|_| AcpError::protocol("skill mutation lock poisoned"))?;
     let Some(spec) = skill_storage_spec(agent_type) else {
         return Err(AcpError::protocol(format!(
             "{agent_type} skills are not supported in Settings yet"
         )));
     };
-    let id = validate_skill_id(&skill_id)?;
-    let dirs = scoped_skill_dirs(agent_type, scope, workspace_path.as_deref())?;
-    let preferred_dir = preferred_scope_skill_dir(agent_type, scope, workspace_path.as_deref())?;
-
-    fs::create_dir_all(&preferred_dir)
-        .map_err(|e| AcpError::protocol(format!("failed to create skills directory: {e}")))?;
-
-    let existing = locate_existing_skill_across_dirs(&dirs, spec.kind, &id, scope);
-    if let Some(ref item) = existing {
-        if is_read_only_skill_path(agent_type, Path::new(&item.path)) {
+    let lookup_id = validate_skill_lookup_id(agent_type, &skill_id)?;
+    if agent_type == AgentType::Codex {
+        let config = load_codex_skill_config()?;
+        if codex_plugin_skill_by_id(&lookup_id, &config)?.is_some() {
             return Err(AcpError::protocol(format!(
-                "skill '{id}' is a built-in system skill and cannot be modified"
+                "skill '{lookup_id}' is managed or read-only and cannot be modified here"
             )));
         }
     }
-    let mut skill = if let Some(item) = existing {
-        item
+    // A colon is valid only for a plugin skill that the enabled-plugin lookup
+    // resolved above. New and ordinary user skills keep the native ID rules.
+    let id = validate_skill_id(&skill_id)?;
+    let topology = SkillRootTopology::build(
+        workspace_path.as_deref(),
+        data_dir,
+        agent_type != AgentType::Codex,
+    )?;
+    let plans = skill_root_plans(
+        agent_type,
+        scope,
+        workspace_path.as_deref(),
+        data_dir,
+        &topology,
+    )?;
+    let inventory = list_skills_from_plans(scope, &plans, spec.kind)?;
+    let existing = locate_skill_in_inventory(&inventory, &id).cloned();
+    if let Some(ref planned) = existing {
+        if planned.residence == SkillResidence::LegacyVault
+            || skill_resolves_to_legacy_vault(&planned.item, &topology)
+            || is_codeg_managed_skill(&planned.item)
+            || is_read_only_skill_path(agent_type, Path::new(&planned.item.path))
+        {
+            return Err(AcpError::protocol(format!(
+                "skill '{id}' is managed or read-only and cannot be modified here"
+            )));
+        }
+    }
+    let mut skill = if let Some(planned) = existing {
+        planned.item
     } else {
+        let preferred_dir = plans
+            .first()
+            .map(|plan| plan.active.as_path())
+            .ok_or_else(|| AcpError::protocol("no skill directory resolved for this agent"))?;
         let new_layout = match spec.kind {
             SkillStorageKind::SkillDirectoryOnly => AgentSkillLayout::SkillDirectory,
             SkillStorageKind::SkillDirectoryOrMarkdownFile => {
@@ -12757,7 +14882,7 @@ pub async fn acp_save_agent_skill(
             AgentSkillLayout::SkillDirectory => preferred_dir.join(&id),
             AgentSkillLayout::MarkdownFile => preferred_dir.join(format!("{id}.md")),
         };
-        build_skill_item(id.clone(), scope, new_layout, skill_path)
+        build_skill_item(id.clone(), scope, new_layout, skill_path, true)
     };
 
     let skill_path = PathBuf::from(&skill.path);
@@ -12780,36 +14905,180 @@ pub async fn acp_save_agent_skill(
         .map_err(|e| AcpError::protocol(format!("failed to write skill content: {e}")))?;
 
     skill.description = read_skill_description(&content_path);
+    skill.name = read_skill_frontmatter_name(&content_path).unwrap_or_else(|| id.clone());
 
-    Ok(skill)
+    let refreshed = list_skills_from_plans(scope, &plans, spec.kind)?;
+    let planned = locate_skill_in_inventory(&refreshed, &id)
+        .ok_or_else(|| AcpError::protocol("saved skill could not be read back"))?;
+    let codex_config = (agent_type == AgentType::Codex).then(load_codex_skill_config);
+    finalize_planned_skill(
+        agent_type,
+        planned,
+        &plans,
+        &refreshed,
+        &topology,
+        codex_config.as_ref(),
+    )
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn acp_delete_agent_skill(
+pub(crate) async fn acp_delete_agent_skill_core(
     agent_type: AgentType,
     scope: AgentSkillScope,
     skill_id: String,
     workspace_path: Option<String>,
+    data_dir: &Path,
 ) -> Result<(), AcpError> {
+    let _guard = SKILL_MUTATION_LOCK
+        .lock()
+        .map_err(|_| AcpError::protocol("skill mutation lock poisoned"))?;
     let Some(spec) = skill_storage_spec(agent_type) else {
         return Err(AcpError::protocol(format!(
             "{agent_type} skills are not supported in Settings yet"
         )));
     };
-    let id = validate_skill_id(&skill_id)?;
-    let dirs = scoped_skill_dirs(agent_type, scope, workspace_path.as_deref())?;
-
-    let skill = locate_existing_skill_across_dirs(&dirs, spec.kind, &id, scope)
+    let id = validate_skill_lookup_id(agent_type, &skill_id)?;
+    if agent_type == AgentType::Codex {
+        let config = load_codex_skill_config()?;
+        if codex_plugin_skill_by_id(&id, &config)?.is_some() {
+            return Err(AcpError::protocol(format!(
+                "skill '{id}' is managed or read-only and cannot be deleted here"
+            )));
+        }
+    }
+    let topology = SkillRootTopology::build(
+        workspace_path.as_deref(),
+        data_dir,
+        agent_type != AgentType::Codex,
+    )?;
+    let plans = skill_root_plans(
+        agent_type,
+        scope,
+        workspace_path.as_deref(),
+        data_dir,
+        &topology,
+    )?;
+    let inventory = list_skills_from_plans(scope, &plans, spec.kind)?;
+    let planned = locate_skill_in_inventory(&inventory, &id)
         .ok_or_else(|| AcpError::protocol(format!("skill not found: {id}")))?;
-    if is_read_only_skill_path(agent_type, Path::new(&skill.path)) {
+    let skill = &planned.item;
+    if planned.residence == SkillResidence::LegacyVault
+        || skill_resolves_to_legacy_vault(skill, &topology)
+        || is_codeg_managed_skill(skill)
+        || is_read_only_skill_path(agent_type, Path::new(&skill.path))
+    {
         return Err(AcpError::protocol(format!(
-            "skill '{id}' is a built-in system skill and cannot be deleted"
+            "skill '{id}' is managed or read-only and cannot be deleted here"
         )));
     }
     let skill_path = PathBuf::from(&skill.path);
-    remove_skill_entry(&skill_path)
-        .map_err(|e| AcpError::protocol(format!("failed to delete skill entry: {e}")))?;
-    Ok(())
+    if agent_type == AgentType::Codex {
+        let content_path = skill_content_path(skill.layout, &skill_path);
+        delete_codex_skill_entry(&skill_path, &content_path)
+    } else {
+        remove_skill_entry(&skill_path)
+            .map_err(|e| AcpError::protocol(format!("failed to delete skill entry: {e}")))
+    }
+}
+
+#[cfg(feature = "tauri-runtime")]
+fn resolve_tauri_skill_data_dir_result<E: std::fmt::Display>(
+    app_data_dir: Result<PathBuf, E>,
+) -> Result<PathBuf, AcpError> {
+    app_data_dir
+        .map(|path| crate::paths::resolve_effective_data_dir(&path))
+        .map_err(|error| {
+            AcpError::protocol(format!(
+                "failed to resolve Codeg data directory for skill storage: {error}"
+            ))
+        })
+}
+
+#[cfg(feature = "tauri-runtime")]
+fn tauri_skill_data_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, AcpError> {
+    resolve_tauri_skill_data_dir_result(app_handle.path().app_data_dir())
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn acp_list_agent_skills(
+    agent_type: AgentType,
+    workspace_path: Option<String>,
+    app_handle: tauri::AppHandle,
+) -> Result<AgentSkillsListResult, AcpError> {
+    let data_dir = tauri_skill_data_dir(&app_handle)?;
+    acp_list_agent_skills_core(agent_type, workspace_path, &data_dir).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn acp_set_agent_skill_enabled(
+    agent_type: AgentType,
+    scope: AgentSkillScope,
+    skill_id: String,
+    workspace_path: Option<String>,
+    enabled: bool,
+    app_handle: tauri::AppHandle,
+) -> Result<AgentSkillItem, AcpError> {
+    let data_dir = tauri_skill_data_dir(&app_handle)?;
+    acp_set_agent_skill_enabled_core(
+        agent_type,
+        scope,
+        skill_id,
+        workspace_path,
+        enabled,
+        &data_dir,
+    )
+    .await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn acp_read_agent_skill(
+    agent_type: AgentType,
+    scope: AgentSkillScope,
+    skill_id: String,
+    workspace_path: Option<String>,
+    app_handle: tauri::AppHandle,
+) -> Result<AgentSkillContent, AcpError> {
+    let data_dir = tauri_skill_data_dir(&app_handle)?;
+    acp_read_agent_skill_core(agent_type, scope, skill_id, workspace_path, &data_dir).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn acp_save_agent_skill(
+    agent_type: AgentType,
+    scope: AgentSkillScope,
+    skill_id: String,
+    content: String,
+    workspace_path: Option<String>,
+    layout: Option<AgentSkillLayout>,
+    app_handle: tauri::AppHandle,
+) -> Result<AgentSkillItem, AcpError> {
+    let data_dir = tauri_skill_data_dir(&app_handle)?;
+    acp_save_agent_skill_core(
+        agent_type,
+        scope,
+        skill_id,
+        content,
+        workspace_path,
+        layout,
+        &data_dir,
+    )
+    .await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn acp_delete_agent_skill(
+    agent_type: AgentType,
+    scope: AgentSkillScope,
+    skill_id: String,
+    workspace_path: Option<String>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), AcpError> {
+    let data_dir = tauri_skill_data_dir(&app_handle)?;
+    acp_delete_agent_skill_core(agent_type, scope, skill_id, workspace_path, &data_dir).await
 }
 
 pub(crate) async fn opencode_list_plugins_core() -> Result<PluginCheckSummary, AcpError> {
@@ -15156,6 +17425,293 @@ wire_api = "chat"
         dir
     }
 
+    fn test_skill_data_dir() -> &'static Path {
+        static DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        DATA_DIR
+            .get_or_init(|| unique_test_dir("skill-data"))
+            .as_path()
+    }
+
+    async fn acp_list_agent_skills(
+        agent_type: AgentType,
+        workspace_path: Option<String>,
+    ) -> Result<AgentSkillsListResult, AcpError> {
+        acp_list_agent_skills_core(agent_type, workspace_path, test_skill_data_dir()).await
+    }
+
+    async fn acp_set_agent_skill_enabled(
+        agent_type: AgentType,
+        scope: AgentSkillScope,
+        skill_id: String,
+        workspace_path: Option<String>,
+        enabled: bool,
+    ) -> Result<AgentSkillItem, AcpError> {
+        acp_set_agent_skill_enabled_core(
+            agent_type,
+            scope,
+            skill_id,
+            workspace_path,
+            enabled,
+            test_skill_data_dir(),
+        )
+        .await
+    }
+
+    async fn acp_read_agent_skill(
+        agent_type: AgentType,
+        scope: AgentSkillScope,
+        skill_id: String,
+        workspace_path: Option<String>,
+    ) -> Result<AgentSkillContent, AcpError> {
+        acp_read_agent_skill_core(
+            agent_type,
+            scope,
+            skill_id,
+            workspace_path,
+            test_skill_data_dir(),
+        )
+        .await
+    }
+
+    async fn acp_save_agent_skill(
+        agent_type: AgentType,
+        scope: AgentSkillScope,
+        skill_id: String,
+        content: String,
+        workspace_path: Option<String>,
+        layout: Option<AgentSkillLayout>,
+    ) -> Result<AgentSkillItem, AcpError> {
+        acp_save_agent_skill_core(
+            agent_type,
+            scope,
+            skill_id,
+            content,
+            workspace_path,
+            layout,
+            test_skill_data_dir(),
+        )
+        .await
+    }
+
+    async fn acp_delete_agent_skill(
+        agent_type: AgentType,
+        scope: AgentSkillScope,
+        skill_id: String,
+        workspace_path: Option<String>,
+    ) -> Result<(), AcpError> {
+        acp_delete_agent_skill_core(
+            agent_type,
+            scope,
+            skill_id,
+            workspace_path,
+            test_skill_data_dir(),
+        )
+        .await
+    }
+
+    #[test]
+    fn independent_private_skill_is_not_codeg_managed_just_because_its_id_exists_centrally() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let central_root = tmp.path().join("codeg-skills");
+        let private_skill = tmp.path().join("private-skills/demo");
+        fs::create_dir_all(central_root.join("demo")).expect("create central skill");
+        fs::write(central_root.join("demo/SKILL.md"), "central").expect("write central skill");
+        fs::create_dir_all(&private_skill).expect("create private skill");
+        fs::write(private_skill.join("SKILL.md"), "private").expect("write private skill");
+
+        let skill = build_skill_item(
+            "demo".into(),
+            AgentSkillScope::Global,
+            AgentSkillLayout::SkillDirectory,
+            private_skill,
+            true,
+        );
+
+        assert!(!is_codeg_managed_skill_at(&skill, &central_root));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_private_skill_resolving_into_central_root_is_codeg_managed() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let central_root = tmp.path().join("codeg-skills");
+        let central_skill = central_root.join("demo");
+        let private_skill = tmp.path().join("private-skills/demo");
+        fs::create_dir_all(&central_skill).expect("create central skill");
+        fs::write(central_skill.join("SKILL.md"), "central").expect("write central skill");
+        fs::create_dir_all(private_skill.parent().expect("private root"))
+            .expect("create private root");
+        symlink(&central_skill, &private_skill).expect("link managed skill");
+
+        let skill = build_skill_item(
+            "demo".into(),
+            AgentSkillScope::Global,
+            AgentSkillLayout::SkillDirectory,
+            private_skill,
+            true,
+        );
+
+        assert!(is_codeg_managed_skill_at(&skill, &central_root));
+    }
+
+    #[cfg(feature = "tauri-runtime")]
+    #[test]
+    fn tauri_skill_data_dir_error_does_not_fall_back_to_current_directory() {
+        let error = resolve_tauri_skill_data_dir_result(Err::<PathBuf, _>("path unavailable"))
+            .expect_err("missing app data directory must fail closed");
+
+        assert!(error.to_string().contains("path unavailable"));
+    }
+
+    #[test]
+    fn shared_project_skill_is_reported_without_any_filesystem_mutation() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let data_dir = tmp.path().join("codeg-data");
+        let shared = workspace.join(".agents/skills/demo");
+        fs::create_dir_all(&shared).expect("create shared skill");
+        fs::write(shared.join("SKILL.md"), "---\nname: demo\n---\n").expect("write skill");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+
+        let listed = runtime
+            .block_on(acp_list_agent_skills_core(
+                AgentType::Gemini,
+                Some(workspace.to_string_lossy().into_owned()),
+                &data_dir,
+            ))
+            .expect("list shared skill");
+        let item = listed
+            .skills
+            .iter()
+            .find(|item| item.id == "demo" && item.scope == AgentSkillScope::Project)
+            .expect("shared skill listed");
+        assert!(item.enabled);
+        assert!(!item.can_toggle);
+        assert_eq!(item.toggle_reason, Some(AgentSkillToggleReason::SharedRoot));
+
+        let error = runtime
+            .block_on(acp_set_agent_skill_enabled_core(
+                AgentType::Gemini,
+                AgentSkillScope::Project,
+                "demo".into(),
+                Some(workspace.to_string_lossy().into_owned()),
+                false,
+                &data_dir,
+            ))
+            .expect_err("shared root must not be moved");
+        assert!(error.to_string().contains("shared skill root"));
+        assert!(shared.join("SKILL.md").is_file());
+        assert!(!disabled_skill_root(&workspace.join(".agents/skills")).exists());
+        assert!(!data_dir.exists());
+    }
+
+    #[test]
+    fn project_private_skill_uses_a_vault_outside_the_workspace() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let data_dir = tmp.path().join("codeg-data");
+        let skill = workspace.join(".grok/skills/demo");
+        fs::create_dir_all(&skill).expect("create private skill");
+        fs::write(skill.join("SKILL.md"), "---\nname: demo\n---\n").expect("write skill");
+
+        let disabled = tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(acp_set_agent_skill_enabled_core(
+                AgentType::Grok,
+                AgentSkillScope::Project,
+                "demo".into(),
+                Some(workspace.to_string_lossy().into_owned()),
+                false,
+                &data_dir,
+            ))
+            .expect("disable private project skill");
+
+        let disabled_path = PathBuf::from(disabled.path);
+        assert!(disabled_path.starts_with(data_dir.join("skill-vaults/v1")));
+        assert!(!disabled_path.starts_with(&workspace));
+        assert!(disabled_path.join("SKILL.md").is_file());
+        assert!(!skill.exists());
+        assert!(!workspace.join(".grok/.skills.codeg-disabled").exists());
+    }
+
+    #[test]
+    fn private_vault_identity_distinguishes_agent_and_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let first = private_skill_vault(
+            AgentType::ClaudeCode,
+            AgentSkillScope::Global,
+            None,
+            tmp.path(),
+            &tmp.path().join("one/skills"),
+        )
+        .expect("first vault");
+        let second = private_skill_vault(
+            AgentType::ClaudeCode,
+            AgentSkillScope::Global,
+            None,
+            tmp.path(),
+            &tmp.path().join("two/skills"),
+        )
+        .expect("second vault");
+        let other_agent = private_skill_vault(
+            AgentType::Grok,
+            AgentSkillScope::Global,
+            None,
+            tmp.path(),
+            &tmp.path().join("one/skills"),
+        )
+        .expect("other-agent vault");
+        assert_ne!(first, second);
+        assert_ne!(first, other_agent);
+    }
+
+    #[test]
+    fn legacy_disabled_skill_is_visible_but_never_automatically_moved() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let data_dir = tmp.path().join("codeg-data");
+        let root = workspace.join(".grok/skills");
+        let legacy = disabled_skill_root(&root).join("demo");
+        fs::create_dir_all(&legacy).expect("create legacy skill");
+        fs::write(legacy.join("SKILL.md"), "---\nname: demo\n---\n").expect("write skill");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+
+        let listed = runtime
+            .block_on(acp_list_agent_skills_core(
+                AgentType::Grok,
+                Some(workspace.to_string_lossy().into_owned()),
+                &data_dir,
+            ))
+            .expect("list legacy skill");
+        let item = listed
+            .skills
+            .iter()
+            .find(|item| item.id == "demo")
+            .expect("legacy skill listed");
+        assert!(!item.enabled);
+        assert!(!item.can_toggle);
+        assert_eq!(
+            item.toggle_reason,
+            Some(AgentSkillToggleReason::LegacyState)
+        );
+
+        runtime
+            .block_on(acp_set_agent_skill_enabled_core(
+                AgentType::Grok,
+                AgentSkillScope::Project,
+                "demo".into(),
+                Some(workspace.to_string_lossy().into_owned()),
+                true,
+                &data_dir,
+            ))
+            .expect_err("legacy state requires manual recovery");
+        assert!(legacy.join("SKILL.md").is_file());
+        assert!(!root.join("demo").exists());
+        assert!(!data_dir.exists());
+    }
+
     #[test]
     fn kimi_code_skill_storage_spec_targets_kimi_home() {
         // `resolve_kimi_code_home_dir()` reads the process-wide `$HOME` (when
@@ -15325,6 +17881,2032 @@ wire_api = "chat"
                 .any(|l| l.path == repo.join(".dsh/skills").to_string_lossy()),
             "the listed project location must be the git root: {:?}",
             listed.locations
+        );
+    }
+
+    #[test]
+    fn skill_enabled_private_command_unisolatable_shared_roots_are_rejected() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join(".gemini/skills");
+        fs::create_dir_all(root.join("demo")).unwrap();
+        fs::write(root.join("demo/SKILL.md"), "shared").unwrap();
+        let error = runtime
+            .block_on(acp_set_agent_skill_enabled(
+                AgentType::Gemini,
+                AgentSkillScope::Project,
+                "demo".to_string(),
+                Some(tmp.path().to_string_lossy().into_owned()),
+                false,
+            ))
+            .unwrap_err();
+        assert!(error.to_string().contains("shared skill root"));
+        assert!(root.join("demo/SKILL.md").is_file());
+        assert!(!disabled_skill_root(&root).exists());
+    }
+
+    #[test]
+    fn skill_enabled_private_concurrent_commands_return_requested_state() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            let root = tmp.path().join(".codex/skills");
+            fs::create_dir_all(root.join("demo")).unwrap();
+            fs::write(root.join("demo/SKILL.md"), "body").unwrap();
+            let workspace = tmp.path().to_string_lossy().into_owned();
+            std::thread::scope(|threads| {
+                let handles = (0..8)
+                    .map(|_| {
+                        let workspace = &workspace;
+                        threads.spawn(move || {
+                            let runtime = tokio::runtime::Runtime::new().unwrap();
+                            for enabled in [false, false, true, true] {
+                                let item = runtime
+                                    .block_on(acp_set_agent_skill_enabled(
+                                        AgentType::Codex,
+                                        AgentSkillScope::Project,
+                                        "demo".to_string(),
+                                        Some(workspace.clone()),
+                                        enabled,
+                                    ))
+                                    .unwrap();
+                                assert_eq!(item.enabled, enabled);
+                            }
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                for handle in handles {
+                    handle.join().unwrap();
+                }
+            });
+            assert_eq!(
+                fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+                "body"
+            );
+            assert!(!disabled_skill_root(&root).join("demo").exists());
+        });
+    }
+
+    #[test]
+    fn codex_native_toggle_disables_duplicate_active_roots_without_moving_them() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        let workspace = tmp.path().join("workspace");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            fs::create_dir_all(&codex_home).unwrap();
+            fs::write(
+                codex_home.join("config.toml"),
+                "# keep this comment\nmodel = \"test-model\"\n\n[[skills.config]]\npath = \"/unrelated/SKILL.md\"\nenabled = false\n",
+            )
+            .unwrap();
+            let roots = [
+                workspace.join(".codex/skills"),
+                workspace.join(".agents/skills"),
+            ];
+            for root in &roots {
+                fs::create_dir_all(root.join("demo")).unwrap();
+                fs::write(root.join("demo/SKILL.md"), "original").unwrap();
+            }
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let workspace_path = Some(workspace.to_string_lossy().into_owned());
+            let before = runtime
+                .block_on(acp_list_agent_skills(
+                    AgentType::Codex,
+                    workspace_path.clone(),
+                ))
+                .unwrap()
+                .skills
+                .into_iter()
+                .find(|skill| skill.scope == AgentSkillScope::Project && skill.id == "demo")
+                .unwrap();
+            assert!(before.can_toggle, "Codex can disable every visible path");
+
+            let disabled = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    workspace_path.clone(),
+                    false,
+                ))
+                .unwrap();
+            assert!(!disabled.enabled);
+            assert_eq!(
+                disabled.path, before.path,
+                "the displayed path stays stable"
+            );
+
+            for root in &roots {
+                assert_eq!(
+                    fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+                    "original"
+                );
+                assert!(!disabled_skill_root(root).exists());
+            }
+
+            let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+            assert!(config.contains("# keep this comment\nmodel = \"test-model\""));
+            let parsed = config.parse::<toml::Value>().unwrap();
+            let configured = parsed["skills"]["config"].as_array().unwrap();
+            assert_eq!(configured.len(), 3);
+            for root in &roots {
+                let expected_path = fs::canonicalize(root.join("demo/SKILL.md")).unwrap();
+                let expected = expected_path.to_string_lossy();
+                assert!(configured.iter().any(|entry| {
+                    entry.get("path").and_then(toml::Value::as_str) == Some(expected.as_ref())
+                        && entry.get("enabled").and_then(toml::Value::as_bool) == Some(false)
+                }));
+            }
+
+            let listed = runtime
+                .block_on(acp_list_agent_skills(AgentType::Codex, workspace_path))
+                .unwrap()
+                .skills
+                .into_iter()
+                .find(|skill| skill.scope == AgentSkillScope::Project && skill.id == "demo")
+                .unwrap();
+            assert!(!listed.enabled);
+            assert!(listed.can_toggle);
+            assert_eq!(listed.path, before.path);
+
+            let enabled = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    Some(workspace.to_string_lossy().into_owned()),
+                    true,
+                ))
+                .unwrap();
+            assert!(enabled.enabled);
+            assert_eq!(enabled.path, before.path);
+            let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+            let parsed = config.parse::<toml::Value>().unwrap();
+            for root in &roots {
+                let expected_path = fs::canonicalize(root.join("demo/SKILL.md")).unwrap();
+                let expected = expected_path.to_string_lossy();
+                assert!(parsed["skills"]["config"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| {
+                        entry.get("path").and_then(toml::Value::as_str) == Some(expected.as_ref())
+                            && entry.get("enabled").and_then(toml::Value::as_bool) == Some(true)
+                    }));
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_native_toggle_keeps_shared_vault_links_in_place() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        let workspace = tmp.path().join("workspace");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            let canonical = workspace
+                .join(".agents/.skills.codeg-disabled")
+                .join("agent-reach");
+            fs::create_dir_all(&canonical).unwrap();
+            fs::write(canonical.join("SKILL.md"), "shared skill").unwrap();
+
+            let links = [
+                workspace.join(".codex/skills/agent-reach"),
+                workspace.join(".gemini/skills/agent-reach"),
+                workspace.join(".cursor/skills/agent-reach"),
+            ];
+            for link in &links {
+                fs::create_dir_all(link.parent().unwrap()).unwrap();
+                std::os::unix::fs::symlink(&canonical, link).unwrap();
+            }
+
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let workspace_path = Some(workspace.to_string_lossy().into_owned());
+            let before = runtime
+                .block_on(acp_list_agent_skills(
+                    AgentType::Codex,
+                    workspace_path.clone(),
+                ))
+                .unwrap()
+                .skills
+                .into_iter()
+                .find(|skill| skill.scope == AgentSkillScope::Project && skill.id == "agent-reach")
+                .unwrap();
+            assert!(before.enabled);
+            assert!(before.can_toggle);
+            assert_eq!(Path::new(&before.path), links[0]);
+
+            let disabled = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "agent-reach".into(),
+                    workspace_path.clone(),
+                    false,
+                ))
+                .unwrap();
+            assert!(!disabled.enabled);
+            assert_eq!(disabled.path, before.path);
+            assert!(canonical.join("SKILL.md").is_file());
+            for link in &links {
+                assert!(fs::symlink_metadata(link).unwrap().file_type().is_symlink());
+                assert_eq!(fs::read_link(link).unwrap(), canonical);
+            }
+
+            let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+            let parsed = config.parse::<toml::Value>().unwrap();
+            let configured = parsed["skills"]["config"].as_array().unwrap();
+            assert_eq!(configured.len(), 1);
+            let canonical_skill_md = fs::canonicalize(canonical.join("SKILL.md")).unwrap();
+            assert_eq!(
+                configured[0].get("path").and_then(toml::Value::as_str),
+                canonical_skill_md.to_str()
+            );
+            assert_eq!(
+                configured[0].get("enabled").and_then(toml::Value::as_bool),
+                Some(false)
+            );
+
+            let listed = runtime
+                .block_on(acp_list_agent_skills(
+                    AgentType::Codex,
+                    workspace_path.clone(),
+                ))
+                .unwrap()
+                .skills
+                .into_iter()
+                .find(|skill| skill.scope == AgentSkillScope::Project && skill.id == "agent-reach")
+                .unwrap();
+            assert!(!listed.enabled);
+            assert!(listed.can_toggle);
+            assert_eq!(listed.path, before.path);
+
+            let enabled = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "agent-reach".into(),
+                    workspace_path,
+                    true,
+                ))
+                .unwrap();
+            assert!(enabled.enabled);
+            assert_eq!(enabled.path, before.path);
+            for link in &links {
+                assert!(fs::symlink_metadata(link).unwrap().file_type().is_symlink());
+                assert_eq!(fs::read_link(link).unwrap(), canonical);
+            }
+        });
+    }
+
+    #[test]
+    fn codex_native_toggle_honors_name_config_entries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        let workspace = tmp.path().join("workspace");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            fs::create_dir_all(&codex_home).unwrap();
+            fs::write(
+                codex_home.join("config.toml"),
+                "[[skills.config]]\nname = \"demo\"\nenabled = false\n",
+            )
+            .unwrap();
+            let skill = workspace.join(".codex/skills/demo");
+            fs::create_dir_all(&skill).unwrap();
+            fs::write(
+                skill.join("SKILL.md"),
+                "---\nname: demo\ndescription: Demo\n---\n",
+            )
+            .unwrap();
+
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let workspace_path = Some(workspace.to_string_lossy().into_owned());
+            let listed = runtime
+                .block_on(acp_list_agent_skills(
+                    AgentType::Codex,
+                    workspace_path.clone(),
+                ))
+                .unwrap()
+                .skills
+                .into_iter()
+                .find(|skill| skill.scope == AgentSkillScope::Project && skill.id == "demo")
+                .unwrap();
+            assert!(!listed.enabled);
+            assert!(listed.can_toggle);
+
+            let enabled = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    workspace_path,
+                    true,
+                ))
+                .unwrap();
+            assert!(enabled.enabled);
+
+            let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+            let parsed = config.parse::<toml::Value>().unwrap();
+            let configured = parsed["skills"]["config"].as_array().unwrap();
+            assert_eq!(configured.len(), 2);
+            assert_eq!(
+                configured[0].get("name").and_then(toml::Value::as_str),
+                Some("demo")
+            );
+            assert_eq!(
+                configured[0].get("enabled").and_then(toml::Value::as_bool),
+                Some(false),
+                "a path-scoped toggle must not rewrite the broader name selector"
+            );
+            let expected_path = fs::canonicalize(skill.join("SKILL.md")).unwrap();
+            assert!(configured.iter().any(|entry| {
+                entry.get("path").and_then(toml::Value::as_str)
+                    == expected_path.to_str()
+                    && entry.get("enabled").and_then(toml::Value::as_bool) == Some(true)
+            }));
+        });
+    }
+
+    #[test]
+    fn codex_skill_config_last_matching_selector_wins() {
+        let path_then_name = parse_codex_skill_config(
+            "[[skills.config]]\npath = \"/tmp/demo/SKILL.md\"\nenabled = true\n\
+             \n[[skills.config]]\nname = \"demo\"\nenabled = false\n",
+            Path::new("/tmp/codex-home"),
+        )
+        .unwrap();
+        let name_then_path = parse_codex_skill_config(
+            "[[skills.config]]\nname = \"demo\"\nenabled = false\n\
+             \n[[skills.config]]\npath = \"/tmp/demo/SKILL.md\"\nenabled = true\n",
+            Path::new("/tmp/codex-home"),
+        )
+        .unwrap();
+
+        assert!(!path_then_name.skill_enabled(Path::new("/tmp/demo/SKILL.md"), "demo"));
+        assert!(name_then_path.skill_enabled(Path::new("/tmp/demo/SKILL.md"), "demo"));
+    }
+
+    #[test]
+    fn codex_skill_config_appends_path_override_after_later_name_selector() {
+        let path = PathBuf::from("/tmp/demo/SKILL.md");
+        let updated = apply_codex_skill_enabled_config(
+            "[[skills.config]]\npath = \"/tmp/demo/SKILL.md\"\nenabled = false\n\
+             \n[[skills.config]]\nname = \"demo\"\nenabled = false\n",
+            Path::new("/tmp/codex-home"),
+            "demo",
+            std::slice::from_ref(&path),
+            true,
+        )
+        .unwrap();
+        let parsed = updated.parse::<toml::Value>().unwrap();
+        let entries = parsed["skills"]["config"].as_array().unwrap();
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(
+            entries
+                .last()
+                .unwrap()
+                .get("path")
+                .and_then(toml::Value::as_str),
+            path.to_str()
+        );
+        assert_eq!(
+            entries
+                .last()
+                .unwrap()
+                .get("enabled")
+                .and_then(toml::Value::as_bool),
+            Some(true)
+        );
+        assert!(
+            parse_codex_skill_config(&updated, Path::new("/tmp/codex-home"))
+                .unwrap()
+                .skill_enabled(&path, "demo")
+        );
+
+        let updated_again = apply_codex_skill_enabled_config(
+            &updated,
+            Path::new("/tmp/codex-home"),
+            "demo",
+            std::slice::from_ref(&path),
+            false,
+        )
+        .unwrap();
+        let parsed = updated_again.parse::<toml::Value>().unwrap();
+        let entries = parsed["skills"]["config"].as_array().unwrap();
+        assert_eq!(entries.len(), 3, "repeated toggles reuse the path override");
+        assert!(
+            !parse_codex_skill_config(&updated_again, Path::new("/tmp/codex-home"))
+                .unwrap()
+                .skill_enabled(&path, "demo")
+        );
+    }
+
+    #[test]
+    fn codex_skill_config_appends_inline_path_override_after_later_name_selector() {
+        let path = PathBuf::from("/tmp/demo/SKILL.md");
+        let updated = apply_codex_skill_enabled_config(
+            "[skills]\nconfig = [{ path = \"/tmp/demo/SKILL.md\", enabled = false }, { name = \"demo\", enabled = false }]\n",
+            Path::new("/tmp/codex-home"),
+            "demo",
+            std::slice::from_ref(&path),
+            true,
+        )
+        .unwrap();
+        let parsed = updated.parse::<toml::Value>().unwrap();
+        let entries = parsed["skills"]["config"].as_array().unwrap();
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(
+            entries
+                .last()
+                .unwrap()
+                .get("path")
+                .and_then(toml::Value::as_str),
+            path.to_str()
+        );
+        assert_eq!(
+            entries
+                .last()
+                .unwrap()
+                .get("enabled")
+                .and_then(toml::Value::as_bool),
+            Some(true)
+        );
+        assert!(
+            parse_codex_skill_config(&updated, Path::new("/tmp/codex-home"))
+                .unwrap()
+                .skill_enabled(&path, "demo")
+        );
+
+        let updated_again = apply_codex_skill_enabled_config(
+            &updated,
+            Path::new("/tmp/codex-home"),
+            "demo",
+            std::slice::from_ref(&path),
+            false,
+        )
+        .unwrap();
+        let parsed = updated_again.parse::<toml::Value>().unwrap();
+        let entries = parsed["skills"]["config"].as_array().unwrap();
+        assert_eq!(entries.len(), 3, "repeated toggles reuse the path override");
+        assert!(
+            !parse_codex_skill_config(&updated_again, Path::new("/tmp/codex-home"))
+                .unwrap()
+                .skill_enabled(&path, "demo")
+        );
+    }
+
+    #[test]
+    fn codex_skill_config_selectorless_entry_matches_no_skill() {
+        let config = parse_codex_skill_config(
+            "[[skills.config]]\nenabled = false\n",
+            Path::new("/tmp/codex-home"),
+        )
+        .expect("Codex accepts selectorless entries");
+
+        assert!(config.skill_enabled(Path::new("/tmp/demo/SKILL.md"), "demo"));
+    }
+
+    #[test]
+    fn codex_skill_config_mixed_selector_matches_no_skill_and_is_preserved() {
+        let path = PathBuf::from("/tmp/demo/SKILL.md");
+        let base = "# keep mixed selector\n[[skills.config]]\npath = \"/tmp/demo/SKILL.md\"\nname = \"demo\"\nenabled = false\n";
+        let config = parse_codex_skill_config(base, Path::new("/tmp/codex-home"))
+            .expect("mixed selector remains syntactically valid TOML");
+        assert!(
+            config.skill_enabled(&path, "demo"),
+            "Codex only applies selectors with exactly one of path or name"
+        );
+
+        let updated = apply_codex_skill_enabled_config(
+            base,
+            Path::new("/tmp/codex-home"),
+            "demo",
+            std::slice::from_ref(&path),
+            false,
+        )
+        .expect("mixed selector must not prevent a precise path override");
+        let parsed = updated
+            .parse::<toml::Value>()
+            .expect("updated TOML is valid");
+        let entries = parsed["skills"]["config"].as_array().expect("config array");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0].get("name").and_then(toml::Value::as_str),
+            Some("demo")
+        );
+        assert_eq!(
+            entries[0].get("path").and_then(toml::Value::as_str),
+            path.to_str()
+        );
+        assert_eq!(
+            entries[0].get("enabled").and_then(toml::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            entries[1].get("path").and_then(toml::Value::as_str),
+            path.to_str()
+        );
+        assert!(entries[1].get("name").is_none());
+        assert_eq!(
+            entries[1].get("enabled").and_then(toml::Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn codex_skill_config_updates_root_inline_skills_table() {
+        let path = PathBuf::from("/tmp/demo/SKILL.md");
+        let updated = apply_codex_skill_enabled_config(
+            "# root inline table\nskills = { config = [{ name = \"demo\", enabled = true }], keep = \"value\" }\n",
+            Path::new("/tmp/codex-home"),
+            "demo",
+            std::slice::from_ref(&path),
+            false,
+        )
+        .expect("root inline skills table remains writable");
+
+        assert!(updated.contains("skills = {"));
+        let parsed = updated
+            .parse::<toml::Value>()
+            .expect("updated TOML is valid");
+        assert_eq!(
+            parsed["skills"].get("keep").and_then(toml::Value::as_str),
+            Some("value")
+        );
+        let entries = parsed["skills"]["config"].as_array().expect("config array");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0].get("name").and_then(toml::Value::as_str),
+            Some("demo")
+        );
+        assert_eq!(
+            entries[0].get("enabled").and_then(toml::Value::as_bool),
+            Some(true),
+            "path-only write must not rewrite a name selector"
+        );
+        assert_eq!(
+            entries[1].get("path").and_then(toml::Value::as_str),
+            path.to_str()
+        );
+        assert!(entries[1].get("name").is_none());
+        assert_eq!(
+            entries[1].get("enabled").and_then(toml::Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn codex_skill_config_uses_frontmatter_name_for_name_selector() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        let workspace = tmp.path().join("workspace");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            fs::create_dir_all(&codex_home).expect("create Codex home");
+            fs::write(
+                codex_home.join("config.toml"),
+                "[[skills.config]]\nname = \"Visible Demo\"\nenabled = false\n",
+            )
+            .expect("write config");
+            let skill = workspace.join(".codex/skills/file-id");
+            fs::create_dir_all(&skill).expect("create skill");
+            fs::write(
+                skill.join("SKILL.md"),
+                "---\nname: \"Visible Demo\"\ndescription: Demo\n---\n",
+            )
+            .expect("write skill");
+
+            let listed = tokio::runtime::Runtime::new()
+                .expect("runtime")
+                .block_on(acp_list_agent_skills(
+                    AgentType::Codex,
+                    Some(workspace.to_string_lossy().into_owned()),
+                ))
+                .expect("list skills");
+            let item = listed
+                .skills
+                .iter()
+                .find(|item| item.id == "file-id")
+                .expect("skill listed");
+            assert_eq!(item.name, "Visible Demo");
+            assert!(!item.enabled);
+        });
+    }
+
+    #[test]
+    fn codex_lists_only_the_newest_enabled_plugin_skills_with_namespaced_frontmatter_names() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            fs::create_dir_all(&codex_home).expect("create Codex home");
+            fs::write(
+                codex_home.join("config.toml"),
+                "[plugins.\"enabled-plugin@demo-market\"]\nenabled = true\n\n[plugins.\"disabled-plugin@demo-market\"]\nenabled = false\n",
+            )
+            .expect("write config");
+
+            for (plugin, version, frontmatter_name) in [
+                ("enabled-plugin", "1.0.0", "from-old-version"),
+                ("enabled-plugin", "2.0.0", "from-newest-version"),
+                ("disabled-plugin", "3.0.0", "must-stay-hidden"),
+            ] {
+                let plugin_root = codex_home
+                    .join("plugins/cache/demo-market")
+                    .join(plugin)
+                    .join(version);
+                fs::create_dir_all(plugin_root.join(".codex-plugin"))
+                    .expect("create plugin manifest directory");
+                fs::create_dir_all(plugin_root.join("plugin-skills/namespaced"))
+                    .expect("create plugin skills directory");
+                fs::write(
+                    plugin_root.join(".codex-plugin/plugin.json"),
+                    format!(
+                        "{{\"name\":\"{plugin}\",\"version\":\"{version}\",\"skills\":\"plugin-skills\"}}"
+                    ),
+                )
+                .expect("write plugin manifest");
+                fs::write(
+                    plugin_root.join("plugin-skills/namespaced/SKILL.md"),
+                    format!("---\nname: {frontmatter_name}\ndescription: plugin skill\n---\n"),
+                )
+                .expect("write plugin skill");
+            }
+
+            let listed = tokio::runtime::Runtime::new()
+                .expect("runtime")
+                .block_on(acp_list_agent_skills(AgentType::Codex, None))
+                .expect("list skills");
+            let skill = listed
+                .skills
+                .iter()
+                .find(|item| item.id == "enabled-plugin:from-newest-version")
+                .expect("newest enabled plugin skill is listed");
+            assert_eq!(skill.name, "enabled-plugin:from-newest-version");
+            assert_eq!(skill.scope, AgentSkillScope::Global);
+            assert!(skill.enabled);
+            assert!(skill.read_only);
+            assert!(skill.can_toggle);
+            assert!(Path::new(&skill.path).ends_with(
+                Path::new("enabled-plugin")
+                    .join("2.0.0")
+                    .join("plugin-skills")
+                    .join("namespaced"),
+            ));
+            assert!(!listed
+                .skills
+                .iter()
+                .any(|item| item.id.contains("from-old-version")
+                    || item.id.contains("must-stay-hidden")));
+        });
+    }
+
+    #[test]
+    fn codex_plugin_skills_are_readable_toggleable_but_not_mutable_and_unknown_namespaced_ids_are_rejected(
+    ) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            let plugin_root = codex_home.join("plugins/cache/demo-market/protected-plugin/1.0.0");
+            fs::create_dir_all(plugin_root.join(".codex-plugin"))
+                .expect("create plugin manifest directory");
+            fs::create_dir_all(plugin_root.join("plugin-skills/protected"))
+                .expect("create plugin skills directory");
+            fs::write(
+                codex_home.join("config.toml"),
+                "# preserve this comment\nmodel = \"keep-me\"\n\n[plugins.\"protected-plugin@demo-market\"]\nenabled = true\n",
+            )
+            .expect("write config");
+            fs::write(
+                plugin_root.join(".codex-plugin/plugin.json"),
+                "{\"name\":\"protected-plugin\",\"version\":\"1.0.0\",\"skills\":\"plugin-skills\"}",
+            )
+            .expect("write plugin manifest");
+            let content_path = plugin_root.join("plugin-skills/protected/SKILL.md");
+            fs::write(
+                &content_path,
+                "---\nname: protected-skill\ndescription: protected plugin skill\n---\nbody\n",
+            )
+            .expect("write plugin skill");
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            let plugin_id = "protected-plugin:protected-skill".to_string();
+
+            let read = runtime
+                .block_on(acp_read_agent_skill(
+                    AgentType::Codex,
+                    AgentSkillScope::Global,
+                    plugin_id.clone(),
+                    None,
+                ))
+                .expect("plugin skill remains readable");
+            assert_eq!(read.content, fs::read_to_string(&content_path).unwrap());
+            assert!(read.skill.read_only);
+
+            let disabled = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Global,
+                    plugin_id.clone(),
+                    None,
+                    false,
+                ))
+                .expect("plugin skill toggle uses native configuration");
+            assert!(!disabled.enabled);
+            assert!(disabled.read_only);
+            assert!(content_path.is_file());
+            let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+            assert!(config.contains("# preserve this comment"));
+            assert!(config.contains("model = \"keep-me\""));
+            let parsed = config.parse::<toml::Value>().expect("valid config");
+            let rules = parsed["skills"]["config"].as_array().expect("skill rules");
+            assert_eq!(rules.len(), 1);
+            assert!(rules[0].get("name").is_none());
+            assert_eq!(
+                rules[0].get("path").and_then(toml::Value::as_str),
+                content_path.canonicalize().unwrap().to_str()
+            );
+            assert_eq!(
+                rules[0].get("enabled").and_then(toml::Value::as_bool),
+                Some(false)
+            );
+
+            let save = runtime.block_on(acp_save_agent_skill(
+                AgentType::Codex,
+                AgentSkillScope::Global,
+                plugin_id.clone(),
+                "replacement".into(),
+                None,
+                None,
+            ));
+            assert!(save.is_err(), "plugin skills cannot be saved: {save:?}");
+            assert!(fs::read_to_string(&content_path).unwrap().contains("body"));
+            let delete = runtime.block_on(acp_delete_agent_skill(
+                AgentType::Codex,
+                AgentSkillScope::Global,
+                plugin_id,
+                None,
+            ));
+            assert!(
+                delete.is_err(),
+                "plugin skills cannot be deleted: {delete:?}"
+            );
+            assert!(content_path.is_file());
+
+            let unknown_id = "unknown-plugin:unknown-skill".to_string();
+            assert!(runtime
+                .block_on(acp_read_agent_skill(
+                    AgentType::Codex,
+                    AgentSkillScope::Global,
+                    unknown_id.clone(),
+                    None,
+                ))
+                .is_err());
+            assert!(runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Global,
+                    unknown_id.clone(),
+                    None,
+                    false,
+                ))
+                .is_err());
+            assert!(runtime
+                .block_on(acp_delete_agent_skill(
+                    AgentType::Codex,
+                    AgentSkillScope::Global,
+                    unknown_id.clone(),
+                    None,
+                ))
+                .is_err());
+            assert!(runtime
+                .block_on(acp_save_agent_skill(
+                    AgentType::Codex,
+                    AgentSkillScope::Global,
+                    unknown_id,
+                    "must not be written".into(),
+                    None,
+                    None,
+                ))
+                .is_err());
+            assert!(!codex_home
+                .join("skills")
+                .join("unknown-plugin:unknown-skill.md")
+                .exists());
+        });
+    }
+
+    #[test]
+    fn codex_bundled_config_disabled_overlays_system_skill_state() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        temp_env::with_var("CODEX_HOME", Some(tmp.path()), || {
+            fs::write(
+                tmp.path().join("config.toml"),
+                "[skills.bundled]\nenabled = false\n",
+            )
+            .expect("write bundled setting");
+            let system_skill = tmp.path().join("skills/.system/bundled-demo");
+            fs::create_dir_all(&system_skill).expect("create system skill");
+            fs::write(system_skill.join("SKILL.md"), "system\n").expect("write system skill");
+
+            let listed = tokio::runtime::Runtime::new()
+                .expect("runtime")
+                .block_on(acp_list_agent_skills(AgentType::Codex, None))
+                .expect("list skills");
+            let item = listed
+                .skills
+                .iter()
+                .find(|item| item.id == "bundled-demo")
+                .expect("system skill listed");
+            assert!(!item.enabled);
+            assert!(!item.can_toggle);
+            assert_eq!(
+                item.toggle_reason,
+                Some(AgentSkillToggleReason::BundledDisabled)
+            );
+        });
+    }
+
+    #[test]
+    fn codex_skill_config_requires_enabled_field() {
+        let error = parse_codex_skill_config(
+            "[[skills.config]]\nname = \"demo\"\n",
+            Path::new("/tmp/codex-home"),
+        )
+        .expect_err("Codex rejects entries without enabled");
+
+        assert!(error.to_string().contains("enabled"));
+    }
+
+    #[test]
+    fn codex_native_toggle_updates_inline_array_config() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        let workspace = tmp.path().join("workspace");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            let skill = workspace.join(".codex/skills/demo");
+            fs::create_dir_all(&skill).unwrap();
+            fs::write(skill.join("SKILL.md"), "inline config").unwrap();
+            fs::create_dir_all(&codex_home).unwrap();
+            let content_path = fs::canonicalize(skill.join("SKILL.md")).unwrap();
+            let encoded_path =
+                toml_edit::Value::from(content_path.to_string_lossy().as_ref()).to_string();
+            fs::write(
+                codex_home.join("config.toml"),
+                format!(
+                    "# inline form is valid Codex TOML\n[skills]\nconfig = [{{ path = {encoded_path}, enabled = true }}]\n"
+                ),
+            )
+            .unwrap();
+
+            let disabled = tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    Some(workspace.to_string_lossy().into_owned()),
+                    false,
+                ))
+                .expect("inline-array config should remain toggleable");
+            assert!(!disabled.enabled);
+
+            let written = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+            assert!(written.contains("# inline form is valid Codex TOML"));
+            assert!(written.contains("config = ["));
+            let parsed = written.parse::<toml::Value>().unwrap();
+            let entries = parsed["skills"]["config"].as_array().unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(
+                entries[0].get("path").and_then(toml::Value::as_str),
+                content_path.to_str()
+            );
+            assert_eq!(
+                entries[0].get("enabled").and_then(toml::Value::as_bool),
+                Some(false)
+            );
+            assert!(skill.join("SKILL.md").is_file());
+        });
+    }
+
+    #[test]
+    fn codex_config_concurrent_rmw_writes_preserve_both_changes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            fs::create_dir_all(&codex_home).unwrap();
+            let config_path = codex_home.join("config.toml");
+            let padding = "# keep this unrelated config padding\n".repeat(50_000);
+
+            for attempt in 0..4 {
+                fs::write(
+                    &config_path,
+                    format!(
+                        "model = \"old\"\nmodel_catalog_json = \"{}\"\n{padding}",
+                        crate::acp::codex_model_catalog::CATALOG_REL,
+                    ),
+                )
+                .unwrap();
+
+                let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+                std::thread::scope(|threads| {
+                    let first = barrier.clone();
+                    let set_model = threads.spawn(move || {
+                        first.wait();
+                        apply_codex_root_model_action(&CodexModelAction::Set("new".into()))
+                    });
+                    let second = barrier.clone();
+                    let drop_catalog = threads.spawn(move || {
+                        second.wait();
+                        drop_codex_catalog_reference()
+                    });
+                    barrier.wait();
+                    set_model.join().unwrap().unwrap();
+                    drop_catalog.join().unwrap().unwrap();
+                });
+
+                let written = fs::read_to_string(&config_path).unwrap();
+                let parsed = written.parse::<toml::Value>().unwrap();
+                assert_eq!(
+                    parsed.get("model").and_then(toml::Value::as_str),
+                    Some("new"),
+                    "model update was lost on attempt {attempt}",
+                );
+                assert!(
+                    parsed.get("model_catalog_json").is_none(),
+                    "catalog cleanup was lost on attempt {attempt}",
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn codex_native_toggle_disables_duplicate_active_layouts_without_moving_them() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            let root = tmp.path().join("workspace/.codex/skills");
+            fs::create_dir_all(root.join("demo")).unwrap();
+            fs::write(root.join("demo/SKILL.md"), "directory").unwrap();
+            fs::write(root.join("demo.md"), "flat").unwrap();
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let disabled = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    Some(tmp.path().join("workspace").to_string_lossy().into_owned()),
+                    false,
+                ))
+                .unwrap();
+            assert!(!disabled.enabled);
+            assert_eq!(
+                fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+                "directory"
+            );
+            assert_eq!(fs::read_to_string(root.join("demo.md")).unwrap(), "flat");
+            assert!(!disabled_skill_root(&root).exists());
+            let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+            let parsed = config.parse::<toml::Value>().unwrap();
+            assert_eq!(parsed["skills"]["config"].as_array().unwrap().len(), 2);
+        });
+    }
+
+    #[test]
+    fn skill_enabled_private_save_new_then_edit_disabled_and_reenable() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            let workspace = Some(tmp.path().to_string_lossy().into_owned());
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let saved = runtime
+                .block_on(acp_save_agent_skill(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    "original".into(),
+                    workspace.clone(),
+                    None,
+                ))
+                .unwrap();
+            assert!(saved.enabled);
+            assert_eq!(saved.layout, AgentSkillLayout::MarkdownFile);
+            runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    workspace.clone(),
+                    false,
+                ))
+                .unwrap();
+            let saved = runtime
+                .block_on(acp_save_agent_skill(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    "updated".into(),
+                    workspace.clone(),
+                    Some(AgentSkillLayout::SkillDirectory),
+                ))
+                .unwrap();
+            assert!(!saved.enabled);
+            assert_eq!(saved.layout, AgentSkillLayout::MarkdownFile);
+            let enabled = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    workspace,
+                    true,
+                ))
+                .unwrap();
+            assert!(enabled.enabled);
+            assert_eq!(fs::read_to_string(enabled.path).unwrap(), "updated");
+        });
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn skill_enabled_private_safety_vault_alias_to_native_root_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let data_dir = tmp.path().join("codeg-data");
+        let root = workspace.join(".grok/skills");
+        let other = workspace.join(".agents/skills");
+        fs::create_dir_all(root.join("demo")).unwrap();
+        fs::write(root.join("demo/SKILL.md"), "original").unwrap();
+        fs::create_dir_all(&other).unwrap();
+        let workspace_path = workspace.to_string_lossy().into_owned();
+        let vault = private_skill_vault(
+            AgentType::Grok,
+            AgentSkillScope::Project,
+            Some(&workspace_path),
+            &data_dir,
+            &root,
+        )
+        .unwrap();
+        fs::create_dir_all(vault.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&other, &vault).unwrap();
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let listed = runtime
+            .block_on(acp_list_agent_skills_core(
+                AgentType::Grok,
+                Some(workspace_path.clone()),
+                &data_dir,
+            ))
+            .unwrap();
+        let skill = listed
+            .skills
+            .iter()
+            .find(|skill| skill.id == "demo")
+            .unwrap();
+        assert_eq!(
+            skill.toggle_reason,
+            Some(AgentSkillToggleReason::StorageConflict)
+        );
+
+        let result = runtime.block_on(acp_set_agent_skill_enabled_core(
+            AgentType::Grok,
+            AgentSkillScope::Project,
+            "demo".into(),
+            Some(workspace_path),
+            false,
+            &data_dir,
+        ));
+        assert!(
+            result.is_err(),
+            "vault must not alias any native scan root: {result:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+            "original"
+        );
+        assert!(!other.join("demo").exists());
+        assert_eq!(fs::read_link(&vault).unwrap(), other);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn private_skill_incoming_directory_alias_is_unsafe_and_never_moved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let data_dir = tmp.path().join("codeg-data");
+        let owner_root = workspace.join(".grok/skills");
+        let peer_root = workspace.join(".cursor/skills");
+        fs::create_dir_all(owner_root.join("demo")).unwrap();
+        fs::write(owner_root.join("demo/SKILL.md"), "private").unwrap();
+        fs::create_dir_all(&peer_root).unwrap();
+        std::os::unix::fs::symlink(owner_root.join("demo"), peer_root.join("alias")).unwrap();
+        let workspace_path = workspace.to_string_lossy().into_owned();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        let listed = runtime
+            .block_on(acp_list_agent_skills_core(
+                AgentType::Grok,
+                Some(workspace_path.clone()),
+                &data_dir,
+            ))
+            .unwrap();
+        let result = runtime.block_on(acp_set_agent_skill_enabled_core(
+            AgentType::Grok,
+            AgentSkillScope::Project,
+            "demo".into(),
+            Some(workspace_path.clone()),
+            false,
+            &data_dir,
+        ));
+        let skill = listed
+            .skills
+            .iter()
+            .find(|skill| skill.id == "demo")
+            .unwrap();
+
+        assert!(!skill.can_toggle);
+        assert_eq!(
+            skill.toggle_reason,
+            Some(AgentSkillToggleReason::UnsafeLink)
+        );
+        assert!(result.is_err(), "incoming alias must block the move");
+        assert_eq!(
+            fs::read_to_string(owner_root.join("demo/SKILL.md")).unwrap(),
+            "private"
+        );
+        assert_eq!(
+            fs::read_to_string(peer_root.join("alias/SKILL.md")).unwrap(),
+            "private"
+        );
+        let vault = private_skill_vault(
+            AgentType::Grok,
+            AgentSkillScope::Project,
+            Some(&workspace_path),
+            &data_dir,
+            &owner_root,
+        )
+        .unwrap();
+        assert!(!vault.join("demo").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn private_skill_indirect_incoming_directory_alias_is_unsafe_and_never_moved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let data_dir = tmp.path().join("codeg-data");
+        let owner_root = workspace.join(".grok/skills");
+        let peer_root = workspace.join(".cursor/skills");
+        let external_alias = workspace.join("external-alias");
+        fs::create_dir_all(owner_root.join("demo")).unwrap();
+        fs::write(owner_root.join("demo/SKILL.md"), "private").unwrap();
+        fs::create_dir_all(&peer_root).unwrap();
+        std::os::unix::fs::symlink(owner_root.join("demo"), &external_alias).unwrap();
+        std::os::unix::fs::symlink(&external_alias, peer_root.join("alias")).unwrap();
+        let workspace_path = workspace.to_string_lossy().into_owned();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        let listed = runtime
+            .block_on(acp_list_agent_skills_core(
+                AgentType::Grok,
+                Some(workspace_path.clone()),
+                &data_dir,
+            ))
+            .unwrap();
+        let result = runtime.block_on(acp_set_agent_skill_enabled_core(
+            AgentType::Grok,
+            AgentSkillScope::Project,
+            "demo".into(),
+            Some(workspace_path.clone()),
+            false,
+            &data_dir,
+        ));
+        let skill = listed
+            .skills
+            .iter()
+            .find(|skill| skill.id == "demo")
+            .unwrap();
+
+        assert!(!skill.can_toggle);
+        assert_eq!(
+            skill.toggle_reason,
+            Some(AgentSkillToggleReason::UnsafeLink)
+        );
+        assert!(result.is_err(), "indirect incoming alias must block the move");
+        assert_eq!(
+            fs::read_to_string(owner_root.join("demo/SKILL.md")).unwrap(),
+            "private"
+        );
+        assert_eq!(
+            fs::read_to_string(peer_root.join("alias/SKILL.md")).unwrap(),
+            "private"
+        );
+        let vault = private_skill_vault(
+            AgentType::Grok,
+            AgentSkillScope::Project,
+            Some(&workspace_path),
+            &data_dir,
+            &owner_root,
+        )
+        .unwrap();
+        assert!(!vault.join("demo").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn private_skill_incoming_content_link_is_unsafe_and_never_moved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let data_dir = tmp.path().join("codeg-data");
+        let owner_root = workspace.join(".grok/skills");
+        let peer_root = workspace.join(".cursor/skills");
+        fs::create_dir_all(owner_root.join("demo")).unwrap();
+        fs::write(owner_root.join("demo/SKILL.md"), "private").unwrap();
+        fs::create_dir_all(peer_root.join("alias")).unwrap();
+        std::os::unix::fs::symlink(
+            owner_root.join("demo/SKILL.md"),
+            peer_root.join("alias/SKILL.md"),
+        )
+        .unwrap();
+        let workspace_path = workspace.to_string_lossy().into_owned();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        let listed = runtime
+            .block_on(acp_list_agent_skills_core(
+                AgentType::Grok,
+                Some(workspace_path.clone()),
+                &data_dir,
+            ))
+            .unwrap();
+        let result = runtime.block_on(acp_set_agent_skill_enabled_core(
+            AgentType::Grok,
+            AgentSkillScope::Project,
+            "demo".into(),
+            Some(workspace_path),
+            false,
+            &data_dir,
+        ));
+        let skill = listed
+            .skills
+            .iter()
+            .find(|skill| skill.id == "demo")
+            .unwrap();
+
+        assert!(!skill.can_toggle);
+        assert_eq!(
+            skill.toggle_reason,
+            Some(AgentSkillToggleReason::UnsafeLink)
+        );
+        assert!(result.is_err(), "incoming content link must block the move");
+        assert_eq!(
+            fs::read_to_string(owner_root.join("demo/SKILL.md")).unwrap(),
+            "private"
+        );
+        assert_eq!(
+            fs::read_to_string(peer_root.join("alias/SKILL.md")).unwrap(),
+            "private"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn private_symlinked_skill_incoming_content_link_is_unsafe_and_never_moved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let data_dir = tmp.path().join("codeg-data");
+        let owner_root = workspace.join(".grok/skills");
+        let peer_root = workspace.join(".cursor/skills");
+        let external_skill = workspace.join("external/demo");
+        fs::create_dir_all(&external_skill).unwrap();
+        fs::write(external_skill.join("SKILL.md"), "private").unwrap();
+        fs::create_dir_all(&owner_root).unwrap();
+        std::os::unix::fs::symlink(&external_skill, owner_root.join("demo")).unwrap();
+        fs::create_dir_all(peer_root.join("alias")).unwrap();
+        std::os::unix::fs::symlink(
+            owner_root.join("demo/SKILL.md"),
+            peer_root.join("alias/SKILL.md"),
+        )
+        .unwrap();
+        let workspace_path = workspace.to_string_lossy().into_owned();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        let listed = runtime
+            .block_on(acp_list_agent_skills_core(
+                AgentType::Grok,
+                Some(workspace_path.clone()),
+                &data_dir,
+            ))
+            .unwrap();
+        let result = runtime.block_on(acp_set_agent_skill_enabled_core(
+            AgentType::Grok,
+            AgentSkillScope::Project,
+            "demo".into(),
+            Some(workspace_path),
+            false,
+            &data_dir,
+        ));
+        let skill = listed
+            .skills
+            .iter()
+            .find(|skill| skill.id == "demo")
+            .unwrap();
+
+        assert!(!skill.can_toggle);
+        assert_eq!(
+            skill.toggle_reason,
+            Some(AgentSkillToggleReason::UnsafeLink)
+        );
+        assert!(
+            result.is_err(),
+            "incoming content link through a symlinked skill must block the move"
+        );
+        assert!(owner_root.join("demo").exists());
+        assert_eq!(
+            fs::read_to_string(peer_root.join("alias/SKILL.md")).unwrap(),
+            "private"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn private_symlinked_skill_with_internal_content_link_remains_toggleable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let data_dir = tmp.path().join("codeg-data");
+        let owner_root = workspace.join(".grok/skills");
+        let external_skill = workspace.join("external/demo");
+        fs::create_dir_all(external_skill.join("docs")).unwrap();
+        fs::write(external_skill.join("docs/body.md"), "private").unwrap();
+        std::os::unix::fs::symlink("docs/body.md", external_skill.join("SKILL.md")).unwrap();
+        fs::create_dir_all(&owner_root).unwrap();
+        std::os::unix::fs::symlink(&external_skill, owner_root.join("demo")).unwrap();
+        let workspace_path = workspace.to_string_lossy().into_owned();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        let listed = runtime
+            .block_on(acp_list_agent_skills_core(
+                AgentType::Grok,
+                Some(workspace_path.clone()),
+                &data_dir,
+            ))
+            .unwrap();
+        let before = listed
+            .skills
+            .iter()
+            .find(|skill| skill.id == "demo")
+            .unwrap();
+        let disabled = runtime.block_on(acp_set_agent_skill_enabled_core(
+            AgentType::Grok,
+            AgentSkillScope::Project,
+            "demo".into(),
+            Some(workspace_path.clone()),
+            false,
+            &data_dir,
+        ));
+
+        assert!(before.can_toggle);
+        assert_eq!(before.toggle_reason, None);
+        let disabled = disabled.expect("safe symlinked skill should disable");
+        assert!(!disabled.enabled);
+        assert_eq!(
+            fs::read_to_string(Path::new(&disabled.path).join("SKILL.md")).unwrap(),
+            "private"
+        );
+        assert!(!owner_root.join("demo").exists());
+
+        let enabled = runtime
+            .block_on(acp_set_agent_skill_enabled_core(
+                AgentType::Grok,
+                AgentSkillScope::Project,
+                "demo".into(),
+                Some(workspace_path),
+                true,
+                &data_dir,
+            ))
+            .expect("safe symlinked skill should re-enable");
+        assert!(enabled.enabled);
+        assert_eq!(fs::read_link(owner_root.join("demo")).unwrap(), external_skill);
+        assert_eq!(
+            fs::read_link(owner_root.join("demo/SKILL.md")).unwrap(),
+            Path::new("docs/body.md")
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn private_symlinked_skill_with_absolute_backreference_is_unsafe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let data_dir = tmp.path().join("codeg-data");
+        let owner_root = workspace.join(".grok/skills");
+        let external_skill = workspace.join("external/demo");
+        fs::create_dir_all(external_skill.join("docs")).unwrap();
+        fs::write(external_skill.join("docs/body.md"), "private").unwrap();
+        fs::create_dir_all(&owner_root).unwrap();
+        std::os::unix::fs::symlink(&external_skill, owner_root.join("demo")).unwrap();
+        std::os::unix::fs::symlink(
+            owner_root.join("demo/docs/body.md"),
+            external_skill.join("SKILL.md"),
+        )
+        .unwrap();
+        let workspace_path = workspace.to_string_lossy().into_owned();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        let listed = runtime
+            .block_on(acp_list_agent_skills_core(
+                AgentType::Grok,
+                Some(workspace_path.clone()),
+                &data_dir,
+            ))
+            .unwrap();
+        let skill = listed
+            .skills
+            .iter()
+            .find(|skill| skill.id == "demo")
+            .unwrap();
+        let result = runtime.block_on(acp_set_agent_skill_enabled_core(
+            AgentType::Grok,
+            AgentSkillScope::Project,
+            "demo".into(),
+            Some(workspace_path),
+            false,
+            &data_dir,
+        ));
+
+        assert!(!skill.can_toggle);
+        assert_eq!(
+            skill.toggle_reason,
+            Some(AgentSkillToggleReason::UnsafeLink)
+        );
+        assert!(result.is_err(), "absolute backreference must block the move");
+        assert_eq!(
+            fs::read_to_string(owner_root.join("demo/SKILL.md")).unwrap(),
+            "private"
+        );
+        assert_eq!(fs::read_link(owner_root.join("demo")).unwrap(), external_skill);
+        assert!(!data_dir.exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn private_markdown_skill_incoming_alias_is_unsafe_and_never_moved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let data_dir = tmp.path().join("codeg-data");
+        let owner_root = workspace.join(".dsh/skills");
+        let peer_root = workspace.join(".pi/skills");
+        fs::create_dir_all(&owner_root).unwrap();
+        fs::write(owner_root.join("demo.md"), "private markdown").unwrap();
+        fs::create_dir_all(&peer_root).unwrap();
+        std::os::unix::fs::symlink(owner_root.join("demo.md"), peer_root.join("alias.md")).unwrap();
+        let workspace_path = workspace.to_string_lossy().into_owned();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        let listed = runtime
+            .block_on(acp_list_agent_skills_core(
+                AgentType::DeepSeek,
+                Some(workspace_path.clone()),
+                &data_dir,
+            ))
+            .unwrap();
+        let result = runtime.block_on(acp_set_agent_skill_enabled_core(
+            AgentType::DeepSeek,
+            AgentSkillScope::Project,
+            "demo".into(),
+            Some(workspace_path),
+            false,
+            &data_dir,
+        ));
+        let skill = listed
+            .skills
+            .iter()
+            .find(|skill| skill.id == "demo")
+            .unwrap();
+
+        assert!(!skill.can_toggle);
+        assert_eq!(
+            skill.toggle_reason,
+            Some(AgentSkillToggleReason::UnsafeLink)
+        );
+        assert!(result.is_err(), "incoming markdown alias must block the move");
+        assert_eq!(
+            fs::read_to_string(owner_root.join("demo.md")).unwrap(),
+            "private markdown"
+        );
+        assert_eq!(
+            fs::read_to_string(peer_root.join("alias.md")).unwrap(),
+            "private markdown"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn private_skill_junction_is_unsafe_and_never_moved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let data_dir = tmp.path().join("codeg-data");
+        let target = tmp.path().join("junction-target");
+        let root = workspace.join(".grok/skills");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("SKILL.md"), "junction content").unwrap();
+        fs::create_dir_all(&root).unwrap();
+        junction::create(&target, root.join("demo")).unwrap();
+        let workspace_path = workspace.to_string_lossy().into_owned();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        let listed = runtime
+            .block_on(acp_list_agent_skills_core(
+                AgentType::Grok,
+                Some(workspace_path.clone()),
+                &data_dir,
+            ))
+            .unwrap();
+        let skill = listed
+            .skills
+            .iter()
+            .find(|skill| skill.id == "demo")
+            .unwrap();
+        assert_eq!(
+            skill.toggle_reason,
+            Some(AgentSkillToggleReason::UnsafeLink)
+        );
+
+        let result = runtime.block_on(acp_set_agent_skill_enabled_core(
+            AgentType::Grok,
+            AgentSkillScope::Project,
+            "demo".into(),
+            Some(workspace_path),
+            false,
+            &data_dir,
+        ));
+        assert!(result.is_err(), "junction must be rejected: {result:?}");
+        assert!(root.join("demo/SKILL.md").is_file());
+        assert_eq!(
+            fs::read_to_string(target.join("SKILL.md")).unwrap(),
+            "junction content"
+        );
+        assert!(!data_dir.exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn skill_enabled_private_safety_bundle_content_link_escape_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        let vault = tmp.path().join("vault");
+        fs::create_dir_all(root.join("demo")).unwrap();
+        fs::write(root.join("body.txt"), "original content").unwrap();
+        std::os::unix::fs::symlink("../body.txt", root.join("demo/SKILL.md")).unwrap();
+        let result = set_private_skill_enabled_at(
+            &root,
+            &vault,
+            SkillStorageKind::SkillDirectoryOnly,
+            AgentSkillScope::Global,
+            "demo",
+            false,
+        );
+        assert!(
+            result.is_err(),
+            "content link must retain its target: {result:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+            "original content"
+        );
+        assert!(!vault.exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn skill_enabled_private_safety_bundle_nested_asset_escape_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        let vault = tmp.path().join("vault");
+        fs::create_dir_all(root.join("demo/assets")).unwrap();
+        fs::write(root.join("demo/SKILL.md"), "body").unwrap();
+        fs::write(root.join("asset.txt"), "original asset").unwrap();
+        std::os::unix::fs::symlink("../../asset.txt", root.join("demo/assets/link")).unwrap();
+        let result = set_private_skill_enabled_at(
+            &root,
+            &vault,
+            SkillStorageKind::SkillDirectoryOnly,
+            AgentSkillScope::Global,
+            "demo",
+            false,
+        );
+        assert!(
+            result.is_err(),
+            "nested asset link must retain its target: {result:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("demo/assets/link")).unwrap(),
+            "original asset"
+        );
+        assert!(!vault.exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn skill_enabled_private_safety_internal_bundle_links_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        let vault = tmp.path().join("vault");
+        fs::create_dir_all(root.join("demo/docs")).unwrap();
+        fs::create_dir_all(root.join("demo/assets")).unwrap();
+        fs::write(root.join("demo/docs/body.md"), "internal content").unwrap();
+        std::os::unix::fs::symlink("docs/body.md", root.join("demo/SKILL.md")).unwrap();
+        std::os::unix::fs::symlink("../docs/body.md", root.join("demo/assets/link")).unwrap();
+        for enabled in [false, true] {
+            let item = set_private_skill_enabled_at(
+                &root,
+                &vault,
+                SkillStorageKind::SkillDirectoryOnly,
+                AgentSkillScope::Global,
+                "demo",
+                enabled,
+            )
+            .unwrap();
+            let path = Path::new(&item.path);
+            assert_eq!(
+                fs::read_to_string(path.join("SKILL.md")).unwrap(),
+                "internal content"
+            );
+            assert_eq!(
+                fs::read_to_string(path.join("assets/link")).unwrap(),
+                "internal content"
+            );
+            assert_eq!(
+                fs::read_link(path.join("SKILL.md")).unwrap(),
+                Path::new("docs/body.md")
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn project_private_skill_internal_links_round_trip_through_fresh_vault() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let data_dir = tmp.path().join("fresh-codeg-data");
+        let root = workspace.join(".grok/skills");
+        let external = tmp.path().join("external.txt");
+        fs::create_dir_all(root.join("demo/docs")).unwrap();
+        fs::create_dir_all(root.join("demo/assets")).unwrap();
+        fs::write(root.join("demo/docs/body.md"), "internal content").unwrap();
+        fs::write(&external, "external content").unwrap();
+        std::os::unix::fs::symlink("docs/body.md", root.join("demo/SKILL.md")).unwrap();
+        std::os::unix::fs::symlink(&external, root.join("demo/assets/external")).unwrap();
+        let workspace_path = workspace.to_string_lossy().into_owned();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        let listed = runtime
+            .block_on(acp_list_agent_skills_core(
+                AgentType::Grok,
+                Some(workspace_path.clone()),
+                &data_dir,
+            ))
+            .unwrap();
+        let before = listed
+            .skills
+            .iter()
+            .find(|skill| skill.id == "demo")
+            .unwrap();
+        let disabled = runtime.block_on(acp_set_agent_skill_enabled_core(
+            AgentType::Grok,
+            AgentSkillScope::Project,
+            "demo".into(),
+            Some(workspace_path.clone()),
+            false,
+            &data_dir,
+        ));
+
+        assert!(before.can_toggle, "fresh vault ancestors are created by the move");
+        assert_eq!(before.toggle_reason, None);
+        let disabled = disabled.expect("safe linked bundle should disable");
+        assert!(!disabled.enabled);
+        let disabled_path = Path::new(&disabled.path);
+        assert!(disabled_path.starts_with(&data_dir));
+        assert_eq!(
+            fs::read_to_string(disabled_path.join("SKILL.md")).unwrap(),
+            "internal content"
+        );
+        assert_eq!(
+            fs::read_to_string(disabled_path.join("assets/external")).unwrap(),
+            "external content"
+        );
+
+        let enabled = runtime
+            .block_on(acp_set_agent_skill_enabled_core(
+                AgentType::Grok,
+                AgentSkillScope::Project,
+                "demo".into(),
+                Some(workspace_path),
+                true,
+                &data_dir,
+            ))
+            .expect("safe linked bundle should re-enable");
+        assert!(enabled.enabled);
+        assert_eq!(Path::new(&enabled.path), root.join("demo"));
+        assert_eq!(
+            fs::read_link(root.join("demo/SKILL.md")).unwrap(),
+            Path::new("docs/body.md")
+        );
+        assert_eq!(
+            fs::read_link(root.join("demo/assets/external")).unwrap(),
+            external
+        );
+    }
+
+    #[test]
+    fn skill_enabled_private_safety_project_root_shared_with_custom_global_is_rejected() {
+        use crate::acp::custom_registry::{
+            hydrate, hydrate_test_guard, CustomAgentDef, CustomAgentSpec, CustomDistributionKind,
+            NpxSpec,
+        };
+        let _registry_guard = hydrate_test_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let data_dir = tmp.path().join("codeg-data");
+        let root = workspace.join(".grok/skills");
+        fs::create_dir_all(root.join("demo")).unwrap();
+        fs::write(root.join("demo/SKILL.md"), "shared").unwrap();
+        let definition = CustomAgentDef {
+            registry_id: "task1b-cross-scope".into(),
+            name: "Cross Scope".into(),
+            description: String::new(),
+            version: "1.0.0".into(),
+            distribution_kind: CustomDistributionKind::Npx,
+            spec: CustomAgentSpec {
+                npx: Some(NpxSpec {
+                    package: "test-agent@1.0.0".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+            skills_dir: Some(root.to_string_lossy().into_owned()),
+            source: Default::default(),
+            version_probe: None,
+            supports_mcp: true,
+        };
+        assert!(hydrate(&[definition]).is_empty());
+        let result =
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(acp_set_agent_skill_enabled_core(
+                    AgentType::Grok,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    Some(workspace.to_string_lossy().into_owned()),
+                    false,
+                    &data_dir,
+                ));
+        hydrate(&[]);
+        assert!(
+            result.is_err(),
+            "global peer root must count as shared: {result:?}"
+        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("shared skill root"));
+        assert_eq!(
+            fs::read_to_string(root.join("demo/SKILL.md")).unwrap(),
+            "shared"
+        );
+        assert!(!data_dir.exists());
+    }
+
+    #[test]
+    fn codex_native_toggle_disables_read_only_system_skill_without_editing_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        temp_env::with_var("CODEX_HOME", Some(tmp.path()), || {
+            let system_skill = tmp.path().join("skills/.system/task1-system-demo");
+            std::fs::create_dir_all(&system_skill).expect("create system skill");
+            std::fs::write(system_skill.join("SKILL.md"), "system\n").expect("write system skill");
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+
+            let listed = runtime
+                .block_on(acp_list_agent_skills(AgentType::Codex, None))
+                .expect("list skills");
+            let item = listed
+                .skills
+                .iter()
+                .find(|item| item.id == "task1-system-demo")
+                .expect("listed system skill");
+            assert!(item.read_only);
+            assert!(item.can_toggle);
+
+            let disabled = runtime
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Global,
+                    "task1-system-demo".to_string(),
+                    None,
+                    false,
+                ))
+                .expect("system skill availability should be configurable");
+            assert!(!disabled.enabled);
+            assert!(disabled.read_only);
+            assert!(disabled.can_toggle);
+            assert_eq!(disabled.path, item.path);
+            assert!(system_skill.join("SKILL.md").is_file());
+
+            let listed = runtime
+                .block_on(acp_list_agent_skills(AgentType::Codex, None))
+                .expect("list disabled system skill");
+            let item = listed
+                .skills
+                .iter()
+                .find(|item| item.id == "task1-system-demo")
+                .expect("disabled system skill remains listed");
+            assert!(!item.enabled);
+            assert!(item.read_only);
+            assert!(item.can_toggle);
+        });
+    }
+
+    #[test]
+    fn codex_delete_removes_only_exact_disabled_path_rules() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        let workspace = tmp.path().join("workspace");
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            let skill = workspace.join(".codex/skills/demo");
+            fs::create_dir_all(&skill).expect("create skill");
+            fs::write(skill.join("SKILL.md"), "---\nname: demo\n---\n").expect("write skill");
+            fs::create_dir_all(&codex_home).expect("create Codex home");
+            let content_path = fs::canonicalize(skill.join("SKILL.md")).unwrap();
+            let unrelated_path = fs::canonicalize(tmp.path())
+                .unwrap()
+                .join("unrelated/SKILL.md");
+            let encoded_path =
+                toml_edit::Value::from(content_path.to_string_lossy().as_ref()).to_string();
+            let encoded_unrelated_path =
+                toml_edit::Value::from(unrelated_path.to_string_lossy().as_ref()).to_string();
+            fs::write(
+                codex_home.join("config.toml"),
+                format!(
+                    "# preserve this comment\nmodel = \"test-model\"\n\n\
+                     [[skills.config]]\npath = {encoded_path}\nenabled = false\n\n\
+                     [[skills.config]]\nname = \"demo\"\nenabled = false\n\n\
+                     [[skills.config]]\npath = {encoded_path}\nname = \"demo\"\nenabled = false\n\n\
+                     [[skills.config]]\npath = {encoded_unrelated_path}\nenabled = false\n"
+                ),
+            )
+            .expect("write config");
+
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(acp_delete_agent_skill(
+                    AgentType::Codex,
+                    AgentSkillScope::Project,
+                    "demo".into(),
+                    Some(workspace.to_string_lossy().into_owned()),
+                ))
+                .expect("delete Codex skill");
+
+            assert!(!skill.exists());
+            let raw = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+            assert!(raw.contains("# preserve this comment"));
+            assert!(raw.contains("model = \"test-model\""));
+            let parsed = parse_codex_skill_config(&raw, &codex_home).unwrap();
+            assert_eq!(parsed.entries.len(), 3);
+            assert!(parsed.entries.iter().any(|entry| {
+                entry.name.as_deref() == Some("demo") && entry.path.is_none() && !entry.enabled
+            }));
+            assert!(parsed.entries.iter().any(|entry| {
+                entry.name.as_deref() == Some("demo")
+                    && entry
+                        .path
+                        .as_deref()
+                        .is_some_and(|path| same_skill_config_path(path, &content_path))
+                    && !entry.enabled
+            }));
+            assert!(parsed.entries.iter().any(|entry| {
+                entry.name.is_none()
+                    && entry
+                        .path
+                        .as_deref()
+                        .is_some_and(|path| same_skill_config_path(path, &unrelated_path))
+                    && !entry.enabled
+            }));
+            assert!(!parsed.entries.iter().any(|entry| {
+                entry.name.is_none()
+                    && entry
+                        .path
+                        .as_deref()
+                        .is_some_and(|path| same_skill_config_path(path, &content_path))
+                    && !entry.enabled
+            }));
+        });
+    }
+
+    #[test]
+    fn codex_delete_rule_cleanup_supports_inline_config_array() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = tmp.path().join("target/SKILL.md");
+        let keep = tmp.path().join("keep/SKILL.md");
+        let target_value = toml_edit::Value::from(target.to_string_lossy().as_ref()).to_string();
+        let keep_value = toml_edit::Value::from(keep.to_string_lossy().as_ref()).to_string();
+        let base = format!(
+            "# keep inline comment\n[skills]\nconfig = [{{ path = {target_value}, enabled = false }}, {{ path = {keep_value}, enabled = false }}]\n"
+        );
+
+        let updated = remove_codex_disabled_skill_path_rules(
+            &base,
+            tmp.path(),
+            std::slice::from_ref(&target),
+        )
+        .expect("clean inline config")
+        .expect("target rule removed");
+
+        assert!(updated.contains("# keep inline comment"));
+        let parsed = parse_codex_skill_config(&updated, tmp.path()).expect("parse cleaned config");
+        assert_eq!(parsed.entries.len(), 1);
+        assert!(parsed.entries[0]
+            .path
+            .as_deref()
+            .is_some_and(|path| same_skill_config_path(path, &keep)));
+    }
+
+    #[test]
+    fn codex_delete_rule_cleanup_supports_root_inline_skills_table() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = tmp.path().join("target/SKILL.md");
+        let keep = tmp.path().join("keep/SKILL.md");
+        let target_value = toml_edit::Value::from(target.to_string_lossy().as_ref()).to_string();
+        let keep_value = toml_edit::Value::from(keep.to_string_lossy().as_ref()).to_string();
+        let base = format!(
+            "# keep root comment\nskills = {{ config = [{{ path = {target_value}, enabled = false }}, {{ path = {keep_value}, enabled = false }}], keep = \"value\" }}\n"
+        );
+
+        let updated = remove_codex_disabled_skill_path_rules(
+            &base,
+            tmp.path(),
+            std::slice::from_ref(&target),
+        )
+        .expect("clean root inline skills table")
+        .expect("target rule removed");
+
+        assert!(updated.contains("# keep root comment"));
+        assert!(updated.contains("keep = \"value\""));
+        let parsed = parse_codex_skill_config(&updated, tmp.path()).expect("parse cleaned config");
+        assert_eq!(parsed.entries.len(), 1);
+        assert!(parsed.entries[0]
+            .path
+            .as_deref()
+            .is_some_and(|path| same_skill_config_path(path, &keep)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_native_toggle_preserves_config_symlink() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        let real_dir = tmp.path().join("real-config");
+        fs::create_dir_all(&codex_home).unwrap();
+        fs::create_dir_all(&real_dir).unwrap();
+        let target = real_dir.join("config.toml");
+        fs::write(&target, "# linked config\nmodel = \"test-model\"\n").unwrap();
+        let relative_target = Path::new("../real-config/config.toml");
+        std::os::unix::fs::symlink(relative_target, codex_home.join("config.toml")).unwrap();
+
+        temp_env::with_var("CODEX_HOME", Some(&codex_home), || {
+            let system_skill = codex_home.join("skills/.system/task1-linked-config-demo");
+            fs::create_dir_all(&system_skill).unwrap();
+            fs::write(system_skill.join("SKILL.md"), "system\n").unwrap();
+
+            let disabled = tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(acp_set_agent_skill_enabled(
+                    AgentType::Codex,
+                    AgentSkillScope::Global,
+                    "task1-linked-config-demo".into(),
+                    None,
+                    false,
+                ))
+                .expect("toggle through linked config");
+            assert!(!disabled.enabled);
+        });
+
+        let link = codex_home.join("config.toml");
+        assert!(
+            fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+            "atomic replacement must update the target without replacing the link",
+        );
+        assert_eq!(fs::read_link(&link).unwrap(), relative_target);
+        let written = fs::read_to_string(&target).unwrap();
+        assert!(written.contains("# linked config"));
+        let parsed = written.parse::<toml::Value>().unwrap();
+        assert_eq!(
+            parsed.get("model").and_then(toml::Value::as_str),
+            Some("test-model"),
+        );
+        assert_eq!(
+            parsed["skills"]["config"].as_array().unwrap()[0]
+                .get("enabled")
+                .and_then(toml::Value::as_bool),
+            Some(false),
         );
     }
 

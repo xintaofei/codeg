@@ -544,6 +544,21 @@
     "noSelectionHint": "從左側選擇一個 Skill，或點擊「新建 Skill」建立。",
     "systemBadge": "系統",
     "systemHint": "CLI 內建 Skill · 唯讀",
+    "availability": {
+      "enabled": "已啟用",
+      "disabled": "已停用",
+      "toggleAria": "切換 {agent} 的 {skill} 啟用狀態",
+      "readOnly": "此 Skill 的檔案為唯讀，無法在這裡切換。",
+      "sharedRoot": "此 Skill 安裝在多個 Agent 共用的目錄中，無法只對目前 Agent 停用。",
+      "managedElsewhere": "此 Skill 由專家、辦公、科研或自訂技能頁面管理。",
+      "storageConflict": "偵測到同名 Skill 或目標位置衝突，請先處理衝突。",
+      "unsafeLink": "此 Skill 包含移動後會失效或改變指向的連結，無法安全切換。",
+      "crossFilesystem": "Skill 與停用儲存區位於不同檔案系統，無法安全移動。",
+      "legacyState": "此 Skill 使用舊版停用配置，需要手動復原後才能切換。",
+      "bundledDisabled": "Codex 全域設定已停用內建 Skills。",
+      "configError": "無法安全讀取 Agent 的技能可用性設定。",
+      "unavailable": "此 Skill 目前無法切換。"
+    },
     "scope": {
       "global": "全域",
       "folder": "資料夾",
@@ -579,7 +594,11 @@
       "created": "Skill 已建立",
       "saveFailed": "儲存 Skill 失敗",
       "deleted": "Skill 已刪除",
-      "deleteFailed": "刪除 Skill 失敗"
+      "deleteFailed": "刪除 Skill 失敗",
+      "enabled": "Skill 已啟用",
+      "disabled": "Skill 已停用",
+      "codexNewSession": "僅對新建的 Codex 工作階段生效；已開啟的工作階段可能仍保留先前載入的 Skill。",
+      "toggleFailed": "更新 Skill 可用狀態失敗"
     },
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",

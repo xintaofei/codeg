@@ -544,6 +544,21 @@
     "noSelectionHint": "Selecciona un Skill a la izquierda o haz clic en \"Nuevo Skill\" para crear uno.",
     "systemBadge": "Sistema",
     "systemHint": "Skill integrado del CLI · solo lectura",
+    "availability": {
+      "enabled": "Activada",
+      "disabled": "Desactivada",
+      "toggleAria": "Cambiar el estado de {skill} para {agent}",
+      "readOnly": "Los archivos de esta Skill son de solo lectura y no se pueden cambiar aquí.",
+      "sharedRoot": "Esta Skill está instalada en un directorio compartido por varios agentes, por lo que no se puede desactivar solo para este agente.",
+      "managedElsewhere": "Esta Skill se administra desde la página de Expertos, Office, Ciencia o Skills personalizadas.",
+      "storageConflict": "Resuelve la Skill duplicada o el conflicto de destino antes de cambiarla.",
+      "unsafeLink": "Esta Skill contiene un enlace que cambiaría o se rompería al moverla.",
+      "crossFilesystem": "La Skill y su almacén desactivado están en sistemas de archivos distintos y no se pueden mover de forma segura.",
+      "legacyState": "Esta Skill usa un diseño de desactivación anterior y debe recuperarse manualmente antes de cambiarla.",
+      "bundledDisabled": "Las Skills incluidas están desactivadas por la configuración global de Codex.",
+      "configError": "No se pudo leer de forma segura la configuración de disponibilidad de Skills del agente.",
+      "unavailable": "Esta Skill no se puede cambiar."
+    },
     "scope": {
       "global": "Global",
       "folder": "Carpeta",
@@ -579,7 +594,11 @@
       "created": "Skill creada",
       "saveFailed": "No se pudo guardar la Skill",
       "deleted": "Skill eliminada",
-      "deleteFailed": "No se pudo eliminar la Skill"
+      "deleteFailed": "No se pudo eliminar la Skill",
+      "enabled": "Skill activada",
+      "disabled": "Skill desactivada",
+      "codexNewSession": "Se aplica a las sesiones nuevas de Codex. Las sesiones existentes pueden conservar las Skills que ya cargaron.",
+      "toggleFailed": "No se pudo actualizar la disponibilidad de la Skill"
     },
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",

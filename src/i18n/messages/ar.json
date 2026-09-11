@@ -544,6 +544,21 @@
     "noSelectionHint": "اختر Skill من اليسار، أو انقر على \"Skill جديد\" لإنشاء واحد.",
     "systemBadge": "نظام",
     "systemHint": "Skill مدمج في CLI · للقراءة فقط",
+    "availability": {
+      "enabled": "مفعّلة",
+      "disabled": "معطّلة",
+      "toggleAria": "تبديل حالة {skill} للوكيل {agent}",
+      "readOnly": "ملفات هذه المهارة للقراءة فقط ولا يمكن تبديلها هنا.",
+      "sharedRoot": "هذه المهارة مثبتة في مجلد مشترك بين عدة وكلاء، لذلك لا يمكن تعطيلها لهذا الوكيل فقط.",
+      "managedElsewhere": "تُدار هذه المهارة من صفحة الخبراء أو Office أو العلوم أو المهارات المخصصة.",
+      "storageConflict": "عالج المهارة المكررة أو تعارض الوجهة قبل التبديل.",
+      "unsafeLink": "تحتوي هذه المهارة على رابط سيتغير أو يتعطل عند نقلها.",
+      "crossFilesystem": "توجد المهارة ومخزن التعطيل على نظامي ملفات مختلفين، لذلك لا يمكن نقلها بأمان.",
+      "legacyState": "تستخدم هذه المهارة تخطيط تعطيل قديمًا ويجب استعادتها يدويًا قبل التبديل.",
+      "bundledDisabled": "المهارات المضمنة معطلة بواسطة إعداد Codex العام.",
+      "configError": "تعذرت قراءة إعداد توفر مهارات الوكيل بأمان.",
+      "unavailable": "لا يمكن تبديل هذه المهارة."
+    },
     "scope": {
       "global": "عام",
       "folder": "مجلد",
@@ -579,7 +594,11 @@
       "created": "تم إنشاء Skill",
       "saveFailed": "فشل حفظ Skill",
       "deleted": "تم حذف Skill",
-      "deleteFailed": "فشل حذف Skill"
+      "deleteFailed": "فشل حذف Skill",
+      "enabled": "تم تفعيل Skill",
+      "disabled": "تم تعطيل Skill",
+      "codexNewSession": "ينطبق على جلسات Codex الجديدة. قد تحتفظ الجلسات الحالية بالـ Skills التي سبق تحميلها.",
+      "toggleFailed": "فشل تحديث حالة توفر Skill"
     },
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",
