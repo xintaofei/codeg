@@ -15,6 +15,7 @@ import {
   GitBranch,
   Globe,
   Keyboard,
+  Languages,
   Menu,
   MessageSquareText,
   SendHorizontal,
@@ -50,6 +51,7 @@ interface SettingsNavItem {
     | "shortcuts"
     | "version_control"
     | "chat_channels"
+    | "translation"
     | "system"
     | "web_service"
     | "logs"
@@ -111,6 +113,11 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     href: "/settings/chat-channels",
     labelKey: "chat_channels",
     icon: SendHorizontal,
+  },
+  {
+    href: "/settings/translation",
+    labelKey: "translation",
+    icon: Languages,
   },
   {
     href: "/settings/web-service",

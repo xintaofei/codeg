@@ -7,6 +7,28 @@
 // `acp/connection.rs` for the sibling *runtime* mitigation of the same frame.
 #![recursion_limit = "256"]
 
+// Test binaries must ship the comctl32-v6 SxS manifest, or the tauri dialog
+// code linked into them (TaskDialogIndirect & friends — entry points that
+// exist only in comctl32 v6) kills the harness at load with
+// STATUS_ENTRYPOINT_NOT_FOUND. tauri-build embeds the manifest resource
+// (`resource.lib`, a .res stream that link.exe accepts by content) only into
+// the bins; this attribute pulls the same file into test compilations — and
+// ONLY test compilations, which is what no build-script directive can express
+// (`rustc-link-arg-tests` skips the lib harness, `rustc-link-arg` duplicates
+// the resource into the bins and fails the link with CVT1100). The search
+// path for `resource.lib` comes from build.rs's `rustc-link-search`, which is
+// also tauri-runtime-gated — and server-mode test exes don't need the
+// manifest at all, since nothing in them imports the comctl32 v6 entry
+// points.
+#[cfg(all(
+    feature = "tauri-runtime",
+    target_os = "windows",
+    target_env = "msvc",
+    test
+))]
+#[link(name = "resource", kind = "dylib")]
+extern "C" {}
+
 pub mod acp;
 pub mod acp_transcript;
 pub use acp::{
@@ -40,6 +62,7 @@ pub mod preferences;
 pub mod process;
 pub mod supervise;
 mod terminal;
+pub mod translation;
 pub mod turn_timings;
 pub mod update;
 pub mod web;
@@ -79,6 +102,7 @@ mod tauri_app {
         session_info as session_info_commands,
         system_settings, terminal as terminal_commands,
         token_usage as token_usage_commands,
+        translation as translation_commands,
         forge as forge_commands, version_control, windows, work_task as work_task_commands,
         workspace_state as workspace_state_commands,
     };
@@ -665,6 +689,24 @@ mod tauri_app {
                     let cm = app.state::<ConnectionManager>();
                     let ccm = app.state::<ChatChannelManager>();
                     cm.install_chat_channel(ccm.clone_ref());
+                }
+
+                // Push translation-settings changes to the frontends: the
+                // message-list hooks re-fetch their snapshot on this event,
+                // so a save in one window (e.g. re-enabling translateBody)
+                // takes effect everywhere without a reload.
+                {
+                    let emitter =
+                        web::event_bridge::EventEmitter::Tauri(app.handle().clone());
+                    crate::translation::settings::on_settings_change(
+                        std::sync::Arc::new(move || {
+                            web::event_bridge::emit_event(
+                                &emitter,
+                                "translation-settings-changed",
+                                serde_json::json!({}),
+                            );
+                        }),
+                    );
                 }
 
                 // Start chat channel background tasks
@@ -1389,6 +1431,18 @@ mod tauri_app {
                 system_settings::update_system_rendering_settings,
                 system_settings::get_system_autostart_settings,
                 system_settings::update_system_autostart_settings,
+                translation_commands::translation_get_settings,
+                translation_commands::translation_update_settings,
+                translation_commands::translation_test,
+                translation_commands::translation_list_models,
+                translation_commands::translation_translate,
+                translation_commands::translation_cache_stats,
+                translation_commands::translation_clear_cache,
+                translation_commands::translation_pool_status,
+                translation_commands::translation_metrics,
+                translation_commands::translation_provider_reset,
+                translation_commands::translation_provider_disable,
+                translation_commands::translation_provider_cooldown,
                 logging_commands::get_log_settings,
                 logging_commands::set_log_settings,
                 logging_commands::get_recent_logs,

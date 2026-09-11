@@ -254,6 +254,20 @@ async fn async_main() -> ExitCode {
     ));
     let emitter = EventEmitter::web_only(broadcaster.clone(), acp_event_bus.clone());
 
+    // Push translation-settings changes to connected clients: hooks beyond
+    // the window that saved re-fetch their snapshot on this event instead of
+    // keeping the mount-time copy.
+    {
+        let emitter = emitter.clone();
+        codeg_lib::translation::settings::on_settings_change(Arc::new(move || {
+            codeg_lib::web::event_bridge::emit_event(
+                &emitter,
+                "translation-settings-changed",
+                serde_json::json!({}),
+            );
+        }));
+    }
+
     // Build AppState
     let pet_state_handle = codeg_lib::pet_state_mapper::new_pet_state_handle();
     let connection_manager = codeg_lib::app_state::default_connection_manager();
