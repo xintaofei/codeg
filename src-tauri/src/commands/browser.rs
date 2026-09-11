@@ -70,7 +70,7 @@ pub fn capabilities(policy: &BrowserPolicy) -> BrowserCapabilities {
     // so a tab there answers `legacy` while this still says `native`. Linux
     // has no embedded surface and a channel all the same: its owned window
     // carries the script world itself.
-    let channel = if CHILD_SURFACE_COMPILED || cfg!(target_os = "linux") {
+    let channel = if CHILD_SURFACE_COMPILED || crate::browser::surface_window::HAS_CHANNEL {
         ChannelKind::Native
     } else {
         reasons.push("no page channel without the embedded surface".to_string());
@@ -1403,13 +1403,14 @@ mod tests {
         assert_eq!(caps.doc_guest, doc_guest::supported());
     }
 
-    /// The page channel travels with the embedded surface: where there is no
-    /// embedded surface the answer is `degraded`, and it says why rather than
-    /// leaving the settings section to guess.
+    /// The page channel travels with whatever surface can carry one — the
+    /// embedded child surface, or the owned window where it installs the
+    /// world itself. Only where neither can is the answer `degraded`, and it
+    /// says why rather than leaving the settings section to guess.
     #[test]
     fn capabilities_report_the_page_channel_the_surface_brings() {
         let caps = capabilities(&BrowserPolicy::default());
-        if CHILD_SURFACE_COMPILED {
+        if CHILD_SURFACE_COMPILED || crate::browser::surface_window::HAS_CHANNEL {
             assert_eq!(caps.channel, ChannelKind::Native);
             assert!(!caps.reasons.iter().any(|r| r.contains("page channel")));
         } else {
