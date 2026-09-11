@@ -243,8 +243,15 @@ impl ConnectionSpawner for FixtureContinuationSpawner {
         if let ledger::AdmissionResult::Existing { entry } = result {
             return Ok(DelegationDispatch::Existing(entry.report));
         }
-        if let ledger::AdmissionResult::Conflict { reason, .. } = result {
-            return Err(SpawnerError::Send(reason));
+        if let ledger::AdmissionResult::Conflict {
+            next_task_id,
+            reason,
+        } = result
+        {
+            return Ok(DelegationDispatch::Conflict {
+                next_task_id,
+                reason,
+            });
         }
 
         let (tx, state) = {

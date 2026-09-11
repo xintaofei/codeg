@@ -4529,9 +4529,10 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
                 next_task_id,
                 reason,
             } => {
-                return Err(SpawnerError::Send(format!(
-                    "{reason}; existing successor is {next_task_id}"
-                )));
+                return Ok(DelegationDispatch::Conflict {
+                    next_task_id,
+                    reason,
+                });
             }
             crate::db::service::delegation_task_service::AdmissionResult::New { .. } => {}
         }

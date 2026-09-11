@@ -1155,7 +1155,7 @@ fn build_historical_delegation_meta(child: &DbConversationSummary) -> serde_json
     if let Some(title) = child.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         obj.insert(
             "task_preview".into(),
-            serde_json::Value::String(title.into()),
+            serde_json::Value::String(crate::acp::delegation::task_preview(title)),
         );
     }
     serde_json::Value::Object(obj)
@@ -1181,7 +1181,7 @@ fn build_ledger_delegation_meta(
         }
         obj.insert(
             "task_preview".into(),
-            serde_json::Value::String(entry.task.clone()),
+            serde_json::Value::String(crate::acp::delegation::task_preview(&entry.task)),
         );
     }
     value
@@ -3282,7 +3282,7 @@ mod tests {
             updated_at: now,
         };
 
-        inject_delegation_meta(&mut turns, &[], &[ledger]);
+        inject_delegation_meta(&mut turns, &[], std::slice::from_ref(&ledger));
 
         let meta = first_block_meta(&turns[0])
             .and_then(|value| value.get("codeg.delegation"))
@@ -3291,6 +3291,15 @@ mod tests {
         assert_eq!(meta["error_code"], "interrupted");
         assert_eq!(meta["task_preview"], "work interrupted by restart");
         assert_eq!(meta["child_conversation_id"], 42);
+
+        let mut oversized = ledger;
+        oversized.task = "界".repeat(crate::acp::delegation::TASK_PREVIEW_CAP);
+        let preview = build_ledger_delegation_meta(&oversized)["task_preview"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(preview.len() <= crate::acp::delegation::TASK_PREVIEW_CAP);
+        assert!(preview.ends_with('…'));
     }
 
     #[test]

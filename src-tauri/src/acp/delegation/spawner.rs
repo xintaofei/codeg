@@ -49,6 +49,10 @@ pub struct DelegationAdmission {
 pub enum DelegationDispatch {
     Started(i32),
     Existing(DelegationTaskReport),
+    Conflict {
+        next_task_id: String,
+        reason: String,
+    },
     Failed(DelegationTaskReport),
 }
 
@@ -307,6 +311,10 @@ pub mod mock {
                 .lock()
                 .await
                 .push_back(r.map(DelegationDispatch::Started));
+        }
+
+        pub async fn queue_dispatch(&self, dispatch: DelegationDispatch) {
+            self.send_results.lock().await.push_back(Ok(dispatch));
         }
 
         /// Install a one-shot gate that holds the next

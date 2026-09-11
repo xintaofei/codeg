@@ -92,13 +92,6 @@ const DEFAULT_COMPLETED_CACHE_CAP_BYTES: usize = 512 * 1024 * 1024;
 /// never the eviction victim in `insert_completed`.
 const COMPLETED_TEXT_CAP: usize = 256 * 1024;
 
-/// Cap on the `task_preview` carried by the `DelegationStarted` event and the
-/// parent-card meta writes. The full task text lives in the MCP call (and, on
-/// most hosts, in the parent tool call's own `raw_input`); the preview only
-/// has to label the delegation card, so it shares the status-preview budget
-/// rather than the multi-KiB result cap.
-const TASK_PREVIEW_CAP: usize = 2 * 1024;
-
 /// Cap on the inline `text_preview` carried by the `DelegationCompleted` event
 /// and the terminal meta, so the parent card can render the result inline
 /// without re-fetching the child session.
@@ -234,7 +227,8 @@ struct RunningTask {
     parent_tool_use_id: String,
     /// Target agent — surfaced in status reports.
     agent_type: AgentType,
-    /// Bounded preview of the delegated task text ([`TASK_PREVIEW_CAP`]).
+    /// Bounded preview of the delegated task text
+    /// ([`super::TASK_PREVIEW_CAP`]).
     /// Carried so TERMINAL meta writes can keep labeling the parent card —
     /// meta is replace-wholesale on the ToolCallState, so a terminal write
     /// that dropped the task text would erase what the running write supplied.
@@ -867,7 +861,7 @@ fn running_ack(
 
 /// Cap on the free-form `reason` a `resume_delegation` call may carry into the
 /// child's continuation prompt. The reason is interruption CONTEXT, not new
-/// instructions — the cap (shared with `TASK_PREVIEW_CAP`'s budget) keeps it
+/// instructions — the cap (shared with the task-preview budget) keeps it
 /// from smuggling a task-sized payload past the "no new iterations" contract.
 const RESUME_REASON_CAP: usize = 2 * 1024;
 
@@ -2813,7 +2807,7 @@ impl DelegationBroker {
         // Bounded task label used by the started event and every meta write —
         // the frontend card's fallback when the parent tool call's `raw_input`
         // never carried the arguments (Cursor's identity-less announcements).
-        let task_preview = truncate_on_char_boundary(&req.task, TASK_PREVIEW_CAP);
+        let task_preview = super::task_preview(&req.task);
         // Now that the child connection and task id exist, fill the span's empty
         // fields so every subsequent log line in this delegation carries the
         // parent→child linkage (see the `delegation_task` span on this fn).
@@ -2867,6 +2861,24 @@ impl DelegationBroker {
                 let _ = self.spawner.disconnect(&child_connection_id).await;
                 self.abandon_release_slot(&call_id).await;
                 return report;
+            }
+            Ok(DelegationDispatch::Conflict {
+                next_task_id,
+                reason,
+            }) => {
+                let mut inner = self.pending.inner.lock().await;
+                inner.unreserve(&call_id, &child_connection_id);
+                inner.deregister_inflight(inflight_id);
+                drop(inner);
+                let _ = self.spawner.disconnect(&child_connection_id).await;
+                self.abandon_release_slot(&call_id).await;
+                return report_err(
+                    req.agent_type,
+                    DelegationError::ContinuationConflict(format!(
+                        "{reason}; existing successor is {next_task_id}"
+                    )),
+                    None,
+                );
             }
             Ok(DelegationDispatch::Failed(report)) => {
                 let mut inner = self.pending.inner.lock().await;
@@ -4596,7 +4608,7 @@ impl DelegationBroker {
         let task_preview = ctx
             .title
             .as_deref()
-            .map(|t| truncate_on_char_boundary(t, TASK_PREVIEW_CAP))
+            .map(super::task_preview)
             .unwrap_or_else(|| "(resumed delegation)".to_string());
         // The resumed run reuses the ORIGINAL parent-side tool_use_id persisted
         // on the row so the parent's original delegation card re-binds; a row
@@ -6060,6 +6072,32 @@ mod tests {
             DelegationOutcome::Err { code, .. } => assert_eq!(code, "spawn_failed"),
             other => panic!("expected Err, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn admission_race_preserves_continuation_conflict() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("losing-child".into())).await;
+        mock.queue_dispatch(DelegationDispatch::Conflict {
+            next_task_id: "winning-task".into(),
+            reason: "source already has a successor".into(),
+        })
+        .await;
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
+
+        let report = broker.start_delegation(request(1, "pt-race")).await;
+
+        assert_eq!(report.error_code.as_deref(), Some("continuation_conflict"));
+        assert!(report.message.as_deref().unwrap().contains("winning-task"));
+        assert_eq!(
+            mock.disconnects.lock().await.as_slice(),
+            &["losing-child".to_string()]
+        );
+        assert_eq!(broker.inflight_count().await, 0);
+        assert_eq!(broker.reserved_call_count().await, 0);
+        assert_eq!(broker.pending_count().await, 0);
     }
 
     #[tokio::test]

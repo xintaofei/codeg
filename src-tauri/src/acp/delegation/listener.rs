@@ -806,14 +806,15 @@ impl DelegationListener {
             .clone()
             .or_else(|| Some(entry.working_dir.to_string_lossy().to_string()));
         let continue_from_task_id = match req.input.get("continue_from_task_id") {
-            None => None,
+            None | Some(serde_json::Value::Null) => None,
             Some(serde_json::Value::String(value)) if !value.trim().is_empty() => {
                 Some(value.trim().to_string())
             }
+            Some(serde_json::Value::String(_)) => None,
             Some(_) => {
                 return report_failed(
                     "continuation_invalid",
-                    "continue_from_task_id must be a non-empty string",
+                    "continue_from_task_id must be a string or null",
                 );
             }
         };
@@ -2063,7 +2064,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_continuation_id_is_rejected_before_spawn() {
+    async fn continuation_id_validation_rejects_types_and_defaults_empty_values() {
         let mock = Arc::new(MockSpawner::new());
         let broker = make_broker(mock.clone()).await;
         let tokens = Arc::new(TokenRegistry::default());
@@ -2077,7 +2078,7 @@ mod tests {
             )
             .await;
         let listener = make_listener(broker, tokens, Some(1));
-        for invalid in [serde_json::Value::Null, json!(7), json!("  ")] {
+        for invalid in [json!(7), json!([])] {
             let report = listener
                 .process(
                     make_request(json!({
@@ -2091,6 +2092,26 @@ mod tests {
             assert_eq!(report.error_code.as_deref(), Some("continuation_invalid"));
         }
         assert!(mock.spawn_args.lock().await.is_empty());
+
+        mock.queue_spawn(Err(SpawnerError::Spawn("stop-null".into())))
+            .await;
+        mock.queue_spawn(Err(SpawnerError::Spawn("stop-blank".into())))
+            .await;
+        for value in [serde_json::Value::Null, json!("  ")] {
+            let report = listener
+                .process(
+                    make_request(json!({
+                        "agent_type": "codex",
+                        "task": "fresh",
+                        "continue_from_task_id": value,
+                    }))
+                    .await,
+                )
+                .await;
+            assert_eq!(report.error_code.as_deref(), Some("spawn_failed"));
+        }
+
+        assert_eq!(mock.spawn_args.lock().await.len(), 2);
     }
 
     // --- check_user_feedback over the listener -----------------------------
