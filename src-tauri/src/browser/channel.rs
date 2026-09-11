@@ -29,8 +29,9 @@ pub const TELEMETRY_EVENT: &str = "browser://telemetry";
 pub type MessageSink = Arc<dyn Fn(String, bool, usize) + Send + Sync>;
 
 /// Defines the send primitive the helper calls; injected before the helper,
-/// in the same world, so the page never sees either.
-#[cfg(target_os = "macos")]
+/// in the same world, so the page never sees either. WebKit spells the message
+/// handler the same way on both its ports, so macOS and Linux share this.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub const PREFIX_SCRIPT: &str = "globalThis.__codegSend = function (m) { window.webkit.messageHandlers.codegBrowser.postMessage(String(m)); };";
 
 #[derive(Debug, Deserialize)]

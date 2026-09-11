@@ -67,8 +67,10 @@ pub fn capabilities(policy: &BrowserPolicy) -> BrowserCapabilities {
     };
     // The installer ships with the embedded surface. On macOS before 11 it
     // falls back to the page world, which only the live controller can tell,
-    // so a tab there answers `legacy` while this still says `native`.
-    let channel = if CHILD_SURFACE_COMPILED {
+    // so a tab there answers `legacy` while this still says `native`. Linux
+    // has no embedded surface and a channel all the same: its owned window
+    // carries the script world itself.
+    let channel = if CHILD_SURFACE_COMPILED || cfg!(target_os = "linux") {
         ChannelKind::Native
     } else {
         reasons.push("no page channel without the embedded surface".to_string());
@@ -344,6 +346,16 @@ pub struct DocOpenResult {
 /// registry so bounds, visibility, reload and close work unchanged; the
 /// grant — root, entry, mode — is looked up by document, so the file comes
 /// back in the mode the user last chose for it this session.
+#[cfg_attr(
+    not(all(
+        feature = "browser-child",
+        any(target_os = "macos", target_os = "windows")
+    )),
+    // Everything below the surface is dead where there is no embedded surface:
+    // `doc_guest::supported()` is false there, and the block that would build
+    // one is a `return`. It still has to compile.
+    allow(unreachable_code, unused_variables)
+)]
 pub fn doc_open_core(
     app: &AppHandle,
     owner: &WebviewWindow,
@@ -372,7 +384,10 @@ pub fn doc_open_core(
         .grant_for(root, entry)
         .map_err(AppCommandError::invalid_input)?;
     let label = doc_guest::doc_label(&params.tab_id);
-    let surface = {
+    // Annotated because on a platform without the embedded surface the block
+    // below is nothing but a `return`, and a diverging block tells the
+    // compiler nothing about what the rest of this function is holding.
+    let surface: BrowserSurface = {
         #[cfg(all(
             feature = "browser-child",
             any(target_os = "macos", target_os = "windows")

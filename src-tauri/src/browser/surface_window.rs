@@ -1,6 +1,13 @@
 //! Owned-window surface: a top-level `WebviewWindow` attached to the owner
 //! (`parent`). The only surface on Linux, the fallback everywhere else, and
 //! the shape popups take when they cannot be adopted as tabs.
+//!
+//! On Linux this window is also where the page ↔ host channel and the rest of
+//! the shim live, because there is no embedded surface to put them on: the
+//! engine webview behind the window is taken hold of once, at creation, and
+//! every operation afterwards goes through `platform`. On macOS and Windows an
+//! owned window is a fallback that the host does not hold the webview of, and
+//! `platform` answers the same calls by saying so.
 
 use tauri::webview::{DownloadEvent, PageLoadEvent};
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
@@ -12,6 +19,8 @@ use super::policy::{self, BrowserPolicy};
 use super::profile;
 use super::registry::BrowserRegistry;
 use super::types::NavigationBlockReason;
+
+pub use platform::*;
 
 #[allow(clippy::too_many_arguments)]
 pub fn create(
@@ -31,14 +40,23 @@ pub fn create(
         .min_inner_size(480.0, 320.0)
         .focused(!background)
         .devtools(devtools)
-        // tauri only asks about top-level navigations here, so every refusal
-        // is worth a notice.
         .on_navigation({
             let app = app.clone();
             let tab_id = tab_id.to_string();
+            let label = label.to_string();
             move |url| {
                 if !policy::navigation_allowed(url) {
-                    hooks::navigation_blocked(&app, &tab_id, url.as_str(), NavigationBlockReason::Scheme);
+                    // On macOS and Windows tauri asks only about top-level
+                    // navigations, so every refusal is the page's own and
+                    // worth a notice. On Linux the engine reports no frame at
+                    // all and wry asks about every one of them, so a refusal
+                    // that a FRAME would have been allowed is one of those and
+                    // is refused quietly: the scheme list stays the top-level
+                    // one, because a page must not be able to put `data:` in
+                    // the address bar by asking for it as a navigation.
+                    if !(cfg!(target_os = "linux") && policy::subframe_navigation_allowed(url)) {
+                        hooks::navigation_blocked(&app, &tab_id, url.as_str(), NavigationBlockReason::Scheme);
+                    }
                     return false;
                 }
                 if app
@@ -48,6 +66,9 @@ pub fn create(
                     hooks::navigation_blocked(&app, &tab_id, url.as_str(), NavigationBlockReason::HostRule);
                     return false;
                 }
+                // Allowed, and this is the last moment before the request is
+                // made: the identity the page is shown is decided here.
+                platform::navigating_to(&label, url);
                 true
             }
         })
@@ -118,13 +139,20 @@ pub fn create(
     let builder = builder.parent(owner)?;
     let window = builder.build()?;
 
+    // Take hold of the engine webview before the caller navigates: on Linux
+    // everything the shim does is reached through it, and the navigation hooks
+    // have to be in place before the first load starts.
+    platform::adopt(app, &window, tab_id);
+
     // The user can close an owned window directly; drop the tab and tell the
     // frontend so the tab strip follows.
     {
         let app = app.clone();
         let tab_id = tab_id.to_string();
+        let label = label.to_string();
         window.on_window_event(move |event| {
             if matches!(event, WindowEvent::Destroyed) {
+                platform::forget(&label);
                 if let Some(registry) = app.try_state::<BrowserRegistry>() {
                     if let Some(tab) = registry.remove(&tab_id) {
                         events::emit_closed(&app, &tab_id, &tab.state.owner_window);
@@ -134,4 +162,358 @@ pub fn create(
         });
     }
     Ok(window)
+}
+
+/// Linux: the engine webview behind each owned window, and the shim calls that
+/// need it.
+///
+/// `tauri::WebviewWindow` hands the platform webview out through `with_webview`
+/// and only on the main thread, so it is taken once at creation and kept here —
+/// the same arrangement `surface_child` uses for its wry views, for the same
+/// reason: the webview is not `Send`, and a handle that crosses threads has to
+/// hop back to reach it. Two callers need it synchronously from the main thread
+/// (the navigation decision, which must set the sign-in identity before the
+/// request goes out, and the window's own event hooks), which is why the map
+/// exists at all instead of a `with_webview` round trip per call.
+#[cfg(target_os = "linux")]
+mod platform {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::sync::mpsc;
+    use std::sync::{Arc, OnceLock};
+    use std::thread::ThreadId;
+    use std::time::Duration;
+
+    use tauri::{AppHandle, Manager, Url, WebviewWindow};
+    use webkit2gtk::WebView;
+
+    use super::super::channel;
+    use super::super::hooks;
+    use super::super::shim::linux as shim;
+    use super::super::surface::SurfaceError;
+
+    struct Live {
+        webview: WebView,
+        tab_id: String,
+    }
+
+    thread_local! {
+        /// Engine webviews by window label. Main thread only.
+        static WEBVIEWS: RefCell<HashMap<String, Live>> = RefCell::new(HashMap::new());
+    }
+
+    static MAIN_THREAD: OnceLock<ThreadId> = OnceLock::new();
+
+    /// Must be called once from the main thread (tauri's `setup` hook) before
+    /// any surface is created; lets the calls below run inline instead of
+    /// deadlocking when they are used from a webview callback.
+    pub fn init_main_thread() {
+        let _ = MAIN_THREAD.set(std::thread::current().id());
+    }
+
+    fn on_main_thread() -> bool {
+        MAIN_THREAD.get() == Some(&std::thread::current().id())
+    }
+
+    fn run_on_main<R: Send + 'static>(
+        app: &AppHandle,
+        f: impl FnOnce() -> R + Send + 'static,
+    ) -> Result<R, SurfaceError> {
+        if on_main_thread() {
+            return Ok(f());
+        }
+        let (tx, rx) = mpsc::channel();
+        app.run_on_main_thread(move || {
+            let _ = tx.send(f());
+        })
+        .map_err(|e| SurfaceError(format!("main-thread dispatch failed: {e}")))?;
+        rx.recv()
+            .map_err(|e| SurfaceError(format!("main-thread dispatch failed: {e}")))
+    }
+
+    /// Run `f` against the engine webview of an owned window, on the main
+    /// thread.
+    fn with<T: Send + 'static>(
+        window: &WebviewWindow,
+        f: impl FnOnce(&WebView) -> T + Send + 'static,
+    ) -> Result<T, SurfaceError> {
+        let label = window.label().to_string();
+        run_on_main(window.app_handle(), move || {
+            WEBVIEWS.with(|live| live.borrow().get(&label).map(|live| f(&live.webview)))
+        })?
+        .ok_or_else(|| SurfaceError("this window has no engine webview".into()))
+    }
+
+    /// Take hold of a new window's engine webview and hook its navigation
+    /// reporting. Waits for it: the caller installs the channel and navigates
+    /// as soon as this returns, and both go through the map.
+    pub(super) fn adopt(app: &AppHandle, window: &WebviewWindow, tab_id: &str) {
+        let label = window.label().to_string();
+        let held = label.clone();
+        let tab = tab_id.to_string();
+        let sink = hooks::navigation_sink(app, tab_id);
+        let (tx, rx) = mpsc::channel();
+        let asked = window.with_webview(move |platform| {
+            let webview = platform.inner();
+            if let Err(err) = shim::install_navigation_hooks(&webview, sink) {
+                tracing::warn!(
+                    "[browser] window {held}: navigation hooks not installed ({err}); \
+                     failures are detected by polling"
+                );
+            }
+            WEBVIEWS.with(|live| {
+                live.borrow_mut()
+                    .insert(held, Live { webview, tab_id: tab })
+            });
+            let _ = tx.send(());
+        });
+        match asked {
+            // Bounded rather than open-ended: a main thread that never answers
+            // is a bug, and hanging a command thread on it would hide the bug
+            // behind a frozen tab. The surface still works, without the shim.
+            Ok(()) => {
+                if rx.recv_timeout(Duration::from_secs(5)).is_err() {
+                    tracing::warn!(
+                        "[browser] window {label}: the engine webview did not arrive; \
+                         history, find and the page channel are unavailable"
+                    );
+                }
+            }
+            Err(err) => tracing::warn!("[browser] window {label}: no engine webview ({err})"),
+        }
+    }
+
+    /// Main thread. Drop what is held for a window that is going away.
+    pub(super) fn forget(label: &str) {
+        let live = WEBVIEWS.with(|live| live.borrow_mut().remove(label));
+        if let Some(live) = live {
+            shim::forget(&live.webview);
+        }
+    }
+
+    /// Main thread. Give the page the identity `profile` wants for where it is
+    /// going — called from the navigation decision, which WebKitGTK takes
+    /// before the request is made.
+    pub(super) fn navigating_to(label: &str, url: &Url) {
+        WEBVIEWS.with(|live| {
+            if let Some(live) = live.borrow().get(label) {
+                shim::apply_user_agent(&live.webview, url);
+            }
+        });
+    }
+
+    pub fn install_channel(window: &WebviewWindow) -> Result<bool, SurfaceError> {
+        let app = window.app_handle().clone();
+        let label = window.label().to_string();
+        run_on_main(window.app_handle(), move || {
+            WEBVIEWS.with(|live| {
+                let live = live.borrow();
+                let Some(live) = live.get(&label) else {
+                    return Err(SurfaceError("this window has no engine webview".into()));
+                };
+                let tab_id = live.tab_id.clone();
+                let sink: shim::MessageSink = Arc::new(move |raw, main_frame| {
+                    channel::handle_message(&app, &tab_id, raw, main_frame)
+                });
+                shim::install_world(
+                    &live.webview,
+                    &[channel::PREFIX_SCRIPT, channel::HELPER_JS],
+                    sink,
+                )
+                .map_err(SurfaceError)
+            })
+        })?
+    }
+
+    pub fn eval_in_world(
+        window: &WebviewWindow,
+        expression: &str,
+        callback: impl Fn(Result<String, String>) + Send + 'static,
+    ) -> Result<(), SurfaceError> {
+        let expression = expression.to_string();
+        with(window, move |webview| {
+            shim::eval_in_world(webview, &expression, callback)
+        })?
+        .map_err(SurfaceError)
+    }
+
+    pub fn snapshot_png(
+        window: &WebviewWindow,
+        callback: impl Fn(Result<Vec<u8>, String>) + Send + 'static,
+    ) -> Result<(), SurfaceError> {
+        with(window, move |webview| shim::snapshot_png(webview, callback))?.map_err(SurfaceError)
+    }
+
+    pub fn snapshot_jpeg(
+        window: &WebviewWindow,
+        quality: f64,
+        callback: impl Fn(Result<(Vec<u8>, u32, u32), String>) + Send + 'static,
+    ) -> Result<(), SurfaceError> {
+        with(window, move |webview| {
+            shim::snapshot_jpeg(webview, quality, callback)
+        })?
+        .map_err(SurfaceError)
+    }
+
+    pub fn find(
+        window: &WebviewWindow,
+        query: &str,
+        forward: bool,
+        callback: impl Fn(bool) + Send + 'static,
+    ) -> Result<(), SurfaceError> {
+        let query = query.to_string();
+        with(window, move |webview| {
+            shim::find_string(webview, &query, forward, callback)
+        })?
+        .map_err(SurfaceError)
+    }
+
+    pub fn clear_find(window: &WebviewWindow) -> Result<(), SurfaceError> {
+        with(window, shim::clear_find)?.map_err(SurfaceError)
+    }
+
+    pub fn go_back(window: &WebviewWindow) -> Result<(), SurfaceError> {
+        with(window, shim::go_back)
+    }
+
+    pub fn go_forward(window: &WebviewWindow) -> Result<(), SurfaceError> {
+        with(window, shim::go_forward)
+    }
+
+    pub fn can_go_back(window: &WebviewWindow) -> Result<bool, SurfaceError> {
+        with(window, shim::can_go_back)
+    }
+
+    pub fn can_go_forward(window: &WebviewWindow) -> Result<bool, SurfaceError> {
+        with(window, shim::can_go_forward)
+    }
+
+    pub fn stop(window: &WebviewWindow) -> Result<(), SurfaceError> {
+        with(window, shim::stop_loading)
+    }
+
+    pub fn is_loading(window: &WebviewWindow) -> Result<bool, SurfaceError> {
+        with(window, shim::is_loading)
+    }
+
+    pub fn url(window: &WebviewWindow) -> Result<Url, SurfaceError> {
+        let url = with(window, shim::current_url)?
+            .ok_or_else(|| SurfaceError("nothing has been loaded in this window yet".into()))?;
+        Url::parse(&url).map_err(|e| SurfaceError(e.to_string()))
+    }
+
+    pub fn refresh_user_agent(window: &WebviewWindow) -> Result<(), SurfaceError> {
+        with(window, shim::refresh_user_agent)
+    }
+
+    pub fn debug_view(window: &WebviewWindow) -> Result<serde_json::Value, SurfaceError> {
+        with(window, shim::debug_view)
+    }
+}
+
+/// macOS / Windows: an owned window is the fallback surface, and the host does
+/// not hold its engine webview — tauri hands that out on the main thread only,
+/// and the embedded surface is where these operations are implemented on both
+/// platforms. Nothing here fails silently: each call says what it needs.
+#[cfg(not(target_os = "linux"))]
+mod platform {
+    use tauri::{AppHandle, Url, WebviewWindow};
+
+    use super::super::surface::SurfaceError;
+
+    fn embedded_only(what: &str) -> SurfaceError {
+        SurfaceError(format!("{what} needs an embedded surface on this platform"))
+    }
+
+    pub fn init_main_thread() {}
+
+    pub(super) fn adopt(_app: &AppHandle, _window: &WebviewWindow, _tab_id: &str) {}
+
+    pub(super) fn forget(_label: &str) {}
+
+    pub(super) fn navigating_to(_label: &str, _url: &Url) {}
+
+    pub fn install_channel(_window: &WebviewWindow) -> Result<bool, SurfaceError> {
+        Err(embedded_only("the page channel"))
+    }
+
+    pub fn eval_in_world(
+        _window: &WebviewWindow,
+        _expression: &str,
+        _callback: impl Fn(Result<String, String>) + Send + 'static,
+    ) -> Result<(), SurfaceError> {
+        Err(embedded_only("world evaluation"))
+    }
+
+    pub fn snapshot_png(
+        _window: &WebviewWindow,
+        _callback: impl Fn(Result<Vec<u8>, String>) + Send + 'static,
+    ) -> Result<(), SurfaceError> {
+        Err(embedded_only("snapshots"))
+    }
+
+    pub fn snapshot_jpeg(
+        _window: &WebviewWindow,
+        _quality: f64,
+        _callback: impl Fn(Result<(Vec<u8>, u32, u32), String>) + Send + 'static,
+    ) -> Result<(), SurfaceError> {
+        Err(embedded_only("snapshots"))
+    }
+
+    pub fn find(
+        _window: &WebviewWindow,
+        _query: &str,
+        _forward: bool,
+        _callback: impl Fn(bool) + Send + 'static,
+    ) -> Result<(), SurfaceError> {
+        Err(embedded_only("find in page"))
+    }
+
+    pub fn clear_find(_window: &WebviewWindow) -> Result<(), SurfaceError> {
+        Err(embedded_only("find in page"))
+    }
+
+    pub fn go_back(_window: &WebviewWindow) -> Result<(), SurfaceError> {
+        Err(embedded_only("history navigation"))
+    }
+
+    pub fn go_forward(_window: &WebviewWindow) -> Result<(), SurfaceError> {
+        Err(embedded_only("history navigation"))
+    }
+
+    pub fn can_go_back(_window: &WebviewWindow) -> Result<bool, SurfaceError> {
+        Ok(false)
+    }
+
+    pub fn can_go_forward(_window: &WebviewWindow) -> Result<bool, SurfaceError> {
+        Ok(false)
+    }
+
+    pub fn stop(_window: &WebviewWindow) -> Result<(), SurfaceError> {
+        Err(embedded_only("stopping a load"))
+    }
+
+    pub fn is_loading(_window: &WebviewWindow) -> Result<bool, SurfaceError> {
+        Err(embedded_only("the load state"))
+    }
+
+    /// Deliberately not asked of wry: `url()` unwraps `WKWebView.URL`, which is
+    /// nil until a navigation has committed (or after the first one failed),
+    /// and that unwrap panics the main thread. The registry state carries the
+    /// URL either way.
+    pub fn url(_window: &WebviewWindow) -> Result<Url, SurfaceError> {
+        Err(SurfaceError(
+            "owned windows report their URL through the tab state".into(),
+        ))
+    }
+
+    /// An owned window here has no per-navigation identity and keeps the
+    /// engine's own.
+    pub fn refresh_user_agent(_window: &WebviewWindow) -> Result<(), SurfaceError> {
+        Ok(())
+    }
+
+    pub fn debug_view(window: &WebviewWindow) -> Result<serde_json::Value, SurfaceError> {
+        Ok(serde_json::json!({ "visible": window.is_visible().ok() }))
+    }
 }

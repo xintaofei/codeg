@@ -5,12 +5,14 @@
 //! through `surface_child::ChildHandle` (or, later, `with_webview` for owned
 //! windows).
 
+#[cfg(target_os = "linux")]
+pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(all(target_os = "windows", feature = "browser-child"))]
 pub mod windows;
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod navigation {
     //! What the engines report about a navigation and wry does not: where a
     //! page-initiated load is heading, that it was redirected, that it ended
@@ -39,5 +41,5 @@ mod navigation {
     pub type NavigationSink = Arc<dyn Fn(NavigationEvent) + Send + Sync>;
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub use navigation::{NavigationEvent, NavigationSink};

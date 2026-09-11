@@ -1008,6 +1008,7 @@ mod tauri_app {
                     any(target_os = "macos", target_os = "windows")
                 ))]
                 crate::browser::surface_child::init_main_thread();
+                crate::browser::surface_window::init_main_thread();
 
                 #[cfg(feature = "browser-smoke")]
                 crate::browser::smoke::spawn_if_enabled(app.handle().clone());

@@ -10,6 +10,31 @@ use super::events;
 use super::registry::BrowserRegistry;
 use super::types::{BrowserErrorInfo, BrowserErrorKind, NavigationBlockReason};
 
+/// Where a platform delegate's navigation events go: the hooks below, for one
+/// tab. Every surface that has a shim builds its sink here, so the four events
+/// mean the same thing whichever engine reported them.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub fn navigation_sink(app: &AppHandle, tab_id: &str) -> super::shim::NavigationSink {
+    use super::shim::NavigationEvent;
+
+    let app = app.clone();
+    let tab_id = tab_id.to_string();
+    std::sync::Arc::new(move |event| match event {
+        NavigationEvent::Started(url) => {
+            if let Ok(url) = Url::parse(&url) {
+                navigation_started(&app, &tab_id, &url);
+            }
+        }
+        NavigationEvent::Redirected(url) => {
+            if let Ok(url) = Url::parse(&url) {
+                navigation_redirected(&app, &tab_id, &url);
+            }
+        }
+        NavigationEvent::Interrupted => navigation_interrupted(&app, &tab_id),
+        NavigationEvent::Failed(failure) => navigation_failed(&app, &tab_id, failure),
+    })
+}
+
 pub fn origin_of(url: &Url) -> Option<String> {
     let origin = url.origin();
     if origin.is_tuple() {

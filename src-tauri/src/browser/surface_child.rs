@@ -125,27 +125,6 @@ fn message_sink(app: &AppHandle) -> MessageSink {
     })
 }
 
-/// Where the platform delegate's navigation events go: the registry, via
-/// the hooks (main thread).
-fn navigation_sink(app: &AppHandle, tab_id: &str) -> shim::NavigationSink {
-    let app = app.clone();
-    let tab_id = tab_id.to_string();
-    Arc::new(move |event| match event {
-        shim::NavigationEvent::Started(url) => {
-            if let Ok(url) = Url::parse(&url) {
-                hooks::navigation_started(&app, &tab_id, &url);
-            }
-        }
-        shim::NavigationEvent::Redirected(url) => {
-            if let Ok(url) = Url::parse(&url) {
-                hooks::navigation_redirected(&app, &tab_id, &url);
-            }
-        }
-        shim::NavigationEvent::Interrupted => hooks::navigation_interrupted(&app, &tab_id),
-        shim::NavigationEvent::Failed(failure) => hooks::navigation_failed(&app, &tab_id, failure),
-    })
-}
-
 /// Main thread only. Hook the engine's navigation reporting so failures and
 /// provisional starts reach the registry. Not fatal when it cannot be done:
 /// the load watcher still notices a failed load, only later and untyped.
@@ -158,12 +137,12 @@ fn attach_navigation_delegate(
     #[cfg(target_os = "macos")]
     let installed = {
         let _ = kind;
-        shim::install_navigation_delegate(webview, navigation_sink(app, tab_id))
+        shim::install_navigation_delegate(webview, hooks::navigation_sink(app, tab_id))
     };
     #[cfg(target_os = "windows")]
     let installed = shim::install_navigation_hooks(
         webview,
-        navigation_sink(app, tab_id),
+        hooks::navigation_sink(app, tab_id),
         frame_navigation_sink(app, tab_id, kind),
         download_permission_sink(app, tab_id, kind),
     );

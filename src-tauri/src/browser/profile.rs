@@ -580,10 +580,15 @@ pub fn user_agent_for(url: &Url) -> Option<&'static str> {
 /// hook on the navigation decision, which embedded tabs have on macOS
 /// (`decidePolicyForNavigationAction:`) and on Windows (`NavigationStarting`).
 pub fn sign_in_user_agent_supported() -> bool {
-    cfg!(all(
-        any(target_os = "macos", target_os = "windows"),
-        feature = "browser-child"
-    ))
+    // Wherever a navigation can be caught before the request goes out: the
+    // embedded surface's navigation delegate on macOS and Windows, the
+    // navigation decision on Linux (which is the owned window's, and the only
+    // surface there).
+    cfg!(target_os = "linux")
+        || cfg!(all(
+            any(target_os = "macos", target_os = "windows"),
+            feature = "browser-child"
+        ))
 }
 
 /// An unusable proxy (unsupported scheme) means direct connections, not a

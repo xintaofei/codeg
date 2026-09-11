@@ -199,6 +199,17 @@ junction = "1"
 webview2-com = { version = "0.38", optional = true }
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"], optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Built-in browser Linux shim (isolated world, world-scoped eval, snapshots,
+# find, history, typed load failures, the sign-in identity, the subframe
+# fence). Pinned to the exact versions and feature set wry 0.55 uses: these
+# types are the ones tauri's `with_webview` hands out, and a second copy of the
+# crate — or the same crate with a wider feature set, which would link symbols
+# the distribution's WebKitGTK may not have — would not line up with them.
+webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
+gtk = "0.18"
+javascriptcore-rs = "=1.1.2"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

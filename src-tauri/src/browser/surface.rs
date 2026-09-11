@@ -7,6 +7,7 @@
 
 use tauri::Url;
 
+use super::surface_window;
 use super::types::{Bounds, SurfaceKind};
 
 #[cfg(all(
@@ -91,7 +92,7 @@ impl BrowserSurface {
     pub fn url(&self) -> Result<Url, SurfaceError> {
         per_surface!(self,
             child: |c| Url::parse(&c.url()?).map_err(|e| SurfaceError(e.to_string())),
-            window: |_w| Err(SurfaceError("owned windows report their URL through the tab state".into())))
+            window: |w| surface_window::url(w))
     }
 
     pub fn eval(&self, js: &str) -> Result<(), SurfaceError> {
@@ -118,16 +119,13 @@ impl BrowserSurface {
     ) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.find(query, forward, callback)?),
-            window: |_w| {
-                let _ = (query, forward, callback);
-                Err(SurfaceError("find in page needs an embedded surface".into()))
-            })
+            window: |w| surface_window::find(w, query, forward, callback))
     }
 
     pub fn clear_find(&self) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.clear_find()?),
-            window: |_w| Err(SurfaceError("find in page needs an embedded surface".into())))
+            window: |w| surface_window::clear_find(w))
     }
 
     pub fn hide(&self) -> Result<(), SurfaceError> {
@@ -161,7 +159,7 @@ impl BrowserSurface {
     pub fn install_channel(&self) -> Result<bool, SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.install_channel()?),
-            window: |_w| Err(SurfaceError("page channel for owned windows lands with the platform shims".into())))
+            window: |w| surface_window::install_channel(w))
     }
 
     pub fn eval_in_world(
@@ -171,7 +169,7 @@ impl BrowserSurface {
     ) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.eval_in_world(expression, callback)?),
-            window: |_w| { let _ = (expression, callback); Err(SurfaceError("world evaluation for owned windows lands with the platform shims".into())) })
+            window: |w| surface_window::eval_in_world(w, expression, callback))
     }
 
     pub fn snapshot_png(
@@ -180,7 +178,7 @@ impl BrowserSurface {
     ) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.snapshot_png(callback)?),
-            window: |_w| { let _ = callback; Err(SurfaceError("snapshots for owned windows land with the platform shims".into())) })
+            window: |w| surface_window::snapshot_png(w, callback))
     }
 
     /// The frame as displayed now, JPEG-encoded (for the freeze frame shown
@@ -192,19 +190,19 @@ impl BrowserSurface {
     ) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.snapshot_jpeg(quality, callback)?),
-            window: |_w| { let _ = (quality, callback); Err(SurfaceError("snapshots for owned windows land with the platform shims".into())) })
+            window: |w| surface_window::snapshot_jpeg(w, quality, callback))
     }
 
     pub fn go_back(&self) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.go_back()?),
-            window: |_w| Err(SurfaceError("history navigation for owned windows lands with the platform shims".into())))
+            window: |w| surface_window::go_back(w))
     }
 
     pub fn go_forward(&self) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.go_forward()?),
-            window: |_w| Err(SurfaceError("history navigation for owned windows lands with the platform shims".into())))
+            window: |w| surface_window::go_forward(w))
     }
 
     /// Engine-side "still loading", used to notice failed navigations (wry
@@ -212,28 +210,30 @@ impl BrowserSurface {
     pub fn is_loading(&self) -> Result<bool, SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.is_loading()?),
-            window: |_w| Err(SurfaceError("load state for owned windows lands with the platform shims".into())))
+            window: |w| surface_window::is_loading(w))
     }
 
     pub fn can_go_back(&self) -> Result<bool, SurfaceError> {
-        per_surface!(self, child: |c| Ok(c.can_go_back()?), window: |_w| Ok(false))
+        per_surface!(self, child: |c| Ok(c.can_go_back()?), window: |w| surface_window::can_go_back(w))
     }
 
     pub fn can_go_forward(&self) -> Result<bool, SurfaceError> {
-        per_surface!(self, child: |c| Ok(c.can_go_forward()?), window: |_w| Ok(false))
+        per_surface!(self,
+            child: |c| Ok(c.can_go_forward()?),
+            window: |w| surface_window::can_go_forward(w))
     }
 
     pub fn stop(&self) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.stop()?),
-            window: |_w| Err(SurfaceError("stop for owned windows lands with the platform shims".into())))
+            window: |w| surface_window::stop(w))
     }
 
     /// Dev puppet only.
     pub fn debug_view(&self) -> Result<serde_json::Value, SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.debug_view()?),
-            window: |w| Ok(serde_json::json!({ "visible": w.is_visible().ok() })))
+            window: |w| surface_window::debug_view(w))
     }
 
     pub fn set_zoom(&self, factor: f64) -> Result<(), SurfaceError> {
@@ -254,6 +254,6 @@ impl BrowserSurface {
     pub fn refresh_user_agent(&self) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.refresh_user_agent()?),
-            window: |_w| Ok(()))
+            window: |w| surface_window::refresh_user_agent(w))
     }
 }
