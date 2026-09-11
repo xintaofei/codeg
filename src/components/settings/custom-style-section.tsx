@@ -39,6 +39,7 @@ import {
   BASIC_THEME_TOKENS,
   CUSTOM_THEME_TOKENS,
   EMPTY_CUSTOM_THEME,
+  SURFACE_COLOR_TOKENS,
   isColorToken,
   isEmptyCustomTheme,
   isValidTokenValue,
@@ -179,6 +180,7 @@ export function CustomStyleSection() {
   const [importOpen, setImportOpen] = useState(false)
   const [importDraft, setImportDraft] = useState("")
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [surfacesOpen, setSurfacesOpen] = useState(false)
   const [effective, setEffective] = useState<Record<string, string>>({})
 
   const overrides: TokenOverrides = isDarkMode
@@ -432,6 +434,33 @@ export function CustomStyleSection() {
               </CollapsibleTrigger>
               <CollapsibleContent className="space-y-1.5 pt-2">
                 {renderTokens(ADVANCED_THEME_TOKENS)}
+              </CollapsibleContent>
+            </Collapsible>
+
+            {/* codeg's own surfaces (message bubbles, composer, status bar).
+                Their defaults follow the shadcn tokens above, so they only need
+                a value when a look wants them to differ. */}
+            <Collapsible open={surfacesOpen} onOpenChange={setSurfacesOpen}>
+              <CollapsibleTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="-ml-2 h-7 px-2 text-xs text-muted-foreground"
+                >
+                  <ChevronDown
+                    className={cn(
+                      "size-3 transition-transform",
+                      surfacesOpen && "rotate-180"
+                    )}
+                  />
+                  {t("customStyle.surfaces", {
+                    count: SURFACE_COLOR_TOKENS.length,
+                  })}
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="space-y-1.5 pt-2">
+                {renderTokens(SURFACE_COLOR_TOKENS)}
               </CollapsibleContent>
             </Collapsible>
           </div>

@@ -1614,6 +1614,15 @@ pub fn build_router(
             "/background_market_download",
             post(handlers::background::background_market_download),
         )
+        // ─── Preset gallery ───
+        .route(
+            "/preset_gallery_fetch_index",
+            post(handlers::preset_gallery::preset_gallery_fetch_index),
+        )
+        .route(
+            "/preset_gallery_fetch_preset",
+            post(handlers::preset_gallery::preset_gallery_fetch_preset),
+        )
         // ─── Pet ───
         .route("/pet_list", post(handlers::pet::pet_list))
         .route("/pet_get", post(handlers::pet::pet_get))

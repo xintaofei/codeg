@@ -3,8 +3,12 @@ import {
   ADVANCED_THEME_TOKENS,
   BASIC_THEME_TOKENS,
   CUSTOM_THEME_TOKENS,
+  LAYOUT_THEME_TOKENS,
   MAX_CUSTOM_CSS_BYTES,
+  SHADCN_THEME_TOKENS,
+  SURFACE_COLOR_TOKENS,
   applyTokenOverrides,
+  isColorToken,
   isValidTokenValue,
   parseStoredCustomTheme,
   parseThemeRegistryItem,
@@ -18,11 +22,35 @@ describe("token whitelist", () => {
   it("covers exactly shadcn's 31 semantic colors plus radius", () => {
     // 与 https://ui.shadcn.com/docs/theming 的 Theme Tokens 表格对齐。多一个少一个
     // 都意味着我们和 shadcn 的 cssVars 形状分叉了，粘贴互通就会有洞。
-    expect(CUSTOM_THEME_TOKENS).toHaveLength(32)
-    expect(new Set(CUSTOM_THEME_TOKENS).size).toBe(32)
-    expect(CUSTOM_THEME_TOKENS).toContain("radius")
+    expect(SHADCN_THEME_TOKENS).toHaveLength(32)
+    expect(new Set(SHADCN_THEME_TOKENS).size).toBe(32)
+    expect(SHADCN_THEME_TOKENS).toContain("radius")
     expect(BASIC_THEME_TOKENS).toHaveLength(8)
     expect(ADVANCED_THEME_TOKENS).toHaveLength(24)
+  })
+
+  it("appends codeg's surface and layout tokens after the shadcn set", () => {
+    // The shadcn slice stays a prefix, so a pasted shadcn theme and an
+    // exported one keep lining up key for key; everything codeg-specific
+    // comes after it.
+    expect(CUSTOM_THEME_TOKENS.slice(0, SHADCN_THEME_TOKENS.length)).toEqual([
+      ...SHADCN_THEME_TOKENS,
+    ])
+    expect(CUSTOM_THEME_TOKENS).toHaveLength(
+      SHADCN_THEME_TOKENS.length +
+        SURFACE_COLOR_TOKENS.length +
+        LAYOUT_THEME_TOKENS.length
+    )
+    expect(new Set(CUSTOM_THEME_TOKENS).size).toBe(CUSTOM_THEME_TOKENS.length)
+  })
+
+  it("only offers a swatch for colour tokens", () => {
+    for (const token of SURFACE_COLOR_TOKENS)
+      expect(isColorToken(token)).toBe(true)
+    for (const token of LAYOUT_THEME_TOKENS)
+      expect(isColorToken(token)).toBe(false)
+    expect(isColorToken("radius")).toBe(false)
+    expect(isColorToken("primary")).toBe(true)
   })
 })
 

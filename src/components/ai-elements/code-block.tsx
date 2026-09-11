@@ -16,6 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { useCodeTheme } from "@/hooks/use-appearance"
 import { cn, copyTextToClipboard } from "@/lib/utils"
 import { CheckIcon, CopyIcon } from "lucide-react"
 import {
@@ -129,16 +130,30 @@ const tokensCache = new Map<string, TokenizedCode>()
 // Subscribers for async token updates
 const subscribers = new Map<string, Set<(result: TokenizedCode) => void>>()
 
-const getTokensCacheKey = (code: string, language: BundledLanguage) => {
+/** `[light, dark]` Shiki theme ids; see `useCodeTheme`. */
+export type CodeThemeTuple = [BundledTheme, BundledTheme]
+
+const themesKey = (themes: CodeThemeTuple) => `${themes[0]}|${themes[1]}`
+
+const getTokensCacheKey = (
+  code: string,
+  language: BundledLanguage,
+  themes: CodeThemeTuple
+) => {
   const start = code.slice(0, 100)
   const end = code.length > 100 ? code.slice(-100) : ""
-  return `${language}:${code.length}:${start}:${end}`
+  return `${themesKey(themes)}:${language}:${code.length}:${start}:${end}`
 }
 
+// One highlighter per (theme pair, language): a theme change is a rare,
+// user-driven event, so a fresh instance per pair is simpler than mutating a
+// shared one under in-flight highlights.
 const getHighlighter = (
-  language: BundledLanguage
+  language: BundledLanguage,
+  themes: CodeThemeTuple
 ): Promise<HighlighterGeneric<BundledLanguage, BundledTheme>> => {
-  const cached = highlighterCache.get(language)
+  const cacheKey = `${themesKey(themes)}:${language}`
+  const cached = highlighterCache.get(cacheKey)
   if (cached) {
     return cached
   }
@@ -151,11 +166,11 @@ const getHighlighter = (
   const highlighterPromise = import("shiki").then(({ createHighlighter }) =>
     createHighlighter({
       langs: [language],
-      themes: ["github-light", "github-dark"],
+      themes: [themes[0], themes[1]],
     })
   )
 
-  highlighterCache.set(language, highlighterPromise)
+  highlighterCache.set(cacheKey, highlighterPromise)
   return highlighterPromise
 }
 
@@ -179,10 +194,11 @@ const createRawTokens = (code: string): TokenizedCode => ({
 export const highlightCode = (
   code: string,
   language: BundledLanguage,
+  themes: CodeThemeTuple,
   // oxlint-disable-next-line eslint-plugin-promise(prefer-await-to-callbacks)
   callback?: (result: TokenizedCode) => void
 ): TokenizedCode | null => {
-  const tokensCacheKey = getTokensCacheKey(code, language)
+  const tokensCacheKey = getTokensCacheKey(code, language, themes)
 
   // Return cached result if available
   const cached = tokensCache.get(tokensCacheKey)
@@ -199,7 +215,7 @@ export const highlightCode = (
   }
 
   // Start highlighting in background - fire-and-forget async pattern
-  getHighlighter(language)
+  getHighlighter(language, themes)
     // oxlint-disable-next-line eslint-plugin-promise(prefer-await-to-then)
     .then((highlighter) => {
       const availableLangs = highlighter.getLoadedLanguages()
@@ -208,8 +224,8 @@ export const highlightCode = (
       const result = highlighter.codeToTokens(code, {
         lang: langToUse,
         themes: {
-          dark: "github-dark",
-          light: "github-light",
+          dark: themes[1],
+          light: themes[0],
         },
       })
 
@@ -389,19 +405,25 @@ export const CodeBlockContent = ({
   language: BundledLanguage
   showLineNumbers?: boolean
 }) => {
+  // The user's code colours (a preset setting). Its own context, so this only
+  // re-renders when the theme ids change.
+  const themes = useCodeTheme()
+  const themeKey = themesKey(themes)
+
   // Memoized raw tokens for immediate display
   const rawTokens = useMemo(() => createRawTokens(code), [code])
 
-  // Synchronous cached-or-raw value, recomputed when code/language changes
+  // Synchronous cached-or-raw value, recomputed when code/language/theme changes
   const syncTokenized = useMemo(
-    () => highlightCode(code, language) ?? rawTokens,
-    [code, language, rawTokens]
+    () => highlightCode(code, language, themes) ?? rawTokens,
+    [code, language, themes, rawTokens]
   )
 
-  // Async highlighted result, tagged with its source code/language
+  // Async highlighted result, tagged with its source code/language/theme
   const [asyncState, setAsyncState] = useState<{
     code: string
     language: string
+    themeKey: string
     tokenized: TokenizedCode
   } | null>(null)
 
@@ -409,20 +431,22 @@ export const CodeBlockContent = ({
     let cancelled = false
 
     // Subscribe to async highlighting result
-    highlightCode(code, language, (result) => {
+    highlightCode(code, language, themes, (result) => {
       if (!cancelled) {
-        setAsyncState({ code, language, tokenized: result })
+        setAsyncState({ code, language, themeKey, tokenized: result })
       }
     })
 
     return () => {
       cancelled = true
     }
-  }, [code, language])
+  }, [code, language, themes, themeKey])
 
-  // Use async result only if it matches current code/language
+  // Use async result only if it matches current code/language/theme
   const tokenized =
-    asyncState?.code === code && asyncState?.language === language
+    asyncState?.code === code &&
+    asyncState?.language === language &&
+    asyncState?.themeKey === themeKey
       ? asyncState.tokenized
       : syncTokenized
 

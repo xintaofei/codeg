@@ -37,6 +37,7 @@ pub mod pet_state_mapper;
 pub mod pets;
 #[cfg(feature = "tauri-runtime")]
 pub mod preferences;
+pub mod preset_gallery;
 pub mod process;
 pub mod supervise;
 mod terminal;
@@ -72,7 +73,8 @@ mod tauri_app {
         experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
         folder_links, office_tools as office_tools_commands, open_in,
         folders, logging as logging_commands, mcp as mcp_commands,
-        model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
+        model_provider as model_provider_commands, notification, pet as pet_commands,
+        preset_gallery as preset_gallery_commands, project_boot,
         question as question_commands, quick_messages as quick_messages_commands,
         remote_proxy as remote_proxy_commands,
         remote_workspace as remote_workspace_commands, science as science_commands,
@@ -1369,6 +1371,8 @@ mod tauri_app {
                 background_commands::background_market_search,
                 background_commands::background_market_asset,
                 background_commands::background_market_download,
+                preset_gallery_commands::preset_gallery_fetch_index,
+                preset_gallery_commands::preset_gallery_fetch_preset,
                 app_update_commands::app_update_state,
                 app_update_commands::perform_app_update,
                 app_update_commands::restart_app,
