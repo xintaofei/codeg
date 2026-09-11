@@ -99,6 +99,12 @@ struct SurfaceState {
     /// ordinary connection failure, and an error page over a load the user
     /// stopped on purpose would be the engine contradicting the user.
     stopped: Cell<bool>,
+    /// The engine's id for the newest navigation started. A completion that
+    /// carries a different one belongs to a load that was replaced while in
+    /// flight: the load flag, the address above and the identity the engine is
+    /// set to are the newer navigation's now, and the one it superseded may not
+    /// take any of them back on its way out.
+    navigation_id: Cell<Option<u64>>,
     /// CDP frame id of the top-level frame. The safety of the channel rests on
     /// it: a `bindingCalled` counts as main-frame only when its execution
     /// context belongs to this frame.
@@ -820,6 +826,28 @@ fn apply_user_agent(webview: &ICoreWebView2, key: usize, url: &Url) {
     }
 }
 
+/// Put the identity back to the one the document that is actually showing
+/// should be shown, after a navigation ended without replacing it.
+///
+/// `apply_user_agent` runs as a navigation STARTS, on the address it is heading
+/// for — which is the only moment early enough for the document it commits. A
+/// navigation that never commits (the user stopped it, it turned into a
+/// download, the page abandoned it) therefore leaves the setting on an identity
+/// meant for a page that never arrived, while the page still on screen goes on
+/// reading it out of `navigator.userAgent` and sending it with everything it
+/// asks for afterwards. Worst way round: a sign-in host's borrowed identity
+/// left behind on an ordinary site.
+fn restore_user_agent(webview: &ICoreWebView2, key: usize) {
+    // SAFETY: main thread, live webview.
+    let Some(url) = pwstr_out(|out| unsafe { webview.Source(out) })
+        .filter(|u| !u.is_empty())
+        .and_then(|u| Url::parse(&u).ok())
+    else {
+        return;
+    };
+    apply_user_agent(webview, key, &url);
+}
+
 /// The other half: the identity a document request actually carries. Written
 /// on the request itself, which is the only place WebView2 lets it be changed
 /// in time — the setting above reaches the page but not the navigation that
@@ -1086,7 +1114,13 @@ fn on_navigation_starting(
     if let Ok(url) = Url::parse(&uri) {
         apply_user_agent(webview, key, &url);
     }
+    let mut navigation_id = 0u64;
+    // SAFETY: main thread; the args are live and this is a valid out parameter.
+    unsafe {
+        let _ = args.NavigationId(&mut navigation_id);
+    }
     if let Some(state) = state(key) {
+        state.navigation_id.set(Some(navigation_id));
         state.loading.set(true);
         *state.started_url.borrow_mut() = Some(uri.clone());
         // A new navigation is not the one that was stopped.
@@ -1112,22 +1146,32 @@ fn on_navigation_completed(
 ) {
     let mut succeeded = BOOL::from(false);
     let mut status = COREWEBVIEW2_WEB_ERROR_STATUS::default();
-    // SAFETY: main thread; the args are live and both are valid out parameters.
+    let mut navigation_id = 0u64;
+    // SAFETY: main thread; the args are live and all three are valid out
+    // parameters.
     unsafe {
         let _ = args.IsSuccess(&mut succeeded);
         let _ = args.WebErrorStatus(&mut status);
+        let _ = args.NavigationId(&mut navigation_id);
     }
-    let mut url = None;
-    let mut worldless = false;
-    let mut stopped = false;
-    if let Some(state) = state(key) {
-        state.loading.set(false);
-        url = state.started_url.borrow_mut().take();
-        worldless = state.channel_installed.get() && main_world_context(&state).is_none();
-        stopped = state.stopped.replace(false);
+    let Some(state) = state(key) else {
+        return;
+    };
+    // A load that was replaced while in flight ends here too, and everything
+    // below belongs to the navigation that replaced it: its flag, its address,
+    // and the identity it set for where IT is going.
+    if state.navigation_id.get().is_some_and(|id| id != navigation_id) {
+        tracing::debug!("[browser] navigation {navigation_id} was superseded ({status:?})");
+        return;
     }
+    state.navigation_id.set(None);
+    state.loading.set(false);
+    let url = state.started_url.borrow_mut().take();
+    let worldless = state.channel_installed.get() && main_world_context(&state).is_none();
+    let stopped = state.stopped.replace(false);
     if stopped && !succeeded.as_bool() {
         tracing::debug!("[browser] navigation stopped by the host ({status:?})");
+        restore_user_agent(webview, key);
         return;
     }
     if succeeded.as_bool() {
@@ -1151,12 +1195,14 @@ fn on_navigation_completed(
     let showing = pwstr_out(|out| unsafe { webview.Source(out) });
     if url.is_some() && url != showing {
         tracing::debug!("[browser] navigation abandoned before it committed ({status:?})");
+        restore_user_agent(webview, key);
         return;
     }
     let Some(kind) = classify_web_error(status) else {
         // Superseded, stopped by the user, or refused by the host's own
         // handler: not a failure of the page.
         tracing::debug!("[browser] navigation ended without a page ({status:?})");
+        restore_user_agent(webview, key);
         return;
     };
     tracing::debug!("[browser] navigation failed: {status:?} -> {kind:?}");
