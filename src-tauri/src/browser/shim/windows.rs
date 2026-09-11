@@ -32,7 +32,8 @@ use serde_json::{json, Value};
 use tauri::Url;
 use tauri_runtime_wry::wry::{self, WebViewExtWindows};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2DevToolsProtocolEventReceiver, ICoreWebView2Environment15,
+    ICoreWebView2, ICoreWebView2DevToolsProtocolEventReceivedEventArgs2,
+    ICoreWebView2DevToolsProtocolEventReceiver, ICoreWebView2Environment15,
     ICoreWebView2Find, ICoreWebView2Frame, ICoreWebView2Frame2, ICoreWebView2Frame7,
     ICoreWebView2PermissionRequestedEventArgs3,
     ICoreWebView2Settings2, ICoreWebView2_28, ICoreWebView2_4,
@@ -109,8 +110,20 @@ struct SurfaceState {
     /// it: a `bindingCalled` counts as main-frame only when its execution
     /// context belongs to this frame.
     main_frame: RefCell<Option<String>>,
-    /// `codeg`-world execution contexts: CDP context id → the frame it is for.
-    contexts: RefCell<HashMap<i64, String>>,
+    /// A document has committed in the top frame since the channel started
+    /// watching. What it distinguishes is the surface that has never navigated
+    /// — still on the empty document it was created with — from one the ENGINE
+    /// navigated before the host could inject anything (see `needs_world`).
+    committed: Cell<bool>,
+    /// `codeg`-world execution contexts: which frame each is for, by the CDP
+    /// session that reported it and the id it has there. Ids are handed out per
+    /// renderer and start over in each, so the id alone does not name a context
+    /// — and this map is what decides whether a message came from the main
+    /// frame. The page's own session is the empty string.
+    contexts: RefCell<HashMap<(String, i64), String>>,
+    /// A world is being built by hand right now (`recover_world`), so a second
+    /// look at the same document must not start building another.
+    recovering: Cell<bool>,
     /// The helper, kept for the documents the injection cannot reach in time
     /// (see `recover_world`).
     helper: RefCell<Option<String>>,
@@ -302,6 +315,11 @@ pub fn install_world(
         &json!({ "source": helper, "worldName": WORLD_NAME }).to_string(),
     )?;
     state.channel_installed.set(true);
+    // The injection above covers what has not started yet. A document that was
+    // already here — or that committed inside one of the message pumps this
+    // call waits on — is not covered by it and gets its world now, rather than
+    // waiting for a navigation of its own that may never come.
+    ensure_world_for_current_document(&webview2, key);
     Ok(true)
 }
 
@@ -373,7 +391,7 @@ fn subscribe(webview: &ICoreWebView2, key: usize, event: &str) -> Result<(), Str
             &DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_, args| {
                 if let Some(args) = args {
                     if let Some(json) = pwstr_out(|out| args.ParameterObjectAsJson(out)) {
-                        on_event(key, &received, &json);
+                        on_event(key, &received, &session_of(&args), &json);
                     }
                 }
                 Ok(())
@@ -386,7 +404,21 @@ fn subscribe(webview: &ICoreWebView2, key: usize, event: &str) -> Result<(), Str
     Ok(())
 }
 
-fn on_event(key: usize, event: &str, raw: &str) {
+/// Which CDP session an event came from — the empty string for the page's own,
+/// a target id for anything WebView2 attached underneath it (an out-of-process
+/// iframe). An engine too old to say is speaking for the page.
+fn session_of(
+    args: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DevToolsProtocolEventReceivedEventArgs,
+) -> String {
+    args.cast::<ICoreWebView2DevToolsProtocolEventReceivedEventArgs2>()
+        .ok()
+        // SAFETY: main thread; the args are live and this is a valid out
+        // parameter.
+        .and_then(|args| pwstr_out(|out| unsafe { args.SessionId(out) }))
+        .unwrap_or_default()
+}
+
+fn on_event(key: usize, event: &str, session: &str, raw: &str) {
     let Some(state) = state(key) else {
         return;
     };
@@ -410,20 +442,28 @@ fn on_event(key: usize, event: &str, raw: &str) {
             // naming this frame is a context that is already gone — its
             // document was replaced, or the renderer that owed us its
             // `executionContextDestroyed` went away without sending one. It is
-            // retired here rather than left to be believed later: the id a
-            // context is known by is handed out per renderer process and starts
-            // over in each, so an id nobody retired can come back naming a
-            // frame that is not the one that first held it — and this map is
-            // what decides whether a message came from the main frame.
+            // retired here rather than left to be believed later: an id nobody
+            // retired can come back naming a frame that is not the one that
+            // first held it, and this map is what decides whether a message
+            // came from the main frame. Frame ids are unique across sessions,
+            // so the entry to retire is looked for in all of them.
             contexts.retain(|_, held| held.as_str() != frame);
-            contexts.insert(id, frame.to_string());
+            contexts.insert((session.to_string(), id), frame.to_string());
         }
         "Runtime.executionContextDestroyed" => {
             if let Some(id) = value["executionContextId"].as_i64() {
-                state.contexts.borrow_mut().remove(&id);
+                state
+                    .contexts
+                    .borrow_mut()
+                    .remove(&(session.to_string(), id));
             }
         }
-        "Runtime.executionContextsCleared" => state.contexts.borrow_mut().clear(),
+        // Every context of the session that said so — and only that session's:
+        // another target's contexts are still live.
+        "Runtime.executionContextsCleared" => state
+            .contexts
+            .borrow_mut()
+            .retain(|(held, _), _| held != session),
         "Page.frameNavigated" => {
             let frame = &value["frame"];
             // No parent = the top-level frame. Its id survives ordinary
@@ -432,6 +472,7 @@ fn on_event(key: usize, event: &str, raw: &str) {
                 if let Some(id) = frame["id"].as_str() {
                     *state.main_frame.borrow_mut() = Some(id.to_string());
                 }
+                state.committed.set(true);
             }
         }
         "Runtime.bindingCalled" => {
@@ -443,11 +484,18 @@ fn on_event(key: usize, event: &str, raw: &str) {
             };
             // Which frame spoke is decided here, from the execution context
             // the engine reports — never from the envelope's own `top` field,
-            // which the page's frame could set to anything. An unknown context
+            // which the page's frame could set to anything. The session it was
+            // reported in is part of that context's name: without it a frame
+            // in a renderer of its own could speak for the page by holding the
+            // number the page's own world happens to have. An unknown context
             // is not the main frame.
-            let frame = value["executionContextId"]
-                .as_i64()
-                .and_then(|id| state.contexts.borrow().get(&id).cloned());
+            let frame = value["executionContextId"].as_i64().and_then(|id| {
+                state
+                    .contexts
+                    .borrow()
+                    .get(&(session.to_string(), id))
+                    .cloned()
+            });
             let main_frame = match (frame, state.main_frame.borrow().clone()) {
                 (Some(frame), Some(main)) => frame == main,
                 _ => false,
@@ -473,22 +521,28 @@ fn on_event(key: usize, event: &str, raw: &str) {
 /// exists; the binding is registered by world NAME, so `__codegSend` is in it
 /// and the helper finds what it expects.
 fn recover_world(webview: &ICoreWebView2, key: usize) {
-    let Some(state) = state(key) else {
+    let Some(surface) = state(key) else {
         return;
     };
     let (Some(frame), Some(helper)) = (
-        state.main_frame.borrow().clone(),
-        state.helper.borrow().clone(),
+        surface.main_frame.borrow().clone(),
+        surface.helper.borrow().clone(),
     ) else {
         return;
     };
     let params = json!({ "frameId": frame, "worldName": WORLD_NAME }).to_string();
     let webview = webview.clone();
-    let _ = call_async(
+    surface.recovering.set(true);
+    let issued = call_async(
         &webview.clone(),
         "Page.createIsolatedWorld",
         &params,
         move |answer| {
+            // Whatever came back, this attempt is over: another look at the
+            // document may start a new one.
+            if let Some(state) = state(key) {
+                state.recovering.set(false);
+            }
             let context = answer.ok().and_then(|json| {
                 serde_json::from_str::<Value>(&json)
                     .ok()?["executionContextId"]
@@ -502,17 +556,56 @@ fn recover_world(webview: &ICoreWebView2, key: usize) {
             let _ = call_async(&webview, "Runtime.evaluate", &params, |_| {});
         },
     );
+    if issued.is_err() {
+        surface.recovering.set(false);
+    }
+}
+
+/// Whether the document on screen has to have a world built for it by hand.
+///
+/// `Page.addScriptToEvaluateOnNewDocument` only reaches documents whose
+/// navigation starts after it is registered, so a document the ENGINE put
+/// there first — an adopted popup's, which is on its way before the host is
+/// handed the webview — would go its whole life without a channel, and a popup
+/// is exactly where the address bar and the gesture ring are needed. A surface
+/// that has never navigated is the other case and must be left alone: it is
+/// still on the empty document it was created with, its first navigation has
+/// not started, and the injection will reach that one and everything after it.
+fn needs_world(state: &SurfaceState, showing: Option<&str>) -> bool {
+    if state.recovering.get() || main_world_context(state).is_some() {
+        return false;
+    }
+    state.committed.get()
+        || showing.is_some_and(|url| !url.is_empty() && url != "about:blank")
+}
+
+/// Build the world for the document on screen if it has none. Cheap to ask and
+/// safe to ask twice, so it is asked wherever the answer can have changed.
+fn ensure_world_for_current_document(webview: &ICoreWebView2, key: usize) {
+    let Some(state) = state(key) else {
+        return;
+    };
+    // SAFETY: main thread, live webview; WebView2 hands back an owned string.
+    let showing = pwstr_out(|out| unsafe { webview.Source(out) });
+    if !needs_world(&state, showing.as_deref()) {
+        return;
+    }
+    recover_world(webview, key);
 }
 
 /// The `codeg` world of the main frame, once the helper has run there.
+///
+/// The page's own session only: `Runtime.evaluate` here goes to that session,
+/// and a context belonging to another one could not be addressed by it anyway.
 fn main_world_context(state: &SurfaceState) -> Option<i64> {
     let main = state.main_frame.borrow().clone()?;
     state
         .contexts
         .borrow()
         .iter()
-        .find(|(_, frame)| **frame == main)
-        .map(|(id, _)| *id)
+        .find_map(|((session, id), frame)| {
+            (session.is_empty() && *frame == main).then_some(*id)
+        })
 }
 
 /// Evaluate `expression` in the `codeg` world of the main frame. The result
@@ -1168,9 +1261,16 @@ fn on_navigation_completed(
     let Some(state) = state(key) else {
         return;
     };
-    // A load that was replaced while in flight ends here too, and everything
-    // below belongs to the navigation that replaced it: its flag, its address,
-    // and the identity it set for where IT is going.
+    // Asked before anything else, because it is about the document that is
+    // SHOWING and not about this navigation: a load replaced while in flight
+    // leaves on screen the page it did not replace, and that page — which may
+    // be the one the engine put there before the channel existed — still needs
+    // a world. Everything BELOW belongs to the navigation, so a completion
+    // that has been superseded stops there.
+    ensure_world_for_current_document(webview, key);
+    // The navigation that replaced it owns the flag, the address, and the
+    // identity set for where IT is going; the one on its way out may not take
+    // any of them back.
     if state.navigation_id.get().is_some_and(|id| id != navigation_id) {
         tracing::debug!("[browser] navigation {navigation_id} was superseded ({status:?})");
         return;
@@ -1178,7 +1278,6 @@ fn on_navigation_completed(
     state.navigation_id.set(None);
     state.loading.set(false);
     let url = state.started_url.borrow_mut().take();
-    let worldless = state.channel_installed.get() && main_world_context(&state).is_none();
     let stopped = state.stopped.replace(false);
     if stopped && !succeeded.as_bool() {
         tracing::debug!("[browser] navigation stopped by the host ({status:?})");
@@ -1186,11 +1285,6 @@ fn on_navigation_completed(
         return;
     }
     if succeeded.as_bool() {
-        // A document the injection did not reach: give it a world now rather
-        // than leave it without a channel for as long as it is shown.
-        if worldless {
-            recover_world(webview, key);
-        }
         return;
     }
     // Did anything commit for the navigation that failed? Chromium puts its
@@ -1284,13 +1378,23 @@ mod tests {
             Self { key, heard }
         }
 
+        /// An event in the page's own CDP session.
         fn event(&self, event: &str, params: Value) {
-            on_event(self.key, event, &params.to_string());
+            self.session_event(event, "", params);
+        }
+
+        fn session_event(&self, event: &str, session: &str, params: Value) {
+            on_event(self.key, event, session, &params.to_string());
         }
 
         fn world(&self, id: i64, frame: &str) {
-            self.event(
+            self.world_in(id, frame, "");
+        }
+
+        fn world_in(&self, id: i64, frame: &str, session: &str) {
+            self.session_event(
                 "Runtime.executionContextCreated",
+                session,
                 json!({ "context": {
                     "id": id,
                     "name": WORLD_NAME,
@@ -1302,11 +1406,23 @@ mod tests {
         /// What the main-frame decision came out as for a message sent from
         /// `context`.
         fn spoke_as_main_frame(&self, context: i64) -> bool {
-            self.event(
+            self.spoke_as_main_frame_in(context, "")
+        }
+
+        fn spoke_as_main_frame_in(&self, context: i64, session: &str) -> bool {
+            self.session_event(
                 "Runtime.bindingCalled",
+                session,
                 json!({ "name": BINDING_NAME, "payload": "{}", "executionContextId": context }),
             );
             self.heard.lock().unwrap().pop().expect("a message").1
+        }
+
+        fn main_frame_is(&self, frame: &str) {
+            self.event(
+                "Page.frameNavigated",
+                json!({ "frame": { "id": frame, "parentId": Value::Null } }),
+            );
         }
     }
 
@@ -1319,10 +1435,7 @@ mod tests {
     #[test]
     fn a_frames_newer_world_retires_the_one_it_replaced() {
         let surface = Surface::new(0x5f1);
-        surface.event(
-            "Page.frameNavigated",
-            json!({ "frame": { "id": "F-main", "parentId": Value::Null } }),
-        );
+        surface.main_frame_is("F-main");
         surface.world(1, "F-main");
         surface.world(2, "F-sub");
         assert!(surface.spoke_as_main_frame(1));
@@ -1338,23 +1451,65 @@ mod tests {
         assert!(!surface.spoke_as_main_frame(7));
     }
 
-    /// A subframe reusing the id a retired main-frame context was known by
-    /// speaks for itself and not for the page.
+    /// A context id names a context only together with the CDP session that
+    /// reported it: ids are handed out per renderer and start over in each, so
+    /// a frame running in one of its own can hold the very number the page's
+    /// world has. It still speaks for itself alone — and destroying its context
+    /// leaves the page's untouched.
     #[test]
-    fn a_reused_context_id_speaks_for_the_frame_that_has_it_now() {
+    fn a_context_is_named_by_its_session_as_well_as_its_id() {
         let surface = Surface::new(0x5f2);
-        surface.event(
-            "Page.frameNavigated",
-            json!({ "frame": { "id": "F-main", "parentId": Value::Null } }),
-        );
+        surface.main_frame_is("F-main");
         surface.world(3, "F-main");
+        // An out-of-process frame, in a session of its own, with the same id.
+        surface.world_in(3, "F-oopif", "S-2");
         assert!(surface.spoke_as_main_frame(3));
+        assert!(!surface.spoke_as_main_frame_in(3, "S-2"));
+        assert_eq!(main_world_context(&state_of(surface.key)), Some(3));
+        // Its renderer goes; the page's context 3 is not the one destroyed.
+        surface.session_event(
+            "Runtime.executionContextsCleared",
+            "S-2",
+            json!({}),
+        );
+        assert!(surface.spoke_as_main_frame(3));
+        // And when the page's own goes, the id is nobody's.
         surface.event(
             "Runtime.executionContextDestroyed",
             json!({ "executionContextId": 3 }),
         );
-        surface.world(3, "F-sub");
         assert!(!surface.spoke_as_main_frame(3));
+        assert_eq!(main_world_context(&state_of(surface.key)), None);
+    }
+
+    /// Which documents get a world built for them by hand. The one case that
+    /// must not is a surface that has never navigated: its first document is
+    /// still to come, and the injection reaches that one.
+    #[test]
+    fn only_a_document_the_injection_could_not_reach_is_recovered() {
+        let surface = Surface::new(0x5f3);
+        let state = state_of(surface.key);
+        // A tab straight after `install_world`: the caller has not navigated
+        // it yet, and the engine says what a fresh webview says.
+        surface.main_frame_is("F-main");
+        state.committed.set(false);
+        assert!(!needs_world(&state, Some("about:blank")));
+        assert!(!needs_world(&state, Some("")));
+        assert!(!needs_world(&state, None));
+        // An adopted popup: the engine had already put a document there.
+        assert!(needs_world(&state, Some("https://example.com/popup")));
+        // Or one it committed while the install was pumping the message loop —
+        // `about:blank` from `window.open()` with no address is that document
+        // too, and the commit is what tells it apart from the empty one above.
+        state.committed.set(true);
+        assert!(needs_world(&state, Some("about:blank")));
+        // Not while an attempt is already in flight...
+        state.recovering.set(true);
+        assert!(!needs_world(&state, Some("about:blank")));
+        state.recovering.set(false);
+        // ...and not once the main frame has a world of its own.
+        surface.world(4, "F-main");
+        assert!(!needs_world(&state, Some("https://example.com/popup")));
     }
 
     /// The engine's statuses, by kind — and the one that is NOT a page failure.
