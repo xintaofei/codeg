@@ -71,6 +71,13 @@ impl BrowserSurface {
         self.kind() != SurfaceKind::Window
     }
 
+    /// Whether the page ↔ host channel can be installed on this surface. Not
+    /// the same question as `is_embedded`: the owned window is where the shim
+    /// lives on Linux, and answers like a tab.
+    pub fn has_channel(&self) -> bool {
+        per_surface!(self, child: |_c| true, window: |_w| surface_window::HAS_CHANNEL)
+    }
+
     pub fn label(&self) -> &str {
         per_surface!(self, child: |c| c.label(), window: |w| w.label())
     }

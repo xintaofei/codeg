@@ -13,17 +13,34 @@
 //! page's own**. `script-message-received` reports a value and nothing about
 //! the frame that sent it — no `WKFrameInfo`, no execution context — so there
 //! is no frame to check a message against. What stands in for that check is
-//! that no other frame can send one: the helper is injected into the TOP FRAME
-//! ONLY, and the handler it posts through is reachable from the `codeg` world
-//! alone, which a page script cannot enter. A subframe therefore has no sender
-//! rather than an unverifiable one.
+//! WHICH HANDLER it arrived on: the helper is injected twice, once into the top
+//! frame with a primitive that posts through `codegBrowser`, and once into every
+//! frame with one that posts through `codegBrowserFrame`. The top frame sees the
+//! first primitive and keeps it; a subframe only ever sees the second. Messages
+//! on the second handler are reported as not-the-main-frame, which is the same
+//! answer macOS gets from `WKFrameInfo`, so `channel.rs` gates them identically:
+//! `hello` and `nav-state` are refused, gestures and shortcuts are not (a
+//! keystroke goes only to the frame that has focus, and a click inside an iframe
+//! never reaches the top document — gating those would make ⌘F dead in an
+//! iframe and deny every popup an embedded page asks for).
+//!
+//! Neither handler is reachable from page script: both live in the `codeg`
+//! world, which the page cannot enter.
 //!
 //! Everything else a tab needs and neither tauri nor wry expose is a
-//! `webkit2gtk` call from here: history, stop, snapshots, find in page, the
-//! sign-in identity, and typed navigation failures (wry forwards
-//! `load-changed` as "page load started / finished" and does not connect
-//! `load-failed` at all, so without this a tab would report a perfectly
-//! successful load of a page that never arrived).
+//! `webkit2gtk` call from here: history, stop, snapshots, find in page, and
+//! typed navigation failures (wry forwards `load-changed` as "page load
+//! started / finished" and does not connect `load-failed` at all, so without
+//! this a tab would report a perfectly successful load of a page that never
+//! arrived).
+//!
+//! One thing deliberately absent: the sign-in identity. It is per navigation
+//! and per MAIN frame, and WebKitGTK's user agent is a property of the whole
+//! webview while its navigation decision does not say which frame is asking —
+//! so any iframe, including one a hostile page adds on purpose, could put the
+//! borrowed identity on the top-level page's own requests, or take it off
+//! again in the middle of a sign-in. `sign_in_user_agent_supported()` says no
+//! here for that reason.
 //!
 //! Every function runs on the GTK main thread against the live webview. The
 //! per-webview state lives in a thread-local keyed by the `WebKitWebView`
@@ -40,23 +57,24 @@ use gtk::gdk;
 use gtk::prelude::*;
 use javascriptcore::ValueExt;
 use serde_json::{json, Value};
-use tauri::Url;
 use webkit2gtk::{
-    FindController, FindControllerExt, FindOptions, LoadEvent, SettingsExt, SnapshotOptions,
-    SnapshotRegion, UserContentInjectedFrames, UserContentManagerExt, UserScript,
-    UserScriptInjectionTime, WebView, WebViewExt,
+    FindController, FindControllerExt, FindOptions, LoadEvent, SnapshotOptions, SnapshotRegion,
+    UserContentInjectedFrames, UserContentManagerExt, UserScript, UserScriptInjectionTime,
+    WebView, WebViewExt,
 };
 
 use super::super::hooks::LoadFailure;
-use super::super::profile;
 use super::super::types::BrowserErrorKind;
 pub use super::{NavigationEvent, NavigationSink};
 
 /// Name of the script world the helper and its message handler live in.
 pub const WORLD_NAME: &str = "codeg";
-/// The message handler the helper posts through — the same name macOS
-/// registers, so `channel::PREFIX_SCRIPT` is the send primitive on both.
+/// The message handler the TOP frame's helper posts through — the same name
+/// macOS registers, so `channel::PREFIX_SCRIPT` is the send primitive on both.
 pub const HANDLER_NAME: &str = "codegBrowser";
+/// The one every other frame posts through. What arrives here is reported as
+/// not the main frame.
+pub const FRAME_HANDLER_NAME: &str = "codegBrowserFrame";
 
 /// A channel message and whether it came from the page's own frame. Unlike the
 /// other platforms this sink is already bound to one tab: a Linux surface owns
@@ -77,9 +95,6 @@ struct SurfaceState {
     /// answers a search on the controller's signals rather than to the caller.
     find_waiting: RefCell<Option<FindAnswer>>,
     find_connected: Cell<bool>,
-    /// The engine's own user agent, read before anything overrode it, so the
-    /// sign-in identity can be taken back off again.
-    default_user_agent: RefCell<Option<String>>,
     navigation: RefCell<Option<NavigationSink>>,
 }
 
@@ -172,7 +187,8 @@ pub fn debug_view(webview: &WebView) -> Value {
 /// must not find its message handler missing.
 pub fn install_world(
     webview: &WebView,
-    scripts: &[&str],
+    top_scripts: &[&str],
+    frame_scripts: &[&str],
     sink: MessageSink,
 ) -> Result<bool, String> {
     let key = webview_pointer(webview);
@@ -183,32 +199,38 @@ pub fn install_world(
     let manager = webview
         .user_content_manager()
         .ok_or("this webview has no user content manager")?;
-    if !manager.register_script_message_handler_in_world(HANDLER_NAME, WORLD_NAME) {
-        return Err(format!(
-            "the engine refused the {HANDLER_NAME} message handler"
-        ));
-    }
-    manager.connect_script_message_received(Some(HANDLER_NAME), move |_, result| {
-        let Some(value) = result.js_value() else {
-            return;
-        };
-        // The helper posts strings. Anything else is not it.
-        if !value.is_string() {
-            return;
+    for (name, main_frame) in [(HANDLER_NAME, true), (FRAME_HANDLER_NAME, false)] {
+        if !manager.register_script_message_handler_in_world(name, WORLD_NAME) {
+            return Err(format!("the engine refused the {name} message handler"));
         }
-        // Every message is the page's own: see the module header — the helper
-        // is in the top frame alone and nothing else can reach the handler.
-        sink(value.to_str().to_string(), true);
-    });
-    for source in scripts {
-        manager.add_script(&UserScript::for_world(
-            source,
-            UserContentInjectedFrames::TopFrame,
-            UserScriptInjectionTime::Start,
-            WORLD_NAME,
-            &[],
-            &[],
-        ));
+        let sink = sink.clone();
+        manager.connect_script_message_received(Some(name), move |_, result| {
+            let Some(value) = result.js_value() else {
+                return;
+            };
+            // The helper posts strings. Anything else is not it.
+            if !value.is_string() {
+                return;
+            }
+            // Which frame spoke is the handler it arrived on: see the module
+            // header. Nothing about the message itself is trusted for this.
+            sink(value.to_str().to_string(), main_frame);
+        });
+    }
+    for (scripts, frames) in [
+        (top_scripts, UserContentInjectedFrames::TopFrame),
+        (frame_scripts, UserContentInjectedFrames::AllFrames),
+    ] {
+        for source in scripts {
+            manager.add_script(&UserScript::for_world(
+                source,
+                frames,
+                UserScriptInjectionTime::Start,
+                WORLD_NAME,
+                &[],
+                &[],
+            ));
+        }
     }
     state.channel_installed.set(true);
     Ok(true)
@@ -395,58 +417,6 @@ fn answer_find(key: usize, found: bool) {
 }
 
 // ---------------------------------------------------------------------------
-// The identity a page is shown (the sign-in exception)
-// ---------------------------------------------------------------------------
-
-/// Re-decide the identity for the page the webview shows (the preference
-/// changed), from its own URL. A webview with nothing committed is left alone:
-/// its first navigation decides.
-pub fn refresh_user_agent(webview: &WebView) {
-    if let Some(url) = current_url(webview).and_then(|u| Url::parse(&u).ok()) {
-        apply_user_agent(webview, &url);
-    }
-}
-
-/// Give the webview the user agent `profile::user_agent_for` wants for a
-/// main-frame navigation to `url`.
-///
-/// Set from the navigation decision, which WebKitGTK takes before the request
-/// is made, so unlike Windows one setting covers both what the page reads out
-/// of `navigator.userAgent` and what goes on the wire. Both directions are
-/// written: a navigation away from a sign-in host must not carry the borrowed
-/// identity out with it.
-pub fn apply_user_agent(webview: &WebView, url: &Url) {
-    let Some(settings) = WebViewExt::settings(webview) else {
-        return;
-    };
-    let state = state_of(webview_pointer(webview));
-    let default = {
-        let mut cached = state.default_user_agent.borrow_mut();
-        if cached.is_none() {
-            *cached = settings.user_agent().map(|ua| ua.to_string());
-        }
-        cached.clone()
-    };
-    let Some(default) = default else {
-        return;
-    };
-    let wanted = profile::user_agent_for(url);
-    let value = wanted.unwrap_or(default.as_str());
-    if settings.user_agent().as_deref() != Some(value) {
-        tracing::debug!(
-            "[browser] user agent for {}: {}",
-            url.host_str().unwrap_or("?"),
-            if wanted.is_some() {
-                "sign-in identity"
-            } else {
-                "engine's own"
-            }
-        );
-        settings.set_user_agent(Some(value));
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Navigation hooks: what wry does not report
 // ---------------------------------------------------------------------------
 
@@ -465,11 +435,6 @@ pub fn install_navigation_hooks(
         return Ok(());
     }
     *state.navigation.borrow_mut() = Some(navigation);
-    // Read the engine's own identity before anything can override it.
-    if let Some(settings) = WebViewExt::settings(webview) {
-        *state.default_user_agent.borrow_mut() =
-            settings.user_agent().map(|ua| ua.to_string());
-    }
 
     webview.connect_load_changed(move |webview, event| {
         let Some(uri) = current_url(webview) else {
@@ -482,7 +447,7 @@ pub fn install_navigation_hooks(
             _ => {}
         }
     });
-    webview.connect_load_failed(move |_webview, _event, uri, error| {
+    webview.connect_load_failed(move |_webview, event, uri, error| {
         match classify(error) {
             Some(kind) => {
                 tracing::debug!("[browser] navigation failed: {error} -> {kind:?}");
@@ -492,10 +457,15 @@ pub fn install_navigation_hooks(
                         kind,
                         message: error.message().to_string(),
                         url: Some(uri.to_string()),
-                        // WebKitGTK reports the load event the failure ended;
-                        // anything before the document is in place means
-                        // nothing of the new page is showing.
-                        provisional: !matches!(_event, LoadEvent::Finished),
+                        // WebKitGTK reports which load event the failure ended.
+                        // Committed means the document IS in place and broke
+                        // afterwards — a dropped connection mid-body — which
+                        // must stop the spinner, not replace the page the user
+                        // is reading with an error.
+                        provisional: matches!(
+                            event,
+                            LoadEvent::Started | LoadEvent::Redirected
+                        ),
                     }),
                 );
             }

@@ -163,13 +163,10 @@ fn build(
     let builder = builder.parent(owner)?;
     let window = builder.build()?;
 
-    // Take hold of the engine webview before the caller navigates: on Linux
-    // everything the shim does is reached through it, and the navigation hooks
-    // have to be in place before the first load starts.
-    platform::adopt(app, &window, tab_id);
-
-    // The user can close an owned window directly; drop the tab and tell the
-    // frontend so the tab strip follows.
+    // Hooked up before the webview is taken hold of: the window is already on
+    // screen and the user can close it at any moment, and a `Destroyed` that
+    // arrives before this is watching would leave the tab in the registry and
+    // the webview in the map.
     {
         let app = app.clone();
         let tab_id = tab_id.to_string();
@@ -185,6 +182,11 @@ fn build(
             }
         });
     }
+
+    // Take hold of the engine webview before the caller navigates: on Linux
+    // everything the shim does is reached through it, and the navigation hooks
+    // have to be in place before the first load starts.
+    platform::adopt(app, &window, tab_id);
     Ok(window)
 }
 
@@ -230,6 +232,9 @@ mod platform {
     /// one for a page unless the webview it is given is RELATED to the webview
     /// that asked, which is also what carries `window.opener` across.
     pub type OpenerView = WebView;
+
+    /// This window carries the page ↔ host channel and the rest of the shim.
+    pub const HAS_CHANNEL: bool = true;
 
     static POPUP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -302,10 +307,17 @@ mod platform {
                      failures are detected by polling"
                 );
             }
-            WEBVIEWS.with(|live| {
+            // An entry already under this label is a window that went without
+            // its `Destroyed` being seen. Its state is keyed by a pointer that
+            // the allocator can hand out again, so it is let go of here rather
+            // than left to be inherited by whoever lands on that address.
+            let replaced = WEBVIEWS.with(|live| {
                 live.borrow_mut()
                     .insert(held, Live { webview, tab_id: tab })
             });
+            if let Some(replaced) = replaced {
+                shim::forget(&replaced.webview);
+            }
             let _ = tx.send(());
         });
         match asked {
@@ -411,6 +423,11 @@ mod platform {
         let Ok(_admission) = profile::admit(profile) else {
             return deny(app, opener_tab_id, &url, &features, "profile-deleting");
         };
+        // Inherited from the opener, and recorded as such: the popup's own
+        // popups read it back from the registry.
+        let devtools = registry
+            .update(opener_tab_id, |tab| tab.devtools)
+            .unwrap_or(false);
         let window = match super::build(
             app,
             &owner,
@@ -418,9 +435,7 @@ mod platform {
             &label,
             &crate::commands::browser::origin_title(&url),
             false,
-            registry
-                .update(opener_tab_id, |tab| tab.devtools)
-                .unwrap_or(false),
+            devtools,
             profile,
             Some(features.opener().webview.clone()),
         ) {
@@ -462,7 +477,7 @@ mod platform {
             surface.clone(),
             Default::default(),
             true,
-            false,
+            devtools,
         )) {
             tracing::warn!("[browser] popup registry insert failed: {err}");
             let _ = surface.close();
@@ -512,16 +527,13 @@ mod platform {
         NewWindowResponse::Deny
     }
 
-    /// Main thread. Give the page the identity `profile` wants for where it is
-    /// going — called from the navigation decision, which WebKitGTK takes
-    /// before the request is made.
-    pub(super) fn navigating_to(label: &str, url: &Url) {
-        WEBVIEWS.with(|live| {
-            if let Some(live) = live.borrow().get(label) {
-                shim::apply_user_agent(&live.webview, url);
-            }
-        });
-    }
+    /// Main thread. The navigation decision, for whatever the surface wants to
+    /// do with the address before the request goes out. Nothing today: the
+    /// sign-in identity, which is what this moment exists for on the other
+    /// platforms, cannot be scoped to the main frame here (see
+    /// `shim/linux.rs`), and there is nothing else that has to happen this
+    /// early.
+    pub(super) fn navigating_to(_label: &str, _url: &Url) {}
 
     pub fn install_channel(window: &WebviewWindow) -> Result<bool, SurfaceError> {
         let app = window.app_handle().clone();
@@ -539,6 +551,7 @@ mod platform {
                 shim::install_world(
                     &live.webview,
                     &[channel::PREFIX_SCRIPT, channel::HELPER_JS],
+                    &[channel::FRAME_PREFIX_SCRIPT, channel::HELPER_JS],
                     sink,
                 )
                 .map_err(SurfaceError)
@@ -623,8 +636,9 @@ mod platform {
         Url::parse(&url).map_err(|e| SurfaceError(e.to_string()))
     }
 
-    pub fn refresh_user_agent(window: &WebviewWindow) -> Result<(), SurfaceError> {
-        with(window, shim::refresh_user_agent)
+    /// No per-navigation identity here; the engine's own stands.
+    pub fn refresh_user_agent(_window: &WebviewWindow) -> Result<(), SurfaceError> {
+        Ok(())
     }
 
     pub fn debug_view(window: &WebviewWindow) -> Result<serde_json::Value, SurfaceError> {
@@ -645,6 +659,10 @@ mod platform {
     /// Nothing is needed to relate an owned window to its opener here: the
     /// embedded surface is where a popup is adopted on both platforms.
     pub type OpenerView = ();
+
+    /// The host has no hold on this window's engine webview, so there is
+    /// nowhere to put the channel.
+    pub const HAS_CHANNEL: bool = false;
 
     fn embedded_only(what: &str) -> SurfaceError {
         SurfaceError(format!("{what} needs an embedded surface on this platform"))

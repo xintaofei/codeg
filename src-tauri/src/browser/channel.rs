@@ -34,6 +34,16 @@ pub type MessageSink = Arc<dyn Fn(String, bool, usize) + Send + Sync>;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub const PREFIX_SCRIPT: &str = "globalThis.__codegSend = function (m) { window.webkit.messageHandlers.codegBrowser.postMessage(String(m)); };";
 
+/// The same primitive for a SUBFRAME's copy of the helper, posting through a
+/// handler the host treats as non-main-frame (Linux only — macOS learns the
+/// frame from the engine and needs one handler).
+///
+/// `||` rather than an assignment: both scripts run in the top frame, this one
+/// second, and there the first one's privileged primitive must stand. A
+/// subframe never saw the first, so it gets this one.
+#[cfg(target_os = "linux")]
+pub const FRAME_PREFIX_SCRIPT: &str = "globalThis.__codegSend = globalThis.__codegSend || function (m) { window.webkit.messageHandlers.codegBrowserFrame.postMessage(String(m)); };";
+
 #[derive(Debug, Deserialize)]
 pub struct Envelope {
     pub kind: String,

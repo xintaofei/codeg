@@ -580,15 +580,16 @@ pub fn user_agent_for(url: &Url) -> Option<&'static str> {
 /// hook on the navigation decision, which embedded tabs have on macOS
 /// (`decidePolicyForNavigationAction:`) and on Windows (`NavigationStarting`).
 pub fn sign_in_user_agent_supported() -> bool {
-    // Wherever a navigation can be caught before the request goes out: the
-    // embedded surface's navigation delegate on macOS and Windows, the
-    // navigation decision on Linux (which is the owned window's, and the only
-    // surface there).
-    cfg!(target_os = "linux")
-        || cfg!(all(
-            any(target_os = "macos", target_os = "windows"),
-            feature = "browser-child"
-        ))
+    // Wherever a navigation can be caught before the request goes out AND the
+    // frame it belongs to is known: the embedded surface's navigation delegate
+    // on macOS and Windows. Not Linux — WebKitGTK's user agent belongs to the
+    // whole webview and its navigation decision does not say which frame is
+    // asking, so an iframe could put the borrowed identity on the top-level
+    // page's requests (see `shim/linux.rs`).
+    cfg!(all(
+        any(target_os = "macos", target_os = "windows"),
+        feature = "browser-child"
+    ))
 }
 
 /// An unusable proxy (unsupported scheme) means direct connections, not a

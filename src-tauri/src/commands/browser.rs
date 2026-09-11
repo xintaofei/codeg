@@ -89,7 +89,7 @@ pub fn capabilities(policy: &BrowserPolicy) -> BrowserCapabilities {
         doc_guest: enabled && doc_guest::supported(),
         profiles: enabled && profile::profiles_supported(),
         sign_in_user_agent: enabled && profile::sign_in_user_agent_supported(),
-        owned_window_controls: cfg!(target_os = "linux"),
+        owned_window_controls: crate::browser::surface_window::HAS_CHANNEL,
     }
 }
 
@@ -271,7 +271,7 @@ pub fn open_tab_core(
     // `about:blank` is still showing at this point. A failed install is not
     // fatal: the tab works, only the page channel is missing.
     let mut state = state;
-    if surface.is_embedded() {
+    if surface.has_channel() {
         match surface.install_channel() {
             // Stays `degraded` until the helper's `hello` proves the round trip.
             Ok(true) => {}

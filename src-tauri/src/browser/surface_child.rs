@@ -363,7 +363,19 @@ impl ChildHandle {
     /// Install the isolated-world helper and the native message handler.
     /// `Ok(true)` = isolated world, `Ok(false)` = page-world fallback.
     pub fn install_channel(&self) -> Result<bool, ChildError> {
+        self.install_channel_inner(false)
+    }
+
+    /// The same, for a webview the engine handed over for a page-initiated new
+    /// window: its first document is the engine's own and the injection cannot
+    /// be in time for that one, whatever address it reports.
+    pub fn install_adopted_channel(&self) -> Result<bool, ChildError> {
+        self.install_channel_inner(true)
+    }
+
+    fn install_channel_inner(&self, adopted: bool) -> Result<bool, ChildError> {
         let sink = message_sink(&self.app);
+        let _ = adopted;
         #[cfg(target_os = "macos")]
         {
             self.with(move |wv| {
@@ -382,7 +394,7 @@ impl ChildHandle {
             run_on_main(&self.app, move || {
                 SURFACES
                     .with(|s| s.borrow().get(&id).map(shim::engine_webview))
-                    .map(|wv| shim::install_world(wv, channel::HELPER_JS, sink))
+                    .map(|wv| shim::install_world(wv, channel::HELPER_JS, sink, adopted))
             })?
             .ok_or_else(|| ChildError::Gone(self.tab_id.clone()))?
             .map_err(ChildError::Op)
@@ -1062,7 +1074,7 @@ fn new_window_handler(
             // practice, so this is a no-op that still reports the channel
             // kind. Windows: a webview of its own, so a full install. Either
             // way it happens before the engine loads anything.
-            let (channel, channel_error) = match handle.install_channel() {
+            let (channel, channel_error) = match handle.install_adopted_channel() {
                 Ok(true) => (ChannelKind::Degraded, None), // native once `hello` arrives
                 Ok(false) => (ChannelKind::Legacy, None),
                 Err(err) => {
