@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest"
 
 import { APPEARANCE_INIT_SCRIPT } from "./appearance-script"
-import { DEFAULT_ZOOM_LEVEL, ZOOM_LEVELS, stepZoom } from "./theme-presets"
+import {
+  DEFAULT_ZOOM_LEVEL,
+  THEME_COLORS,
+  ZOOM_LEVELS,
+  stepZoom,
+} from "./theme-presets"
 
 describe("stepZoom", () => {
   it("walks the Settings rungs and stops at the ends", () => {
@@ -27,5 +32,15 @@ describe("pre-paint zoom whitelist", () => {
       .map((n) => parseInt(n.trim(), 10))
 
     expect(listed).toEqual([...ZOOM_LEVELS])
+  })
+
+  // Same shape for the palette ids: a base palette a preset can name but the
+  // script does not know would paint neutral until hydration on every launch.
+  it("keeps VALID_COLORS in step with THEME_COLORS", () => {
+    const listed = JSON.parse(
+      /var VALID_COLORS = (\[[^\]]*\])/.exec(APPEARANCE_INIT_SCRIPT)![1]
+    )
+
+    expect(listed).toEqual([...THEME_COLORS])
   })
 })

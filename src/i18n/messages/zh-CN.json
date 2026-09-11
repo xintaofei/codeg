@@ -106,6 +106,7 @@
       "radius": "圆角",
       "radiusHint": "从 sm 到 4xl 的整套圆角尺寸都由它派生，一个滑块即可改变全局圆角。",
       "advanced": "高级（另有 {count} 个变量）",
+      "surfaces": "会话表面（另 {count} 个变量）",
       "enableCss": "启用自定义 CSS",
       "cssRisk": "高级功能。自定义 CSS 会压过所有内置样式，写坏可能导致界面不可用。",
       "editCss": "编辑 CSS…",
@@ -144,6 +145,119 @@
         "hintTokens": "提示：你覆盖的颜色可以直接用 var(--primary)、var(--background) 等引用。"
       }
     },
+    "presets": {
+      "sectionTitle": "外观预设",
+      "sectionDescription": "一键切换整套外观：配色、字体、间距、消息气泡与代码配色。预设设定的每一项仍可在下方各节继续调整，调好的结果可以另存为文件分享。",
+      "current": "当前：{name}",
+      "currentModified": "当前：{name}（已修改）",
+      "currentCustom": "当前：自定义外观",
+      "customName": "自定义",
+      "apply": "应用 {name}",
+      "disabledHint": "「自定义样式」里的自定义配色已关闭，预设的配色、间距与字号要等重新开启后才会生效。",
+      "codeTheme": "代码配色",
+      "codeThemeLight": "浅色模式代码配色",
+      "codeThemeDark": "深色模式代码配色",
+      "codeThemeGroupLight": "浅色主题",
+      "codeThemeGroupDark": "深色主题",
+      "codeThemeHint": "消息内代码块的语法高亮配色，明暗两种模式各选一套。",
+      "density": "密度",
+      "densityHint": "按比例缩放界面里的所有间距、内边距与控件高度。",
+      "densityOptions": {
+        "compact": "紧凑",
+        "snug": "略紧",
+        "default": "默认",
+        "relaxed": "宽松",
+        "custom": "自定义"
+      },
+      "chatText": "消息文字",
+      "chatTextHint": "消息的阅读字号。整体缩放请用窗口缩放。",
+      "chatTextOptions": {
+        "small": "小",
+        "default": "默认",
+        "large": "大",
+        "larger": "更大",
+        "custom": "自定义"
+      },
+      "import": "导入预设…",
+      "export": "导出预设…",
+      "sharingNote": "预设文件只包含配色、字体、间距以及内置代码主题的名字，不含其他内容。自定义 CSS 永远不会离开这台设备。",
+      "importTitle": "导入预设",
+      "importPreview": "先看看这个文件会改动什么，再决定是否应用。",
+      "importErrorsTitle": "这个文件无法应用",
+      "importErrorsDescription": "没有做任何改动。请修正下列问题，或换一个文件。",
+      "importApply": "应用预设",
+      "cancel": "取消",
+      "preview": {
+        "base": "基底配色",
+        "mode": "模式",
+        "overrides": "颜色覆盖",
+        "overridesValue": "浅色 {light} 项，深色 {dark} 项",
+        "fonts": "字体（界面 / 代码）",
+        "code": "代码配色",
+        "density": "密度",
+        "chatText": "消息文字",
+        "unchanged": "不改动"
+      },
+      "modes": {
+        "light": "浅色",
+        "dark": "深色",
+        "system": "跟随系统"
+      },
+      "toasts": {
+        "applied": "已应用预设：{name}",
+        "exported": "预设已保存",
+        "exportFailed": "无法保存预设",
+        "readFailed": "无法读取该文件",
+        "partialExport": "未写入文件的内容：{items}"
+      },
+      "errors": {
+        "invalid-json": "不是有效的 JSON",
+        "too-large": "文件过大（上限 {limit} KB）",
+        "not-object": "应为对象",
+        "unknown-key": "未知字段",
+        "missing": "缺少必填字段",
+        "wrong-type": "类型不对",
+        "invalid-value": "不是允许的值",
+        "unsupported-version": "预设格式版本不受支持",
+        "unknown-token": "不是主题变量",
+        "invalid-color": "不是颜色（请用 hex、rgb、hsl 或 oklch）",
+        "invalid-length": "不是长度（请用 rem、px 或 em）",
+        "out-of-range": "超出范围",
+        "unknown-font": "不是内置字体或系统字体",
+        "unknown-code-theme": "不是内置代码主题",
+        "unknown-base": "不是内置配色"
+      },
+      "bundled": {
+        "default": {
+          "name": "默认",
+          "description": "codeg 原本的样子：中性配色、Inter 字体、GitHub 代码配色。"
+        },
+        "warm-terminal": {
+          "name": "暖色终端",
+          "description": "暖炭灰底、琥珀色强调与等宽字体界面，像终端里的 Agent。浅色模式是暖纸色。"
+        },
+        "ink": {
+          "name": "墨",
+          "description": "单色且方正：黑、白和几级灰，描边气泡，没有任何强调色。"
+        },
+        "dense-ide": {
+          "name": "紧凑 IDE",
+          "description": "紧凑的间距、小字号、蓝色强调与带色状态栏，像带聊天面板的编辑器。"
+        },
+        "high-contrast": {
+          "name": "高对比度",
+          "description": "纯黑配纯白（深色模式则反过来），粗边框、更大的文字与高对比代码配色。"
+        },
+        "midnight": {
+          "name": "午夜",
+          "description": "深蓝紫表面、柔和的圆角气泡与丁香色强调，深夜聊天客户端的气氛。"
+        },
+        "paper": {
+          "name": "纸张",
+          "description": "温暖的浅色阅读面，间距宽裕、文字更大。深色模式是昏暗的暮色而非纯黑。"
+        }
+      }
+    },
     "zoomLevel": {
       "sectionTitle": "窗口缩放",
       "sectionDescription": "整体放大或缩小界面，立即生效，按设备分别保存。⌘/Ctrl + 和 - 按与此菜单相同的档位调节（⌘/Ctrl 0 恢复为 100%）。",
@@ -157,6 +271,7 @@
       "interface": "界面",
       "editor": "编辑器",
       "terminal": "终端",
+      "code": "消息内代码",
       "groupSans": "无衬线",
       "groupMono": "等宽",
       "custom": "自定义…",

@@ -106,6 +106,7 @@
       "radius": "Corner radius",
       "radiusHint": "Drives the whole radius scale from sm to 4xl, so one slider rounds the entire app.",
       "advanced": "Advanced ({count} more variables)",
+      "surfaces": "Chat surfaces ({count} more variables)",
       "enableCss": "Enable custom CSS",
       "cssRisk": "Advanced feature. Custom CSS overrides every built-in style and can make the interface unusable.",
       "editCss": "Edit CSS…",
@@ -144,6 +145,119 @@
         "hintTokens": "Tip: your color overrides are available as var(--primary), var(--background) and so on."
       }
     },
+    "presets": {
+      "sectionTitle": "Presets",
+      "sectionDescription": "A whole look in one click: palette, fonts, spacing, message bubbles and code colors. Everything a preset sets stays editable in the sections below, and the result can be saved as a file to share.",
+      "current": "Current: {name}",
+      "currentModified": "Current: {name} (modified)",
+      "currentCustom": "Current: custom look",
+      "customName": "Custom",
+      "apply": "Apply {name}",
+      "disabledHint": "Custom colors are switched off in Custom Style, so a preset's colors, spacing and text size do not apply until you turn them back on.",
+      "codeTheme": "Code colors",
+      "codeThemeLight": "Light mode code colors",
+      "codeThemeDark": "Dark mode code colors",
+      "codeThemeGroupLight": "Light themes",
+      "codeThemeGroupDark": "Dark themes",
+      "codeThemeHint": "Syntax colors for code blocks in messages, one theme per mode.",
+      "density": "Density",
+      "densityHint": "Scales every gap, padding and control height in the interface.",
+      "densityOptions": {
+        "compact": "Compact",
+        "snug": "Snug",
+        "default": "Default",
+        "relaxed": "Relaxed",
+        "custom": "Custom"
+      },
+      "chatText": "Message text",
+      "chatTextHint": "Reading size for messages. Window zoom scales the whole interface instead.",
+      "chatTextOptions": {
+        "small": "Small",
+        "default": "Default",
+        "large": "Large",
+        "larger": "Larger",
+        "custom": "Custom"
+      },
+      "import": "Import preset…",
+      "export": "Export preset…",
+      "sharingNote": "A preset file carries colors, fonts, spacing and the names of bundled code themes, nothing else. Custom CSS never leaves this device.",
+      "importTitle": "Import preset",
+      "importPreview": "Review what this file changes, then apply it.",
+      "importErrorsTitle": "This file cannot be applied",
+      "importErrorsDescription": "Nothing was changed. Fix the problems below or pick another file.",
+      "importApply": "Apply preset",
+      "cancel": "Cancel",
+      "preview": {
+        "base": "Base palette",
+        "mode": "Mode",
+        "overrides": "Color overrides",
+        "overridesValue": "{light} light, {dark} dark",
+        "fonts": "Fonts (interface / code)",
+        "code": "Code colors",
+        "density": "Density",
+        "chatText": "Message text",
+        "unchanged": "Unchanged"
+      },
+      "modes": {
+        "light": "Light",
+        "dark": "Dark",
+        "system": "Follow system"
+      },
+      "toasts": {
+        "applied": "Preset applied: {name}",
+        "exported": "Preset saved",
+        "exportFailed": "Could not save the preset",
+        "readFailed": "Could not read that file",
+        "partialExport": "Left out of the file: {items}"
+      },
+      "errors": {
+        "invalid-json": "Not valid JSON",
+        "too-large": "File is too large (limit {limit} KB)",
+        "not-object": "Expected an object",
+        "unknown-key": "Unknown field",
+        "missing": "Required field is missing",
+        "wrong-type": "Wrong type",
+        "invalid-value": "Not an allowed value",
+        "unsupported-version": "Written for a different version of the preset format",
+        "unknown-token": "Not a theme token",
+        "invalid-color": "Not a color (use hex, rgb, hsl or oklch)",
+        "invalid-length": "Not a length (use rem, px or em)",
+        "out-of-range": "Out of range",
+        "unknown-font": "Not a bundled or system font",
+        "unknown-code-theme": "Not a bundled code theme",
+        "unknown-base": "Not a built-in palette"
+      },
+      "bundled": {
+        "default": {
+          "name": "Default",
+          "description": "The stock codeg look: neutral palette, Inter, GitHub code colors."
+        },
+        "warm-terminal": {
+          "name": "Warm terminal",
+          "description": "Warm charcoal, amber accents and a monospace interface, the way a terminal-first agent feels. Light mode is warm paper."
+        },
+        "ink": {
+          "name": "Ink",
+          "description": "Monochrome and square: black, white and a few grays, outlined bubbles, no accent color anywhere."
+        },
+        "dense-ide": {
+          "name": "Dense IDE",
+          "description": "Compact spacing, small text, blue accents and a colored status bar, like an editor with a chat panel."
+        },
+        "high-contrast": {
+          "name": "High contrast",
+          "description": "Pure black on white (and white on black), strong borders, larger text and high-contrast code colors."
+        },
+        "midnight": {
+          "name": "Midnight",
+          "description": "Deep blue-violet surfaces, soft rounded bubbles and a lilac accent, the mood of a late-night chat client."
+        },
+        "paper": {
+          "name": "Paper",
+          "description": "A warm, light reading surface with roomy spacing and larger text. Dark mode is a dim dusk instead of black."
+        }
+      }
+    },
     "zoomLevel": {
       "sectionTitle": "Window zoom",
       "sectionDescription": "Scale the entire interface. Applies immediately and persists per device. ⌘/Ctrl + and - move through the same zoom levels as this menu (⌘/Ctrl 0 resets to 100%).",
@@ -157,6 +271,7 @@
       "interface": "Interface",
       "editor": "Editor",
       "terminal": "Terminal",
+      "code": "Code in messages",
       "groupSans": "Sans-serif",
       "groupMono": "Monospace",
       "custom": "Custom…",

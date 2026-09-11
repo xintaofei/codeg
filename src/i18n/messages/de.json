@@ -106,6 +106,7 @@
       "radius": "Eckenradius",
       "radiusHint": "Daraus leitet sich die gesamte Radiusskala von sm bis 4xl ab – ein Regler rundet die ganze App.",
       "advanced": "Erweitert ({count} weitere Variablen)",
+      "surfaces": "Chat-Flächen ({count} weitere Variablen)",
       "enableCss": "Eigenes CSS aktivieren",
       "cssRisk": "Funktion für Fortgeschrittene. Eigenes CSS überschreibt sämtliche eingebauten Stile und kann die Oberfläche unbrauchbar machen.",
       "editCss": "CSS bearbeiten…",
@@ -144,6 +145,119 @@
         "hintTokens": "Tipp: Deine überschriebenen Farben sind als var(--primary), var(--background) usw. verfügbar."
       }
     },
+    "presets": {
+      "sectionTitle": "Voreinstellungen",
+      "sectionDescription": "Ein kompletter Look mit einem Klick: Palette, Schriften, Abstände, Nachrichtenblasen und Code-Farben. Alles, was eine Voreinstellung setzt, bleibt in den Abschnitten darunter änderbar, und das Ergebnis lässt sich als Datei speichern und teilen.",
+      "current": "Aktuell: {name}",
+      "currentModified": "Aktuell: {name} (geändert)",
+      "currentCustom": "Aktuell: eigener Look",
+      "customName": "Eigener Look",
+      "apply": "{name} anwenden",
+      "disabledHint": "Eigene Farben sind unter „Eigener Stil“ ausgeschaltet, deshalb greifen Farben, Abstände und Textgröße einer Voreinstellung erst, wenn du sie wieder einschaltest.",
+      "codeTheme": "Code-Farben",
+      "codeThemeLight": "Code-Farben im hellen Modus",
+      "codeThemeDark": "Code-Farben im dunklen Modus",
+      "codeThemeGroupLight": "Helle Themes",
+      "codeThemeGroupDark": "Dunkle Themes",
+      "codeThemeHint": "Syntaxfarben für Codeblöcke in Nachrichten, ein Theme pro Modus.",
+      "density": "Dichte",
+      "densityHint": "Skaliert jeden Abstand, jede Innenfläche und jede Steuerelementhöhe in der Oberfläche.",
+      "densityOptions": {
+        "compact": "Kompakt",
+        "snug": "Eng",
+        "default": "Standard",
+        "relaxed": "Locker",
+        "custom": "Eigener Wert"
+      },
+      "chatText": "Nachrichtentext",
+      "chatTextHint": "Lesegröße für Nachrichten. Der Fensterzoom skaliert stattdessen die ganze Oberfläche.",
+      "chatTextOptions": {
+        "small": "Klein",
+        "default": "Standard",
+        "large": "Groß",
+        "larger": "Größer",
+        "custom": "Eigener Wert"
+      },
+      "import": "Voreinstellung importieren…",
+      "export": "Voreinstellung exportieren…",
+      "sharingNote": "Eine Voreinstellungsdatei enthält Farben, Schriften, Abstände und die Namen mitgelieferter Code-Themes, sonst nichts. Eigenes CSS verlässt dieses Gerät nie.",
+      "importTitle": "Voreinstellung importieren",
+      "importPreview": "Prüfe, was diese Datei ändert, und wende sie dann an.",
+      "importErrorsTitle": "Diese Datei lässt sich nicht anwenden",
+      "importErrorsDescription": "Es wurde nichts geändert. Behebe die Probleme unten oder wähle eine andere Datei.",
+      "importApply": "Voreinstellung anwenden",
+      "cancel": "Abbrechen",
+      "preview": {
+        "base": "Basispalette",
+        "mode": "Modus",
+        "overrides": "Farbüberschreibungen",
+        "overridesValue": "{light} hell, {dark} dunkel",
+        "fonts": "Schriften (Oberfläche / Code)",
+        "code": "Code-Farben",
+        "density": "Dichte",
+        "chatText": "Nachrichtentext",
+        "unchanged": "Unverändert"
+      },
+      "modes": {
+        "light": "Hell",
+        "dark": "Dunkel",
+        "system": "System folgen"
+      },
+      "toasts": {
+        "applied": "Voreinstellung angewendet: {name}",
+        "exported": "Voreinstellung gespeichert",
+        "exportFailed": "Die Voreinstellung konnte nicht gespeichert werden",
+        "readFailed": "Die Datei konnte nicht gelesen werden",
+        "partialExport": "Nicht in die Datei übernommen: {items}"
+      },
+      "errors": {
+        "invalid-json": "Kein gültiges JSON",
+        "too-large": "Datei ist zu groß (Limit {limit} KB)",
+        "not-object": "Ein Objekt wurde erwartet",
+        "unknown-key": "Unbekanntes Feld",
+        "missing": "Pflichtfeld fehlt",
+        "wrong-type": "Falscher Typ",
+        "invalid-value": "Kein erlaubter Wert",
+        "unsupported-version": "Für eine andere Version des Voreinstellungsformats geschrieben",
+        "unknown-token": "Kein Theme-Token",
+        "invalid-color": "Keine Farbe (hex, rgb, hsl oder oklch verwenden)",
+        "invalid-length": "Keine Länge (rem, px oder em verwenden)",
+        "out-of-range": "Außerhalb des Bereichs",
+        "unknown-font": "Keine mitgelieferte oder System-Schrift",
+        "unknown-code-theme": "Kein mitgeliefertes Code-Theme",
+        "unknown-base": "Keine eingebaute Palette"
+      },
+      "bundled": {
+        "default": {
+          "name": "Standard",
+          "description": "Der gewohnte codeg-Look: neutrale Palette, Inter, GitHub-Code-Farben."
+        },
+        "warm-terminal": {
+          "name": "Warmes Terminal",
+          "description": "Warmes Anthrazit, Bernstein-Akzente und eine Monospace-Oberfläche, wie sich ein terminalgeborener Agent anfühlt. Der helle Modus ist warmes Papier."
+        },
+        "ink": {
+          "name": "Tinte",
+          "description": "Monochrom und kantig: Schwarz, Weiß und ein paar Grautöne, umrandete Blasen, nirgends eine Akzentfarbe."
+        },
+        "dense-ide": {
+          "name": "Dichte IDE",
+          "description": "Kompakte Abstände, kleiner Text, blaue Akzente und eine farbige Statusleiste, wie ein Editor mit Chat-Panel."
+        },
+        "high-contrast": {
+          "name": "Hoher Kontrast",
+          "description": "Reines Schwarz auf Weiß (und Weiß auf Schwarz), kräftige Rahmen, größerer Text und kontrastreiche Code-Farben."
+        },
+        "midnight": {
+          "name": "Mitternacht",
+          "description": "Tiefe blauviolette Flächen, weich gerundete Blasen und ein Flieder-Akzent, die Stimmung eines Chat-Clients spät in der Nacht."
+        },
+        "paper": {
+          "name": "Papier",
+          "description": "Eine warme, helle Lesefläche mit großzügigen Abständen und größerem Text. Der dunkle Modus ist gedämpfte Dämmerung statt Schwarz."
+        }
+      }
+    },
     "zoomLevel": {
       "sectionTitle": "Fensterzoom",
       "sectionDescription": "Skaliert die gesamte Oberfläche. Wird sofort übernommen und pro Gerät gespeichert. ⌘/Ctrl + und - durchlaufen dieselben Zoomstufen wie dieses Menü (⌘/Ctrl 0 setzt auf 100% zurück).",
@@ -157,6 +271,7 @@
       "interface": "Oberfläche",
       "editor": "Editor",
       "terminal": "Terminal",
+      "code": "Code in Nachrichten",
       "groupSans": "Serifenlos",
       "groupMono": "Monospace",
       "custom": "Benutzerdefiniert…",

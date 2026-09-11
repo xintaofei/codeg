@@ -106,6 +106,7 @@
       "radius": "Rayon des coins",
       "radiusHint": "Toute l'échelle de rayons, de sm à 4xl, en découle : un seul curseur arrondit l'application entière.",
       "advanced": "Avancé ({count} variables de plus)",
+      "surfaces": "Surfaces de la conversation ({count} variables de plus)",
       "enableCss": "Activer le CSS personnalisé",
       "cssRisk": "Fonction avancée. Le CSS personnalisé remplace tous les styles intégrés et peut rendre l'interface inutilisable.",
       "editCss": "Modifier le CSS…",
@@ -144,6 +145,119 @@
         "hintTokens": "Astuce : vos couleurs remplacées sont accessibles via var(--primary), var(--background), etc."
       }
     },
+    "presets": {
+      "sectionTitle": "Préréglages",
+      "sectionDescription": "Un look complet en un clic : palette, polices, espacements, bulles de message et couleurs du code. Tout ce qu'un préréglage définit reste modifiable dans les sections ci-dessous, et le résultat peut être enregistré dans un fichier à partager.",
+      "current": "Actuel : {name}",
+      "currentModified": "Actuel : {name} (modifié)",
+      "currentCustom": "Actuel : look personnalisé",
+      "customName": "Personnalisé",
+      "apply": "Appliquer {name}",
+      "disabledHint": "Les couleurs personnalisées sont désactivées dans Style personnalisé : les couleurs, espacements et taille de texte d'un préréglage ne s'appliquent qu'une fois réactivées.",
+      "codeTheme": "Couleurs du code",
+      "codeThemeLight": "Couleurs du code en mode clair",
+      "codeThemeDark": "Couleurs du code en mode sombre",
+      "codeThemeGroupLight": "Thèmes clairs",
+      "codeThemeGroupDark": "Thèmes sombres",
+      "codeThemeHint": "Couleurs de syntaxe des blocs de code dans les messages, un thème par mode.",
+      "density": "Densité",
+      "densityHint": "Met à l'échelle chaque espacement, marge intérieure et hauteur de contrôle de l'interface.",
+      "densityOptions": {
+        "compact": "Compacte",
+        "snug": "Serrée",
+        "default": "Par défaut",
+        "relaxed": "Aérée",
+        "custom": "Personnalisée"
+      },
+      "chatText": "Texte des messages",
+      "chatTextHint": "Taille de lecture des messages. Le zoom de la fenêtre agrandit toute l'interface.",
+      "chatTextOptions": {
+        "small": "Petit",
+        "default": "Par défaut",
+        "large": "Grand",
+        "larger": "Plus grand",
+        "custom": "Personnalisé"
+      },
+      "import": "Importer un préréglage…",
+      "export": "Exporter le préréglage…",
+      "sharingNote": "Un fichier de préréglage contient les couleurs, les polices, les espacements et les noms des thèmes de code fournis, rien d'autre. Le CSS personnalisé ne quitte jamais cet appareil.",
+      "importTitle": "Importer un préréglage",
+      "importPreview": "Vérifiez ce que ce fichier modifie, puis appliquez-le.",
+      "importErrorsTitle": "Ce fichier ne peut pas être appliqué",
+      "importErrorsDescription": "Rien n'a été modifié. Corrigez les problèmes ci-dessous ou choisissez un autre fichier.",
+      "importApply": "Appliquer le préréglage",
+      "cancel": "Annuler",
+      "preview": {
+        "base": "Palette de base",
+        "mode": "Mode",
+        "overrides": "Couleurs remplacées",
+        "overridesValue": "{light} en clair, {dark} en sombre",
+        "fonts": "Polices (interface / code)",
+        "code": "Couleurs du code",
+        "density": "Densité",
+        "chatText": "Texte des messages",
+        "unchanged": "Inchangé"
+      },
+      "modes": {
+        "light": "Clair",
+        "dark": "Sombre",
+        "system": "Suivre le système"
+      },
+      "toasts": {
+        "applied": "Préréglage appliqué : {name}",
+        "exported": "Préréglage enregistré",
+        "exportFailed": "Impossible d'enregistrer le préréglage",
+        "readFailed": "Impossible de lire ce fichier",
+        "partialExport": "Non inclus dans le fichier : {items}"
+      },
+      "errors": {
+        "invalid-json": "JSON invalide",
+        "too-large": "Fichier trop volumineux (limite {limit} Ko)",
+        "not-object": "Un objet était attendu",
+        "unknown-key": "Champ inconnu",
+        "missing": "Champ obligatoire manquant",
+        "wrong-type": "Mauvais type",
+        "invalid-value": "Valeur non autorisée",
+        "unsupported-version": "Écrit pour une autre version du format de préréglage",
+        "unknown-token": "Ce n'est pas un token de thème",
+        "invalid-color": "Ce n'est pas une couleur (utilisez hex, rgb, hsl ou oklch)",
+        "invalid-length": "Ce n'est pas une longueur (utilisez rem, px ou em)",
+        "out-of-range": "Hors limites",
+        "unknown-font": "Ni une police fournie ni une police système",
+        "unknown-code-theme": "Ce n'est pas un thème de code fourni",
+        "unknown-base": "Ce n'est pas une palette intégrée"
+      },
+      "bundled": {
+        "default": {
+          "name": "Par défaut",
+          "description": "Le look d'origine de codeg : palette neutre, Inter, couleurs de code GitHub."
+        },
+        "warm-terminal": {
+          "name": "Terminal chaleureux",
+          "description": "Anthracite chaud, accents ambrés et interface en monospace, comme un agent né dans le terminal. Le mode clair est un papier chaud."
+        },
+        "ink": {
+          "name": "Encre",
+          "description": "Monochrome et carré : noir, blanc et quelques gris, bulles cerclées, aucune couleur d'accent."
+        },
+        "dense-ide": {
+          "name": "IDE dense",
+          "description": "Espacements serrés, petit texte, accents bleus et barre d'état colorée, comme un éditeur avec un panneau de discussion."
+        },
+        "high-contrast": {
+          "name": "Contraste élevé",
+          "description": "Noir pur sur blanc (et blanc sur noir), bordures marquées, texte plus grand et couleurs de code à fort contraste."
+        },
+        "midnight": {
+          "name": "Minuit",
+          "description": "Surfaces bleu-violet profond, bulles arrondies et accent lilas, l'ambiance d'un client de discussion tard dans la nuit."
+        },
+        "paper": {
+          "name": "Papier",
+          "description": "Une surface de lecture claire et chaude, avec des espacements généreux et un texte plus grand. Le mode sombre est un crépuscule tamisé plutôt que du noir."
+        }
+      }
+    },
     "zoomLevel": {
       "sectionTitle": "Zoom de la fenêtre",
       "sectionDescription": "Met à l'échelle toute l'interface. S'applique immédiatement et est enregistré par appareil. ⌘/Ctrl + et - parcourent les mêmes niveaux de zoom que ce menu (⌘/Ctrl 0 rétablit 100%).",
@@ -157,6 +271,7 @@
       "interface": "Interface",
       "editor": "Éditeur",
       "terminal": "Terminal",
+      "code": "Code dans les messages",
       "groupSans": "Sans empattement",
       "groupMono": "Monospace",
       "custom": "Personnalisée…",

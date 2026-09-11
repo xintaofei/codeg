@@ -17,6 +17,7 @@ import {
   type ZoomLevel,
   stepZoom,
 } from "@/lib/theme-presets"
+import type { BundledTheme } from "shiki"
 import {
   resolveFontStack,
   isValidFontId,
@@ -24,6 +25,7 @@ import {
   DEFAULT_UI_FONT_ID,
   DEFAULT_EDITOR_FONT_ID,
   DEFAULT_TERMINAL_FONT_ID,
+  DEFAULT_MONO_FONT_ID,
   DEFAULT_EDITOR_FONT_SIZE,
   DEFAULT_TERMINAL_FONT_SIZE,
   type FontSize,
@@ -44,6 +46,11 @@ import {
   STORAGE_KEY_TERMINAL_FONT_CUSTOM,
   STORAGE_KEY_TERMINAL_FONT_SIZE,
   STORAGE_KEY_TERMINAL_LIGATURES,
+  STORAGE_KEY_MONO_FONT,
+  STORAGE_KEY_MONO_FONT_CUSTOM,
+  STORAGE_KEY_MONO_FONT_STACK,
+  STORAGE_KEY_CODE_THEME,
+  STORAGE_KEY_APPEARANCE_PRESET,
   STORAGE_KEY_WORKSPACE_BG_ENABLED,
   STORAGE_KEY_WORKSPACE_BG_MASK,
   STORAGE_KEY_WORKSPACE_BG_BLUR,
@@ -66,6 +73,19 @@ import {
   type CustomTheme,
   type CustomThemeToken,
 } from "@/lib/custom-style"
+import {
+  DEFAULT_CODE_THEME,
+  parseStoredCodeTheme,
+  sanitizeCodeTheme,
+  codeThemeTuple,
+  type CodeThemePair,
+} from "@/lib/code-themes"
+import {
+  parseStoredAppearancePreset,
+  presetToApplication,
+  serializeAppearancePreset,
+  type AppearancePreset,
+} from "@/lib/appearance-preset"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import {
   isShortcutRecorderArmed,
@@ -137,6 +157,28 @@ type AppearanceContextValue = {
   setEditorWordWrap: (on: boolean) => void
   terminalLigatures: boolean
   setTerminalLigatures: (on: boolean) => void
+  /** 消息内代码字体（驱动 --font-mono）。编辑器 / 终端字体各自独立，不受它影响。 */
+  monoFont: FontSelection
+  setMonoFont: (id: string, custom?: string) => void
+  /** Shiki themes for code blocks in messages, one per mode. */
+  codeTheme: CodeThemePair
+  setCodeTheme: (pair: CodeThemePair) => void
+  /**
+   * The last applied appearance preset (bundled or imported), or null when
+   * none was ever applied. Remembered so the settings page can tell "Warm
+   * terminal" from "Warm terminal (modified)" and name an imported preset; it
+   * is not what renders (the token keys are).
+   */
+  appliedPreset: AppearancePreset | null
+  /**
+   * Apply a validated preset: base palette, both modes' token overrides (the
+   * preset's shape / density / text settings fanned out to both), fonts and
+   * code colours. Turns custom colours on, since a preset is nothing without
+   * them. The light / dark mode is a window setting applied by the caller.
+   */
+  applyPreset: (preset: AppearancePreset) => void
+  /** Write one token to BOTH modes (layout tokens are mode-independent); null clears it. */
+  setSharedThemeToken: (token: CustomThemeToken, value: string | null) => void
   /** Workspace 背景图片总开关。关闭时不加载图片、不触发任何表面半透明。 */
   workspaceBgEnabled: boolean
   setWorkspaceBgEnabled: (on: boolean) => void
@@ -189,6 +231,22 @@ type AppearanceContextValue = {
 
 export const AppearanceContext = createContext<AppearanceContextValue | null>(
   null
+)
+
+/**
+ * The `[light, dark]` Shiki theme tuple, in a context of its own. Every
+ * rendered message reads it (Streamdown's `shikiTheme` prop), and the main
+ * context's value changes on every appearance edit (zoom, a colour swatch,
+ * a background slider); subscribing the transcript to that would re-render
+ * every message for changes that only touch CSS variables. This value is only
+ * replaced when the theme ids change, so a preset switch that keeps the same
+ * code colours re-renders no message at all (see the provider test).
+ *
+ * The default is Streamdown's own, so a tree rendered without the provider
+ * (tests, previews) highlights exactly as before.
+ */
+export const CodeThemeContext = createContext<[BundledTheme, BundledTheme]>(
+  codeThemeTuple(DEFAULT_CODE_THEME)
 )
 
 function persist(key: string, value: string) {
@@ -408,6 +466,24 @@ export function AppearanceProvider({
   const [terminalLigatures, setTerminalLigaturesState] = useState<boolean>(() =>
     readBool(STORAGE_KEY_TERMINAL_LIGATURES, false)
   )
+  const [monoFont, setMonoFontState] = useState<FontSelection>(() =>
+    readFontSelection(
+      STORAGE_KEY_MONO_FONT,
+      STORAGE_KEY_MONO_FONT_CUSTOM,
+      DEFAULT_MONO_FONT_ID
+    )
+  )
+
+  // Code colours and the last applied preset. Neither needs the pre-paint
+  // script: highlighting is asynchronous anyway, and the preset document only
+  // labels the settings page.
+  const [codeTheme, setCodeThemeState] = useState<CodeThemePair>(() =>
+    parseStoredCodeTheme(readStored(STORAGE_KEY_CODE_THEME))
+  )
+  const [appliedPreset, setAppliedPresetState] =
+    useState<AppearancePreset | null>(() =>
+      parseStoredAppearancePreset(readStored(STORAGE_KEY_APPEARANCE_PRESET))
+    )
 
   // Workspace 背景图片配置（图片 URL 异步加载，初始 null）。
   const [workspaceBgEnabled, setWorkspaceBgEnabledState] = useState<boolean>(
@@ -567,6 +643,23 @@ export function AppearanceProvider({
     persist(STORAGE_KEY_TERMINAL_LIGATURES, on ? "1" : "0")
   }, [])
 
+  // Same shape as setUiFont: the resolved stack goes inline on <html> now and
+  // into storage for the pre-paint script.
+  const setMonoFont = useCallback((id: string, custom = "") => {
+    setMonoFontState({ id, custom })
+    const stack = resolveFontStack(id, custom, "mono")
+    document.documentElement.style.setProperty("--font-mono", stack)
+    persist(STORAGE_KEY_MONO_FONT, id)
+    persist(STORAGE_KEY_MONO_FONT_CUSTOM, custom)
+    persist(STORAGE_KEY_MONO_FONT_STACK, stack)
+  }, [])
+
+  const setCodeTheme = useCallback((pair: CodeThemePair) => {
+    const next = sanitizeCodeTheme(pair)
+    setCodeThemeState(next)
+    persist(STORAGE_KEY_CODE_THEME, JSON.stringify(next))
+  }, [])
+
   // enabled 与 panelOpacity 的 DOM 应用（data-workspace-bg 属性 + --ws-surface-alpha）
   // 统一交给下方一个 effect，覆盖 mount、重启后 re-enable、跨标签所有路径。setter 只
   // 更新 state + 持久化，避免 --ws-surface-alpha 与 state 失同步（否则重启后 re-enable
@@ -618,10 +711,46 @@ export function AppearanceProvider({
     setCustomThemeState(sanitizeCustomTheme(theme))
   }, [])
 
+  const setSharedThemeToken = useCallback(
+    (token: CustomThemeToken, value: string | null) => {
+      setCustomThemeState((prev) => {
+        const light = { ...prev.light }
+        const dark = { ...prev.dark }
+        if (value === null) {
+          delete light[token]
+          delete dark[token]
+        } else {
+          light[token] = value
+          dark[token] = value
+        }
+        return { light, dark }
+      })
+    },
+    []
+  )
+
   const setCustomThemeEnabled = useCallback((on: boolean) => {
     setCustomThemeEnabledState(on)
     persist(STORAGE_KEY_CUSTOM_THEME_ENABLED, on ? "1" : "0")
   }, [])
+
+  // Applying a preset is the same set of writes a hand edit would make, in
+  // the same order the pre-paint script reads them, so a reload lands on the
+  // identical look. Fonts the preset leaves out keep the user's choice.
+  const applyPreset = useCallback(
+    (preset: AppearancePreset) => {
+      const plan = presetToApplication(preset)
+      setThemeColor(plan.themeColor)
+      setCustomThemeState(sanitizeCustomTheme(plan.customTheme))
+      setCustomThemeEnabled(true)
+      if (plan.uiFont) setUiFont(plan.uiFont)
+      if (plan.monoFont) setMonoFont(plan.monoFont)
+      if (plan.codeTheme) setCodeTheme(plan.codeTheme)
+      setAppliedPresetState(preset)
+      persist(STORAGE_KEY_APPEARANCE_PRESET, serializeAppearancePreset(preset))
+    },
+    [setThemeColor, setCustomThemeEnabled, setUiFont, setMonoFont, setCodeTheme]
+  )
 
   // 传进来的必须是 sanitizeCustomCss 处理过的文本：存的即是注入的，预水合脚本
   // 才能原样使用而不必在 inline 脚本里重跑一遍 CSSOM 校验。
@@ -750,6 +879,16 @@ export function AppearanceProvider({
     if (readStored(STORAGE_KEY_UI_FONT_STACK) !== sans) {
       document.documentElement.style.setProperty("--font-sans", sans)
       persist(STORAGE_KEY_UI_FONT_STACK, sans)
+    }
+    // The code font only ever writes when the user chose one: with no stored
+    // id the :root default is the stack, so there is nothing to reconcile and
+    // no storage event to raise.
+    if (readStored(STORAGE_KEY_MONO_FONT)) {
+      const mono = resolveFontStack(monoFont.id, monoFont.custom, "mono")
+      if (readStored(STORAGE_KEY_MONO_FONT_STACK) !== mono) {
+        document.documentElement.style.setProperty("--font-mono", mono)
+        persist(STORAGE_KEY_MONO_FONT_STACK, mono)
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -894,6 +1033,9 @@ export function AppearanceProvider({
       STORAGE_KEY_TERMINAL_FONT_CUSTOM,
       STORAGE_KEY_TERMINAL_FONT_SIZE,
       STORAGE_KEY_TERMINAL_LIGATURES,
+      STORAGE_KEY_MONO_FONT,
+      STORAGE_KEY_MONO_FONT_CUSTOM,
+      STORAGE_KEY_MONO_FONT_STACK,
     ])
     const rehydrateFonts = () => {
       const ui = readFontSelection(
@@ -923,10 +1065,21 @@ export function AppearanceProvider({
       setEditorLigaturesState(readBool(STORAGE_KEY_EDITOR_LIGATURES, false))
       setEditorWordWrapState(readBool(STORAGE_KEY_EDITOR_WORD_WRAP, false))
       setTerminalLigaturesState(readBool(STORAGE_KEY_TERMINAL_LIGATURES, false))
-      // 仅界面字体落到 --font-sans；编辑器/终端字体由各自组件读取 provider 状态后应用。
+      // 界面字体落到 --font-sans，消息代码字体落到 --font-mono；编辑器/终端字体由
+      // 各自组件读取 provider 状态后应用。
       document.documentElement.style.setProperty(
         "--font-sans",
         resolveFontStack(ui.id, ui.custom, "sans")
+      )
+      const mono = readFontSelection(
+        STORAGE_KEY_MONO_FONT,
+        STORAGE_KEY_MONO_FONT_CUSTOM,
+        DEFAULT_MONO_FONT_ID
+      )
+      setMonoFontState(mono)
+      document.documentElement.style.setProperty(
+        "--font-mono",
+        resolveFontStack(mono.id, mono.custom, "mono")
       )
     }
 
@@ -1037,6 +1190,13 @@ export function AppearanceProvider({
           readBool(STORAGE_KEY_CUSTOM_STYLE_SUSPENDED, false)
         )
       }
+      // Preset-level settings written by the settings window.
+      if (e.key === STORAGE_KEY_CODE_THEME) {
+        setCodeThemeState(parseStoredCodeTheme(e.newValue))
+      }
+      if (e.key === STORAGE_KEY_APPEARANCE_PRESET) {
+        setAppliedPresetState(parseStoredAppearancePreset(e.newValue))
+      }
       // Sync appearance mode to Tauri DB when changed in another window
       if (e.key === "theme") {
         syncAppearanceMode(e.newValue ?? "system")
@@ -1050,6 +1210,13 @@ export function AppearanceProvider({
     resetCustomCssBaseline,
   ])
 
+  // Keyed on the two ids, not the pair object: setCodeTheme always allocates
+  // a fresh pair, and the tuple must only change when the colours do.
+  const codeThemeTupleValue = useMemo<[BundledTheme, BundledTheme]>(
+    () => [codeTheme.light, codeTheme.dark],
+    [codeTheme.light, codeTheme.dark]
+  )
+
   return (
     <AppearanceContext.Provider
       value={{
@@ -1057,6 +1224,13 @@ export function AppearanceProvider({
         setThemeColor,
         zoomLevel,
         setZoomLevel,
+        monoFont,
+        setMonoFont,
+        codeTheme,
+        setCodeTheme,
+        appliedPreset,
+        applyPreset,
+        setSharedThemeToken,
         showWelcomeQuickActions,
         setShowWelcomeQuickActions,
         uiFont,
@@ -1105,7 +1279,9 @@ export function AppearanceProvider({
         safeStyleRequested,
       }}
     >
-      {children}
+      <CodeThemeContext.Provider value={codeThemeTupleValue}>
+        {children}
+      </CodeThemeContext.Provider>
     </AppearanceContext.Provider>
   )
 }

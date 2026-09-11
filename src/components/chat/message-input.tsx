@@ -1889,12 +1889,15 @@ export function MessageInput({
                 // blank areas (padding, the dead space below a short message, the
                 // action-bar gaps) so the whole input reads as clickable-to-type;
                 // interactive controls re-assert their own cursor (see globals.css).
-                // Resting border uses `border-foreground/20` (a touch darker than
-                // the default `border-input`, which is near-invisible at rest and
-                // vanishes over a workspace background image); it adapts per theme
-                // (dark ink in light mode, light ink in dark) and stays legible.
-                // Focus still swaps to `border-ring` below.
-                "codeg-composer-chrome @container relative flex flex-col rounded-xl border border-foreground/20 bg-transparent transition-colors",
+                // Resting border, surface and radius come from the composer
+                // tokens (globals.css :root). Their defaults reproduce the
+                // previous literals: a `foreground/20` border (a touch darker
+                // than `border-input`, which is near-invisible at rest and
+                // vanishes over a workspace background image; adapts per theme
+                // and stays legible), a transparent surface and `rounded-xl`.
+                // An appearance preset restyles the box through them. Focus
+                // still swaps to `border-ring` below.
+                "codeg-composer-chrome @container relative flex flex-col rounded-(--composer-radius) border border-(--composer-border) bg-(--composer-bg) transition-colors",
                 // Standard focus ring — always shown when the composer is
                 // focused (the plain default input style). `bg-background
                 // ws-transparent-bg`: opaque surface normally, but with a

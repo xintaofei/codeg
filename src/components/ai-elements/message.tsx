@@ -11,6 +11,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { useCodeTheme } from "@/hooks/use-appearance"
 import { cn } from "@/lib/utils"
 import { useTranslations } from "next-intl"
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react"
@@ -69,15 +70,22 @@ export const MessageContent = ({
 }: MessageContentProps) => (
   <div
     className={cn(
-      "is-user:dark flex min-w-0 flex-col gap-2 overflow-hidden text-sm",
-      // `ws-msg-secondary` pairs with the user bubble's `bg-secondary`: with
-      // a workspace background image on it turns the bubble translucent + frosted
+      // `chat-text` is `text-sm` routed through --chat-font-size /
+      // --chat-line-height so a preset can resize message text on its own.
+      "is-user:dark flex min-w-0 flex-col gap-2 overflow-hidden chat-text",
+      // Bubble colours, radius and hairline come from the bubble tokens
+      // (globals.css :root). The user defaults are the previous literals
+      // (`bg-secondary` / `rounded-lg` / `text-foreground`, no hairline); the
+      // assistant defaults are transparent, unpadded and unrounded, i.e. the
+      // plain column it always was. A preset can give either side a surface.
+      // `ws-msg-secondary` pairs with the user bubble's surface: with a
+      // workspace background image on it turns the bubble translucent + frosted
       // with a hairline ring (fixed `--ws-msg-alpha` + backdrop blur — see
       // globals.css, scoped to `.is-user`) so it stays legible over a busy
       // background. Off / assistant messages: inert (no base rule, no `.is-user`
       // ancestor).
-      "group-[.is-user]:ml-auto group-[.is-user]:w-fit group-[.is-user]:max-w-full group-[.is-user]:rounded-lg group-[.is-user]:bg-secondary group-[.is-user]:px-4 group-[.is-user]:py-3 group-[.is-user]:text-foreground ws-msg-secondary",
-      "group-[.is-assistant]:w-full group-[.is-assistant]:text-foreground",
+      "group-[.is-user]:ml-auto group-[.is-user]:w-fit group-[.is-user]:max-w-full group-[.is-user]:rounded-(--bubble-user-radius) group-[.is-user]:bg-(--bubble-user-bg) group-[.is-user]:px-4 group-[.is-user]:py-3 group-[.is-user]:text-(--bubble-user-fg) group-[.is-user]:shadow-[inset_0_0_0_1px_var(--bubble-user-border)] ws-msg-secondary",
+      "group-[.is-assistant]:w-full group-[.is-assistant]:rounded-(--bubble-assistant-radius) group-[.is-assistant]:bg-(--bubble-assistant-bg) group-[.is-assistant]:p-(--bubble-assistant-padding) group-[.is-assistant]:text-(--bubble-assistant-fg) group-[.is-assistant]:shadow-[inset_0_0_0_1px_var(--bubble-assistant-border)]",
       className
     )}
     {...props}
@@ -524,9 +532,14 @@ function MessageResponseImpl({
   const plugins = useStreamdownPlugins(
     typeof normalized === "string" ? normalized : undefined
   )
+  // Code colours from the appearance preset. Read through its own context so
+  // this memoized message re-renders for a code theme change and for no other
+  // appearance edit (see CodeThemeContext).
+  const shikiTheme = useCodeTheme()
 
   return (
     <Streamdown
+      shikiTheme={shikiTheme}
       className={cn(
         "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:pl-3 [&_ol]:pl-3",
         // Streamdown gives `blockquote` its own `border-l-4
