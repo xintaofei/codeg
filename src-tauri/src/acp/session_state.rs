@@ -1,7 +1,7 @@
 //! 会话级状态结构。后端权威：流式累积、in-flight tool calls、待处理 permission 等
 //! 全部住在这里。Phase 2 的 snapshot 端点直接从此处读取 live 部分。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -9,7 +9,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::acp::delegation::types::{BlockedKind, BlockedOn};
-use crate::acp::event_stream::{ConnectionEventStream, RecentEventsBuffer};
+use crate::acp::event_stream::{
+    images_slice_size, json_str_len, json_value_size, opt_json_size, opt_str_size,
+    ConnectionEventStream, RecentEventsBuffer,
+};
 use crate::acp::feedback::{FeedbackItem, FeedbackStatus};
 use crate::acp::plan_approval::PendingPlanApprovalState;
 use crate::acp::question::PendingQuestionState;
@@ -1808,6 +1811,128 @@ impl SessionState {
         }
     }
 
+    /// Wire copy of `active_tool_calls`, with the bulky RESULT payload of
+    /// already-finished calls bounded by `MAX_SNAPSHOT_TOOL_PAYLOAD_BYTES`.
+    ///
+    /// Nothing removes a completed call from `active_tool_calls`: the map is
+    /// cleared in one place, `TurnComplete`. So a single long agentic turn
+    /// accumulates one entry per tool call it has ever made, and the snapshot
+    /// used to carry all of them whole. Issue #380 sampled a turn that had not
+    /// reached `TurnComplete`: 1814 entries / 23.6 MB, then 1983 entries (1964
+    /// completed, 18 failed, 1 running) / 26.7 MB. Each entry holds up to
+    /// `MAX_SINGLE_EMIT_BYTES` (64 KiB) of tool output plus the agent's
+    /// rendered `content` and, for image tools, base64 image data, so the
+    /// payload had no bound at all — and the desktop client that parses it on
+    /// every attach stopped responding.
+    ///
+    /// Every call still ships, in the same (id-sorted) order, with its id,
+    /// kind, label, status and meta. That is the part nothing else can supply:
+    /// `denormalizeSnapshot` resolves each `LiveContentBlock::ToolCallRef` in
+    /// `live_message.content` through this list and DROPS a block whose id is
+    /// missing, so an entry left out is a tool card missing from the middle of
+    /// the in-flight turn.
+    ///
+    /// What the budget bounds is `input` / `output` / `content` / `locations` /
+    /// `images`, and only on calls that already reached a terminal status:
+    ///
+    /// * Pending / InProgress calls are never trimmed, at any size. They are
+    ///   the ones the attaching client has to keep rendering and revising from
+    ///   live events, their partial output exists nowhere else, and their count
+    ///   tracks live concurrency rather than turn length.
+    /// * Terminal calls keep everything, newest first, until the budget is
+    ///   spent; the older ones then ship without those fields. A finished
+    ///   call's result is durable in the agent's own transcript, which is what
+    ///   the conversation reloads from.
+    ///
+    /// The budget is spent, not enforced per entry, so the last entry admitted
+    /// may carry the total past it by its own size (one oversized image tool
+    /// call). In-flight entries are counted against the budget but never
+    /// trimmed by it.
+    fn snapshot_tool_calls(&self) -> Vec<ToolCallState> {
+        // Arrival order comes from the live message: `push_tool_call_ref_if_absent`
+        // anchors exactly one `ToolCallRef` per call, in the order the agent
+        // opened them. `active_tool_calls` itself is keyed by id, which says
+        // nothing about age.
+        let mut arrival: BTreeMap<&str, usize> = BTreeMap::new();
+        if let Some(live) = self.live_message.as_ref() {
+            for (i, block) in live.content.iter().enumerate() {
+                if let LiveContentBlock::ToolCallRef { tool_call_id } = block {
+                    arrival.entry(tool_call_id.as_str()).or_insert(i);
+                }
+            }
+        }
+
+        // (arrival rank, id, payload bytes). An id with no anchoring ref sorts
+        // newest, so the fail-safe direction is "keep everything" — today that
+        // cannot happen, because both `ToolCall` and `ToolCallUpdate` anchor a
+        // ref for the id they upsert.
+        let mut ordered: Vec<(usize, &str, usize)> = self
+            .active_tool_calls
+            .iter()
+            .map(|(id, tc)| {
+                (
+                    arrival.get(id.as_str()).copied().unwrap_or(usize::MAX),
+                    id.as_str(),
+                    tool_call_payload_bytes(tc),
+                )
+            })
+            .collect();
+
+        let total = ordered
+            .iter()
+            .fold(0usize, |acc, (_, _, bytes)| acc.saturating_add(*bytes));
+        if total <= MAX_SNAPSHOT_TOOL_PAYLOAD_BYTES {
+            // The ordinary turn: nothing to trim, wire shape byte-identical.
+            return self.active_tool_calls.values().cloned().collect();
+        }
+
+        ordered.sort_unstable();
+        let mut trimmed: BTreeSet<&str> = BTreeSet::new();
+        let mut spent = 0usize;
+        for (_, id, bytes) in ordered.iter().rev() {
+            let terminal = matches!(
+                self.active_tool_calls[*id].status,
+                ToolCallStatus::Completed | ToolCallStatus::Failed
+            );
+            if terminal && spent >= MAX_SNAPSHOT_TOOL_PAYLOAD_BYTES {
+                trimmed.insert(*id);
+                continue;
+            }
+            spent = spent.saturating_add(*bytes);
+        }
+
+        self.active_tool_calls
+            .values()
+            .map(|tc| {
+                if !trimmed.contains(tc.id.as_str()) {
+                    return tc.clone();
+                }
+                // Listed field by field (no `..tc.clone()`) so a field added to
+                // `ToolCallState` later has to be classified here as identity
+                // or as payload, instead of silently riding an unbounded value
+                // back onto the wire.
+                ToolCallState {
+                    id: tc.id.clone(),
+                    kind: tc.kind.clone(),
+                    label: tc.label.clone(),
+                    status: tc.status.clone(),
+                    input: None,
+                    output: None,
+                    content: None,
+                    locations: None,
+                    // Kept: the delegation broker writes the parent↔child
+                    // binding here (`meta["codeg.delegation"]`), which is what
+                    // re-anchors an inline sub-thread on a mid-turn attach.
+                    // Bounded by contract — a small status object, not output.
+                    meta: tc.meta.clone(),
+                    images: Vec::new(),
+                    // `#[serde(skip)]` — never on the wire either way.
+                    raw_input_chunks: Vec::new(),
+                }
+            })
+            .collect()
+    }
+
     /// 拷贝出对外可见的 wire-friendly snapshot。Phase 2 snapshot 端点直接调用此方法。
     pub fn to_snapshot(&self) -> LiveSessionSnapshot {
         LiveSessionSnapshot {
@@ -1817,7 +1942,7 @@ impl SessionState {
             status: self.status.clone(),
             external_id: self.external_id.clone(),
             live_message: self.live_message.clone(),
-            active_tool_calls: self.active_tool_calls.values().cloned().collect(),
+            active_tool_calls: self.snapshot_tool_calls(),
             pending_permission: self.pending_permission.clone(),
             pending_question: self.pending_question.clone(),
             pending_plan_approval: self.pending_plan_approval.clone(),
@@ -1982,6 +2107,37 @@ pub struct LiveSessionSnapshot {
 /// `skip_serializing_if` helper for `LiveSessionSnapshot.background_outstanding`.
 fn u32_is_zero(v: &u32) -> bool {
     *v == 0
+}
+
+/// Byte budget for the bulky tool-call payload one snapshot may carry. See
+/// [`SessionState::snapshot_tool_calls`] for what it does and does not bound.
+///
+/// 2 MiB leaves the newest ~150 finished calls of a typical read/edit/grep turn
+/// intact (and, at the 64 KiB per-call ceiling `MAX_SINGLE_EMIT_BYTES` imposes,
+/// at least the newest 32 in the worst case) — far more than a client attaching
+/// mid-turn has on screen — while holding the #380 session's snapshot at ~2.6 MB
+/// instead of 24 MB.
+const MAX_SNAPSHOT_TOOL_PAYLOAD_BYTES: usize = 2 * 1024 * 1024;
+
+/// The part of a `ToolCallState` that grows with what the tool actually did —
+/// what [`MAX_SNAPSHOT_TOOL_PAYLOAD_BYTES`] bounds. Excludes the identity fields
+/// (id / kind / label / status / meta), which every entry keeps.
+///
+/// Sized with the same escape-aware, allocation-free accounting the per-event
+/// cap uses (`event_stream`), so "this call's payload" means the same number of
+/// bytes on both paths.
+fn tool_call_payload_bytes(tc: &ToolCallState) -> usize {
+    let output = match tc.output.as_ref() {
+        Some(ToolCallOutput::Text { content }) => json_str_len(content),
+        Some(ToolCallOutput::Error { message }) => json_str_len(message),
+        Some(ToolCallOutput::Json { value }) => json_value_size(value),
+        None => 0,
+    };
+    opt_json_size(&tc.input)
+        .saturating_add(output)
+        .saturating_add(opt_str_size(&tc.content))
+        .saturating_add(opt_json_size(&tc.locations))
+        .saturating_add(images_slice_size(&tc.images))
 }
 
 /// Last non-empty line of `s`, trimmed. `None` if every line is blank.
@@ -3369,6 +3525,179 @@ mod tests {
             .map(|tc| tc.id.as_str())
             .collect();
         assert_eq!(ids, vec!["tc-a", "tc-m", "tc-z"]);
+    }
+
+    /// Open a tool call and finish it, with `output_bytes` of tool output.
+    /// `settled` false leaves it in progress (still streaming its output).
+    fn run_tool_call(s: &mut SessionState, id: &str, output_bytes: usize, settled: bool) {
+        s.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: id.into(),
+            title: format!("Read src/{id}.rs"),
+            kind: "read".into(),
+            status: "in_progress".into(),
+            content: None,
+            raw_input: Some(format!("{{\"file_path\":\"src/{id}.rs\"}}")),
+            raw_output: None,
+            locations: Some(serde_json::json!([{ "path": format!("src/{id}.rs") }])),
+            meta: Some(serde_json::json!({ "codeg.delegation": { "status": "completed" } })),
+            images: None,
+        });
+        let status = if settled { "completed" } else { "in_progress" };
+        s.apply_event(&AcpEvent::ToolCallUpdate {
+            tool_call_id: id.into(),
+            title: None,
+            status: Some(status.to_string()),
+            content: None,
+            raw_input: None,
+            raw_output: Some("o".repeat(output_bytes)),
+            raw_output_append: None,
+            locations: None,
+            meta: None,
+            images: None,
+        });
+    }
+
+    /// The ordinary turn stays byte-identical: nothing is trimmed while the
+    /// table fits the budget, so the wire shape is exactly what it always was.
+    #[test]
+    fn snapshot_carries_every_tool_call_whole_while_it_fits_the_budget() {
+        let mut s = fresh_state();
+        for i in 0..20 {
+            run_tool_call(&mut s, &format!("tc-{i:03}"), 4 * 1024, true);
+        }
+
+        let snap = s.to_snapshot();
+        assert_eq!(snap.active_tool_calls.len(), 20);
+        for tc in &snap.active_tool_calls {
+            let live = &s.active_tool_calls[&tc.id];
+            assert_eq!(
+                serde_json::to_value(tc).unwrap(),
+                serde_json::to_value(live).unwrap(),
+                "{} must ship exactly as held",
+                tc.id
+            );
+        }
+    }
+
+    /// #380: `active_tool_calls` is cleared only at `TurnComplete`, so a turn
+    /// that keeps working accumulates every tool call it ever made — the
+    /// reporter sampled 1983 entries and a 26.7 MB snapshot on a turn that had
+    /// not reached one, and the client that parses that on attach stopped
+    /// responding.
+    ///
+    /// The snapshot now spends a byte budget over the finished calls' payload,
+    /// newest first, WITHOUT dropping an entry: every `ToolCallRef` in the live
+    /// message must still resolve, or the reattaching client renders the
+    /// in-flight turn with tool cards missing from the middle of it.
+    #[test]
+    fn snapshot_bounds_finished_tool_call_payload_on_a_long_turn() {
+        const CALLS: usize = 300;
+        const OUTPUT_BYTES: usize = 16 * 1024;
+        let mut s = fresh_state();
+        for i in 0..CALLS {
+            run_tool_call(&mut s, &format!("tc-{i:04}"), OUTPUT_BYTES, true);
+        }
+        // …and one still running, the call the attaching client has to keep
+        // rendering from live events.
+        run_tool_call(&mut s, "tc-running", OUTPUT_BYTES, false);
+
+        // What the state holds, and what shipping it whole would have cost.
+        assert_eq!(s.active_tool_calls.len(), CALLS + 1);
+        let held: usize = s
+            .active_tool_calls
+            .values()
+            .map(tool_call_payload_bytes)
+            .sum();
+        assert!(
+            held > 2 * MAX_SNAPSHOT_TOOL_PAYLOAD_BYTES,
+            "the turn must hold well past the budget for this to test anything (held {held})"
+        );
+
+        let snap = s.to_snapshot();
+        let wire = serde_json::to_string(&snap).expect("serialize snapshot");
+        assert!(
+            wire.len() < MAX_SNAPSHOT_TOOL_PAYLOAD_BYTES * 3 / 2,
+            "snapshot must stay near the budget, got {} bytes for {held} bytes held",
+            wire.len()
+        );
+
+        // Nothing is dropped: same count, same (id-sorted) order, and every
+        // `ToolCallRef` block in the live message still resolves.
+        assert_eq!(snap.active_tool_calls.len(), CALLS + 1);
+        let wire_ids: Vec<&str> = snap
+            .active_tool_calls
+            .iter()
+            .map(|tc| tc.id.as_str())
+            .collect();
+        let held_ids: Vec<&str> = s.active_tool_calls.keys().map(String::as_str).collect();
+        assert_eq!(wire_ids, held_ids);
+        let by_id: std::collections::BTreeMap<&str, &ToolCallState> = snap
+            .active_tool_calls
+            .iter()
+            .map(|tc| (tc.id.as_str(), tc))
+            .collect();
+        for block in &s.live_message.as_ref().expect("live message").content {
+            if let LiveContentBlock::ToolCallRef { tool_call_id } = block {
+                assert!(
+                    by_id.contains_key(tool_call_id.as_str()),
+                    "{tool_call_id} is anchored in the live message but missing from the snapshot"
+                );
+            }
+        }
+
+        // The running call keeps its partial output at any size — nothing else
+        // has it. So does the newest finished one.
+        assert!(by_id["tc-running"].output.is_some());
+        assert!(by_id[format!("tc-{:04}", CALLS - 1).as_str()].output.is_some());
+
+        // The oldest finished calls ship without the payload, but keep every
+        // field that identifies the card.
+        let oldest = by_id["tc-0000"];
+        assert!(oldest.output.is_none(), "oldest call must shed its output");
+        assert!(oldest.content.is_none());
+        assert!(oldest.input.is_none());
+        assert!(oldest.locations.is_none());
+        assert!(oldest.images.is_empty());
+        assert_eq!(oldest.label, "Read src/tc-0000.rs");
+        assert_eq!(oldest.kind, ToolKind::Read);
+        assert_eq!(oldest.status, ToolCallStatus::Completed);
+        assert!(
+            oldest.meta.is_some(),
+            "delegation meta re-anchors an inline sub-thread on attach"
+        );
+
+        // And the trimming is a tail, not a purge: the budget is actually spent
+        // on the recent calls rather than thrown away.
+        let kept = snap
+            .active_tool_calls
+            .iter()
+            .filter(|tc| tc.output.is_some())
+            .count();
+        assert!(
+            kept > 32 && kept < CALLS,
+            "expected a bounded recent window to keep its output, got {kept}"
+        );
+    }
+
+    /// The budget bounds finished work only. A single running call bigger than
+    /// the whole budget still ships whole: its output exists nowhere else yet,
+    /// and its count tracks live concurrency, not how long the turn has run.
+    #[test]
+    fn snapshot_never_trims_a_running_tool_call() {
+        let mut s = fresh_state();
+        for i in 0..200 {
+            run_tool_call(&mut s, &format!("tc-{i:04}"), 16 * 1024, true);
+        }
+        run_tool_call(&mut s, "tc-huge", MAX_SNAPSHOT_TOOL_PAYLOAD_BYTES + 1024, false);
+
+        let snap = s.to_snapshot();
+        let huge = snap
+            .active_tool_calls
+            .iter()
+            .find(|tc| tc.id == "tc-huge")
+            .expect("running call present");
+        assert_eq!(huge.status, ToolCallStatus::InProgress);
+        assert!(huge.output.is_some(), "a running call is never trimmed");
     }
 
     #[test]
