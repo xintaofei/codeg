@@ -2780,7 +2780,7 @@ interface TimelinePrefixDeps {
   optimisticTurns: MessageTurn[]
   liveOwnsActiveTurn: boolean
   delegationKickoffText: string | null
-  hasLiveMessage: boolean
+  liveShowsReply: boolean
   liveStartedAt: number | null
 }
 interface TimelinePrefixEntry {
@@ -3029,7 +3029,7 @@ function timelinePrefixDepsEqual(
     a.optimisticTurns === b.optimisticTurns &&
     a.liveOwnsActiveTurn === b.liveOwnsActiveTurn &&
     a.delegationKickoffText === b.delegationKickoffText &&
-    a.hasLiveMessage === b.hasLiveMessage &&
+    a.liveShowsReply === b.liveShowsReply &&
     a.liveStartedAt === b.liveStartedAt
   )
 }
@@ -3078,9 +3078,22 @@ function collectInFlightPersistedToolCalls(
   return out
 }
 
+/**
+ * @param liveShowsReply whether the live message this session holds actually
+ * produced an assistant turn — see [`computeTimeline`], which derives it from
+ * the same build the streaming tail is made of. Both suppressions below hide a
+ * persisted assistant turn *because the live stream is showing that reply*, so
+ * they must key off what the live message RENDERS, never off the existence of a
+ * live message object. Those two differ: a live message with nothing renderable
+ * in it is an ordinary state (`STATUS_CHANGED` → `prompting` installs
+ * `content: []` at the start of every turn, and the runtime mirror never writes
+ * a null back over it), and keying off the object hid a reply with nothing put
+ * in its place — a blank agent turn.
+ */
 function computeTimelinePrefix(
   session: ConversationRuntimeSession,
-  conversationId: number
+  conversationId: number,
+  liveShowsReply: boolean
 ): TimelinePrefixEntry {
   const detail = session.detail
   // Everything Phases 1–3 read, snapshotted for the `===` validity check.
@@ -3094,7 +3107,7 @@ function computeTimelinePrefix(
     optimisticTurns: session.optimisticTurns,
     liveOwnsActiveTurn: session.liveOwnsActiveTurn,
     delegationKickoffText: session.delegationKickoffText,
-    hasLiveMessage: session.liveMessage !== null,
+    liveShowsReply,
     liveStartedAt: session.liveMessage?.startedAt ?? null,
   }
   if (detail) {
@@ -3121,7 +3134,7 @@ function computeTimelinePrefix(
   const rawPersistedTurns = session.detail?.turns ?? []
   const hasLiveOrLocalReply =
     session.liveOwnsActiveTurn &&
-    (session.liveMessage !== null || session.localTurns.length > 0)
+    (liveShowsReply || session.localTurns.length > 0)
   let stripFrom = -1
   if (hasLiveOrLocalReply) {
     let lastUserIdx = -1
@@ -3153,13 +3166,12 @@ function computeTimelinePrefix(
   // into `detail` it sits beside the live reply (a separate assistant turn
   // under a `live-…` id), and `mergeConsecutiveAssistantTurns` concatenates
   // the two — so the already-persisted head (e.g. the first reasoning block)
-  // renders twice. Hide that persisted partial, but ONLY while `liveMessage`
-  // is in hand: the live stream carries the full reply (the attach snapshot is
-  // built atomically and includes it), so this only ever hides from render
-  // what the live stream is concurrently showing — never dropping a reply we
-  // can't re-show. The moment the turn ends, `liveMessage` clears and the
-  // persisted copy (now complete) renders normally; the brief promote→refetch
-  // grace window can show a transient visible duplicate, never a hidden turn.
+  // renders twice. Hide that persisted partial, but ONLY while the live message
+  // is actually SHOWING a reply (`liveShowsReply`): that is what makes this a
+  // choice between two renderings of one reply rather than a deletion. The
+  // moment the turn ends, `liveMessage` clears and the persisted copy (now
+  // complete) renders normally; the brief promote→refetch grace window can show
+  // a transient visible duplicate, never a hidden turn.
   //
   // The in-flight prompt is identified authoritatively by the backend, which
   // reports the id of the persisted user turn it stamped as the in-flight one
@@ -3171,9 +3183,7 @@ function computeTimelinePrefix(
   // id, so an earlier completed round's reply is never mistaken for a partial.
   const inFlightPromptId = session.detail?.in_flight_user_turn_id ?? null
   const inFlightPromptIdx =
-    !hasLiveOrLocalReply &&
-    session.liveMessage !== null &&
-    inFlightPromptId !== null
+    !hasLiveOrLocalReply && liveShowsReply && inFlightPromptId !== null
       ? persistedTurns.findIndex(
           (t) => t.role === "user" && t.id === inFlightPromptId
         )
@@ -3415,14 +3425,28 @@ function computeTimeline(
   const cached = timelineCache.get(session)
   if (cached) return cached
 
-  // Phases 1–3 (already deduped), reused across streaming batches.
-  const { prefix, prefixKeys } = computeTimelinePrefix(session, conversationId)
-
-  // Phase 4: Streaming turns (live agent response, split into rounds)
+  // Phase 4 first: Phases 1–3 hide the persisted copy of the reply this build
+  // is showing, so they need its verdict, and deriving that from the same build
+  // is what keeps the two from disagreeing. A live message can hold nothing
+  // renderable — `content: []` from the turn's own `prompting` transition, or
+  // only blocks this build drops — and a check for the message OBJECT then hid
+  // a persisted reply that nothing replaced.
   const streamingMessage = session.liveMessage
   const built = streamingMessage
     ? buildStreamingTurnsFromLiveMessage(conversationId, streamingMessage)
     : null
+  // A `user` turn here is a message the user sent mid-turn (native steering),
+  // not a rendering of the reply — a live message that produced only those is
+  // showing no reply and must suppress nothing.
+  const liveShowsReply =
+    built?.turns.some((turn) => turn.role === "assistant") ?? false
+
+  // Phases 1–3 (already deduped), reused across streaming batches.
+  const { prefix, prefixKeys } = computeTimelinePrefix(
+    session,
+    conversationId,
+    liveShowsReply
+  )
 
   let deduped: ConversationTimelineTurn[]
   if (!built || built.turns.length === 0) {

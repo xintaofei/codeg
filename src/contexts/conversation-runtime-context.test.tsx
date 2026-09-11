@@ -709,6 +709,14 @@ describe("ConversationRuntimeProvider delegation kickoff projection", () => {
     mockGetFolderConversation.mockImplementation(() => new Promise(() => {}))
   })
 
+  /** The live message the strip stands in for: one that IS showing the reply. */
+  const streamingReply: LiveMessage = {
+    id: "lm-streaming",
+    role: "assistant",
+    content: [{ type: "text", text: "working on it" }],
+    startedAt: 0,
+  }
+
   it("synthesizes the kickoff user turn (and strips the persisted reply) while the transcript has no user turn yet", async () => {
     // DB lags: only a partial assistant turn is persisted, no user turn.
     mockGetFolderConversation.mockResolvedValueOnce(
@@ -721,7 +729,7 @@ describe("ConversationRuntimeProvider delegation kickoff projection", () => {
       api().setLiveOwnsActiveTurn(99, true, "do the thing")
     })
     act(() => {
-      api().setLiveMessage(99, LIVE_MSG, true)
+      api().setLiveMessage(99, streamingReply, true)
     })
     await act(async () => {
       api().refetchDetail(99, { preserveLive: true })
@@ -742,6 +750,35 @@ describe("ConversationRuntimeProvider delegation kickoff projection", () => {
         (t) => t.phase === "persisted" && t.turn.role === "assistant"
       )
     ).toBe(false)
+  })
+
+  it("keeps the persisted reply while the live message is showing nothing", async () => {
+    // The child's next turn has begun: `status_changed → prompting` put a fresh
+    // `content: []` live message on the connection and the viewer bridged it,
+    // but no chunk has arrived. Stripping the reply then leaves the dialog
+    // showing a prompt with nothing under it.
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWithTurns([userTurn("u1"), assistantTurn("a1")])
+    )
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+
+    act(() => {
+      api().setLiveOwnsActiveTurn(99, true, "do the thing")
+    })
+    act(() => {
+      api().setLiveMessage(99, LIVE_MSG, true)
+    })
+    await act(async () => {
+      api().refetchDetail(99, { preserveLive: true })
+      await Promise.resolve()
+    })
+
+    expect(
+      api()
+        .getTimelineTurns(99)
+        .map((t) => t.turn.id)
+    ).toEqual(["u1", "a1"])
   })
 
   it("uses the real persisted user turn instead of synthesizing once it has landed", async () => {
