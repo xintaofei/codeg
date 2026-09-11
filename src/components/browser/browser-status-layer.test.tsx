@@ -250,7 +250,7 @@ function renderState(state: BrowserTabState) {
   )
 }
 
-const degradedText = /Pop-ups and in-page navigation are limited/
+const degradedText = /Pop-ups are blocked in this tab/
 
 describe("BrowserNoticeBar — page channel", () => {
   beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }))
