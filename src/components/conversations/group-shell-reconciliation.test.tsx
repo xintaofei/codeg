@@ -1,7 +1,19 @@
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
-import { describe, it, expect } from "vitest"
-import { render } from "@testing-library/react"
+import { describe, it, expect, vi } from "vitest"
+import { act, render } from "@testing-library/react"
+
+import {
+  getTimelineTurns,
+  resetConversationRuntimeStore,
+  useConversationRuntimeStore,
+} from "@/stores/conversation-runtime-store"
+
+vi.mock("@/lib/api", () => ({
+  getFolderConversation: vi.fn(),
+}))
+
+const { getFolderConversation } = await import("@/lib/api")
 
 const source = readFileSync(
   resolve(
@@ -153,5 +165,61 @@ describe("split group shell source shape", () => {
     // No fragment/wrapper around the trio — that would make the flip shift
     // slots and remount the content subtree.
     expect(shellBody.slice(stripIdx, contentIdx)).not.toContain("<>")
+  })
+})
+
+/**
+ * The reparents the shells above cannot absorb.
+ *
+ * A tab dragged into another group DOES change React parents, so its view is
+ * remounted by design. The connection is deliberately carried across that
+ * unmount (`isTransientUnmount`), and the runtime session — which holds the
+ * transcript — has to be carried with it. Dropping the session there left the
+ * message list empty for as long as the tab stayed open: the remounted view
+ * re-registers its live-message sink on the connection it just kept, that
+ * recreates the session with live data and no detail, and `fetchDetail` skips
+ * a session that already has live data. Nothing refetches after that.
+ */
+describe("a reparented conversation view keeps its runtime session", () => {
+  it("consults the reparent classifier before either destructive branch", () => {
+    const cleanupStart = source.indexOf(
+      "// Cleanup runtime data on unmount (tab close)"
+    )
+    expect(cleanupStart).toBeGreaterThan(-1)
+    const cleanup = source.slice(cleanupStart, cleanupStart + 2000)
+    const guardIdx = cleanup.indexOf("isReparentUnmount(useTabStore.getState()")
+    const deferIdx = cleanup.indexOf("setPendingCleanup(")
+    const removeIdx = cleanup.indexOf("removeConversation(")
+    expect(guardIdx).toBeGreaterThan(-1)
+    // Both ways of ending a session sit behind the classifier.
+    expect(deferIdx).toBeGreaterThan(guardIdx)
+    expect(removeIdx).toBeGreaterThan(guardIdx)
+    // Same inputs the connection's own guard uses, so the two agree on what a
+    // reparent is.
+    expect(cleanup.slice(guardIdx, deferIdx)).toContain("tabId, groupId")
+  })
+
+  it("cannot reload the transcript once a live sink has recreated the session", async () => {
+    resetConversationRuntimeStore()
+    const { actions } = useConversationRuntimeStore.getState()
+
+    // What the remounted view does first: re-register its live-message sink on
+    // the connection it kept. The session comes back empty, but live.
+    act(() => {
+      actions.setLiveMessage(
+        7,
+        { id: "lm-1", role: "assistant", content: [], startedAt: 0 },
+        true
+      )
+    })
+    expect(getTimelineTurns(7)).toHaveLength(0)
+
+    act(() => {
+      actions.fetchDetail(7)
+    })
+    await act(async () => {})
+
+    expect(getFolderConversation).not.toHaveBeenCalled()
+    expect(getTimelineTurns(7)).toHaveLength(0)
   })
 })

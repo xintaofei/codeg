@@ -502,6 +502,44 @@ function moveTabToSlot(
   return insertTab(without, tabs[from], index)
 }
 
+/**
+ * `raw` with the tabs sitting at `slots` rearranged into the order a reorder
+ * callback asked for, or `null` when that list is not a permutation of exactly
+ * those slots (and so must be ignored).
+ *
+ * A reorder callback is a request to MOVE tabs, never a new tab set. The
+ * distinction matters because `Reorder.Group` emits the order it has measured
+ * since its own last render and then drops, by reference, whatever is missing
+ * from its current `values` — so mid-drag it can legitimately hand back a list
+ * that is short, repeats an id, or carries a tab object from an earlier derive.
+ * Resolving every entry back to the live `rawTabs` item by id keeps a drag
+ * unable to close a tab, resurrect a closed one, or write a stale copy of a
+ * tab's fields over the current one (a draft that bound to a conversation
+ * mid-drag would otherwise go back to being an unbound draft).
+ */
+function permuteSlots(
+  raw: TabItemInternal[],
+  slots: number[],
+  orderedTabs: TabItem[]
+): TabItemInternal[] | null {
+  if (orderedTabs.length !== slots.length) return null
+  const slotIds = new Set(slots.map((i) => raw[i].id))
+  const seen = new Set<string>()
+  const ordered: TabItemInternal[] = []
+  for (const tab of orderedTabs) {
+    if (!slotIds.has(tab.id) || seen.has(tab.id)) return null
+    seen.add(tab.id)
+    const item = raw.find((t) => t.id === tab.id)
+    if (!item) return null
+    ordered.push(item)
+  }
+  const next = [...raw]
+  slots.forEach((slot, k) => {
+    next[slot] = ordered[k]
+  })
+  return next.every((tab, i) => tab === raw[i]) ? null : next
+}
+
 /** Field-wise equality for derived tab items. Backs the cross-derive reuse in
  *  the `tabs` derivation: an item whose every field matches the previous derive
  *  keeps its old reference, so downstream `Object.is` gates (consumers' memos)
@@ -1628,24 +1666,10 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         slots.push(i)
       }
     })
-    if (orderedTabs.length !== slots.length) return
-    const slotIds = new Set(slots.map((i) => raw[i].id))
-    const seen = new Set<string>()
-    const ordered: TabItemInternal[] = []
-    for (const tab of orderedTabs) {
-      if (!slotIds.has(tab.id) || seen.has(tab.id)) return
-      seen.add(tab.id)
-      const item = raw.find((t) => t.id === tab.id)
-      if (!item) return
-      ordered.push(item)
-    }
     // Partition permutation: only this group's slots move, so the other
     // groups' persisted positions stay byte-stable.
-    const next = [...raw]
-    slots.forEach((slot, k) => {
-      next[slot] = ordered[k]
-    })
-    if (next.every((tab, i) => tab === raw[i])) return
+    const next = permuteSlots(raw, slots, orderedTabs)
+    if (!next) return
     set({ rawTabs: next })
     recomputeTabs()
   },
@@ -1664,7 +1688,16 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   },
 
   reorderTabs: (reorderedTabs) => {
-    set({ rawTabs: reorderedTabs })
+    // The unsplit strip shows every tab, so its slots are the whole array —
+    // otherwise identical to a group reorder, guards included.
+    const raw = get().rawTabs
+    const next = permuteSlots(
+      raw,
+      raw.map((_, i) => i),
+      reorderedTabs
+    )
+    if (!next) return
+    set({ rawTabs: next })
     recomputeTabs()
   },
 

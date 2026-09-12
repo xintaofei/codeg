@@ -950,6 +950,20 @@ const ConversationTabView = memo(function ConversationTabView({
     return () => {
       mountedRef.current = false
       syncCancelRef.current?.()
+      if (isReparentUnmount(useTabStore.getState(), tabId, groupId)) {
+        // Dragging the tab into another group reparents this view: React
+        // remounts it under that group's shell while the tab stays open. The
+        // connection is already held across that unmount (see
+        // `isTransientUnmount` above) and the runtime session has to be held
+        // with it — it holds the transcript. Dropping it emptied the message
+        // list and nothing brought it back: the remounted view re-registers
+        // its live-message sink on the connection it just kept, which recreates
+        // the session with a `liveMessage` and no `detail`, and `fetchDetail`
+        // skips a session that already has live data. Header, title and
+        // composer all read the tab row, so they looked untouched while the
+        // transcript stayed blank until the tab was closed and reopened.
+        return
+      }
       if (connStatusRef.current === "prompting" && !isViewerRef.current) {
         // Owner, agent still responding — keep the session for deferred cleanup
         // (the background turn_complete handler removes it once done).
@@ -963,7 +977,13 @@ const ConversationTabView = memo(function ConversationTabView({
         removeConversation(effectiveConversationId)
       }
     }
-  }, [effectiveConversationId, removeConversation, setPendingCleanup])
+  }, [
+    effectiveConversationId,
+    groupId,
+    removeConversation,
+    setPendingCleanup,
+    tabId,
+  ])
 
   const handleSend = useCallback(
     (
