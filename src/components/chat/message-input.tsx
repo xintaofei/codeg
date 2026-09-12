@@ -391,6 +391,7 @@ export function MessageInput({
   }, [])
 
   const voice = useVoiceInput({
+    engine: "gemini",
     lang: locale?.toLowerCase().startsWith("zh") ? "zh-CN" : (locale || "zh-CN"),
     onTranscript: handleVoiceTranscript,
   })
