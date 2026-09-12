@@ -5914,7 +5914,9 @@
       "channelDegraded": "Pop-ups are blocked in this tab and the address bar can fall behind the page",
       "channelDegradedHint": "codeg could not install its page script. Pop-ups this page opens are blocked, the address bar will not follow navigation inside the page, and the find shortcut pressed in the page will not open the find bar. Reopening the tab tries again.",
       "downloadsDenied": "Downloads blocked: {host}",
-      "downloadsDeniedNoGesture": "several files, not started by a click"
+      "downloadsDeniedNoGesture": "several files, not started by a click",
+      "agentGrantLost": "Sharing ended: the page left {origin}",
+      "agentGrantLostShare": "Share {origin} too"
     },
     "tab": {
       "untitled": "New tab"
@@ -5980,6 +5982,23 @@
       "openWithSystem": "Open with system app",
       "schemeBlocked": "{url} can't be opened here",
       "cannotShow": "This document can't be shown"
+    },
+    "agent": {
+      "share": "Share this page with agents ({origin})",
+      "shareLabel": "Share with agents",
+      "notShareable": "This page has no web address to share with agents",
+      "shared": "Shared",
+      "sharedWith": "Agents can read {origin}",
+      "sharedScope": "Sharing ends as soon as the page leaves this site.",
+      "sharedToast": "Agents can now read {origin}",
+      "stopSharing": "Stop sharing",
+      "shareFailed": "This page can't be shared with agents",
+      "activityRead": "Read the page",
+      "activityRefused": "Refused: this page isn't shared",
+      "activityFailed": "Couldn't read the page",
+      "activityCount": "{count}×",
+      "expand": "{count} more",
+      "collapse": "Less"
     }
   },
   "browser": {

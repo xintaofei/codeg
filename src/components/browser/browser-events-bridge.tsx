@@ -21,6 +21,7 @@ import {
 } from "@/lib/browser/browser-downloads-store"
 import {
   browserWorkspaceTabId,
+  recordBrowserAgentActivity,
   removeBrowserTabState,
   requestBrowserFind,
   setBrowserTabNotice,
@@ -28,6 +29,8 @@ import {
   setDocGuestState,
 } from "@/lib/browser/browser-tab-store"
 import {
+  BROWSER_AGENT_ACTIVITY_EVENT,
+  BROWSER_AGENT_GRANT_EVENT,
   BROWSER_CLOSED_EVENT,
   BROWSER_DOC_STATE_EVENT,
   BROWSER_DOWNLOAD_EVENT,
@@ -36,6 +39,8 @@ import {
   BROWSER_POPUP_EVENT,
   BROWSER_SHORTCUT_EVENT,
   BROWSER_STATE_EVENT,
+  type AgentActivityPayload,
+  type AgentGrantPayload,
   type BrowserClosedPayload,
   type BrowserDownload,
   type BrowserNavigationBlockedPayload,
@@ -66,6 +71,10 @@ import { getCurrentWindowLabel } from "@/lib/browser/window-label"
  *   policy refused
  * - `browser://doc-state` → the mode of a document guest (the file column's
  *   HTML preview), including a fall-back to safe mode
+ * - `browser://agent-grant` → a notice when a page navigating away took its
+ *   own sharing with it
+ * - `browser://agent-activity` → the activity strip of the tab an agent
+ *   reached for
  *
  * It also carries two preferences the other way: the user's site rules (the
  * backend enforces `block` on every navigation a tab attempts) and the
@@ -206,6 +215,27 @@ export function BrowserEventsBridge() {
         transport.subscribe<DocGuestState>(BROWSER_DOC_STATE_EVENT, (doc) => {
           setDocGuestState(doc)
         }),
+        transport.subscribe<AgentGrantPayload>(
+          BROWSER_AGENT_GRANT_EVENT,
+          (grant) => {
+            // What the level IS travels on `browser://state`, which the
+            // toolbar reads. The only thing worth a notice here is the
+            // transition the user did not perform: the page walked off the
+            // origin it was shared for, and an agent that was working on it
+            // has just started being refused.
+            if (grant.change !== "navigated" || !grant.origin) return
+            setBrowserTabNotice(browserWorkspaceTabId(grant.tabId), {
+              kind: "agent-grant-lost",
+              origin: grant.origin,
+            })
+          }
+        ),
+        transport.subscribe<AgentActivityPayload>(
+          BROWSER_AGENT_ACTIVITY_EVENT,
+          (activity) => {
+            recordBrowserAgentActivity(activity)
+          }
+        ),
         transport.subscribe<BrowserOpenRequestPayload>(
           BROWSER_OPEN_REQUEST_EVENT,
           (request) => {

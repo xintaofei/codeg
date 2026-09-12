@@ -5914,7 +5914,9 @@
       "channelDegraded": "이 탭에서는 팝업이 차단되며 주소 표시줄이 페이지를 따라가지 못할 수 있습니다",
       "channelDegradedHint": "codeg가 페이지 스크립트를 설치하지 못했습니다. 이 페이지가 여는 팝업은 차단되고, 주소 표시줄은 페이지 내 이동을 따라가지 않으며, 페이지에서 찾기 단축키를 눌러도 찾기 막대가 열리지 않습니다. 탭을 다시 열면 재시도합니다.",
       "downloadsDenied": "다운로드 차단됨: {host}",
-      "downloadsDeniedNoGesture": "여러 파일, 클릭으로 시작되지 않음"
+      "downloadsDeniedNoGesture": "여러 파일, 클릭으로 시작되지 않음",
+      "agentGrantLost": "공유가 끝났습니다: 페이지가 {origin}을(를) 벗어났습니다",
+      "agentGrantLostShare": "{origin}도 공유"
     },
     "tab": {
       "untitled": "새 탭"
@@ -5980,6 +5982,23 @@
       "openWithSystem": "시스템 앱으로 열기",
       "schemeBlocked": "{url}은(는) 여기서 열 수 없습니다",
       "cannotShow": "이 문서를 표시할 수 없습니다"
+    },
+    "agent": {
+      "share": "이 페이지를 에이전트와 공유({origin})",
+      "shareLabel": "에이전트와 공유",
+      "notShareable": "이 페이지에는 에이전트와 공유할 웹 주소가 없습니다",
+      "shared": "공유됨",
+      "sharedWith": "에이전트가 {origin}을(를) 읽을 수 있습니다",
+      "sharedScope": "페이지가 이 사이트를 벗어나면 공유가 끝납니다.",
+      "sharedToast": "이제 에이전트가 {origin}을(를) 읽을 수 있습니다",
+      "stopSharing": "공유 중지",
+      "shareFailed": "이 페이지는 에이전트와 공유할 수 없습니다",
+      "activityRead": "페이지를 읽음",
+      "activityRefused": "거부됨: 이 페이지는 공유되지 않았습니다",
+      "activityFailed": "페이지를 읽지 못했습니다",
+      "activityCount": "{count}회",
+      "expand": "{count}개 더",
+      "collapse": "접기"
     }
   },
   "browser": {

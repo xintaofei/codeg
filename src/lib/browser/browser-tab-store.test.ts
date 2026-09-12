@@ -20,13 +20,15 @@ import {
   markBrowserTabHidden,
   markBrowserTabShown,
   releaseBrowserTab,
+  recordBrowserAgentActivity,
   removeBrowserTabState,
   resetBrowserTabStoreForTests,
   setBrowserTabState,
   subscribeBrowserTabs,
+  useBrowserAgentActivity,
   useBrowserTabState,
 } from "./browser-tab-store"
-import type { AgentGrant, BrowserTabState } from "./types"
+import type { AgentActivityPayload, AgentGrant, BrowserTabState } from "./types"
 
 function state(over: Partial<BrowserTabState> = {}): BrowserTabState {
   return {
@@ -216,6 +218,76 @@ describe("browser tab store", () => {
     await expect(
       runSurfaceOp("abc", () => Promise.resolve("ok"))
     ).resolves.toBe("ok")
+  })
+
+  describe("agent activity", () => {
+    const read = (over: Partial<AgentActivityPayload> = {}) =>
+      act(() =>
+        recordBrowserAgentActivity({
+          tabId: "abc",
+          action: "read",
+          outcome: "done",
+          at: 1,
+          ...over,
+        })
+      )
+
+    it("gives a tab with no activity the same empty list every time", () => {
+      const view = renderHook(() => useBrowserAgentActivity("browser:abc"))
+      const first = view.result.current
+      expect(first).toEqual([])
+      // A fresh array each read would make `useSyncExternalStore` believe the
+      // store had changed on every notification, forever.
+      act(() =>
+        recordBrowserAgentActivity({
+          tabId: "other",
+          action: "read",
+          outcome: "done",
+          at: 1,
+        })
+      )
+      expect(view.result.current).toBe(first)
+      view.unmount()
+    })
+
+    it("folds a run of identical attempts into one line and keeps the newest time", () => {
+      const view = renderHook(() => useBrowserAgentActivity("browser:abc"))
+      read({ at: 100 })
+      read({ at: 200 })
+      read({ at: 300 })
+      expect(view.result.current).toEqual([
+        { action: "read", outcome: "done", at: 300, count: 3 },
+      ])
+      // A different outcome is a different line, and goes on top.
+      read({ at: 400, outcome: "refused" })
+      read({ at: 500 })
+      expect(view.result.current).toEqual([
+        { action: "read", outcome: "done", at: 500, count: 1 },
+        { action: "read", outcome: "refused", at: 400, count: 1 },
+        { action: "read", outcome: "done", at: 300, count: 3 },
+      ])
+      view.unmount()
+    })
+
+    it("keeps only the most recent lines", () => {
+      const view = renderHook(() => useBrowserAgentActivity("browser:abc"))
+      // Alternating outcomes so nothing folds: 120 distinct lines offered.
+      for (let i = 0; i < 120; i += 1) {
+        read({ at: i, outcome: i % 2 === 0 ? "done" : "refused" })
+      }
+      expect(view.result.current).toHaveLength(50)
+      expect(view.result.current[0]?.at).toBe(119)
+      view.unmount()
+    })
+
+    it("forgets a tab's activity with the tab", () => {
+      const view = renderHook(() => useBrowserAgentActivity("browser:abc"))
+      read()
+      expect(view.result.current).toHaveLength(1)
+      act(() => removeBrowserTabState("browser:abc"))
+      expect(view.result.current).toEqual([])
+      view.unmount()
+    })
   })
 
   it("stamps when a tab left the screen", () => {

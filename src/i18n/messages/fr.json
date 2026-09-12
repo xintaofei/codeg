@@ -5914,7 +5914,9 @@
       "channelDegraded": "Dans cet onglet, les fenêtres pop-up sont bloquées et la barre d'adresse peut ne pas suivre la page",
       "channelDegradedHint": "codeg n'a pas pu installer son script de page. Les fenêtres contextuelles ouvertes par cette page sont bloquées, la barre d'adresse ne suivra pas la navigation à l'intérieur de la page, et le raccourci de recherche pressé dans la page n'ouvrira pas la barre de recherche. Rouvrir l'onglet fait une nouvelle tentative.",
       "downloadsDenied": "Téléchargements bloqués : {host}",
-      "downloadsDeniedNoGesture": "plusieurs fichiers, non déclenchés par un clic"
+      "downloadsDeniedNoGesture": "plusieurs fichiers, non déclenchés par un clic",
+      "agentGrantLost": "Partage terminé : la page a quitté {origin}",
+      "agentGrantLostShare": "Partager aussi {origin}"
     },
     "tab": {
       "untitled": "Nouvel onglet"
@@ -5980,6 +5982,23 @@
       "openWithSystem": "Ouvrir avec l'application système",
       "schemeBlocked": "{url} ne peut pas être ouvert ici",
       "cannotShow": "Ce document ne peut pas être affiché"
+    },
+    "agent": {
+      "share": "Partager cette page avec les agents ({origin})",
+      "shareLabel": "Partager avec les agents",
+      "notShareable": "Cette page n'a pas d'adresse web à partager avec les agents",
+      "shared": "Partagée",
+      "sharedWith": "Les agents peuvent lire {origin}",
+      "sharedScope": "Le partage prend fin dès que la page quitte ce site.",
+      "sharedToast": "Les agents peuvent désormais lire {origin}",
+      "stopSharing": "Arrêter le partage",
+      "shareFailed": "Cette page ne peut pas être partagée avec les agents",
+      "activityRead": "A lu la page",
+      "activityRefused": "Refusé : cette page n'est pas partagée",
+      "activityFailed": "Impossible de lire la page",
+      "activityCount": "{count}×",
+      "expand": "{count} de plus",
+      "collapse": "Moins"
     }
   },
   "browser": {

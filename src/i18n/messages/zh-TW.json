@@ -5914,7 +5914,9 @@
       "channelDegraded": "此分頁的彈出視窗會被攔截，網址列可能跟不上頁面",
       "channelDegradedHint": "codeg 未能載入頁面指令碼。此頁面開啟的彈出視窗會被攔截，網址列不會跟隨頁內導覽，在頁面中按尋找快速鍵也不會開啟尋找列。重新開啟此分頁會再試一次。",
       "downloadsDenied": "已攔截下載：{host}",
-      "downloadsDeniedNoGesture": "多個檔案，不是由點擊觸發"
+      "downloadsDeniedNoGesture": "多個檔案，不是由點擊觸發",
+      "agentGrantLost": "分享已結束：頁面離開了 {origin}",
+      "agentGrantLostShare": "也分享 {origin}"
     },
     "tab": {
       "untitled": "新分頁"
@@ -5980,6 +5982,23 @@
       "openWithSystem": "用系統應用程式開啟",
       "schemeBlocked": "{url} 無法在這裡開啟",
       "cannotShow": "無法顯示此文件"
+    },
+    "agent": {
+      "share": "將此頁面分享給智慧代理（{origin}）",
+      "shareLabel": "分享給智慧代理",
+      "notShareable": "此頁面沒有可分享給智慧代理的網址",
+      "shared": "已分享",
+      "sharedWith": "智慧代理可讀取 {origin}",
+      "sharedScope": "頁面一旦離開該網站，分享即結束。",
+      "sharedToast": "智慧代理現在可以讀取 {origin}",
+      "stopSharing": "停止分享",
+      "shareFailed": "此頁面無法分享給智慧代理",
+      "activityRead": "讀取了頁面",
+      "activityRefused": "已拒絕：此頁面未分享",
+      "activityFailed": "讀取頁面失敗",
+      "activityCount": "{count} 次",
+      "expand": "還有 {count} 筆",
+      "collapse": "收合"
     }
   },
   "browser": {

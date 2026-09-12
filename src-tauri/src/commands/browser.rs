@@ -1157,11 +1157,37 @@ pub fn set_agent_grant_core(
 ///
 /// Refusing costs an agent a round trip and the instruction to ask again.
 /// Not refusing hands it a page nobody shared.
+///
+/// Every attempt that reaches an existing tab leaves a line on that tab's
+/// activity strip, whichever way it goes. The strip is only worth having if
+/// it is complete: a user who sees nothing on it has to be able to conclude
+/// that nothing happened.
 pub async fn agent_snapshot_core(
+    app: &AppHandle,
     registry: &BrowserRegistry,
     tab_id: &str,
     request: &agent::SnapshotRequest,
 ) -> Result<agent::PageSnapshot, AppCommandError> {
+    let (outcome, answer) = match read_shared_page(registry, tab_id, request).await {
+        Ok(snapshot) => (Some(agent::AgentOutcome::Done), Ok(snapshot)),
+        Err((outcome, err)) => (outcome, Err(err)),
+    };
+    if let Some(outcome) = outcome {
+        events::emit_agent_activity(app, tab_id, agent::AgentAction::Read, outcome, now_millis());
+    }
+    answer
+}
+
+/// What a read failed on, and the line it leaves behind. `None` for a tab
+/// that does not exist: there is no strip to report into and nobody watching
+/// it.
+type ReadFailure = (Option<agent::AgentOutcome>, AppCommandError);
+
+async fn read_shared_page(
+    registry: &BrowserRegistry,
+    tab_id: &str,
+    request: &agent::SnapshotRequest,
+) -> Result<agent::PageSnapshot, ReadFailure> {
     let Some((surface, generation, epoch, level)) = registry.read(tab_id, |tab| {
         (
             tab.surface.clone(),
@@ -1170,28 +1196,34 @@ pub async fn agent_snapshot_core(
             agent::level_of(tab.state.agent_grant.as_ref()),
         )
     }) else {
-        return Err(AppCommandError::not_found(format!(
-            "browser tab {tab_id} not found"
-        )));
+        return Err((
+            None,
+            AppCommandError::not_found(format!("browser tab {tab_id} not found")),
+        ));
     };
+    let failed = |err: AppCommandError| (Some(agent::AgentOutcome::Failed), err);
     // Before touching the page at all: an unshared tab is never read, not
     // even to find out that the read would have been refused.
     if !level.allows(GrantLevel::Read) {
-        return Err(grant_required(tab_id));
+        return Err((Some(agent::AgentOutcome::Refused), grant_required(tab_id)));
     }
 
-    let answer = eval_in_world_string(&surface, &agent::probe_and_snapshot(request, &epoch)).await?;
+    let answer = eval_in_world_string(&surface, &agent::probe_and_snapshot(request, &epoch))
+        .await
+        .map_err(failed)?;
     // The engine is not in this document — a page that has just loaded, or
     // one loaded before the tab was ever shared. Put it there and take the
     // snapshot in the same evaluation, so the two cannot straddle a
     // navigation.
     let answer = if answer == agent::ENGINE_ABSENT {
-        eval_in_world_string(&surface, &agent::install_and_snapshot(request, &epoch)).await?
+        eval_in_world_string(&surface, &agent::install_and_snapshot(request, &epoch))
+            .await
+            .map_err(failed)?
     } else {
         answer
     };
     let snapshot: agent::PageSnapshot = serde_json::from_str(&answer)
-        .map_err(|e| window_err("Failed to read the page", format!("unreadable snapshot: {e}")))?;
+        .map_err(|e| failed(window_err("Failed to read the page", format!("unreadable snapshot: {e}"))))?;
 
     let walked = Url::parse(&snapshot.url).ok();
     let walked_origin = walked.as_ref().and_then(hooks::origin_of);
@@ -1205,7 +1237,7 @@ pub async fn agent_snapshot_core(
         })
         .unwrap_or(false);
     if !allowed {
-        return Err(grant_required(tab_id));
+        return Err((Some(agent::AgentOutcome::Refused), grant_required(tab_id)));
     }
     Ok(snapshot)
 }
@@ -1531,11 +1563,12 @@ pub async fn browser_agent_grant(
 /// the check is inside `agent_snapshot_core`, so every caller gets it.
 #[tauri::command]
 pub async fn browser_agent_snapshot(
+    app: AppHandle,
     registry: State<'_, BrowserRegistry>,
     tab_id: String,
     max_chars: Option<usize>,
 ) -> Result<agent::PageSnapshot, AppCommandError> {
-    agent_snapshot_core(&registry, &tab_id, &agent::SnapshotRequest { max_chars }).await
+    agent_snapshot_core(&app, &registry, &tab_id, &agent::SnapshotRequest { max_chars }).await
 }
 
 /// Downloads this run started, oldest first. The frontend hydrates from it on
@@ -1626,6 +1659,20 @@ mod tests {
             node.as_str().is_some_and(|s| !s.is_empty()),
             "{BROWSER_I18N_KEY_GRANT_REQUIRED} has no message in en.json"
         );
+    }
+
+    /// A tab that is not there is the one exit that leaves no line: there is
+    /// no strip to leave it on, and no one watching. Every other way a read
+    /// can end reports itself, which is what lets an empty strip be read as
+    /// "nothing reached this tab".
+    #[tokio::test]
+    async fn a_read_of_a_tab_that_is_not_there_reports_to_nobody() {
+        let registry = BrowserRegistry::default();
+        let (outcome, err) = read_shared_page(&registry, "ghost", &agent::SnapshotRequest::default())
+            .await
+            .expect_err("no such tab");
+        assert!(outcome.is_none());
+        assert!(matches!(err.code, crate::app_error::AppErrorCode::NotFound));
     }
 
     #[test]

@@ -65,6 +65,24 @@ export interface AgentGrantPayload {
   origin: string | null
 }
 
+/** What an agent did to a page. One value today; acting on a page adds to
+ *  this rather than reinterpreting it. */
+export type AgentAction = "read"
+
+/** Whether it happened. Refusals and failures are reported too: the activity
+ *  strip is only worth reading if seeing nothing on it means nothing
+ *  happened. */
+export type AgentOutcome = "done" | "refused" | "failed"
+
+/** One agent's one attempt on one tab (`browser://agent-activity`). */
+export interface AgentActivityPayload {
+  tabId: string
+  action: AgentAction
+  outcome: AgentOutcome
+  /** Unix milliseconds. */
+  at: number
+}
+
 /** A page as an agent reads it (`browser_agent_snapshot`). */
 export interface PageSnapshot {
   /** Opaque token a later ref must quote. */
@@ -277,6 +295,8 @@ export const BROWSER_DOWNLOAD_EVENT = "browser://download"
 export const BROWSER_SHORTCUT_EVENT = "browser://shortcut"
 export const BROWSER_NAVIGATION_BLOCKED_EVENT = "browser://navigation-blocked"
 export const BROWSER_DOC_STATE_EVENT = "browser://doc-state"
+export const BROWSER_AGENT_GRANT_EVENT = "browser://agent-grant"
+export const BROWSER_AGENT_ACTIVITY_EVENT = "browser://agent-activity"
 
 /** `external` and `download` come from document guests only: a web address
  *  the document pointed at (the user may open it in a tab), and a download

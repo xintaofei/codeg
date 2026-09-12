@@ -62,6 +62,8 @@ vi.mock("@/contexts/workspace-context", () => ({
   useOptionalWorkspaceActions: () => toolbarMocks.workspaceActions,
 }))
 vi.mock("@/lib/browser/browser-api", () => ({
+  // The toolbar also carries the agent share control.
+  browserAgentGrant: vi.fn(() => Promise.resolve()),
   browserGoBack: vi.fn(),
   browserGoForward: vi.fn(),
   browserNavigate: vi.fn(),

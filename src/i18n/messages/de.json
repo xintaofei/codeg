@@ -5914,7 +5914,9 @@
       "channelDegraded": "In diesem Tab werden Pop-ups blockiert und die Adressleiste kann der Seite hinterherhinken",
       "channelDegradedHint": "codeg konnte sein Seitenskript nicht einsetzen. Von dieser Seite geöffnete Pop-ups werden blockiert, die Adressleiste folgt der Navigation innerhalb der Seite nicht, und das Suchkürzel in der Seite öffnet die Suchleiste nicht. Ein erneutes Öffnen des Tabs versucht es noch einmal.",
       "downloadsDenied": "Downloads blockiert: {host}",
-      "downloadsDeniedNoGesture": "mehrere Dateien, nicht durch einen Klick ausgelöst"
+      "downloadsDeniedNoGesture": "mehrere Dateien, nicht durch einen Klick ausgelöst",
+      "agentGrantLost": "Freigabe beendet: Die Seite hat {origin} verlassen",
+      "agentGrantLostShare": "Auch {origin} freigeben"
     },
     "tab": {
       "untitled": "Neuer Tab"
@@ -5980,6 +5982,23 @@
       "openWithSystem": "Mit System-App öffnen",
       "schemeBlocked": "{url} kann hier nicht geöffnet werden",
       "cannotShow": "Dieses Dokument kann nicht angezeigt werden"
+    },
+    "agent": {
+      "share": "Diese Seite für Agenten freigeben ({origin})",
+      "shareLabel": "Für Agenten freigeben",
+      "notShareable": "Diese Seite hat keine Webadresse, die für Agenten freigegeben werden könnte",
+      "shared": "Freigegeben",
+      "sharedWith": "Agenten können {origin} lesen",
+      "sharedScope": "Die Freigabe endet, sobald die Seite diese Website verlässt.",
+      "sharedToast": "Agenten können jetzt {origin} lesen",
+      "stopSharing": "Freigabe beenden",
+      "shareFailed": "Diese Seite kann nicht für Agenten freigegeben werden",
+      "activityRead": "Seite gelesen",
+      "activityRefused": "Abgelehnt: Diese Seite ist nicht freigegeben",
+      "activityFailed": "Seite konnte nicht gelesen werden",
+      "activityCount": "{count}×",
+      "expand": "{count} weitere",
+      "collapse": "Weniger"
     }
   },
   "browser": {

@@ -10,6 +10,9 @@ import { useSyncExternalStore } from "react"
 
 import { browserClose } from "./browser-api"
 import type {
+  AgentAction,
+  AgentActivityPayload,
+  AgentOutcome,
   BrowserTabState,
   DocGuestState,
   NavigationBlockReason,
@@ -149,7 +152,14 @@ export function removeBrowserTabState(workspaceTabId: string): void {
   const hadDoc = docStates.delete(workspaceTabId)
   hiddenAt.delete(workspaceTabId)
   findRequests.delete(workspaceTabId)
-  if (states.delete(workspaceTabId) || hadNotice || hadDoc) notify()
+  // Counted among the reasons to notify: a strip still mounted over a tab
+  // whose state had already gone would otherwise keep showing the lines of
+  // the page that left. `hiddenAt` and `findRequests` are not — nothing
+  // renders them on their own.
+  const hadActivity = agentActivity.delete(workspaceTabId)
+  if (states.delete(workspaceTabId) || hadNotice || hadDoc || hadActivity) {
+    notify()
+  }
 }
 
 // Mode and status of document guests (`browser://doc-state`), keyed like the
@@ -228,6 +238,10 @@ export type BrowserTabNotice =
   | { kind: "popup-denied"; url: string; reason: string | null }
   /** A top-level navigation the tab attempted was refused by policy. */
   | { kind: "navigation-blocked"; url: string; reason: NavigationBlockReason }
+  /** The page left the origin its grant was bound to, so agents lost access
+   *  to this tab without the user doing anything. The one grant transition
+   *  worth interrupting for — the other two the user just performed. */
+  | { kind: "agent-grant-lost"; origin: string }
 
 const notices = new Map<string, BrowserTabNotice>()
 
@@ -248,6 +262,74 @@ export function useBrowserTabNotice(
     () => (workspaceTabId ? (notices.get(workspaceTabId) ?? null) : null),
     getServerSnapshot
   )
+}
+
+/** A run of identical attempts an agent made on one tab. */
+export interface BrowserAgentActivity {
+  action: AgentAction
+  outcome: AgentOutcome
+  /** Unix milliseconds of the most recent one. */
+  at: number
+  /** How many identical attempts this line stands for. */
+  count: number
+}
+
+// What agents have done to each tab, newest first. Lives here rather than in
+// the tab state because the backend does not keep it: it announces each
+// attempt once and forgets, which is the right division — a record with no
+// reader is a leak, and the reader is a pane that exists for as long as the
+// tab does.
+//
+// Runs of the same (action, outcome) collapse into one line with a count. An
+// agent working through a page reads it dozens of times; forty lines saying
+// "read the page" hide the one that says something else, which is the only
+// line worth having a strip for.
+const AGENT_ACTIVITY_LIMIT = 50
+const NO_ACTIVITY: readonly BrowserAgentActivity[] = []
+const agentActivity = new Map<string, readonly BrowserAgentActivity[]>()
+
+export function recordBrowserAgentActivity(
+  payload: AgentActivityPayload
+): void {
+  const key = browserWorkspaceTabId(payload.tabId)
+  const previous = agentActivity.get(key) ?? NO_ACTIVITY
+  const head = previous[0]
+  const next =
+    head && head.action === payload.action && head.outcome === payload.outcome
+      ? [
+          { ...head, at: payload.at, count: head.count + 1 },
+          ...previous.slice(1),
+        ]
+      : [
+          {
+            action: payload.action,
+            outcome: payload.outcome,
+            at: payload.at,
+            count: 1,
+          },
+          ...previous.slice(0, AGENT_ACTIVITY_LIMIT - 1),
+        ]
+  agentActivity.set(key, next)
+  notify()
+}
+
+/** What agents have done to this tab, newest first. Empty until something
+ *  has. Not a log: nothing persists it, and it dies with the tab. */
+export function useBrowserAgentActivity(
+  workspaceTabId: string | null
+): readonly BrowserAgentActivity[] {
+  return useSyncExternalStore(
+    subscribeBrowserTabs,
+    () =>
+      workspaceTabId
+        ? (agentActivity.get(workspaceTabId) ?? NO_ACTIVITY)
+        : NO_ACTIVITY,
+    getNoActivity
+  )
+}
+
+function getNoActivity(): readonly BrowserAgentActivity[] {
+  return NO_ACTIVITY
 }
 
 // Per-tab counter of "open the find bar" requests. The page owns ⌘F while it
@@ -283,6 +365,7 @@ export function resetBrowserTabStoreForTests(): void {
   surfaceOps.clear()
   hiddenAt.clear()
   findRequests.clear()
+  agentActivity.clear()
 }
 
 function shallowEqualState(a: BrowserTabState, b: BrowserTabState): boolean {

@@ -5,7 +5,10 @@ use tauri::AppHandle;
 
 use crate::web::event_bridge::{emit_event, EventEmitter};
 
-use super::agent::{AgentGrantPayload, GrantChange, GrantLevel, AGENT_GRANT_EVENT};
+use super::agent::{
+    AgentAction, AgentActivityPayload, AgentGrantPayload, AgentOutcome, GrantChange, GrantLevel,
+    AGENT_ACTIVITY_EVENT, AGENT_GRANT_EVENT,
+};
 use super::doc_guest::DocGuestState;
 use super::downloads::{BrowserDownload, DOWNLOAD_EVENT};
 use super::types::{
@@ -76,6 +79,28 @@ pub fn emit_agent_grant(
             change,
             level,
             origin: origin.map(str::to_string),
+        },
+    );
+}
+
+/// An agent reached for a tab, and what came of it. Emitted from the one
+/// place that decides — so a tool surface added later cannot read a page
+/// without the person watching it seeing that it did.
+pub fn emit_agent_activity(
+    app: &AppHandle,
+    tab_id: &str,
+    action: AgentAction,
+    outcome: AgentOutcome,
+    at: i64,
+) {
+    emit_event(
+        &EventEmitter::Tauri(app.clone()),
+        AGENT_ACTIVITY_EVENT,
+        AgentActivityPayload {
+            tab_id: tab_id.to_string(),
+            action,
+            outcome,
+            at,
         },
     );
 }

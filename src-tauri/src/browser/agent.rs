@@ -125,6 +125,51 @@ pub struct AgentGrantPayload {
 
 pub const AGENT_GRANT_EVENT: &str = "browser://agent-grant";
 
+/// What an agent did to a page, for the person watching it.
+///
+/// One variant today because there is one thing an agent can do. Acting on a
+/// page (W3.2) extends this rather than reinterpreting it, which is the point
+/// of spelling out a single-variant enum: the alternative — a bare "an agent
+/// touched this tab" — would have to be redefined the first time two kinds of
+/// touch existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentAction {
+    /// Took a snapshot of the page.
+    Read,
+}
+
+/// Whether the action happened.
+///
+/// Refusals are reported, not swallowed. They are the more interesting half:
+/// a page the user never shared, or one whose grant died when it navigated,
+/// being asked for repeatedly is exactly what someone would want to see, and
+/// it is invisible everywhere else — the agent is told, the user is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentOutcome {
+    Done,
+    /// No grant covered the page. The agent was told to ask.
+    Refused,
+    /// The grant was there; the page was not reachable (no answer from the
+    /// world, an unreadable one). Reported so that "nothing on the strip"
+    /// keeps meaning "nothing reached this tab" rather than "nothing worked".
+    Failed,
+}
+
+/// `browser://agent-activity`: one agent's one attempt on one tab.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentActivityPayload {
+    pub tab_id: String,
+    pub action: AgentAction,
+    pub outcome: AgentOutcome,
+    /// Unix milliseconds.
+    pub at: i64,
+}
+
+pub const AGENT_ACTIVITY_EVENT: &str = "browser://agent-activity";
+
 /// Why a tab cannot be shared with an agent at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotGrantable {
@@ -560,6 +605,28 @@ mod tests {
         // A reopened tab id is a different tab, and says so even if the new
         // one has navigated exactly as often as the old one had.
         assert_ne!(epoch(4, 1), epoch(3, 1));
+    }
+
+    /// The strip branches on these three words. Renaming a variant without
+    /// renaming its message would leave the user reading a blank line about
+    /// something an agent just did to their page.
+    #[test]
+    fn an_activity_line_says_which_of_the_three_things_happened() {
+        let line = |outcome| {
+            serde_json::to_value(AgentActivityPayload {
+                tab_id: "t1".into(),
+                action: AgentAction::Read,
+                outcome,
+                at: 1_700_000_000_000,
+            })
+            .expect("serialises")
+        };
+        assert_eq!(line(AgentOutcome::Done)["action"], "read");
+        assert_eq!(line(AgentOutcome::Done)["outcome"], "done");
+        assert_eq!(line(AgentOutcome::Refused)["outcome"], "refused");
+        assert_eq!(line(AgentOutcome::Failed)["outcome"], "failed");
+        assert_eq!(line(AgentOutcome::Done)["tabId"], "t1");
+        assert_eq!(line(AgentOutcome::Done)["at"], 1_700_000_000_000i64);
     }
 
     #[test]

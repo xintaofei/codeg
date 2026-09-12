@@ -5914,7 +5914,9 @@
       "channelDegraded": "このタブではポップアップがブロックされ、アドレスバーがページに追従しないことがあります",
       "channelDegradedHint": "codeg がページスクリプトを組み込めませんでした。このページが開くポップアップはブロックされ、アドレスバーはページ内のナビゲーションに追従せず、ページ内で検索ショートカットを押しても検索バーは開きません。タブを開き直すと再試行します。",
       "downloadsDenied": "ダウンロードをブロックしました: {host}",
-      "downloadsDeniedNoGesture": "複数のファイル、クリックによるものではありません"
+      "downloadsDeniedNoGesture": "複数のファイル、クリックによるものではありません",
+      "agentGrantLost": "共有を終了しました：ページが {origin} を離れました",
+      "agentGrantLostShare": "{origin} も共有"
     },
     "tab": {
       "untitled": "新しいタブ"
@@ -5980,6 +5982,23 @@
       "openWithSystem": "システムのアプリで開く",
       "schemeBlocked": "{url} はここでは開けません",
       "cannotShow": "このドキュメントを表示できません"
+    },
+    "agent": {
+      "share": "このページをエージェントに共有（{origin}）",
+      "shareLabel": "エージェントに共有",
+      "notShareable": "このページには共有できるウェブアドレスがありません",
+      "shared": "共有中",
+      "sharedWith": "エージェントは {origin} を読み取れます",
+      "sharedScope": "ページがこのサイトを離れた時点で共有は終了します。",
+      "sharedToast": "エージェントが {origin} を読み取れるようになりました",
+      "stopSharing": "共有を停止",
+      "shareFailed": "このページはエージェントに共有できません",
+      "activityRead": "ページを読み取りました",
+      "activityRefused": "拒否：このページは共有されていません",
+      "activityFailed": "ページを読み取れませんでした",
+      "activityCount": "{count} 回",
+      "expand": "他 {count} 件",
+      "collapse": "折りたたむ"
     }
   },
   "browser": {

@@ -89,6 +89,7 @@ import {
   getBrowserTabState,
   resetBrowserTabStoreForTests,
   setBrowserTabState,
+  useBrowserAgentActivity,
   useBrowserFindRequest,
   useBrowserTabNotice,
 } from "@/lib/browser/browser-tab-store"
@@ -142,6 +143,8 @@ describe("BrowserEventsBridge", () => {
     expect(mocks.browserClose).toHaveBeenCalledWith("stale-1")
     expect(mocks.browserClose).toHaveBeenCalledWith("stale-2")
     expect([...mocks.handlers.keys()].sort()).toEqual([
+      "browser://agent-activity",
+      "browser://agent-grant",
       "browser://closed",
       "browser://doc-state",
       "browser://download",
@@ -318,6 +321,8 @@ describe("BrowserEventsBridge", () => {
 
     unmount()
     expect(mocks.unsubscribed.sort()).toEqual([
+      "browser://agent-activity",
+      "browser://agent-grant",
       "browser://closed",
       "browser://doc-state",
       "browser://download",
@@ -390,6 +395,60 @@ describe("BrowserEventsBridge", () => {
       url: "https://blocked.example/",
       reason: "host-rule",
     })
+    view.unmount()
+  })
+
+  // The user performed the other two transitions and can see the result in
+  // the toolbar; this one happened to them.
+  it("only interrupts for the grant the page took away, not the ones the user made", async () => {
+    render(<BrowserEventsBridge />)
+    await flush()
+    const grant = mocks.handlers.get("browser://agent-grant")!
+    const noticeOf = () => {
+      const view = renderHook(() => useBrowserTabNotice("browser:abc"))
+      const seen = view.result.current
+      view.unmount()
+      return seen
+    }
+    grant({
+      tabId: "abc",
+      change: "granted",
+      level: "read",
+      origin: "https://example.com",
+    })
+    expect(noticeOf()).toBeNull()
+    grant({
+      tabId: "abc",
+      change: "revoked",
+      level: "none",
+      origin: "https://example.com",
+    })
+    expect(noticeOf()).toBeNull()
+    grant({
+      tabId: "abc",
+      change: "navigated",
+      level: "none",
+      origin: "https://example.com",
+    })
+    expect(noticeOf()).toEqual({
+      kind: "agent-grant-lost",
+      origin: "https://example.com",
+    })
+  })
+
+  it("records what agents did to a tab, refusals included", async () => {
+    render(<BrowserEventsBridge />)
+    await flush()
+    const activity = mocks.handlers.get("browser://agent-activity")!
+    activity({ tabId: "abc", action: "read", outcome: "refused", at: 10 })
+    activity({ tabId: "abc", action: "read", outcome: "refused", at: 20 })
+    activity({ tabId: "abc", action: "read", outcome: "done", at: 30 })
+    const view = renderHook(() => useBrowserAgentActivity("browser:abc"))
+    // Newest first, and the run of identical attempts is one line.
+    expect(view.result.current).toEqual([
+      { action: "read", outcome: "done", at: 30, count: 1 },
+      { action: "read", outcome: "refused", at: 20, count: 2 },
+    ])
     view.unmount()
   })
 

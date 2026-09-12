@@ -17,7 +17,11 @@ import { useTranslations } from "next-intl"
 
 import type { BrowserWorkspaceTab } from "@/contexts/workspace-context"
 import { useOptionalWorkspaceActions } from "@/contexts/workspace-context"
-import { browserReload, browserRevealDownload } from "@/lib/browser/browser-api"
+import {
+  browserAgentGrant,
+  browserReload,
+  browserRevealDownload,
+} from "@/lib/browser/browser-api"
 import {
   dismissBrowserDownload,
   useBrowserTabDownloads,
@@ -42,6 +46,11 @@ function noticeText(
   t: ReturnType<typeof useTranslations<"Browser.status">>,
   notice: BrowserTabNotice
 ): string {
+  if (notice.kind === "agent-grant-lost") {
+    return t("agentGrantLost", {
+      origin: displayHostPort(notice.origin) ?? notice.origin,
+    })
+  }
   const host = displayHostPort(notice.url) ?? notice.url
   if (notice.kind === "navigation-blocked") {
     if (notice.reason === "scheme") {
@@ -126,6 +135,14 @@ export function BrowserNoticeBar({
   // route); the bar then only reports the block.
   const actions = useOptionalWorkspaceActions()
   const channelDegraded = useChannelDegraded(state)
+  const backendId = browserTabBackendId(tab.id)
+  // Where the tab is NOW — the notice names where it was. Null unless that is
+  // a web origin, which is the only thing a grant can be tied to.
+  const origin = state?.origin ?? null
+  const landedOn =
+    origin && (origin.startsWith("http://") || origin.startsWith("https://"))
+      ? origin
+      : null
   if (!notice && !state?.remoteHost && !channelDegraded) return null
   return (
     <div className="flex flex-col">
@@ -170,6 +187,29 @@ export function BrowserNoticeBar({
               }}
             >
               {t("navigationBlockedOpenSystem")}
+            </button>
+          ) : null}
+          {/* The page walked out of what was shared. Offering to share where
+              it landed is not a way around the revocation — it is the same
+              person making the same decision about a different site, named
+              in the button. Only offered when there is a web origin to bind
+              to; otherwise the notice just reports. */}
+          {notice.kind === "agent-grant-lost" && landedOn ? (
+            <button
+              type="button"
+              className="shrink-0 rounded px-1.5 py-0.5 text-xs font-medium text-primary hover:bg-primary/8"
+              onClick={() => {
+                if (!backendId) return
+                void browserAgentGrant(backendId, "read")
+                  .then(() => setBrowserTabNotice(tab.id, null))
+                  .catch(() => {
+                    /* the notice stays; the tab moved on again */
+                  })
+              }}
+            >
+              {t("agentGrantLostShare", {
+                origin: displayHostPort(landedOn) ?? landedOn,
+              })}
             </button>
           ) : null}
           {/* Opens the blocked address as a plain tab: the page's own

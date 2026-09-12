@@ -5914,7 +5914,9 @@
       "channelDegraded": "Nesta aba, os pop-ups são bloqueados e a barra de endereços pode ficar desatualizada",
       "channelDegradedHint": "O codeg não conseguiu instalar seu script de página. Os pop-ups que esta página abrir são bloqueados, a barra de endereço não acompanhará a navegação dentro da página e o atalho de busca pressionado na página não abrirá a barra de busca. Reabrir a aba tenta de novo.",
       "downloadsDenied": "Downloads bloqueados: {host}",
-      "downloadsDeniedNoGesture": "vários arquivos, não iniciados por um clique"
+      "downloadsDeniedNoGesture": "vários arquivos, não iniciados por um clique",
+      "agentGrantLost": "Partilha terminada: a página saiu de {origin}",
+      "agentGrantLostShare": "Partilhar também {origin}"
     },
     "tab": {
       "untitled": "Nova aba"
@@ -5980,6 +5982,23 @@
       "openWithSystem": "Abrir com o aplicativo do sistema",
       "schemeBlocked": "{url} não pode ser aberto aqui",
       "cannotShow": "Este documento não pode ser exibido"
+    },
+    "agent": {
+      "share": "Partilhar esta página com os agentes ({origin})",
+      "shareLabel": "Partilhar com os agentes",
+      "notShareable": "Esta página não tem um endereço web para partilhar com os agentes",
+      "shared": "Partilhada",
+      "sharedWith": "Os agentes podem ler {origin}",
+      "sharedScope": "A partilha termina assim que a página sai deste site.",
+      "sharedToast": "Os agentes já podem ler {origin}",
+      "stopSharing": "Parar de partilhar",
+      "shareFailed": "Esta página não pode ser partilhada com os agentes",
+      "activityRead": "Leu a página",
+      "activityRefused": "Recusado: esta página não está partilhada",
+      "activityFailed": "Não foi possível ler a página",
+      "activityCount": "{count}×",
+      "expand": "mais {count}",
+      "collapse": "Menos"
     }
   },
   "browser": {

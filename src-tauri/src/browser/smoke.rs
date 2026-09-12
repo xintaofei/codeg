@@ -394,6 +394,7 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                     .map(|n| n as usize),
             };
             let snapshot = browser_commands::agent_snapshot_core(
+                app,
                 &registry,
                 &str_arg(cmd, "tab_id")?,
                 &request,

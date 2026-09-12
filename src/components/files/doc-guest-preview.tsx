@@ -95,7 +95,12 @@ export function DocGuestPreview({
   const storeKey = browserWorkspaceTabId(backendId)
   const state = useBrowserTabState(storeKey)
   const doc = useDocGuestState(storeKey)
-  const notice = useBrowserTabNotice(storeKey)
+  // Notices about an address this preview refused to follow. The store's
+  // other kind — a tab losing the sharing it was given — cannot reach a
+  // document guest: it shows a local file, and a local file has no origin to
+  // tie a grant to, so one is never made here in the first place.
+  const raw = useBrowserTabNotice(storeKey)
+  const notice = raw?.kind === "agent-grant-lost" ? null : raw
   const openUrlTarget = useOpenUrlTarget()
   const [switching, setSwitching] = useState(false)
   const [dismissedReset, setDismissedReset] = useState<DocReset | null>(null)

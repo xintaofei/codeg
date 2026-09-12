@@ -5914,7 +5914,9 @@
       "channelDegraded": "此标签页的弹窗会被拦截，地址栏可能跟不上页面",
       "channelDegradedHint": "codeg 未能装入页面脚本。此页面打开的弹窗会被拦截，地址栏不会跟随页内导航，在页面中按查找快捷键也不会打开查找栏。重新打开该标签页会再试一次。",
       "downloadsDenied": "已拦截下载：{host}",
-      "downloadsDeniedNoGesture": "多个文件，不是由点击触发"
+      "downloadsDeniedNoGesture": "多个文件，不是由点击触发",
+      "agentGrantLost": "共享已结束：页面离开了 {origin}",
+      "agentGrantLostShare": "也共享 {origin}"
     },
     "tab": {
       "untitled": "新标签页"
@@ -5980,6 +5982,23 @@
       "openWithSystem": "用系统应用打开",
       "schemeBlocked": "{url} 不能在这里打开",
       "cannotShow": "无法显示此文档"
+    },
+    "agent": {
+      "share": "把此页面共享给智能体（{origin}）",
+      "shareLabel": "共享给智能体",
+      "notShareable": "此页面没有可共享给智能体的网址",
+      "shared": "已共享",
+      "sharedWith": "智能体可读取 {origin}",
+      "sharedScope": "页面一旦离开该站点，共享即结束。",
+      "sharedToast": "智能体现在可以读取 {origin}",
+      "stopSharing": "停止共享",
+      "shareFailed": "此页面无法共享给智能体",
+      "activityRead": "读取了页面",
+      "activityRefused": "已拒绝：此页面未共享",
+      "activityFailed": "读取页面失败",
+      "activityCount": "{count} 次",
+      "expand": "还有 {count} 条",
+      "collapse": "收起"
     }
   },
   "browser": {
