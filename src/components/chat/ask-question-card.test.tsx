@@ -536,3 +536,118 @@ describe("AskQuestionCard", () => {
     expect(container).toBeEmptyDOMElement()
   })
 })
+
+describe("AskQuestionCard collapse & floating", () => {
+  it("collapses to a header-only bar and keeps the selection across the round-trip", () => {
+    const onAnswer = renderCard(single)
+    fireEvent.click(screen.getByRole("radio", { name: /Incremental/ }))
+    fireEvent.click(screen.getByRole("button", { name: "Collapse" }))
+    // Header-only: options and the footer are unmounted.
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Submit" })
+    ).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Expand" }))
+    // The pick survived the collapse/expand round-trip.
+    expect(screen.getByRole("radio", { name: /Incremental/ })).toBeChecked()
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }))
+    expect(onAnswer).toHaveBeenCalledWith("q-1", {
+      answers: [{ questionId: "qa", labels: ["Incremental"] }],
+      declined: false,
+    })
+  })
+
+  it("pops out to a fixed floating window and docks back into the flow", () => {
+    const onAnswer = vi.fn()
+    const { container } = renderWith(single, onAnswer)
+    fireEvent.click(screen.getByRole("radio", { name: /Incremental/ }))
+    fireEvent.click(screen.getByRole("button", { name: "Pop out" }))
+    // Portaled to body — nothing left in the flow mount point, and the card is
+    // viewport-fixed at its bottom-right default.
+    expect(container).toBeEmptyDOMElement()
+    const card = screen.getByRole("group", {
+      name: "The agent needs your input",
+    })
+    expect(card.parentElement).toBe(document.body)
+    expect(card).toHaveClass("fixed")
+    // Default anchor is the bottom-right corner, expressed as CSS insets.
+    expect(card.style.right).toBe("12px")
+    expect(card.style.bottom).toBe("12px")
+    // Docking back keeps the selection and the answer flow intact.
+    fireEvent.click(screen.getByRole("button", { name: "Back to panel" }))
+    expect(
+      screen.getByRole("radio", { name: /Incremental/ })
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }))
+    expect(onAnswer).toHaveBeenCalledWith("q-1", {
+      answers: [{ questionId: "qa", labels: ["Incremental"] }],
+      declined: false,
+    })
+  })
+
+  it("drags the floating window by its header, clamped inside the viewport", () => {
+    renderCard(single)
+    fireEvent.click(screen.getByRole("button", { name: "Pop out" }))
+    const card = screen.getByRole("group", {
+      name: "The agent needs your input",
+    })
+    const handle = screen.getByTestId("ask-question-drag-handle")
+    // jsdom has no PointerEvent, so fireEvent.pointerDown degrades to a plain
+    // Event and drops clientX/clientY (drag coords would all be NaN). Build
+    // MouseEvents by hand — same recipe as chat-input.test.tsx.
+    const dragEvent = (type: string, x: number, y: number) =>
+      fireEvent(
+        handle,
+        new MouseEvent(type, { bubbles: true, clientX: x, clientY: y })
+      )
+    // First drag from the default anchor: jsdom reads the card's box as 0, so
+    // the card lands on the raw delta, clamped by the 8px margin.
+    dragEvent("pointerdown", 400, 400)
+    dragEvent("pointermove", 340, 380)
+    dragEvent("pointerup", 340, 380)
+    expect(parseFloat(card.style.left)).toBe(8)
+    expect(parseFloat(card.style.top)).toBe(8)
+    // Dragging far past the far corner clamps to the opposite edge margin.
+    dragEvent("pointerdown", 400, 400)
+    dragEvent("pointermove", 5000, 5000)
+    dragEvent("pointerup", 5000, 5000)
+    expect(parseFloat(card.style.left)).toBe(window.innerWidth - 8)
+    expect(parseFloat(card.style.top)).toBe(window.innerHeight - 8)
+    // And far past the top-left corner clamps to the 8px margin, never
+    // offscreen.
+    dragEvent("pointerdown", 400, 400)
+    dragEvent("pointermove", -5000, -5000)
+    dragEvent("pointerup", -5000, -5000)
+    expect(parseFloat(card.style.left)).toBe(8)
+    expect(parseFloat(card.style.top)).toBe(8)
+  })
+
+  it("collapses inside the floating window to a pill and restores", () => {
+    renderCard(single)
+    fireEvent.click(screen.getByRole("button", { name: "Pop out" }))
+    fireEvent.click(screen.getByRole("button", { name: "Collapse" }))
+    const card = screen.getByRole("group", {
+      name: "The agent needs your input",
+    })
+    expect(card.parentElement).toBe(document.body)
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Expand" }))
+    expect(
+      screen.getByRole("radio", { name: /Incremental/ })
+    ).toBeInTheDocument()
+  })
+
+  it("offers no collapse/float controls in the read-only view", () => {
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <AskQuestionCard question={single} onAnswer={vi.fn()} readOnly />
+      </NextIntlClientProvider>
+    )
+    expect(
+      screen.queryByRole("button", { name: "Collapse" })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Pop out" })
+    ).not.toBeInTheDocument()
+  })
+})

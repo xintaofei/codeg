@@ -1,12 +1,16 @@
 "use client"
 
 import { useMemo, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import { useTranslations } from "next-intl"
 import {
   Check,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   Loader2,
   MessageCircleQuestionMark,
+  PictureInPicture2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -48,6 +52,23 @@ type SeedSelections = Record<string, { chosen: string[]; otherText: string }>
 /** Single-select sentinel value for the host-injected free-text "Other" choice,
  *  so it can live inside the same `RadioGroup` as the real options. */
 const OTHER_VALUE = "__other__"
+
+/** Keep a floating coordinate inside the viewport with an 8px safety margin,
+ *  tolerant of a degenerate (0×0) measurement on tiny windows. */
+function clampFloatingPos(
+  left: number,
+  top: number,
+  width: number,
+  height: number
+): { left: number; top: number } {
+  const margin = 8
+  const maxLeft = Math.max(margin, window.innerWidth - width - margin)
+  const maxTop = Math.max(margin, window.innerHeight - height - margin)
+  return {
+    left: Math.min(Math.max(left, margin), maxLeft),
+    top: Math.min(Math.max(top, margin), maxTop),
+  }
+}
 
 interface QState {
   /** Selected real-option labels (verbatim). For single-select, ≤ 1. */
@@ -105,6 +126,31 @@ export function AskQuestionCard({
   // selections never carry over — the component stays correct on its own rather
   // than relying on the caller to supply a fresh React key.
   const [renderedId, setRenderedId] = useState(question.question_id)
+
+  // Panel-presence states (live card only): `collapsed` hides the body/footer,
+  // `floating` detaches the card into a draggable viewport-fixed window so it
+  // stops squeezing the conversation panel. Both intentionally survive a
+  // question-set swap — the user's chosen layout must not reset just because
+  // a new set renders into this instance.
+  const [collapsed, setCollapsed] = useState(false)
+  const [floating, setFloating] = useState(false)
+  // Dragged coordinates. Null while the floating window still sits at its
+  // default anchor — expressed directly as CSS `right/bottom` insets on the
+  // style prop — so no measure-then-position effect is needed. The first drag
+  // converts the anchor into left/top numbers (see `handleDragStart`).
+  const [floatPos, setFloatPos] = useState<{
+    left: number
+    top: number
+  } | null>(null)
+  const cardRef = useRef<HTMLDivElement>(null)
+  // Drag start snapshot: pointer origin plus the card's left/top at that
+  // moment, so each move applies a plain delta.
+  const dragOrigin = useRef<{
+    x: number
+    y: number
+    left: number
+    top: number
+  } | null>(null)
 
   // How many questions are answered — drives the progress bar, the counter, and
   // the submit gate (every question must be answered).
@@ -246,6 +292,47 @@ export function AskQuestionCard({
   }
 
   const skip = () => void run({ answers: [], declined: true })
+
+  // Floating-window drag: the header row is the handle; pointer capture keeps
+  // the drag alive outside the card. Clamped on every move so the card can
+  // never leave the viewport.
+  const handleDragStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return
+    // First drag from the default anchor: convert the CSS right/bottom inset
+    // into left/top coordinates from the card's live box. In environments
+    // without layout reads (jsdom) the box reads as 0 and the first move lands
+    // on the raw delta — the per-move clamps still keep the card onscreen.
+    const rect = cardRef.current?.getBoundingClientRect()
+    dragOrigin.current = {
+      x: e.clientX,
+      y: e.clientY,
+      left: floatPos?.left ?? rect?.left ?? 0,
+      top: floatPos?.top ?? rect?.top ?? 0,
+    }
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {
+      // Capture is an optimization; the drag still works when the moves
+      // target the handle directly (jsdom, engines without capture).
+    }
+  }
+
+  const handleDragMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const origin = dragOrigin.current
+    if (!origin) return
+    setFloatPos(
+      clampFloatingPos(
+        origin.left + (e.clientX - origin.x),
+        origin.top + (e.clientY - origin.y),
+        cardRef.current?.offsetWidth ?? 0,
+        cardRef.current?.offsetHeight ?? 0
+      )
+    )
+  }
+
+  const handleDragEnd = () => {
+    dragOrigin.current = null
+  }
 
   const isMulti = questions.length > 1
   // The read-only/answered view passes an empty subtitle; with no second line the
@@ -435,19 +522,36 @@ export function AskQuestionCard({
   // Submit that posts an empty affirmative answer rather than a decline.
   if (questions.length === 0) return null
 
-  return (
-    // Capped to the viewport (header + footer pinned, body scrolls) so a tall set
-    // never covers the whole message list and always keeps Submit/Skip reachable.
+  const card = (
+    // Docked: capped to the viewport (header + footer pinned, body scrolls) so
+    // a tall set never covers the whole message list and keeps Submit/Skip
+    // reachable. Floating: a fixed-size window portaled to body, so the
+    // conversation panel keeps its full height.
     // `overflow-hidden` clips the full-bleed progress bar to the rounded corners.
     <div
+      ref={cardRef}
       role="group"
       aria-label={title ?? t("title")}
+      style={
+        floating
+          ? floatPos
+            ? { left: floatPos.left, top: floatPos.top }
+            : { right: 12, bottom: 12 }
+          : undefined
+      }
       className={cn(
-        "mb-2 flex max-h-[88svh] flex-col overflow-hidden rounded-xl border border-primary/30 bg-card ws-msg-card",
-        readOnly ? "shadow-sm" : "shadow-lg"
+        "flex flex-col overflow-hidden rounded-xl border border-primary/30 bg-card ws-msg-card",
+        floating
+          ? cn(
+              "fixed z-50 border-primary/50 shadow-xl",
+              collapsed
+                ? "w-auto"
+                : "max-h-[70svh] w-[22rem] max-w-[calc(100vw-1rem)]"
+            )
+          : cn("mb-2 max-h-[88svh]", readOnly ? "shadow-sm" : "shadow-lg")
       )}
     >
-      {isMulti && (
+      {isMulti && !collapsed && (
         <Progress
           value={(answeredCount / questions.length) * 100}
           aria-label={t("title")}
@@ -456,12 +560,21 @@ export function AskQuestionCard({
         />
       )}
 
-      <div className="flex min-h-0 flex-col gap-3 p-3">
-        {/* Header */}
+      <div
+        className={cn("flex min-h-0 flex-col gap-3 p-3", collapsed && "p-2")}
+      >
+        {/* Header — also the floating window's drag handle. The control cluster
+            opts out of pointerdown so pressing a button never starts a drag. */}
         <div
+          data-testid="ask-question-drag-handle"
+          onPointerDown={floating ? handleDragStart : undefined}
+          onPointerMove={floating ? handleDragMove : undefined}
+          onPointerUp={floating ? handleDragEnd : undefined}
+          onPointerCancel={floating ? handleDragEnd : undefined}
           className={cn(
             "flex shrink-0 gap-2.5",
-            resolvedSubtitle ? "items-start" : "items-center"
+            resolvedSubtitle && !collapsed ? "items-start" : "items-center",
+            floating && "cursor-grab select-none active:cursor-grabbing"
           )}
         >
           <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-primary">
@@ -469,73 +582,103 @@ export function AskQuestionCard({
           </span>
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium">{title ?? t("title")}</p>
-            {resolvedSubtitle && (
+            {resolvedSubtitle && !collapsed && (
               <p className="text-xs text-muted-foreground">
                 {resolvedSubtitle}
               </p>
             )}
           </div>
           {isMulti && (
-            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+            <span className="shrink-0 self-center text-xs tabular-nums text-muted-foreground">
               {`${answeredCount}/${questions.length}`}
             </span>
           )}
+          {!readOnly && (
+            <div
+              className="flex shrink-0 items-center gap-0.5"
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label={collapsed ? t("expand") : t("collapse")}
+                title={collapsed ? t("expand") : t("collapse")}
+                onClick={() => setCollapsed((v) => !v)}
+              >
+                {collapsed ? (
+                  <ChevronUp className="size-3.5" />
+                ) : (
+                  <ChevronDown className="size-3.5" />
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label={floating ? t("dock") : t("float")}
+                title={floating ? t("dock") : t("float")}
+                onClick={() => setFloating((v) => !v)}
+              >
+                <PictureInPicture2 className="size-3.5" />
+              </Button>
+            </div>
+          )}
         </div>
 
-        {isMulti ? (
-          <Tabs
-            value={activeId}
-            onValueChange={setActiveId}
-            className="flex min-h-0 flex-col gap-2"
-          >
-            <TabsList className="w-full shrink-0">
-              {questions.map((q, i) => {
-                const done = isAnswered(state[q.id])
-                return (
-                  <TabsTrigger
-                    key={q.id}
-                    value={q.id}
-                    disabled={submitting}
-                    data-answered={done ? "true" : "false"}
-                    className="min-w-0 gap-1.5 data-[state=active]:bg-background data-[state=active]:shadow-sm data-[answered=true]:text-primary"
-                  >
-                    {done ? (
-                      <Check className="size-3.5 shrink-0 text-primary" />
-                    ) : (
-                      <span className="flex size-4 shrink-0 items-center justify-center rounded-full border border-current text-3xs leading-none">
-                        {i + 1}
-                      </span>
-                    )}
-                    <span className="truncate">{q.header}</span>
-                  </TabsTrigger>
-                )
-              })}
-            </TabsList>
-            {questions.map((q) => (
-              <TabsContent
-                key={q.id}
-                value={q.id}
-                style={{ height: bodyHeight }}
-                className="mt-0 flex-none space-y-2.5 overflow-y-auto pr-1"
-              >
-                {questionHeading(q)}
-                {renderOptions(q)}
-              </TabsContent>
-            ))}
-          </Tabs>
-        ) : (
-          <div className="min-h-0 space-y-2.5 overflow-y-auto pr-1">
-            {questions.map((q) => (
-              <div key={q.id} className="space-y-2.5">
-                {questionHeading(q)}
-                {renderOptions(q)}
-              </div>
-            ))}
-          </div>
-        )}
+        {!collapsed &&
+          (isMulti ? (
+            <Tabs
+              value={activeId}
+              onValueChange={setActiveId}
+              className="flex min-h-0 flex-col gap-2"
+            >
+              <TabsList className="w-full shrink-0">
+                {questions.map((q, i) => {
+                  const done = isAnswered(state[q.id])
+                  return (
+                    <TabsTrigger
+                      key={q.id}
+                      value={q.id}
+                      disabled={submitting}
+                      data-answered={done ? "true" : "false"}
+                      className="min-w-0 gap-1.5 data-[state=active]:bg-background data-[state=active]:shadow-sm data-[answered=true]:text-primary"
+                    >
+                      {done ? (
+                        <Check className="size-3.5 shrink-0 text-primary" />
+                      ) : (
+                        <span className="flex size-4 shrink-0 items-center justify-center rounded-full border border-current text-3xs leading-none">
+                          {i + 1}
+                        </span>
+                      )}
+                      <span className="truncate">{q.header}</span>
+                    </TabsTrigger>
+                  )
+                })}
+              </TabsList>
+              {questions.map((q) => (
+                <TabsContent
+                  key={q.id}
+                  value={q.id}
+                  style={{ height: bodyHeight }}
+                  className="mt-0 flex-none space-y-2.5 overflow-y-auto pr-1"
+                >
+                  {questionHeading(q)}
+                  {renderOptions(q)}
+                </TabsContent>
+              ))}
+            </Tabs>
+          ) : (
+            <div className="min-h-0 space-y-2.5 overflow-y-auto pr-1">
+              {questions.map((q) => (
+                <div key={q.id} className="space-y-2.5">
+                  {questionHeading(q)}
+                  {renderOptions(q)}
+                </div>
+              ))}
+            </div>
+          ))}
 
-        {/* Footer — dropped in the read-only/answered view */}
-        {!readOnly && (
+        {/* Footer — dropped in the read-only/answered view and while collapsed */}
+        {!readOnly && !collapsed && (
           <div className="flex shrink-0 items-center gap-2">
             <Button
               variant="ghost"
@@ -581,4 +724,12 @@ export function AskQuestionCard({
       </div>
     </div>
   )
+
+  // Floating mode escapes any transformed ancestor via the body portal — a
+  // fixed child of a transformed container would position against that
+  // ancestor instead of the viewport.
+  if (floating && typeof document !== "undefined") {
+    return createPortal(card, document.body)
+  }
+  return card
 }
