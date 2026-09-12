@@ -47,7 +47,7 @@ jobs:
         run: pnpm server:build
 
       - name: Build Tauri App
-        run: pnpm tauri build --bundles nsis -c "{\"bundle\":{\"createUpdaterArtifacts\":false}}"
+        run: pnpm tauri build --bundles nsis
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
