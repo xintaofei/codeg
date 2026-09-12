@@ -28,6 +28,7 @@ tauri-runtime = [
     "dep:tauri-plugin-process",
     "dep:tauri-plugin-notification",
     "dep:tauri-plugin-single-instance",
+    "dep:tauri-plugin-deep-link",
     "dep:tauri-plugin-autostart",
     "dep:keyring",
 ]
@@ -149,6 +150,7 @@ tauri-plugin-updater = { version = "2", optional = true }
 tauri-plugin-process = { version = "2", optional = true }
 tauri-plugin-notification = { version = "2", optional = true }
 tauri-plugin-single-instance = { version = "2", optional = true }
+tauri-plugin-deep-link = { version = "2", optional = true }
 # "Launch at login" toggle. Desktop-only: registry Run key on Windows, a
 # LaunchAgent plist on macOS, an XDG autostart .desktop entry on Linux.
 tauri-plugin-autostart = { version = "2", optional = true }

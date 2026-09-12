@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use sea_orm::DatabaseConnection;
 use tauri::{
     window::{Effect, EffectState, EffectsBuilder},
-    AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 
 use crate::app_error::AppCommandError;
@@ -1777,6 +1777,25 @@ pub async fn resize_pet_panel(app: AppHandle, height: f64) -> Result<(), AppComm
 /// Bring the main workspace to the foreground and ask it to focus a specific
 /// conversation. Uses an event (not a URL reload) so the in-memory tab/session
 /// state survives — `PetFocusBridge` in the main window calls `openTab`.
+/// Shared by the pet panel, the `focus_conversation` command, and `codeg://`
+/// OS deep links.
+pub fn emit_focus_conversation(
+    app: &AppHandle,
+    folder_id: i32,
+    conversation_id: i32,
+    agent: &str,
+) {
+    show_main_window(app);
+    let payload = serde_json::json!({
+        "folderId": folder_id,
+        "conversationId": conversation_id,
+        "agent": agent,
+    });
+    if let Err(e) = app.emit_to("main", "workspace://focus-conversation", payload) {
+        tracing::warn!("[deep-link] failed to signal main window: {e}");
+    }
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn focus_conversation(
@@ -1785,17 +1804,7 @@ pub async fn focus_conversation(
     conversation_id: i32,
     agent: String,
 ) -> Result<(), AppCommandError> {
-    use tauri::Emitter;
-    show_main_window(&app);
-    let payload = serde_json::json!({
-        "folderId": folder_id,
-        "conversationId": conversation_id,
-        "agent": agent,
-    });
-    app.emit_to("main", "workspace://focus-conversation", payload)
-        .map_err(|e| {
-            AppCommandError::window("Failed to signal main window", e.to_string())
-        })?;
+    emit_focus_conversation(&app, folder_id, conversation_id, &agent);
     Ok(())
 }
 
