@@ -111,6 +111,14 @@ pub struct CommitWindowState {
     owner_by_commit_label: Mutex<HashMap<String, String>>,
 }
 
+/// Owner tracking for the auxiliary windows that have no state of their own:
+/// stash, push, project boot and the session importer. They share one map
+/// because their labels are already distinct namespaces, and because the
+/// restore is the same three lines for all four.
+pub struct AuxWindowState {
+    owner_by_aux_label: Mutex<HashMap<String, String>>,
+}
+
 /// Detect macOS system dark mode via `defaults read`.
 /// Result is cached for the process lifetime via `OnceLock`.
 #[cfg(target_os = "macos")]
@@ -324,6 +332,33 @@ impl CommitWindowState {
 }
 
 impl Default for CommitWindowState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AuxWindowState {
+    pub fn new() -> Self {
+        Self {
+            owner_by_aux_label: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn set_owner(&self, aux_label: String, owner_label: String) {
+        if let Ok(mut owners) = self.owner_by_aux_label.lock() {
+            owners.insert(aux_label, owner_label);
+        }
+    }
+
+    fn take_owner(&self, aux_label: &str) -> Option<String> {
+        self.owner_by_aux_label
+            .lock()
+            .ok()
+            .and_then(|mut owners| owners.remove(aux_label))
+    }
+}
+
+impl Default for AuxWindowState {
     fn default() -> Self {
         Self::new()
     }
@@ -748,11 +783,14 @@ pub async fn open_settings_window(
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn open_import_sessions_window(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     db: tauri::State<'_, AppDatabase>,
+    state: tauri::State<'_, AuxWindowState>,
     focus_path: Option<String>,
     locale: Option<crate::models::system::AppLocale>,
     remote_connection_id: Option<i32>,
 ) -> Result<(), AppCommandError> {
+    let owner_label = window.label().to_string();
     let label = match remote_connection_id {
         Some(remote_id) => format!("remote-import-sessions-{remote_id}"),
         None => "import-sessions".to_string(),
@@ -796,6 +834,7 @@ pub async fn open_import_sessions_window(
                     )
                 })?;
         }
+        state.set_owner(label.clone(), owner_label);
         let _ = existing.unminimize();
         existing.set_focus().map_err(|e| {
             AppCommandError::window("Failed to focus import sessions window", e.to_string())
@@ -824,6 +863,7 @@ pub async fn open_import_sessions_window(
     })?;
     register_remote_window_cleanup(&app, &import_window, remote_window_id.as_deref());
     post_window_setup(&import_window);
+    state.set_owner(label, owner_label);
     import_window.set_focus().map_err(|e| {
         AppCommandError::window("Failed to focus import sessions window", e.to_string())
     })?;
@@ -872,6 +912,16 @@ pub fn restore_window_after_commit(
     commit_window_label: &str,
 ) {
     if let Some(owner_label) = state.take_owner(commit_window_label) {
+        show_and_focus_window(app, &owner_label);
+    }
+}
+
+/// Owner restore for the stash / push / project-boot / import windows. Called
+/// for every closing window rather than from a list of label prefixes: a
+/// window that never registered an owner has none to hand back, so the map is
+/// the only place that has to know which labels take part.
+pub fn restore_window_after_aux(app: &AppHandle, state: &AuxWindowState, aux_window_label: &str) {
+    if let Some(owner_label) = state.take_owner(aux_window_label) {
         show_and_focus_window(app, &owner_label);
     }
 }
@@ -1037,11 +1087,14 @@ pub async fn cleanup_dangling_merge(app: &AppHandle, merge_window_label: &str) {
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn open_stash_window(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     db: tauri::State<'_, AppDatabase>,
+    state: tauri::State<'_, AuxWindowState>,
     folder_id: i32,
     locale: Option<crate::models::system::AppLocale>,
     remote_connection_id: Option<i32>,
 ) -> Result<(), AppCommandError> {
+    let owner_label = window.label().to_string();
     let label = match remote_connection_id {
         Some(remote_id) => format!("remote-stash-{remote_id}-{folder_id}"),
         None => format!("stash-{folder_id}"),
@@ -1049,6 +1102,7 @@ pub async fn open_stash_window(
 
     if let Some(existing) = app.get_webview_window(&label) {
         post_window_setup(&existing);
+        state.set_owner(label.clone(), owner_label);
         let _ = existing.unminimize();
         existing
             .set_focus()
@@ -1082,6 +1136,7 @@ pub async fn open_stash_window(
         .map_err(|e| AppCommandError::window("Failed to open stash window", e.to_string()))?;
     register_remote_window_cleanup(&app, &stash_window, remote_window_id.as_deref());
     post_window_setup(&stash_window);
+    state.set_owner(label, owner_label);
 
     Ok(())
 }
@@ -1098,11 +1153,13 @@ pub async fn open_push_window(
     app: AppHandle,
     window: tauri::WebviewWindow,
     db: tauri::State<'_, AppDatabase>,
+    state: tauri::State<'_, AuxWindowState>,
     folder_id: i32,
     locale: Option<crate::models::system::AppLocale>,
     remote_connection_id: Option<i32>,
     branch: Option<String>,
 ) -> Result<(), AppCommandError> {
+    let owner_label = window.label().to_string();
     let label = match remote_connection_id {
         Some(remote_id) => format!("remote-push-{remote_id}-{folder_id}"),
         None => format!("push-{folder_id}"),
@@ -1111,6 +1168,7 @@ pub async fn open_push_window(
 
     if let Some(existing) = app.get_webview_window(&label) {
         post_window_setup(&existing);
+        state.set_owner(label.clone(), owner_label);
         let _ = existing.unminimize();
         existing
             .set_focus()
@@ -1177,6 +1235,7 @@ pub async fn open_push_window(
         .map_err(|e| AppCommandError::window("Failed to open push window", e.to_string()))?;
     register_remote_window_cleanup(&app, &push_window, remote_window_id.as_deref());
     post_window_setup(&push_window);
+    state.set_owner(label, owner_label);
 
     Ok(())
 }
@@ -1185,18 +1244,22 @@ pub async fn open_push_window(
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn open_project_boot_window(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     db: tauri::State<'_, AppDatabase>,
+    state: tauri::State<'_, AuxWindowState>,
     source: Option<String>,
     locale: Option<crate::models::system::AppLocale>,
     remote_connection_id: Option<i32>,
 ) -> Result<(), AppCommandError> {
     let _ = source;
+    let owner_label = window.label().to_string();
     let label = match remote_connection_id {
         Some(id) => format!("remote-project-boot-{id}"),
         None => "project-boot".to_string(),
     };
     if let Some(existing) = app.get_webview_window(&label) {
         post_window_setup(&existing);
+        state.set_owner(label.clone(), owner_label);
         let _ = existing.unminimize();
         existing.set_focus().map_err(|e| {
             AppCommandError::window("Failed to focus project boot window", e.to_string())
@@ -1213,11 +1276,12 @@ pub async fn open_project_boot_window(
         .inner_size(1400.0, 900.0)
         .min_inner_size(1100.0, 700.0)
         .center();
-    let window = apply_platform_window_style(builder).build().map_err(|e| {
+    let boot_window = apply_platform_window_style(builder).build().map_err(|e| {
         AppCommandError::window("Failed to open project boot window", e.to_string())
     })?;
-    register_remote_window_cleanup(&app, &window, remote_window_id.as_deref());
-    post_window_setup(&window);
+    register_remote_window_cleanup(&app, &boot_window, remote_window_id.as_deref());
+    post_window_setup(&boot_window);
+    state.set_owner(label, owner_label);
 
     Ok(())
 }
@@ -2155,7 +2219,7 @@ pub async fn set_tray_locale(
 
 #[cfg(test)]
 mod owner_window_tests {
-    use super::SettingsWindowState;
+    use super::{AuxWindowState, SettingsWindowState};
 
     // `lib.rs` runs the restore on both `CloseRequested` and `Destroyed`, so the
     // owner has to be handed back exactly once. That mattered less while the
@@ -2179,6 +2243,59 @@ mod owner_window_tests {
         state.set_owner("settings".to_string(), "remote-workspace-3".to_string());
 
         assert_eq!(state.take_owner("settings").as_deref(), Some("remote-workspace-3"));
+    }
+
+    // Same hand-back-once contract for the shared map, which stash, push,
+    // project boot and the importer all write into.
+    #[test]
+    fn aux_owner_is_handed_back_once() {
+        let state = AuxWindowState::new();
+        state.set_owner("stash-7".to_string(), "main".to_string());
+
+        assert_eq!(state.take_owner("stash-7").as_deref(), Some("main"));
+        assert_eq!(state.take_owner("stash-7"), None);
+    }
+
+    // The four window kinds share one map, so their labels must not collide:
+    // closing the stash window has to leave the push window's owner alone.
+    #[test]
+    fn aux_owners_are_kept_per_window_label() {
+        let state = AuxWindowState::new();
+        state.set_owner("stash-7".to_string(), "main".to_string());
+        state.set_owner("push-7".to_string(), "remote-workspace-3".to_string());
+        state.set_owner("project-boot".to_string(), "main".to_string());
+        state.set_owner("import-sessions".to_string(), "main".to_string());
+
+        assert_eq!(state.take_owner("stash-7").as_deref(), Some("main"));
+        assert_eq!(state.take_owner("push-7").as_deref(), Some("remote-workspace-3"));
+        assert_eq!(state.take_owner("project-boot").as_deref(), Some("main"));
+        assert_eq!(state.take_owner("import-sessions").as_deref(), Some("main"));
+    }
+
+    // `lib.rs` runs the aux restore for EVERY closing window, so a label that
+    // never registered an owner (main, pet, settings, a commit window) must
+    // come back empty rather than pull some other window forward.
+    #[test]
+    fn aux_restore_is_inert_for_unregistered_labels() {
+        let state = AuxWindowState::new();
+        state.set_owner("stash-7".to_string(), "main".to_string());
+
+        for label in ["main", "pet", "settings", "commit-7", "merge-7"] {
+            assert_eq!(state.take_owner(label), None, "{label} owns nothing");
+        }
+        assert_eq!(state.take_owner("stash-7").as_deref(), Some("main"));
+    }
+
+    // Re-opening from another window re-points the owner here too. The stash
+    // window is reused across workspaces, so the restore has to follow the
+    // window the user last came from.
+    #[test]
+    fn reopening_an_aux_window_repoints_the_owner() {
+        let state = AuxWindowState::new();
+        state.set_owner("stash-7".to_string(), "main".to_string());
+        state.set_owner("stash-7".to_string(), "remote-workspace-3".to_string());
+
+        assert_eq!(state.take_owner("stash-7").as_deref(), Some("remote-workspace-3"));
     }
 }
 

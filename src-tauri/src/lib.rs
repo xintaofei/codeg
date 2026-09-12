@@ -396,6 +396,7 @@ mod tauri_app {
             .manage(windows::SettingsWindowState::new())
             .manage(windows::CommitWindowState::new())
             .manage(windows::MergeWindowState::new())
+            .manage(windows::AuxWindowState::new())
             .manage(web::WebServerState::new())
             // Remote-workspace IPC proxy. Routes HTTP / WS for windows
             // opened against a remote codeg-server through Rust so we
@@ -1081,6 +1082,20 @@ mod tauri_app {
                         tauri::async_runtime::spawn(async move {
                             windows::cleanup_dangling_merge(&app_clone, &label_clone).await;
                         });
+                    }
+                }
+
+                // Stash, push, project boot and the session importer share one
+                // owner map, so this arm matches on the map instead of a list
+                // of label prefixes: a window that never registered an owner
+                // has none to hand back, and `main` never registers one at all.
+                if matches!(
+                    event,
+                    tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+                ) {
+                    let app = window.app_handle();
+                    if let Some(state) = app.try_state::<windows::AuxWindowState>() {
+                        windows::restore_window_after_aux(app, &state, &label);
                     }
                 }
 
