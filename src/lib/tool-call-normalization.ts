@@ -258,6 +258,26 @@ function hasAnyKey(obj: Record<string, unknown>, keys: string[]): boolean {
 }
 
 /**
+ * Codex ACP uses human titles for web-search follow-up actions. Those frames
+ * keep `kind: "search"` (the same kind used by local fuzzy-file search), so
+ * the title is the only identity signal when the raw-input type is omitted on
+ * session replay.
+ */
+function isCodexWebSearchTitle(input: string | null | undefined): boolean {
+  const title = input?.trim()
+  if (!title) return false
+  return /^(?:web\s+search|open\s+page|find\s+in\s+page)(?:\s*:|\s|$)/i.test(
+    title
+  )
+}
+
+/** Codex's raw-input marker is camelCase on the ACP wire (`webSearch`). */
+function isCodexWebSearchType(input: unknown): boolean {
+  if (typeof input !== "string") return false
+  return canonicalizeToolName(input).replace(/_/g, "") === "websearch"
+}
+
+/**
  * Wire spellings that mean the same argument as one of the canonical
  * (snake_case) keys every tool card reads. OpenCode names its tool arguments in
  * camelCase and its ACP adapter forwards them verbatim, so the LIVE stream
@@ -392,14 +412,18 @@ function inferFromInput(
   // `query` is a common MCP argument (for example CodeGraph's
   // `codegraph_explore` and Context7's query tools), not a web-search
   // discriminator. Only classify it as websearch when the wire also names a
-  // web-search tool; otherwise `inferLiveToolName` can preserve the explicit
-  // tool title instead of showing every query-bearing MCP call as "WebSearch".
+  // web-search tool, or when Codex's action title/type identifies the call;
+  // otherwise `inferLiveToolName` can preserve the explicit tool title instead
+  // of showing every query-bearing MCP call as "WebSearch". Codex's generic
+  // `kind: "search"` intentionally remains a local file search (`grep`).
   if (
     hasAnyKey(parsed, ["query"]) &&
     (normalizedTitle === "websearch" ||
       normalizedTitle === "web_search" ||
       normalizedKind === "websearch" ||
-      normalizedKind === "web_search")
+      normalizedKind === "web_search" ||
+      isCodexWebSearchTitle(title) ||
+      isCodexWebSearchType(parsed.type))
   )
     return "websearch"
   if (hasAnyKey(parsed, ["url"])) return "webfetch"

@@ -407,6 +407,47 @@ describe("inferLiveToolName query-bearing MCP calls", () => {
     ).toBe("websearch")
   })
 
+  it("recognizes Codex web-search action frames", () => {
+    expect(
+      inferLiveToolName({
+        title: "Open page: https://example.com",
+        kind: "search",
+        rawInput: JSON.stringify({
+          query: "Codeg",
+          action: { type: "openPage", url: "https://example.com" },
+        }),
+      })
+    ).toBe("websearch")
+
+    // session/load replay omits the `type` marker, but keeps the action title
+    // and payload. `kind: "search"` must not be enough on its own because
+    // local fuzzy-file searches use the same ACP kind.
+    expect(
+      inferLiveToolName({
+        title: "Find in page for 'ACP' in https://example.com",
+        kind: "search",
+        rawInput: JSON.stringify({
+          query: "Codeg",
+          action: {
+            type: "findInPage",
+            pattern: "ACP",
+            url: "https://example.com",
+          },
+        }),
+      })
+    ).toBe("websearch")
+
+    // The marker is also sufficient when a title is too generic to identify
+    // the action on its own.
+    expect(
+      inferLiveToolName({
+        title: "Search",
+        kind: "other",
+        rawInput: JSON.stringify({ type: "webSearch", query: "Codeg" }),
+      })
+    ).toBe("websearch")
+  })
+
   it("does not infer websearch from a query field alone", () => {
     expect(
       inferLiveToolName({
@@ -415,6 +456,14 @@ describe("inferLiveToolName query-bearing MCP calls", () => {
         rawInput: JSON.stringify({ query: "find usages" }),
       })
     ).not.toBe("websearch")
+
+    expect(
+      inferLiveToolName({
+        title: "Search for 'find usages'",
+        kind: "search",
+        rawInput: JSON.stringify({ query: "find usages" }),
+      })
+    ).toBe("grep")
   })
 })
 
