@@ -70,6 +70,8 @@ pub struct DelegationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_working_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continue_from_task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_handle: Option<String>,
 }
 
@@ -136,6 +138,12 @@ pub enum DelegationError {
     InvalidWorkingDir(String),
     #[error("spawn failed: {0}")]
     SpawnFailed(String),
+    #[error("continuation is busy: {0}")]
+    ContinuationBusy(String),
+    #[error("continuation conflict: {0}")]
+    ContinuationConflict(String),
+    #[error("continuation is not eligible: {0}")]
+    ContinuationInvalid(String),
     #[error("subagent runtime error: {0}")]
     SubagentRuntimeError(String),
     /// Child agent ended its turn via `refusal`. Often a backend / gateway
@@ -294,6 +302,9 @@ impl DelegationOutcome {
             DelegationError::InvalidAgentType => "invalid_agent_type",
             DelegationError::InvalidWorkingDir(_) => "invalid_working_dir",
             DelegationError::SpawnFailed(_) => "spawn_failed",
+            DelegationError::ContinuationBusy(_) => "continuation_busy",
+            DelegationError::ContinuationConflict(_) => "continuation_conflict",
+            DelegationError::ContinuationInvalid(_) => "continuation_invalid",
             DelegationError::SubagentRuntimeError(_) => "subagent_error",
             DelegationError::ChildRefusal => "child_refusal",
             DelegationError::ChildMaxTokens => "child_max_tokens",

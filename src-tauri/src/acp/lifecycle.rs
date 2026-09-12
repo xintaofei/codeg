@@ -128,6 +128,7 @@ fn is_dispatcher_terminal(event: &AcpEvent) -> bool {
 /// can wake up after the entry is already gone.
 struct CachedConn {
     conversation_id: i32,
+    delegation_task_id: Option<String>,
     state: Arc<RwLock<SessionState>>,
     emitter: EventEmitter,
 }
@@ -267,8 +268,8 @@ pub(crate) async fn handle_event(
                 // `cancelled` and any future reason: don't write here.
                 _ => None,
             };
-            let Some((state_arc, emitter)) =
-                manager.get_state_and_emitter(&envelope.connection_id).await
+            let Some((state_arc, emitter, delegation_task_id)) =
+                manager.get_lifecycle_context(&envelope.connection_id).await
             else {
                 return Ok(());
             };
@@ -286,16 +287,31 @@ pub(crate) async fn handle_event(
                 // DB write before emit so any downstream subscriber that observes
                 // the ConversationStatusChanged event can assume the row is
                 // already at the target status.
-                conversation_service::update_status(db_conn, cid, ts.clone()).await?;
-                emit_with_state(
-                    &state_arc,
-                    &emitter,
-                    AcpEvent::ConversationStatusChanged {
-                        conversation_id: cid,
-                        status: ts,
-                    },
+                let changed = conversation_service::update_status_for_execution_if(
+                    db_conn,
+                    cid,
+                    delegation_task_id.as_deref(),
+                    ConversationStatus::InProgress,
+                    ts.clone(),
                 )
-                .await;
+                .await?;
+                if !changed {
+                    tracing::info!(
+                        conversation_id = cid,
+                        task_id = delegation_task_id.as_deref(),
+                        "[delegation] terminal status CAS did not change the conversation"
+                    );
+                } else {
+                    emit_with_state(
+                        &state_arc,
+                        &emitter,
+                        AcpEvent::ConversationStatusChanged {
+                            conversation_id: cid,
+                            status: ts,
+                        },
+                    )
+                    .await;
+                }
             }
 
             // If this conversation was spawned by a delegation, resolve the
@@ -306,6 +322,7 @@ pub(crate) async fn handle_event(
                     db_conn,
                     b.as_ref(),
                     cid,
+                    delegation_task_id.as_deref(),
                     stop_reason.as_str(),
                     last_text,
                 )
@@ -368,6 +385,7 @@ async fn forward_turn_complete_to_broker(
     db_conn: &DatabaseConnection,
     broker: &DelegationBroker,
     conversation_id: i32,
+    execution_task_id: Option<&str>,
     stop_reason: &str,
     last_text: Option<String>,
 ) {
@@ -381,9 +399,10 @@ async fn forward_turn_complete_to_broker(
             return;
         }
     };
-    let call_id = match row.delegation_call_id.clone() {
-        Some(id) => id,
+    let call_id = match execution_task_id {
+        Some(id) if row.delegation_call_id.as_deref() == Some(id) => id.to_string(),
         None => return, // not a delegation child; nothing to do.
+        Some(_) => return,
     };
     if row.parent_tool_use_id.is_none() {
         tracing::info!(
@@ -449,7 +468,9 @@ async fn try_cache_link(
     // The connection is necessarily still in the manager at this point —
     // `ConversationLinked` is emitted by `send_prompt_linked` from the
     // connection's own send path, well before any disconnect.
-    let Some((state, emitter)) = manager.get_state_and_emitter(connection_id).await else {
+    let Some((state, emitter, delegation_task_id)) =
+        manager.get_lifecycle_context(connection_id).await
+    else {
         tracing::warn!(
             "[lifecycle][WARN] ConversationLinked for unknown connection {connection_id}; \
              skipping cache (terminal-status hand-off will no-op)"
@@ -460,6 +481,7 @@ async fn try_cache_link(
         connection_id.to_string(),
         CachedConn {
             conversation_id,
+            delegation_task_id,
             state,
             emitter,
         },
@@ -484,9 +506,10 @@ async fn handle_terminal_event(
         return Ok(());
     };
     let cid = entry.conversation_id;
-    let changed = conversation_service::update_status_if(
+    let changed = conversation_service::update_status_for_execution_if(
         db_conn,
         cid,
+        entry.delegation_task_id.as_deref(),
         ConversationStatus::InProgress,
         ConversationStatus::Cancelled,
     )
@@ -665,10 +688,17 @@ fn extract_delegation_match_key(raw_input: Option<&str>) -> Option<DelegationMat
         .get("working_dir")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let continue_from_task_id = args
+        .get("continue_from_task_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     Some(DelegationMatchKey {
         agent_type,
         task,
         working_dir,
+        continue_from_task_id,
     })
 }
 
@@ -851,11 +881,12 @@ mod delegation_title_tests {
 
     #[test]
     fn extract_match_key_pulls_agent_task_and_dir() {
-        let raw = r#"{"agent_type":"codex","task":"smoke test","working_dir":"/tmp"}"#;
+        let raw = r#"{"agent_type":"codex","task":"smoke test","working_dir":"/tmp","continue_from_task_id":"  source-1  "}"#;
         let key = extract_delegation_match_key(Some(raw)).expect("key parses");
         assert_eq!(key.agent_type, AgentType::Codex);
         assert_eq!(key.task, "smoke test");
         assert_eq!(key.working_dir.as_deref(), Some("/tmp"));
+        assert_eq!(key.continue_from_task_id.as_deref(), Some("source-1"));
     }
 
     #[test]
@@ -1073,6 +1104,7 @@ mod delegation_registration_tests {
             agent_type: AgentType::Codex,
             task: task.to_string(),
             working_dir: None,
+            continue_from_task_id: None,
         }
     }
 
@@ -1755,6 +1787,9 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            requested_session_id: None,
+            delegation_task_id: None,
+            driver_cancel: tokio_util::sync::CancellationToken::new(),
         }
     }
 
@@ -2093,6 +2128,63 @@ mod tests {
         assert_eq!(
             read_row_status(&db, conv.id).await,
             ConversationStatus::PendingReview
+        );
+    }
+
+    #[tokio::test]
+    async fn late_delegation_events_cannot_update_successor_after_connection_reap() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/late-delegation").await;
+        let parent =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let link = crate::acp::delegation::spawner::DelegationLink {
+            parent_conversation_id: parent.id,
+            parent_tool_use_id: "tool-1".into(),
+            delegation_call_id: "task-new".into(),
+            admission: None,
+        };
+        let conv = conversation_service::create_with_delegation(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            None,
+            None,
+            Some(link),
+        )
+        .await
+        .unwrap();
+        let mgr = ConnectionManager::new();
+        {
+            let mut conn = fake_connection_with_state("old", Some(conv.id));
+            conn.delegation_task_id = Some("task-old".into());
+            mgr.connections.lock().await.insert("old".into(), conn);
+        }
+        let mut cache = HashMap::new();
+        seed_cache(&mut cache, &mgr, "old", conv.id).await;
+        let event = EventEnvelope {
+            seq: 1,
+            connection_id: "old".into(),
+            payload: AcpEvent::TurnComplete {
+                session_id: "old-session".into(),
+                stop_reason: "end_turn".into(),
+                agent_type: "codex".into(),
+            },
+        };
+        handle_event(&db.conn, &mgr, &event, None).await.unwrap();
+        assert_eq!(
+            read_row_status(&db, conv.id).await,
+            ConversationStatus::InProgress
+        );
+
+        mgr.connections.lock().await.remove("old");
+        handle_terminal_event(&db.conn, &mut cache, "old")
+            .await
+            .unwrap();
+        assert_eq!(
+            read_row_status(&db, conv.id).await,
+            ConversationStatus::InProgress
         );
     }
 
@@ -2455,7 +2547,10 @@ mod tests {
         let env = EventEnvelope {
             seq: 1,
             connection_id: "c1".to_string(),
-            payload: AcpEvent::ContentDelta { text: "hi".into(), parent_tool_use_id: None },
+            payload: AcpEvent::ContentDelta {
+                text: "hi".into(),
+                parent_tool_use_id: None,
+            },
         };
         handle_event(&db.conn, &mgr, &env, None).await.unwrap();
 
@@ -2911,6 +3006,7 @@ mod tests {
             task: "do x".into(),
             working_dir: None,
             requested_working_dir: None,
+            continue_from_task_id: None,
             external_handle: None,
         }
     }
@@ -2956,6 +3052,93 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         (broker, driver)
+    }
+
+    #[tokio::test]
+    async fn turn_complete_still_resolves_broker_when_status_was_already_cancelled() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/cancel-race-complete").await;
+        let parent =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        assert_eq!(parent.id, 1, "the staged broker request is owned by parent 1");
+        let child = conversation_service::create_with_delegation(
+            &db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            None,
+            None,
+            Some(crate::acp::delegation::spawner::DelegationLink {
+                parent_conversation_id: parent.id,
+                parent_tool_use_id: "tu-cancel-race".into(),
+                delegation_call_id: "temporary-call".into(),
+                admission: None,
+            }),
+        )
+        .await
+        .unwrap();
+        let (broker, driver) = stage_pending_delegation("c-cancel-race", child.id).await;
+        let call_id = broker.peek_first_pending_call_id().await.unwrap();
+        assert!(
+            conversation_service::advance_delegation_call_id(
+                &db.conn,
+                child.id,
+                "temporary-call",
+                &call_id,
+            )
+            .await
+            .unwrap()
+        );
+        conversation_service::update_status(
+            &db.conn,
+            child.id,
+            ConversationStatus::Cancelled,
+        )
+        .await
+        .unwrap();
+
+        let mgr = ConnectionManager::new();
+        let mut conn = fake_connection_with_state("c-cancel-race", Some(child.id));
+        conn.delegation_task_id = Some(call_id);
+        conn.state.write().await.last_assistant_text = Some("finished despite cancel race".into());
+        mgr.connections
+            .lock()
+            .await
+            .insert("c-cancel-race".into(), conn);
+        handle_event(
+            &db.conn,
+            &mgr,
+            &EventEnvelope {
+                seq: 1,
+                connection_id: "c-cancel-race".into(),
+                payload: AcpEvent::TurnComplete {
+                    session_id: "ext-cancel-race".into(),
+                    stop_reason: "end_turn".into(),
+                    agent_type: "claude_code".into(),
+                },
+            },
+            Some(&broker),
+        )
+        .await
+        .unwrap();
+
+        let outcome = tokio::time::timeout(Duration::from_secs(2), driver)
+            .await
+            .expect("the terminal event must resolve the broker even when status CAS loses")
+            .unwrap();
+        match outcome {
+            DelegationOutcome::Ok(success) => {
+                assert_eq!(success.text, "finished despite cancel race");
+                assert_eq!(success.child_conversation_id, child.id);
+            }
+            other => panic!("expected successful broker completion, got {other:?}"),
+        }
+        assert_eq!(
+            read_row_status(&db, child.id).await,
+            ConversationStatus::Cancelled,
+            "the losing status CAS must not rewrite the independently-cancelled row"
+        );
     }
 
     /// `Error` alone must NOT drain the broker. The pending entry stays

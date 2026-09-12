@@ -3379,6 +3379,7 @@
             "child_max_turn_requests": "サブエージェント: 要求上限",
             "child_empty": "サブエージェント応答なし",
             "child_auth_required": "サブエージェント要サインイン",
+            "interrupted": "中断済み（結果不明）",
             "child_unknown": "サブエージェント: エラー",
             "unknown": "不明なタスク"
           }

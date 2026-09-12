@@ -146,6 +146,7 @@ pub async fn get_folder_conversation(
     let result = conv_commands::get_folder_conversation_with_live_core(
         &db.conn,
         &state.connection_manager,
+        &state.delegation_broker,
         &state.chat_channel_manager,
         &state.emitter,
         params.conversation_id,
@@ -169,6 +170,7 @@ pub async fn get_folder_conversation_turns(
 ) -> Result<Json<ConversationTurnsPage>, AppCommandError> {
     let result = conv_commands::get_folder_conversation_turns_core(
         &state.db.conn,
+        Some(&state.delegation_broker),
         params.conversation_id,
         params.before_index,
         params.limit,

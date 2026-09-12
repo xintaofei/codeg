@@ -623,4 +623,35 @@ describe("DelegationStatusGroupCard", () => {
     expect(screen.getByText("Final result")).toBeInTheDocument()
     expect(screen.getByText("3 / 3")).toBeInTheDocument()
   })
+
+  it("keeps results separate for different tasks sharing one child", () => {
+    renderWithIntl(
+      <DelegationStatusGroupCard
+        polls={[
+          poll("T0", {
+            output: envelope({
+              task_id: "T0",
+              child_conversation_id: 42,
+              status: "completed",
+              text: "Original review result",
+            }),
+          }),
+          poll("T1", {
+            output: envelope({
+              task_id: "T1",
+              child_conversation_id: 42,
+              status: "completed",
+              text: "Follow-up review result",
+            }),
+          }),
+        ]}
+      />
+    )
+    expect(screen.getAllByText("done")).toHaveLength(2)
+    const buttons = screen.getAllByRole("button")
+    expect(buttons).toHaveLength(2)
+    for (const button of buttons) fireEvent.click(button)
+    expect(screen.getByText("Original review result")).toBeInTheDocument()
+    expect(screen.getByText("Follow-up review result")).toBeInTheDocument()
+  })
 })

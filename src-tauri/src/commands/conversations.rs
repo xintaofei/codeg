@@ -1155,10 +1155,36 @@ fn build_historical_delegation_meta(child: &DbConversationSummary) -> serde_json
     if let Some(title) = child.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         obj.insert(
             "task_preview".into(),
-            serde_json::Value::String(title.into()),
+            serde_json::Value::String(crate::acp::delegation::task_preview(title)),
         );
     }
     serde_json::Value::Object(obj)
+}
+
+fn build_ledger_delegation_meta(
+    entry: &crate::db::service::delegation_task_service::TaskLedgerEntry,
+) -> serde_json::Value {
+    let mut value = serde_json::to_value(&entry.report).unwrap_or_default();
+    if let Some(obj) = value.as_object_mut() {
+        let interrupted = entry.report.status
+            == crate::acp::delegation::types::TaskStatus::Unknown
+            && entry.report.error_code.as_deref() == Some("interrupted");
+        if entry.report.status == crate::acp::delegation::types::TaskStatus::Canceled
+            || interrupted
+        {
+            // Delegation-card metadata has a closed status vocabulary; its
+            // failure detail still distinguishes cancellation/interruption by
+            // error_code. The broker uses `unknown` for an orphaned durable
+            // run, but the card parser deliberately has no `unknown` lifecycle
+            // state, so render that known interruption as a closed failure.
+            obj.insert("status".into(), serde_json::Value::String("failed".into()));
+        }
+        obj.insert(
+            "task_preview".into(),
+            serde_json::Value::String(crate::acp::delegation::task_preview(&entry.task)),
+        );
+    }
+    value
 }
 
 /// The broker-minted task id a `delegate_to_agent` result announces. Codex
@@ -1269,8 +1295,12 @@ fn parse_resume_task_id(input: &str) -> Option<String> {
 /// an earlier turn). Without this the resumed card would be frozen at the
 /// `running` its ack reported, forever — the child's real outcome landed on the
 /// DB row, not on the resume result.
-fn inject_delegation_meta(turns: &mut [MessageTurn], children: &[DbConversationSummary]) {
-    if children.is_empty() {
+fn inject_delegation_meta(
+    turns: &mut [MessageTurn],
+    children: &[DbConversationSummary],
+    ledger: &[crate::db::service::delegation_task_service::TaskLedgerEntry],
+) {
+    if children.is_empty() && ledger.is_empty() {
         return;
     }
     let by_parent_tool_use_id: HashMap<&str, &DbConversationSummary> = children
@@ -1281,11 +1311,15 @@ fn inject_delegation_meta(turns: &mut [MessageTurn], children: &[DbConversationS
         .iter()
         .filter_map(|c| c.delegation_call_id.as_deref().map(|id| (id, c)))
         .collect();
+    let ledger_by_task_id: HashMap<&str, _> = ledger
+        .iter()
+        .map(|entry| (entry.task_id.as_str(), entry))
+        .collect();
 
     // The task id lives on the call's RESULT, which the parsers emit as a
     // separate block (usually a later turn), so collect it up front.
     let mut task_id_by_call: HashMap<String, String> = HashMap::new();
-    if !by_task_id.is_empty() {
+    if !by_task_id.is_empty() || !ledger_by_task_id.is_empty() {
         for turn in turns.iter() {
             for block in turn.blocks.iter() {
                 if let ContentBlock::ToolResult {
@@ -1317,8 +1351,23 @@ fn inject_delegation_meta(turns: &mut [MessageTurn], children: &[DbConversationS
             if meta.is_some() {
                 continue;
             }
+            let is_delegate = tool_name.contains("delegate_to_agent");
+            let is_resume = tool_name.contains("resume_delegation");
+            if !is_delegate && !is_resume {
+                continue;
+            }
+            if let Some(entry) = tool_use_id
+                .as_deref()
+                .and_then(|tu| task_id_by_call.get(tu))
+                .and_then(|task_id| ledger_by_task_id.get(task_id.as_str()))
+            {
+                *meta = Some(serde_json::json!({
+                    "codeg.delegation": build_ledger_delegation_meta(entry),
+                }));
+                continue;
+            }
             let child: Option<&DbConversationSummary> =
-                if tool_name.contains("delegate_to_agent") {
+                if is_delegate {
                     tool_use_id.as_deref().and_then(|tu| {
                         by_parent_tool_use_id
                             .get(tu)
@@ -1329,13 +1378,13 @@ fn inject_delegation_meta(turns: &mut [MessageTurn], children: &[DbConversationS
                             })
                             .copied()
                     })
-                } else if tool_name.contains("resume_delegation") {
+                } else if is_resume {
                     input_preview
                         .as_deref()
                         .and_then(parse_resume_task_id)
                         .and_then(|task_id| by_task_id.get(task_id.as_str()).copied())
                 } else {
-                    continue;
+                    unreachable!("delegation tool was checked above")
                 };
             if let Some(child) = child {
                 *meta = Some(serde_json::json!({
@@ -1356,6 +1405,14 @@ fn inject_delegation_meta(turns: &mut [MessageTurn], children: &[DbConversationS
 pub async fn get_folder_conversation_core(
     conn: &sea_orm::DatabaseConnection,
     conversation_id: i32,
+) -> Result<(DbConversationDetail, Option<String>), AppCommandError> {
+    get_folder_conversation_core_with_broker(conn, conversation_id, None).await
+}
+
+async fn get_folder_conversation_core_with_broker(
+    conn: &sea_orm::DatabaseConnection,
+    conversation_id: i32,
+    broker: Option<&crate::acp::delegation::broker::DelegationBroker>,
 ) -> Result<(DbConversationDetail, Option<String>), AppCommandError> {
     let summary = conversation_service::get_by_id(conn, conversation_id)
         .await
@@ -1495,7 +1552,19 @@ pub async fn get_folder_conversation_core(
     let children = conversation_service::list_children(conn, conversation_id)
         .await
         .unwrap_or_default();
-    inject_delegation_meta(&mut turns, &children);
+    let mut ledger = crate::db::service::delegation_task_service::list_for_parent(
+        conn,
+        conversation_id,
+    )
+    .await
+    .unwrap_or_default();
+    if let Some(broker) = broker {
+        for entry in &mut ledger {
+            let projected = broker.project_ledger_report(entry).await;
+            entry.report = projected;
+        }
+    }
+    inject_delegation_meta(&mut turns, &children, &ledger);
 
     Ok((
         DbConversationDetail {
@@ -1716,12 +1785,14 @@ fn apply_turn_window(
 pub async fn get_folder_conversation_with_live_core(
     conn: &sea_orm::DatabaseConnection,
     manager: &crate::acp::manager::ConnectionManager,
+    broker: &crate::acp::delegation::broker::DelegationBroker,
     chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
     emitter: &EventEmitter,
     conversation_id: i32,
     window: Option<crate::commands::turn_window::TurnWindowReq>,
 ) -> Result<DbConversationDetail, AppCommandError> {
-    let (mut detail, parsed_title) = get_folder_conversation_core(conn, conversation_id).await?;
+    let (mut detail, parsed_title) =
+        get_folder_conversation_core_with_broker(conn, conversation_id, Some(broker)).await?;
 
     // Per-turn auto-title backfill. The parse `get_folder_conversation_core`
     // just did already produced the session-file title; adopt it (and broadcast
@@ -1798,12 +1869,14 @@ pub async fn get_folder_conversation_with_live_core(
 /// auto-title refresh, no live correlation, no sidebar events.
 pub async fn get_folder_conversation_turns_core(
     conn: &sea_orm::DatabaseConnection,
+    broker: Option<&crate::acp::delegation::broker::DelegationBroker>,
     conversation_id: i32,
     before_index: usize,
     limit: usize,
 ) -> Result<ConversationTurnsPage, AppCommandError> {
     use crate::commands::turn_window;
-    let (detail, _parsed_title) = get_folder_conversation_core(conn, conversation_id).await?;
+    let (detail, _parsed_title) =
+        get_folder_conversation_core_with_broker(conn, conversation_id, broker).await?;
     let turns = detail.turns;
     let (start, end) = turn_window::resolve_page_bounds(&turns, before_index, limit);
     let meta = turn_window::window_meta(&turns, start);
@@ -1831,9 +1904,14 @@ pub async fn get_folder_conversation(
     from_index: Option<usize>,
 ) -> Result<DbConversationDetail, AppCommandError> {
     let window = resolve_turn_window_req(tail_turns, from_index)?;
+    let broker = app
+        .state::<std::sync::Arc<crate::acp::delegation::broker::DelegationBroker>>()
+        .inner()
+        .clone();
     get_folder_conversation_with_live_core(
         &db.conn,
         &manager,
+        &broker,
         &chat_channel_manager,
         &EventEmitter::Tauri(app),
         conversation_id,
@@ -1846,11 +1924,19 @@ pub async fn get_folder_conversation(
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn get_folder_conversation_turns(
     db: tauri::State<'_, AppDatabase>,
+    broker: tauri::State<'_, std::sync::Arc<crate::acp::delegation::broker::DelegationBroker>>,
     conversation_id: i32,
     before_index: usize,
     limit: usize,
 ) -> Result<ConversationTurnsPage, AppCommandError> {
-    get_folder_conversation_turns_core(&db.conn, conversation_id, before_index, limit).await
+    get_folder_conversation_turns_core(
+        &db.conn,
+        Some(&broker),
+        conversation_id,
+        before_index,
+        limit,
+    )
+    .await
 }
 
 /// Emit a `conversation://changed` Upsert for `conversation_id` so every
@@ -3025,7 +3111,7 @@ mod tests {
             "mcp__codeg-mcp__delegate_to_agent",
         )];
         let children = vec![summary_child(42, "tu-1", "completed")];
-        inject_delegation_meta(&mut turns, &children);
+        inject_delegation_meta(&mut turns, &children, &[]);
         let meta = first_block_meta(&turns[0]).expect("meta should be set");
         let inner = meta.get("codeg.delegation").expect("codeg.delegation key");
         assert_eq!(inner["status"], "completed");
@@ -3074,12 +3160,146 @@ mod tests {
         let mut child = summary_child(2890, "exec-0fb6db94-3042-4cc4-b492-2edd1804c1fa", "completed");
         child.delegation_call_id = Some("8ff4c14c-740c-4482-b758-8f2091f97063".into());
 
-        inject_delegation_meta(&mut turns, &[child]);
+        inject_delegation_meta(&mut turns, &[child], &[]);
 
         let inner = first_block_meta(&turns[0])
             .and_then(|m| m.get("codeg.delegation").cloned())
             .expect("meta should be set");
         assert_eq!(inner["child_conversation_id"], 2890);
+    }
+
+    #[test]
+    fn ledger_restores_an_old_round_without_marking_a_status_call() {
+        use crate::acp::delegation::types::{DelegationTaskReport, TaskStatus};
+        use crate::db::service::delegation_task_service::{ResumeBinding, TaskLedgerEntry};
+
+        let mut turns = vec![
+            tool_use_turn(Some("exec-r1"), "mcp__codeg_mcp__delegate_to_agent"),
+            tool_result_turn("exec-r1", "Delegation successful. task_id=task-r1."),
+            tool_use_turn(Some("exec-status"), "mcp__codeg_mcp__get_delegation_status"),
+            tool_result_turn("exec-status", r#"{"task_id":"task-r1"}"#),
+        ];
+        let mut child = summary_child(42, "exec-r3", "in_progress");
+        child.delegation_call_id = Some("task-r3".into());
+        let now = chrono::Utc::now();
+        let ledger = TaskLedgerEntry {
+            id: 1,
+            task_id: "task-r1".into(),
+            parent_conversation_id: 1,
+            child_conversation_id: 42,
+            source_task_id: None,
+            task: "round one".into(),
+            requested_working_dir: None,
+            resume_binding: ResumeBinding {
+                agent_type: AgentType::Codex,
+                external_session_id: "session-1".into(),
+                child_conversation_id: 42,
+                working_dir: "/tmp".into(),
+                preferred_mode_id: None,
+                preferred_config_values: Default::default(),
+                config_fingerprint: "fp".into(),
+            },
+            status: TaskStatus::Canceled,
+            released: true,
+            report: DelegationTaskReport {
+                task_id: Some("task-r1".into()),
+                status: TaskStatus::Canceled,
+                child_conversation_id: Some(42),
+                agent_type: Some(AgentType::Codex),
+                text: None,
+                error_code: Some("canceled".into()),
+                message: Some("Canceled by user".into()),
+                duration_ms: Some(12),
+                blocked_on: None,
+            },
+            created_at: now,
+            updated_at: now,
+        };
+
+        inject_delegation_meta(&mut turns, &[child], &[ledger]);
+        let meta = first_block_meta(&turns[0])
+            .and_then(|value| value.get("codeg.delegation"))
+            .expect("old ledger round is restored by task id");
+        assert_eq!(meta["task_id"], "task-r1");
+        assert_eq!(meta["child_conversation_id"], 42);
+        assert_eq!(meta["status"], "failed");
+        assert_eq!(meta["error_code"], "canceled");
+        assert!(
+            first_block_meta(&turns[2]).is_none(),
+            "status polling remains a status card"
+        );
+    }
+
+    #[test]
+    fn interrupted_ledger_report_closes_the_history_card_truthfully() {
+        use crate::acp::delegation::types::{DelegationTaskReport, TaskStatus};
+        use crate::db::service::delegation_task_service::{ResumeBinding, TaskLedgerEntry};
+
+        let mut turns = vec![
+            tool_use_turn(Some("call-orphan"), "mcp__codeg_mcp__delegate_to_agent"),
+            tool_result_turn(
+                "call-orphan",
+                "Delegation successful. task_id=task-orphan.",
+            ),
+        ];
+        let now = chrono::Utc::now();
+        let ledger = TaskLedgerEntry {
+            id: 1,
+            task_id: "task-orphan".into(),
+            parent_conversation_id: 1,
+            child_conversation_id: 42,
+            source_task_id: None,
+            task: "work interrupted by restart".into(),
+            requested_working_dir: None,
+            resume_binding: ResumeBinding {
+                agent_type: AgentType::Codex,
+                external_session_id: "session-1".into(),
+                child_conversation_id: 42,
+                working_dir: "/tmp".into(),
+                preferred_mode_id: None,
+                preferred_config_values: Default::default(),
+                config_fingerprint: "fp".into(),
+            },
+            // The durable row remains running; only the broker-projected report
+            // says the process disappeared and its outcome is unknown.
+            status: TaskStatus::Running,
+            released: false,
+            report: DelegationTaskReport {
+                task_id: Some("task-orphan".into()),
+                status: TaskStatus::Unknown,
+                child_conversation_id: Some(42),
+                agent_type: Some(AgentType::Codex),
+                text: None,
+                error_code: Some("interrupted".into()),
+                message: Some(
+                    "The application stopped while this delegation was running; its outcome is unknown."
+                        .into(),
+                ),
+                duration_ms: None,
+                blocked_on: None,
+            },
+            created_at: now,
+            updated_at: now,
+        };
+
+        inject_delegation_meta(&mut turns, &[], std::slice::from_ref(&ledger));
+
+        let meta = first_block_meta(&turns[0])
+            .and_then(|value| value.get("codeg.delegation"))
+            .expect("orphaned ledger row should still restore its card");
+        assert_eq!(meta["status"], "failed");
+        assert_eq!(meta["error_code"], "interrupted");
+        assert_eq!(meta["task_preview"], "work interrupted by restart");
+        assert_eq!(meta["child_conversation_id"], 42);
+
+        let mut oversized = ledger;
+        oversized.task = "界".repeat(crate::acp::delegation::TASK_PREVIEW_CAP);
+        let preview = build_ledger_delegation_meta(&oversized)["task_preview"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(preview.len() <= crate::acp::delegation::TASK_PREVIEW_CAP);
+        assert!(preview.ends_with('…'));
     }
 
     #[test]
@@ -3091,7 +3311,7 @@ mod tests {
         let mut child = summary_child(1, "exec-zzz", "completed");
         child.delegation_call_id = Some("bbbb".into());
 
-        inject_delegation_meta(&mut turns, &[child]);
+        inject_delegation_meta(&mut turns, &[child], &[]);
 
         assert!(
             first_block_meta(&turns[0]).is_none(),
@@ -3115,7 +3335,7 @@ mod tests {
         child.delegation_call_id = Some("b0858712-9257".into());
         child.title = Some("Build the /test4 sandbox page".into());
 
-        inject_delegation_meta(&mut turns, &[child]);
+        inject_delegation_meta(&mut turns, &[child], &[]);
 
         let inner = first_block_meta(&turns[0])
             .and_then(|m| m.get("codeg.delegation").cloned())
@@ -3138,7 +3358,7 @@ mod tests {
         let mut child = summary_child(9, "tu-x", "completed");
         child.delegation_call_id = Some("bbbb".into());
 
-        inject_delegation_meta(&mut turns, &[child]);
+        inject_delegation_meta(&mut turns, &[child], &[]);
 
         assert!(
             first_block_meta(&turns[0]).is_none(),
@@ -3223,7 +3443,7 @@ mod tests {
     fn inject_delegation_meta_maps_in_progress_to_running() {
         let mut turns = vec![tool_use_turn(Some("tu-1"), "delegate_to_agent")];
         let children = vec![summary_child(7, "tu-1", "in_progress")];
-        inject_delegation_meta(&mut turns, &children);
+        inject_delegation_meta(&mut turns, &children, &[]);
         let inner = first_block_meta(&turns[0])
             .unwrap()
             .get("codeg.delegation")
@@ -3242,7 +3462,7 @@ mod tests {
         // "running" badge until the user reloads again.
         let mut turns = vec![tool_use_turn(Some("tu-1"), "delegate_to_agent")];
         let children = vec![summary_child(11, "tu-1", "pending_review")];
-        inject_delegation_meta(&mut turns, &children);
+        inject_delegation_meta(&mut turns, &children, &[]);
         let inner = first_block_meta(&turns[0])
             .unwrap()
             .get("codeg.delegation")
@@ -3261,7 +3481,7 @@ mod tests {
         // as user-cancel. Emit `failed` without a code instead.
         let mut turns = vec![tool_use_turn(Some("tu-1"), "delegate_to_agent")];
         let children = vec![summary_child(9, "tu-1", "cancelled")];
-        inject_delegation_meta(&mut turns, &children);
+        inject_delegation_meta(&mut turns, &children, &[]);
         let inner = first_block_meta(&turns[0])
             .unwrap()
             .get("codeg.delegation")
@@ -3277,7 +3497,7 @@ mod tests {
     fn inject_delegation_meta_skips_non_delegation_tool_calls() {
         let mut turns = vec![tool_use_turn(Some("tu-1"), "bash")];
         let children = vec![summary_child(42, "tu-1", "completed")];
-        inject_delegation_meta(&mut turns, &children);
+        inject_delegation_meta(&mut turns, &children, &[]);
         assert!(
             first_block_meta(&turns[0]).is_none(),
             "non-delegation tool_name must not get meta even on tool_use_id match"
@@ -3288,7 +3508,7 @@ mod tests {
     fn inject_delegation_meta_skips_blocks_without_tool_use_id() {
         let mut turns = vec![tool_use_turn(None, "delegate_to_agent")];
         let children = vec![summary_child(42, "tu-1", "completed")];
-        inject_delegation_meta(&mut turns, &children);
+        inject_delegation_meta(&mut turns, &children, &[]);
         assert!(first_block_meta(&turns[0]).is_none());
     }
 
@@ -3315,7 +3535,7 @@ mod tests {
         agent_message_id: None,
         }];
         let children = vec![summary_child(42, "tu-1", "completed")];
-        inject_delegation_meta(&mut turns, &children);
+        inject_delegation_meta(&mut turns, &children, &[]);
         // The 999 (broker-written) survives — DB-derived 42 is not used here.
         let inner = first_block_meta(&turns[0])
             .unwrap()
@@ -3328,7 +3548,7 @@ mod tests {
     #[test]
     fn inject_delegation_meta_no_op_when_children_empty() {
         let mut turns = vec![tool_use_turn(Some("tu-1"), "delegate_to_agent")];
-        inject_delegation_meta(&mut turns, &[]);
+        inject_delegation_meta(&mut turns, &[], &[]);
         assert!(first_block_meta(&turns[0]).is_none());
     }
 
@@ -3336,7 +3556,7 @@ mod tests {
     fn inject_delegation_meta_unmatched_tool_use_id_left_alone() {
         let mut turns = vec![tool_use_turn(Some("tu-other"), "delegate_to_agent")];
         let children = vec![summary_child(42, "tu-1", "completed")];
-        inject_delegation_meta(&mut turns, &children);
+        inject_delegation_meta(&mut turns, &children, &[]);
         assert!(first_block_meta(&turns[0]).is_none());
     }
 
@@ -3363,6 +3583,7 @@ mod tests {
             parent_conversation_id: parent_id,
             parent_tool_use_id: "tu-historical".into(),
             delegation_call_id: "call-historical".into(),
+            admission: None,
         };
         conversation_service::create_with_delegation(
             &db.conn,
@@ -4812,6 +5033,7 @@ mod tests {
                 parent_conversation_id: parent_id,
                 parent_tool_use_id: (*tool_use).into(),
                 delegation_call_id: format!("call-{i}"),
+                admission: None,
             };
             let child = conversation_service::create_with_delegation(
                 &db.conn,
@@ -5170,6 +5392,7 @@ mod tests {
                 parent_conversation_id: parent_id,
                 parent_tool_use_id: "tu-1".into(),
                 delegation_call_id: "call-1".into(),
+                admission: None,
             }),
         )
         .await
@@ -5214,6 +5437,7 @@ mod tests {
                 parent_conversation_id: parent_id,
                 parent_tool_use_id: "tu-1".into(),
                 delegation_call_id: "call-1".into(),
+                admission: None,
             }),
         )
         .await
@@ -6455,7 +6679,7 @@ mod tests {
         let conv_id = create_conversation_core(&db.conn, folder_id, AgentType::ClaudeCode, None)
             .await
             .expect("create conversation");
-        let page = get_folder_conversation_turns_core(&db.conn, conv_id, 10, 5)
+        let page = get_folder_conversation_turns_core(&db.conn, None, conv_id, 10, 5)
             .await
             .expect("page fetch");
         assert_eq!(page.turns_total, 0);

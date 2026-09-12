@@ -63,3 +63,32 @@ pub const DELEGATE_TOOL_REWRITE_TITLE: &str = "codeg-mcp__delegate_to_agent";
 pub const STATUS_TOOL_REWRITE_TITLE: &str = "codeg-mcp__get_delegation_status";
 pub const CANCEL_TOOL_REWRITE_TITLE: &str = "codeg-mcp__cancel_delegation";
 pub const RESUME_TOOL_REWRITE_TITLE: &str = "codeg-mcp__resume_delegation";
+
+/// Byte cap shared by every fallback task label written to delegation-card
+/// metadata. The full task remains available in the child session.
+pub(crate) const TASK_PREVIEW_CAP: usize = 2 * 1024;
+
+/// Return a bounded task label without splitting a UTF-8 code point.
+pub(crate) fn task_preview(task: &str) -> String {
+    if task.len() <= TASK_PREVIEW_CAP {
+        return task.to_string();
+    }
+    const ELLIPSIS: &str = "…";
+    let mut end = TASK_PREVIEW_CAP.saturating_sub(ELLIPSIS.len());
+    while end > 0 && !task.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &task[..end], ELLIPSIS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_preview_is_utf8_safe_and_within_cap() {
+        let preview = task_preview(&"界".repeat(TASK_PREVIEW_CAP));
+        assert!(preview.len() <= TASK_PREVIEW_CAP);
+        assert!(preview.ends_with('…'));
+    }
+}
