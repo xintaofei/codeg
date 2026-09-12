@@ -51,6 +51,7 @@ vi.mock("@/lib/api", () => ({
   getQuestionSettings: vi.fn(async () => ({ enabled: true })),
   setQuestionSettings: vi.fn(async (v: unknown) => v),
   getSessionInfoSettings: vi.fn(async () => ({ enabled: true })),
+  getBrowserToolsSettings: vi.fn(async () => ({ enabled: false })),
   setSessionInfoSettings: vi.fn(async (v: unknown) => v),
   getChatAuthoringSettings: vi.fn(async () => ({
     automations_enabled: false,

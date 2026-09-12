@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import {
   Bubbles,
   CalendarClock,
+  Globe,
   HelpCircle,
   ListTodo,
   MessageSquare,
@@ -53,6 +54,7 @@ type GroupLabelKey =
   | "groupSessions"
   | "groupAutomations"
   | "groupTaskboard"
+  | "groupBrowser"
 
 type GroupDescKey =
   | "descDelegation"
@@ -61,6 +63,7 @@ type GroupDescKey =
   | "descSessions"
   | "descAutomations"
   | "descTaskboard"
+  | "descBrowser"
 
 interface GroupPresentation {
   label: GroupLabelKey
@@ -72,7 +75,7 @@ interface GroupPresentation {
  * Presentation per tool group.
  *
  * The icons are deliberately the same ones the General settings page uses for
- * these very switches — `AgentToolsSettingsSection`'s `TOOL_ROWS` for the five
+ * these very switches — `AgentToolsSettingsSection`'s `TOOL_ROWS` for the six
  * agent tools, and `DelegationSettingsSection`'s heading glyph for delegation.
  * The popover's "Open full settings" button leads straight there, so a
  * different glyph on each side would make one control look like two.
@@ -111,6 +114,11 @@ const GROUPS: Record<string, GroupPresentation | undefined> = {
     label: "groupTaskboard",
     desc: "descTaskboard",
     icon: ListTodo,
+  },
+  browser: {
+    label: "groupBrowser",
+    desc: "descBrowser",
+    icon: Globe,
   },
 }
 

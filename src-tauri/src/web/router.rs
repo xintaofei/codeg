@@ -106,6 +106,14 @@ pub fn build_router(
             post(handlers::session_info::set_session_info_settings),
         )
         .route(
+            "/get_browser_tools_settings",
+            post(handlers::browser_tools::get_browser_tools_settings),
+        )
+        .route(
+            "/set_browser_tools_settings",
+            post(handlers::browser_tools::set_browser_tools_settings),
+        )
+        .route(
             "/get_chat_authoring_settings",
             post(handlers::chat_authoring::get_chat_authoring_settings),
         )

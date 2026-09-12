@@ -878,6 +878,12 @@ pub(crate) async fn do_start_web_server_tauri(
             .state::<crate::acp::chat_authoring::ChatAuthoringRuntimeConfig>()
             .inner()
             .clone(),
+        // Reuse the same browser-tools handle MCP injection and the access impl
+        // read, so a switch flipped over HTTP reaches the running sessions.
+        browser_tools_config: app
+            .state::<crate::acp::browser_tools::BrowserToolsRuntimeConfig>()
+            .inner()
+            .clone(),
         system_op_lock: crate::app_state::default_system_op_lock(),
         // Reuse the same handle the desktop `app_update` commands write to so
         // HTTP and webview readers see the identical update snapshot.

@@ -1100,6 +1100,18 @@ fn now_millis() -> i64 {
         .unwrap_or_default()
 }
 
+/// Every tab an agent may be told about, oldest id first.
+///
+/// Not scoped to a window, a folder, or the conversation that asked. A tab
+/// does not belong to a conversation, and the backend is not even told which
+/// folder one was opened in — `browser_open_tab` takes a `folder_id` and
+/// discards it, because grouping tabs is the tab strip's business. One user,
+/// one set of tabs; what any given agent may *read* of them is the grant, and
+/// that is decided per tab by the person, not by which chat is asking.
+pub fn agent_list_tabs_core(registry: &BrowserRegistry) -> Vec<agent::AgentTabSummary> {
+    registry.list().iter().filter_map(agent::summarize_tab).collect()
+}
+
 /// Share a tab with agents, change the level, or take it back.
 ///
 /// Only ever called for a person: nothing reachable by an agent leads here,
@@ -1240,6 +1252,96 @@ async fn read_shared_page(
         return Err((Some(agent::AgentOutcome::Refused), grant_required(tab_id)));
     }
     Ok(snapshot)
+}
+
+/// The two browser tools an agent gets, answered from this process's tab
+/// registry.
+///
+/// Holds an `AppHandle` rather than the registry itself: the registry is Tauri
+/// managed state, and resolving it per call means a build that never installed
+/// one degrades to "no browser here" instead of panicking at startup.
+///
+/// The feature flag is re-read on every call, not captured at injection. A
+/// person switching this off has decided something about the session in front
+/// of them right now, and an agent launched five minutes ago is exactly the
+/// one they mean.
+pub struct McpBrowserTools {
+    app: AppHandle,
+    config: crate::acp::browser_tools::BrowserToolsRuntimeConfig,
+}
+
+impl McpBrowserTools {
+    pub fn new(app: AppHandle, config: crate::acp::browser_tools::BrowserToolsRuntimeConfig) -> Self {
+        Self { app, config }
+    }
+
+    /// The registry, or `None` when this build has no browser to speak of.
+    async fn registry(&self) -> Option<State<'_, BrowserRegistry>> {
+        if !self.config.is_enabled().await {
+            return None;
+        }
+        self.app.try_state::<BrowserRegistry>()
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
+    async fn list_tabs(&self) -> crate::acp::browser_tools::BrowserTabsOutcome {
+        use crate::acp::browser_tools::{BrowserTabsOutcome, NO_BROWSER_NOTE};
+        let Some(registry) = self.registry().await else {
+            return BrowserTabsOutcome::unavailable(NO_BROWSER_NOTE);
+        };
+        BrowserTabsOutcome {
+            tabs: agent_list_tabs_core(&registry),
+            note: None,
+        }
+    }
+
+    async fn snapshot(
+        &self,
+        tab_id: &str,
+        max_chars: Option<usize>,
+    ) -> crate::acp::browser_tools::BrowserSnapshotOutcome {
+        use crate::acp::browser_tools::{
+            BrowserSnapshotOutcome, DEFAULT_SNAPSHOT_MAX_CHARS, ERROR_NO_SUCH_TAB,
+            ERROR_READ_FAILED, ERROR_UNAVAILABLE, NO_BROWSER_NOTE,
+        };
+        let Some(registry) = self.registry().await else {
+            return BrowserSnapshotOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE);
+        };
+        // `Some(0)` is the caller asking for the whole page, and is passed
+        // through as such; only an absent cap becomes the default.
+        let request = agent::SnapshotRequest {
+            max_chars: Some(max_chars.unwrap_or(DEFAULT_SNAPSHOT_MAX_CHARS)),
+        };
+        // Straight through `agent_snapshot_core`: the grant check and the line
+        // it leaves on the tab's activity strip both live in there, so this
+        // surface cannot read a page more quietly than the app's own does.
+        match agent_snapshot_core(&self.app, &registry, tab_id, &request).await {
+            Ok(snapshot) => BrowserSnapshotOutcome::page(tab_id, snapshot),
+            // The refusal is recognized by the key the error was tagged with,
+            // not by its code: `PermissionDenied` is a wide category, and only
+            // this one means "the user can fix it with one click".
+            Err(err)
+                if err.i18n_key.as_deref() == Some(BROWSER_I18N_KEY_GRANT_REQUIRED) =>
+            {
+                BrowserSnapshotOutcome::grant_required(tab_id)
+            }
+            Err(err)
+                if matches!(err.code, crate::app_error::AppErrorCode::NotFound) =>
+            {
+                BrowserSnapshotOutcome::refused(
+                    tab_id,
+                    ERROR_NO_SUCH_TAB,
+                    format!(
+                        "No browser tab {tab_id} is open. Call browser_list_tabs for the ids \
+                         that are."
+                    ),
+                )
+            }
+            Err(err) => BrowserSnapshotOutcome::refused(tab_id, ERROR_READ_FAILED, err.message),
+        }
+    }
 }
 
 /// Evaluate an expression in a tab's isolated world and unwrap the shim's

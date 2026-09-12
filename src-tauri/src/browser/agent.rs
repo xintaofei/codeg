@@ -92,6 +92,58 @@ pub fn level_of(grant: Option<&AgentGrant>) -> GrantLevel {
     grant.map_or(GrantLevel::None, |g| g.level)
 }
 
+/// One tab as an agent may see it before it is allowed to read anything.
+///
+/// A listing exists so an agent can *name* a tab — to read it, or to ask the
+/// user to share it — which is why it is not itself behind a grant. What it
+/// carries is bounded by that purpose: an address, and whether this agent may
+/// read the page at it.
+///
+/// The title is the exception that proves the rule. It is chosen by the page
+/// and is the first line of its content — an unshared tab called
+/// "Re: termination letter — Mail" would hand over the very thing the grant
+/// exists to withhold. So it appears only once the page is readable, at which
+/// point the agent could have read the whole document anyway and is merely
+/// saved a round trip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTabSummary {
+    pub tab_id: String,
+    /// `None` for a tab that has committed no document yet, or one whose
+    /// document has an opaque origin. Such a tab cannot be shared at all (see
+    /// [`grantable_origin`]); it is listed anyway, because a page that is
+    /// merely still loading would otherwise drop out of the listing and
+    /// reappear a moment later.
+    pub origin: Option<String>,
+    pub level: GrantLevel,
+    /// Present only from [`GrantLevel::Read`] upwards.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+/// What an agent may know about a tab, or `None` for one it should not be
+/// told about at all.
+///
+/// The only such tab today is a document guest. It shows a local file — one
+/// the agent itself usually wrote — through a scheme spelled differently on
+/// every platform, it can never be shared ([`NotGrantable::DocumentGuest`]),
+/// and the file is on disk where the agent reads it directly. Listing it would
+/// only invite an agent to ask for something nobody can grant.
+pub fn summarize_tab(state: &BrowserTabState) -> Option<AgentTabSummary> {
+    if state.kind == TabKind::Document {
+        return None;
+    }
+    let level = level_of(state.agent_grant.as_ref());
+    Some(AgentTabSummary {
+        tab_id: state.tab_id.clone(),
+        origin: state.origin.clone(),
+        level,
+        title: level
+            .allows(GrantLevel::Read)
+            .then(|| state.title.clone()),
+    })
+}
+
 /// Why a tab's grant changed.
 ///
 /// The level itself travels on `browser://state` with the rest of the tab, so
@@ -470,6 +522,45 @@ mod tests {
         assert!(!grant.covers(Some("https://example.com:8443")));
         assert!(!grant.covers(Some("http://example.com")));
         assert!(!grant.covers(None));
+    }
+
+    /// The listing names pages; it does not quote them. A title is the page's
+    /// own words, so it waits for the grant that lets the agent read the rest
+    /// of them.
+    #[test]
+    fn a_listed_tab_gives_up_its_title_only_once_it_is_readable() {
+        let mut state = tab(Some("https://example.com"), TabKind::Page);
+        state.title = "Re: termination letter — Mail".into();
+
+        let closed = summarize_tab(&state).expect("a page is listed");
+        assert_eq!(closed.tab_id, "t1");
+        assert_eq!(closed.origin.as_deref(), Some("https://example.com"));
+        assert_eq!(closed.level, GrantLevel::None);
+        assert_eq!(closed.title, None);
+        // And it is absent from the wire, not present-and-null.
+        let wire = serde_json::to_value(&closed).expect("serialises");
+        assert!(wire.get("title").is_none());
+        assert_eq!(wire["tabId"], "t1");
+
+        apply_grant(&mut state, GrantLevel::Read, 1).unwrap();
+        let open = summarize_tab(&state).expect("a page is listed");
+        assert_eq!(open.level, GrantLevel::Read);
+        assert_eq!(open.title.as_deref(), Some("Re: termination letter — Mail"));
+    }
+
+    /// A tab that has not committed a document yet is still a tab. Dropping it
+    /// would make the listing flicker while a page loads; a document guest is
+    /// dropped because it can never be shared at all.
+    #[test]
+    fn a_blank_tab_is_listed_and_a_document_guest_is_not() {
+        let blank = summarize_tab(&tab(None, TabKind::Page)).expect("a blank page is still a tab");
+        assert_eq!(blank.origin, None);
+        assert_eq!(blank.level, GrantLevel::None);
+
+        assert_eq!(
+            summarize_tab(&tab(Some("https://codeg-doc.localhost"), TabKind::Document)),
+            None
+        );
     }
 
     #[test]

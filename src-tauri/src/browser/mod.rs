@@ -27,31 +27,58 @@
 //! - `smoke`      — dev-only puppet driven by a JSON control file (feature
 //!   `browser-smoke`, never in a release build)
 
+// `agent` and `types` are pure data and pure rules — serde and nothing else —
+// and they are compiled in BOTH runtimes. The codeg-mcp plumbing that carries
+// the browser tools (`acp::browser_tools`, the broker wire, the companion) is
+// shared code, and it has to name the same `PageSnapshot` and the same
+// `GrantLevel` the desktop build produces. A second copy of those types for
+// the server build would be two wire formats one rename apart from disagreeing
+// silently.
+//
+// Everything below them touches a webview, and so is desktop-only: server mode
+// renders a "browser tab" as an iframe in the user's own browser, which this
+// process has no handle on at all.
 pub mod agent;
+pub mod types;
+
+#[cfg(feature = "tauri-runtime")]
 pub mod channel;
+#[cfg(feature = "tauri-runtime")]
 pub mod doc_guest;
+#[cfg(feature = "tauri-runtime")]
 pub mod downloads;
+#[cfg(feature = "tauri-runtime")]
 pub mod events;
+#[cfg(feature = "tauri-runtime")]
 pub mod hooks;
+#[cfg(feature = "tauri-runtime")]
 pub mod policy;
+#[cfg(feature = "tauri-runtime")]
 pub mod profile;
+#[cfg(feature = "tauri-runtime")]
 pub mod registry;
+#[cfg(feature = "tauri-runtime")]
 pub mod surface;
 #[cfg(all(
     feature = "browser-child",
+    feature = "tauri-runtime",
     any(target_os = "macos", target_os = "windows")
 ))]
 pub mod surface_child;
+#[cfg(feature = "tauri-runtime")]
 pub mod surface_window;
-pub mod types;
 
+#[cfg(feature = "tauri-runtime")]
 pub mod shim;
 
 #[cfg(feature = "browser-smoke")]
 pub mod smoke;
 
+#[cfg(feature = "tauri-runtime")]
 pub use doc_guest::DocGuests;
+#[cfg(feature = "tauri-runtime")]
 pub use downloads::BrowserDownloads;
+#[cfg(feature = "tauri-runtime")]
 pub use registry::BrowserRegistry;
 
 /// Label prefix of every browser tab webview / window. Nothing under this

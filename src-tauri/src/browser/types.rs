@@ -114,6 +114,12 @@ pub struct BrowserTabState {
 }
 
 /// Answer to `browser_capabilities`: what this build on this machine can do.
+///
+/// Desktop-only, unlike the rest of this file: it quotes the proxy and policy
+/// status types, which are themselves about a webview this process owns. The
+/// question it answers — "what can the built-in browser do here?" — has no
+/// meaning in a runtime that has no built-in browser.
+#[cfg(feature = "tauri-runtime")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserCapabilities {

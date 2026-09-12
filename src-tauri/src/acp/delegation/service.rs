@@ -357,6 +357,24 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl crate::acp::browser_tools::BrowserToolAccess for Stub {
+        async fn list_tabs(&self) -> crate::acp::browser_tools::BrowserTabsOutcome {
+            Default::default()
+        }
+        async fn snapshot(
+            &self,
+            tab_id: &str,
+            _max_chars: Option<usize>,
+        ) -> crate::acp::browser_tools::BrowserSnapshotOutcome {
+            crate::acp::browser_tools::BrowserSnapshotOutcome::refused(
+                tab_id,
+                crate::acp::browser_tools::ERROR_UNAVAILABLE,
+                "stub",
+            )
+        }
+    }
+
     fn make_service(socket_path: PathBuf) -> Arc<DelegationService> {
         let broker = Arc::new(DelegationBroker::new(
             Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
@@ -365,6 +383,7 @@ mod tests {
         let listener = DelegationListener::new(
             broker,
             Arc::new(TokenRegistry::default()),
+            Arc::new(Stub),
             Arc::new(Stub),
             Arc::new(Stub),
             Arc::new(Stub),

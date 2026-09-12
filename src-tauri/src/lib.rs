@@ -17,7 +17,8 @@ mod app_error;
 pub mod app_state;
 pub mod automation;
 pub mod backgrounds;
-#[cfg(feature = "tauri-runtime")]
+/// Built-in browser. Only its wire types and its grant rules compile in server
+/// mode — see `browser/mod.rs` for why those two, and only those two.
 pub mod browser;
 pub mod chat_channel;
 pub mod commands;
@@ -772,6 +773,7 @@ mod tauri_app {
                         question_config,
                         session_info_config,
                         chat_authoring_config,
+                        browser_tools_config,
                     ) = crate::app_state::build_delegation_stack(
                         &cm_state,
                         db_conn.clone(),
@@ -783,6 +785,7 @@ mod tauri_app {
                     app.manage(question_config.clone());
                     app.manage(session_info_config.clone());
                     app.manage(chat_authoring_config.clone());
+                    app.manage(browser_tools_config.clone());
                     app.manage(crate::commands::delegation::DelegationSocketPath(
                         socket_path.clone(),
                     ));
@@ -795,6 +798,7 @@ mod tauri_app {
                     let question_for_init = question_config.clone();
                     let session_info_for_init = session_info_config.clone();
                     let chat_authoring_for_init = chat_authoring_config.clone();
+                    let browser_tools_for_init = browser_tools_config.clone();
                     tauri::async_runtime::block_on(async move {
                         delegation_commands::apply_persisted_config(
                             &db_for_init,
@@ -819,6 +823,11 @@ mod tauri_app {
                         crate::commands::chat_authoring::apply_persisted_chat_authoring_config(
                             &db_for_init,
                             &chat_authoring_for_init,
+                        )
+                        .await;
+                        crate::commands::browser_tools::apply_persisted_browser_tools_config(
+                            &db_for_init,
+                            &browser_tools_for_init,
                         )
                         .await;
                     });
@@ -859,6 +868,12 @@ mod tauri_app {
                                     app.handle().clone(),
                                 ),
                                 chat_authoring_config.clone(),
+                            ),
+                        ),
+                        std::sync::Arc::new(
+                            crate::commands::browser::McpBrowserTools::new(
+                                app.handle().clone(),
+                                browser_tools_config.clone(),
                             ),
                         ),
                     );
@@ -1455,6 +1470,8 @@ mod tauri_app {
                 session_info_commands::set_session_info_settings,
                 chat_authoring_commands::get_chat_authoring_settings,
                 chat_authoring_commands::set_chat_authoring_settings,
+                crate::commands::browser_tools::get_browser_tools_settings,
+                crate::commands::browser_tools::set_browser_tools_settings,
                 version_control::detect_git,
                 version_control::test_git_path,
                 version_control::get_git_settings,

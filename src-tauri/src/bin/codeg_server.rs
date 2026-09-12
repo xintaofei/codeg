@@ -265,6 +265,7 @@ async fn async_main() -> ExitCode {
         question_config,
         session_info_config,
         chat_authoring_config,
+        browser_tools_config,
     ) = codeg_lib::app_state::build_delegation_stack(
         &connection_manager,
         db.conn.clone(),
@@ -291,6 +292,7 @@ async fn async_main() -> ExitCode {
         question_config: question_config.clone(),
         session_info_config: session_info_config.clone(),
         chat_authoring_config: chat_authoring_config.clone(),
+        browser_tools_config: browser_tools_config.clone(),
         system_op_lock: codeg_lib::app_state::default_system_op_lock(),
         update_state: codeg_lib::app_state::default_update_state(),
     });
@@ -337,6 +339,14 @@ async fn async_main() -> ExitCode {
         &chat_authoring_config,
     )
     .await;
+    // And the browser-tools switch, so the popover reports it truthfully.
+    // Server mode never advertises the group (there are no native tabs here),
+    // but the flag is one setting shared by both runtimes.
+    codeg_lib::commands::browser_tools::apply_persisted_browser_tools_config(
+        &state.db.conn,
+        &state.browser_tools_config,
+    )
+    .await;
     // Before accepting connections: keep ACP model terminal fallbacks aligned
     // with the same default-shell preference the built-in terminal uses, and
     // seed the command-color opt-in that every launch env is built from.
@@ -376,6 +386,10 @@ async fn async_main() -> ExitCode {
                 state.emitter.clone(),
                 chat_authoring_config.clone(),
             )),
+            // No native webviews in this process: what a web user sees in a
+            // "browser tab" is an iframe their own browser renders, which
+            // nothing here can reach.
+            Arc::new(codeg_lib::acp::browser_tools::NoBrowserTabs),
         );
         // Bind through the service handle rather than a bare `listener.run`
         // spawn: it keeps the bind error and the accept-loop handle around, so

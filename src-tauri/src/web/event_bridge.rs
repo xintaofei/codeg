@@ -170,6 +170,12 @@ pub const QUESTION_SETTINGS_CHANGED_EVENT: &str = "question-settings://changed";
 /// backend broadcast. Payload: `SessionInfoSettings` (`{ "enabled": bool }`).
 pub const SESSION_INFO_SETTINGS_CHANGED_EVENT: &str = "session-info-settings://changed";
 
+/// Global side-channel announcing a browser-tools enable/disable
+/// (`browser_list_tabs` / `browser_snapshot`). Same cross-window rationale as
+/// [`SESSION_INFO_SETTINGS_CHANGED_EVENT`]. Payload: `BrowserToolsSettings`
+/// (`{ "enabled": bool }`).
+pub const BROWSER_TOOLS_SETTINGS_CHANGED_EVENT: &str = "browser-tools-settings://changed";
+
 /// Global side-channel announcing a chat-authoring enable/disable
 /// (`create_automation` / `create_work_task`). Same cross-window rationale as
 /// [`SESSION_INFO_SETTINGS_CHANGED_EVENT`]. Payload: `ChatAuthoringSettings`

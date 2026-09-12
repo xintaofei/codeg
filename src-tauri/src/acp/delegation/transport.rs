@@ -244,6 +244,30 @@ pub struct BrokerCreateWorkTaskRequest {
     pub spec: NewWorkTaskSpec,
 }
 
+/// List the built-in browser's tabs as an agent may see them. Backs the
+/// `browser_list_tabs` MCP tool. Authenticated by the per-launch `token`, and
+/// — like [`BrokerSessionRequest`] and for the same single-tenant reason — not
+/// scoped to the caller's parent connection: a browser tab belongs to the user,
+/// not to a conversation, and the backend is not told which folder one was
+/// opened in. What any given agent may *read* of a tab is the per-tab grant,
+/// which is a decision the person makes tab by tab.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerBrowserTabsRequest {
+    pub token: String,
+}
+
+/// Read one shared page. Backs the `browser_snapshot` MCP tool; the grant check
+/// and the audit line both happen behind it, in `agent_snapshot_core`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerBrowserSnapshotRequest {
+    pub token: String,
+    pub tab_id: String,
+    /// Cap on the rendered tree, in characters. `None` →
+    /// [`crate::acp::browser_tools::DEFAULT_SNAPSHOT_MAX_CHARS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_chars: Option<usize>,
+}
+
 /// Tagged top-level message dispatched by the listener. Adding new variants
 /// is the wire-stable way to grow the broker protocol without touching the
 /// frame layer.
@@ -263,6 +287,8 @@ pub enum BrokerMessage {
     TaskComplete(BrokerTaskCompleteRequest),
     CreateAutomation(BrokerCreateAutomationRequest),
     CreateWorkTask(BrokerCreateWorkTaskRequest),
+    BrowserTabs(BrokerBrowserTabsRequest),
+    BrowserSnapshot(BrokerBrowserSnapshotRequest),
     /// Liveness probe. Unlike every other variant this one is NOT sent by a
     /// companion — it comes from codeg's own service-status check
     /// (`acp::delegation::service`), which is why it carries no `token`: a
@@ -462,6 +488,24 @@ pub async fn client_create_work_task_round_trip(
     req: &BrokerCreateWorkTaskRequest,
 ) -> io::Result<BrokerResponse> {
     message_round_trip(socket_path, &BrokerMessage::CreateWorkTask(req.clone())).await
+}
+
+/// Dispatch a `browser_list_tabs` request and read back the serialized
+/// [`crate::acp::browser_tools::BrowserTabsOutcome`].
+pub async fn client_browser_tabs_round_trip(
+    socket_path: &str,
+    req: &BrokerBrowserTabsRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::BrowserTabs(req.clone())).await
+}
+
+/// Dispatch a `browser_snapshot` request and read back the serialized
+/// [`crate::acp::browser_tools::BrowserSnapshotOutcome`].
+pub async fn client_browser_snapshot_round_trip(
+    socket_path: &str,
+    req: &BrokerBrowserSnapshotRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::BrowserSnapshot(req.clone())).await
 }
 
 /// Probe the listener: write a [`BrokerMessage::Ping`] and read the

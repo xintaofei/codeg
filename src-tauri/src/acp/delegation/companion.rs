@@ -45,11 +45,13 @@ use crate::acp::chat_authoring::{
     NewAutomationSpec, NewWorkTaskSpec, MAX_PROMPT_CHARS, MAX_TITLE_CHARS,
 };
 use crate::acp::delegation::transport::{
-    client_ask_round_trip, client_cancel, client_cancel_task_round_trip, client_commit_feedback,
+    client_ask_round_trip, client_browser_snapshot_round_trip, client_browser_tabs_round_trip,
+    client_cancel, client_cancel_task_round_trip, client_commit_feedback,
     client_create_automation_round_trip, client_create_work_task_round_trip,
     client_feedback_round_trip, client_resume_task_round_trip, client_round_trip,
     client_session_round_trip, client_status_round_trip, client_task_complete_round_trip,
-    client_task_progress_round_trip, BrokerAskRequest, BrokerCancelRequest,
+    client_task_progress_round_trip, BrokerAskRequest, BrokerBrowserSnapshotRequest,
+    BrokerBrowserTabsRequest, BrokerCancelRequest,
     BrokerCancelTaskRequest, BrokerCommitFeedbackRequest, BrokerCreateAutomationRequest,
     BrokerCreateWorkTaskRequest, BrokerFeedbackRequest, BrokerRequest, BrokerResponse,
     BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
@@ -153,6 +155,11 @@ pub struct CompanionFeatures {
     pub automations: bool,
     /// `create_work_task` — queue a card on the work-task board from chat.
     pub taskboard: bool,
+    /// `browser_list_tabs` / `browser_snapshot` — the built-in browser's read
+    /// surface. Off unless the desktop build's setting says otherwise: the
+    /// listing names the sites the user has open, and nothing else codeg hands
+    /// an agent is a window onto what they are looking at right now.
+    pub browser: bool,
 }
 
 impl CompanionFeatures {
@@ -172,6 +179,7 @@ impl CompanionFeatures {
                 tasks: false,
                 automations: false,
                 taskboard: false,
+                browser: false,
             };
         };
         let mut f = Self {
@@ -182,6 +190,7 @@ impl CompanionFeatures {
             tasks: false,
             automations: false,
             taskboard: false,
+            browser: false,
         };
         for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             match tok {
@@ -192,6 +201,7 @@ impl CompanionFeatures {
                 "tasks" => f.tasks = true,
                 "automations" => f.automations = true,
                 "taskboard" => f.taskboard = true,
+                "browser" => f.browser = true,
                 _ => {}
             }
         }
@@ -207,6 +217,7 @@ impl CompanionFeatures {
             "task_progress" | "task_complete" => self.tasks,
             "create_automation" => self.automations,
             "create_work_task" => self.taskboard,
+            "browser_list_tabs" | "browser_snapshot" => self.browser,
             "delegate_to_agent" | "get_delegation_status" | "cancel_delegation"
             | "resume_delegation" => self.delegation,
             _ => false,
@@ -684,6 +695,43 @@ async fn build_tools_call_spawn(
             let round_trip =
                 Box::pin(async move { client_session_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_session_result).await
+        }
+        "browser_list_tabs" => {
+            let req = BrokerBrowserTabsRequest {
+                token: ctx.token.clone(),
+            };
+            // No external_handle, same as every other read-only arm.
+            let round_trip =
+                Box::pin(async move { client_browser_tabs_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_browser_tabs_result).await
+        }
+        "browser_snapshot" => {
+            let Some(tab_id) = arguments
+                .get("tabId")
+                .or_else(|| arguments.get("tab_id"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+            else {
+                return LineAction::Respond(err(
+                    id,
+                    -32602,
+                    "browser_snapshot requires a non-empty `tabId` string (from browser_list_tabs)",
+                ));
+            };
+            let req = BrokerBrowserSnapshotRequest {
+                token: ctx.token.clone(),
+                tab_id,
+                max_chars: parse_max_chars(&arguments),
+            };
+            // No external_handle, and no broker-side cancel: dropping this
+            // round-trip only suppresses the answer. The read itself finishes
+            // on the codeg side — which is what leaves the line on the tab's
+            // activity strip, so a canceled call cannot read a page invisibly.
+            let round_trip =
+                Box::pin(async move { client_browser_snapshot_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_browser_snapshot_result).await
         }
         "task_progress" => {
             let message = arguments
@@ -1375,6 +1423,135 @@ pub fn render_session_result(outcome: &Value) -> Value {
     })
 }
 
+/// Extract `maxChars` from the `browser_snapshot` arguments.
+///
+/// `None` — absent, or a value that is not a whole non-negative number — means
+/// "the backend's default". An explicit `0` is passed through and means "no
+/// cap": the engine reads it that way, and a caller that wants the whole page
+/// should be able to say so. There is no ceiling; a caller that asks for a
+/// megabyte gets a megabyte, because only the caller knows what it can hold.
+fn parse_max_chars(arguments: &Value) -> Option<usize> {
+    let v = arguments.get("maxChars").or_else(|| arguments.get("max_chars"))?;
+    let raw: Option<u64> = if let Some(n) = v.as_u64() {
+        Some(n)
+    } else if let Some(f) = v.as_f64() {
+        (f.fract() == 0.0 && f >= 0.0).then_some(f as u64)
+    } else if let Some(s) = v.as_str() {
+        s.trim().parse::<u64>().ok()
+    } else {
+        None
+    };
+    raw.map(|n| usize::try_from(n).unwrap_or(usize::MAX))
+}
+
+/// Map a `browser_list_tabs` round-trip outcome (a serialized
+/// [`crate::acp::browser_tools::BrowserTabsOutcome`]) into an MCP `tools/call`
+/// result.
+///
+/// One line per tab, and the unshared ones say what to do about it — an agent
+/// that reads this should tell the user which button to press rather than
+/// retrying a read it cannot be granted by asking again.
+pub fn render_browser_tabs_result(outcome: &Value) -> Value {
+    let tabs = outcome.get("tabs").and_then(|v| v.as_array());
+    let note = outcome.get("note").and_then(|v| v.as_str());
+    let text = match tabs {
+        Some(tabs) if !tabs.is_empty() => {
+            let mut out = format!("Browser tabs ({}):\n", tabs.len());
+            let mut any_closed = false;
+            for tab in tabs {
+                let id = tab.get("tabId").and_then(|v| v.as_str()).unwrap_or("?");
+                let origin = tab
+                    .get("origin")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(no address yet)");
+                let level = tab.get("level").and_then(|v| v.as_str()).unwrap_or("none");
+                let readable = level == "read" || level == "control";
+                if !readable {
+                    any_closed = true;
+                }
+                out.push_str(&format!(
+                    "  {id}  {origin}  [{}]",
+                    if readable {
+                        format!("shared: {level}")
+                    } else {
+                        "not shared".to_string()
+                    }
+                ));
+                if let Some(title) = tab.get("title").and_then(|v| v.as_str()) {
+                    out.push_str(&format!("  {title}"));
+                }
+                out.push('\n');
+            }
+            if any_closed {
+                out.push_str(
+                    "\nA tab marked \"not shared\" cannot be read. Ask the user to open it and \
+                     press \"Share with agents\" in its toolbar — it is theirs to give.",
+                );
+            }
+            out
+        }
+        _ => note
+            .unwrap_or("No browser tabs are open.")
+            .to_string(),
+    };
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": false,
+        "structuredContent": outcome.clone(),
+    })
+}
+
+/// Map a `browser_snapshot` round-trip outcome (a serialized
+/// [`crate::acp::browser_tools::BrowserSnapshotOutcome`]) into an MCP
+/// `tools/call` result.
+///
+/// A refusal is `isError: false` like every other soft outcome here. Being
+/// told a tab is not shared is not a failure the turn should abort on — it is
+/// an instruction to relay to the user, and the agent can carry on with
+/// everything else it was doing.
+pub fn render_browser_snapshot_result(outcome: &Value) -> Value {
+    let text = match outcome.get("snapshot") {
+        Some(snapshot) if snapshot.is_object() => {
+            let s = |k: &str| snapshot.get(k).and_then(|v| v.as_str()).unwrap_or("");
+            let n = |k: &str| snapshot.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let viewport = snapshot.get("viewport");
+            let vp = |k: &str| {
+                viewport
+                    .and_then(|v| v.get(k))
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0)
+            };
+            let mut out = format!("{} — {}\n", s("title"), s("url"));
+            out.push_str(&format!(
+                "{}×{} @{}x · {} refs\n",
+                vp("width"),
+                vp("height"),
+                vp("dpr"),
+                n("refsCount"),
+            ));
+            if snapshot.get("truncated").and_then(|v| v.as_bool()) == Some(true) {
+                out.push_str(
+                    "The tree below stops early — pass a larger `maxChars` (or 0 for all of it) \
+                     to see the rest.\n",
+                );
+            }
+            out.push('\n');
+            out.push_str(s("tree"));
+            out
+        }
+        _ => outcome
+            .get("note")
+            .and_then(|v| v.as_str())
+            .unwrap_or("The page could not be read.")
+            .to_string(),
+    };
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": false,
+        "structuredContent": outcome.clone(),
+    })
+}
+
 /// Map a `task_progress` / `task_complete` round-trip outcome (a
 /// `{ recorded, note? }` ack) into an MCP `tools/call` result. A report that
 /// could not be attributed (no active work task for this session) is readable
@@ -1583,6 +1760,7 @@ mod tests {
             tasks: false,
             automations: false,
             taskboard: false,
+            browser: false,
         })
     }
 
@@ -2174,6 +2352,7 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: false,
+        browser: false,
     };
     const BOTH: CompanionFeatures = CompanionFeatures {
         delegation: true,
@@ -2183,6 +2362,7 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: false,
+        browser: false,
     };
     const ASK_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -2192,6 +2372,7 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: false,
+        browser: false,
     };
     const SESSIONS_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -2201,6 +2382,7 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: false,
+        browser: false,
     };
 
     fn list_tool_names(action: LineAction) -> Vec<String> {
@@ -2539,6 +2721,7 @@ mod tests {
         tasks: false,
         automations: true,
         taskboard: false,
+        browser: false,
     };
     const TASKBOARD_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -2548,6 +2731,7 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: true,
+        browser: false,
     };
 
     /// The two authoring groups gate independently: enabling one must not
@@ -3050,4 +3234,185 @@ mod tests {
             "a cancelled check must not commit"
         );
     }
+
+    // ── browser tools ──────────────────────────────────────────────────────
+
+    const BROWSER_ONLY: CompanionFeatures = CompanionFeatures {
+        delegation: false,
+        feedback: false,
+        ask: false,
+        sessions: false,
+        tasks: false,
+        automations: false,
+        taskboard: false,
+        browser: true,
+    };
+
+    /// The browser group gates as its own thing, and is off unless asked for:
+    /// the listing names the sites the user has open, so it must not ride in
+    /// on any other switch.
+    #[tokio::test]
+    async fn tools_list_gates_the_browser_tools_on_their_own_switch() {
+        let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let names = list_tool_names(dispatch_for_test(list).await);
+        assert!(!names.contains(&"browser_list_tabs".to_string()));
+        assert!(!names.contains(&"browser_snapshot".to_string()));
+        // Not on the neighbouring read-only group either.
+        let names = list_tool_names(dispatch_with_features(SESSIONS_ONLY, list).await);
+        assert!(!names.contains(&"browser_snapshot".to_string()));
+
+        let names = list_tool_names(dispatch_with_features(BROWSER_ONLY, list).await);
+        assert_eq!(
+            names,
+            vec![
+                "browser_list_tabs".to_string(),
+                "browser_snapshot".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_tools_rejected_as_unknown_when_feature_off() {
+        for (name, args) in [
+            ("browser_list_tabs", json!({})),
+            ("browser_snapshot", json!({ "tabId": "t1" })),
+        ] {
+            let line = json!({
+                "jsonrpc": "2.0", "id": 60, "method": "tools/call",
+                "params": { "name": name, "arguments": args }
+            })
+            .to_string();
+            let resp = unwrap_respond(dispatch_for_test(&line).await);
+            let e = resp.error.unwrap();
+            assert_eq!(e.code, -32602);
+            assert!(e.message.contains("unknown tool"));
+        }
+    }
+
+    #[tokio::test]
+    async fn browser_tools_spawn_when_enabled_and_reject_a_snapshot_with_no_tab() {
+        let list = json!({
+            "jsonrpc": "2.0", "id": 61, "method": "tools/call",
+            "params": { "name": "browser_list_tabs", "arguments": {} }
+        })
+        .to_string();
+        assert!(matches!(
+            dispatch_with_features(BROWSER_ONLY, &list).await,
+            LineAction::Spawn(_)
+        ));
+
+        let read = json!({
+            "jsonrpc": "2.0", "id": 62, "method": "tools/call",
+            "params": { "name": "browser_snapshot", "arguments": { "tabId": "t1" } }
+        })
+        .to_string();
+        assert!(matches!(
+            dispatch_with_features(BROWSER_ONLY, &read).await,
+            LineAction::Spawn(_)
+        ));
+
+        // A snapshot with no tab is refused synchronously — there is nothing
+        // to ask the broker about, and the LLM can fix it from the message.
+        for args in [json!({}), json!({ "tabId": "  " }), json!({ "tabId": 7 })] {
+            let line = json!({
+                "jsonrpc": "2.0", "id": 63, "method": "tools/call",
+                "params": { "name": "browser_snapshot", "arguments": args }
+            })
+            .to_string();
+            let resp = unwrap_respond(dispatch_with_features(BROWSER_ONLY, &line).await);
+            assert_eq!(resp.error.unwrap().code, -32602);
+        }
+    }
+
+    /// `maxChars` absent means the backend's default; an explicit `0` means
+    /// "all of it" and must survive as `Some(0)` rather than collapsing into
+    /// the same `None` as "unspecified".
+    #[test]
+    fn a_zero_cap_is_not_the_same_as_no_cap() {
+        assert_eq!(parse_max_chars(&json!({})), None);
+        assert_eq!(parse_max_chars(&json!({ "maxChars": 0 })), Some(0));
+        assert_eq!(parse_max_chars(&json!({ "maxChars": 2500 })), Some(2500));
+        // Hosts that stringify integer args, and the snake_case spelling some
+        // models reach for.
+        assert_eq!(parse_max_chars(&json!({ "maxChars": "2500" })), Some(2500));
+        assert_eq!(parse_max_chars(&json!({ "max_chars": 2500 })), Some(2500));
+        // Nonsense falls back to the default rather than to zero, which would
+        // silently mean "no cap".
+        assert_eq!(parse_max_chars(&json!({ "maxChars": -5 })), None);
+        assert_eq!(parse_max_chars(&json!({ "maxChars": "lots" })), None);
+    }
+
+    #[test]
+    fn the_listing_marks_what_cannot_be_read_and_says_how_to_change_that() {
+        let out = json!({
+            "tabs": [
+                { "tabId": "t1", "origin": "https://example.com", "level": "read",
+                  "title": "Example" },
+                { "tabId": "t2", "origin": "http://localhost:3000", "level": "none" }
+            ]
+        });
+        let text = render_browser_tabs_result(&out)["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(text.contains("t1  https://example.com  [shared: read]  Example"));
+        assert!(text.contains("t2  http://localhost:3000  [not shared]"));
+        assert!(text.contains("Share with agents"));
+        // Nothing is a tool error here: the agent reads this and talks to the
+        // user about it.
+        assert_eq!(render_browser_tabs_result(&out)["isError"], false);
+    }
+
+    /// The empty listing is two different facts, and the note is what tells
+    /// them apart.
+    #[test]
+    fn an_empty_listing_repeats_the_reason_it_was_given() {
+        let quiet = render_browser_tabs_result(&json!({ "tabs": [] }));
+        assert_eq!(quiet["content"][0]["text"], "No browser tabs are open.");
+
+        let none_here = render_browser_tabs_result(
+            &json!({ "tabs": [], "note": "The built-in browser is not available." }),
+        );
+        assert_eq!(
+            none_here["content"][0]["text"],
+            "The built-in browser is not available."
+        );
+    }
+
+    #[test]
+    fn a_snapshot_renders_its_page_and_a_refusal_renders_its_note() {
+        let page = render_browser_snapshot_result(&json!({
+            "tabId": "t1",
+            "snapshot": {
+                "generation": "3.0",
+                "url": "https://example.com/",
+                "title": "Example",
+                "viewport": { "width": 1280.0, "height": 800.0, "dpr": 2.0 },
+                "tree": "- heading \"Example\" [ref=e1]",
+                "refsCount": 4,
+                "truncated": true
+            }
+        }));
+        let text = page["content"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with("Example — https://example.com/"));
+        assert!(text.contains("1280×800 @2x · 4 refs"));
+        // A cut tree says so, and says how to get the rest.
+        assert!(text.contains("maxChars"));
+        assert!(text.contains("- heading \"Example\" [ref=e1]"));
+        // The structured envelope rides along for hosts that keep it.
+        assert_eq!(page["structuredContent"]["snapshot"]["refsCount"], 4);
+
+        let refused = render_browser_snapshot_result(&json!({
+            "tabId": "t9",
+            "error": "browser_grant_required",
+            "note": "Browser tab t9 is not shared with agents."
+        }));
+        assert_eq!(
+            refused["content"][0]["text"],
+            "Browser tab t9 is not shared with agents."
+        );
+        // Being refused is not a failed tool call: the turn carries on.
+        assert_eq!(refused["isError"], false);
+    }
+
 }

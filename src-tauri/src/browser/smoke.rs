@@ -563,6 +563,38 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
         }
         // Ask the frontend to open a URL as a browser tab (exercises the real
         // tab record → surface host → browser_open_tab path).
+        // Mint a companion token against the live broker socket, so the real
+        // `codeg-mcp` binary can be driven against this running app the way an
+        // agent CLI drives it. Verifying the browser tools end to end otherwise
+        // means starting a real agent session and asking it nicely; this reaches
+        // the same listener, over the same UDS, with the same token policy —
+        // the only thing skipped is which process asked for the token.
+        //
+        // Dev-only twice over: the `browser-smoke` feature is never in a release
+        // build, and the puppet does nothing without `CODEG_BROWSER_SMOKE_DIR`.
+        "mcp_companion_handle" => {
+            let tokens = app
+                .try_state::<std::sync::Arc<crate::acp::delegation::listener::TokenRegistry>>()
+                .ok_or("no delegation token registry")?;
+            let socket = app
+                .try_state::<crate::commands::delegation::DelegationSocketPath>()
+                .ok_or("no delegation socket path")?;
+            let token = uuid::Uuid::new_v4().to_string();
+            tokens
+                .register(
+                    token.clone(),
+                    crate::acp::delegation::listener::TokenEntry {
+                        parent_connection_id: cmd
+                            .get("parent")
+                            .and_then(Value::as_str)
+                            .unwrap_or("smoke-parent")
+                            .to_string(),
+                        working_dir: std::env::temp_dir(),
+                    },
+                )
+                .await;
+            Ok(json!({ "token": token, "socketPath": socket.0.to_string_lossy() }))
+        }
         "frontend_open" => {
             crate::browser::events::emit_open_request(
                 app,

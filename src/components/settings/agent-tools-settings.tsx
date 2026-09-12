@@ -2,18 +2,18 @@
 
 /**
  * The extra tools codeg hands an agent inside a conversation, as one panel:
- * live feedback, ask-user-question, get-session-info, and the two
- * create-from-chat writers. All five are injected by `codeg-mcp` when an agent
- * starts, so what the user is really deciding here is one thing — how much of
- * the app an agent may reach from a conversation.
+ * live feedback, ask-user-question, get-session-info, the two create-from-chat
+ * writers, and the built-in browser's read surface. All six are injected by
+ * `codeg-mcp` when an agent starts, so what the user is really deciding here is
+ * one thing — how much of the app an agent may reach from a conversation.
  *
  * They used to be four sections, each with its own heading, description, card
  * and Save bar: four times the chrome for five switches, which is what made
  * `/settings/general` read as far longer than it configures.
  *
  * Persistence stays split the way the backend has it — `feedback.enabled`,
- * `question.enabled`, `session_info.enabled` and `chat_authoring.*` remain four
- * endpoints. Save writes only the groups whose value actually moved, so a
+ * `question.enabled`, `session_info.enabled`, `browser_tools.enabled` and
+ * `chat_authoring.*` remain five endpoints. Save writes only the groups whose value actually moved, so a
  * failing endpoint can't roll back its neighbours, and a group whose *load*
  * failed (its switch is showing a default, not what is stored) is left alone
  * unless the user touched it.
@@ -23,6 +23,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
   CalendarClock,
+  Globe,
   HelpCircle,
   ListTodo,
   MessageSquare,
@@ -42,10 +43,12 @@ import { Switch } from "@/components/ui/switch"
 import { subscribe } from "@/lib/platform"
 import { CHAT_AUTHORING_SETTINGS_CHANGED_EVENT } from "@/lib/types"
 import {
+  getBrowserToolsSettings,
   getChatAuthoringSettings,
   getFeedbackSettings,
   getQuestionSettings,
   getSessionInfoSettings,
+  setBrowserToolsSettings,
   setChatAuthoringSettings,
   setFeedbackSettings,
   setQuestionSettings,
@@ -55,11 +58,12 @@ import {
 import { toErrorMessage } from "@/lib/app-error"
 import { primeFeedbackEnabled } from "@/hooks/use-feedback-enabled"
 
-/** One field per switch, flattened across the four backend groups. */
+/** One field per switch, flattened across the five backend groups. */
 interface AgentToolValues {
   feedback: boolean
   question: boolean
   sessionInfo: boolean
+  browserTools: boolean
   automations: boolean
   workTasks: boolean
 }
@@ -74,6 +78,7 @@ const DEFAULTS: AgentToolValues = {
   feedback: false,
   question: true,
   sessionInfo: true,
+  browserTools: false,
   automations: false,
   workTasks: false,
 }
@@ -101,6 +106,13 @@ const TOOL_ROWS = [
     icon: MessageSquare,
     label: "sessionInfoLabel",
     hint: "sessionInfoHint",
+  },
+  {
+    key: "browserTools",
+    id: "agent-tools-browser",
+    icon: Globe,
+    label: "browserToolsLabel",
+    hint: "browserToolsHint",
   },
   {
     key: "automations",
@@ -150,12 +162,14 @@ export function AgentToolsSettingsSection() {
     let cancelled = false
     void (async () => {
       const gen = remoteGenRef.current
-      const [feedback, question, sessionInfo, chat] = await Promise.allSettled([
-        getFeedbackSettings(),
-        getQuestionSettings(),
-        getSessionInfoSettings(),
-        getChatAuthoringSettings(),
-      ])
+      const [feedback, question, sessionInfo, browserTools, chat] =
+        await Promise.allSettled([
+          getFeedbackSettings(),
+          getQuestionSettings(),
+          getSessionInfoSettings(),
+          getBrowserToolsSettings(),
+          getChatAuthoringSettings(),
+        ])
       if (cancelled) return
 
       // One endpoint being down shouldn't blank the other four switches, so
@@ -171,6 +185,9 @@ export function AgentToolsSettingsSection() {
       if (sessionInfo.status === "fulfilled")
         next.sessionInfo = sessionInfo.value.enabled
       else failures.push(toErrorMessage(sessionInfo.reason))
+      if (browserTools.status === "fulfilled")
+        next.browserTools = browserTools.value.enabled
+      else failures.push(toErrorMessage(browserTools.reason))
       if (chat.status === "fulfilled") {
         next.automations = chat.value.automations_enabled
         next.workTasks = chat.value.work_tasks_enabled
@@ -251,6 +268,7 @@ export function AgentToolsSettingsSection() {
     values.feedback !== baseline.feedback ||
     values.question !== baseline.question ||
     values.sessionInfo !== baseline.sessionInfo ||
+    values.browserTools !== baseline.browserTools ||
     values.automations !== baseline.automations ||
     values.workTasks !== baseline.workTasks
 
@@ -280,6 +298,13 @@ export function AgentToolsSettingsSection() {
         writes.push(
           setSessionInfoSettings({ enabled: values.sessionInfo }).then(
             (applied) => ({ sessionInfo: applied.enabled })
+          )
+        )
+      }
+      if (values.browserTools !== baseline.browserTools) {
+        writes.push(
+          setBrowserToolsSettings({ enabled: values.browserTools }).then(
+            (applied) => ({ browserTools: applied.enabled })
           )
         )
       }
@@ -334,7 +359,8 @@ export function AgentToolsSettingsSection() {
       )}
 
       {/* One card, because these are one decision split by which surface the
-          agent reaches: the conversation, or the app state behind it. */}
+          agent reaches: the conversation, the app state behind it, or the page
+          on screen next to it. */}
       <SettingCard>
         {TOOL_ROWS.map((row) => (
           <SettingRow
