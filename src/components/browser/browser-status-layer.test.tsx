@@ -7,12 +7,16 @@ const mocks = vi.hoisted(() => ({
   openUrl: vi.fn(),
   revealItemInDir: vi.fn(),
   openWithOsHandler: vi.fn(),
+  browserAgentGrant: vi.fn(() => Promise.resolve({})),
 }))
 
 vi.mock("@/contexts/workspace-context", () => ({
   useOptionalWorkspaceActions: () => mocks.actions,
 }))
-vi.mock("@/lib/browser/browser-api", () => ({ browserReload: vi.fn() }))
+vi.mock("@/lib/browser/browser-api", () => ({
+  browserReload: vi.fn(),
+  browserAgentGrant: mocks.browserAgentGrant,
+}))
 vi.mock("@/lib/link-open", () => ({
   openWithOsHandler: mocks.openWithOsHandler,
   openInSystemBrowser: vi.fn(),
@@ -72,9 +76,72 @@ beforeEach(() => {
   mocks.openUrl.mockClear()
   mocks.revealItemInDir.mockClear()
   mocks.openWithOsHandler.mockClear()
+  mocks.browserAgentGrant.mockClear()
 })
 
 describe("BrowserNoticeBar", () => {
+  // Both ways a grant can end without the user doing anything. They read
+  // almost opposite: one says the page moved, the other says it did not —
+  // which is why the second one needs saying at all, since nothing else on
+  // screen would have changed.
+  describe("a grant that ended by itself", () => {
+    function renderOn(origin: string) {
+      return render(
+        <NextIntlClientProvider locale="en" messages={enMessages}>
+          <BrowserNoticeBar
+            tab={tab}
+            state={{ origin } as unknown as BrowserTabState}
+          />
+        </NextIntlClientProvider>
+      )
+    }
+
+    it("offers to follow the page to where it landed", async () => {
+      renderOn("https://other.example")
+      act(() =>
+        setBrowserTabNotice(tab.id, {
+          kind: "agent-grant-lost",
+          origin: "https://example.com",
+        })
+      )
+      expect(
+        screen.getByText(/Sharing ended: the page left example\.com/)
+      ).toBeInTheDocument()
+      // Awaited: acting on the notice also dismisses it, and that happens
+      // when the grant call resolves.
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Share other.example too" })
+        )
+      })
+      expect(mocks.browserAgentGrant).toHaveBeenCalledWith("abc", "read")
+      expect(screen.queryByText(/Sharing ended/)).not.toBeInTheDocument()
+    })
+
+    it("names no new address when a loopback port changed hands", async () => {
+      renderOn("http://localhost:3000")
+      act(() =>
+        setBrowserTabNotice(tab.id, {
+          kind: "agent-grant-replaced",
+          origin: "http://localhost:3000",
+        })
+      )
+      expect(
+        screen.getByText(/a different program is serving localhost:3000 now/)
+      ).toBeInTheDocument()
+      // The tab did not move, so there is nowhere new to offer: the button
+      // re-affirms the same address, now knowing what is behind it.
+      expect(
+        screen.queryByRole("button", { name: /Share .* too/ })
+      ).not.toBeInTheDocument()
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Share it anyway" }))
+      })
+      expect(mocks.browserAgentGrant).toHaveBeenCalledWith("abc", "read")
+      expect(screen.queryByText(/Sharing ended/)).not.toBeInTheDocument()
+    })
+  })
+
   it("renders nothing without a notice or a remote host", () => {
     const { container } = renderBar()
     expect(container).toBeEmptyDOMElement()

@@ -242,6 +242,12 @@ export type BrowserTabNotice =
    *  to this tab without the user doing anything. The one grant transition
    *  worth interrupting for — the other two the user just performed. */
   | { kind: "agent-grant-lost"; origin: string }
+  /** The tab never moved and the grant ended anyway: a different program is
+   *  serving the loopback address it was shared for. Its own kind rather than
+   *  a reason on the one above, because the sentence is the opposite one —
+   *  the address in the toolbar is still exactly what the user shared, which
+   *  is why nothing else on screen would have told them. */
+  | { kind: "agent-grant-replaced"; origin: string }
 
 const notices = new Map<string, BrowserTabNotice>()
 

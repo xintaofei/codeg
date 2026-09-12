@@ -304,12 +304,17 @@ mod tests {
                 level: crate::browser::agent::GrantLevel::Read,
                 origin: "https://example.com".into(),
                 granted_at: 1_700_000_000_000,
+                listener: None,
             }),
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(json["tabId"], "t1");
         assert_eq!(json["agentGrant"]["level"], "read");
         assert_eq!(json["agentGrant"]["grantedAt"], 1_700_000_000_000i64);
+        // A grant on a real site has no listener to pin, and says so by
+        // leaving the key out rather than by sending a null the frontend
+        // would have to tell apart from "pinned to nothing".
+        assert!(json["agentGrant"].get("listener").is_none());
         assert_eq!(json["profile"], "default");
         assert_eq!(json["ownerWindow"], "main");
         assert_eq!(json["kind"], "page");

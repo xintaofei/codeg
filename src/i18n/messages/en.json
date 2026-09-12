@@ -5920,7 +5920,9 @@
       "downloadsDenied": "Downloads blocked: {host}",
       "downloadsDeniedNoGesture": "several files, not started by a click",
       "agentGrantLost": "Sharing ended: the page left {origin}",
-      "agentGrantLostShare": "Share {origin} too"
+      "agentGrantLostShare": "Share {origin} too",
+      "agentGrantReplaced": "Sharing ended: a different program is serving {origin} now",
+      "agentGrantReplacedShare": "Share it anyway"
     },
     "tab": {
       "untitled": "New tab"
@@ -5994,6 +5996,7 @@
       "shared": "Shared",
       "sharedWith": "Agents can read {origin}",
       "sharedScope": "Sharing ends as soon as the page leaves this site.",
+      "sharedScopeProgram": "It also ends if another program takes this port from {program}.",
       "sharedToast": "Agents can now read {origin}",
       "stopSharing": "Stop sharing",
       "shareFailed": "This page can't be shared with agents",

@@ -14,6 +14,8 @@
 //! - `types`      — wire types shared with `src/lib/browser/types.ts`
 //! - `policy`     — pure decisions (scheme allow-list, …)
 //! - `agent`      — what an agent may read of a page, and on whose say-so
+//! - `listener`   — which program is serving a loopback address, for grants
+//!   made on one (`http://localhost:3000` names a port, not a site)
 //! - `doc_guest`  — the `codeg-doc:` guest that shows a local HTML file
 //! - `profile`    — the tabs' own data store / directory and their proxy
 //! - `downloads`  — destination policy and records for page downloads
@@ -51,6 +53,8 @@ pub mod downloads;
 pub mod events;
 #[cfg(feature = "tauri-runtime")]
 pub mod hooks;
+#[cfg(feature = "tauri-runtime")]
+pub mod listener;
 #[cfg(feature = "tauri-runtime")]
 pub mod policy;
 #[cfg(feature = "tauri-runtime")]

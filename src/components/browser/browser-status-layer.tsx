@@ -51,6 +51,11 @@ function noticeText(
       origin: displayHostPort(notice.origin) ?? notice.origin,
     })
   }
+  if (notice.kind === "agent-grant-replaced") {
+    return t("agentGrantReplaced", {
+      origin: displayHostPort(notice.origin) ?? notice.origin,
+    })
+  }
   const host = displayHostPort(notice.url) ?? notice.url
   if (notice.kind === "navigation-blocked") {
     if (notice.reason === "scheme") {
@@ -210,6 +215,26 @@ export function BrowserNoticeBar({
               {t("agentGrantLostShare", {
                 origin: displayHostPort(landedOn) ?? landedOn,
               })}
+            </button>
+          ) : null}
+          {/* The tab did not move, so there is nowhere new to name: the
+              button offers the same address, now that the person knows
+              something else is behind it. Re-sharing pins whatever is
+              serving it at the moment they press this. */}
+          {notice.kind === "agent-grant-replaced" && landedOn ? (
+            <button
+              type="button"
+              className="shrink-0 rounded px-1.5 py-0.5 text-xs font-medium text-primary hover:bg-primary/8"
+              onClick={() => {
+                if (!backendId) return
+                void browserAgentGrant(backendId, "read")
+                  .then(() => setBrowserTabNotice(tab.id, null))
+                  .catch(() => {
+                    /* the notice stays; the tab moved on again */
+                  })
+              }}
+            >
+              {t("agentGrantReplacedShare")}
             </button>
           ) : null}
           {/* Opens the blocked address as a plain tab: the page's own

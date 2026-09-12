@@ -383,6 +383,7 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                 &str_arg(cmd, "tab_id")?,
                 level,
             )
+            .await
             .map_err(err_string)?;
             Ok(json!(state))
         }

@@ -21,7 +21,7 @@ import {
   type BrowserAgentActivity,
 } from "@/lib/browser/browser-tab-store"
 import { displayHostPort } from "@/lib/browser/browser-url"
-import type { BrowserTabState } from "@/lib/browser/types"
+import type { AgentGrant, BrowserTabState } from "@/lib/browser/types"
 import { browserTabBackendId } from "@/lib/file-tab-id"
 import { cn } from "@/lib/utils"
 
@@ -114,6 +114,15 @@ export function useBrowserAgentGlow(
   return lit ? "active" : "steady"
 }
 
+/** The pinned program's file name — what the person would have typed —
+ *  rather than the path they never look at. Null when this grant has no pin,
+ *  which is every address but a loopback one. */
+function pinnedProgram(grant: AgentGrant | null): string | null {
+  const program = grant?.listener?.program
+  if (!program) return null
+  return program.split(/[/\\]/).filter(Boolean).pop() ?? null
+}
+
 /** The share control in a browser tab's toolbar. */
 export function BrowserAgentShareControl({
   tab,
@@ -189,6 +198,15 @@ export function BrowserAgentShareControl({
         <DropdownMenuLabel className="pt-0 text-xs font-normal text-muted-foreground/80">
           {t("sharedScope")}
         </DropdownMenuLabel>
+        {/* And for a loopback address, the edge of the site is not the whole
+            boundary: `localhost:3000` is a port number, so the grant is also
+            bound to the program behind it. Saying which one here is what
+            keeps the notice from arriving out of nowhere later. */}
+        {pinnedProgram(grant) ? (
+          <DropdownMenuLabel className="pt-0 text-xs font-normal text-muted-foreground/80">
+            {t("sharedScopeProgram", { program: pinnedProgram(grant) })}
+          </DropdownMenuLabel>
+        ) : null}
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={() => share("none")}>
           <ShieldOff className="h-3.5 w-3.5" />

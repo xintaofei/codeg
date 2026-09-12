@@ -436,6 +436,27 @@ describe("BrowserEventsBridge", () => {
     })
   })
 
+  // The tab never moved, so nothing else on screen changed: the toolbar still
+  // shows the address the user shared. That is exactly why it needs its own
+  // notice rather than being folded into the one above.
+  it("interrupts when a loopback address changes hands under a still tab", async () => {
+    render(<BrowserEventsBridge />)
+    await flush()
+    const grant = mocks.handlers.get("browser://agent-grant")!
+    grant({
+      tabId: "abc",
+      change: "replaced",
+      level: "none",
+      origin: "http://localhost:3000",
+    })
+    const view = renderHook(() => useBrowserTabNotice("browser:abc"))
+    expect(view.result.current).toEqual({
+      kind: "agent-grant-replaced",
+      origin: "http://localhost:3000",
+    })
+    view.unmount()
+  })
+
   it("records what agents did to a tab, refusals included", async () => {
     render(<BrowserEventsBridge />)
     await flush()

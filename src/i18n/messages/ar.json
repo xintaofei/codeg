@@ -5920,7 +5920,9 @@
       "downloadsDenied": "تم حظر التنزيلات: {host}",
       "downloadsDeniedNoGesture": "ملفات متعددة، لم تبدأ بنقرة",
       "agentGrantLost": "انتهت المشاركة: غادرت الصفحة {origin}",
-      "agentGrantLostShare": "شارك {origin} أيضًا"
+      "agentGrantLostShare": "شارك {origin} أيضًا",
+      "agentGrantReplaced": "انتهت المشاركة: يخدم برنامج آخر {origin} الآن",
+      "agentGrantReplacedShare": "شارك على أي حال"
     },
     "tab": {
       "untitled": "علامة تبويب جديدة"
@@ -5994,6 +5996,7 @@
       "shared": "تمت المشاركة",
       "sharedWith": "يمكن للوكلاء قراءة {origin}",
       "sharedScope": "تنتهي المشاركة بمجرد مغادرة الصفحة لهذا الموقع.",
+      "sharedScopeProgram": "تنتهي أيضًا إذا استولى برنامج آخر على هذا المنفذ من {program}.",
       "sharedToast": "أصبح بإمكان الوكلاء الآن قراءة {origin}",
       "stopSharing": "إيقاف المشاركة",
       "shareFailed": "لا يمكن مشاركة هذه الصفحة مع الوكلاء",

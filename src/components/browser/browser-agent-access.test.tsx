@@ -203,6 +203,56 @@ describe("the share control", () => {
     expect(mocks.success).not.toHaveBeenCalled()
   })
 
+  // For a loopback address the site is not the whole boundary — the port can
+  // change hands under a page that never moved — so the menu has to say what
+  // the grant is actually pinned to, before the notice that names it.
+  it("names the program a loopback grant is pinned to", async () => {
+    wrap(
+      <BrowserAgentShareControl
+        tab={tab}
+        state={state({
+          origin: "http://localhost:3000",
+          agentGrant: {
+            level: "read",
+            origin: "http://localhost:3000",
+            grantedAt: 1,
+            listener: {
+              program: "/usr/local/bin/node",
+              workdir: "/home/dev/project",
+            },
+          },
+        })}
+      />
+    )
+    await openMenu(
+      screen.getByRole("button", { name: "Agents can read localhost:3000" })
+    )
+    expect(
+      screen.getByText("It also ends if another program takes this port from node.")
+    ).toBeVisible()
+  })
+
+  // A real site cannot be taken over by a local process, so there is nothing
+  // to pin and nothing to warn about.
+  it("says nothing about programs for a grant on a real site", async () => {
+    wrap(
+      <BrowserAgentShareControl
+        tab={tab}
+        state={state({
+          agentGrant: {
+            level: "read",
+            origin: "https://example.com",
+            grantedAt: 1,
+          },
+        })}
+      />
+    )
+    await openMenu(
+      screen.getByRole("button", { name: "Agents can read example.com" })
+    )
+    expect(screen.queryByText(/takes this port/)).not.toBeInTheDocument()
+  })
+
   it("reports a refused share instead of silently doing nothing", async () => {
     mocks.browserAgentGrant.mockImplementationOnce(() =>
       Promise.reject(new Error("no origin"))

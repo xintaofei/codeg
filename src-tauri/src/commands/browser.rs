@@ -20,7 +20,7 @@ use crate::browser::types::{
     Bounds, BrowserCapabilities, BrowserErrorInfo, BrowserErrorKind, BrowserTabState, ChannelKind,
     FrozenFrame, SurfaceChoice, SurfaceKind, TabKind,
 };
-use crate::browser::{events, hooks, policy, profile, tab_label};
+use crate::browser::{events, hooks, listener, policy, profile, tab_label};
 
 #[cfg(all(
     feature = "browser-child",
@@ -1118,16 +1118,35 @@ pub fn agent_list_tabs_core(registry: &BrowserRegistry) -> Vec<agent::AgentTabSu
 /// which is the entire model (`browser::agent`). The check and the write
 /// happen under one lock so a grant cannot be bound to an origin the tab left
 /// while the request was in the air.
-pub fn set_agent_grant_core(
+pub async fn set_agent_grant_core(
     app: &AppHandle,
     registry: &BrowserRegistry,
     tab_id: &str,
     level: GrantLevel,
 ) -> Result<BrowserTabState, AppCommandError> {
+    // Taken before the lock: asking the operating system who holds a port is
+    // tens of milliseconds, and the registry lock is on the path of every
+    // tab's events. `apply_grant` drops the answer unless the tab is still
+    // showing the address it was taken for.
+    let probed = match level {
+        GrantLevel::None => None,
+        _ => {
+            let origin = registry
+                .read(tab_id, |tab| {
+                    agent::grantable_origin(&tab.state).ok().map(str::to_string)
+                })
+                .flatten();
+            match origin {
+                Some(origin) => probe_listener(&origin).await,
+                None => None,
+            }
+        }
+    };
     let now = now_millis();
     let applied = registry
         .update(tab_id, |tab| {
-            agent::apply_grant(&mut tab.state, level, now).map(|change| (tab.state.clone(), change))
+            agent::apply_grant(&mut tab.state, level, now, probed)
+                .map(|change| (tab.state.clone(), change))
         })
         .ok_or_else(|| AppCommandError::not_found(format!("browser tab {tab_id} not found")))?;
     let (state, change) = applied.map_err(|reason| match reason {
@@ -1151,6 +1170,74 @@ pub fn set_agent_grant_core(
         );
     }
     Ok(state)
+}
+
+/// Ask the operating system which program is serving `origin`, off the async
+/// runtime. `None` for anything that is not a loopback address this machine
+/// can answer about — see [`browser::listener`](crate::browser::listener).
+async fn probe_listener(origin: &str) -> Option<agent::ProbedListener> {
+    let port = listener::loopback_port(origin)?;
+    let origin = origin.to_string();
+    // Reading the kernel's socket table — and on macOS running `lsof` — is
+    // blocking work with no business on a runtime thread that other tabs'
+    // events are queued behind.
+    let identity = tokio::task::spawn_blocking(move || listener::identify(port))
+        .await
+        .ok()??;
+    Some(agent::ProbedListener { origin, identity })
+}
+
+/// End a grant whose loopback address is being served by a different program
+/// than the one it was pinned to.
+///
+/// The address in the toolbar has not changed, which is exactly why this is
+/// worth telling the user about: everything they can see about the tab still
+/// looks like what they shared.
+///
+/// Ends the grant and says nothing else — the refusal that follows is the
+/// ordinary one for a tab with no grant, raised by the check that was already
+/// there. A second refusal path for this case would be a second place to keep
+/// the activity strip's accounting right.
+async fn revoke_if_listener_replaced(app: &AppHandle, registry: &BrowserRegistry, tab_id: &str) {
+    // Only a pinned grant has anything to check, and reading that costs a
+    // lock rather than a process scan — so the common case (a real site, or
+    // an unpinned loopback one) never reaches the probe at all.
+    let pinned_origin = registry
+        .read(tab_id, |tab| {
+            tab.state
+                .agent_grant
+                .as_ref()
+                .filter(|grant| grant.listener.is_some())
+                .map(|grant| grant.origin.clone())
+        })
+        .flatten();
+    let Some(origin) = pinned_origin else {
+        return;
+    };
+    let Some(probed) = probe_listener(&origin).await else {
+        // Nobody is home, or nobody this process can name. There is no second
+        // program to point at, and an address nobody serves cannot deliver
+        // anything new — a dev server between two restarts is the ordinary
+        // shape of this, and ending the sharing for it would be wrong.
+        return;
+    };
+    let lost = registry
+        .update(tab_id, |tab| {
+            agent::revoke_if_replaced(&mut tab.state, &origin, &probed.identity)
+                .map(|lost| (tab.state.clone(), lost))
+        })
+        .flatten();
+    let Some((state, lost)) = lost else {
+        return;
+    };
+    events::emit_state(app, &state);
+    events::emit_agent_grant(
+        app,
+        tab_id,
+        agent::GrantChange::Replaced,
+        GrantLevel::None,
+        Some(&lost.origin),
+    );
 }
 
 /// Read a shared page, as the tree an agent operates on.
@@ -1180,6 +1267,12 @@ pub async fn agent_snapshot_core(
     tab_id: &str,
     request: &agent::SnapshotRequest,
 ) -> Result<agent::PageSnapshot, AppCommandError> {
+    // The address is still the one that was shared. For a loopback address
+    // that settles less than it sounds like — `localhost:3000` is a port
+    // number, and the question worth asking is whether the program behind it
+    // is still the one the person pointed at. A grant that fails it is gone
+    // before the read below looks for one.
+    revoke_if_listener_replaced(app, registry, tab_id).await;
     let (outcome, answer) = match read_shared_page(registry, tab_id, request).await {
         Ok(snapshot) => (Some(agent::AgentOutcome::Done), Ok(snapshot)),
         Err((outcome, err)) => (outcome, Err(err)),
@@ -1654,7 +1747,7 @@ pub async fn browser_agent_grant(
     tab_id: String,
     level: GrantLevel,
 ) -> Result<BrowserTabState, AppCommandError> {
-    set_agent_grant_core(&app, &registry, &tab_id, level)
+    set_agent_grant_core(&app, &registry, &tab_id, level).await
 }
 
 /// Read a shared page on an agent's behalf.

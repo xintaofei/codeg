@@ -5920,7 +5920,9 @@
       "downloadsDenied": "ダウンロードをブロックしました: {host}",
       "downloadsDeniedNoGesture": "複数のファイル、クリックによるものではありません",
       "agentGrantLost": "共有を終了しました：ページが {origin} を離れました",
-      "agentGrantLostShare": "{origin} も共有"
+      "agentGrantLostShare": "{origin} も共有",
+      "agentGrantReplaced": "共有を終了しました：現在 {origin} には別のプログラムが応答しています",
+      "agentGrantReplacedShare": "それでも共有"
     },
     "tab": {
       "untitled": "新しいタブ"
@@ -5994,6 +5996,7 @@
       "shared": "共有中",
       "sharedWith": "エージェントは {origin} を読み取れます",
       "sharedScope": "ページがこのサイトを離れた時点で共有は終了します。",
+      "sharedScopeProgram": "このポートが {program} から別のプログラムに替わった場合も共有は終了します。",
       "sharedToast": "エージェントが {origin} を読み取れるようになりました",
       "stopSharing": "共有を停止",
       "shareFailed": "このページはエージェントに共有できません",

@@ -49,13 +49,31 @@ export interface AgentGrant {
   origin: string
   /** Unix milliseconds. */
   grantedAt: number
+  /** For a grant on a loopback address, the program that was serving it when
+   *  the tab was shared. `http://localhost:3000` names a port rather than a
+   *  site, so the origin alone does not say that the thing behind it is still
+   *  the thing the person meant; the backend re-checks this before each read.
+   *  Absent for every other address, and for one it could not look into. */
+  listener?: ListenerIdentity
+}
+
+/** What was answering on a loopback address. Recorded and compared as a whole
+ *  — the *program*, deliberately not the process: a dev server under
+ *  `nodemon` or `cargo watch` gets a new pid on every save, and pinning the
+ *  instance would end the sharing several times a minute. */
+export interface ListenerIdentity {
+  /** Absolute path of the listening process's executable. */
+  program?: string
+  /** Its working directory. Absent on Windows, where a process's working
+   *  directory is not reachable through a documented API. */
+  workdir?: string
 }
 
 /** Why a tab's grant changed (`browser://agent-grant`). The level itself
  *  travels with the tab on `browser://state`, which stays the one place to
  *  read what it is now; this says what the state cannot — that the change was
  *  the page's doing rather than the user's. */
-export type GrantChange = "granted" | "revoked" | "navigated"
+export type GrantChange = "granted" | "revoked" | "navigated" | "replaced"
 
 export interface AgentGrantPayload {
   tabId: string

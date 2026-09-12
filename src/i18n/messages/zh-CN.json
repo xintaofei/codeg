@@ -5920,7 +5920,9 @@
       "downloadsDenied": "已拦截下载：{host}",
       "downloadsDeniedNoGesture": "多个文件，不是由点击触发",
       "agentGrantLost": "共享已结束：页面离开了 {origin}",
-      "agentGrantLostShare": "也共享 {origin}"
+      "agentGrantLostShare": "也共享 {origin}",
+      "agentGrantReplaced": "共享已结束：现在是另一个程序在 {origin} 上提供服务",
+      "agentGrantReplacedShare": "仍然共享"
     },
     "tab": {
       "untitled": "新标签页"
@@ -5994,6 +5996,7 @@
       "shared": "已共享",
       "sharedWith": "智能体可读取 {origin}",
       "sharedScope": "页面一旦离开该站点，共享即结束。",
+      "sharedScopeProgram": "如果这个端口从 {program} 换成了别的程序，共享同样结束。",
       "sharedToast": "智能体现在可以读取 {origin}",
       "stopSharing": "停止共享",
       "shareFailed": "此页面无法共享给智能体",

@@ -196,7 +196,7 @@ objc2-web-kit = { version = "0.3", default-features = false, features = ["std", 
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphics", "NSGraphicsContext", "NSResponder", "NSView", "NSWindow"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Threading"] }
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Threading", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock"] }
 junction = "1"
 # Built-in browser Windows shim (isolated world over CDP, world-scoped eval,
 # snapshots, find, history, the sign-in identity, the subframe fence).

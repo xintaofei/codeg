@@ -5920,7 +5920,9 @@
       "downloadsDenied": "Downloads blockiert: {host}",
       "downloadsDeniedNoGesture": "mehrere Dateien, nicht durch einen Klick ausgelöst",
       "agentGrantLost": "Freigabe beendet: Die Seite hat {origin} verlassen",
-      "agentGrantLostShare": "Auch {origin} freigeben"
+      "agentGrantLostShare": "Auch {origin} freigeben",
+      "agentGrantReplaced": "Freigabe beendet: {origin} wird jetzt von einem anderen Programm bedient",
+      "agentGrantReplacedShare": "Trotzdem freigeben"
     },
     "tab": {
       "untitled": "Neuer Tab"
@@ -5994,6 +5996,7 @@
       "shared": "Freigegeben",
       "sharedWith": "Agenten können {origin} lesen",
       "sharedScope": "Die Freigabe endet, sobald die Seite diese Website verlässt.",
+      "sharedScopeProgram": "Sie endet auch, wenn ein anderes Programm diesen Port von {program} übernimmt.",
       "sharedToast": "Agenten können jetzt {origin} lesen",
       "stopSharing": "Freigabe beenden",
       "shareFailed": "Diese Seite kann nicht für Agenten freigegeben werden",

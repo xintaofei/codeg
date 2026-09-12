@@ -5920,7 +5920,9 @@
       "downloadsDenied": "Téléchargements bloqués : {host}",
       "downloadsDeniedNoGesture": "plusieurs fichiers, non déclenchés par un clic",
       "agentGrantLost": "Partage terminé : la page a quitté {origin}",
-      "agentGrantLostShare": "Partager aussi {origin}"
+      "agentGrantLostShare": "Partager aussi {origin}",
+      "agentGrantReplaced": "Partage terminé : un autre programme sert maintenant {origin}",
+      "agentGrantReplacedShare": "Partager quand même"
     },
     "tab": {
       "untitled": "Nouvel onglet"
@@ -5994,6 +5996,7 @@
       "shared": "Partagée",
       "sharedWith": "Les agents peuvent lire {origin}",
       "sharedScope": "Le partage prend fin dès que la page quitte ce site.",
+      "sharedScopeProgram": "Il prend aussi fin si un autre programme reprend ce port à {program}.",
       "sharedToast": "Les agents peuvent désormais lire {origin}",
       "stopSharing": "Arrêter le partage",
       "shareFailed": "Cette page ne peut pas être partagée avec les agents",

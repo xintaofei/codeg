@@ -219,15 +219,23 @@ export function BrowserEventsBridge() {
           BROWSER_AGENT_GRANT_EVENT,
           (grant) => {
             // What the level IS travels on `browser://state`, which the
-            // toolbar reads. The only thing worth a notice here is the
-            // transition the user did not perform: the page walked off the
-            // origin it was shared for, and an agent that was working on it
-            // has just started being refused.
-            if (grant.change !== "navigated" || !grant.origin) return
-            setBrowserTabNotice(browserWorkspaceTabId(grant.tabId), {
-              kind: "agent-grant-lost",
-              origin: grant.origin,
-            })
+            // toolbar reads. The only things worth a notice here are the
+            // transitions the user did not perform, and an agent that was
+            // working on the tab has just started being refused for.
+            if (!grant.origin) return
+            if (grant.change === "navigated") {
+              // The page walked off the origin it was shared for.
+              setBrowserTabNotice(browserWorkspaceTabId(grant.tabId), {
+                kind: "agent-grant-lost",
+                origin: grant.origin,
+              })
+            } else if (grant.change === "replaced") {
+              // The page stayed put and the server behind it changed.
+              setBrowserTabNotice(browserWorkspaceTabId(grant.tabId), {
+                kind: "agent-grant-replaced",
+                origin: grant.origin,
+              })
+            }
           }
         ),
         transport.subscribe<AgentActivityPayload>(

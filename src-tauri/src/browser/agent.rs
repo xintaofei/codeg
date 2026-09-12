@@ -58,6 +58,58 @@ impl GrantLevel {
     }
 }
 
+/// What is answering on a loopback address.
+///
+/// A grant names an origin, and for a real site the name is the thing: nobody
+/// else can be `https://mail.example.com`. `http://localhost:3000` names
+/// nothing durable — it is a port number, and this morning's dev server and
+/// this afternoon's unrelated admin tool wear it equally well. Someone who
+/// shares `localhost:3000` means *the program they are working on*, so this
+/// records enough to notice when that stops being what answers.
+///
+/// **It records the program, not the process.** The instinct is to pin
+/// `(pid, path, start time)`, which is what an identity looks like — but a
+/// dev server under `nodemon`, `cargo watch`, `air` or `uvicorn --reload`
+/// gets a new pid on every save, and an agent-driven edit loop is *made* of
+/// saves. Pinning the instance would end the sharing several times a minute
+/// in exactly the workflow this exists to serve, and a person clicking
+/// "share" back every time is a person who learns to stop reading the notice.
+/// A restart is still the same program serving the same project, and it is
+/// allowed to be.
+///
+/// The working directory is here because the program alone rarely says
+/// anything: two projects on port 3000 an hour apart are both `node`. What
+/// distinguishes them is where they were started, which also survives the
+/// restart the executable path survives.
+///
+/// Either field is `None` when this process cannot see it — a socket owned by
+/// another user, a platform with no way to ask. `None` compares equal only to
+/// `None`, so a listener that was invisible and is now visible (or the other
+/// way round) reads as a change, which it is: an unprivileged agent can only
+/// bind a port as the user, where we *can* see it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListenerIdentity {
+    /// Absolute path of the listening process's executable.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub program: Option<String>,
+    /// Its working directory.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub workdir: Option<String>,
+}
+
+impl ListenerIdentity {
+    /// The name to put in front of a person when this program displaced
+    /// another: the executable's file name, which is what they would have
+    /// typed, rather than the path they never look at.
+    pub fn display_name(&self) -> Option<&str> {
+        let program = self.program.as_deref()?;
+        program
+            .rsplit(['/', '\\'])
+            .find(|part| !part.is_empty())
+    }
+}
+
 /// A grant in force on one tab.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,6 +125,12 @@ pub struct AgentGrant {
     /// not used for any expiry, because a grant ends when the user revokes it
     /// or the page leaves the origin, not after a duration nobody chose.
     pub granted_at: i64,
+    /// What was serving [`Self::origin`] when the person shared it, for a
+    /// loopback address this process could look into. `None` everywhere else,
+    /// and an absent pin is never checked: a grant that could not be pinned
+    /// behaves exactly as it did before this existed.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub listener: Option<ListenerIdentity>,
 }
 
 impl AgentGrant {
@@ -161,6 +219,12 @@ pub enum GrantChange {
     Revoked,
     /// The page left the origin the grant was bound to.
     Navigated,
+    /// The address stayed the same and the thing behind it did not: another
+    /// program is serving the loopback port this grant was pinned to. Its own
+    /// transition rather than a [`Self::Navigated`] with a confusing origin,
+    /// because what a person has to be told is the opposite of a navigation —
+    /// the address in the toolbar is still the one they shared.
+    Replaced,
 }
 
 /// `browser://agent-grant`: a transition, with its reason. Current level:
@@ -273,6 +337,7 @@ pub fn apply_grant(
     state: &mut BrowserTabState,
     level: GrantLevel,
     now: i64,
+    listener: Option<ProbedListener>,
 ) -> Result<Option<AgentGrantPayload>, NotGrantable> {
     if level == GrantLevel::None {
         let previous = state.agent_grant.take();
@@ -284,17 +349,29 @@ pub fn apply_grant(
         }));
     }
     let origin = grantable_origin(state)?.to_string();
-    if state
-        .agent_grant
-        .as_ref()
-        .is_some_and(|g| g.level == level && g.origin == origin)
-    {
-        return Ok(None);
+    // Asking the operating system who holds a port takes long enough that the
+    // tab can navigate while the answer is on its way, so the probe carries
+    // the address it was taken for and is dropped unless that is still the
+    // address being shared. Pinning one origin's listener to another origin's
+    // grant would revoke it at the next read for no reason anybody could name.
+    let listener = listener
+        .filter(|probed| probed.origin == origin)
+        .map(|probed| probed.identity);
+    if let Some(existing) = state.agent_grant.as_mut() {
+        if existing.level == level && existing.origin == origin {
+            // The same share, re-affirmed. Take the fresh pin — the person
+            // just pointed at what is running now and called it theirs — but
+            // keep `granted_at`, and announce nothing: pressing a button that
+            // is already on is not a transition.
+            existing.listener = listener;
+            return Ok(None);
+        }
     }
     state.agent_grant = Some(AgentGrant {
         level,
         origin: origin.clone(),
         granted_at: now,
+        listener,
     });
     Ok(Some(AgentGrantPayload {
         tab_id: state.tab_id.clone(),
@@ -302,6 +379,47 @@ pub fn apply_grant(
         level,
         origin: Some(origin),
     }))
+}
+
+/// A listener probe's answer together with the address it was taken for.
+///
+/// The pairing is the point: a bare [`ListenerIdentity`] arriving at
+/// [`apply_grant`] could not be checked against the origin it is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbedListener {
+    pub origin: String,
+    pub identity: ListenerIdentity,
+}
+
+/// Re-check a tab's grant against what is serving its address now, and take
+/// the grant away if that is no longer the program it was pinned to. Returns
+/// what was lost, for the notice.
+///
+/// Only a grant that *has* a pin can lose one. A grant on a real site, or on
+/// a loopback address this process could not look into when it was made,
+/// passes through untouched — the check can only ever narrow what an agent
+/// may read, never widen it.
+///
+/// `origin` is the address `serving` was probed for. The probe happens outside
+/// the lock, so by the time its answer arrives the tab may have navigated and
+/// been re-shared for somewhere else; a grant on a different address is not
+/// this probe's business and is left alone.
+pub fn revoke_if_replaced(
+    state: &mut BrowserTabState,
+    origin: &str,
+    serving: &ListenerIdentity,
+) -> Option<AgentGrant> {
+    let replaced = state
+        .agent_grant
+        .as_ref()
+        .filter(|grant| grant.origin == origin)
+        .and_then(|grant| grant.listener.as_ref())
+        .is_some_and(|pinned| pinned != serving);
+    if replaced {
+        state.agent_grant.take()
+    } else {
+        None
+    }
 }
 
 /// Re-check a tab's grant against the origin it is showing now, and take the
@@ -516,6 +634,7 @@ mod tests {
             level: GrantLevel::Read,
             origin: "https://example.com".into(),
             granted_at: 0,
+            listener: None,
         };
         assert!(grant.covers(Some("https://example.com")));
         assert!(!grant.covers(Some("https://other.example")));
@@ -542,7 +661,7 @@ mod tests {
         assert!(wire.get("title").is_none());
         assert_eq!(wire["tabId"], "t1");
 
-        apply_grant(&mut state, GrantLevel::Read, 1).unwrap();
+        apply_grant(&mut state, GrantLevel::Read, 1, None).unwrap();
         let open = summarize_tab(&state).expect("a page is listed");
         assert_eq!(open.level, GrantLevel::Read);
         assert_eq!(open.title.as_deref(), Some("Re: termination letter — Mail"));
@@ -593,7 +712,7 @@ mod tests {
     fn sharing_binds_to_the_origin_on_screen_and_repeating_it_is_quiet() {
         let mut state = tab(Some("https://example.com"), TabKind::Page);
 
-        let first = apply_grant(&mut state, GrantLevel::Read, 100)
+        let first = apply_grant(&mut state, GrantLevel::Read, 100, None)
             .expect("a web origin can be shared")
             .expect("a first grant is a transition");
         assert_eq!(first.change, GrantChange::Granted);
@@ -603,11 +722,11 @@ mod tests {
 
         // Same level, same origin: nothing happened, and in particular the
         // clock the audit surface shows did not restart.
-        assert_eq!(apply_grant(&mut state, GrantLevel::Read, 200), Ok(None));
+        assert_eq!(apply_grant(&mut state, GrantLevel::Read, 200, None), Ok(None));
         assert_eq!(state.agent_grant.as_ref().unwrap().granted_at, 100);
 
         // A different level is a decision, and dates from when it was made.
-        let raised = apply_grant(&mut state, GrantLevel::Control, 300)
+        let raised = apply_grant(&mut state, GrantLevel::Control, 300, None)
             .unwrap()
             .expect("raising the level is a transition");
         assert_eq!(raised.level, GrantLevel::Control);
@@ -617,9 +736,9 @@ mod tests {
     #[test]
     fn taking_it_back_reports_what_was_lost_once() {
         let mut state = tab(Some("https://example.com"), TabKind::Page);
-        apply_grant(&mut state, GrantLevel::Read, 1).unwrap();
+        apply_grant(&mut state, GrantLevel::Read, 1, None).unwrap();
 
-        let revoked = apply_grant(&mut state, GrantLevel::None, 2)
+        let revoked = apply_grant(&mut state, GrantLevel::None, 2, None)
             .unwrap()
             .expect("revoking a live grant is a transition");
         assert_eq!(revoked.change, GrantChange::Revoked);
@@ -628,7 +747,7 @@ mod tests {
         assert!(state.agent_grant.is_none());
 
         // Revoking nothing is not an event.
-        assert_eq!(apply_grant(&mut state, GrantLevel::None, 3), Ok(None));
+        assert_eq!(apply_grant(&mut state, GrantLevel::None, 3, None), Ok(None));
     }
 
     /// The refusal has to happen here, not at the UI: a tab showing nothing
@@ -637,14 +756,14 @@ mod tests {
     fn a_tab_with_no_web_origin_cannot_be_shared_at_all() {
         let mut blank = tab(None, TabKind::Page);
         assert_eq!(
-            apply_grant(&mut blank, GrantLevel::Read, 1),
+            apply_grant(&mut blank, GrantLevel::Read, 1, None),
             Err(NotGrantable::NoOrigin)
         );
         assert!(blank.agent_grant.is_none());
 
         let mut guest = tab(Some("https://codeg-doc.localhost"), TabKind::Document);
         assert_eq!(
-            apply_grant(&mut guest, GrantLevel::Control, 1),
+            apply_grant(&mut guest, GrantLevel::Control, 1, None),
             Err(NotGrantable::DocumentGuest)
         );
         assert!(guest.agent_grant.is_none());
@@ -657,6 +776,7 @@ mod tests {
             level: GrantLevel::Read,
             origin: "https://example.com".into(),
             granted_at: 1,
+            listener: None,
         });
 
         // Same origin: a reload, a route change, another page on the site.
@@ -673,6 +793,157 @@ mod tests {
         assert_eq!(revoke_if_departed(&mut state), None);
     }
 
+    fn serving(program: &str, workdir: &str) -> ListenerIdentity {
+        ListenerIdentity {
+            program: Some(program.into()),
+            workdir: Some(workdir.into()),
+        }
+    }
+
+    fn shared_localhost(pin: Option<ListenerIdentity>) -> BrowserTabState {
+        let mut state = tab(Some("http://localhost:3000"), TabKind::Page);
+        state.agent_grant = Some(AgentGrant {
+            level: GrantLevel::Read,
+            origin: "http://localhost:3000".into(),
+            granted_at: 1,
+            listener: pin,
+        });
+        state
+    }
+
+    /// The case the whole design turns on. A dev server under `nodemon` or
+    /// `cargo watch` is a new process on every save, and an agent-driven edit
+    /// loop is made of saves — so the pin is the *program*, and a restart of
+    /// it passes.
+    #[test]
+    fn a_restarted_dev_server_keeps_the_grant() {
+        let node = serving("/usr/local/bin/node", "/home/dev/project");
+        let mut state = shared_localhost(Some(node.clone()));
+        // A different process, indistinguishable as a program: same
+        // executable, same directory. Nothing about it is a new decision for
+        // the user to make.
+        assert_eq!(
+            revoke_if_replaced(&mut state, "http://localhost:3000", &node),
+            None
+        );
+        assert!(state.agent_grant.is_some());
+    }
+
+    #[test]
+    fn another_program_on_the_port_ends_the_grant() {
+        let mut state = shared_localhost(Some(serving("/usr/local/bin/node", "/home/dev/project")));
+        let lost = revoke_if_replaced(
+            &mut state,
+            "http://localhost:3000",
+            &serving("/usr/bin/python3", "/home/dev/project"),
+        )
+        .expect("the grant is taken away");
+        assert_eq!(lost.origin, "http://localhost:3000");
+        assert!(state.agent_grant.is_none());
+    }
+
+    /// The accident this is really for: the same runtime, an hour later,
+    /// serving a different project. `node` and `node` say nothing; the
+    /// directory says everything.
+    #[test]
+    fn the_same_runtime_serving_a_different_project_ends_the_grant() {
+        let mut state = shared_localhost(Some(serving("/usr/local/bin/node", "/home/dev/shop")));
+        assert!(revoke_if_replaced(
+            &mut state,
+            "http://localhost:3000",
+            &serving("/usr/local/bin/node", "/home/dev/admin-tool"),
+        )
+        .is_some());
+        assert!(state.agent_grant.is_none());
+    }
+
+    /// A grant that was never pinned — a real site, or a loopback address
+    /// this machine could not look into — is not judged by a probe. The check
+    /// narrows what an agent may read or does nothing; it never widens.
+    #[test]
+    fn an_unpinned_grant_is_never_taken_away_by_the_check() {
+        let mut state = shared_localhost(None);
+        assert_eq!(
+            revoke_if_replaced(&mut state, "http://localhost:3000", &serving("/x", "/y")),
+            None
+        );
+        assert!(state.agent_grant.is_some());
+    }
+
+    /// The probe runs outside the registry lock. By the time it answers, the
+    /// tab can have navigated and been shared again for somewhere else — and
+    /// that grant is not the one this answer is about.
+    #[test]
+    fn a_probe_of_one_address_does_not_judge_a_grant_on_another() {
+        let mut state = shared_localhost(Some(serving("/usr/local/bin/node", "/p")));
+        assert_eq!(
+            revoke_if_replaced(&mut state, "http://localhost:4000", &serving("/other", "/q")),
+            None
+        );
+        assert!(state.agent_grant.is_some());
+    }
+
+    #[test]
+    fn a_probe_is_pinned_only_to_the_address_it_was_taken_for() {
+        let mut state = tab(Some("http://localhost:3000"), TabKind::Page);
+        // The page moved while the probe was in flight.
+        apply_grant(
+            &mut state,
+            GrantLevel::Read,
+            1,
+            Some(ProbedListener {
+                origin: "http://localhost:9999".into(),
+                identity: serving("/usr/local/bin/node", "/p"),
+            }),
+        )
+        .expect("granted");
+        let grant = state.agent_grant.as_ref().expect("a grant");
+        assert_eq!(grant.origin, "http://localhost:3000");
+        // Unpinned rather than wrongly pinned: an identity for another port
+        // would revoke this grant at the next read for no nameable reason.
+        assert_eq!(grant.listener, None);
+    }
+
+    /// Pressing "share" on a tab that is already shared is not a transition —
+    /// no toast, and the audit surface keeps showing when access began. It is
+    /// still a fresh statement about what the person means, so the pin moves.
+    #[test]
+    fn re_sharing_refreshes_the_pin_without_resetting_the_clock() {
+        let mut state = tab(Some("http://localhost:3000"), TabKind::Page);
+        apply_grant(&mut state, GrantLevel::Read, 100, None).expect("granted");
+        let refreshed = apply_grant(
+            &mut state,
+            GrantLevel::Read,
+            200,
+            Some(ProbedListener {
+                origin: "http://localhost:3000".into(),
+                identity: serving("/usr/bin/python3", "/home/dev"),
+            }),
+        )
+        .expect("no error");
+        assert_eq!(refreshed, None, "a button already on announces nothing");
+        let grant = state.agent_grant.as_ref().expect("a grant");
+        assert_eq!(grant.granted_at, 100);
+        assert_eq!(grant.listener, Some(serving("/usr/bin/python3", "/home/dev")));
+    }
+
+    #[test]
+    fn a_program_is_named_by_its_file_name_on_either_platforms_separator() {
+        assert_eq!(
+            serving("/usr/local/bin/node", "/p").display_name(),
+            Some("node")
+        );
+        assert_eq!(
+            ListenerIdentity {
+                program: Some(r"C:\Program Files\nodejs\node.exe".into()),
+                workdir: None,
+            }
+            .display_name(),
+            Some("node.exe")
+        );
+        assert_eq!(ListenerIdentity::default().display_name(), None);
+    }
+
     /// A page that ends up with no origin at all — an `about:blank` the
     /// engine substituted for a load it refused, a `data:` document — is not
     /// the page that was shared.
@@ -683,6 +954,7 @@ mod tests {
             level: GrantLevel::Control,
             origin: "https://example.com".into(),
             granted_at: 1,
+            listener: None,
         });
         state.origin = None;
         assert!(revoke_if_departed(&mut state).is_some());

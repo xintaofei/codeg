@@ -5920,7 +5920,9 @@
       "downloadsDenied": "已攔截下載：{host}",
       "downloadsDeniedNoGesture": "多個檔案，不是由點擊觸發",
       "agentGrantLost": "分享已結束：頁面離開了 {origin}",
-      "agentGrantLostShare": "也分享 {origin}"
+      "agentGrantLostShare": "也分享 {origin}",
+      "agentGrantReplaced": "分享已結束：現在是另一個程式在 {origin} 上提供服務",
+      "agentGrantReplacedShare": "仍然分享"
     },
     "tab": {
       "untitled": "新分頁"
@@ -5994,6 +5996,7 @@
       "shared": "已分享",
       "sharedWith": "智慧代理可讀取 {origin}",
       "sharedScope": "頁面一旦離開該網站，分享即結束。",
+      "sharedScopeProgram": "如果這個連接埠從 {program} 換成了別的程式，分享同樣結束。",
       "sharedToast": "智慧代理現在可以讀取 {origin}",
       "stopSharing": "停止分享",
       "shareFailed": "此頁面無法分享給智慧代理",
