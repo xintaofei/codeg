@@ -378,6 +378,46 @@ describe("inferLiveToolName meta.claudeCode.toolName override", () => {
   })
 })
 
+describe("inferLiveToolName query-bearing MCP calls", () => {
+  it("keeps an explicit OpenCode MCP tool title", () => {
+    expect(
+      inferLiveToolName({
+        title: "codegraph_explore",
+        kind: "other",
+        rawInput: JSON.stringify({ query: "find the auth flow" }),
+      })
+    ).toBe("codegraph_explore")
+  })
+
+  it("still classifies a query as websearch when the wire names websearch", () => {
+    expect(
+      inferLiveToolName({
+        title: "web_search",
+        kind: "other",
+        rawInput: JSON.stringify({ query: "Codeg" }),
+      })
+    ).toBe("websearch")
+
+    expect(
+      inferLiveToolName({
+        title: "Search",
+        kind: "websearch",
+        rawInput: JSON.stringify({ query: "Codeg" }),
+      })
+    ).toBe("websearch")
+  })
+
+  it("does not infer websearch from a query field alone", () => {
+    expect(
+      inferLiveToolName({
+        title: "MCP: tool",
+        kind: "other",
+        rawInput: JSON.stringify({ query: "find usages" }),
+      })
+    ).not.toBe("websearch")
+  })
+})
+
 describe("normalizeToolName collapses delegate_to_agent across hosts", () => {
   // The codeg multi-agent delegation MCP tool is named the same across hosts
   // (`delegate_to_agent`) but each host serializes the server prefix

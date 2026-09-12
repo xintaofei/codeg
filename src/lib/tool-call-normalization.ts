@@ -389,7 +389,19 @@ function inferFromInput(
     return "edit"
   if (hasAnyKey(parsed, ["changes"])) return "edit"
   if (hasAnyKey(parsed, ["todos"])) return "todowrite"
-  if (hasAnyKey(parsed, ["query"])) return "websearch"
+  // `query` is a common MCP argument (for example CodeGraph's
+  // `codegraph_explore` and Context7's query tools), not a web-search
+  // discriminator. Only classify it as websearch when the wire also names a
+  // web-search tool; otherwise `inferLiveToolName` can preserve the explicit
+  // tool title instead of showing every query-bearing MCP call as "WebSearch".
+  if (
+    hasAnyKey(parsed, ["query"]) &&
+    (normalizedTitle === "websearch" ||
+      normalizedTitle === "web_search" ||
+      normalizedKind === "websearch" ||
+      normalizedKind === "web_search")
+  )
+    return "websearch"
   if (hasAnyKey(parsed, ["url"])) return "webfetch"
 
   const hasPattern = hasAnyKey(parsed, ["pattern"])
