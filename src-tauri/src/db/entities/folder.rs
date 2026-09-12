@@ -14,6 +14,18 @@ pub enum FolderKind {
     Regular,
     #[sea_orm(string_value = "chat")]
     Chat,
+    #[sea_orm(string_value = "semantic")]
+    Semantic,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn semantic_is_a_variant() {
+        let k = FolderKind::Semantic;
+        assert_eq!(serde_json::to_string(&k).unwrap(), "\"semantic\"");
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]

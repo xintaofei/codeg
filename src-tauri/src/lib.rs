@@ -38,6 +38,7 @@ pub mod pets;
 #[cfg(feature = "tauri-runtime")]
 pub mod preferences;
 pub mod process;
+pub mod semantic;
 pub mod supervise;
 mod terminal;
 pub mod turn_timings;
