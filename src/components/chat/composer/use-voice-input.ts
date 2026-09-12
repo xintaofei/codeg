@@ -145,7 +145,9 @@ export function useVoiceInput(options: UseVoiceInputOptions = {}): UseVoiceInput
         recognitionRef.current = recognition
         recognition.continuous = true
         recognition.interimResults = true
-        recognition.lang = lang || (typeof navigator !== "undefined" ? navigator.language : "zh-CN") || "zh-CN"
+        recognition.maxAlternatives = 1
+        // Priority: explicit lang > app Chinese default > navigator.language
+        recognition.lang = lang || "zh-CN"
 
         recognition.onresult = (event: any) => {
           let finalChunk = ""
@@ -161,10 +163,12 @@ export function useVoiceInput(options: UseVoiceInputOptions = {}): UseVoiceInput
           }
 
           if (finalChunk) {
-            onTranscript?.(finalChunk, true)
+            const cleaned = finalChunk.replace(/([\u4e00-\u9fa5])\s+([\u4e00-\u9fa5])/g, "$1$2")
+            onTranscript?.(cleaned, true)
           }
-          setInterimText(currentInterim)
-          onInterimTranscript?.(currentInterim)
+          const cleanedInterim = currentInterim.replace(/([\u4e00-\u9fa5])\s+([\u4e00-\u9fa5])/g, "$1$2")
+          setInterimText(cleanedInterim)
+          onInterimTranscript?.(cleanedInterim)
         }
 
         recognition.onerror = (event: any) => {

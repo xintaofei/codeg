@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useTranslations } from "next-intl"
+import { useTranslations, useLocale } from "next-intl"
 import { isImeCompositionKey } from "@/lib/ime-composition"
 import { Button } from "@/components/ui/button"
 import {
@@ -349,6 +349,7 @@ export function MessageInput({
 }: MessageInputProps) {
   const t = useTranslations("Folder.chat.messageInput")
   const tQueue = useTranslations("Folder.chat.messageQueue")
+  const locale = useLocale()
   // Kept as a separate binding from `t` so its call sites — exclusively
   // upload / attachment toasts — read as a single coherent group when
   // scanning the file. Same namespace, no extra runtime cost.
@@ -390,6 +391,7 @@ export function MessageInput({
   }, [])
 
   const voice = useVoiceInput({
+    lang: locale?.toLowerCase().startsWith("zh") ? "zh-CN" : (locale || "zh-CN"),
     onTranscript: handleVoiceTranscript,
   })
 
