@@ -4,6 +4,8 @@ import { useTranslations } from "next-intl"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   AcpConnectionsProvider,
+  STREAM_FLUSH_FRAME_MS,
+  STREAM_FLUSH_MAX_MS,
   useAcpActions,
   useConnectionStore,
 } from "@/contexts/acp-connections-context"
@@ -2131,6 +2133,150 @@ describe("out-of-turn wire guard + background activity", () => {
     expect(notify).toHaveBeenCalledTimes(1)
 
     resetConversationRuntimeStore()
+  })
+})
+
+describe("streaming flush window widens with the run it re-renders", () => {
+  async function mountStreamingOwner() {
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    const handlers = latestAttachHandlers()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    return handlers
+  }
+
+  function liveText(): string {
+    const content = h.store!.getConnection(TAB)?.liveMessage?.content ?? []
+    return content
+      .map((block) => (block.type === "text" ? block.text : ""))
+      .join("")
+  }
+
+  it("holds a long run for more frames, and delivers exactly what arrived", async () => {
+    const handlers = await mountStreamingOwner()
+    // Mount and connect on real timers (they await the transport); only the
+    // flush window below is driven by hand.
+    vi.useFakeTimers()
+    try {
+      // First delta of the turn: the live message is empty, so the window is
+      // the single frame it has always been.
+      const head = "a".repeat(9000)
+      emitAcpEvent(handlers, {
+        seq: 2,
+        connection_id: "spawned-conn",
+        type: "content_delta",
+        text: head,
+      })
+      expect(liveText()).toBe("")
+      act(() => {
+        vi.advanceTimersByTime(STREAM_FLUSH_FRAME_MS)
+      })
+      expect(liveText()).toBe(head)
+
+      // The next delta is armed against a 9000-character run, which is past
+      // the first step: one frame is no longer enough to release it.
+      emitAcpEvent(handlers, {
+        seq: 3,
+        connection_id: "spawned-conn",
+        type: "content_delta",
+        text: "b",
+      })
+      act(() => {
+        vi.advanceTimersByTime(STREAM_FLUSH_FRAME_MS)
+      })
+      expect(liveText()).toBe(head)
+      act(() => {
+        vi.advanceTimersByTime(STREAM_FLUSH_FRAME_MS)
+      })
+      expect(liveText()).toBe(`${head}b`)
+
+      // Whatever the window, every chunk lands once and in order.
+      let expected = `${head}b`
+      for (let i = 0; i < 40; i++) {
+        const text = `-${i}-`
+        expected += text
+        emitAcpEvent(handlers, {
+          seq: 4 + i,
+          connection_id: "spawned-conn",
+          type: "content_delta",
+          text,
+        })
+        act(() => {
+          vi.advanceTimersByTime(STREAM_FLUSH_MAX_MS)
+        })
+      }
+      expect(liveText()).toBe(expected)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // The window is sized by the RUN the batch appends to, not by how much the
+  // turn has said in total: a reply that has already written 9 KB and then ran
+  // a tool is back to rendering a short block, and must not keep paying for
+  // the prose above it.
+  it("returns to a single frame when a new run starts", async () => {
+    const handlers = await mountStreamingOwner()
+    vi.useFakeTimers()
+    try {
+      emitAcpEvent(handlers, {
+        seq: 2,
+        connection_id: "spawned-conn",
+        type: "content_delta",
+        text: "a".repeat(9000),
+      })
+      act(() => {
+        vi.advanceTimersByTime(STREAM_FLUSH_FRAME_MS)
+      })
+
+      // A tool call closes the prose run (and flushes the queue itself), so
+      // the reply that resumes after it starts short again.
+      emitAcpEvent(handlers, {
+        seq: 3,
+        connection_id: "spawned-conn",
+        type: "tool_call",
+        tool_call_id: "toolu_1",
+        title: "Read",
+        kind: "read",
+        status: "in_progress",
+        content: null,
+        raw_input: null,
+        raw_output: null,
+      })
+      emitAcpEvent(handlers, {
+        seq: 4,
+        connection_id: "spawned-conn",
+        type: "content_delta",
+        text: "after",
+      })
+      act(() => {
+        vi.advanceTimersByTime(STREAM_FLUSH_FRAME_MS)
+      })
+      expect(liveText()).toBe(`${"a".repeat(9000)}after`)
+
+      // And it stays there while the new run is short, even though the turn
+      // now holds more than 9 KB in total.
+      emitAcpEvent(handlers, {
+        seq: 5,
+        connection_id: "spawned-conn",
+        type: "content_delta",
+        text: " more",
+      })
+      act(() => {
+        vi.advanceTimersByTime(STREAM_FLUSH_FRAME_MS)
+      })
+      expect(liveText()).toBe(`${"a".repeat(9000)}after more`)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

@@ -741,6 +741,44 @@ type StreamingAction =
       parentToolUseId?: string
     }
 
+/** One display frame: the narrowest window streaming deltas coalesce into. */
+export const STREAM_FLUSH_FRAME_MS = 16
+/** The widest — about five batches a second. */
+export const STREAM_FLUSH_MAX_MS = 192
+/** Characters of live prose that buy one more frame of coalescing. */
+const STREAM_FLUSH_CHARS_PER_FRAME = 8 * 1024
+
+/**
+ * How long streaming deltas coalesce before one `STREAM_BATCH` lands, given
+ * the length of the prose run the batch will grow.
+ *
+ * Each batch replaces the live message, and the run it appended to is
+ * re-rendered whole: normalized, re-lexed into markdown blocks, re-highlighted.
+ * That is linear in the run's length, and the window was a flat 16 ms — so the
+ * work a turn cost grew with the SQUARE of its own output, while the rate it
+ * arrived at stayed the same. Past a few tens of KB the renderer could no
+ * longer keep up with the stream, which is #589: at ~300 tok/s the whole UI
+ * stops responding, on hardware with plenty of headroom.
+ *
+ * Measured on a 300 tok/s stream, counting the characters re-rendered across
+ * a turn: 30 s of output cost 32.5M before and 11.1M after; 120 s cost 518.8M
+ * before and 59.9M after.
+ *
+ * A run under 8 KB — nearly every reply — keeps the 16 ms window it has today.
+ * Past that each further 8 KB buys one more frame, so the cost per second
+ * flattens out instead of climbing with the answer. Nothing about WHAT gets
+ * delivered changes: the queue merges and dispatches exactly as before, and
+ * every non-streaming event still flushes it immediately, so a tool card, a
+ * permission prompt or the end of a turn never waits on this window.
+ */
+export function streamFlushDelayMs(liveRunChars: number): number {
+  const frames = Math.max(
+    1,
+    Math.ceil(liveRunChars / STREAM_FLUSH_CHARS_PER_FRAME)
+  )
+  return Math.min(STREAM_FLUSH_MAX_MS, STREAM_FLUSH_FRAME_MS * frames)
+}
+
 type ConnectionsMap = Map<string, ConnectionState>
 const MAX_LIVE_TOOL_RAW_OUTPUT_CHARS = 200_000
 const MAX_BUFFERED_UNMAPPED_EVENTS_PER_CONNECTION = 64
@@ -3478,7 +3516,22 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         return
       }
       if (flushTimerRef.current === null) {
-        flushTimerRef.current = setTimeout(flushStreamingQueue, 16)
+        // Size the window from the prose run this batch will grow — the block
+        // the reducer will append to, which is what gets re-rendered whole.
+        // Read as of the last batch, so it costs one map lookup, and a fresh
+        // turn (empty live message, or a run that just restarted after a tool
+        // call) is back to a single frame. See `streamFlushDelayMs`.
+        const content = storeRef.current.connections.get(action.contextKey)
+          ?.liveMessage?.content
+        const last = content?.[content.length - 1]
+        const runChars =
+          last && (last.type === "text" || last.type === "thinking")
+            ? last.text.length
+            : 0
+        flushTimerRef.current = setTimeout(
+          flushStreamingQueue,
+          streamFlushDelayMs(runChars)
+        )
       }
     },
     [flushStreamingQueue]
