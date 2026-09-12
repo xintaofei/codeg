@@ -23,7 +23,17 @@ import {
   type TermMods,
 } from "@/lib/terminal/keybar"
 import { TermKeybar } from "@/components/terminal/term-keybar"
+import {
+  TerminalLinkMenu,
+  terminalLinkClickOpensMenu,
+  type TerminalLinkClick,
+} from "@/components/terminal/terminal-link-menu"
+import { getBrowserPrefs } from "@/lib/browser/browser-prefs"
 import { useZoomLevel, useTerminalFont } from "@/hooks/use-appearance"
+import {
+  isPrimaryModifier,
+  useOpenUrlTarget,
+} from "@/hooks/use-open-url-target"
 import { detectPlatform } from "@/hooks/use-platform"
 import type { TerminalEvent } from "@/lib/types"
 import type { ITerminalAddon, Terminal as XTermTerminal } from "@xterm/xterm"
@@ -117,6 +127,14 @@ export function TerminalView({
   const isActiveRef = useRef(isActive)
   const isVisibleRef = useRef(isVisible)
   const onProcessExitedRef = useRef(onProcessExited)
+  // Link clicks route through the app's link decision (built-in browser vs
+  // system browser, ⌘/Ctrl inverts). xterm's default handler is a bare
+  // `window.open`, which the desktop webview turns into a dead click.
+  const openUrlTarget = useOpenUrlTarget()
+  const openUrlTargetRef = useRef(openUrlTarget)
+  // A link click held for the action menu (optional, off by default): the
+  // user picks the destination instead of the per-source preference.
+  const [linkClick, setLinkClick] = useState<TerminalLinkClick | null>(null)
   const { zoomLevel: appZoomLevel } = useZoomLevel()
   // 100 = 「不缩放」。画布卡片走这条：它已经在自己那套缩放里了。
   const zoomLevel = ignoreAppZoom ? 100 : appZoomLevel
@@ -223,6 +241,10 @@ export function TerminalView({
   }, [onProcessExited])
 
   useEffect(() => {
+    openUrlTargetRef.current = openUrlTarget
+  }, [openUrlTarget])
+
+  useEffect(() => {
     let cancelled = false
     let cleanup: (() => void) | undefined
 
@@ -234,7 +256,14 @@ export function TerminalView({
       if (cancelled || !containerRef.current) return
 
       const fitAddon = new FitAddon()
-      const webLinksAddon = new WebLinksAddon()
+      const webLinksAddon = new WebLinksAddon((event, uri) => {
+        const modifier = isPrimaryModifier(event)
+        if (terminalLinkClickOpensMenu(getBrowserPrefs(), modifier, uri)) {
+          setLinkClick({ url: uri, x: event.clientX, y: event.clientY })
+          return
+        }
+        openUrlTargetRef.current(uri, { source: "terminal", modifier })
+      })
 
       const term = new Terminal({
         cursorBlink: true,
@@ -561,6 +590,10 @@ export function TerminalView({
     return () => {
       cancelled = true
       cleanup?.()
+      // A click held for the menu belongs to the terminal that was clicked;
+      // when this effect re-runs for another terminal (or unmounts) the
+      // menu must not outlive it and open the old terminal's link.
+      setLinkClick(null)
     }
   }, [terminalId, workingDir, shell, initialCommand, attach])
 
@@ -652,6 +685,20 @@ export function TerminalView({
           />
         )}
       </div>
+      <TerminalLinkMenu
+        click={linkClick}
+        onChoose={(url, target) => {
+          setLinkClick(null)
+          openUrlTargetRef.current(url, {
+            source: "terminal",
+            forceTarget: target,
+          })
+        }}
+        onClose={() => {
+          setLinkClick(null)
+          termRef.current?.focus()
+        }}
+      />
       {loading && isActive && (
         <div className="absolute inset-0 flex items-center justify-center bg-background/80">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">

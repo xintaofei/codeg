@@ -1,0 +1,371 @@
+//! Wire types for the built-in browser. `src/lib/browser/types.ts` mirrors
+//! these one to one; both sides use camelCase field names and kebab-case enum
+//! values.
+
+use serde::{Deserialize, Serialize};
+
+/// Which concrete surface renders a tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SurfaceKind {
+    /// wry child webview embedded in the owner window (macOS / Windows).
+    Child,
+    /// Owned top-level window (`WebviewWindowBuilder::parent`).
+    Window,
+}
+
+/// What a tab shows: a web page, or a local HTML document served through the
+/// `codeg-doc:` guest (see `doc_guest`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TabKind {
+    #[default]
+    Page,
+    Document,
+}
+
+/// How the page ↔ host channel was installed for a tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChannelKind {
+    /// Isolated-world helper + native message handler.
+    Native,
+    /// Installation failed; only navigation interception is available.
+    Degraded,
+    /// Platform too old for isolated worlds (macOS < 11); page-world helper.
+    Legacy,
+}
+
+/// Placement of the surface inside the owner window, in logical pixels — the
+/// same unit `getBoundingClientRect()` reports (the workspace content area is
+/// the whole window and the app's zoom changes the root font size, not the
+/// webview scale).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Bounds {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BrowserErrorKind {
+    Dns,
+    Tls,
+    Blocked,
+    Failed,
+    PopupDenied,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserErrorInfo {
+    pub kind: BrowserErrorKind,
+    pub message: String,
+    pub url: Option<String>,
+}
+
+/// Everything the toolbar / status layer renders for one tab. Emitted in full
+/// on every change (`browser://state`); the frontend keeps it in a store keyed
+/// by `tab_id` rather than inside the workspace tab record.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserTabState {
+    pub tab_id: String,
+    /// Label of the window the tab belongs to (`main`, `remote-workspace-*`).
+    pub owner_window: String,
+    pub kind: TabKind,
+    pub surface: SurfaceKind,
+    pub channel: ChannelKind,
+    /// Why the page channel could not be installed, in the engine's own words.
+    /// `None` while the channel is fine — and also while it is merely still
+    /// coming up, which is what `channel: degraded` means until the helper's
+    /// `hello` arrives. A tab with this set stays degraded for good.
+    pub channel_error: Option<String>,
+    /// Last committed URL.
+    pub url: String,
+    /// URL the last navigation was asked for (differs from `url` while loading
+    /// or after a redirect).
+    pub requested_url: String,
+    pub title: String,
+    pub favicon: Option<String>,
+    pub loading: bool,
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
+    pub origin: Option<String>,
+    pub zoom: f64,
+    pub error: Option<BrowserErrorInfo>,
+    /// Set when the tab's traffic egresses through a remote workspace host.
+    pub remote_host: Option<String>,
+    /// For a tab adopted from a page-initiated new-window request: the tab
+    /// whose page opened it (that page keeps a live `window.opener`).
+    pub opener_tab_id: Option<String>,
+    /// The browser profile (cookie jar, storage) the tab lives in; a popup
+    /// shares its opener's. `None` for a document guest, whose store dies
+    /// with it.
+    pub profile: Option<String>,
+    /// What an agent may do with this tab, if a person has shared it. `None`
+    /// is the default and the resting state — see `agent`. It rides on the
+    /// tab's state rather than in a store of its own so that the code which
+    /// notices a tab changed origin is the code that revokes.
+    pub agent_grant: Option<crate::browser::agent::AgentGrant>,
+}
+
+/// Answer to `browser_capabilities`: what this build on this machine can do.
+///
+/// Desktop-only, unlike the rest of this file: it quotes the proxy and policy
+/// status types, which are themselves about a webview this process owns. The
+/// question it answers — "what can the built-in browser do here?" — has no
+/// meaning in a runtime that has no built-in browser.
+#[cfg(feature = "tauri-runtime")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserCapabilities {
+    pub available: bool,
+    pub surface: Option<SurfaceKind>,
+    pub platform: String,
+    pub channel: ChannelKind,
+    /// Human-readable reasons behind a degraded answer (for diagnostics UI).
+    pub reasons: Vec<String>,
+    /// Browsing data lives apart from the app's own web storage.
+    pub isolated_storage: bool,
+    pub proxy: crate::browser::profile::BrowserProxyStatus,
+    /// Where a page's downloads land, for the settings section.
+    pub downloads_dir: String,
+    /// The administrator's policy in force (rules shown read-only, and
+    /// whether the browser is enabled at all).
+    pub policy: crate::browser::policy::BrowserPolicyStatus,
+    /// Local HTML files can be shown through the `codeg-doc:` document guest
+    /// (an embedded surface with a handler for that scheme).
+    pub doc_guest: bool,
+    /// More than the default browser profile can exist (macOS 14+, Windows,
+    /// Linux); the settings offer to create, clear and delete them.
+    pub profiles: bool,
+    /// Tabs present the sign-in user agent to Google's sign-in hosts when the
+    /// preference is on (needs a navigation hook: the embedded tabs' delegate,
+    /// or the owned window's navigation decision on Linux).
+    pub sign_in_user_agent: bool,
+    /// A tab shown in an owned window still answers find, history, stop and
+    /// snapshots, and its page still talks to the host. True where the owned
+    /// window is the surface the platform shim is written for (Linux); false
+    /// where it is the fallback and the host does not hold its webview.
+    pub owned_window_controls: bool,
+}
+
+/// The last frame of a page, handed back by `browser_set_visible` when the
+/// frontend hides a surface under an overlay: the placeholder paints it so
+/// the page does not vanish while a dialog or menu is open over it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrozenFrame {
+    /// `image/jpeg`.
+    pub mime: String,
+    /// Base64 of the encoded image.
+    pub data: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Caller's surface preference for `browser_open_tab`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SurfaceChoice {
+    #[default]
+    Auto,
+    Child,
+    Window,
+}
+
+pub const STATE_EVENT: &str = "browser://state";
+pub const CLOSED_EVENT: &str = "browser://closed";
+pub const POPUP_EVENT: &str = "browser://popup";
+/// Backend → frontend: please open this URL in a browser tab (agent tools,
+/// deep links, the dev puppet). The frontend owns tab records, so a backend
+/// side cannot create one directly.
+pub const OPEN_REQUEST_EVENT: &str = "browser://open-request";
+/// A browser shortcut the PAGE swallowed first (the page has keyboard focus,
+/// so the app's own DOM never sees the keystroke). Only the fixed set below
+/// is forwarded; the payload carries no page data.
+pub const SHORTCUT_EVENT: &str = "browser://shortcut";
+/// A top-level navigation a tab attempted was refused by policy: the address
+/// type is not allowed in a tab, or a site rule blocks the host. The status
+/// layer tells the user; nothing else happens.
+pub const NAVIGATION_BLOCKED_EVENT: &str = "browser://navigation-blocked";
+/// The mode and status of a document guest changed (`DocGuestState`): the
+/// user switched it, or the guest fell back to safe mode on its own.
+pub const DOC_STATE_EVENT: &str = "browser://doc-state";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NavigationBlockReason {
+    HostRule,
+    Scheme,
+    /// A document guest pointed at a web address: not loaded in the guest,
+    /// but the user may open it in a browser tab.
+    External,
+    /// A document guest tried to download a file; documents do not download.
+    Download,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserNavigationBlockedPayload {
+    pub tab_id: String,
+    pub url: String,
+    pub reason: NavigationBlockReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserShortcutPayload {
+    pub tab_id: String,
+    /// One of a closed set the host recognises (`find` today).
+    pub shortcut: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserOpenRequestPayload {
+    pub url: String,
+    /// Who asked: `agent`, `deeplink`, `smoke`, …
+    pub source: String,
+    pub activate: bool,
+    /// Window whose workspace should open it (`main` when absent).
+    pub owner_window: Option<String>,
+    /// Tab the request originated in (a modifier-click inside it). The
+    /// frontend inserts the new tab right after it, like a browser does.
+    pub opener_tab_id: Option<String>,
+    /// The profile the new tab belongs in: the opener's for a modifier-click
+    /// (the same signed-in session), else the frontend's choice.
+    pub profile: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PopupPresentation {
+    /// The engine-created webview was adopted as a new tab next to its opener.
+    Adopted,
+    /// The request was refused (`reason` says why).
+    Denied,
+}
+
+/// `browser://popup`: outcome of a page-initiated new-window request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserPopupPayload {
+    pub presentation: PopupPresentation,
+    pub opener_tab_id: String,
+    pub tab_id: Option<String>,
+    pub url: String,
+    /// `window.open` size features, when the page asked for any.
+    pub requested_size: Option<[f64; 2]>,
+    pub reason: Option<String>,
+    /// The profile an adopted popup lives in — its opener's, whatever the
+    /// frontend knows about the opener by the time the event arrives.
+    pub profile: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserClosedPayload {
+    pub tab_id: String,
+    pub owner_window: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wire_names_are_camel_and_kebab() {
+        let state = BrowserTabState {
+            tab_id: "t1".into(),
+            owner_window: "main".into(),
+            kind: TabKind::Page,
+            surface: SurfaceKind::Child,
+            channel: ChannelKind::Native,
+            channel_error: Some("Runtime.addBinding failed".into()),
+            url: "about:blank".into(),
+            requested_url: "https://example.com/".into(),
+            title: String::new(),
+            favicon: None,
+            loading: true,
+            can_go_back: false,
+            can_go_forward: false,
+            origin: None,
+            zoom: 1.0,
+            error: None,
+            remote_host: None,
+            opener_tab_id: None,
+            profile: Some("default".into()),
+            agent_grant: Some(crate::browser::agent::AgentGrant {
+                level: crate::browser::agent::GrantLevel::Read,
+                origin: "https://example.com".into(),
+                granted_at: 1_700_000_000_000,
+                listener: None,
+            }),
+        };
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["tabId"], "t1");
+        assert_eq!(json["agentGrant"]["level"], "read");
+        assert_eq!(json["agentGrant"]["grantedAt"], 1_700_000_000_000i64);
+        // A grant on a real site has no listener to pin, and says so by
+        // leaving the key out rather than by sending a null the frontend
+        // would have to tell apart from "pinned to nothing".
+        assert!(json["agentGrant"].get("listener").is_none());
+        assert_eq!(json["profile"], "default");
+        assert_eq!(json["ownerWindow"], "main");
+        assert_eq!(json["kind"], "page");
+        assert_eq!(json["surface"], "child");
+        assert_eq!(json["channel"], "native");
+        assert_eq!(json["channelError"], "Runtime.addBinding failed");
+        assert_eq!(json["requestedUrl"], "https://example.com/");
+        assert_eq!(json["canGoBack"], false);
+
+        let bounds: Bounds =
+            serde_json::from_str(r#"{"x":1,"y":2.5,"width":300,"height":200}"#).unwrap();
+        assert_eq!(bounds.y, 2.5);
+        let choice: SurfaceChoice = serde_json::from_str(r#""window""#).unwrap();
+        assert_eq!(choice, SurfaceChoice::Window);
+
+        let popup = serde_json::to_value(BrowserPopupPayload {
+            presentation: PopupPresentation::Adopted,
+            opener_tab_id: "t1".into(),
+            tab_id: Some("t1-p1".into()),
+            url: "https://example.com/popup".into(),
+            requested_size: None,
+            reason: None,
+            profile: Some("p-work".into()),
+        })
+        .unwrap();
+        assert_eq!(popup["profile"], "p-work");
+        let request = serde_json::to_value(BrowserOpenRequestPayload {
+            url: "https://example.com/".into(),
+            source: "modifier-click".into(),
+            activate: false,
+            owner_window: Some("main".into()),
+            opener_tab_id: Some("t1".into()),
+            profile: Some("p-work".into()),
+        })
+        .unwrap();
+        assert_eq!(request["profile"], "p-work");
+        assert_eq!(request["openerTabId"], "t1");
+        let blocked = serde_json::to_value(BrowserNavigationBlockedPayload {
+            tab_id: "t1".into(),
+            url: "https://blocked.example/".into(),
+            reason: NavigationBlockReason::HostRule,
+        })
+        .unwrap();
+        assert_eq!(blocked["reason"], "host-rule");
+        let frame = serde_json::to_value(FrozenFrame {
+            mime: "image/jpeg".into(),
+            data: "AAAA".into(),
+            width: 10,
+            height: 4,
+        })
+        .unwrap();
+        assert_eq!(frame["mime"], "image/jpeg");
+    }
+}

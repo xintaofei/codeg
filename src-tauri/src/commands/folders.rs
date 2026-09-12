@@ -5132,7 +5132,7 @@ pub async fn read_file_base64(
 /// path validated by canonicalization cannot be redirected through a symlink
 /// swapped in afterward.
 #[cfg(unix)]
-fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new()
         .read(true)
@@ -5141,7 +5141,7 @@ fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
 }
 
 #[cfg(windows)]
-fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
     // FILE_FLAG_OPEN_REPARSE_POINT opens the reparse point itself instead of
     // following it, so a symlink/junction swapped in after validation is opened
@@ -5155,7 +5155,7 @@ fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
     std::fs::File::open(path)
 }
 

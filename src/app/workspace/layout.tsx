@@ -1,5 +1,8 @@
 "use client"
 
+import { BrowserEventsBridge } from "@/components/browser/browser-events-bridge"
+import { BrowserTabsPersistence } from "@/components/browser/browser-tabs-persistence"
+import { BrowserTabsSuspender } from "@/components/browser/browser-tabs-suspender"
 import {
   Suspense,
   useMemo,
@@ -1279,6 +1282,9 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                     <TabProvider>
                       <WorkspaceDocumentTitle />
                       <TabKeysSync />
+                      <BrowserEventsBridge />
+                      <BrowserTabsPersistence />
+                      <BrowserTabsSuspender />
                       <HeavyPluginsWarmup />
                       <DeepLinkBootstrap />
                       <PetFocusBridge />

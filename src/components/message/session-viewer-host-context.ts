@@ -69,10 +69,19 @@ export interface FileRequest extends FileViewerRequest {
   kind: "file"
 }
 
+/** An http(s) page opened from the transcript while the file column is
+ *  covered by a full-page route: shown in the built-in browser, inside the
+ *  transcript's side panel. */
+export interface BrowserRequest {
+  kind: "browser"
+  url: string
+}
+
 export type SessionViewerRequest =
   | DelegationRequest
   | AgentSessionRequest
   | FileRequest
+  | BrowserRequest
 
 export interface SessionViewerHostValue {
   open: (request: SessionViewerRequest) => void

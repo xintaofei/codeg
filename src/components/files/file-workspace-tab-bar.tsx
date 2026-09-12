@@ -2,13 +2,23 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Reorder } from "motion/react"
-import { FileText, GitCompare, Maximize2, Minimize2, X } from "lucide-react"
+import {
+  Bot,
+  FileText,
+  GitCompare,
+  Maximize2,
+  Minimize2,
+  X,
+  Globe,
+} from "lucide-react"
 import { useTranslations } from "next-intl"
 import {
   useWorkspaceActions,
   useWorkspaceFileTabs,
   useWorkspaceView,
 } from "@/contexts/workspace-context"
+import { AGENT_MARK } from "@/components/browser/browser-agent-access"
+import { useBrowserTabState } from "@/lib/browser/browser-tab-store"
 import type { FileWorkspaceTab } from "@/contexts/workspace-context"
 import { useIsCoarsePointer } from "@/hooks/use-is-coarse-pointer"
 import { useLongPressDrag } from "@/hooks/use-long-press-drag"
@@ -218,8 +228,27 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
   onTouchSortingStart,
   onTouchSortingEnd,
 }: FileWorkspaceTabItemProps) {
+  const tAgent = useTranslations("Browser.agent")
   const isDiff = tab.kind === "diff" || tab.kind === "rich-diff"
+  const isBrowser = tab.kind === "browser"
   const isDirty = tab.kind === "file" && Boolean(tab.isDirty)
+  // A browser tab's title follows the page (document.title); the record only
+  // knows the host it was opened with.
+  const browserState = useBrowserTabState(isBrowser ? tab.id : null)
+  // No live state = no page behind the tab yet: restored from a previous run
+  // or unloaded in the background; it loads when switched to. Drawn faded,
+  // the way browsers draw a discarded tab.
+  const unloaded = isBrowser && !browserState
+  const displayTitle = isBrowser ? browserState?.title || tab.title : tab.title
+  const sharedWith = browserState?.agentGrant?.origin ?? null
+  const displayHint = isBrowser
+    ? [
+        browserState?.url || tab.browser.initialUrl,
+        sharedWith && tAgent("shared"),
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : (tab.description ?? tab.title)
 
   const handleLongPressStart = useCallback(
     () => onTouchSortingStart(tab.id),
@@ -317,9 +346,24 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
                       : "text-muted-foreground",
                   ]
             )}
-            title={tab.description ?? tab.title}
+            title={displayHint}
           >
-            {isDiff ? (
+            {isBrowser && sharedWith ? (
+              // A shared tab says so from the strip, not only from inside
+              // itself: the page an agent is reading is often not the one the
+              // user is looking at. Replaces the globe rather than joining it
+              // — "an agent can read this" is the fact worth a glyph here,
+              // and the title and address already say it is a web page.
+              <Bot
+                className={cn("h-3.5 w-3.5 shrink-0", AGENT_MARK)}
+                data-agent-shared={sharedWith}
+              />
+            ) : isBrowser ? (
+              <Globe
+                className={cn("h-3.5 w-3.5", unloaded && "opacity-50")}
+                data-unloaded={unloaded ? "true" : undefined}
+              />
+            ) : isDiff ? (
               <GitCompare className="h-3.5 w-3.5" />
             ) : (
               <FileText className="h-3.5 w-3.5" />
@@ -332,10 +376,11 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
                 // the full width is used. Standalone: ellipsis cap in the scroll row.
                 embedded
                   ? "min-w-0 flex-1 overflow-hidden whitespace-nowrap browser-tab-label"
-                  : "truncate max-w-[11.25rem]"
+                  : "truncate max-w-[11.25rem]",
+                unloaded && "opacity-60"
               )}
             >
-              {tab.title}
+              {displayTitle}
               {isDirty ? " *" : ""}
             </span>
             <button

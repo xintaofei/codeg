@@ -13,7 +13,7 @@ import {
 import { useTranslations } from "next-intl"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { buildFileTabId } from "@/lib/file-tab-id"
+import { browserTabBackendId, buildFileTabId } from "@/lib/file-tab-id"
 import {
   gitDiff,
   gitDiffWithBranch,
@@ -39,6 +39,7 @@ import { isAbsoluteFilePath } from "@/lib/file-path-display"
 import {
   batchCloseSlots,
   pushClosedTab,
+  snapshotBrowserTab,
   snapshotFileTab,
 } from "@/lib/closed-tab-stack"
 import {
@@ -66,17 +67,59 @@ import {
   type WorkspaceExternalConflict,
 } from "@/hooks/use-open-file-tabs-watch"
 import { useOfficeAutoPreview } from "@/lib/office-preview-prefs"
+import {
+  browserTabHiddenAt,
+  getBrowserTabState,
+  hasSurfaceClaim,
+  releaseBrowserTab,
+} from "@/lib/browser/browser-tab-store"
+import { hostnameOf, normalizeUrlForDedupe } from "@/lib/browser/browser-url"
+import {
+  DEFAULT_BROWSER_PROFILE_ID,
+  browserProfileExists,
+  getBrowserPrefs,
+  subscribeBrowserPrefs,
+} from "@/lib/browser/browser-prefs"
+import { randomUUID } from "@/lib/utils"
 
 export type WorkspaceMode = "conversation" | "fusion"
+
+/** The closed-stack entry for a browser tab: the page it was showing, read
+ *  from the live state while that still exists (it is released right after).
+ *  `index` is the strip slot to reopen into — for a batch close, the slot
+ *  `batchCloseSlots` assigned, not the position in the pre-close strip. */
+function closedBrowserTab(tab: BrowserWorkspaceTab, index: number) {
+  const state = getBrowserTabState(tab.id)
+  return snapshotBrowserTab(
+    tab,
+    state?.url || state?.requestedUrl || tab.browser.initialUrl,
+    state?.title || tab.title,
+    index
+  )
+}
+
 export type WorkspacePane = "conversation" | "files"
 
-type FileWorkspaceTabKind = "file" | "diff" | "rich-diff"
+type FileLikeTabKind = "file" | "diff" | "rich-diff"
+type FileWorkspaceTabKind = FileLikeTabKind | "browser"
 type FileSaveState = "idle" | "saving" | "error"
 type LineEnding = "lf" | "crlf" | "mixed" | "none"
 
-export interface FileWorkspaceTab {
+/** Seed of a built-in browser tab. Live state (url, title, loading, history)
+ *  lives in `lib/browser/browser-tab-store`, keyed by the tab id, so page
+ *  activity never churns the `fileTabs` slice. */
+export interface BrowserTabSeed {
+  /** The URL the tab was opened with; the surface navigates to it once. */
+  initialUrl: string
+  /** Set on a tab adopted from another tab's `window.open` (popup). */
+  openerTabId: string | null
+  /** The browser profile the tab lives in (its cookie jar and storage).
+   *  Fixed for the tab's life: the surface is built in it. */
+  profile: string
+}
+
+interface FileWorkspaceTabBase {
   id: string
-  kind: FileWorkspaceTabKind
   // Repo context for git-scoped diff tabs (working/branch/commit/session
   // diffs are repository operations and need the repo root). Plain file
   // tabs are folder-free: folderId is ALWAYS null and `path` holds the
@@ -111,6 +154,25 @@ export interface FileWorkspaceTab {
   // resolved against disk. Cleared by any successful content reload.
   stale?: boolean
 }
+
+/** A file, a unified diff, or a rich (side-by-side) diff. */
+export interface FileLikeWorkspaceTab extends FileWorkspaceTabBase {
+  kind: FileLikeTabKind
+  browser?: never
+}
+
+/** A built-in browser tab: no path, no editable content. */
+export interface BrowserWorkspaceTab extends FileWorkspaceTabBase {
+  kind: "browser"
+  path: null
+  language: "browser"
+  browser: BrowserTabSeed
+}
+
+// A discriminated union rather than optional fields on one shape: a `file`
+// tab can never carry browser state and a `browser` tab can never be dirty,
+// and the compiler should say so at every switch on `kind`.
+export type FileWorkspaceTab = FileLikeWorkspaceTab | BrowserWorkspaceTab
 
 // The provider value is split across three contexts so high-frequency
 // fileTabs churn (per-keystroke content updates, watcher-driven reloads)
@@ -218,6 +280,57 @@ interface WorkspaceActionsValue {
   reloadActiveFile: () => Promise<void>
   toggleFileTabPreview: (tabId: string) => void
   toggleFilesMaximized: () => void
+  // Open (or re-activate) a built-in browser tab for an http(s) URL. One tab
+  // per URL (fragment ignored): a second open activates the existing tab.
+  // Returns the tab id, or null when the URL does not parse. The native
+  // surface is created by the tab's view when it mounts, not here.
+  // `openerTabId` (a workspace tab id) places the new tab right after that
+  // tab, the way a ⌘/Ctrl-click lands next to the page it came from.
+  // `index` is the strip slot for a tab that is not open yet, clamped to the
+  // strip; omitted = append, and an `openerTabId` wins over it. Reopening a
+  // closed tab passes the slot it was closed from. A tab already on this URL
+  // in the same profile is activated where it is. `profile` defaults to the
+  // opener's, else to the preference for new tabs.
+  openBrowserTab: (
+    url: string,
+    options?: {
+      folderId?: number
+      activate?: boolean
+      openerTabId?: string
+      index?: number
+      profile?: string
+    }
+  ) => string | null
+  // Register a tab for a webview the BACKEND already created — a popup the
+  // page opened that the host adopted. `backendTabId` is the backend's id
+  // (`<opener>-p<n>`); the record is inserted right after its opener.
+  adoptBrowserTab: (params: {
+    backendTabId: string
+    url: string
+    openerBackendTabId: string
+    /** The profile the backend built the popup in; null = unknown. */
+    profile?: string | null
+  }) => string
+  // Bring back browser tabs saved by a previous run, as records only: none
+  // is activated, and a native surface is created for one when it is first
+  // shown. Entries are appended in order; nothing happens when the workspace
+  // already has browser tabs (a second document of the same run).
+  restoreBrowserTabs: (entries: RestorableBrowserTab[]) => void
+  // Release a background tab's native surface (memory) while keeping its
+  // record: the record moves to the page the tab was showing, so the next
+  // time it is shown a fresh surface loads that page. No-op for a tab that
+  // has no surface. Returns whether a surface was released.
+  suspendBrowserTab: (tabId: string) => boolean
+}
+
+/** What a browser tab needs to come back after a restart (see
+ *  `lib/browser/browser-tab-persistence`). */
+export interface RestorableBrowserTab {
+  url: string
+  title: string | null
+  folderId: number | null
+  /** A profile that exists (the restorer maps deleted ones to the default). */
+  profile: string
 }
 
 interface WorkspaceViewValue {
@@ -333,7 +446,7 @@ const IMAGE_MIME: Record<string, string> = {
 function loadingTab(
   id: string,
   folderId: number | null,
-  kind: FileWorkspaceTabKind,
+  kind: FileLikeTabKind,
   title: string,
   description: string | null,
   path: string | null,
@@ -661,6 +774,313 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     },
     [activateFilePane]
   )
+
+  const browserTabRecord = useCallback(
+    (
+      backendTabId: string,
+      url: string,
+      folderId: number | null,
+      openerTabId: string | null,
+      profile: string,
+      title?: string | null
+    ): BrowserWorkspaceTab => ({
+      id: buildFileTabId({ kind: "browser", id: backendTabId }),
+      kind: "browser",
+      folderId,
+      title: title || (hostnameOf(url) ?? url),
+      description: null,
+      path: null,
+      language: "browser",
+      content: "",
+      loading: true,
+      readonly: true,
+      browser: { initialUrl: url, openerTabId, profile },
+    }),
+    []
+  )
+
+  const openBrowserTab = useCallback(
+    (
+      url: string,
+      options?: {
+        folderId?: number
+        activate?: boolean
+        openerTabId?: string
+        index?: number
+        profile?: string
+      }
+    ) => {
+      const normalized = normalizeUrlForDedupe(url)
+      if (!normalized) return null
+      const opener = options?.openerTabId
+        ? fileTabsRef.current.find((tab) => tab.id === options.openerTabId)
+        : undefined
+      // A tab opened from another tab (⌘-click, a popup) belongs with it:
+      // same cookies, same signed-in state. Otherwise the preference. A
+      // profile that no longer exists (a reopened tab of a deleted one, a
+      // stale record) is not recreated on the backend: default instead.
+      const prefs = getBrowserPrefs()
+      const wanted =
+        options?.profile ??
+        (opener?.kind === "browser" ? opener.browser.profile : undefined) ??
+        prefs.newTabProfile
+      const profile = browserProfileExists(prefs, wanted)
+        ? wanted
+        : DEFAULT_BROWSER_PROFILE_ID
+      // One tab per page AND profile: the same page in two profiles is two
+      // different sessions, and both are worth a tab.
+      const existing = fileTabsRef.current.find(
+        (tab) =>
+          tab.kind === "browser" &&
+          tab.browser.profile === profile &&
+          normalizeUrlForDedupe(tab.browser.initialUrl) === normalized
+      )
+      if (existing) {
+        if (options?.activate !== false) activateTab(existing.id)
+        return existing.id
+      }
+      const record = browserTabRecord(
+        randomUUID(),
+        url,
+        options?.folderId ??
+          opener?.folderId ??
+          activeFolderRef.current?.id ??
+          null,
+        opener?.id ?? null,
+        profile
+      )
+      const insert = (prev: FileWorkspaceTab[]) => {
+        if (prev.some((tab) => tab.id === record.id)) return prev
+        const idx = opener ? prev.findIndex((tab) => tab.id === opener.id) : -1
+        const at =
+          idx >= 0
+            ? idx + 1
+            : options?.index == null
+              ? prev.length
+              : Math.max(0, Math.min(options.index, prev.length))
+        const next = [...prev]
+        next.splice(at, 0, record)
+        return next
+      }
+      if (options?.activate === false) {
+        setFileTabs(insert)
+      } else if (opener) {
+        setFileTabs(insert)
+        setActiveFileTabId(record.id)
+        activateFilePane()
+      } else {
+        seedLoadingTab(record, false, options?.index)
+      }
+      return record.id
+    },
+    [activateFilePane, activateTab, browserTabRecord, seedLoadingTab]
+  )
+
+  const adoptBrowserTab = useCallback(
+    (params: {
+      backendTabId: string
+      url: string
+      openerBackendTabId: string
+      /** The profile the backend built the popup in (its opener's). */
+      profile?: string | null
+    }) => {
+      const openerId = buildFileTabId({
+        kind: "browser",
+        id: params.openerBackendTabId,
+      })
+      const opener = fileTabsRef.current.find((tab) => tab.id === openerId)
+      // A popup shares its opener's data store on the backend whatever is
+      // said here; the record says the same so the toolbar shows it. The
+      // backend's word comes first — the opener record may be gone by now.
+      const record = browserTabRecord(
+        params.backendTabId,
+        params.url,
+        opener?.folderId ?? activeFolderRef.current?.id ?? null,
+        openerId,
+        params.profile ??
+          (opener?.kind === "browser"
+            ? opener.browser.profile
+            : getBrowserPrefs().newTabProfile)
+      )
+      setFileTabs((prev) => {
+        if (prev.some((tab) => tab.id === record.id)) return prev
+        const idx = prev.findIndex((tab) => tab.id === openerId)
+        if (idx < 0) return [...prev, record]
+        const next = [...prev]
+        next.splice(idx + 1, 0, record)
+        return next
+      })
+      // A popup is what the user just clicked for: show it, like a browser
+      // would, and the opener stays one tab to the left.
+      setActiveFileTabId(record.id)
+      activateFilePane()
+      return record.id
+    },
+    [activateFilePane, browserTabRecord]
+  )
+
+  const restoreBrowserTabs = useCallback(
+    (entries: RestorableBrowserTab[]) => {
+      if (entries.length === 0) return
+      setFileTabs((prev) => {
+        // Merge, never replace: a tab opened before the restore ran (a deep
+        // link, an agent request — the capability probe is a round trip) must
+        // not cost the user the whole stored set. Same one-tab-per-URL rule
+        // as `openBrowserTab`, so a page already open is not duplicated.
+        const open = new Set(
+          prev.flatMap((tab) =>
+            tab.kind === "browser"
+              ? [
+                  `${tab.browser.profile} ${normalizeUrlForDedupe(tab.browser.initialUrl) ?? ""}`,
+                ]
+              : []
+          )
+        )
+        const records: FileWorkspaceTab[] = []
+        const prefs = getBrowserPrefs()
+        for (const entry of entries) {
+          const normalized = normalizeUrlForDedupe(entry.url)
+          if (!normalized) continue
+          const profile = browserProfileExists(prefs, entry.profile)
+            ? entry.profile
+            : DEFAULT_BROWSER_PROFILE_ID
+          const key = `${profile} ${normalized}`
+          if (open.has(key)) continue
+          open.add(key)
+          records.push(
+            browserTabRecord(
+              randomUUID(),
+              entry.url,
+              entry.folderId,
+              null,
+              profile,
+              entry.title
+            )
+          )
+        }
+        // Records only; not activated, so no surface is created until the
+        // user switches to one. The pane state is left exactly as it was.
+        return records.length === 0 ? prev : [...prev, ...records]
+      })
+    },
+    [browserTabRecord]
+  )
+
+  // A deleted profile has no store any more. Its loaded tabs are closed by
+  // the backend as part of the deletion (their records go with the
+  // `browser://closed` event, and until then they still name the store their
+  // surface lives in); the records that are NOT loaded (restored, suspended)
+  // would recreate the store the moment they are shown, so they move to the
+  // default profile as soon as the preference says the profile is gone — or
+  // go, if the default profile already has a tab on that page (one tab per
+  // page and profile).
+  useEffect(
+    () =>
+      subscribeBrowserPrefs(() => {
+        const prefs = getBrowserPrefs()
+        setFileTabs((prev) => {
+          // Dormant = no live state AND no surface being created: a tab
+          // whose create is in flight has no state yet but already has a
+          // webview in its profile's store on the way, and the backend will
+          // close it with the rest of the profile.
+          const dormantOrphan = (tab: FileWorkspaceTab) =>
+            tab.kind === "browser" &&
+            !browserProfileExists(prefs, tab.browser.profile) &&
+            getBrowserTabState(tab.id) === null &&
+            !hasSurfaceClaim(browserTabBackendId(tab.id) ?? "")
+          if (!prev.some(dormantOrphan)) return prev
+          const inDefault = new Set(
+            prev.flatMap((tab) =>
+              tab.kind === "browser" &&
+              tab.browser.profile === DEFAULT_BROWSER_PROFILE_ID
+                ? [normalizeUrlForDedupe(tab.browser.initialUrl) ?? ""]
+                : []
+            )
+          )
+          const next: FileWorkspaceTab[] = []
+          for (const tab of prev) {
+            if (!dormantOrphan(tab) || tab.kind !== "browser") {
+              next.push(tab)
+              continue
+            }
+            const key = normalizeUrlForDedupe(tab.browser.initialUrl) ?? ""
+            if (inDefault.has(key)) continue
+            inDefault.add(key)
+            next.push({
+              ...tab,
+              browser: {
+                ...tab.browser,
+                profile: DEFAULT_BROWSER_PROFILE_ID,
+              },
+            })
+          }
+          return next
+        })
+      }),
+    []
+  )
+
+  const suspendBrowserTab = useCallback((tabId: string) => {
+    const tab = fileTabsRef.current.find((t) => t.id === tabId)
+    if (!tab || tab.kind !== "browser") return false
+    const state = getBrowserTabState(tabId)
+    if (!state) return false
+    // Re-checked here, not just by the caller: the surface host may have
+    // mounted (the user switched to this tab) between the caller picking it
+    // and this call. `null` means "on screen right now", `undefined` "never
+    // shown by this document" — releasing either would blank a live pane.
+    if (typeof browserTabHiddenAt(tabId) !== "number") return false
+    const url = state.url || state.requestedUrl || tab.browser.initialUrl
+    const title = state.title || tab.title
+    // Move the record to where the page got to before letting the surface
+    // go: the tab strip keeps showing the page's title, and the surface
+    // created when the tab is next shown loads that page, not the address
+    // the tab was opened with. History and scroll position are lost, as in
+    // a browser's discarded tab. A profile deleted while the tab was loaded
+    // is left behind here too: the dormant record must not name it — and if
+    // the default profile already shows that page, the record goes rather
+    // than becoming a duplicate (one tab per page and profile).
+    const profile = browserProfileExists(getBrowserPrefs(), tab.browser.profile)
+      ? tab.browser.profile
+      : DEFAULT_BROWSER_PROFILE_ID
+    // Decided inside the updater, against the list as it is when the update
+    // applies (a queued insert may land first); the active pointer moves to
+    // the neighbouring survivor the way `closeFileTab` does — a suspended
+    // tab is off screen, but the file pane may be hidden with it selected.
+    const normalized = normalizeUrlForDedupe(url)
+    setFileTabs((prev) => {
+      const duplicate =
+        profile !== tab.browser.profile &&
+        prev.some(
+          (t) =>
+            t.kind === "browser" &&
+            t.id !== tabId &&
+            t.browser.profile === profile &&
+            normalizeUrlForDedupe(t.browser.initialUrl) === normalized
+        )
+      if (!duplicate) {
+        return prev.map((t) =>
+          t.id === tabId && t.kind === "browser"
+            ? {
+                ...t,
+                title,
+                browser: { ...t.browser, initialUrl: url, profile },
+              }
+            : t
+        )
+      }
+      const idx = prev.findIndex((t) => t.id === tabId)
+      const next = prev.filter((t) => t.id !== tabId)
+      setActiveFileTabId((current) => {
+        if (current !== tabId) return current
+        if (next.length === 0) return null
+        return next[Math.min(Math.max(idx, 0), next.length - 1)].id
+      })
+      return next
+    })
+    releaseBrowserTab(tabId)
+    return true
+  }, [])
 
   // Mark an existing tab as refreshing. Preserves content / originalContent /
   // modifiedContent / gitBaseContent / savedContent / etag / mtimeMs /
@@ -2355,6 +2775,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         // more than once (StrictMode, or a discarded render replayed).
         const closed = snapshotFileTab(tab, idx)
         if (closed) pushClosedTab(closed)
+        // Idempotent on the backend, so safe under a replayed updater.
+        if (tab.kind === "browser") {
+          pushClosedTab(closedBrowserTab(tab, idx))
+          releaseBrowserTab(tab.id)
+        }
 
         const next = prev.filter((candidate) => candidate.id !== tabId)
 
@@ -2408,6 +2833,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         for (const [closing, slot] of slots) {
           const closed = snapshotFileTab(closing, slot)
           if (closed) pushClosedTab(closed)
+          if (closing.kind === "browser") {
+            pushClosedTab(closedBrowserTab(closing, slot))
+            releaseBrowserTab(closing.id)
+          }
           inFlightLoadsRef.current.delete(closing.id)
         }
 
@@ -2429,6 +2858,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       for (const [tab, slot] of batchCloseSlots(prev)) {
         const closed = snapshotFileTab(tab, slot)
         if (closed) pushClosedTab(closed)
+        if (tab.kind === "browser") {
+          pushClosedTab(closedBrowserTab(tab, slot))
+          releaseBrowserTab(tab.id)
+        }
       }
 
       inFlightLoadsRef.current.clear()
@@ -2600,6 +3033,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       reloadActiveFile,
       toggleFileTabPreview,
       toggleFilesMaximized,
+      openBrowserTab,
+      adoptBrowserTab,
+      restoreBrowserTabs,
+      suspendBrowserTab,
     }),
     [
       setActivePane,
@@ -2628,6 +3065,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       reloadActiveFile,
       toggleFileTabPreview,
       toggleFilesMaximized,
+      openBrowserTab,
+      adoptBrowserTab,
+      restoreBrowserTabs,
+      suspendBrowserTab,
     ]
   )
 
@@ -2699,6 +3140,12 @@ export function useWorkspaceActions(): WorkspaceActionsValue {
     throw new Error("useWorkspaceActions must be used within WorkspaceProvider")
   }
   return ctx
+}
+
+/** The actions, or `null` outside a `WorkspaceProvider` — for hooks that can
+ *  degrade (the link opener falls back to the system browser). */
+export function useOptionalWorkspaceActions(): WorkspaceActionsValue | null {
+  return useContext(WorkspaceActionsContext)
 }
 
 // Low-frequency layout state (mode / activePane / filesMaximized). Changes

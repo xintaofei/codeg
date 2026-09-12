@@ -27,6 +27,7 @@
 
 import * as React from "react"
 
+import { BrowserViewerDrawer } from "@/components/browser/browser-viewer-drawer"
 import { FileViewerDrawer } from "@/components/files/file-viewer-drawer"
 import {
   SessionViewerHostContext,
@@ -96,6 +97,14 @@ export function SessionViewerHost({ children }: { children: React.ReactNode }) {
       {request?.kind === "file" && (
         <FileViewerDrawer
           request={request}
+          open={open}
+          onOpenChange={setOpen}
+        />
+      )}
+      {request?.kind === "browser" && (
+        <BrowserViewerDrawer
+          key={request.url}
+          url={request.url}
           open={open}
           onOpenChange={setOpen}
         />

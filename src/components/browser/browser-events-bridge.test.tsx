@@ -1,0 +1,542 @@
+import { act, render, renderHook } from "@testing-library/react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+import type { BrowserCapabilities } from "@/lib/browser/types"
+
+type Handler = (payload: unknown) => void
+
+const mocks = vi.hoisted(() => {
+  const handlers = new Map<string, Handler>()
+  const unsubscribed: string[] = []
+  return {
+    handlers,
+    unsubscribed,
+    capabilities: vi.fn(
+      (): Promise<BrowserCapabilities> =>
+        Promise.resolve({
+          available: true,
+          surface: "child",
+          platform: "macos",
+          channel: "native",
+          reasons: [],
+          isolatedStorage: true,
+          proxy: { url: null, applies: "live", reason: null },
+          downloadsDir: "/Users/dev/Downloads",
+          docGuest: false,
+          profiles: false,
+          signInUserAgent: false,
+          ownedWindowControls: false,
+          policy: { enabled: true, managedRules: [], managedSource: null },
+        })
+    ),
+    browserSetHostRules: vi.fn(() => Promise.resolve()),
+    browserSetSignInUserAgent: vi.fn(() => Promise.resolve()),
+    subscribe: vi.fn((event: string, handler: Handler) => {
+      handlers.set(event, handler)
+      return Promise.resolve(() => {
+        unsubscribed.push(event)
+        handlers.delete(event)
+      })
+    }),
+    adoptBrowserTab: vi.fn(() => "browser:opener-p1"),
+    closeFileTab: vi.fn(),
+    openBrowserTab: vi.fn(() => "browser:new"),
+    browserClose: vi.fn(() => Promise.resolve()),
+    browserListTabs: vi.fn(() =>
+      Promise.resolve([{ tabId: "stale-1" }, { tabId: "stale-2" }])
+    ),
+    browserListDownloads: vi.fn(() =>
+      Promise.resolve([
+        {
+          id: "dl-1",
+          tabId: "t1",
+          url: "https://example.com/a.bin",
+          fileName: "a.bin",
+          path: "/Users/dev/Downloads/a.bin",
+          state: "completed",
+        },
+      ])
+    ),
+  }
+})
+
+vi.mock("@/lib/browser/browser-api", () => ({
+  browserCapabilities: mocks.capabilities,
+  browserClose: mocks.browserClose,
+  browserListTabs: mocks.browserListTabs,
+  browserListDownloads: mocks.browserListDownloads,
+  browserSetHostRules: mocks.browserSetHostRules,
+  browserSetSignInUserAgent: mocks.browserSetSignInUserAgent,
+}))
+vi.mock("@/lib/transport", () => ({
+  getTransport: () => ({ subscribe: mocks.subscribe }),
+  isDesktop: () => true,
+}))
+vi.mock("@/contexts/workspace-context", () => ({
+  useWorkspaceActions: () => ({
+    adoptBrowserTab: mocks.adoptBrowserTab,
+    closeFileTab: mocks.closeFileTab,
+    openBrowserTab: mocks.openBrowserTab,
+  }),
+}))
+
+import {
+  resetBrowserPrefsForTests,
+  setBrowserHostRules,
+  setBrowserSignInUserAgent,
+} from "@/lib/browser/browser-prefs"
+import {
+  getBrowserTabState,
+  resetBrowserTabStoreForTests,
+  setBrowserTabState,
+  useBrowserAgentActivity,
+  useBrowserFindRequest,
+  useBrowserTabNotice,
+} from "@/lib/browser/browser-tab-store"
+import {
+  getBrowserDownloads,
+  resetBrowserDownloadsForTests,
+} from "@/lib/browser/browser-downloads-store"
+import { BrowserEventsBridge } from "./browser-events-bridge"
+
+/** The store's find counter, read the way a component would. */
+function findRequestOf(workspaceTabId: string): number {
+  const view = renderHook(() => useBrowserFindRequest(workspaceTabId))
+  const seen = view.result.current
+  view.unmount()
+  return seen
+}
+
+async function flush() {
+  await act(async () => {
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
+describe("BrowserEventsBridge", () => {
+  beforeEach(() => {
+    mocks.handlers.clear()
+    mocks.unsubscribed.length = 0
+    mocks.subscribe.mockClear()
+    mocks.adoptBrowserTab.mockClear()
+    mocks.closeFileTab.mockClear()
+    mocks.openBrowserTab.mockClear()
+    mocks.browserClose.mockClear()
+    mocks.browserListDownloads.mockClear()
+    mocks.browserSetHostRules.mockClear()
+    mocks.browserSetSignInUserAgent.mockClear()
+    resetBrowserTabStoreForTests()
+    resetBrowserDownloadsForTests()
+    resetBrowserPrefsForTests()
+  })
+  afterEach(() => {
+    resetBrowserTabStoreForTests()
+    resetBrowserDownloadsForTests()
+    resetBrowserPrefsForTests()
+  })
+
+  it("subscribes to the streams once the capabilities say a browser exists, after sweeping orphans", async () => {
+    const { unmount } = render(<BrowserEventsBridge />)
+    await flush()
+    // Surfaces left over from a previous document are closed first.
+    expect(mocks.browserClose).toHaveBeenCalledWith("stale-1")
+    expect(mocks.browserClose).toHaveBeenCalledWith("stale-2")
+    expect([...mocks.handlers.keys()].sort()).toEqual([
+      "browser://agent-activity",
+      "browser://agent-grant",
+      "browser://closed",
+      "browser://doc-state",
+      "browser://download",
+      "browser://navigation-blocked",
+      "browser://open-request",
+      "browser://popup",
+      "browser://shortcut",
+      "browser://state",
+    ])
+    // Downloads already running when this document mounted are shown again.
+    expect(getBrowserDownloads().map((d) => d.id)).toEqual(["dl-1"])
+    mocks.handlers.get("browser://download")!({
+      id: "dl-2",
+      tabId: "t1",
+      url: "https://example.com/b.bin",
+      fileName: "b.bin",
+      path: "/Users/dev/Downloads/b.bin",
+      state: "started",
+    })
+    expect(getBrowserDownloads().map((d) => d.id)).toEqual(["dl-2", "dl-1"])
+
+    // ⌘F inside the page reaches the tab's find bar; anything else the page
+    // claims is dropped by the host, and an unknown name changes nothing.
+    expect(findRequestOf("browser:abc")).toBe(0)
+    mocks.handlers.get("browser://shortcut")!({
+      tabId: "abc",
+      shortcut: "find",
+    })
+    expect(findRequestOf("browser:abc")).toBe(1)
+    mocks.handlers.get("browser://shortcut")!({
+      tabId: "abc",
+      shortcut: "quit",
+    })
+    expect(findRequestOf("browser:abc")).toBe(1)
+
+    mocks.handlers.get("browser://open-request")!({
+      url: "https://example.com/from-agent",
+      source: "agent",
+      activate: false,
+      ownerWindow: null,
+    })
+    expect(mocks.openBrowserTab).toHaveBeenCalledWith(
+      "https://example.com/from-agent",
+      { activate: false }
+    )
+    mocks.handlers.get("browser://open-request")!({
+      url: "https://example.com/other-window",
+      source: "agent",
+      activate: true,
+      ownerWindow: "remote-workspace-3",
+    })
+    expect(mocks.openBrowserTab).toHaveBeenCalledTimes(1)
+    // A modifier-click names its opener; the workspace id is derived here so
+    // the context can place the new tab right after it.
+    mocks.handlers.get("browser://open-request")!({
+      url: "https://example.com/next-to-opener",
+      source: "modifier-click",
+      activate: false,
+      ownerWindow: "main",
+      kind: "page",
+      openerTabId: "abc",
+      profile: "default",
+    })
+    expect(mocks.openBrowserTab).toHaveBeenCalledTimes(2)
+    expect(mocks.openBrowserTab).toHaveBeenLastCalledWith(
+      "https://example.com/next-to-opener",
+      { activate: false, openerTabId: "browser:abc", profile: "default" }
+    )
+    // The opener's profile travels with the request: the new tab belongs to
+    // the same signed-in session even when the opener record is gone.
+    mocks.handlers.get("browser://open-request")!({
+      url: "https://example.com/in-work",
+      source: "modifier-click",
+      activate: false,
+      ownerWindow: "main",
+      openerTabId: "abc",
+      profile: "p-work",
+    })
+    expect(mocks.openBrowserTab).toHaveBeenLastCalledWith(
+      "https://example.com/in-work",
+      { activate: false, openerTabId: "browser:abc", profile: "p-work" }
+    )
+    // A request from an agent or a deep link leaves the profile open.
+    mocks.handlers.get("browser://open-request")!({
+      url: "https://example.com/no-opinion",
+      source: "agent",
+      activate: true,
+      ownerWindow: "main",
+      openerTabId: null,
+      profile: null,
+    })
+    expect(mocks.openBrowserTab).toHaveBeenLastCalledWith(
+      "https://example.com/no-opinion",
+      { activate: true, openerTabId: undefined, profile: undefined }
+    )
+
+    mocks.handlers.get("browser://state")!({
+      tabId: "abc",
+      ownerWindow: "main",
+      kind: "page",
+      surface: "child",
+      channel: "native",
+      url: "https://example.com/",
+      requestedUrl: "https://example.com/",
+      title: "Example",
+      favicon: null,
+      loading: false,
+      canGoBack: false,
+      canGoForward: false,
+      origin: "https://example.com",
+      zoom: 1,
+      error: null,
+      remoteHost: null,
+      openerTabId: null,
+      profile: "default",
+    })
+    expect(getBrowserTabState("browser:abc")?.title).toBe("Example")
+
+    mocks.handlers.get("browser://popup")!({
+      presentation: "adopted",
+      openerTabId: "abc",
+      profile: "default",
+      tabId: "abc-p1",
+      url: "https://example.com/popup",
+      requestedSize: null,
+      reason: null,
+    })
+    expect(mocks.adoptBrowserTab).toHaveBeenCalledWith({
+      backendTabId: "abc-p1",
+      url: "https://example.com/popup",
+      openerBackendTabId: "abc",
+      profile: "default",
+    })
+    mocks.handlers.get("browser://popup")!({
+      presentation: "denied",
+      openerTabId: "abc",
+      profile: "default",
+      tabId: null,
+      url: "https://example.com/blocked",
+      requestedSize: null,
+      reason: "no-gesture",
+    })
+    expect(mocks.adoptBrowserTab).toHaveBeenCalledTimes(1)
+
+    setBrowserTabState({
+      tabId: "abc-p1",
+      ownerWindow: "main",
+      kind: "page",
+      surface: "child",
+      channel: "native",
+      channelError: null,
+      url: "",
+      requestedUrl: "https://example.com/popup",
+      title: "",
+      favicon: null,
+      loading: true,
+      canGoBack: false,
+      canGoForward: false,
+      origin: null,
+      zoom: 1,
+      error: null,
+      remoteHost: null,
+      openerTabId: "abc",
+      profile: "default",
+      agentGrant: null,
+    })
+    mocks.handlers.get("browser://closed")!({
+      tabId: "abc-p1",
+      ownerWindow: "main",
+      kind: "page",
+    })
+    expect(getBrowserTabState("browser:abc-p1")).toBeNull()
+    expect(mocks.closeFileTab).toHaveBeenCalledWith("browser:abc-p1")
+
+    unmount()
+    expect(mocks.unsubscribed.sort()).toEqual([
+      "browser://agent-activity",
+      "browser://agent-grant",
+      "browser://closed",
+      "browser://doc-state",
+      "browser://download",
+      "browser://navigation-blocked",
+      "browser://open-request",
+      "browser://popup",
+      "browser://shortcut",
+      "browser://state",
+    ])
+  })
+
+  it("stays silent when no built-in browser is available", async () => {
+    mocks.capabilities.mockResolvedValueOnce({
+      available: false,
+      surface: null,
+      platform: "web",
+      channel: "degraded",
+      reasons: ["web"],
+      isolatedStorage: false,
+      proxy: { url: null, applies: "unsupported", reason: null },
+      downloadsDir: "/Users/dev/Downloads",
+      docGuest: false,
+      profiles: false,
+      signInUserAgent: false,
+      ownedWindowControls: false,
+      policy: { enabled: true, managedRules: [], managedSource: null },
+    })
+    render(<BrowserEventsBridge />)
+    await flush()
+    expect(mocks.subscribe).not.toHaveBeenCalled()
+  })
+
+  it("pushes the user's site rules to the backend at start and whenever they change", async () => {
+    const { unmount } = render(<BrowserEventsBridge />)
+    await flush()
+    expect(mocks.browserSetHostRules).toHaveBeenCalledWith([])
+    // The sign-in user agent travels with them, on by default.
+    expect(mocks.browserSetSignInUserAgent).toHaveBeenCalledWith(true)
+    await act(async () => {
+      setBrowserHostRules([{ pattern: "blocked.example", action: "block" }])
+    })
+    expect(mocks.browserSetHostRules).toHaveBeenLastCalledWith([
+      { pattern: "blocked.example", action: "block" },
+    ])
+    await act(async () => {
+      setBrowserSignInUserAgent(false)
+    })
+    expect(mocks.browserSetSignInUserAgent).toHaveBeenLastCalledWith(false)
+    unmount()
+    // After unmount the preference subscription is gone with the rest.
+    mocks.browserSetHostRules.mockClear()
+    mocks.browserSetSignInUserAgent.mockClear()
+    await act(async () => {
+      setBrowserHostRules([])
+    })
+    expect(mocks.browserSetHostRules).not.toHaveBeenCalled()
+  })
+
+  it("turns a refused navigation into a notice on its tab", async () => {
+    render(<BrowserEventsBridge />)
+    await flush()
+    mocks.handlers.get("browser://navigation-blocked")!({
+      tabId: "abc",
+      url: "https://blocked.example/",
+      reason: "host-rule",
+    })
+    const view = renderHook(() => useBrowserTabNotice("browser:abc"))
+    expect(view.result.current).toEqual({
+      kind: "navigation-blocked",
+      url: "https://blocked.example/",
+      reason: "host-rule",
+    })
+    view.unmount()
+  })
+
+  // The user performed the other two transitions and can see the result in
+  // the toolbar; this one happened to them.
+  it("only interrupts for the grant the page took away, not the ones the user made", async () => {
+    render(<BrowserEventsBridge />)
+    await flush()
+    const grant = mocks.handlers.get("browser://agent-grant")!
+    const noticeOf = () => {
+      const view = renderHook(() => useBrowserTabNotice("browser:abc"))
+      const seen = view.result.current
+      view.unmount()
+      return seen
+    }
+    grant({
+      tabId: "abc",
+      change: "granted",
+      level: "read",
+      origin: "https://example.com",
+    })
+    expect(noticeOf()).toBeNull()
+    grant({
+      tabId: "abc",
+      change: "revoked",
+      level: "none",
+      origin: "https://example.com",
+    })
+    expect(noticeOf()).toBeNull()
+    grant({
+      tabId: "abc",
+      change: "navigated",
+      level: "none",
+      origin: "https://example.com",
+    })
+    expect(noticeOf()).toEqual({
+      kind: "agent-grant-lost",
+      origin: "https://example.com",
+    })
+  })
+
+  // The tab never moved, so nothing else on screen changed: the toolbar still
+  // shows the address the user shared. That is exactly why it needs its own
+  // notice rather than being folded into the one above.
+  it("interrupts when a loopback address changes hands under a still tab", async () => {
+    render(<BrowserEventsBridge />)
+    await flush()
+    const grant = mocks.handlers.get("browser://agent-grant")!
+    grant({
+      tabId: "abc",
+      change: "replaced",
+      level: "none",
+      origin: "http://localhost:3000",
+    })
+    const view = renderHook(() => useBrowserTabNotice("browser:abc"))
+    expect(view.result.current).toEqual({
+      kind: "agent-grant-replaced",
+      origin: "http://localhost:3000",
+    })
+    view.unmount()
+  })
+
+  it("records what agents did to a tab, refusals included", async () => {
+    render(<BrowserEventsBridge />)
+    await flush()
+    const activity = mocks.handlers.get("browser://agent-activity")!
+    activity({ tabId: "abc", action: "read", outcome: "refused", at: 10 })
+    activity({ tabId: "abc", action: "read", outcome: "refused", at: 20 })
+    activity({ tabId: "abc", action: "read", outcome: "done", at: 30 })
+    const view = renderHook(() => useBrowserAgentActivity("browser:abc"))
+    // Newest first, and the run of identical attempts is one line.
+    expect(view.result.current).toEqual([
+      { action: "read", outcome: "done", at: 30, count: 1 },
+      { action: "read", outcome: "refused", at: 20, count: 2 },
+    ])
+    view.unmount()
+  })
+
+  // The settings window can write a rule while this document is still
+  // waiting for the backend's capabilities. The subscription that carries
+  // cross-window changes into this document's cache must already exist
+  // then, and the first push must carry that rule.
+  it("sends a rule written while the capabilities were still pending", async () => {
+    let resolveCapabilities: (caps: BrowserCapabilities) => void = () => {}
+    mocks.capabilities.mockImplementationOnce(
+      () =>
+        new Promise<BrowserCapabilities>((resolve) => {
+          resolveCapabilities = resolve
+        })
+    )
+    render(<BrowserEventsBridge />)
+    await flush()
+    expect(mocks.browserSetHostRules).not.toHaveBeenCalled()
+    // Another window's write arrives as a storage event: only a subscriber
+    // installs the listener that drops this document's cached snapshot.
+    localStorage.setItem(
+      "browser:host-rules",
+      JSON.stringify([{ pattern: "blocked.example", action: "block" }])
+    )
+    window.dispatchEvent(
+      new StorageEvent("storage", { key: "browser:host-rules" })
+    )
+    await act(async () => {
+      resolveCapabilities({
+        available: true,
+        surface: "child",
+        platform: "macos",
+        channel: "native",
+        reasons: [],
+        isolatedStorage: true,
+        proxy: { url: null, applies: "live", reason: null },
+        downloadsDir: "/Users/dev/Downloads",
+        docGuest: false,
+        profiles: false,
+        signInUserAgent: false,
+        ownedWindowControls: false,
+        policy: { enabled: true, managedRules: [], managedSource: null },
+      })
+      await Promise.resolve()
+    })
+    await flush()
+    expect(mocks.browserSetHostRules).toHaveBeenLastCalledWith([
+      { pattern: "blocked.example", action: "block" },
+    ])
+  })
+
+  it("retries a failed push once", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] })
+    try {
+      mocks.browserSetHostRules.mockImplementationOnce(() =>
+        Promise.reject(new Error("backend restarting"))
+      )
+      render(<BrowserEventsBridge />)
+      await flush()
+      expect(mocks.browserSetHostRules).toHaveBeenCalledTimes(1)
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+        await Promise.resolve()
+      })
+      expect(mocks.browserSetHostRules).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

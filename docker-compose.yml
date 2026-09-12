@@ -5,6 +5,11 @@ services:
     # image: xintaofei/codeg:latest
     ports:
       - "3080:3080"
+      # Port bridge for dev servers started by agents inside the container:
+      # the workbench shows `http://localhost:3000` from the container through
+      # one of these ports (one per dev server). Publish the same range you set
+      # in CODEG_BRIDGE_PORTS (default: the ten ports after CODEG_PORT).
+      - "3081-3090:3081-3090"
     volumes:
       - codeg-data:/data
       # Mount your project directories (optional):
@@ -13,6 +18,7 @@ services:
       - CODEG_TOKEN=${CODEG_TOKEN:-}
       - CODEG_PORT=3080
       - CODEG_HOST=0.0.0.0
+      # - CODEG_BRIDGE_PORTS=3081-3090   # or `off` to disable the port bridge
     # In-place upgrades (Settings → Software Update) rewrite the binaries and
     # web assets inside this container's writable layer, not the image. The
     # codeg-data volume persists, but an upgrade lives only in the running

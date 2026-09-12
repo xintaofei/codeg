@@ -4434,6 +4434,12 @@ pub struct DelegationInjection {
     /// read-only groups these are ALSO re-read at call time by the authoring
     /// access impl — see [`crate::acp::chat_authoring::ChatAuthoringRuntimeConfig`].
     pub authoring: crate::acp::chat_authoring::ChatAuthoringRuntimeConfig,
+    /// Hot-swappable "may agents see the built-in browser?" flag. Read here to
+    /// decide whether to advertise the `browser` group, and re-read at call
+    /// time by the access impl so switching it off stops the agent that is
+    /// already running — see
+    /// [`crate::acp::browser_tools::BrowserToolsRuntimeConfig`].
+    pub browser: crate::acp::browser_tools::BrowserToolsRuntimeConfig,
     /// Question registry handle for the teardown cascade. The `run_connection`
     /// cleanup guard calls `cancel_questions_by_parent` through this so a pending
     /// `ask_user_question` is reclaimed synchronously on disconnect, mirroring
@@ -4547,6 +4553,10 @@ struct CompanionFeatureFlags {
     automations: bool,
     /// `create_work_task`, gated by the chat-authoring setting.
     taskboard: bool,
+    /// `browser_list_tabs` / `browser_snapshot`, gated by the browser-tools
+    /// setting AND by there being a built-in browser at all — the tabs are
+    /// native webviews this process owns, which server mode has none of.
+    browser: bool,
 }
 
 /// The `--features` value for a companion launch, or `None` when no group is
@@ -4576,6 +4586,9 @@ fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<String> {
     }
     if flags.taskboard {
         features.push("taskboard");
+    }
+    if flags.browser {
+        features.push("browser");
     }
     if features.is_empty() {
         return None;
@@ -4673,6 +4686,13 @@ where
         tasks: tasks_enabled,
         automations: authoring.automations_enabled,
         taskboard: authoring.work_tasks_enabled,
+        // `cfg!` rather than a runtime probe: a browser tab is a native
+        // webview owned by this process, and the server binary has no such
+        // thing — what a web user sees in a "browser tab" is an iframe their
+        // own browser renders, which nothing here can read. Advertising the
+        // tools there would promise a capability that cannot exist, and the
+        // agent would find out by being told "no tabs" forever.
+        browser: cfg!(feature = "tauri-runtime") && injection.browser.is_enabled().await,
     };
     // `None` (no feature enabled) short-circuits BEFORE the binary lookup, the
     // token registration and the server append: there is no companion to launch,
@@ -21730,6 +21750,7 @@ mod tests {
             ask: crate::acp::question::QuestionRuntimeConfig::new(),
             sessions: crate::acp::session_info::SessionInfoRuntimeConfig::new(),
             authoring: crate::acp::chat_authoring::ChatAuthoringRuntimeConfig::new(),
+            browser: crate::acp::browser_tools::BrowserToolsRuntimeConfig::new(),
             questions: Arc::new(TestNoQuestions)
                 as Arc<dyn crate::acp::question::SessionQuestionAccess>,
             plan_approvals: Arc::new(TestNoPlanApprovals)
@@ -21920,6 +21941,9 @@ mod tests {
             Some("automations".to_string())
         );
         assert_eq!(only(|f| f.taskboard = true), Some("taskboard".to_string()));
+        // The browser group too — a user who only shares browser tabs still
+        // gets a companion.
+        assert_eq!(only(|f| f.browser = true), Some("browser".to_string()));
         // All on → comma-joined, in the order the companion parses.
         assert_eq!(
             companion_features_arg(CompanionFeatureFlags {
@@ -21930,8 +21954,11 @@ mod tests {
                 tasks: true,
                 automations: true,
                 taskboard: true,
+                browser: true,
             }),
-            Some("delegation,feedback,ask,sessions,tasks,automations,taskboard".to_string())
+            Some(
+                "delegation,feedback,ask,sessions,tasks,automations,taskboard,browser".to_string()
+            )
         );
     }
 

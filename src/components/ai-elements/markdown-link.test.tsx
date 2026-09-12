@@ -9,6 +9,14 @@ const mocks = vi.hoisted(() => ({
   ),
 }))
 
+vi.mock("next-intl", () => {
+  const t = (key: string) => key
+  return { useTranslations: () => t }
+})
+vi.mock("@/hooks/use-open-url-target", () => ({
+  useOpenUrlTarget: () => () => ({ kind: "system", url: "" }),
+  isPrimaryModifier: () => false,
+}))
 vi.mock("./link-safety", async (importOriginal) => {
   // Only the streamdown hook is stubbed — `parseLocalFileTarget` stays real, so
   // the file badge's hover-actions anchor wraps it exactly as it would in the app.

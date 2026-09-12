@@ -9,6 +9,7 @@ import {
   useWorkspaceFileTabs,
 } from "@/contexts/workspace-context"
 import { FilePathBreadcrumb } from "@/components/files/file-path-breadcrumb"
+import { useBrowserTabState } from "@/lib/browser/browser-tab-store"
 import { cn } from "@/lib/utils"
 
 /**
@@ -26,8 +27,18 @@ export function FileWorkspaceHeader() {
   const { activeFileTab, activeFileTabId, previewFileTabIds } =
     useWorkspaceFileTabs()
   const { toggleFileTabPreview } = useWorkspaceActions()
+  // A browser tab's title follows the page (document.title); its record only
+  // ever knew the host it was opened with.
+  const browserState = useBrowserTabState(
+    activeFileTab?.kind === "browser" ? activeFileTab.id : null
+  )
 
   if (!activeFileTab) return null
+
+  const displayTitle =
+    activeFileTab.kind === "browser"
+      ? browserState?.title || activeFileTab.title
+      : activeFileTab.title
 
   const isDiff =
     activeFileTab.kind === "diff" || activeFileTab.kind === "rich-diff"
@@ -64,9 +75,9 @@ export function FileWorkspaceHeader() {
         {isDiff || !activeFileTab.path ? (
           <span
             className="truncate text-foreground/90"
-            title={activeFileTab.description ?? activeFileTab.title}
+            title={activeFileTab.description ?? displayTitle}
           >
-            {activeFileTab.title}
+            {displayTitle}
             {isDirty ? " *" : ""}
           </span>
         ) : (

@@ -9,6 +9,8 @@ vi.mock("@/lib/api", () => ({
   setQuestionSettings: vi.fn(),
   getSessionInfoSettings: vi.fn(),
   setSessionInfoSettings: vi.fn(),
+  getBrowserToolsSettings: vi.fn(),
+  setBrowserToolsSettings: vi.fn(),
   getChatAuthoringSettings: vi.fn(),
   setChatAuthoringSettings: vi.fn(),
 }))
@@ -33,10 +35,12 @@ vi.mock("@/hooks/use-feedback-enabled", () => ({
 import { AgentToolsSettingsSection } from "./agent-tools-settings"
 import enMessages from "@/i18n/messages/en.json"
 import {
+  getBrowserToolsSettings,
   getChatAuthoringSettings,
   getFeedbackSettings,
   getQuestionSettings,
   getSessionInfoSettings,
+  setBrowserToolsSettings,
   setChatAuthoringSettings,
   setFeedbackSettings,
   setQuestionSettings,
@@ -50,6 +54,8 @@ const mockGetQuestion = vi.mocked(getQuestionSettings)
 const mockSetQuestion = vi.mocked(setQuestionSettings)
 const mockGetSessionInfo = vi.mocked(getSessionInfoSettings)
 const mockSetSessionInfo = vi.mocked(setSessionInfoSettings)
+const mockGetBrowser = vi.mocked(getBrowserToolsSettings)
+const mockSetBrowser = vi.mocked(setBrowserToolsSettings)
 const mockGetChat = vi.mocked(getChatAuthoringSettings)
 const mockSetChat = vi.mocked(setChatAuthoringSettings)
 const mockPrime = vi.mocked(primeFeedbackEnabled)
@@ -58,6 +64,7 @@ const LABELS = {
   feedback: "Live Feedback",
   question: "Ask user question",
   sessionInfo: "Get session info",
+  browserTools: "Read the built-in browser",
   automations: "Create automations",
   workTasks: "Create to-do tasks",
 } as const
@@ -76,6 +83,7 @@ function primeBackend(
     feedback?: boolean
     question?: boolean
     sessionInfo?: boolean
+    browserTools?: boolean
     automations?: boolean
     workTasks?: boolean
   } = {}
@@ -84,12 +92,14 @@ function primeBackend(
     feedback = false,
     question = true,
     sessionInfo = true,
+    browserTools = false,
     automations = false,
     workTasks = false,
   } = overrides
   mockGetFeedback.mockResolvedValue({ enabled: feedback })
   mockGetQuestion.mockResolvedValue({ enabled: question })
   mockGetSessionInfo.mockResolvedValue({ enabled: sessionInfo })
+  mockGetBrowser.mockResolvedValue({ enabled: browserTools })
   mockGetChat.mockResolvedValue({
     automations_enabled: automations,
     work_tasks_enabled: workTasks,
@@ -97,6 +107,7 @@ function primeBackend(
   mockSetFeedback.mockImplementation(async (next) => next)
   mockSetQuestion.mockImplementation(async (next) => next)
   mockSetSessionInfo.mockImplementation(async (next) => next)
+  mockSetBrowser.mockImplementation(async (next) => next)
   mockSetChat.mockImplementation(async (next) => next)
 }
 
@@ -146,6 +157,28 @@ describe("AgentToolsSettingsSection", () => {
     // The other three endpoints hold values this panel never touched; writing
     // them back would republish state the user didn't ask to change.
     expect(mockSetFeedback).not.toHaveBeenCalled()
+    expect(mockSetSessionInfo).not.toHaveBeenCalled()
+    expect(mockSetChat).not.toHaveBeenCalled()
+  })
+
+  /** The browser group is the one switch here that is off out of the box, and
+   * the one whose endpoint is new — so pin both ends: it reads its own value,
+   * and saving it writes nothing else. */
+  it("carries the built-in browser switch on its own endpoint", async () => {
+    primeBackend({ browserTools: true })
+
+    renderWithIntl()
+
+    expect(await screen.findByLabelText(LABELS.browserTools)).toHaveAttribute(
+      "data-state",
+      "checked"
+    )
+    fireEvent.click(screen.getByLabelText(LABELS.browserTools))
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+
+    await waitFor(() =>
+      expect(mockSetBrowser).toHaveBeenCalledWith({ enabled: false })
+    )
     expect(mockSetSessionInfo).not.toHaveBeenCalled()
     expect(mockSetChat).not.toHaveBeenCalled()
   })

@@ -106,6 +106,14 @@ pub fn build_router(
             post(handlers::session_info::set_session_info_settings),
         )
         .route(
+            "/get_browser_tools_settings",
+            post(handlers::browser_tools::get_browser_tools_settings),
+        )
+        .route(
+            "/set_browser_tools_settings",
+            post(handlers::browser_tools::set_browser_tools_settings),
+        )
+        .route(
             "/get_chat_authoring_settings",
             post(handlers::chat_authoring::get_chat_authoring_settings),
         )
@@ -1096,6 +1104,19 @@ pub fn build_router(
             post(handlers::custom_skills::custom_delete_skills),
         )
         // ─── Office tools ───
+        // ─── Web-mode port bridge (dev servers on the host, shown in an iframe) ───
+        .route(
+            "/browser_bridge_status",
+            post(handlers::browser_bridge::browser_bridge_status),
+        )
+        .route(
+            "/browser_bridge_open",
+            post(handlers::browser_bridge::browser_bridge_open),
+        )
+        .route(
+            "/browser_bridge_close",
+            post(handlers::browser_bridge::browser_bridge_close),
+        )
         .route(
             "/officecli_detect",
             post(handlers::office_tools::officecli_detect),

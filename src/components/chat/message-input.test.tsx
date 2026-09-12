@@ -86,8 +86,8 @@ vi.mock("@/components/chat/conversation-context-bar", () => ({
   ConversationFolderBranchPicker: () => null,
   useConversationFolderBranchPickerVisible: () => false,
 }))
-// `openUrl` is where link-safety lands a web-mode link, and so where the
-// right-click menu's "Open link" ends up.
+// The platform opener is the DESKTOP arm of the shared opener; this suite runs
+// in web mode, where a system-browser target lands on `window.open` instead.
 const platform = vi.hoisted(() => ({ openUrl: vi.fn(async () => {}) }))
 vi.mock("@/lib/platform", () => ({
   isDesktop: () => false,
@@ -97,6 +97,7 @@ vi.mock("@/lib/platform", () => ({
 vi.mock("@/lib/transport", () => ({
   getActiveRemoteConnectionId: () => null,
   isDesktop: () => false,
+  isRemoteDesktopMode: () => false,
 }))
 // A local-file link target routes to the workspace file column, whose provider
 // this suite deliberately renders without.
@@ -1498,10 +1499,21 @@ describe("MessageInput right-click token selection", () => {
     const open = await screen.findByRole("menuitem", { name: "Open link" })
     expect(selectedText(editor)).toBe("example.com/docs")
 
-    fireEvent.click(open)
-    await waitFor(() =>
-      expect(platform.openUrl).toHaveBeenCalledWith("https://example.com/docs")
-    )
+    // No built-in browser here (web mode, no capability answer), so the link
+    // decision resolves to the system browser — `window.open` in web mode.
+    const windowOpen = vi.spyOn(window, "open").mockReturnValue(null)
+    try {
+      fireEvent.click(open)
+      await waitFor(() =>
+        expect(windowOpen).toHaveBeenCalledWith(
+          "https://example.com/docs",
+          "_blank",
+          "noreferrer"
+        )
+      )
+    } finally {
+      windowOpen.mockRestore()
+    }
   })
 
   it("selects a plain word without inventing an action for it", async () => {

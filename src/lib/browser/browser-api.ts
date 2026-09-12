@@ -1,0 +1,325 @@
+// Thin transport wrappers over the `browser_*` commands. Desktop only: the
+// commands exist in the Tauri runtime alone, and `browserCapabilities()`
+// answers `{ available: false }` everywhere else so callers can branch on one
+// value instead of on the runtime.
+
+import { getTransport, isDesktop } from "@/lib/transport"
+
+import type { HostRule } from "./host-rules"
+import type {
+  Bounds,
+  BrowserCapabilities,
+  BrowserDownload,
+  BrowserTabState,
+  DocGuestState,
+  DocMode,
+  FrozenFrame,
+  GrantLevel,
+  PageSnapshot,
+  SurfaceChoice,
+} from "./types"
+
+const UNAVAILABLE: BrowserCapabilities = {
+  available: false,
+  surface: null,
+  platform: "web",
+  channel: "degraded",
+  reasons: ["built-in browser needs the desktop runtime"],
+  isolatedStorage: false,
+  proxy: { url: null, applies: "unsupported", reason: null },
+  downloadsDir: "",
+  policy: { enabled: false, managedRules: [], managedSource: null },
+  docGuest: false,
+  profiles: false,
+  signInUserAgent: false,
+  ownedWindowControls: false,
+}
+
+let capabilitiesPromise: Promise<BrowserCapabilities> | null = null
+let resolvedCapabilities: BrowserCapabilities | null = null
+
+/** Cached for the session: the answer cannot change while the app runs. */
+export function browserCapabilities(): Promise<BrowserCapabilities> {
+  if (!isDesktop()) {
+    resolvedCapabilities = UNAVAILABLE
+    return Promise.resolve(UNAVAILABLE)
+  }
+  if (!capabilitiesPromise) {
+    capabilitiesPromise = getTransport()
+      .call<BrowserCapabilities>("browser_capabilities", {})
+      .then((caps) => {
+        resolvedCapabilities = caps
+        return caps
+      })
+      .catch((error: unknown) => {
+        capabilitiesPromise = null
+        return {
+          ...UNAVAILABLE,
+          reasons: [`browser_capabilities failed: ${String(error)}`],
+        }
+      })
+  }
+  return capabilitiesPromise
+}
+
+/**
+ * Synchronous view of the answer, for decisions that must happen inside a
+ * click's call stack. `null` until `browserCapabilities()` has resolved once
+ * (the events bridge asks at startup); callers treat null as "not available"
+ * and fall back to the system browser, which is always a safe answer.
+ */
+export function browserCapabilitiesSnapshot(): BrowserCapabilities | null {
+  return resolvedCapabilities
+}
+
+/**
+ * Fresh answer, bypassing the session cache: the proxy part changes whenever
+ * the user edits the app's proxy setting, and the settings section shows it.
+ */
+export function browserCapabilitiesNow(): Promise<BrowserCapabilities> {
+  if (!isDesktop()) return Promise.resolve(UNAVAILABLE)
+  return getTransport().call<BrowserCapabilities>("browser_capabilities", {})
+}
+
+/** Tests only. */
+export function resetBrowserCapabilitiesCacheForTests(): void {
+  capabilitiesPromise = null
+  resolvedCapabilities = null
+}
+
+/** Tests only: pretend the capabilities already resolved. */
+export function setBrowserCapabilitiesForTests(
+  caps: BrowserCapabilities | null
+): void {
+  resolvedCapabilities = caps
+}
+
+export interface OpenBrowserTabParams {
+  tabId: string
+  url: string
+  bounds: Bounds
+  background?: boolean
+  surface?: SurfaceChoice
+  folderId?: number | null
+  /** Build the surface with the web inspector available. */
+  devtools?: boolean
+  /** The browser profile to open in (`default` when omitted). */
+  profile?: string
+}
+
+export function browserOpenTab(
+  params: OpenBrowserTabParams
+): Promise<BrowserTabState> {
+  return getTransport().call<BrowserTabState>("browser_open_tab", {
+    tabId: params.tabId,
+    url: params.url,
+    bounds: params.bounds,
+    background: params.background ?? false,
+    surface: params.surface ?? "auto",
+    folderId: params.folderId ?? null,
+    devtools: params.devtools ?? false,
+    profile: params.profile ?? "default",
+  })
+}
+
+export interface OpenDocGuestParams {
+  tabId: string
+  /** Absolute path of the HTML file. */
+  path: string
+  /** Directory to confine the document to (the owning workspace folder);
+   *  null = the file's own directory. */
+  root: string | null
+  bounds: Bounds
+  background?: boolean
+  devtools?: boolean
+}
+
+export interface DocGuestOpenResult {
+  state: BrowserTabState
+  doc: DocGuestState
+}
+
+/** Show a local HTML file through a document guest (see the Rust
+ *  `doc_guest` module): an embedded surface registered like a tab's, whose
+ *  requests the backend answers from the file's folder. */
+export function browserDocOpen(
+  params: OpenDocGuestParams
+): Promise<DocGuestOpenResult> {
+  return getTransport().call<DocGuestOpenResult>("browser_doc_open", {
+    tabId: params.tabId,
+    path: params.path,
+    root: params.root,
+    bounds: params.bounds,
+    background: params.background ?? false,
+    devtools: params.devtools ?? false,
+  })
+}
+
+/** Switch a document guest between safe and dynamic mode; the guest reloads
+ *  so the new policy travels with the document. */
+export function browserDocSetMode(
+  tabId: string,
+  mode: DocMode
+): Promise<DocGuestState> {
+  return getTransport().call<DocGuestState>("browser_doc_set_mode", {
+    tabId,
+    mode,
+  })
+}
+
+export function browserDocState(tabId: string): Promise<DocGuestState> {
+  return getTransport().call<DocGuestState>("browser_doc_state", { tabId })
+}
+
+export function browserClose(tabId: string): Promise<void> {
+  return getTransport().call<void>("browser_close", { tabId })
+}
+
+export function browserSetBounds(tabId: string, bounds: Bounds): Promise<void> {
+  return getTransport().call<void>("browser_set_bounds", { tabId, bounds })
+}
+
+/**
+ * Show or hide a tab's surface. Hiding with `freeze` asks for the frame the
+ * page shows at that moment, to paint in the placeholder while an overlay is
+ * open over it; `null` when the platform cannot provide one in time.
+ */
+export function browserSetVisible(
+  tabId: string,
+  visible: boolean,
+  handoffFocus = false,
+  freeze = false
+): Promise<FrozenFrame | null> {
+  return getTransport()
+    .call<FrozenFrame | null | undefined>("browser_set_visible", {
+      tabId,
+      visible,
+      handoffFocus,
+      freeze,
+    })
+    .then((frame) => frame ?? null)
+}
+
+/** The user's site rules, for the backend to enforce `block` on navigations. */
+export function browserSetHostRules(rules: readonly HostRule[]): Promise<void> {
+  return getTransport().call<void>("browser_set_host_rules", {
+    rules: rules.map((rule) => ({
+      pattern: rule.pattern,
+      action: rule.action,
+    })),
+  })
+}
+
+export function browserNavigate(
+  tabId: string,
+  url: string
+): Promise<BrowserTabState> {
+  return getTransport().call<BrowserTabState>("browser_navigate", {
+    tabId,
+    url,
+  })
+}
+
+export function browserReload(tabId: string): Promise<void> {
+  return getTransport().call<void>("browser_reload", { tabId })
+}
+
+export function browserStop(tabId: string): Promise<void> {
+  return getTransport().call<void>("browser_stop", { tabId })
+}
+
+export function browserGoBack(tabId: string): Promise<void> {
+  return getTransport().call<void>("browser_go_back", { tabId })
+}
+
+export function browserGoForward(tabId: string): Promise<void> {
+  return getTransport().call<void>("browser_go_forward", { tabId })
+}
+
+export function browserGetState(tabId: string): Promise<BrowserTabState> {
+  return getTransport().call<BrowserTabState>("browser_get_state", { tabId })
+}
+
+export function browserListTabs(): Promise<BrowserTabState[]> {
+  return getTransport().call<BrowserTabState[]>("browser_list_tabs", {})
+}
+
+/** Share this tab with agents at `level`, or take it back with `"none"`.
+ *
+ *  Only ever called for a person. There is no path by which an agent grants
+ *  itself anything, and adding one would empty the model of its content: the
+ *  backend refuses a tab with no web origin to bind to, and drops the grant
+ *  by itself the moment the page leaves that origin. */
+export function browserAgentGrant(
+  tabId: string,
+  level: GrantLevel
+): Promise<BrowserTabState> {
+  return getTransport().call<BrowserTabState>("browser_agent_grant", {
+    tabId,
+    level,
+  })
+}
+
+/** Read a shared page as the tree an agent operates on. Rejects with a
+ *  permission error when the tab has not been shared, or when the page moved
+ *  off the shared origin while the read was in flight. */
+export function browserAgentSnapshot(
+  tabId: string,
+  maxChars?: number
+): Promise<PageSnapshot> {
+  return getTransport().call<PageSnapshot>("browser_agent_snapshot", {
+    tabId,
+    maxChars: maxChars ?? null,
+  })
+}
+
+/** Wipe cookies, caches and storage shared by every tab of a profile. */
+export function browserClearData(profile = "default"): Promise<void> {
+  return getTransport().call<void>("browser_clear_data", { profile })
+}
+
+/** Delete a profile: its tabs are closed, then its store is removed. The
+ *  default profile cannot be deleted. */
+export function browserRemoveProfile(profile: string): Promise<void> {
+  return getTransport().call<void>("browser_remove_profile", { profile })
+}
+
+/** The "sign-in user agent" preference, for the backend to apply on
+ *  navigations to Google's sign-in hosts. */
+export function browserSetSignInUserAgent(enabled: boolean): Promise<void> {
+  return getTransport().call<void>("browser_set_sign_in_user_agent", {
+    enabled,
+  })
+}
+
+/**
+ * Highlight the next (or previous) match of `query` in the page and answer
+ * whether anything matched. An empty query clears the highlight.
+ */
+export function browserFind(
+  tabId: string,
+  query: string,
+  forward = true
+): Promise<boolean> {
+  return getTransport().call<boolean>("browser_find", {
+    tabId,
+    query,
+    forward,
+  })
+}
+
+/** Downloads this run started, oldest first. */
+export function browserListDownloads(): Promise<BrowserDownload[]> {
+  return getTransport().call<BrowserDownload[]>("browser_list_downloads", {})
+}
+
+/** Show a finished download in the file manager. The backend reveals the path
+ *  it recorded for that download, so this cannot point anywhere else. */
+export function browserRevealDownload(id: string): Promise<void> {
+  return getTransport().call<void>("browser_reveal_download", { id })
+}
+
+/** Forget the records; the downloaded files stay where they are. */
+export function browserClearDownloads(): Promise<void> {
+  return getTransport().call<void>("browser_clear_downloads", {})
+}

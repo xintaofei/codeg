@@ -2954,3 +2954,13 @@ div.monaco-diff-editor.side-by-side .editor.modified {
 .canvas-surface[data-canvas-panning] * {
   cursor: grabbing !important;
 }
+
+/* Built-in browser: indeterminate loading bar under the toolbar. */
+@keyframes browser-loading {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}

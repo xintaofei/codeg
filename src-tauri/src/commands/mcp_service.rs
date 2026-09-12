@@ -30,6 +30,7 @@ use std::sync::Arc;
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 
+use crate::acp::browser_tools::BrowserToolsRuntimeConfig;
 use crate::acp::chat_authoring::ChatAuthoringRuntimeConfig;
 use crate::acp::delegation::broker::DelegationBroker;
 use crate::acp::delegation::listener::TokenRegistry;
@@ -112,6 +113,7 @@ pub struct CodegMcpStatusSources<'a> {
     pub question: &'a QuestionRuntimeConfig,
     pub session_info: &'a SessionInfoRuntimeConfig,
     pub authoring: &'a ChatAuthoringRuntimeConfig,
+    pub browser: &'a BrowserToolsRuntimeConfig,
 }
 
 /// Build the report. Probes the socket for real (one ping round-trip), so
@@ -170,6 +172,10 @@ pub async fn codeg_mcp_service_status_core(
             key: "taskboard".into(),
             enabled: authoring_cfg.work_tasks_enabled,
         },
+        CodegMcpToolGroup {
+            key: "browser".into(),
+            enabled: sources.browser.is_enabled().await,
+        },
     ];
     let any_group_enabled = tool_groups.iter().any(|g| g.enabled);
 
@@ -210,6 +216,7 @@ pub struct CodegMcpToolGroupTargets<'a> {
     pub question: &'a QuestionRuntimeConfig,
     pub session_info: &'a SessionInfoRuntimeConfig,
     pub authoring: &'a ChatAuthoringRuntimeConfig,
+    pub browser: &'a BrowserToolsRuntimeConfig,
 }
 
 /// Flip one tool group by the same slug [`codeg_mcp_service_status_core`]
@@ -235,7 +242,9 @@ pub async fn set_codeg_mcp_tool_group_core(
     enabled: bool,
 ) -> Result<(), AppCommandError> {
     use crate::commands::chat_authoring::ChatAuthoringFlag;
-    use crate::commands::{chat_authoring, delegation, feedback, question, session_info};
+    use crate::commands::{
+        browser_tools, chat_authoring, delegation, feedback, question, session_info,
+    };
 
     match key {
         "delegation" => {
@@ -265,6 +274,15 @@ pub async fn set_codeg_mcp_tool_group_core(
                 targets.session_info,
                 emitter,
                 session_info::SessionInfoSettings { enabled },
+            )
+            .await?;
+        }
+        "browser" => {
+            browser_tools::set_browser_tools_settings_core(
+                conn,
+                targets.browser,
+                emitter,
+                browser_tools::BrowserToolsSettings { enabled },
             )
             .await?;
         }
@@ -320,6 +338,7 @@ pub async fn get_codeg_mcp_service_status(
     #[cfg(feature = "tauri-runtime")] question: tauri::State<'_, QuestionRuntimeConfig>,
     #[cfg(feature = "tauri-runtime")] session_info: tauri::State<'_, SessionInfoRuntimeConfig>,
     #[cfg(feature = "tauri-runtime")] authoring: tauri::State<'_, ChatAuthoringRuntimeConfig>,
+    #[cfg(feature = "tauri-runtime")] browser: tauri::State<'_, BrowserToolsRuntimeConfig>,
 ) -> Result<CodegMcpServiceStatus, AppCommandError> {
     #[cfg(feature = "tauri-runtime")]
     {
@@ -330,6 +349,7 @@ pub async fn get_codeg_mcp_service_status(
             question: question.inner(),
             session_info: session_info.inner(),
             authoring: authoring.inner(),
+            browser: browser.inner(),
         })
         .await)
     }
@@ -345,7 +365,7 @@ pub async fn start_codeg_mcp_service() -> Result<(), AppCommandError> {
     start_codeg_mcp_service_core().await
 }
 
-// Five runtime configs plus the db, the app handle and the two payload fields.
+// Six runtime configs plus the db, the app handle and the two payload fields.
 // Tauri injects managed state positionally, so these cannot be bundled the way
 // `CodegMcpToolGroupTargets` bundles them for the `_core` helper below.
 #[allow(clippy::too_many_arguments)]
@@ -358,6 +378,7 @@ pub async fn set_codeg_mcp_tool_group(
     #[cfg(feature = "tauri-runtime")] question: tauri::State<'_, QuestionRuntimeConfig>,
     #[cfg(feature = "tauri-runtime")] session_info: tauri::State<'_, SessionInfoRuntimeConfig>,
     #[cfg(feature = "tauri-runtime")] authoring: tauri::State<'_, ChatAuthoringRuntimeConfig>,
+    #[cfg(feature = "tauri-runtime")] browser: tauri::State<'_, BrowserToolsRuntimeConfig>,
     key: String,
     enabled: bool,
 ) -> Result<(), AppCommandError> {
@@ -374,6 +395,7 @@ pub async fn set_codeg_mcp_tool_group(
                 question: question.inner(),
                 session_info: session_info.inner(),
                 authoring: authoring.inner(),
+                browser: browser.inner(),
             },
             &emitter,
             &key,
@@ -416,6 +438,7 @@ mod tests {
         question: QuestionRuntimeConfig,
         session_info: SessionInfoRuntimeConfig,
         authoring: ChatAuthoringRuntimeConfig,
+        browser: BrowserToolsRuntimeConfig,
     }
 
     impl Fixture {
@@ -430,6 +453,7 @@ mod tests {
                 question: QuestionRuntimeConfig::new(),
                 session_info: SessionInfoRuntimeConfig::new(),
                 authoring: ChatAuthoringRuntimeConfig::new(),
+                browser: BrowserToolsRuntimeConfig::new(),
             }
         }
 
@@ -441,6 +465,7 @@ mod tests {
                 question: &self.question,
                 session_info: &self.session_info,
                 authoring: &self.authoring,
+                browser: &self.browser,
             }
         }
 
@@ -462,6 +487,7 @@ mod tests {
                     question: &self.question,
                     session_info: &self.session_info,
                     authoring: &self.authoring,
+                    browser: &self.browser,
                 },
                 &EventEmitter::Noop,
                 key,

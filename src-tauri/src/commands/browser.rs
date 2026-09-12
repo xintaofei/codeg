@@ -1,0 +1,1915 @@
+//! `browser_*` commands: thin parameter validation over the registry. The
+//! `_core` functions are the real implementation and are also driven by the
+//! dev-only smoke puppet, so every code path the frontend uses is the one the
+//! P0/P1 checks exercised.
+
+use std::time::Duration;
+
+use base64::Engine as _;
+use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::Url;
+
+use crate::app_error::AppCommandError;
+use crate::browser::agent::{self, GrantLevel};
+use crate::browser::doc_guest::{self, DocGuestState, DocGuests, DocMode};
+use crate::browser::downloads::{BrowserDownload, BrowserDownloads};
+use crate::browser::policy::{BrowserPolicy, HostRule};
+use crate::browser::registry::{BrowserRegistry, BrowserTab};
+use crate::browser::surface::BrowserSurface;
+use crate::browser::types::{
+    Bounds, BrowserCapabilities, BrowserErrorInfo, BrowserErrorKind, BrowserTabState, ChannelKind,
+    FrozenFrame, SurfaceChoice, SurfaceKind, TabKind,
+};
+use crate::browser::{events, hooks, listener, policy, profile, tab_label};
+
+#[cfg(all(
+    feature = "browser-child",
+    any(target_os = "macos", target_os = "windows")
+))]
+const CHILD_SURFACE_COMPILED: bool = true;
+#[cfg(not(all(
+    feature = "browser-child",
+    any(target_os = "macos", target_os = "windows")
+)))]
+const CHILD_SURFACE_COMPILED: bool = false;
+
+fn platform_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "other"
+    }
+}
+
+/// What this build can do on this machine. `channel` is what a new tab will
+/// be given, not what any tab currently has: a tab reports its own, and a
+/// per-tab install that fails lands in its `channel_error`. The frontend keys
+/// off `available` and `surface`. An administrator's policy can turn the whole
+/// feature off, in which case every link goes to the system browser.
+pub fn capabilities(policy: &BrowserPolicy) -> BrowserCapabilities {
+    let mut reasons = Vec::new();
+    let enabled = policy.enabled();
+    if !enabled {
+        reasons.push("disabled by the administrator's policy".to_string());
+    }
+    let surface = if CHILD_SURFACE_COMPILED {
+        SurfaceKind::Child
+    } else {
+        reasons.push(if cfg!(target_os = "linux") {
+            "linux: child webviews cannot be positioned; using owned windows".to_string()
+        } else {
+            "child surface not compiled; using owned windows".to_string()
+        });
+        SurfaceKind::Window
+    };
+    // The installer ships with the embedded surface. On macOS before 11 it
+    // falls back to the page world, which only the live controller can tell,
+    // so a tab there answers `legacy` while this still says `native`. Linux
+    // has no embedded surface and a channel all the same: its owned window
+    // carries the script world itself.
+    let channel = if CHILD_SURFACE_COMPILED || crate::browser::surface_window::HAS_CHANNEL {
+        ChannelKind::Native
+    } else {
+        reasons.push("no page channel without the embedded surface".to_string());
+        ChannelKind::Degraded
+    };
+    BrowserCapabilities {
+        available: enabled,
+        surface: enabled.then_some(surface),
+        platform: platform_name().to_string(),
+        channel,
+        reasons,
+        isolated_storage: crate::browser::profile::isolated_storage(),
+        proxy: crate::browser::profile::proxy_status(),
+        downloads_dir: crate::browser::downloads::downloads_dir_display(),
+        policy: policy.status(),
+        doc_guest: enabled && doc_guest::supported(),
+        profiles: enabled && profile::profiles_supported(),
+        sign_in_user_agent: enabled && profile::sign_in_user_agent_supported(),
+        owned_window_controls: crate::browser::surface_window::HAS_CHANNEL,
+    }
+}
+
+/// The error a tab shows for an address a site rule blocks. No message: the
+/// status layer has its own wording, in the user's language.
+fn blocked_error(url: &Url) -> BrowserErrorInfo {
+    BrowserErrorInfo {
+        kind: BrowserErrorKind::Blocked,
+        message: String::new(),
+        url: Some(url.to_string()),
+    }
+}
+
+/// Whether the policy in force refuses `url` outright.
+fn blocked_by_policy(app: &AppHandle, url: &Url) -> bool {
+    app.try_state::<BrowserPolicy>()
+        .is_some_and(|policy| policy.blocked(url))
+}
+
+fn pick_surface(choice: SurfaceChoice) -> SurfaceKind {
+    if CHILD_SURFACE_COMPILED && choice != SurfaceChoice::Window {
+        SurfaceKind::Child
+    } else {
+        SurfaceKind::Window
+    }
+}
+
+/// Tab ids become webview labels, and a label is also what the popup and
+/// capability checks key on, so keep them to a safe alphabet.
+fn validate_tab_id(tab_id: &str) -> Result<(), AppCommandError> {
+    let ok = !tab_id.is_empty()
+        && tab_id.len() <= 64
+        && tab_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if ok {
+        Ok(())
+    } else {
+        Err(AppCommandError::invalid_input(format!(
+            "invalid browser tab id {tab_id:?}"
+        )))
+    }
+}
+
+fn parse_web_url(raw: &str) -> Result<Url, AppCommandError> {
+    let url = Url::parse(raw.trim())
+        .map_err(|e| AppCommandError::invalid_input(format!("invalid url {raw:?}: {e}")))?;
+    if !policy::open_url_allowed(&url) {
+        return Err(AppCommandError::invalid_input(format!(
+            "url scheme not allowed in a browser tab: {raw:?}"
+        )));
+    }
+    Ok(url)
+}
+
+/// `host[:port]` — an owned window's title never shows the path or query, so a
+/// one-time token in an OAuth URL cannot leak through the window list.
+pub fn origin_title(url: &Url) -> String {
+    match (url.host_str(), url.port()) {
+        (Some(host), Some(port)) => format!("{host}:{port}"),
+        (Some(host), None) => host.to_string(),
+        (None, _) => url.to_string(),
+    }
+}
+
+fn window_err(what: &str, err: impl std::fmt::Display) -> AppCommandError {
+    AppCommandError::window(what.to_string(), err.to_string())
+}
+
+pub struct OpenTabParams {
+    pub tab_id: String,
+    pub url: String,
+    pub bounds: Bounds,
+    pub background: bool,
+    pub surface: SurfaceChoice,
+    /// Build the surface with the web inspector available (user preference).
+    pub devtools: bool,
+    /// The browser profile to open the tab in (`default` when the caller has
+    /// no opinion).
+    pub profile: String,
+}
+
+pub fn open_tab_core(
+    app: &AppHandle,
+    owner: &WebviewWindow,
+    registry: &BrowserRegistry,
+    params: OpenTabParams,
+) -> Result<BrowserTabState, AppCommandError> {
+    validate_tab_id(&params.tab_id)?;
+    // Held until the tab is registered: a second open of the same id while
+    // this one builds its surface must fail, not build a second surface.
+    let reservation = registry.reserve(&params.tab_id)?;
+    if app
+        .try_state::<BrowserPolicy>()
+        .is_some_and(|policy| !policy.enabled())
+    {
+        return Err(AppCommandError::invalid_input(
+            "the built-in browser is disabled by the administrator's policy",
+        ));
+    }
+    let url = parse_web_url(&params.url)?;
+    let label = tab_label(&params.tab_id);
+    profile::check(&params.profile).map_err(AppCommandError::invalid_input)?;
+    // Held until this returns (the tab is registered by then): a deletion of
+    // the profile that has begun refuses the open, one that begins now waits
+    // for it.
+    let _admission = profile::admit(&params.profile).map_err(AppCommandError::invalid_input)?;
+    profile::prepare(app, &params.profile)
+        .map_err(|e| window_err("Failed to prepare the browser profile", e))?;
+
+    let surface = match pick_surface(params.surface) {
+        #[cfg(all(
+            feature = "browser-child",
+            any(target_os = "macos", target_os = "windows")
+        ))]
+        SurfaceKind::Child => BrowserSurface::Child(
+            crate::browser::surface_child::create(
+                app,
+                owner,
+                &params.tab_id,
+                &label,
+                params.bounds,
+                params.background,
+                params.devtools,
+                &params.profile,
+            )
+            .map_err(|e| window_err("Failed to create browser webview", e))?,
+        ),
+        _ => BrowserSurface::Window(Box::new(
+            crate::browser::surface_window::create(
+                app,
+                owner,
+                &params.tab_id,
+                &label,
+                &origin_title(&url),
+                params.background,
+                params.devtools,
+                &params.profile,
+            )
+            .map_err(|e| window_err("Failed to create browser window", e))?,
+        )),
+    };
+
+    let state = BrowserTabState {
+        tab_id: params.tab_id.clone(),
+        owner_window: owner.label().to_string(),
+        kind: TabKind::Page,
+        surface: surface.kind(),
+        channel: ChannelKind::Degraded,
+        channel_error: None,
+        url: String::new(),
+        requested_url: url.to_string(),
+        title: String::new(),
+        favicon: None,
+        loading: true,
+        can_go_back: false,
+        can_go_forward: false,
+        origin: None,
+        zoom: 1.0,
+        error: None,
+        remote_host: None,
+        opener_tab_id: None,
+        profile: Some(params.profile.clone()),
+        agent_grant: None,
+    };
+    if let Err(err) = registry.insert_reserved(
+        BrowserTab::new(
+            state.clone(),
+            surface.clone(),
+            params.bounds,
+            !params.background,
+            params.devtools,
+        ),
+        reservation,
+    ) {
+        let _ = surface.close();
+        return Err(err);
+    }
+    // The helper must be in place before the first real document loads;
+    // `about:blank` is still showing at this point. A failed install is not
+    // fatal: the tab works, only the page channel is missing.
+    let mut state = state;
+    if surface.has_channel() {
+        match surface.install_channel() {
+            // Stays `degraded` until the helper's `hello` proves the round trip.
+            Ok(true) => {}
+            Ok(false) => {
+                if let Some(next) =
+                    registry.update_state(&params.tab_id, |s| s.channel = ChannelKind::Legacy)
+                {
+                    state = next;
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "[browser] tab {}: page channel unavailable ({err}); continuing degraded",
+                    params.tab_id
+                );
+                if let Some(next) = registry.update_state(&params.tab_id, |s| {
+                    s.channel_error = Some(err.to_string())
+                }) {
+                    state = next;
+                }
+            }
+        }
+    }
+    if params.background && surface.is_embedded() {
+        let _ = surface.hide();
+    }
+    // A blocked address gets its tab — the caller (an agent tool, a deep
+    // link) asked for one and the block page is where the user learns why —
+    // but nothing is loaded into it.
+    if blocked_by_policy(app, &url) {
+        let state = registry
+            .update_state(&params.tab_id, |s| {
+                s.loading = false;
+                s.error = Some(blocked_error(&url));
+            })
+            .unwrap_or(state);
+        events::emit_state(app, &state);
+        return Ok(state);
+    }
+    if let Err(err) = surface.navigate(url) {
+        registry.remove(&params.tab_id);
+        let _ = surface.close();
+        return Err(window_err("Failed to navigate browser tab", err));
+    }
+    hooks::begin_load(app, &params.tab_id);
+    events::emit_state(app, &state);
+    Ok(state)
+}
+
+pub struct DocOpenParams {
+    pub tab_id: String,
+    /// Absolute path of the HTML file.
+    pub path: String,
+    /// Directory to confine the document to (the owning workspace folder);
+    /// the file's own directory when absent or not containing the file.
+    pub root: Option<String>,
+    pub bounds: Bounds,
+    pub background: bool,
+    pub devtools: bool,
+}
+
+/// What `browser_doc_open` answers: the tab like any other, and the guest's
+/// own state (mode, root, URL).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocOpenResult {
+    pub state: BrowserTabState,
+    pub doc: DocGuestState,
+}
+
+/// Show a local HTML file through a document guest (see `doc_guest`). The
+/// guest is an embedded surface like a tab's, registered under the same
+/// registry so bounds, visibility, reload and close work unchanged; the
+/// grant — root, entry, mode — is looked up by document, so the file comes
+/// back in the mode the user last chose for it this session.
+#[cfg_attr(
+    not(all(
+        feature = "browser-child",
+        any(target_os = "macos", target_os = "windows")
+    )),
+    // Everything below the surface is dead where there is no embedded surface:
+    // `doc_guest::supported()` is false there, and the block that would build
+    // one is a `return`. It still has to compile.
+    allow(unreachable_code, unused_variables)
+)]
+pub fn doc_open_core(
+    app: &AppHandle,
+    owner: &WebviewWindow,
+    registry: &BrowserRegistry,
+    guests: &DocGuests,
+    params: DocOpenParams,
+) -> Result<DocOpenResult, AppCommandError> {
+    validate_tab_id(&params.tab_id)?;
+    let reservation = registry.reserve(&params.tab_id)?;
+    if app
+        .try_state::<BrowserPolicy>()
+        .is_some_and(|policy| !policy.enabled())
+    {
+        return Err(AppCommandError::invalid_input(
+            "the built-in browser is disabled by the administrator's policy",
+        ));
+    }
+    if !doc_guest::supported() {
+        return Err(AppCommandError::invalid_input(
+            "document guests need the embedded browser surface",
+        ));
+    }
+    let (root, entry) = doc_guest::resolve_document(&params.path, params.root.as_deref())
+        .map_err(AppCommandError::invalid_input)?;
+    let grant = guests
+        .grant_for(root, entry)
+        .map_err(AppCommandError::invalid_input)?;
+    let label = doc_guest::doc_label(&params.tab_id);
+    // Annotated because on a platform without the embedded surface the block
+    // below is nothing but a `return`, and a diverging block tells the
+    // compiler nothing about what the rest of this function is holding.
+    let surface: BrowserSurface = {
+        #[cfg(all(
+            feature = "browser-child",
+            any(target_os = "macos", target_os = "windows")
+        ))]
+        {
+            BrowserSurface::Child(
+                crate::browser::surface_child::create_document(
+                    app,
+                    owner,
+                    &params.tab_id,
+                    &label,
+                    params.bounds,
+                    params.background,
+                    params.devtools,
+                    grant.clone(),
+                )
+                .map_err(|e| window_err("Failed to create document webview", e))?,
+            )
+        }
+        #[cfg(not(all(
+            feature = "browser-child",
+            any(target_os = "macos", target_os = "windows")
+        )))]
+        {
+            let _ = (owner, &label, reservation);
+            return Err(AppCommandError::invalid_input(
+                "document guests need the embedded browser surface",
+            ));
+        }
+    };
+    let url = grant.document_url();
+    let state = BrowserTabState {
+        tab_id: params.tab_id.clone(),
+        owner_window: owner.label().to_string(),
+        kind: TabKind::Document,
+        surface: surface.kind(),
+        channel: ChannelKind::Degraded,
+        channel_error: None,
+        url: String::new(),
+        requested_url: url.clone(),
+        title: String::new(),
+        favicon: None,
+        loading: true,
+        can_go_back: false,
+        can_go_forward: false,
+        origin: None,
+        zoom: 1.0,
+        error: None,
+        remote_host: None,
+        opener_tab_id: None,
+        profile: None,
+        agent_grant: None,
+    };
+    if let Err(err) = registry.insert_reserved(
+        BrowserTab::new(
+            state.clone(),
+            surface.clone(),
+            params.bounds,
+            !params.background,
+            params.devtools,
+        ),
+        reservation,
+    ) {
+        let _ = surface.close();
+        return Err(err);
+    }
+    guests.bind(&params.tab_id, grant.clone());
+    let mut state = state;
+    match surface.install_channel() {
+        Ok(true) => {}
+        Ok(false) => {
+            if let Some(next) =
+                registry.update_state(&params.tab_id, |s| s.channel = ChannelKind::Legacy)
+            {
+                state = next;
+            }
+        }
+        Err(err) => {
+            tracing::warn!(
+                "[browser] document {}: page channel unavailable ({err}); continuing degraded",
+                params.tab_id
+            );
+            if let Some(next) = registry
+                .update_state(&params.tab_id, |s| s.channel_error = Some(err.to_string()))
+            {
+                state = next;
+            }
+        }
+    }
+    if params.background {
+        let _ = surface.hide();
+    }
+    let parsed = Url::parse(&url)
+        .map_err(|e| AppCommandError::invalid_input(format!("bad document url {url:?}: {e}")))?;
+    if let Err(err) = surface.navigate(doc_guest::engine_url(&parsed)) {
+        registry.remove(&params.tab_id);
+        guests.unbind(&params.tab_id);
+        let _ = surface.close();
+        return Err(window_err("Failed to load the document", err));
+    }
+    hooks::begin_load(app, &params.tab_id);
+    events::emit_state(app, &state);
+    let doc = grant.state(&params.tab_id);
+    events::emit_doc_state(app, &doc);
+    Ok(DocOpenResult { state, doc })
+}
+
+/// The user's choice of mode for a document. Takes effect on the reload
+/// this performs: the CSP travels with the document, and a fresh approval
+/// starts counting from now.
+pub fn doc_set_mode_core(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    guests: &DocGuests,
+    tab_id: &str,
+    mode: DocMode,
+) -> Result<DocGuestState, AppCommandError> {
+    let grant = guests
+        .for_tab(tab_id)
+        .ok_or_else(|| AppCommandError::not_found(format!("document guest {tab_id} not found")))?;
+    let surface = surface_of(registry, tab_id)?;
+    grant.set_mode(mode);
+    let doc = grant.state(tab_id);
+    events::emit_doc_state(app, &doc);
+    reload_document(app, registry, tab_id, &surface, &grant.document_url())?;
+    Ok(doc)
+}
+
+/// Load a document guest's page again so the policy in force travels with
+/// it. Nothing committed yet (the first load still in flight, or refused):
+/// navigate to the document instead — a reload has nothing to reload, and
+/// the general retry path would refuse a `codeg-doc:` address.
+fn reload_document(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    tab_id: &str,
+    surface: &BrowserSurface,
+    document_url: &str,
+) -> Result<(), AppCommandError> {
+    let state = registry.update_state(tab_id, |state| {
+        state.requested_url = document_url.to_string();
+        state.loading = true;
+        state.error = None;
+    });
+    if surface.url().is_ok() {
+        surface
+            .reload()
+            .map_err(|e| window_err("Failed to reload the document", e))?;
+    } else {
+        let url = Url::parse(document_url).map_err(|e| {
+            AppCommandError::invalid_input(format!("bad document url {document_url:?}: {e}"))
+        })?;
+        surface
+            .navigate(doc_guest::engine_url(&url))
+            .map_err(|e| window_err("Failed to load the document", e))?;
+    }
+    hooks::begin_load(app, tab_id);
+    if let Some(state) = state {
+        events::emit_state(app, &state);
+    }
+    Ok(())
+}
+
+pub fn doc_state_core(guests: &DocGuests, tab_id: &str) -> Result<DocGuestState, AppCommandError> {
+    guests
+        .for_tab(tab_id)
+        .map(|grant| grant.state(tab_id))
+        .ok_or_else(|| AppCommandError::not_found(format!("document guest {tab_id} not found")))
+}
+
+/// Wipe cookies, caches and every other kind of stored site data of one
+/// profile. Every tab of the profile shares the store, so this is app-wide
+/// for that profile; open pages keep running (nothing is reloaded, as in a
+/// browser).
+pub async fn clear_data_core(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    profile_id: &str,
+) -> Result<(), AppCommandError> {
+    // `check`, not only the syntax: below macOS 14 a profile other than the
+    // default has no store of its own, and clearing "it" would clear the
+    // shared one.
+    profile::check(profile_id).map_err(AppCommandError::invalid_input)?;
+    // Held through the clear: see `open_tab_core`. On macOS the engine's
+    // completion callback holds a share, so a wait that gives up (the 15 s
+    // cap) does not end the admission while WebKit is still clearing.
+    let admission = profile::admit(profile_id).map_err(AppCommandError::invalid_input)?;
+    #[cfg(target_os = "macos")]
+    {
+        // Straight at the profile's store: works with no tab open and reports
+        // completion, which a surface's `clear_all_browsing_data` cannot.
+        let _ = registry;
+        let profile_id = profile_id.to_string();
+        let held = admission.share();
+        on_main_until_done(app, "Failed to clear browsing data", move |done| {
+            crate::browser::shim::macos::clear_profile_store(&profile_id, move || {
+                let _held = &held;
+                done()
+            })
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Until the Windows / Linux shims land, clearing goes through a live
+        // surface of the profile (they all share its store); with none open
+        // there is nothing to call into. Picked under one lock: a tab id
+        // looked up separately could by then name a tab of another profile.
+        // The engine reports no completion here, so the admission ends when
+        // the call returns — a deletion that follows at once may find the
+        // engine still writing and fail with a retry, which is the accepted
+        // shape on these platforms until their shims land.
+        let _ = app;
+        let Some(surface) = registry.surface_in_profile(profile_id) else {
+            return Err(AppCommandError::invalid_input(
+                "open a page in this profile first, then clear its data",
+            ));
+        };
+        let result = surface
+            .clear_browsing_data()
+            .map_err(|e| window_err("Failed to clear browsing data", e));
+        drop(admission);
+        result
+    }
+}
+
+/// Delete a profile and everything stored in it. The default profile stays
+/// (clear it instead). The profile's tabs are closed first — every window's,
+/// with the `browser://closed` event that drops their records — because the
+/// engine refuses to remove a store a webview still uses (and would keep
+/// writing into a folder being deleted); WebKit then gets a moment to let go
+/// of the views before the store is asked to go.
+pub async fn remove_profile_core(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    profile_id: &str,
+) -> Result<(), AppCommandError> {
+    profile::check(profile_id).map_err(AppCommandError::invalid_input)?;
+    if profile_id == profile::DEFAULT_PROFILE_ID {
+        return Err(AppCommandError::invalid_input(
+            "the default browser profile cannot be deleted; clear its data instead",
+        ));
+    }
+    // From here until the store is gone, nothing may put it back in use:
+    // opens, popups and clears of this profile are refused (see
+    // `profile::admit`), the ones already under way are waited for, and the
+    // mark lifts when the last holder is gone — the native completion
+    // callbacks hold shares, so a command that times out cannot lift it
+    // while WebKit is still at work.
+    let removing = profile::begin_removal(profile_id).map_err(AppCommandError::invalid_input)?;
+    if !profile::wait_until_idle(profile_id).await {
+        return Err(AppCommandError::invalid_input(
+            "the browser profile is busy; try again in a moment",
+        ));
+    }
+    // Detach only tabs that are STILL in the profile when each is taken: a
+    // tab id can be reused by a later incarnation in another profile.
+    for tab_id in registry.tabs_in_profile(profile_id) {
+        let Some(tab) = registry.remove_if(&tab_id, |tab| tab.state.profile.as_deref() == Some(profile_id))
+        else {
+            continue;
+        };
+        let _ = tab.surface.close();
+        if let Some(guests) = app.try_state::<DocGuests>() {
+            guests.unbind(&tab_id);
+        }
+        events::emit_closed(app, &tab_id, &tab.state.owner_window);
+    }
+    // A moment for the engine to let go of views that were just closed —
+    // here or by a close that was still running when the tabs were listed.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    #[cfg(target_os = "macos")]
+    {
+        // Two main-thread turns: the data goes through the store first (that
+        // reaches the network process's session, which removing the store
+        // alone leaves alone — its cookies were seen surviving into a store
+        // created again under the same identifier), then the store itself,
+        // on a later turn so that no reference to it from the first — ours or
+        // an autoreleased one — is still alive when WebKit checks.
+        let what = "Failed to delete the browser profile";
+        let clearing = profile_id.to_string();
+        let mark = removing.share();
+        on_main_until_done(app, what, move |done| {
+            crate::browser::shim::macos::clear_profile_store(&clearing, move || {
+                let _held = &mark;
+                done()
+            })
+        })
+        .await?;
+        let removing_id = profile_id.to_string();
+        let mark = removing.share();
+        on_main_until_result(app, what, move |done| {
+            crate::browser::shim::macos::remove_profile_store(&removing_id, move |result| {
+                let _held = &mark;
+                done(result)
+            })
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        #[cfg(all(feature = "browser-child", target_os = "windows"))]
+        crate::browser::surface_child::forget_profile_context(app, profile_id)
+            .map_err(|e| window_err("Failed to delete the browser profile", e))?;
+        let _ = app;
+        let result = profile::remove_directory(profile_id)
+            .map_err(|e| window_err("Failed to delete the browser profile", e));
+        drop(removing);
+        result
+    }
+}
+
+/// Run `start` on the main thread and wait until the completion callback it
+/// was given has fired (WebKit reports finished removals that way), with a
+/// timeout so a callback that never comes cannot hang the caller.
+#[cfg(target_os = "macos")]
+pub async fn on_main_until_done(
+    app: &AppHandle,
+    what: &str,
+    start: impl FnOnce(Box<dyn Fn() + 'static>) -> Result<(), String> + Send + 'static,
+) -> Result<(), AppCommandError> {
+    on_main_until_result(app, what, move |done| start(Box::new(move || done(Ok(()))))).await
+}
+
+/// `on_main_until_done` for callbacks that carry the platform's verdict.
+#[cfg(target_os = "macos")]
+pub async fn on_main_until_result(
+    app: &AppHandle,
+    what: &str,
+    start: impl FnOnce(Box<dyn Fn(Result<(), String>) + 'static>) -> Result<(), String> + Send + 'static,
+) -> Result<(), AppCommandError> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+    let finish = move |result: Result<(), String>| {
+        if let Some(tx) = tx.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            let _ = tx.send(result);
+        }
+    };
+    app.run_on_main_thread(move || {
+        let on_done = finish.clone();
+        if let Err(err) = start(Box::new(on_done)) {
+            finish(Err(err));
+        }
+    })
+    .map_err(|e| window_err(what, e))?;
+    match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(err))) => Err(window_err(what, err)),
+        Ok(Err(_)) => Err(window_err(what, "the request was dropped")),
+        Err(_) => Err(window_err(what, "timed out waiting for WebKit")),
+    }
+}
+
+fn surface_of(registry: &BrowserRegistry, tab_id: &str) -> Result<BrowserSurface, AppCommandError> {
+    registry
+        .surface(tab_id)
+        .ok_or_else(|| AppCommandError::not_found(format!("browser tab {tab_id} not found")))
+}
+
+pub fn close_core(app: &AppHandle, registry: &BrowserRegistry, tab_id: &str) -> Result<(), AppCommandError> {
+    if let Some(tab) = registry.remove(tab_id) {
+        let _ = tab.surface.close();
+        if let Some(guests) = app.try_state::<DocGuests>() {
+            guests.unbind(tab_id);
+        }
+        events::emit_closed(app, tab_id, &tab.state.owner_window);
+    }
+    Ok(())
+}
+
+/// Called from the window-event hook when a window is destroyed: its tabs go
+/// with it. Errors are ignored — a child webview of a destroyed window is
+/// already gone.
+pub fn close_all_for_owner(app: &AppHandle, owner_window: &str) {
+    if let Some(registry) = app.try_state::<BrowserRegistry>() {
+        for tab in registry.remove_by_owner(owner_window) {
+            let _ = tab.surface.close();
+            if let Some(guests) = app.try_state::<DocGuests>() {
+                guests.unbind(&tab.state.tab_id);
+            }
+        }
+    }
+}
+
+pub fn set_bounds_core(
+    registry: &BrowserRegistry,
+    tab_id: &str,
+    bounds: Bounds,
+) -> Result<(), AppCommandError> {
+    let surface = surface_of(registry, tab_id)?;
+    let visible = registry
+        .update(tab_id, |tab| {
+            tab.last_bounds = bounds;
+            tab.visible
+        })
+        .unwrap_or(false);
+    // A hidden surface picks the bounds up again when it is shown; moving it
+    // while hidden is wasted main-thread work on every split-pane drag.
+    if visible && surface.is_embedded() {
+        surface
+            .set_bounds(bounds)
+            .map_err(|e| window_err("Failed to move browser webview", e))?;
+    }
+    Ok(())
+}
+
+/// JPEG quality of the freeze frame: legible text under a dimmed overlay,
+/// small enough to ride the IPC without being noticed.
+const FREEZE_JPEG_QUALITY: f64 = 0.8;
+/// How long a hide may wait for its freeze frame. Longer than this and the
+/// overlay would sit under the page for a visible moment; the hide then goes
+/// ahead without a frame.
+const FREEZE_CAPTURE_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// The frame the surface shows now, for the placeholder to paint while the
+/// surface is hidden. `None` whenever it cannot be had in time — a blank
+/// placeholder is the state before this existed, never an error.
+async fn capture_freeze_frame(surface: &BrowserSurface) -> Option<FrozenFrame> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(Vec<u8>, u32, u32), String>>();
+    let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+    if let Err(err) = surface.snapshot_jpeg(FREEZE_JPEG_QUALITY, move |result| {
+        if let Some(tx) = tx.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            let _ = tx.send(result);
+        }
+    }) {
+        tracing::debug!("[browser] no freeze frame: {err}");
+        return None;
+    }
+    match tokio::time::timeout(FREEZE_CAPTURE_TIMEOUT, rx).await {
+        Ok(Ok(Ok((bytes, width, height)))) => Some(FrozenFrame {
+            mime: "image/jpeg".to_string(),
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+            width,
+            height,
+        }),
+        Ok(Ok(Err(err))) => {
+            tracing::debug!("[browser] freeze frame failed: {err}");
+            None
+        }
+        Ok(Err(_)) | Err(_) => {
+            tracing::debug!("[browser] freeze frame did not arrive in time");
+            None
+        }
+    }
+}
+
+/// Show or hide a surface. Hiding with `freeze` first captures the frame the
+/// surface shows and hands it back, so the placeholder can keep showing the
+/// page while an overlay is open over it; the capture is asynchronous, and a
+/// request that a newer one overtook meanwhile is dropped rather than
+/// applied late.
+pub async fn set_visible_core(
+    owner: &WebviewWindow,
+    registry: &BrowserRegistry,
+    tab_id: &str,
+    visible: bool,
+    handoff_focus: bool,
+    freeze: bool,
+) -> Result<Option<FrozenFrame>, AppCommandError> {
+    // The surface and the request's stamp (its sequence number and the
+    // tab's incarnation) are taken in ONE registry operation: taken apart, a
+    // close-and-reopen of the same id in between would pair the old surface
+    // with the new tab's stamp. Then the tab's lock: requests apply one at a
+    // time and in the order they came, and one that a newer request has
+    // overtaken while it waited or captured is dropped rather than applied
+    // late (the newer one carries the state that stands).
+    let (surface, stamp) = registry
+        .update(tab_id, |tab| {
+            tab.visible_seq += 1;
+            (tab.surface.clone(), (tab.visible_seq, tab.generation))
+        })
+        .ok_or_else(|| AppCommandError::not_found(format!("browser tab {tab_id} not found")))?;
+    let lock = registry.visibility_lock(tab_id);
+    let _applying = lock.lock().await;
+    // Both the sequence and the incarnation: the id may have been closed and
+    // reopened while this waited, and the new tab's own counter must not be
+    // mistaken for ours.
+    let current = || registry.update(tab_id, |tab| (tab.visible_seq, tab.generation));
+    if current() != Some(stamp) {
+        return Ok(None);
+    }
+    let mut frame = None;
+    if !visible && freeze && surface.is_embedded() {
+        frame = capture_freeze_frame(&surface).await;
+    }
+    // Check and record in one operation, so nothing can come between the
+    // last look at the stamp and the state change it guards.
+    let Some(Some(bounds)) = registry.update(tab_id, |tab| {
+        if (tab.visible_seq, tab.generation) != stamp {
+            return None;
+        }
+        tab.visible = visible;
+        Some(tab.last_bounds)
+    }) else {
+        return Ok(None);
+    };
+    if visible {
+        if surface.is_embedded() {
+            surface
+                .set_bounds(bounds)
+                .map_err(|e| window_err("Failed to move browser webview", e))?;
+        }
+        surface
+            .show()
+            .map_err(|e| window_err("Failed to show browser surface", e))?;
+    } else {
+        // Keyboard focus must not stay inside a hidden native view: the
+        // overlay that caused the hide would never receive Esc / Tab.
+        if handoff_focus {
+            let _ = owner.set_focus();
+        }
+        surface
+            .hide()
+            .map_err(|e| window_err("Failed to hide browser surface", e))?;
+    }
+    Ok(frame)
+}
+
+pub fn navigate_core(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    tab_id: &str,
+    raw_url: &str,
+) -> Result<BrowserTabState, AppCommandError> {
+    let url = parse_web_url(raw_url)?;
+    let surface = surface_of(registry, tab_id)?;
+    // A document guest shows one file; it is not an address bar.
+    if registry
+        .state(tab_id)
+        .is_some_and(|state| state.kind == TabKind::Document)
+    {
+        return Err(AppCommandError::invalid_input(
+            "a document view cannot be navigated to another address",
+        ));
+    }
+    // Refused by a site rule: the block page takes the place of the page,
+    // as in a browser, and nothing is loaded. Whatever was loading before
+    // is stopped and its watcher retired, or its commit or failure would
+    // land on top of the block a moment later.
+    if blocked_by_policy(app, &url) {
+        let _ = surface.stop();
+        let state = registry
+            .update(tab_id, |tab| {
+                tab.load_seq += 1;
+                tab.provisional_url = None;
+                tab.state.requested_url = url.to_string();
+                tab.state.loading = false;
+                tab.state.error = Some(blocked_error(&url));
+                tab.state.clone()
+            })
+            .ok_or_else(|| AppCommandError::not_found(format!("browser tab {tab_id} not found")))?;
+        events::emit_state(app, &state);
+        return Ok(state);
+    }
+    let state = registry
+        .update_state(tab_id, |state| {
+            state.requested_url = url.to_string();
+            state.loading = true;
+            state.error = None;
+        })
+        .ok_or_else(|| AppCommandError::not_found(format!("browser tab {tab_id} not found")))?;
+    surface
+        .navigate(url)
+        .map_err(|e| window_err("Failed to navigate browser tab", e))?;
+    hooks::begin_load(app, tab_id);
+    events::emit_state(app, &state);
+    Ok(state)
+}
+
+pub fn reload_core(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    tab_id: &str,
+) -> Result<(), AppCommandError> {
+    let surface = surface_of(registry, tab_id)?;
+    let current = registry
+        .state(tab_id)
+        .ok_or_else(|| AppCommandError::not_found(format!("browser tab {tab_id} not found")))?;
+    // A document guest reloads its one document (its address is not a web
+    // address the retry path below would accept).
+    if current.kind == TabKind::Document {
+        let document_url = app
+            .try_state::<DocGuests>()
+            .and_then(|guests| guests.for_tab(tab_id))
+            .map(|grant| grant.document_url())
+            .unwrap_or(current.requested_url);
+        return reload_document(app, registry, tab_id, &surface, &document_url);
+    }
+    // Retry rather than reload when the page showing is not the one asked
+    // for: a navigation that failed before committing left nothing to reload
+    // (or left an older document, which the error page now covers), and the
+    // error page's button means "try that address again".
+    let retry = current.error.is_some() || surface.url().is_err();
+    if retry && !current.requested_url.is_empty() {
+        navigate_core(app, registry, tab_id, &current.requested_url)?;
+        return Ok(());
+    }
+    // A reload asks for the document that is showing; saying so keeps the
+    // load watcher's "did the requested page arrive" check honest after an
+    // in-page (pushState) navigation moved `url` away from the last request.
+    let state = registry.update_state(tab_id, |state| {
+        if !state.url.is_empty() {
+            state.requested_url = state.url.clone();
+        }
+        state.loading = true;
+        state.error = None;
+    });
+    surface
+        .reload()
+        .map_err(|e| window_err("Failed to reload browser tab", e))?;
+    hooks::begin_load(app, tab_id);
+    if let Some(state) = state {
+        events::emit_state(app, &state);
+    }
+    Ok(())
+}
+
+/// Find in page. Returns whether the engine highlighted a match; an empty
+/// query is the "close the find bar" case and only clears the highlight.
+/// The search itself is WebKit's, so the page can neither see it nor break it.
+pub async fn find_core(
+    registry: &BrowserRegistry,
+    tab_id: &str,
+    query: &str,
+    forward: bool,
+) -> Result<bool, AppCommandError> {
+    let surface = surface_of(registry, tab_id)?;
+    if query.is_empty() {
+        surface
+            .clear_find()
+            .map_err(|e| window_err("Failed to clear the page search", e))?;
+        return Ok(false);
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+    let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+    surface
+        .find(query, forward, move |found| {
+            if let Some(tx) = tx.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                let _ = tx.send(found);
+            }
+        })
+        .map_err(|e| window_err("Failed to search the page", e))?;
+    // A search that never answers must not hang the caller — but it must not
+    // be reported as "no match" either: the engine may still highlight one a
+    // moment later, and the bar would be saying the opposite of the screen.
+    // An error leaves the bar showing nothing at all.
+    match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
+        Ok(Ok(found)) => Ok(found),
+        Ok(Err(_)) => Err(window_err("Failed to search the page", "the search was dropped")),
+        Err(_) => Err(window_err("Failed to search the page", "WebKit did not answer")),
+    }
+}
+
+pub fn go_back_core(registry: &BrowserRegistry, tab_id: &str) -> Result<(), AppCommandError> {
+    surface_of(registry, tab_id)?
+        .go_back()
+        .map_err(|e| window_err("Failed to go back", e))
+}
+
+pub fn go_forward_core(registry: &BrowserRegistry, tab_id: &str) -> Result<(), AppCommandError> {
+    surface_of(registry, tab_id)?
+        .go_forward()
+        .map_err(|e| window_err("Failed to go forward", e))
+}
+
+pub fn stop_core(app: &AppHandle, registry: &BrowserRegistry, tab_id: &str) -> Result<(), AppCommandError> {
+    surface_of(registry, tab_id)?
+        .stop()
+        .map_err(|e| window_err("Failed to stop loading", e))?;
+    if let Some(state) = registry.update_state(tab_id, |s| s.loading = false) {
+        events::emit_state(app, &state);
+    }
+    Ok(())
+}
+
+pub fn state_core(registry: &BrowserRegistry, tab_id: &str) -> Result<BrowserTabState, AppCommandError> {
+    registry
+        .state(tab_id)
+        .ok_or_else(|| AppCommandError::not_found(format!("browser tab {tab_id} not found")))
+}
+
+// ---------------------------------------------------------------------------
+// Agent access
+// ---------------------------------------------------------------------------
+
+/// The error an agent tool turns into `browser_grant_required{tabId}`: this
+/// tab has not been shared, or the page it was shared for is gone.
+///
+/// One error for both, on purpose. To the agent they are the same instruction
+/// — ask the user to share this tab — and telling the two apart would report
+/// on a page it is not allowed to read.
+fn grant_required(tab_id: &str) -> AppCommandError {
+    AppCommandError::permission_denied(format!(
+        "browser tab {tab_id} has not been shared with agents"
+    ))
+    .with_i18n(BROWSER_I18N_KEY_GRANT_REQUIRED, std::collections::BTreeMap::new())
+}
+
+/// Emitted whenever an agent is refused a page. The frontend turns it into
+/// the prompt that offers to share the tab.
+pub const BROWSER_I18N_KEY_GRANT_REQUIRED: &str = "browser.agent.error.grantRequired";
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+/// Every tab an agent may be told about, oldest id first.
+///
+/// Not scoped to a window, a folder, or the conversation that asked. A tab
+/// does not belong to a conversation, and the backend is not even told which
+/// folder one was opened in — `browser_open_tab` takes a `folder_id` and
+/// discards it, because grouping tabs is the tab strip's business. One user,
+/// one set of tabs; what any given agent may *read* of them is the grant, and
+/// that is decided per tab by the person, not by which chat is asking.
+pub fn agent_list_tabs_core(registry: &BrowserRegistry) -> Vec<agent::AgentTabSummary> {
+    registry.list().iter().filter_map(agent::summarize_tab).collect()
+}
+
+/// Share a tab with agents, change the level, or take it back.
+///
+/// Only ever called for a person: nothing reachable by an agent leads here,
+/// which is the entire model (`browser::agent`). The check and the write
+/// happen under one lock so a grant cannot be bound to an origin the tab left
+/// while the request was in the air.
+pub async fn set_agent_grant_core(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    tab_id: &str,
+    level: GrantLevel,
+) -> Result<BrowserTabState, AppCommandError> {
+    // Taken before the lock: asking the operating system who holds a port is
+    // tens of milliseconds, and the registry lock is on the path of every
+    // tab's events. `apply_grant` drops the answer unless the tab is still
+    // showing the address it was taken for.
+    let probed = match level {
+        GrantLevel::None => None,
+        _ => {
+            let origin = registry
+                .read(tab_id, |tab| {
+                    agent::grantable_origin(&tab.state).ok().map(str::to_string)
+                })
+                .flatten();
+            match origin {
+                Some(origin) => probe_listener(&origin).await,
+                None => None,
+            }
+        }
+    };
+    let now = now_millis();
+    let applied = registry
+        .update(tab_id, |tab| {
+            agent::apply_grant(&mut tab.state, level, now, probed)
+                .map(|change| (tab.state.clone(), change))
+        })
+        .ok_or_else(|| AppCommandError::not_found(format!("browser tab {tab_id} not found")))?;
+    let (state, change) = applied.map_err(|reason| match reason {
+        agent::NotGrantable::NoOrigin => AppCommandError::invalid_input(
+            "This tab has no web address to share: an agent's access is tied to one site, \
+             and there is nothing here to tie it to.",
+        ),
+        agent::NotGrantable::DocumentGuest => AppCommandError::invalid_input(
+            "A document view cannot be shared with an agent. It is showing a local file, \
+             which an agent reads from disk.",
+        ),
+    })?;
+    events::emit_state(app, &state);
+    if let Some(change) = change {
+        events::emit_agent_grant(
+            app,
+            tab_id,
+            change.change,
+            change.level,
+            change.origin.as_deref(),
+        );
+    }
+    Ok(state)
+}
+
+/// Ask the operating system which program is serving `origin`, off the async
+/// runtime. `None` for anything that is not a loopback address this machine
+/// can answer about — see [`browser::listener`](crate::browser::listener).
+async fn probe_listener(origin: &str) -> Option<agent::ProbedListener> {
+    let port = listener::loopback_port(origin)?;
+    let origin = origin.to_string();
+    // Reading the kernel's socket table — and on macOS running `lsof` — is
+    // blocking work with no business on a runtime thread that other tabs'
+    // events are queued behind.
+    let identity = tokio::task::spawn_blocking(move || listener::identify(port))
+        .await
+        .ok()??;
+    Some(agent::ProbedListener { origin, identity })
+}
+
+/// End a grant whose loopback address is being served by a different program
+/// than the one it was pinned to.
+///
+/// The address in the toolbar has not changed, which is exactly why this is
+/// worth telling the user about: everything they can see about the tab still
+/// looks like what they shared.
+///
+/// Ends the grant and says nothing else — the refusal that follows is the
+/// ordinary one for a tab with no grant, raised by the check that was already
+/// there. A second refusal path for this case would be a second place to keep
+/// the activity strip's accounting right.
+async fn revoke_if_listener_replaced(app: &AppHandle, registry: &BrowserRegistry, tab_id: &str) {
+    // Only a pinned grant has anything to check, and reading that costs a
+    // lock rather than a process scan — so the common case (a real site, or
+    // an unpinned loopback one) never reaches the probe at all.
+    let pinned_origin = registry
+        .read(tab_id, |tab| {
+            tab.state
+                .agent_grant
+                .as_ref()
+                .filter(|grant| grant.listener.is_some())
+                .map(|grant| grant.origin.clone())
+        })
+        .flatten();
+    let Some(origin) = pinned_origin else {
+        return;
+    };
+    let Some(probed) = probe_listener(&origin).await else {
+        // Nobody is home, or nobody this process can name. There is no second
+        // program to point at, and an address nobody serves cannot deliver
+        // anything new — a dev server between two restarts is the ordinary
+        // shape of this, and ending the sharing for it would be wrong.
+        return;
+    };
+    let lost = registry
+        .update(tab_id, |tab| {
+            agent::revoke_if_replaced(&mut tab.state, &origin, &probed.identity)
+                .map(|lost| (tab.state.clone(), lost))
+        })
+        .flatten();
+    let Some((state, lost)) = lost else {
+        return;
+    };
+    events::emit_state(app, &state);
+    events::emit_agent_grant(
+        app,
+        tab_id,
+        agent::GrantChange::Replaced,
+        GrantLevel::None,
+        Some(&lost.origin),
+    );
+}
+
+/// Read a shared page, as the tree an agent operates on.
+///
+/// The grant is checked twice, and the second time is the one that decides.
+/// Reading a page is not instantaneous: between the first check and the
+/// answer the user can revoke, the tab can be closed and another opened under
+/// the same id, and the page can go anywhere. So the tree is handed over only
+/// if the grant *as it stands now* still allows reading and still covers the
+/// address the world reports having walked — not the address the host last
+/// heard about, which is the one that can be out of date.
+///
+/// That address is `location.href` read inside the isolated world, which the
+/// page cannot dress up: `location` is unforgeable, and a page-level
+/// redefinition would not be visible from the world in any case.
+///
+/// Refusing costs an agent a round trip and the instruction to ask again.
+/// Not refusing hands it a page nobody shared.
+///
+/// Every attempt that reaches an existing tab leaves a line on that tab's
+/// activity strip, whichever way it goes. The strip is only worth having if
+/// it is complete: a user who sees nothing on it has to be able to conclude
+/// that nothing happened.
+pub async fn agent_snapshot_core(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    tab_id: &str,
+    request: &agent::SnapshotRequest,
+) -> Result<agent::PageSnapshot, AppCommandError> {
+    // The address is still the one that was shared. For a loopback address
+    // that settles less than it sounds like — `localhost:3000` is a port
+    // number, and the question worth asking is whether the program behind it
+    // is still the one the person pointed at. A grant that fails it is gone
+    // before the read below looks for one.
+    revoke_if_listener_replaced(app, registry, tab_id).await;
+    let (outcome, answer) = match read_shared_page(registry, tab_id, request).await {
+        Ok(snapshot) => (Some(agent::AgentOutcome::Done), Ok(snapshot)),
+        Err((outcome, err)) => (outcome, Err(err)),
+    };
+    if let Some(outcome) = outcome {
+        events::emit_agent_activity(app, tab_id, agent::AgentAction::Read, outcome, now_millis());
+    }
+    answer
+}
+
+/// What a read failed on, and the line it leaves behind. `None` for a tab
+/// that does not exist: there is no strip to report into and nobody watching
+/// it.
+type ReadFailure = (Option<agent::AgentOutcome>, AppCommandError);
+
+async fn read_shared_page(
+    registry: &BrowserRegistry,
+    tab_id: &str,
+    request: &agent::SnapshotRequest,
+) -> Result<agent::PageSnapshot, ReadFailure> {
+    let Some((surface, generation, epoch, level)) = registry.read(tab_id, |tab| {
+        (
+            tab.surface.clone(),
+            tab.generation,
+            agent::epoch(tab.generation, tab.nav_epoch),
+            agent::level_of(tab.state.agent_grant.as_ref()),
+        )
+    }) else {
+        return Err((
+            None,
+            AppCommandError::not_found(format!("browser tab {tab_id} not found")),
+        ));
+    };
+    let failed = |err: AppCommandError| (Some(agent::AgentOutcome::Failed), err);
+    // Before touching the page at all: an unshared tab is never read, not
+    // even to find out that the read would have been refused.
+    if !level.allows(GrantLevel::Read) {
+        return Err((Some(agent::AgentOutcome::Refused), grant_required(tab_id)));
+    }
+
+    let answer = eval_in_world_string(&surface, &agent::probe_and_snapshot(request, &epoch))
+        .await
+        .map_err(failed)?;
+    // The engine is not in this document — a page that has just loaded, or
+    // one loaded before the tab was ever shared. Put it there and take the
+    // snapshot in the same evaluation, so the two cannot straddle a
+    // navigation.
+    let answer = if answer == agent::ENGINE_ABSENT {
+        eval_in_world_string(&surface, &agent::install_and_snapshot(request, &epoch))
+            .await
+            .map_err(failed)?
+    } else {
+        answer
+    };
+    let snapshot: agent::PageSnapshot = serde_json::from_str(&answer)
+        .map_err(|e| failed(window_err("Failed to read the page", format!("unreadable snapshot: {e}"))))?;
+
+    let walked = Url::parse(&snapshot.url).ok();
+    let walked_origin = walked.as_ref().and_then(hooks::origin_of);
+    let allowed = registry
+        .read(tab_id, |tab| {
+            tab.generation == generation
+                && tab.state.agent_grant.as_ref().is_some_and(|grant| {
+                    grant.level.allows(GrantLevel::Read)
+                        && grant.covers(walked_origin.as_deref())
+                })
+        })
+        .unwrap_or(false);
+    if !allowed {
+        return Err((Some(agent::AgentOutcome::Refused), grant_required(tab_id)));
+    }
+    Ok(snapshot)
+}
+
+/// The two browser tools an agent gets, answered from this process's tab
+/// registry.
+///
+/// Holds an `AppHandle` rather than the registry itself: the registry is Tauri
+/// managed state, and resolving it per call means a build that never installed
+/// one degrades to "no browser here" instead of panicking at startup.
+///
+/// The feature flag is re-read on every call, not captured at injection. A
+/// person switching this off has decided something about the session in front
+/// of them right now, and an agent launched five minutes ago is exactly the
+/// one they mean.
+pub struct McpBrowserTools {
+    app: AppHandle,
+    config: crate::acp::browser_tools::BrowserToolsRuntimeConfig,
+}
+
+impl McpBrowserTools {
+    pub fn new(app: AppHandle, config: crate::acp::browser_tools::BrowserToolsRuntimeConfig) -> Self {
+        Self { app, config }
+    }
+
+    /// The registry, or `None` when this build has no browser to speak of.
+    async fn registry(&self) -> Option<State<'_, BrowserRegistry>> {
+        if !self.config.is_enabled().await {
+            return None;
+        }
+        self.app.try_state::<BrowserRegistry>()
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
+    async fn list_tabs(&self) -> crate::acp::browser_tools::BrowserTabsOutcome {
+        use crate::acp::browser_tools::{BrowserTabsOutcome, NO_BROWSER_NOTE};
+        let Some(registry) = self.registry().await else {
+            return BrowserTabsOutcome::unavailable(NO_BROWSER_NOTE);
+        };
+        BrowserTabsOutcome {
+            tabs: agent_list_tabs_core(&registry),
+            note: None,
+        }
+    }
+
+    async fn snapshot(
+        &self,
+        tab_id: &str,
+        max_chars: Option<usize>,
+    ) -> crate::acp::browser_tools::BrowserSnapshotOutcome {
+        use crate::acp::browser_tools::{
+            BrowserSnapshotOutcome, DEFAULT_SNAPSHOT_MAX_CHARS, ERROR_NO_SUCH_TAB,
+            ERROR_READ_FAILED, ERROR_UNAVAILABLE, NO_BROWSER_NOTE,
+        };
+        let Some(registry) = self.registry().await else {
+            return BrowserSnapshotOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE);
+        };
+        // `Some(0)` is the caller asking for the whole page, and is passed
+        // through as such; only an absent cap becomes the default.
+        let request = agent::SnapshotRequest {
+            max_chars: Some(max_chars.unwrap_or(DEFAULT_SNAPSHOT_MAX_CHARS)),
+        };
+        // Straight through `agent_snapshot_core`: the grant check and the line
+        // it leaves on the tab's activity strip both live in there, so this
+        // surface cannot read a page more quietly than the app's own does.
+        match agent_snapshot_core(&self.app, &registry, tab_id, &request).await {
+            Ok(snapshot) => BrowserSnapshotOutcome::page(tab_id, snapshot),
+            // The refusal is recognized by the key the error was tagged with,
+            // not by its code: `PermissionDenied` is a wide category, and only
+            // this one means "the user can fix it with one click".
+            Err(err)
+                if err.i18n_key.as_deref() == Some(BROWSER_I18N_KEY_GRANT_REQUIRED) =>
+            {
+                BrowserSnapshotOutcome::grant_required(tab_id)
+            }
+            Err(err)
+                if matches!(err.code, crate::app_error::AppErrorCode::NotFound) =>
+            {
+                BrowserSnapshotOutcome::refused(
+                    tab_id,
+                    ERROR_NO_SUCH_TAB,
+                    format!(
+                        "No browser tab {tab_id} is open. Call browser_list_tabs for the ids \
+                         that are."
+                    ),
+                )
+            }
+            Err(err) => BrowserSnapshotOutcome::refused(tab_id, ERROR_READ_FAILED, err.message),
+        }
+    }
+}
+
+/// Evaluate an expression in a tab's isolated world and unwrap the shim's
+/// `{ok, value}` envelope. The value is always a string here: every caller in
+/// this module asks for `JSON.stringify(…)` or for a literal.
+async fn eval_in_world_string(surface: &BrowserSurface, js: &str) -> Result<String, AppCommandError> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
+    let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+    surface
+        .eval_in_world(js, move |result| {
+            if let Some(tx) = tx.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                let _ = tx.send(result);
+            }
+        })
+        .map_err(|e| window_err("Failed to read the page", e))?;
+    // Long enough that a big page's tree is not mistaken for a hung engine.
+    // It bounds how long a caller waits for an answer that is not coming, not
+    // how large a page may be.
+    let raw = match tokio::time::timeout(Duration::from_secs(15), rx).await {
+        Ok(Ok(Ok(raw))) => raw,
+        Ok(Ok(Err(err))) => return Err(window_err("Failed to read the page", err)),
+        Ok(Err(_)) => {
+            return Err(window_err("Failed to read the page", "the request was dropped"))
+        }
+        Err(_) => return Err(window_err("Failed to read the page", "the page did not answer")),
+    };
+    let envelope: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| window_err("Failed to read the page", format!("unreadable answer: {e}")))?;
+    if envelope["ok"] == serde_json::Value::Bool(true) {
+        envelope["value"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| window_err("Failed to read the page", "the page answered with no value"))
+    } else {
+        Err(window_err(
+            "Failed to read the page",
+            envelope["error"].as_str().unwrap_or("evaluation failed"),
+        ))
+    }
+}
+
+#[tauri::command]
+pub async fn browser_capabilities(
+    policy: State<'_, BrowserPolicy>,
+) -> Result<BrowserCapabilities, AppCommandError> {
+    Ok(capabilities(&policy))
+}
+
+/// The user's site rules, pushed by the frontend (which owns the preference)
+/// at startup and on every change. Invalid patterns are dropped.
+#[tauri::command]
+pub async fn browser_set_host_rules(
+    policy: State<'_, BrowserPolicy>,
+    rules: Vec<HostRule>,
+) -> Result<(), AppCommandError> {
+    policy.set_user_rules(rules);
+    Ok(())
+}
+
+/// Record the "sign-in user agent" preference and re-decide the identity of
+/// every open page under it, so a flip applies to the pages on screen and
+/// not only to their next navigation.
+pub fn set_sign_in_user_agent_core(registry: &BrowserRegistry, enabled: bool) {
+    profile::set_sign_in_user_agent(enabled);
+    // Each surface decides from its own current URL on the main thread, so a
+    // tab id reused by a newer incarnation meanwhile cannot be given the
+    // older page's identity.
+    for state in registry.list() {
+        if state.kind != TabKind::Page {
+            continue;
+        }
+        if let Some(surface) = registry.surface(&state.tab_id) {
+            if let Err(err) = surface.refresh_user_agent() {
+                tracing::debug!("[browser] tab {}: identity not re-applied: {err}", state.tab_id);
+            }
+        }
+    }
+}
+
+/// The "sign-in user agent" preference, pushed by the frontend (which owns
+/// it) at startup and on every change.
+#[tauri::command]
+pub async fn browser_set_sign_in_user_agent(
+    registry: State<'_, BrowserRegistry>,
+    enabled: bool,
+) -> Result<(), AppCommandError> {
+    set_sign_in_user_agent_core(&registry, enabled);
+    Ok(())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn browser_open_tab(
+    app: AppHandle,
+    window: WebviewWindow,
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+    url: String,
+    bounds: Bounds,
+    background: Option<bool>,
+    surface: Option<SurfaceChoice>,
+    folder_id: Option<i64>,
+    devtools: Option<bool>,
+    profile: Option<String>,
+) -> Result<BrowserTabState, AppCommandError> {
+    // Folder scoping is a frontend concern (tab strip grouping); the backend
+    // only needs the owner window.
+    let _ = folder_id;
+    open_tab_core(
+        &app,
+        &window,
+        &registry,
+        OpenTabParams {
+            tab_id,
+            url,
+            bounds,
+            background: background.unwrap_or(false),
+            surface: surface.unwrap_or_default(),
+            devtools: devtools.unwrap_or(false),
+            profile: profile.unwrap_or_else(|| profile::DEFAULT_PROFILE_ID.to_string()),
+        },
+    )
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn browser_doc_open(
+    app: AppHandle,
+    window: WebviewWindow,
+    registry: State<'_, BrowserRegistry>,
+    guests: State<'_, DocGuests>,
+    tab_id: String,
+    path: String,
+    root: Option<String>,
+    bounds: Bounds,
+    background: Option<bool>,
+    devtools: Option<bool>,
+) -> Result<DocOpenResult, AppCommandError> {
+    doc_open_core(
+        &app,
+        &window,
+        &registry,
+        &guests,
+        DocOpenParams {
+            tab_id,
+            path,
+            root,
+            bounds,
+            background: background.unwrap_or(false),
+            devtools: devtools.unwrap_or(false),
+        },
+    )
+}
+
+#[tauri::command]
+pub async fn browser_doc_set_mode(
+    app: AppHandle,
+    registry: State<'_, BrowserRegistry>,
+    guests: State<'_, DocGuests>,
+    tab_id: String,
+    mode: DocMode,
+) -> Result<DocGuestState, AppCommandError> {
+    doc_set_mode_core(&app, &registry, &guests, &tab_id, mode)
+}
+
+#[tauri::command]
+pub async fn browser_doc_state(
+    guests: State<'_, DocGuests>,
+    tab_id: String,
+) -> Result<DocGuestState, AppCommandError> {
+    doc_state_core(&guests, &tab_id)
+}
+
+#[tauri::command]
+pub async fn browser_clear_data(
+    app: AppHandle,
+    registry: State<'_, BrowserRegistry>,
+    profile: Option<String>,
+) -> Result<(), AppCommandError> {
+    clear_data_core(
+        &app,
+        &registry,
+        profile.as_deref().unwrap_or(profile::DEFAULT_PROFILE_ID),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn browser_remove_profile(
+    app: AppHandle,
+    registry: State<'_, BrowserRegistry>,
+    profile: String,
+) -> Result<(), AppCommandError> {
+    remove_profile_core(&app, &registry, &profile).await
+}
+
+#[tauri::command]
+pub async fn browser_close(
+    app: AppHandle,
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+) -> Result<(), AppCommandError> {
+    close_core(&app, &registry, &tab_id)
+}
+
+#[tauri::command]
+pub async fn browser_set_bounds(
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+    bounds: Bounds,
+) -> Result<(), AppCommandError> {
+    set_bounds_core(&registry, &tab_id, bounds)
+}
+
+#[tauri::command]
+pub async fn browser_set_visible(
+    window: WebviewWindow,
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+    visible: bool,
+    handoff_focus: Option<bool>,
+    freeze: Option<bool>,
+) -> Result<Option<FrozenFrame>, AppCommandError> {
+    set_visible_core(
+        &window,
+        &registry,
+        &tab_id,
+        visible,
+        handoff_focus.unwrap_or(false),
+        freeze.unwrap_or(false),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn browser_navigate(
+    app: AppHandle,
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+    url: String,
+) -> Result<BrowserTabState, AppCommandError> {
+    navigate_core(&app, &registry, &tab_id, &url)
+}
+
+#[tauri::command]
+pub async fn browser_reload(
+    app: AppHandle,
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+) -> Result<(), AppCommandError> {
+    reload_core(&app, &registry, &tab_id)
+}
+
+#[tauri::command]
+pub async fn browser_go_back(
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+) -> Result<(), AppCommandError> {
+    go_back_core(&registry, &tab_id)
+}
+
+#[tauri::command]
+pub async fn browser_go_forward(
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+) -> Result<(), AppCommandError> {
+    go_forward_core(&registry, &tab_id)
+}
+
+#[tauri::command]
+pub async fn browser_stop(
+    app: AppHandle,
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+) -> Result<(), AppCommandError> {
+    stop_core(&app, &registry, &tab_id)
+}
+
+#[tauri::command]
+pub async fn browser_find(
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+    query: String,
+    forward: bool,
+) -> Result<bool, AppCommandError> {
+    find_core(&registry, &tab_id, &query, forward).await
+}
+
+#[tauri::command]
+pub async fn browser_get_state(
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+) -> Result<BrowserTabState, AppCommandError> {
+    state_core(&registry, &tab_id)
+}
+
+#[tauri::command]
+pub async fn browser_list_tabs(
+    window: WebviewWindow,
+    registry: State<'_, BrowserRegistry>,
+) -> Result<Vec<BrowserTabState>, AppCommandError> {
+    Ok(registry.list_for_owner(window.label()))
+}
+
+/// The share control in a tab's toolbar. A person, always.
+#[tauri::command]
+pub async fn browser_agent_grant(
+    app: AppHandle,
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+    level: GrantLevel,
+) -> Result<BrowserTabState, AppCommandError> {
+    set_agent_grant_core(&app, &registry, &tab_id, level).await
+}
+
+/// Read a shared page on an agent's behalf.
+///
+/// A command rather than only a `_core` function because the smoke puppet
+/// drives commands, and because the tool surface in `codeg-mcp` reaches the
+/// backend the same way the frontend does. It is not a way around the grant:
+/// the check is inside `agent_snapshot_core`, so every caller gets it.
+#[tauri::command]
+pub async fn browser_agent_snapshot(
+    app: AppHandle,
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+    max_chars: Option<usize>,
+) -> Result<agent::PageSnapshot, AppCommandError> {
+    agent_snapshot_core(&app, &registry, &tab_id, &agent::SnapshotRequest { max_chars }).await
+}
+
+/// Downloads this run started, oldest first. The frontend hydrates from it on
+/// mount; afterwards `browser://download` keeps it current.
+#[tauri::command]
+pub async fn browser_list_downloads(
+    downloads: State<'_, BrowserDownloads>,
+) -> Result<Vec<BrowserDownload>, AppCommandError> {
+    Ok(downloads.list())
+}
+
+/// Show a finished download in the file manager. Only reachable for a record
+/// this run made, and it is the record's path that is shown — the caller
+/// names a download, not a path. The frontend falls back to this when the
+/// opener plugin cannot take the path (a network location on Windows).
+#[tauri::command]
+pub async fn browser_reveal_download(
+    downloads: State<'_, BrowserDownloads>,
+    id: String,
+) -> Result<(), AppCommandError> {
+    crate::browser::downloads::reveal(&downloads, &id)
+        .map_err(|e| window_err("Failed to show the download", e))
+}
+
+/// Forget the records (the "dismiss" of the download bar). The files stay.
+#[tauri::command]
+pub async fn browser_clear_downloads(
+    downloads: State<'_, BrowserDownloads>,
+) -> Result<(), AppCommandError> {
+    downloads.clear();
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_ids_are_label_safe() {
+        assert!(validate_tab_id("b7e2c1d0-1a2b").is_ok());
+        assert!(validate_tab_id("tab_1").is_ok());
+        for bad in ["", "a b", "a/b", "a:b", "é", &"x".repeat(65)] {
+            assert!(validate_tab_id(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn origin_title_hides_path_and_query() {
+        let url = Url::parse("https://accounts.example.com/o/oauth2?state=SECRET").unwrap();
+        assert_eq!(origin_title(&url), "accounts.example.com");
+        let url = Url::parse("http://localhost:3000/app#x").unwrap();
+        assert_eq!(origin_title(&url), "localhost:3000");
+    }
+
+    #[test]
+    fn open_url_must_be_a_web_page() {
+        assert!(parse_web_url(" https://example.com ").is_ok());
+        assert!(parse_web_url("about:blank").is_ok());
+        assert!(parse_web_url("file:///etc/hosts").is_err());
+        assert!(parse_web_url("javascript:1").is_err());
+        assert!(parse_web_url("not a url").is_err());
+    }
+
+    /// The refusal an agent gets is the same one whether the tab was never
+    /// shared or the page has since left the shared origin. Distinguishing
+    /// them would report on a page the caller is not allowed to read, and the
+    /// instruction is identical either way: ask the user to share this tab.
+    #[test]
+    fn the_refusal_carries_the_key_the_frontend_branches_on() {
+        let err = grant_required("t1");
+        assert!(matches!(err.code, crate::app_error::AppErrorCode::PermissionDenied));
+        assert_eq!(
+            err.i18n_key.as_deref(),
+            Some("browser.agent.error.grantRequired")
+        );
+        // …and that key has a message. A stamped key with nothing behind it
+        // silently degrades to the English `message`, which is the kind of
+        // thing nobody notices until a user reports it in their own language.
+        let messages = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../src/i18n/messages/en.json");
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&messages).expect("en.json")).unwrap();
+        let mut node = &json;
+        for segment in BROWSER_I18N_KEY_GRANT_REQUIRED.split('.') {
+            node = &node[segment];
+        }
+        assert!(
+            node.as_str().is_some_and(|s| !s.is_empty()),
+            "{BROWSER_I18N_KEY_GRANT_REQUIRED} has no message in en.json"
+        );
+    }
+
+    /// A tab that is not there is the one exit that leaves no line: there is
+    /// no strip to leave it on, and no one watching. Every other way a read
+    /// can end reports itself, which is what lets an empty strip be read as
+    /// "nothing reached this tab".
+    #[tokio::test]
+    async fn a_read_of_a_tab_that_is_not_there_reports_to_nobody() {
+        let registry = BrowserRegistry::default();
+        let (outcome, err) = read_shared_page(&registry, "ghost", &agent::SnapshotRequest::default())
+            .await
+            .expect_err("no such tab");
+        assert!(outcome.is_none());
+        assert!(matches!(err.code, crate::app_error::AppErrorCode::NotFound));
+    }
+
+    #[test]
+    fn capabilities_report_a_surface() {
+        let caps = capabilities(&BrowserPolicy::default());
+        assert!(caps.available);
+        assert!(caps.surface.is_some());
+        assert!(!caps.platform.is_empty());
+        assert!(caps.policy.enabled);
+        assert_eq!(caps.doc_guest, doc_guest::supported());
+    }
+
+    /// The page channel travels with whatever surface can carry one — the
+    /// embedded child surface, or the owned window where it installs the
+    /// world itself. Only where neither can is the answer `degraded`, and it
+    /// says why rather than leaving the settings section to guess.
+    #[test]
+    fn capabilities_report_the_page_channel_the_surface_brings() {
+        let caps = capabilities(&BrowserPolicy::default());
+        if CHILD_SURFACE_COMPILED || crate::browser::surface_window::HAS_CHANNEL {
+            assert_eq!(caps.channel, ChannelKind::Native);
+            assert!(!caps.reasons.iter().any(|r| r.contains("page channel")));
+        } else {
+            assert_eq!(caps.channel, ChannelKind::Degraded);
+            assert!(caps.reasons.iter().any(|r| r.contains("page channel")));
+        }
+    }
+
+    /// An administrator can turn the feature off: no surface is offered and
+    /// the reason is spelled out for the settings section.
+    #[test]
+    fn capabilities_follow_a_disabling_policy() {
+        let policy = BrowserPolicy::with_managed(crate::browser::policy::ManagedPolicy {
+            browser_enabled: false,
+            host_rules: Vec::new(),
+            source: None,
+        });
+        let caps = capabilities(&policy);
+        assert!(!caps.available);
+        assert!(caps.surface.is_none());
+        assert!(!caps.doc_guest);
+        assert!(!caps.policy.enabled);
+        assert!(caps.reasons.iter().any(|r| r.contains("policy")));
+    }
+}

@@ -5097,6 +5097,25 @@ export async function setSessionInfoSettings(
   return getTransport().call("set_session_info_settings", { settings })
 }
 
+// ─── Built-in browser tools settings ───────────────────────────────────────
+
+/** Mirror of Rust `BrowserToolsSettings` (default OFF). Whether agents get
+ *  `browser_list_tabs` / `browser_snapshot` at all; which individual page they
+ *  may read is a separate, per-tab decision made from the tab's own toolbar. */
+export interface BrowserToolsSettings {
+  enabled: boolean
+}
+
+export async function getBrowserToolsSettings(): Promise<BrowserToolsSettings> {
+  return getTransport().call("get_browser_tools_settings")
+}
+
+export async function setBrowserToolsSettings(
+  settings: BrowserToolsSettings
+): Promise<BrowserToolsSettings> {
+  return getTransport().call("set_browser_tools_settings", { settings })
+}
+
 // ─── Create-from-chat (chat authoring) settings ────────────────────────────
 
 /** Mirror of Rust `ChatAuthoringSettings`. Both default OFF — these tools write
