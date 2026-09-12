@@ -427,7 +427,7 @@
       },
       "open_folder": {
         "title": "打开文件夹",
-        "description": "打开文件夹选择器并在新窗口中打开"
+        "description": "打开文件夹选择器并在工作区中打开该文件夹"
       },
       "open_settings": {
         "title": "打开设置",

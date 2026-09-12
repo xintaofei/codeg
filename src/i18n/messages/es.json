@@ -427,7 +427,7 @@
       },
       "open_folder": {
         "title": "Abrir carpeta",
-        "description": "Abre el selector de carpetas y la carpeta en una nueva ventana"
+        "description": "Abre el selector de carpetas y la carpeta en el espacio de trabajo"
       },
       "open_settings": {
         "title": "Abrir configuración",

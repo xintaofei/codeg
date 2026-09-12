@@ -427,7 +427,7 @@
       },
       "open_folder": {
         "title": "Ordner öffnen",
-        "description": "Öffnet die Ordnerauswahl und den Ordner in einem neuen Fenster"
+        "description": "Öffnet die Ordnerauswahl und den Ordner im Arbeitsbereich"
       },
       "open_settings": {
         "title": "Einstellungen öffnen",

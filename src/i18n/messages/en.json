@@ -427,7 +427,7 @@
       },
       "open_folder": {
         "title": "Open Folder",
-        "description": "Open folder picker and open in a new window"
+        "description": "Open folder picker and open the folder in the workspace"
       },
       "open_settings": {
         "title": "Open Settings",

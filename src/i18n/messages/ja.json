@@ -427,7 +427,7 @@
       },
       "open_folder": {
         "title": "フォルダを開く",
-        "description": "フォルダ選択を開き、新しいウィンドウで開きます"
+        "description": "フォルダ選択を開き、そのフォルダをワークスペースで開きます"
       },
       "open_settings": {
         "title": "設定を開く",

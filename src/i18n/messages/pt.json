@@ -427,7 +427,7 @@
       },
       "open_folder": {
         "title": "Abrir pasta",
-        "description": "Abre o seletor de pastas e abre em uma nova janela"
+        "description": "Abre o seletor de pastas e abre a pasta no espaço de trabalho"
       },
       "open_settings": {
         "title": "Abrir configurações",

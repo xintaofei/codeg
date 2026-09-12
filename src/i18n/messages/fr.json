@@ -427,7 +427,7 @@
       },
       "open_folder": {
         "title": "Ouvrir un dossier",
-        "description": "Ouvrir le sélecteur de dossier et ouvrir dans une nouvelle fenêtre"
+        "description": "Ouvrir le sélecteur de dossier et ouvrir le dossier dans l'espace de travail"
       },
       "open_settings": {
         "title": "Ouvrir les paramètres",
