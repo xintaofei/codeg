@@ -1213,7 +1213,9 @@ pub async fn claim_due_scheduled(
 }
 
 /// canceled → todo ("requeue"): back to the board, worktree (if any) reused at
-/// the next start.
+/// the next start. The SESSION is not reused: the conversation link is dropped
+/// so the next start runs the task from the top rather than resuming the run
+/// the user canceled.
 /// canceled → todo, optionally carrying the note the user attached to the
 /// requeue. The note is written in the SAME transaction as the CAS: the moment
 /// this commits the task is schedulable, and an `auto_process` folder's pump
@@ -1240,6 +1242,15 @@ pub async fn requeue_canceled(
             Expr::value(None::<chrono::DateTime<Utc>>),
         )
         .col_expr(work_task::Column::FinishedAt, Expr::value(None::<chrono::DateTime<Utc>>))
+        // Drop the link to the run the user just canceled. `launch_mode_for`
+        // reads exactly this column to decide `Retry` vs `Fresh`, so leaving it
+        // meant the next start silently RESUMED the canceled session instead of
+        // starting the task over, and handed the reconcile sweep a conversation
+        // row whose `cancelled` status belongs to the previous generation. The
+        // worktree is still reused; the old conversation still exists in its
+        // folder. Unlike `retry` (failed -> queued), which deliberately
+        // continues the same session, a requeue puts the task back on the board.
+        .col_expr(work_task::Column::ConversationId, Expr::value(None::<i32>))
         .col_expr(work_task::Column::UpdatedAt, Expr::value(now))
         .filter(work_task::Column::Id.eq(id))
         .filter(work_task::Column::Status.eq(WorkTaskStatus::Canceled))
@@ -3224,6 +3235,80 @@ mod tests {
             .filter_map(|e| e.payload.as_ref()?.get("action")?.as_str())
             .collect();
         assert_eq!(actions, vec!["schedule", "unschedule"]);
+    }
+
+    /// #649: start, cancel, requeue, start again used to land the task in
+    /// `canceled`. The requeue kept the conversation of the run the user had
+    /// just stopped, and `launch_mode_for` reads exactly that column to pick
+    /// `Retry` over `Fresh`, so the second start resumed the killed session
+    /// instead of running the task, on a conversation row still recorded as
+    /// `cancelled`, which the reconcile sweep then read as this generation's
+    /// verdict. A requeue puts the task back on the board, so it keeps the
+    /// worktree and drops the session.
+    #[tokio::test]
+    async fn a_requeue_drops_the_canceled_run_s_conversation() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-requeue-conversation").await;
+        let t = create(&db.conn, draft(folder_id, "t")).await.unwrap();
+
+        let seq = claim_for_run(&db.conn, t.id, WorkTaskStatus::Todo, "user")
+            .await
+            .unwrap()
+            .unwrap();
+        attach_worktree(&db.conn, t.id, folder_id, "main", "abc123", "task/t")
+            .await
+            .unwrap();
+        assert!(start_running(&db.conn, t.id, seq, 41, "c1").await.unwrap());
+        assert!(cancel(&db.conn, t.id, None).await.unwrap());
+        assert_eq!(
+            get_model(&db.conn, t.id).await.unwrap().conversation_id,
+            Some(41),
+            "cancel keeps the link so the stopped run stays reachable"
+        );
+
+        assert!(requeue_canceled(&db.conn, t.id, None, &[], false)
+            .await
+            .unwrap());
+        let row = get_model(&db.conn, t.id).await.unwrap();
+        assert_eq!(row.status, WorkTaskStatus::Todo);
+        assert_eq!(
+            row.conversation_id, None,
+            "a requeued task must start over, not resume the canceled session"
+        );
+        assert_eq!(
+            row.worktree_folder_id,
+            Some(folder_id),
+            "the worktree is still reused"
+        );
+
+        // Retry (failed -> queued) is the path that DOES continue the same
+        // session, and it is untouched.
+        let seq = claim_for_run(&db.conn, t.id, WorkTaskStatus::Todo, "user")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(start_running(&db.conn, t.id, seq, 42, "c2").await.unwrap());
+        assert!(fail(
+            &db.conn,
+            t.id,
+            &[WorkTaskStatus::Running],
+            Some(seq),
+            "agent_error",
+            Some("boom".to_string()),
+        )
+        .await
+        .unwrap());
+        assert!(
+            claim_for_run(&db.conn, t.id, WorkTaskStatus::Failed, "user")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            get_model(&db.conn, t.id).await.unwrap().conversation_id,
+            Some(42),
+            "retry continues the same session"
+        );
     }
 
     /// A plan must not outlive the task's stay in `todo`: cancel drops it, so
