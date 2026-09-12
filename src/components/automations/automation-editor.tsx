@@ -379,6 +379,7 @@ export function AutomationEditor({
           mentionUiLabels={mentionUiLabels}
           tabLabels={referenceGroupLabels}
           mentionAnchorRef={composerBoxRef}
+          knownInvocations={invocations.knownInvocations}
           onChange={(text) => {
             setPrompt(text)
             invocations.detect()

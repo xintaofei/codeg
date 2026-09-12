@@ -120,6 +120,7 @@ import {
   restampSkillPrefixes,
 } from "@/components/chat/composer/composer-commands"
 import {
+  buildKnownInvocations,
   commandInvocationToken,
   commandToReference,
   skillToReference,
@@ -362,6 +363,14 @@ export function MessageInput({
   // only ever saw global skills in the `$` autocomplete.
   const availableSkills = useAgentSkills(skillAgentType, defaultPath ?? null)
   const skillPrefix = agentType === "codex" ? "$" : "/"
+  // Exactly what the `/`·`$` menu below can offer. Seeding or pasting text turns
+  // a bare `/cmd`·`$skill` token into a badge only when it is on this list, so
+  // prose the agent has no command for stays prose.
+  const knownInvocations = useMemo(
+    () =>
+      buildKnownInvocations(availableCommands, availableSkills, skillPrefix),
+    [availableCommands, availableSkills, skillPrefix]
+  )
   const { shortcuts } = useShortcutSettings()
   const effectiveDraftStorageKey = draftStorageKey ?? null
   const resolvedPlaceholder = placeholder ?? t("askAnything")
@@ -529,7 +538,7 @@ export function MessageInput({
         const editor = ed.getEditor()
         if (editingDraftBlocks && editingDraftBlocks.length > 0 && editor) {
           // Full fidelity: restore inline badges + images from the blocks.
-          hydrateFromBlocks(editor, editingDraftBlocks)
+          hydrateFromBlocks(editor, editingDraftBlocks, knownInvocations)
         } else if (editingDraftText != null) {
           ed.setText(editingDraftText)
         }
@@ -553,6 +562,7 @@ export function MessageInput({
     editingDraftBlocks,
     effectiveDraftStorageKey,
     hydrateFromBlocks,
+    knownInvocations,
   ])
 
   // Focus the composer the moment the editor exists and this tab is active, so
@@ -590,7 +600,7 @@ export function MessageInput({
       const raf = requestAnimationFrame(() => {
         const editor = editorRef.current?.getEditor()
         if (editingDraftBlocks && editingDraftBlocks.length > 0 && editor) {
-          hydrateFromBlocks(editor, editingDraftBlocks)
+          hydrateFromBlocks(editor, editingDraftBlocks, knownInvocations)
         } else if (editingDraftText != null) {
           editorRef.current?.setText(editingDraftText)
         }
@@ -607,6 +617,7 @@ export function MessageInput({
     editingDraftText,
     editingDraftBlocks,
     hydrateFromBlocks,
+    knownInvocations,
   ])
 
   useEffect(() => {
@@ -1943,6 +1954,7 @@ export function MessageInput({
                 // the same box the `/` menu hangs off (this container), so the
                 // two read as one affordance.
                 mentionAnchorRef={containerRef}
+                knownInvocations={knownInvocations}
                 onChange={handleComposerChange}
                 onReady={handleComposerReady}
                 onSubmit={handleSend}

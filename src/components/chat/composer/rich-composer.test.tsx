@@ -412,7 +412,7 @@ describe("RichComposer text paste (plain-text schema)", () => {
   })
 
   it("hydrates serialized references in a plain-text paste into badges", async () => {
-    const { ref } = await mount()
+    const { ref } = await mount({ knownInvocations: new Set(["$deploy"]) })
     act(() => ref.current?.focus())
     const dom = ref.current?.getEditor()?.view.dom as HTMLElement
     // The wire form of a sent message (file link + Codex `$` skill token): the
@@ -426,6 +426,35 @@ describe("RichComposer text paste (plain-text schema)", () => {
     // Round-trip: the hydrated badges re-serialize to exactly the pasted text
     // (the `$` trigger survives — never downgraded to `/deploy`).
     expect(ref.current?.getText()).toBe(wire)
+  })
+
+  it("pastes a slash word the agent does not advertise as editable text", async () => {
+    const { ref } = await mount({ knownInvocations: new Set(["/review"]) })
+    act(() => ref.current?.focus())
+    const dom = ref.current?.getEditor()?.view.dom as HTMLElement
+    dispatchPaste(dom, { text: "try /notacommand on /tmp/x" })
+    expect(JSON.stringify(ref.current?.getJSON())).not.toContain(
+      '"type":"reference"'
+    )
+    expect(ref.current?.getText()).toBe("try /notacommand on /tmp/x")
+  })
+
+  it("seeds a slash word as text until the agent's list says it is a command", async () => {
+    // The list arrives with the connection, so a composer that seeds before it
+    // lands must not guess — and must honor it once it is there.
+    const { ref, rerender } = await mount()
+    act(() => ref.current?.setText("/review it"))
+    expect(JSON.stringify(ref.current?.getJSON())).not.toContain(
+      '"type":"reference"'
+    )
+    expect(ref.current?.getText()).toBe("/review it")
+
+    rerender(<RichComposer ref={ref} knownInvocations={new Set(["/review"])} />)
+    act(() => ref.current?.setText("/review it"))
+    expect(JSON.stringify(ref.current?.getJSON())).toContain(
+      '"refType":"skill"'
+    )
+    expect(ref.current?.getText()).toBe("/review it")
   })
 
   it("does not insert text when the host consumes the paste as files", async () => {

@@ -1012,6 +1012,95 @@ describe("MessageInput slash menu while the agent connects", () => {
   })
 })
 
+describe("MessageInput slash badges", () => {
+  afterEach(() => {
+    cleanup()
+    composerHandle.current = null
+  })
+
+  const COMMANDS = [{ name: "compact", description: "Compact the thread" }]
+
+  async function mount(
+    props: Partial<React.ComponentProps<typeof MessageInput>> = {}
+  ) {
+    renderInput({ availableCommands: COMMANDS, ...props })
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    const handle = composerHandle.current
+    const editor = handle?.getEditor()
+    if (!handle || !editor) throw new Error("composer editor not mounted")
+    return { handle, editor }
+  }
+
+  function press(editor: Editor, key: string) {
+    act(() => {
+      ;(editor.view.dom as HTMLElement).dispatchEvent(
+        new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })
+      )
+    })
+  }
+
+  for (const key of ["Enter", "Tab"]) {
+    it(`still badges the command picked from the menu with ${key}`, async () => {
+      const { handle, editor } = await mount()
+      act(() => {
+        editor.commands.insertContent("/comp")
+      })
+      await screen.findByTestId("slash-menu")
+      press(editor, key)
+      await waitFor(() =>
+        expect(JSON.stringify(handle.getJSON())).toContain('"type":"reference"')
+      )
+      // The badge still brings its trailing space, so the next word is typed
+      // clear of it.
+      expect(handle.getText()).toBe("/compact ")
+    })
+  }
+
+  it("badges the command clicked in the menu", async () => {
+    const { handle, editor } = await mount()
+    act(() => {
+      editor.commands.insertContent("/comp")
+    })
+    const menu = await screen.findByTestId("slash-menu")
+    fireEvent.mouseDown(within(menu).getByText("/compact"))
+    await waitFor(() =>
+      expect(JSON.stringify(handle.getJSON())).toContain('"type":"reference"')
+    )
+    expect(handle.getText()).toBe("/compact ")
+  })
+
+  it("leaves a seeded slash word the agent never advertised as plain text", async () => {
+    const { handle } = await mount()
+    act(() => {
+      handle.setText("/notacommand on /tmp/x and and/or")
+    })
+    expect(JSON.stringify(handle.getJSON())).not.toContain('"type":"reference"')
+    expect(handle.getText()).toBe("/notacommand on /tmp/x and and/or")
+  })
+
+  it("badges a seeded token that IS one of the agent's commands", async () => {
+    const { handle } = await mount()
+    act(() => {
+      handle.setText("/compact the thread")
+    })
+    expect(JSON.stringify(handle.getJSON())).toContain('"refType":"skill"')
+    // Same bytes on the wire either way — only the composer's rendering differs.
+    expect(handle.getText()).toBe("/compact the thread")
+  })
+
+  it("leaves a seeded command alone for an agent that has none", async () => {
+    const { handle } = await mount({ availableCommands: [] })
+    act(() => {
+      handle.setText("/compact the thread")
+    })
+    expect(JSON.stringify(handle.getJSON())).not.toContain('"type":"reference"')
+    expect(handle.getText()).toBe("/compact the thread")
+  })
+})
+
 describe("MessageInput mid-turn send (live-feedback channel)", () => {
   afterEach(() => {
     cleanup()

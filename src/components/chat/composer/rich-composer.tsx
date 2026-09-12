@@ -16,6 +16,10 @@ import { EditorContent, useEditor } from "@tiptap/react"
 import { exitSuggestion } from "@tiptap/suggestion"
 
 import { isImeCompositionKey } from "@/lib/ime-composition"
+import {
+  NO_KNOWN_INVOCATIONS,
+  type KnownInvocations,
+} from "@/lib/invocation-token"
 import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
 import { cn } from "@/lib/utils"
 
@@ -154,6 +158,20 @@ export interface RichComposerProps {
    */
   mentionAnchorRef?: RefObject<HTMLElement | null>
   /**
+   * The invocations the host's `/`·`$` menu can offer right now (see
+   * {@link "./invocation-reference".buildKnownInvocations}). Seeded and pasted
+   * text turns a bare `/cmd`·`$skill` token into a command badge only when it is
+   * one of these; anything else stays editable prose. Omit — or leave empty
+   * while the agent's list is still on its way — and no bare token is ever
+   * badged, which is the safe direction: text that stays text sends exactly as
+   * written.
+   *
+   * Read at event time, so a list that lands mid-compose applies to the next
+   * paste without recreating the editor. Badges already in the document are
+   * never revisited.
+   */
+  knownInvocations?: KnownInvocations
+  /**
    * Key binding (matchShortcutEvent form) that sends the message. Default
    * `"enter"`. When set to a non-Enter binding, a plain Enter inserts a newline.
    */
@@ -224,6 +242,7 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
       mentionUiLabels,
       tabLabels,
       mentionAnchorRef,
+      knownInvocations,
       submitShortcut,
       newlineShortcut,
       isExternalMenuOpen,
@@ -245,6 +264,10 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
     // installed) is gated on whether mentions are currently enabled — robust to
     // the prop being added/removed after the editor is created once.
     const referenceSearchRef = useRef(referenceSearch)
+    // Read at event time (paste, seed) rather than baked into the editor, so a
+    // command list that arrives after the connection comes up applies without
+    // rebuilding the editor — and without disturbing what is already typed.
+    const knownInvocationsRef = useRef(knownInvocations)
     const submitShortcutRef = useRef(submitShortcut)
     const newlineShortcutRef = useRef(newlineShortcut)
     const isExternalMenuOpenRef = useRef(isExternalMenuOpen)
@@ -264,6 +287,7 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
       onBlurRef.current = onBlur
       onReadyRef.current = onReady
       referenceSearchRef.current = referenceSearch
+      knownInvocationsRef.current = knownInvocations
       submitShortcutRef.current = submitShortcut
       newlineShortcutRef.current = newlineShortcut
       isExternalMenuOpenRef.current = isExternalMenuOpen
@@ -313,6 +337,12 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
     // cannot be recovered from the serialized text.
     const placeholderRef = useRef(placeholder)
     const getPlaceholder = useCallback(() => placeholderRef.current ?? "", [])
+
+    /** The invocations badge-able right now (see the `knownInvocations` prop). */
+    const known = useCallback(
+      () => knownInvocationsRef.current ?? NO_KNOWN_INVOCATIONS,
+      []
+    )
 
     const editor = useEditor({
       // Static export / SSR safety: never render on the server.
@@ -413,10 +443,13 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
           const editor = editorInstanceRef.current
           const clipboard = event.clipboardData
           if (!editor || !clipboard) return false
-          const inline = decidePastedContent({
-            html: clipboard.getData("text/html"),
-            text: clipboard.getData("text/plain"),
-          })
+          const inline = decidePastedContent(
+            {
+              html: clipboard.getData("text/html"),
+              text: clipboard.getData("text/plain"),
+            },
+            known()
+          )
           if (!inline) return false
           editor.chain().insertContent(inline).run()
           return true
@@ -426,7 +459,7 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
       onCreate: ({ editor }) => {
         editorInstanceRef.current = editor
         if (defaultText) {
-          editor.commands.setContent(textToSeededDoc(defaultText), {
+          editor.commands.setContent(textToSeededDoc(defaultText, known()), {
             emitUpdate: false,
           })
         }
@@ -465,7 +498,8 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
       ref,
       (): RichComposerHandle => ({
         getText: () => (editor ? serializeDocToText(editor.state.doc) : ""),
-        setText: (text) => editor?.commands.setContent(textToSeededDoc(text)),
+        setText: (text) =>
+          editor?.commands.setContent(textToSeededDoc(text, known())),
         setDoc: (doc) => editor?.commands.setContent(doc),
         clear: () => editor?.commands.clearContent(true),
         focus: () => editor?.commands.focus("end"),
@@ -511,7 +545,7 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
           editor
             ?.chain()
             .focus()
-            .insertContent(textToSeededInlineContent(text))
+            .insertContent(textToSeededInlineContent(text, known()))
             .run()
         },
         insertReference: (attrs) => {
@@ -519,7 +553,7 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
         },
         getEditor: () => editor ?? null,
       }),
-      [editor]
+      [editor, known]
     )
 
     const closeMention = useCallback(() => {
