@@ -118,29 +118,33 @@ pub async fn test_remote_workspace_connection(
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn create_remote_workspace_connection(
+    app: AppHandle,
     db: tauri::State<'_, AppDatabase>,
     input: RemoteWorkspaceConnectionInput,
 ) -> Result<RemoteWorkspaceConnectionInfo, AppCommandError> {
     validate_remote_health(&input.base_url, &input.token, &input.headers).await?;
-    remote_workspace_connection_service::create(
+    let connection = remote_workspace_connection_service::create(
         &db.conn,
         &input.name,
         &input.base_url,
         &input.token,
         &input.headers,
     )
-    .await
+    .await?;
+    crate::commands::windows::remote_tray::refresh_saved_connections(&app).await;
+    Ok(connection)
 }
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn update_remote_workspace_connection(
+    app: AppHandle,
     db: tauri::State<'_, AppDatabase>,
     id: i32,
     input: RemoteWorkspaceConnectionInput,
 ) -> Result<RemoteWorkspaceConnectionInfo, AppCommandError> {
     validate_remote_health(&input.base_url, &input.token, &input.headers).await?;
-    remote_workspace_connection_service::update(
+    let connection = remote_workspace_connection_service::update(
         &db.conn,
         id,
         &input.name,
@@ -148,27 +152,35 @@ pub async fn update_remote_workspace_connection(
         &input.token,
         &input.headers,
     )
-    .await
+    .await?;
+    crate::commands::windows::remote_tray::refresh_saved_connections(&app).await;
+    Ok(connection)
 }
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn delete_remote_workspace_connection(
+    app: AppHandle,
     db: tauri::State<'_, AppDatabase>,
     id: i32,
 ) -> Result<(), AppCommandError> {
     remote_workspace_connection_service::delete(&db.conn, id)
         .await
-        .map_err(AppCommandError::db)
+        .map_err(AppCommandError::db)?;
+    crate::commands::windows::remote_tray::refresh_saved_connections(&app).await;
+    Ok(())
 }
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn reorder_remote_workspace_connections(
+    app: AppHandle,
     db: tauri::State<'_, AppDatabase>,
     ids: Vec<i32>,
 ) -> Result<(), AppCommandError> {
-    remote_workspace_connection_service::reorder(&db.conn, ids).await
+    remote_workspace_connection_service::reorder(&db.conn, ids).await?;
+    crate::commands::windows::remote_tray::refresh_saved_connections(&app).await;
+    Ok(())
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -185,6 +197,9 @@ pub async fn open_remote_workspace(
 
     let label = format!("remote-workspace-{id}");
     if let Some(existing) = app.get_webview_window(&label) {
+        existing.show().map_err(|e| {
+            AppCommandError::window("Failed to show remote workspace", e.to_string())
+        })?;
         let _ = existing.unminimize();
         existing.set_focus().map_err(|e| {
             AppCommandError::window("Failed to focus remote workspace", e.to_string())
