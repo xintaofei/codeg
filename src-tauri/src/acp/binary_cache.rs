@@ -331,7 +331,7 @@ fn installed_binary_path(agent_id: &str, version: &str, cmd_name: &str) -> Optio
     if !path.exists() {
         return None;
     }
-    if is_binary_file_compatible(path.as_path()) {
+    if probe_binary_format(path.as_path()).is_usable() {
         return Some(path);
     }
     let _ = std::fs::remove_file(path);
@@ -589,6 +589,11 @@ async fn ensure_binary_with_progress(
         std::fs::copy(&extracted_bin, &final_path)
             .map_err(|e| AcpError::DownloadFailed(format!("failed to copy binary: {e}")))?;
 
+        // Strict here on purpose, unlike `installed_binary_path`: we own the
+        // file we just wrote, so anything short of a readable, correct header
+        // means this install must fail loudly rather than cache something
+        // unverified. Only the READ path tolerates `Unreadable`, where a
+        // transient lock on an already-installed binary is expected.
         if !is_binary_file_compatible(&final_path) {
             let _ = std::fs::remove_file(&final_path);
             return Err(AcpError::DownloadFailed(
@@ -828,16 +833,62 @@ fn set_executable_permissions(path: &Path) -> Result<(), AcpError> {
     }
 }
 
-pub(crate) fn is_binary_file_compatible(path: &Path) -> bool {
+/// Outcome of the executable-header probe. `Unreadable` is deliberately NOT
+/// folded into `Incompatible`: "this file is a binary for another platform" is
+/// a permanent verdict that justifies evicting it from the cache, while "this
+/// file is busy right now" is transient and must not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BinaryFormat {
+    Compatible,
+    Incompatible,
+    Unreadable,
+}
+
+impl BinaryFormat {
+    /// Whether a cached file may be reported as installed. Only a positive
+    /// wrong-platform identification disqualifies it — see
+    /// [`installed_binary_path`], which deletes exactly what this rejects.
+    pub(crate) fn is_usable(self) -> bool {
+        !matches!(self, BinaryFormat::Incompatible)
+    }
+}
+
+/// Classify the first four bytes of a cached agent binary.
+///
+/// Split from the old boolean because the boolean could not tell "wrong
+/// platform" from "could not open the file", and the caller deleted on both.
+/// On Windows the anti-virus real-time scanner routinely holds a freshly
+/// written ~180 MB agent binary for a moment, and a running agent holds its own
+/// image — treating either as a bad download turned a transient read error into
+/// a lost download plus a "Binary is not installed" report immediately after an
+/// install that really did succeed (#631).
+pub(crate) fn probe_binary_format(path: &Path) -> BinaryFormat {
     let mut file = match std::fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return false,
+        Err(_) => return BinaryFormat::Unreadable,
     };
     let mut header = [0_u8; 4];
-    if file.read_exact(&mut header).is_err() {
-        return false;
+    match file.read_exact(&mut header) {
+        Ok(()) => {}
+        // Fewer than four bytes on disk IS a permanent verdict — no executable
+        // format is that small, so a truncated or empty file stays evictable.
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            return BinaryFormat::Incompatible
+        }
+        Err(_) => return BinaryFormat::Unreadable,
     }
+    if header_matches_platform(header) {
+        BinaryFormat::Compatible
+    } else {
+        BinaryFormat::Incompatible
+    }
+}
 
+pub(crate) fn is_binary_file_compatible(path: &Path) -> bool {
+    probe_binary_format(path) == BinaryFormat::Compatible
+}
+
+fn header_matches_platform(header: [u8; 4]) -> bool {
     #[cfg(target_os = "macos")]
     {
         matches!(
@@ -865,6 +916,7 @@ pub(crate) fn is_binary_file_compatible(path: &Path) -> bool {
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
+        let _ = header;
         true
     }
 }
@@ -1059,6 +1111,74 @@ mod tests {
         };
         let err = install_extracted_tree(&extract, &final_dir, entry, &|_| {}).unwrap_err();
         assert!(err.to_string().contains("not found in archive"), "{err}");
+    }
+
+    // Regression for #631: a cached binary we cannot open must NOT be read as
+    // "wrong platform" and deleted. `installed_binary_path` deletes exactly
+    // what `is_usable()` rejects, so this is the eviction rule itself.
+    #[test]
+    fn only_a_wrong_platform_verdict_evicts_a_cached_binary() {
+        assert!(BinaryFormat::Compatible.is_usable());
+        assert!(
+            BinaryFormat::Unreadable.is_usable(),
+            "a busy/locked binary must survive the probe"
+        );
+        assert!(!BinaryFormat::Incompatible.is_usable());
+    }
+
+    // A file the OS refuses to hand us (here: a directory, which fails at
+    // `open` on Windows and at `read` elsewhere) is transient-looking, not a
+    // foreign binary.
+    #[test]
+    fn unopenable_path_probes_as_unreadable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("busy");
+        std::fs::create_dir(&dir).unwrap();
+        assert_eq!(probe_binary_format(&dir), BinaryFormat::Unreadable);
+        assert!(!is_binary_file_compatible(&dir));
+    }
+
+    // Too short to hold any executable header: a permanent verdict, so the
+    // truncated-download eviction the old boolean did is preserved.
+    #[test]
+    fn truncated_file_probes_as_incompatible() {
+        let tmp = tempfile::tempdir().unwrap();
+        let empty = tmp.path().join("empty");
+        std::fs::write(&empty, b"").unwrap();
+        assert_eq!(probe_binary_format(&empty), BinaryFormat::Incompatible);
+
+        let short = tmp.path().join("short");
+        std::fs::write(&short, b"MZ").unwrap();
+        assert_eq!(probe_binary_format(&short), BinaryFormat::Incompatible);
+    }
+
+    // A readable file with a header for another platform stays evictable.
+    #[test]
+    fn readable_header_decides_compatibility() {
+        let tmp = tempfile::tempdir().unwrap();
+        let good = tmp.path().join("good");
+        let expected: [u8; 4] = if cfg!(target_os = "windows") {
+            [b'M', b'Z', 0x90, 0x00]
+        } else if cfg!(target_os = "macos") {
+            [0xCF, 0xFA, 0xED, 0xFE]
+        } else {
+            [0x7F, b'E', b'L', b'F']
+        };
+        std::fs::write(&good, expected).unwrap();
+        assert_eq!(probe_binary_format(&good), BinaryFormat::Compatible);
+        assert!(is_binary_file_compatible(&good));
+
+        let foreign = tmp.path().join("foreign");
+        std::fs::write(&foreign, b"#!/bin/sh\n").unwrap();
+        // A shebang is a valid file on every platform and a valid executable
+        // image on none of the three codeg ships for, so it stays evictable.
+        if cfg!(any(
+            target_os = "macos",
+            target_os = "linux",
+            target_os = "windows"
+        )) {
+            assert_eq!(probe_binary_format(&foreign), BinaryFormat::Incompatible);
+        }
     }
 
     #[test]
