@@ -204,7 +204,7 @@ export function BrowserAgentShareControl({
             keeps the notice from arriving out of nowhere later. */}
         {pinnedProgram(grant) ? (
           <DropdownMenuLabel className="pt-0 text-xs font-normal text-muted-foreground/80">
-            {t("sharedScopeProgram", { program: pinnedProgram(grant) })}
+            {t("sharedScopeProgram", { program: pinnedProgram(grant)! })}
           </DropdownMenuLabel>
         ) : null}
         <DropdownMenuSeparator />

@@ -228,7 +228,9 @@ describe("the share control", () => {
       screen.getByRole("button", { name: "Agents can read localhost:3000" })
     )
     expect(
-      screen.getByText("It also ends if another program takes this port from node.")
+      screen.getByText(
+        "It also ends if another program takes this port from node."
+      )
     ).toBeVisible()
   })
 

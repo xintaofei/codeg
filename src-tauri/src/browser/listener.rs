@@ -160,7 +160,7 @@ fn parse_proc_net_address(field: &str) -> Option<(IpAddr, u16)> {
         }
         32 => {
             let mut bytes = [0u8; 16];
-            for (word, chunk) in bytes.chunks_exact_mut(4).enumerate() {
+            for (word, chunk) in bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let raw = u32::from_str_radix(&addr[word * 8..word * 8 + 8], 16).ok()?;
                 chunk.copy_from_slice(&raw.swap_bytes().to_be_bytes());
             }
