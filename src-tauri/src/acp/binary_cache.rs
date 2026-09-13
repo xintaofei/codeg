@@ -3,6 +3,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::acp::cursor_acp_retry_compat;
 use crate::acp::error::AcpError;
 use crate::acp::registry;
 use crate::models::agent::AgentType;
@@ -412,6 +413,7 @@ pub fn find_best_cached_binary_for_agent(
     versions.sort_by(|a, b| version_cmp(a, b));
     while let Some(version) = versions.pop() {
         if let Some(path) = installed_binary_path(&agent_id, &version, cmd_name) {
+            apply_cursor_acp_retry_compat(&agent_id, &version);
             return Ok(Some((path, version)));
         }
     }
@@ -464,6 +466,8 @@ pub async fn ensure_binary_for_agent_with_progress(
 ) -> Result<PathBuf, AcpError> {
     if let Some(path) = find_cached_binary_for_agent(agent_type, version, cmd_name)? {
         on_progress("Binary already cached, skipping download");
+        let agent_id = agent_cache_key(agent_type);
+        apply_cursor_acp_retry_compat(&agent_id, version);
         return Ok(path);
     }
 
@@ -525,6 +529,7 @@ async fn ensure_binary_with_progress(
     on_progress: impl Fn(&str),
 ) -> Result<PathBuf, AcpError> {
     if let Some(path) = find_cached_binary(agent_id, version, cmd_name)? {
+        apply_cursor_acp_retry_compat(agent_id, version);
         return Ok(path);
     }
 
@@ -606,9 +611,19 @@ async fn ensure_binary_with_progress(
     if result.is_err() {
         // Avoid leaving empty version/platform directories on failed downloads.
         let _ = std::fs::remove_dir_all(&dir);
+    } else {
+        apply_cursor_acp_retry_compat(agent_id, version);
     }
 
     result
+}
+
+fn apply_cursor_acp_retry_compat(agent_id: &str, version: &str) {
+    let platform_dir = match binary_dir(agent_id, version) {
+        Ok(dir) => dir,
+        Err(_) => return,
+    };
+    cursor_acp_retry_compat::maybe_apply_for_agent(agent_id, &platform_dir, version);
 }
 
 /// Move a dir-tree archive's extracted content into the final per-version
