@@ -97,6 +97,18 @@ pub fn default_chat_channel_manager() -> ChatChannelManager {
     ChatChannelManager::new()
 }
 
+/// A restarted process owns none of the previous process's delegation children.
+/// Reconcile their durable rows before the listener can accept new work.
+pub async fn reconcile_interrupted_delegations(conn: &sea_orm::DatabaseConnection) {
+    match crate::db::service::delegation_task_service::boot_reconcile_interrupted(conn).await {
+        Ok(n) if n > 0 => {
+            tracing::info!("[delegation] boot reconcile settled {n} interrupted task(s)")
+        }
+        Ok(_) => {}
+        Err(error) => tracing::error!(%error, "[delegation] boot reconcile failed"),
+    }
+}
+
 /// Build the delegation broker + token registry + per-process UDS socket
 /// path. Shared between codeg-server bootstrap and the Tauri `setup` block
 /// so both modes apply identical depth limit + timeout defaults.
@@ -147,7 +159,8 @@ pub fn build_delegation_stack(
         db: db_arc.clone(),
     })
         as Arc<dyn crate::acp::connection::AgentAvailabilityLookup>;
-    let status_lookup = Arc::new(DbChildStatusLookup { db: db_arc }) as Arc<dyn ChildStatusLookup>;
+    let status_lookup =
+        Arc::new(DbChildStatusLookup { db: db_arc.clone() }) as Arc<dyn ChildStatusLookup>;
     let meta_writer = Arc::new(ConnectionManagerMetaWriter {
         manager: cm_arc.clone(),
     }) as Arc<dyn DelegationMetaWriter>;
@@ -159,6 +172,7 @@ pub fn build_delegation_stack(
     let broker = Arc::new(
         DelegationBroker::with_writers(spawner, depth_lookup, meta_writer, event_emitter)
             .with_status_lookup(status_lookup)
+            .with_ledger(db_arc)
             .with_live_reply_lookup(live_reply_lookup),
     );
     let tokens = Arc::new(TokenRegistry::default());

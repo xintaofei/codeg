@@ -3379,6 +3379,7 @@
             "child_max_turn_requests": "子代理超出请求上限",
             "child_empty": "子代理无响应",
             "child_auth_required": "子智能体需登录",
+            "interrupted": "已中断，结果未知",
             "child_unknown": "子代理未知错误",
             "unknown": "未知任务"
           }

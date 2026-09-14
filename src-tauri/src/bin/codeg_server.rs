@@ -192,6 +192,7 @@ async fn async_main() -> ExitCode {
     let db = codeg_lib::db::init_database(&data_dir, app_version)
         .await
         .expect("Failed to initialize database");
+    codeg_lib::app_state::reconcile_interrupted_delegations(&db.conn).await;
 
     // Logging phase 2: override the default level from the persisted
     // `logging.level` now that the DB is open. Phase 3 (wiring the emitter)

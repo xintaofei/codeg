@@ -10,6 +10,8 @@ pub enum AcpError {
     Protocol(String),
     #[error("agent process exited unexpectedly")]
     ProcessExited,
+    #[error("agent session is busy: {0}")]
+    SessionBusy(String),
     /// A prompt arrived while this connection already had a turn in flight.
     /// The connection loop processes one turn at a time; a second concurrent
     /// prompt (e.g. two co-controlling clients sending near-simultaneously)
@@ -103,6 +105,7 @@ impl AcpError {
             Self::InitializeTimeout => Some("initialize_timeout"),
             Self::ProbeTimedOut => Some("probe_timed_out"),
             Self::ProcessExited => Some("process_exited"),
+            Self::SessionBusy(_) => Some("session_busy"),
             Self::TurnInProgress => Some("turn_in_progress"),
             Self::NoActiveTurn => Some("no_active_turn"),
             Self::FeedbackDisabled => Some("feedback_disabled"),

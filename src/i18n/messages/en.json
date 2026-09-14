@@ -3379,6 +3379,7 @@
             "child_max_turn_requests": "subagent request limit",
             "child_empty": "subagent no output",
             "child_auth_required": "subagent needs sign-in",
+            "interrupted": "Interrupted; outcome unknown",
             "child_unknown": "subagent unknown error",
             "unknown": "unknown task"
           }

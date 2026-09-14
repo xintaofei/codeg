@@ -236,7 +236,10 @@ pub(crate) fn cursor_force_enabled(value: Option<&str>) -> bool {
 /// Gated on the explicit `CURSOR_AUTH_MODE` knob (written by the Cursor panel),
 /// so legacy rows and operator-provided container env are left untouched. In
 /// custom mode the credentials are present and non-empty, so nothing is cleared.
-fn apply_cursor_env_policy(merged: &mut Vec<(String, String)>, runtime_env: &BTreeMap<String, String>) {
+fn apply_cursor_env_policy(
+    merged: &mut Vec<(String, String)>,
+    runtime_env: &BTreeMap<String, String>,
+) {
     if runtime_env.get("CURSOR_AUTH_MODE").map(String::as_str) != Some("subscription") {
         return;
     }
@@ -260,7 +263,10 @@ fn apply_cursor_env_policy(merged: &mut Vec<(String, String)>, runtime_env: &BTr
 /// sacp-tokio) to `env_remove` the inherited var. In api_key mode the key is
 /// present and non-empty, so nothing is cleared; legacy/no-mode rows are left
 /// untouched.
-fn apply_grok_env_policy(merged: &mut Vec<(String, String)>, runtime_env: &BTreeMap<String, String>) {
+fn apply_grok_env_policy(
+    merged: &mut Vec<(String, String)>,
+    runtime_env: &BTreeMap<String, String>,
+) {
     if runtime_env.get("GROK_AUTH_MODE").map(String::as_str) != Some("subscription") {
         return;
     }
@@ -786,9 +792,9 @@ pub fn antigravity_effective_auth_type(
         .filter(|value| !value.is_empty())
         // The server resolves the legacy spelling before it tests membership,
         // so a caller matching on canonical ids would otherwise miss it.
-        .map(|value| AntigravityAuthType::Declared(
-            canonical_antigravity_auth_method(value).to_string(),
-        ))
+        .map(|value| {
+            AntigravityAuthType::Declared(canonical_antigravity_auth_method(value).to_string())
+        })
         .unwrap_or(AntigravityAuthType::Absent)
 }
 
@@ -1235,18 +1241,93 @@ fn tag_mcp_suspect(
 struct ConnectionCleanupGuard {
     connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
     connection_id: String,
+    runtime: tokio::runtime::Handle,
+    delegation_release: Option<Arc<DelegationReleaseBarrier>>,
 }
 
 impl Drop for ConnectionCleanupGuard {
     fn drop(&mut self) {
+        if let Some(release) = self.delegation_release.take() {
+            release.mark_driver_done();
+            return;
+        }
         if let Ok(mut guard) = self.connections.try_lock() {
             guard.remove(&self.connection_id);
             return;
         }
         let connections = self.connections.clone();
         let connection_id = std::mem::take(&mut self.connection_id);
-        tokio::spawn(async move {
+        self.runtime.spawn(async move {
             connections.lock().await.remove(&connection_id);
+        });
+    }
+}
+
+/// Two-signal release barrier for a broker-owned process. A connection stops
+/// occupying its external session only after the driver has finished and the
+/// child has actually been reaped. Missing exit acknowledgement intentionally
+/// leaves the entry busy.
+struct DelegationReleaseBarrier {
+    driver_done: std::sync::atomic::AtomicBool,
+    reaped: std::sync::atomic::AtomicBool,
+    spawned: std::sync::atomic::AtomicBool,
+    released: std::sync::atomic::AtomicBool,
+    runtime: tokio::runtime::Handle,
+    connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
+    connection_id: String,
+    task_id: Option<String>,
+    broker: Option<Arc<crate::acp::delegation::broker::DelegationBroker>>,
+}
+
+impl DelegationReleaseBarrier {
+    fn mark_spawned(&self) {
+        self.spawned
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn mark_reaped(&self) {
+        self.reaped.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.try_release();
+    }
+
+    fn mark_driver_done(&self) {
+        self.driver_done
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        // If the process never reached `on_spawn`, there is nothing to reap.
+        if !self.spawned.load(std::sync::atomic::Ordering::SeqCst) {
+            self.reaped.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.try_release();
+    }
+
+    fn try_release(&self) {
+        if !self.driver_done.load(std::sync::atomic::Ordering::SeqCst)
+            || !self.reaped.load(std::sync::atomic::Ordering::SeqCst)
+            || self
+                .released
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let connections = Arc::clone(&self.connections);
+        let connection_id = self.connection_id.clone();
+        let task_id = self.task_id.clone();
+        let broker = self.broker.clone();
+        self.runtime.spawn(async move {
+            let removed = {
+                let mut map = connections.lock().await;
+                let owns_slot = task_id.as_deref().is_some_and(|task_id| {
+                    map.get(&connection_id)
+                        .is_some_and(|conn| conn.delegation_task_id.as_deref() == Some(task_id))
+                });
+                owns_slot
+                    .then(|| map.remove(&connection_id))
+                    .flatten()
+                    .is_some()
+            };
+            if let (true, Some(broker), Some(task_id)) = (removed, broker, task_id) {
+                broker.connection_released(&task_id).await;
+            }
         });
     }
 }
@@ -1301,6 +1382,17 @@ pub struct AgentConnection {
     /// the tree without waiting, so the agent may still be alive and still
     /// needs the backstop.
     pub child_pid: Arc<std::sync::atomic::AtomicU32>,
+    /// Session id this process was asked to restore. Unlike
+    /// `SessionState::external_id`, this exists throughout the handshake and
+    /// therefore participates in admission before the agent replies.
+    pub requested_session_id: Option<String>,
+    /// Immutable execution identity for a broker-owned connection. Lifecycle
+    /// routing and teardown compare this value instead of trusting the child
+    /// conversation's mutable `delegation_call_id`.
+    pub delegation_task_id: Option<String>,
+    /// Cancels the whole driver future, including initialize/load handshakes
+    /// which have not started consuming `ConnectionCommand` yet.
+    pub driver_cancel: tokio_util::sync::CancellationToken,
 }
 
 impl AgentConnection {
@@ -1520,9 +1612,7 @@ async fn record_turn_end(
 /// boolean — see `config_option_already_holds`).
 ///
 /// Used to carry a session's selectors across a fork.
-fn current_config_option_values(
-    opts: &[SessionConfigOptionInfo],
-) -> BTreeMap<String, String> {
+fn current_config_option_values(opts: &[SessionConfigOptionInfo]) -> BTreeMap<String, String> {
     opts.iter()
         .map(|opt| {
             let value = match &opt.kind {
@@ -1994,11 +2084,8 @@ async fn build_agent(
                 .unwrap_or(false);
             let agent_name = meta.name.to_string();
             let tail = Arc::clone(stderr_tail);
-            Ok(
-                AcpAgent::new(sacp::schema::McpServer::Stdio(server)).with_debug(
-                    agent_debug_callback(agent_name, tail, stdio_debug_enabled),
-                ),
-            )
+            Ok(AcpAgent::new(sacp::schema::McpServer::Stdio(server))
+                .with_debug(agent_debug_callback(agent_name, tail, stdio_debug_enabled)))
         }
         AgentDistribution::Uvx {
             package,
@@ -2100,6 +2187,17 @@ async fn build_agent(
 /// into boxed sub-futures rather than raising it further.
 const ACP_CONNECTION_STACK_SIZE: usize = 8 * 1024 * 1024;
 
+/// How a connection may recover a requested external session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionRecoveryPolicy {
+    /// Existing interactive behaviour: resume, then load, with the established
+    /// per-agent fallback to a fresh session where allowed.
+    BestEffort,
+    /// Broker continuation behaviour: the requested session must be restored;
+    /// no failure or missing capability may cross into `session/new`.
+    Strict,
+}
+
 /// Spawn an ACP agent process and run the connection loop in a background task.
 ///
 /// On success, the newly created `AgentConnection` is inserted into
@@ -2121,6 +2219,8 @@ pub async fn spawn_agent_connection(
     preferred_config_values: BTreeMap<String, String>,
     delegation_injection: Option<DelegationInjection>,
     terminal_shell_config: TerminalShellRuntimeConfig,
+    recovery_policy: SessionRecoveryPolicy,
+    delegation_task_id: Option<String>,
 ) -> Result<tokio::sync::oneshot::Receiver<()>, AcpError> {
     // Create the authoritative session state up front. Subsequent emit_with_state
     // calls write through this state and increment its seq counter so the first
@@ -2169,6 +2269,22 @@ pub async fn spawn_agent_connection(
     // backstop when the connection driver thread is torn down by process exit
     // before `ChildGuard::drop` can run. 0 = not spawned yet / unknown.
     let child_pid = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let connection_runtime = tokio::runtime::Handle::current();
+    let delegation_release = delegation_task_id.is_some().then(|| {
+        Arc::new(DelegationReleaseBarrier {
+            driver_done: std::sync::atomic::AtomicBool::new(false),
+            reaped: std::sync::atomic::AtomicBool::new(false),
+            spawned: std::sync::atomic::AtomicBool::new(false),
+            released: std::sync::atomic::AtomicBool::new(false),
+            runtime: connection_runtime.clone(),
+            connections: Arc::clone(&connections),
+            connection_id: connection_id.clone(),
+            task_id: delegation_task_id.clone(),
+            broker: delegation_injection
+                .as_ref()
+                .map(|injection| Arc::clone(&injection.broker)),
+        })
+    });
     // Connection-scoped ring buffer of the agent's stderr, populated by the
     // `with_debug` callback `build_agent` installs and read at turn end when a
     // turn is diagnosed as silently empty. Created here so both the spawn side
@@ -2178,7 +2294,13 @@ pub async fn spawn_agent_connection(
         .await?
         .on_spawn({
             let child_pid = Arc::clone(&child_pid);
-            move |pid| child_pid.store(pid, std::sync::atomic::Ordering::SeqCst)
+            let delegation_release = delegation_release.clone();
+            move |pid| {
+                child_pid.store(pid, std::sync::atomic::Ordering::SeqCst);
+                if let Some(release) = delegation_release.as_ref() {
+                    release.mark_spawned();
+                }
+            }
         })
         // Paired with `on_spawn`: publish 0 again once the process has been
         // reaped, so the shutdown backstop can never `kill_tree` a pid the OS
@@ -2188,7 +2310,13 @@ pub async fn spawn_agent_connection(
         // may still be running.
         .on_exit({
             let child_pid = Arc::clone(&child_pid);
-            move || child_pid.store(0, std::sync::atomic::Ordering::SeqCst)
+            let delegation_release = delegation_release.clone();
+            move || {
+                child_pid.store(0, std::sync::atomic::Ordering::SeqCst);
+                if let Some(release) = delegation_release.as_ref() {
+                    release.mark_reaped();
+                }
+            }
         });
 
     // Path policy for the ACP `fs/*` channel. Built HERE rather than inside
@@ -2222,6 +2350,7 @@ pub async fn spawn_agent_connection(
     prepend_officecli_path(&mut terminal_base_env);
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<ConnectionCommand>(32);
+    let driver_cancel = tokio_util::sync::CancellationToken::new();
     let conn_id = connection_id.clone();
     let emitter_clone = emitter.clone();
     let cleanup_connections = connections.clone();
@@ -2238,6 +2367,7 @@ pub async fn spawn_agent_connection(
     // Insert the entry BEFORE spawning the background task so that a
     // fast-failing `run_connection` can never remove it before it was
     // inserted (would otherwise leak the entry).
+    let requested_session_id = session_id.clone();
     connections.lock().await.insert(
         connection_id.clone(),
         AgentConnection {
@@ -2252,6 +2382,9 @@ pub async fn spawn_agent_connection(
             last_observed_fingerprint: config_fingerprint.clone(),
             config_fingerprint,
             child_pid,
+            requested_session_id,
+            delegation_task_id,
+            driver_cancel: driver_cancel.clone(),
         },
     );
 
@@ -2264,7 +2397,7 @@ pub async fn spawn_agent_connection(
     // The connection is fire-and-forget (torn down from within via `cmd_rx` /
     // process exit; no JoinHandle is awaited), so a thread is behaviorally
     // equivalent to the previous task.
-    let connection_rt = tokio::runtime::Handle::current();
+    let connection_rt = connection_runtime.clone();
     // RAII guard built OUTSIDE the thread body and moved in: on a normal exit
     // or panic unwind its Drop removes the manager map entry, AND if the thread
     // fails to spawn the dropped closure runs the same Drop — so the entry is
@@ -2272,6 +2405,8 @@ pub async fn spawn_agent_connection(
     let cleanup_guard = ConnectionCleanupGuard {
         connections: cleanup_connections,
         connection_id: cleanup_connection_id,
+        runtime: connection_runtime,
+        delegation_release,
     };
     let connection_thread = std::thread::Builder::new()
         .name(format!("acp-conn-{conn_id}"))
@@ -2279,92 +2414,99 @@ pub async fn spawn_agent_connection(
         .spawn(move || {
             let _cleanup = cleanup_guard;
             connection_rt.block_on(async move {
-        let delegation_for_cleanup = delegation_injection.clone();
-        let result = run_connection(
-            agent,
-            conn_id.clone(),
-            agent_type,
-            working_dir,
-            session_id,
-            cmd_rx,
-            emitter_clone.clone(),
-            Arc::clone(&state_clone),
-            terminal_base_env,
-            terminal_shell_config,
-            preferred_mode_id,
-            preferred_config_values,
-            delegation_injection,
-            fs_policy,
-            host_tools,
-            stderr_tail,
-        )
-        .await;
+                let delegation_for_cleanup = delegation_injection.clone();
+                let connection = run_connection(
+                    agent,
+                    conn_id.clone(),
+                    agent_type,
+                    working_dir,
+                    session_id,
+                    cmd_rx,
+                    emitter_clone.clone(),
+                    Arc::clone(&state_clone),
+                    terminal_base_env,
+                    terminal_shell_config,
+                    preferred_mode_id,
+                    preferred_config_values,
+                    delegation_injection,
+                    fs_policy,
+                    host_tools,
+                    stderr_tail,
+                    recovery_policy,
+                );
+                tokio::pin!(connection);
+                let result = tokio::select! {
+                    result = &mut connection => result,
+                    _ = driver_cancel.cancelled() => {
+                        Err(AcpError::protocol("connection driver canceled"))
+                    }
+                };
 
-        // Revoke the per-launch token + cascade cancel any still-pending
-        // delegations AND questions owned by this parent connection. All are
-        // best-effort: a missing token entry is a no-op, and both
-        // `cancel_by_parent` calls are safe on an empty pending map.
-        if let Some(inj) = delegation_for_cleanup {
-            let token = {
-                let snap = state_clone.read().await;
-                snap.delegation_token.clone()
-            };
-            if let Some(tok) = token {
-                inj.tokens.revoke(&tok).await;
-            }
-            inj.broker.cancel_by_parent(&conn_id).await;
-            // Reclaim a parked `ask_user_question` instead of waiting for the
-            // companion's ask socket to close (which a reparented/hard-killed
-            // agent may never do); the dropped sender declines the tool cleanly.
-            inj.questions.cancel_questions_by_parent(&conn_id).await;
-            // Likewise reclaim a parked Grok `exit_plan_mode` approval; the
-            // dropped sender replies disconnect so grok keeps plan mode active.
-            inj.plan_approvals
-                .cancel_plan_approvals_by_parent(&conn_id)
+                // Revoke the per-launch token + cascade cancel any still-pending
+                // delegations AND questions owned by this parent connection. All are
+                // best-effort: a missing token entry is a no-op, and both
+                // `cancel_by_parent` calls are safe on an empty pending map.
+                if let Some(inj) = delegation_for_cleanup {
+                    let token = {
+                        let snap = state_clone.read().await;
+                        snap.delegation_token.clone()
+                    };
+                    if let Some(tok) = token {
+                        inj.tokens.revoke(&tok).await;
+                    }
+                    inj.broker.cancel_by_parent(&conn_id).await;
+                    // Reclaim a parked `ask_user_question` instead of waiting for the
+                    // companion's ask socket to close (which a reparented/hard-killed
+                    // agent may never do); the dropped sender declines the tool cleanly.
+                    inj.questions.cancel_questions_by_parent(&conn_id).await;
+                    // Likewise reclaim a parked Grok `exit_plan_mode` approval; the
+                    // dropped sender replies disconnect so grok keeps plan mode active.
+                    inj.plan_approvals
+                        .cancel_plan_approvals_by_parent(&conn_id)
+                        .await;
+                }
+
+                if let Err(e) = result {
+                    let code = e.code().map(String::from);
+                    emit_with_state(
+                        &state_clone,
+                        &emitter_clone,
+                        AcpEvent::Error {
+                            message: e.to_string(),
+                            agent_type: agent_type.to_string(),
+                            code,
+                            details: None,
+                            // The only genuinely terminal emit site: `run_connection`
+                            // is unwinding and the next event is `Disconnected`.
+                            // The lifecycle worker uses this flag to decide whether
+                            // to flip the conversation row to Cancelled and to
+                            // buffer the detail for the broker's cancel reason.
+                            terminal: true,
+                        },
+                    )
+                    .await;
+                    // Drive the state machine through `Error` before `Disconnected`
+                    // so the frontend's error-handling effect (cancelled-on-error)
+                    // engages — without this hop the connection would jump straight
+                    // to Disconnected and look like a clean shutdown.
+                    emit_with_state(
+                        &state_clone,
+                        &emitter_clone,
+                        AcpEvent::StatusChanged {
+                            status: ConnectionStatus::Error,
+                        },
+                    )
+                    .await;
+                }
+
+                emit_with_state(
+                    &state_clone,
+                    &emitter_clone,
+                    AcpEvent::StatusChanged {
+                        status: ConnectionStatus::Disconnected,
+                    },
+                )
                 .await;
-        }
-
-        if let Err(e) = result {
-            let code = e.code().map(String::from);
-            emit_with_state(
-                &state_clone,
-                &emitter_clone,
-                AcpEvent::Error {
-                    message: e.to_string(),
-                    agent_type: agent_type.to_string(),
-                    code,
-                    details: None,
-                    // The only genuinely terminal emit site: `run_connection`
-                    // is unwinding and the next event is `Disconnected`.
-                    // The lifecycle worker uses this flag to decide whether
-                    // to flip the conversation row to Cancelled and to
-                    // buffer the detail for the broker's cancel reason.
-                    terminal: true,
-                },
-            )
-            .await;
-            // Drive the state machine through `Error` before `Disconnected`
-            // so the frontend's error-handling effect (cancelled-on-error)
-            // engages — without this hop the connection would jump straight
-            // to Disconnected and look like a clean shutdown.
-            emit_with_state(
-                &state_clone,
-                &emitter_clone,
-                AcpEvent::StatusChanged {
-                    status: ConnectionStatus::Error,
-                },
-            )
-            .await;
-        }
-
-        emit_with_state(
-            &state_clone,
-            &emitter_clone,
-            AcpEvent::StatusChanged {
-                status: ConnectionStatus::Disconnected,
-            },
-        )
-        .await;
                 // Connection loop ended; `block_on` returns and `_cleanup`
                 // (bound at the top of the thread body) drops next, removing
                 // the manager map entry — same as on a panic unwind.
@@ -3403,9 +3545,8 @@ async fn send_steer_request(
     blocks: &[PromptInputBlock],
 ) -> Result<SteerOutcome, AcpError> {
     let params = build_steer_params(session_id.0.as_ref(), blocks);
-    let untyped_req = UntypedMessage::new("_session/steering", params).map_err(|e| {
-        AcpError::protocol(format!("Failed to build steering request: {e}"))
-    })?;
+    let untyped_req = UntypedMessage::new("_session/steering", params)
+        .map_err(|e| AcpError::protocol(format!("Failed to build steering request: {e}")))?;
     let raw = cx
         .send_request_to(Agent, untyped_req)
         .block_task()
@@ -3448,9 +3589,8 @@ async fn send_stop_async_task_request(
         "sessionId": session_id.0.as_ref(),
         "asyncTaskId": task_id,
     });
-    let untyped_req = UntypedMessage::new("_session/async_task/stop", params).map_err(|e| {
-        AcpError::protocol(format!("Failed to build async task stop request: {e}"))
-    })?;
+    let untyped_req = UntypedMessage::new("_session/async_task/stop", params)
+        .map_err(|e| AcpError::protocol(format!("Failed to build async task stop request: {e}")))?;
     let raw = cx
         .send_request_to(Agent, untyped_req)
         .block_task()
@@ -3978,8 +4118,7 @@ fn build_client_capabilities(
         client_capabilities = client_capabilities.terminal(true).fs(
             FileSystemCapabilities::new()
                 .read_text_file(true)
-                .write_text_file(true),
-        );
+                .write_text_file(true));
     }
     // Form elicitation is advertised only to agents that are KNOWN to send
     // spec-conformant `elicitation/create` forms `classify_elicitation` can
@@ -4005,7 +4144,10 @@ fn build_client_capabilities(
     // convention is to advertise nothing an agent hasn't implemented.
     let mut meta = serde_json::Map::new();
     if agent_type == AgentType::ClaudeCode {
-        meta.insert("subagent-transcript".to_string(), serde_json::Value::Bool(true));
+        meta.insert(
+            "subagent-transcript".to_string(),
+            serde_json::Value::Bool(true),
+        );
     }
     // claude-agent-acp 0.73.0 added "asyncTasks", and codex-acp 1.10.0 joined
     // it, so BOTH are advertised. It publishes the lifecycle of an agent's
@@ -4205,9 +4347,8 @@ async fn send_resume_session(
     cx: &ConnectionTo<Agent>,
     req: ResumeSessionRequest,
 ) -> Result<(ResumeSessionResponse, Option<serde_json::Value>), sacp::Error> {
-    let untyped_req = UntypedMessage::new("session/resume", req).map_err(|e| {
-        sacp::util::internal_error(format!("Failed to build resume request: {e}"))
-    })?;
+    let untyped_req = UntypedMessage::new("session/resume", req)
+        .map_err(|e| sacp::util::internal_error(format!("Failed to build resume request: {e}")))?;
 
     let mut raw_response = cx.send_request_to(Agent, untyped_req).block_task().await?;
     // Capture the raw top-level `models` (per-model reasoning-effort data) BEFORE
@@ -4215,9 +4356,8 @@ async fn send_resume_session(
     // field survives serde as an ignored unknown for other agents).
     let models = raw_response.get("models").cloned();
     strip_unknown_config_options(&mut raw_response, "session/resume");
-    let resp = serde_json::from_value(raw_response).map_err(|e| {
-        sacp::util::internal_error(format!("Failed to parse resume response: {e}"))
-    })?;
+    let resp = serde_json::from_value(raw_response)
+        .map_err(|e| sacp::util::internal_error(format!("Failed to parse resume response: {e}")))?;
     Ok((resp, models))
 }
 
@@ -4892,6 +5032,7 @@ async fn run_connection(
     // callback installed by `build_agent`. Read only when a turn ends without
     // agent output, to attach evidence to the synthesized error.
     stderr_tail: Arc<StderrTail>,
+    recovery_policy: SessionRecoveryPolicy,
 ) -> Result<(), AcpError> {
     let pending_perms: PendingPermissions =
         Arc::new(tokio::sync::Mutex::new(PermissionQueue::default()));
@@ -5846,6 +5987,11 @@ async fn run_connection(
                         .await
                     }
                     Err(e) => {
+                        if recovery_policy == SessionRecoveryPolicy::Strict {
+                            return Err(sacp::util::internal_error(format!(
+                                "strict session recovery failed for {sid}: {e}"
+                            )));
+                        }
                         // session/load failed. Classify it: an unrecoverable
                         // historical session — the agent has no record of it
                         // (ResourceNotFound, -32002) or the agent process/session
@@ -6037,6 +6183,11 @@ async fn run_connection(
                     }
                 }
             } else {
+                if recovery_policy == SessionRecoveryPolicy::Strict {
+                    return Err(sacp::util::internal_error(
+                        "strict session recovery requires an external session id",
+                    ));
+                }
                 // Create new session
                 let (new_resp, grok_models_raw) = send_new_session_capturing_models(
                     &cx,
@@ -6421,9 +6572,9 @@ async fn try_bridge_pi_select_ask(
                 )
                 .await;
                 let outcome = match option_id {
-                    Some(option_id) => {
-                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id))
-                    }
+                    Some(option_id) => RequestPermissionOutcome::Selected(
+                        SelectedPermissionOutcome::new(option_id),
+                    ),
                     None => RequestPermissionOutcome::Cancelled,
                 };
                 let _ = responder.respond(RequestPermissionResponse::new(outcome));
@@ -6668,11 +6819,11 @@ async fn handle_elicitation_request(
                 let reaper_conn = connection_id.to_string();
                 let reaper_qid = registered.question_id.clone();
                 tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        ms.saturating_add(2_000),
-                    ))
-                    .await;
-                    reaper_access.cancel_question(&reaper_conn, &reaper_qid).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(ms.saturating_add(2_000)))
+                        .await;
+                    reaper_access
+                        .cancel_question(&reaper_conn, &reaper_qid)
+                        .await;
                 });
             }
             // The user answers out-of-band (the `answer_question` endpoint
@@ -8660,9 +8811,9 @@ impl EmptyTurnCause {
                 "{agent_type} produced output that codeg could not parse — \
                  the agent version may not match the protocol."
             ),
-            EmptyTurnCause::MetadataOnly => format!(
-                "{agent_type} sent only status updates this turn and no reply."
-            ),
+            EmptyTurnCause::MetadataOnly => {
+                format!("{agent_type} sent only status updates this turn and no reply.")
+            }
         }
     }
 }
@@ -8963,9 +9114,15 @@ async fn run_conversation_loop<'a>(
                 );
                 let cx = session.connection();
                 let sid = session.session_id().clone();
-                if let Err(e) =
-                    set_session_config_option(&cx, &sid, state, emitter, config_id.clone(), value_id)
-                        .await
+                if let Err(e) = set_session_config_option(
+                    &cx,
+                    &sid,
+                    state,
+                    emitter,
+                    config_id.clone(),
+                    value_id,
+                )
+                .await
                 {
                     // Advisory: the agent is running what it pushed and has already
                     // told the frontend so. Failing the connection over a selector
@@ -9167,6 +9324,12 @@ async fn run_conversation_loop<'a>(
                 // to avoid deadlocking when the agent awaits a permission response.
                 loop {
                     tokio::select! {
+                        // sacp routes wire notifications into `read_update` before
+                        // routing a following prompt response, but both futures
+                        // can be ready by the time this task is polled. Preserve
+                        // that wire order so TurnComplete snapshots every queued
+                        // assistant chunk instead of racing past the final text.
+                        biased;
                         update = session.read_update() => {
                             let update = match update {
                                 Ok(u) => u,
@@ -10257,7 +10420,9 @@ fn build_new_file_diff(path: &str, new_text: &str) -> String {
 /// on `AcpEvent::ToolCall(Update)` stays absent for non-image tool calls
 /// (preserves replace-on-update semantics: an absent field means "keep
 /// prior", a `Some(vec)` replaces).
-pub(crate) fn extract_tool_call_images(content: &[ToolCallContent]) -> Option<Vec<ToolCallImageInfo>> {
+pub(crate) fn extract_tool_call_images(
+    content: &[ToolCallContent],
+) -> Option<Vec<ToolCallImageInfo>> {
     let mut imgs: Vec<ToolCallImageInfo> = Vec::new();
     for item in content {
         if let ToolCallContent::Content(c) = item {
@@ -10949,7 +11114,10 @@ fn is_subagent_invocation(agent_type: AgentType, raw_input: &Option<String>) -> 
 /// historical unwrap in `parsers/codebuddy.rs`. `raw_input` is left untouched
 /// (the cards peel `params` themselves, and that keeps `inferFromInput` from
 /// misclassifying `cancel_delegation`'s `{task_id}` as a generic task).
-fn codebuddy_deferred_tool_name(agent_type: AgentType, raw_input: &Option<String>) -> Option<String> {
+fn codebuddy_deferred_tool_name(
+    agent_type: AgentType,
+    raw_input: &Option<String>,
+) -> Option<String> {
     if agent_type != AgentType::CodeBuddy {
         return None;
     }
@@ -12634,7 +12802,12 @@ fn map_grok_subagent_notification_inner(
                 .get("output")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
-                .map(|s| crate::parsers::truncate_str(s, crate::parsers::claude::BACKGROUND_RESULT_MAX_CHARS));
+                .map(|s| {
+                    crate::parsers::truncate_str(
+                        s,
+                        crate::parsers::claude::BACKGROUND_RESULT_MAX_CHARS,
+                    )
+                });
             Some(vec![AcpEvent::BackgroundActivity {
                 session_id: session_id.to_string(),
                 turns: Vec::new(),
@@ -13408,9 +13581,7 @@ async fn emit_conversation_update(
                 Some((_, inner)) => {
                     json_value_to_text(&Some(inner.clone())).filter(|t| !t.trim().is_empty())
                 }
-                None => {
-                    json_value_to_text(&tcu.fields.raw_input).filter(|t| !t.trim().is_empty())
-                }
+                None => json_value_to_text(&tcu.fields.raw_input).filter(|t| !t.trim().is_empty()),
             };
             let synthesized_edit = if own_raw_input.is_none() {
                 content_blocks.and_then(synthesize_edit_input_from_diffs)
@@ -13517,7 +13688,13 @@ async fn emit_conversation_update(
             }
             // Symmetric with the ToolCall arm: an update may carry the terminal
             // status (and, on grok, usually re-carries the `x.ai/tool` meta).
-            track_grok_spawn_call(cb_state, grok_spawn, status.as_deref(), &tool_call_id, &raw_input);
+            track_grok_spawn_call(
+                cb_state,
+                grok_spawn,
+                status.as_deref(),
+                &tool_call_id,
+                &raw_input,
+            );
             // Ordering variant: `subagent_spawned` can pair BEFORE the launch
             // call's terminal frame arrives. The pairing site skipped its
             // outstanding emission then (call not yet settled), so surface the
@@ -13840,9 +14017,99 @@ async fn emit_conversation_update(
 }
 
 #[cfg(test)]
+mod continuation_protocol_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use sacp::schema::{Diff, SessionConfigId};
+
+    async fn release_barrier_fixture(
+        connection_id: &str,
+    ) -> (
+        Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
+        Arc<DelegationReleaseBarrier>,
+    ) {
+        let connections = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let (cmd_tx, _cmd_rx) = mpsc::channel(1);
+        let task_id = format!("task-{connection_id}");
+        connections.lock().await.insert(
+            connection_id.to_string(),
+            AgentConnection {
+                id: connection_id.to_string(),
+                agent_type: AgentType::Codex,
+                status: ConnectionStatus::Connected,
+                owner_window_label: "test-window".into(),
+                cmd_tx,
+                state: Arc::new(RwLock::new(SessionState::new(
+                    connection_id.to_string(),
+                    AgentType::Codex,
+                    None,
+                    "test-window".into(),
+                    None,
+                ))),
+                emitter: EventEmitter::Noop,
+                prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
+                config_fingerprint: String::new(),
+                last_observed_fingerprint: String::new(),
+                child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                requested_session_id: None,
+                delegation_task_id: Some(task_id.clone()),
+                driver_cancel: tokio_util::sync::CancellationToken::new(),
+            },
+        );
+        let barrier = Arc::new(DelegationReleaseBarrier {
+            driver_done: std::sync::atomic::AtomicBool::new(false),
+            reaped: std::sync::atomic::AtomicBool::new(false),
+            spawned: std::sync::atomic::AtomicBool::new(false),
+            released: std::sync::atomic::AtomicBool::new(false),
+            runtime: tokio::runtime::Handle::current(),
+            connections: Arc::clone(&connections),
+            connection_id: connection_id.to_string(),
+            task_id: Some(task_id),
+            broker: None,
+        });
+        (connections, barrier)
+    }
+
+    async fn wait_until_released(
+        connections: &Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
+        connection_id: &str,
+    ) {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if !connections.lock().await.contains_key(connection_id) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("release barrier should remove the owned slot");
+    }
+
+    #[tokio::test]
+    async fn delegation_release_waits_for_driver_and_reap_in_either_order() {
+        let (connections, release) = release_barrier_fixture("driver-first").await;
+        release.mark_spawned();
+        release.mark_driver_done();
+        tokio::task::yield_now().await;
+        assert!(connections.lock().await.contains_key("driver-first"));
+        release.mark_reaped();
+        wait_until_released(&connections, "driver-first").await;
+
+        let (connections, release) = release_barrier_fixture("reap-first").await;
+        release.mark_spawned();
+        release.mark_reaped();
+        tokio::task::yield_now().await;
+        assert!(connections.lock().await.contains_key("reap-first"));
+        release.mark_driver_done();
+        wait_until_released(&connections, "reap-first").await;
+
+        let (connections, release) = release_barrier_fixture("never-spawned").await;
+        release.mark_driver_done();
+        wait_until_released(&connections, "never-spawned").await;
+    }
 
     /// Unwrap a select selector. The Grok synthesizers below only ever build
     /// selects, so any other kind is a test failure rather than a branch to
@@ -14458,9 +14725,7 @@ mod tests {
         assert!(!init_advertises_steering(Some(&off)));
 
         // Wrong nesting (e.g. another convention's namespace) must not count.
-        let nested = meta_map(
-            serde_json::json!({"symposium": {"steering": {"supported": true}}}),
-        );
+        let nested = meta_map(serde_json::json!({"symposium": {"steering": {"supported": true}}}));
         assert!(!init_advertises_steering(Some(&nested)));
 
         // Non-bool / absent → false.
@@ -14518,9 +14783,8 @@ mod tests {
             serde_json::json!({"codex": {"goal": {"objective": "legacy", "status": "active"}}}),
         );
         assert!(session_info_goal_value(true, Some(&legacy_only)).is_none());
-        let neutral_only = meta_map(
-            serde_json::json!({"goal": {"objective": "neutral", "status": "active"}}),
-        );
+        let neutral_only =
+            meta_map(serde_json::json!({"goal": {"objective": "neutral", "status": "active"}}));
         assert!(session_info_goal_value(false, Some(&neutral_only)).is_none());
 
         // `goal: null` IS a value (the clear signal), not an absent key.
@@ -15652,10 +15916,7 @@ mod tests {
     }
 
     fn antigravity_runtime(method: &str) -> BTreeMap<String, String> {
-        BTreeMap::from([(
-            ANTIGRAVITY_AUTH_METHOD_ENV.to_string(),
-            method.to_string(),
-        )])
+        BTreeMap::from([(ANTIGRAVITY_AUTH_METHOD_ENV.to_string(), method.to_string())])
     }
 
     #[test]
@@ -15855,8 +16116,11 @@ mod tests {
         // whole enum exists for. A caller that treated it as "nothing there"
         // would sign out of a `gemini-api-key` connection, clear nothing, and
         // be told `{}`.
-        std::fs::write(&path, "{\n  // mine\n  \"auth\": {\"type\": \"oauth-personal\"},\n}\n")
-            .unwrap();
+        std::fs::write(
+            &path,
+            "{\n  // mine\n  \"auth\": {\"type\": \"oauth-personal\"},\n}\n",
+        )
+        .unwrap();
         assert_eq!(
             antigravity_effective_auth_type(&home()),
             AntigravityAuthType::Unreadable
@@ -15995,9 +16259,14 @@ mod tests {
 
         // No file at all: created from scratch. (A non-object ROOT never gets
         // here — the read side already refused it.)
-        let created = merge_antigravity_settings(None, "oauth-personal", GcpField::Set("p"), GcpField::Set("global"))
-            .expect("editable")
-            .expect("created");
+        let created = merge_antigravity_settings(
+            None,
+            "oauth-personal",
+            GcpField::Set("p"),
+            GcpField::Set("global"),
+        )
+        .expect("editable")
+        .expect("created");
         assert_eq!(created["auth"]["type"], "oauth-personal");
         assert_eq!(created["gcp"]["project"], "p");
         assert_eq!(created["gcp"]["location"], "global");
@@ -16015,18 +16284,21 @@ mod tests {
         // into it. With no project or location supplied, a strange `gcp` is
         // none of codeg's business and must not block the `auth.type` update.
         let odd_gcp = serde_json::json!({ "gcp": ["not", "an", "object"] });
-        assert!(
-            merge_antigravity_settings(
-                Some(odd_gcp.clone()),
-                "oauth-personal",
-                GcpField::Set("p"),
-                GcpField::Keep,
-            )
-                .is_err()
-        );
-        let untouched = merge_antigravity_settings(Some(odd_gcp), "oauth-personal", GcpField::Keep, GcpField::Keep)
-            .expect("editable")
-            .expect("auth.type still written");
+        assert!(merge_antigravity_settings(
+            Some(odd_gcp.clone()),
+            "oauth-personal",
+            GcpField::Set("p"),
+            GcpField::Keep,
+        )
+        .is_err());
+        let untouched = merge_antigravity_settings(
+            Some(odd_gcp),
+            "oauth-personal",
+            GcpField::Keep,
+            GcpField::Keep,
+        )
+        .expect("editable")
+        .expect("auth.type still written");
         assert_eq!(untouched["auth"]["type"], "oauth-personal");
         assert_eq!(untouched["gcp"], serde_json::json!(["not", "an", "object"]));
 
@@ -16063,10 +16335,14 @@ mod tests {
         };
 
         // The panel owns both fields for this method and both are now empty.
-        let cleared =
-            merge_antigravity_settings(Some(existing()), "oauth-business", GcpField::Clear, GcpField::Clear)
-                .expect("editable")
-                .expect("the gcp block changed, so this is a real write");
+        let cleared = merge_antigravity_settings(
+            Some(existing()),
+            "oauth-business",
+            GcpField::Clear,
+            GcpField::Clear,
+        )
+        .expect("editable")
+        .expect("the gcp block changed, so this is a real write");
         assert!(
             cleared.get("gcp").is_none(),
             "an emptied block should go rather than linger as {{}}: {cleared}"
@@ -16075,10 +16351,14 @@ mod tests {
         assert_eq!(cleared["keep"], 1, "foreign keys still survive a clear");
 
         // One cleared, one set.
-        let partial =
-            merge_antigravity_settings(Some(existing()), "oauth-business", GcpField::Set("new"), GcpField::Clear)
-                .expect("editable")
-                .expect("changed");
+        let partial = merge_antigravity_settings(
+            Some(existing()),
+            "oauth-business",
+            GcpField::Set("new"),
+            GcpField::Clear,
+        )
+        .expect("editable")
+        .expect("changed");
         assert_eq!(partial["gcp"]["project"], "new");
         assert!(partial["gcp"].get("location").is_none());
 
@@ -16099,10 +16379,14 @@ mod tests {
         // take the `auth.type` update down with it — the one part of this file
         // the agent cannot start without.
         let odd = serde_json::json!({ "gcp": ["not", "an", "object"] });
-        let still_written =
-            merge_antigravity_settings(Some(odd), "oauth-business", GcpField::Clear, GcpField::Clear)
-                .expect("a clear must not refuse a block it cannot edit")
-                .expect("auth.type still written");
+        let still_written = merge_antigravity_settings(
+            Some(odd),
+            "oauth-business",
+            GcpField::Clear,
+            GcpField::Clear,
+        )
+        .expect("a clear must not refuse a block it cannot edit")
+        .expect("auth.type still written");
         assert_eq!(still_written["auth"]["type"], "oauth-business");
         assert_eq!(
             still_written["gcp"],
@@ -16549,7 +16833,12 @@ mod tests {
     #[test]
     fn prepend_path_windows_seeds_from_fallback_with_semicolon() {
         let mut env = BTreeMap::new();
-        prepend_dir_to_path_env(&mut env, r"C:\OfficeCLI", r"C:\Windows;C:\Windows\System32", true);
+        prepend_dir_to_path_env(
+            &mut env,
+            r"C:\OfficeCLI",
+            r"C:\Windows;C:\Windows\System32",
+            true,
+        );
         // No prior key → default `Path` casing on Windows.
         assert_eq!(env.get("Path").unwrap(), r"C:\OfficeCLI;C:\Windows;C:\Windows\System32");
     }
@@ -18018,7 +18307,10 @@ mod tests {
     #[test]
     fn note_dropped_counts_each_site_separately_and_keeps_the_first() {
         let mut probe = TurnOutputProbe::new(0);
-        probe.note_dropped(DropSite::Dispatch, &drop_err("missing field `sessionUpdate`"));
+        probe.note_dropped(
+            DropSite::Dispatch,
+            &drop_err("missing field `sessionUpdate`"),
+        );
         probe.note_dropped(DropSite::Decode, &drop_err("missing field `update`"));
         probe.note_dropped(DropSite::Decode, &drop_err("missing field `content`"));
 
@@ -18337,9 +18629,9 @@ mod tests {
                             sacp::schema::SessionConfigSelectOptions::Ungrouped(Vec::new()),
                         ))
                     }
-                    SessionConfigKindInfo::Boolean(b) => {
-                        SessionConfigKind::Boolean(sacp::schema::SessionConfigBoolean::new(b.current_value))
-                    }
+                    SessionConfigKindInfo::Boolean(b) => SessionConfigKind::Boolean(
+                        sacp::schema::SessionConfigBoolean::new(b.current_value),
+                    ),
                 },
             );
             let extracted = values.get(&opt.id).expect("every option is extracted");
@@ -19465,12 +19757,7 @@ mod tests {
         cache: &mut ToolCallOutputCache,
         cb: &mut CodeBuddyLiveState,
         wire: serde_json::Value,
-    ) -> (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<bool>,
-    ) {
+    ) -> (Option<String>, Option<String>, Option<String>, Option<bool>) {
         let st = SessionState::new(
             "conn-pi".to_string(),
             agent_type,
@@ -19495,12 +19782,7 @@ mod tests {
                     raw_input,
                     raw_output,
                     ..
-                } => Some((
-                    content.clone(),
-                    raw_input.clone(),
-                    raw_output.clone(),
-                    None,
-                )),
+                } => Some((content.clone(), raw_input.clone(), raw_output.clone(), None)),
                 AcpEvent::ToolCallUpdate {
                     content,
                     raw_input,
@@ -20356,8 +20638,11 @@ mod tests {
     /// own counters so the banner can render its localized line.
     #[tokio::test]
     async fn pi_retry_chunk_becomes_the_retry_banner_with_counters() {
-        let events =
-            pi_emit_chunk(AgentType::Pi, pi_chunk("Retrying (attempt 2/3, waiting 4s)...")).await;
+        let events = pi_emit_chunk(
+            AgentType::Pi,
+            pi_chunk("Retrying (attempt 2/3, waiting 4s)..."),
+        )
+        .await;
         assert!(
             !events
                 .iter()

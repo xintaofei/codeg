@@ -64,7 +64,9 @@ use crate::acp::delegation::live_reply::{ChildLiveReplyLookup, NoopChildLiveRepl
 use crate::acp::delegation::meta_writer::{
     build_delegation_meta, is_synthetic_parent_tool_use_id, DelegationMetaWriter, NoopMetaWriter,
 };
-use crate::acp::delegation::spawner::{ConnectionSpawner, DelegationLink};
+use crate::acp::delegation::spawner::{
+    ConnectionSpawner, DelegationAdmission, DelegationDispatch, DelegationLink,
+};
 use crate::acp::delegation::types::{
     AgentDelegationDefaults, BlockedKind, BlockedOn, DelegationError, DelegationOutcome,
     DelegationRequest, DelegationTaskReport, ResumeDelegationRequest, TaskStatus,
@@ -89,13 +91,6 @@ const DEFAULT_COMPLETED_CACHE_CAP_BYTES: usize = 512 * 1024 * 1024;
 /// (`DEFAULT_COMPLETED_CACHE_CAP_BYTES`), the newest result always fits and is
 /// never the eviction victim in `insert_completed`.
 const COMPLETED_TEXT_CAP: usize = 256 * 1024;
-
-/// Cap on the `task_preview` carried by the `DelegationStarted` event and the
-/// parent-card meta writes. The full task text lives in the MCP call (and, on
-/// most hosts, in the parent tool call's own `raw_input`); the preview only
-/// has to label the delegation card, so it shares the status-preview budget
-/// rather than the multi-KiB result cap.
-const TASK_PREVIEW_CAP: usize = 2 * 1024;
 
 /// Cap on the inline `text_preview` carried by the `DelegationCompleted` event
 /// and the terminal meta, so the parent card can render the result inline
@@ -228,10 +223,12 @@ struct RunningTask {
     child_connection_id: String,
     child_conversation_id: i32,
     parent_connection_id: String,
+    parent_conversation_id: i32,
     parent_tool_use_id: String,
     /// Target agent — surfaced in status reports.
     agent_type: AgentType,
-    /// Bounded preview of the delegated task text ([`TASK_PREVIEW_CAP`]).
+    /// Bounded preview of the delegated task text
+    /// ([`super::TASK_PREVIEW_CAP`]).
     /// Carried so TERMINAL meta writes can keep labeling the parent card —
     /// meta is replace-wholesale on the ToolCallState, so a terminal write
     /// that dropped the task text would erase what the running write supplied.
@@ -864,7 +861,7 @@ fn running_ack(
 
 /// Cap on the free-form `reason` a `resume_delegation` call may carry into the
 /// child's continuation prompt. The reason is interruption CONTEXT, not new
-/// instructions — the cap (shared with `TASK_PREVIEW_CAP`'s budget) keeps it
+/// instructions — the cap (shared with the task-preview budget) keeps it
 /// from smuggling a task-sized payload past the "no new iterations" contract.
 const RESUME_REASON_CAP: usize = 2 * 1024;
 
@@ -1075,6 +1072,25 @@ fn unknown_report(task_id: &str) -> DelegationTaskReport {
     }
 }
 
+fn interrupted_ledger_report(
+    entry: &crate::db::service::delegation_task_service::TaskLedgerEntry,
+) -> DelegationTaskReport {
+    DelegationTaskReport {
+        task_id: Some(entry.task_id.clone()),
+        status: TaskStatus::Unknown,
+        child_conversation_id: Some(entry.child_conversation_id),
+        agent_type: Some(entry.resume_binding.agent_type),
+        text: None,
+        error_code: Some("interrupted".into()),
+        message: Some(
+            "The application stopped while this delegation was running; its outcome is unknown."
+                .into(),
+        ),
+        duration_ms: None,
+        blocked_on: None,
+    }
+}
+
 /// Status report recovered from the DB after the in-memory result was evicted.
 /// Carries status only — the full output lives in the child session.
 fn db_report(task_id: &str, rec: &ChildStatusRecord) -> DelegationTaskReport {
@@ -1148,6 +1164,41 @@ fn classify_locked(inner: &PendingInner, parent_connection_id: &str, task_id: &s
         Some(_) => StatusClass::Settled(unknown_report(task_id)),
         None => StatusClass::NotInMemory,
     }
+}
+
+/// The durable parent/conversation check has already authorized this id, so a
+/// reconnect may read the live cache even though the owning connection id has
+/// changed. The ledger remains the security boundary.
+fn classify_authorized_locked(
+    inner: &PendingInner,
+    task_id: &str,
+    ledger_report: &DelegationTaskReport,
+) -> StatusClass {
+    if let Some(c) = inner.completed.get(task_id) {
+        return StatusClass::Settled(completed_report(task_id, c));
+    }
+    match inner.running.get(task_id) {
+        Some(r) => StatusClass::Running {
+            report: running_report(task_id, r),
+            child_connection_id: r.child_connection_id.clone(),
+        },
+        None => match inner.setups.get(task_id) {
+            Some(child_connection_id) => StatusClass::Running {
+                report: ledger_report.clone(),
+                child_connection_id: child_connection_id.clone(),
+            },
+            None => StatusClass::NotInMemory,
+        },
+    }
+}
+
+fn same_effective_working_dir(requested: Option<&str>, stored: &str) -> bool {
+    requested.is_none_or(|dir| {
+        std::fs::canonicalize(dir)
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|_| dir.to_string())
+            == stored
+    })
 }
 
 /// Map a terminal [`DelegationTaskReport`] back to a [`DelegationOutcome`] for
@@ -1287,6 +1338,7 @@ pub struct DelegationMatchKey {
     pub agent_type: AgentType,
     pub task: String,
     pub working_dir: Option<String>,
+    pub continue_from_task_id: Option<String>,
 }
 
 /// One captured parent-side `delegate_to_agent` tool_call awaiting its
@@ -1418,6 +1470,11 @@ pub struct DelegationBroker {
     /// no-op ("no hint"); production wires `ConnectionManagerLiveReplyLookup` via
     /// `with_live_reply_lookup`.
     live_reply_lookup: Arc<dyn ChildLiveReplyLookup>,
+    /// Installed in production to make admission/results survive broker cache
+    /// eviction and process restarts. Tests which do not exercise persistence
+    /// keep the legacy in-memory path.
+    ledger_db: Option<Arc<crate::db::AppDatabase>>,
+    release_state: Arc<Mutex<ReleaseState>>,
     pending: Arc<PendingCalls>,
     tool_calls: Arc<ToolCallTracker>,
     pre_canceled_handles: Arc<PreCanceledHandles>,
@@ -1431,7 +1488,109 @@ pub struct DelegationBroker {
     block_resurface: Duration,
 }
 
+#[derive(Default)]
+struct ReleaseState {
+    parents: HashMap<String, i32>,
+    released: HashSet<String>,
+    admitted: HashSet<String>,
+}
+
 impl DelegationBroker {
+    /// Project one durable ledger row through the broker's live task tables.
+    ///
+    /// A `running` row can mean either a task this broker still owns or a task
+    /// whose process disappeared before a terminal snapshot reached SQLite.
+    /// Historical readers must make the same distinction as status queries:
+    /// preserve genuinely active work, prefer a terminal in-memory result if
+    /// it won a narrow persistence race, and describe an orphan as interrupted
+    /// without rewriting the durable row.
+    pub(crate) async fn project_ledger_report(
+        &self,
+        entry: &crate::db::service::delegation_task_service::TaskLedgerEntry,
+    ) -> DelegationTaskReport {
+        if entry.status != TaskStatus::Running {
+            return entry.report.clone();
+        }
+        let inner = self.pending.inner.lock().await;
+        if let Some(completed) = inner.completed.get(&entry.task_id) {
+            return completed_report(&entry.task_id, completed);
+        }
+        if let Some(running) = inner.running.get(&entry.task_id) {
+            return running_report(&entry.task_id, running);
+        }
+        if inner.setups.contains_key(&entry.task_id) {
+            return entry.report.clone();
+        }
+        interrupted_ledger_report(entry)
+    }
+
+    /// Called by the connection's driver/reap barrier. Persistence is wired by
+    /// the continuation ledger; keeping the notification on the broker avoids
+    /// making the ACP process layer depend on database services.
+    pub(crate) async fn connection_released(&self, task_id: &str) {
+        let parent = {
+            let mut state = self.release_state.lock().await;
+            let Some(parent) = state.parents.get(task_id).copied() else {
+                return;
+            };
+            state.released.insert(task_id.to_string());
+            if state.admitted.contains(task_id) {
+                Some(parent)
+            } else {
+                None
+            }
+        };
+        if let (Some(db), Some(parent)) = (self.ledger_db.as_ref(), parent) {
+            if let Err(error) = crate::db::service::delegation_task_service::mark_released(
+                &db.conn, parent, task_id,
+            )
+            .await
+            {
+                tracing::error!(task_id, %error, "[delegation] failed to persist process release");
+            } else {
+                let mut state = self.release_state.lock().await;
+                state.parents.remove(task_id);
+                state.released.remove(task_id);
+                state.admitted.remove(task_id);
+            }
+        }
+    }
+
+    async fn register_release_slot(&self, task_id: &str, parent_conversation_id: i32) {
+        self.release_state
+            .lock()
+            .await
+            .parents
+            .insert(task_id.to_string(), parent_conversation_id);
+    }
+
+    async fn abandon_release_slot(&self, task_id: &str) {
+        let mut state = self.release_state.lock().await;
+        state.parents.remove(task_id);
+        state.released.remove(task_id);
+        state.admitted.remove(task_id);
+    }
+
+    async fn mark_admission_ready(&self, task_id: &str) {
+        let parent = {
+            let mut state = self.release_state.lock().await;
+            state.admitted.insert(task_id.to_string());
+            state
+                .released
+                .contains(task_id)
+                .then(|| state.parents.get(task_id).copied())
+                .flatten()
+        };
+        if let (Some(db), Some(parent)) = (self.ledger_db.as_ref(), parent) {
+            if crate::db::service::delegation_task_service::mark_released(&db.conn, parent, task_id)
+                .await
+                .is_ok()
+            {
+                self.abandon_release_slot(task_id).await;
+            }
+        }
+    }
+
     pub fn new(
         spawner: Arc<dyn ConnectionSpawner>,
         depth_lookup: Arc<dyn ConversationDepthLookup>,
@@ -1479,6 +1638,8 @@ impl DelegationBroker {
             event_emitter,
             status_lookup: Arc::new(NoopChildStatusLookup),
             live_reply_lookup: Arc::new(NoopChildLiveReplyLookup),
+            ledger_db: None,
+            release_state: Arc::new(Mutex::new(ReleaseState::default())),
             pending: Arc::new(PendingCalls::default()),
             tool_calls: Arc::new(ToolCallTracker::default()),
             pre_canceled_handles: Arc::new(PreCanceledHandles::default()),
@@ -1506,6 +1667,11 @@ impl DelegationBroker {
         live_reply_lookup: Arc<dyn ChildLiveReplyLookup>,
     ) -> Self {
         self.live_reply_lookup = live_reply_lookup;
+        self
+    }
+
+    pub fn with_ledger(mut self, db: Arc<crate::db::AppDatabase>) -> Self {
+        self.ledger_db = Some(db);
         self
     }
 
@@ -2333,6 +2499,7 @@ impl DelegationBroker {
                         agent_type: req.agent_type,
                         task: req.task.clone(),
                         working_dir: req.requested_working_dir.clone(),
+                        continue_from_task_id: req.continue_from_task_id.clone(),
                     };
                     let _ = self
                         .take_matching_tool_call(&req.parent_connection_id, &key)
@@ -2365,6 +2532,7 @@ impl DelegationBroker {
                 agent_type: req.agent_type,
                 task: req.task.clone(),
                 working_dir: req.requested_working_dir.clone(),
+                continue_from_task_id: req.continue_from_task_id.clone(),
             };
             let claimed = self
                 .claim_pending_tool_call_with_brief_wait(&req.parent_connection_id, &match_key)
@@ -2392,6 +2560,12 @@ impl DelegationBroker {
                 }
                 if let Some(dir) = req.requested_working_dir.as_deref() {
                     raw_input.insert("working_dir".into(), serde_json::Value::String(dir.into()));
+                }
+                if let Some(source) = req.continue_from_task_id.as_deref() {
+                    raw_input.insert(
+                        "continue_from_task_id".into(),
+                        serde_json::Value::String(source.into()),
+                    );
                 }
                 self.meta_writer
                     .write_tool_call_identity(
@@ -2463,11 +2637,107 @@ impl DelegationBroker {
         // Pull per-agent overrides from the broker config (defaults to empty).
         // Cloning is cheap — `AgentDelegationDefaults` is at most one Option<String>
         // and a small BTreeMap, and the spawner consumes both fields by value.
-        let (preferred_mode_id, preferred_config_values) = cfg
+        let (mut preferred_mode_id, mut preferred_config_values) = cfg
             .agent_defaults
             .get(&req.agent_type)
             .map(|d: &AgentDelegationDefaults| (d.mode_id.clone(), d.config_values.clone()))
             .unwrap_or((None, BTreeMap::new()));
+        let call_id = uuid::Uuid::new_v4().to_string();
+        let resume_binding = if let Some(source_task_id) = req.continue_from_task_id.as_deref() {
+            let Some(db) = self.ledger_db.as_ref() else {
+                self.drop_inflight(inflight_id).await;
+                return report_err(
+                    req.agent_type,
+                    DelegationError::ContinuationInvalid(
+                        "durable continuation storage is unavailable".into(),
+                    ),
+                    None,
+                );
+            };
+            use crate::db::service::delegation_task_service as ledger;
+            match ledger::successor(&db.conn, req.parent_conversation_id, source_task_id).await {
+                Ok(Some(existing)) => {
+                    self.drop_inflight(inflight_id).await;
+                    let same = existing.task == req.task
+                        && existing.resume_binding.agent_type == req.agent_type
+                        && same_effective_working_dir(
+                            req.working_dir.as_deref(),
+                            &existing.resume_binding.working_dir,
+                        );
+                    if same {
+                        return self.project_ledger_report(&existing).await;
+                    }
+                    return report_err(
+                        req.agent_type,
+                        DelegationError::ContinuationConflict(format!(
+                            "source {source_task_id} already continues as {}; use that task id",
+                            existing.task_id
+                        )),
+                        None,
+                    );
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.drop_inflight(inflight_id).await;
+                    return report_err(
+                        req.agent_type,
+                        DelegationError::ContinuationInvalid(error.to_string()),
+                        None,
+                    );
+                }
+            }
+            let source =
+                match ledger::lookup(&db.conn, req.parent_conversation_id, source_task_id).await {
+                    Ok(Some(source)) => source,
+                    Ok(None) => {
+                        self.drop_inflight(inflight_id).await;
+                        return report_err(
+                            req.agent_type,
+                            DelegationError::ContinuationInvalid(format!(
+                                "source task {source_task_id} was not found for this parent"
+                            )),
+                            None,
+                        );
+                    }
+                    Err(error) => {
+                        self.drop_inflight(inflight_id).await;
+                        return report_err(
+                            req.agent_type,
+                            DelegationError::ContinuationInvalid(error.to_string()),
+                            None,
+                        );
+                    }
+                };
+            if source.status == TaskStatus::Running || !source.released {
+                self.drop_inflight(inflight_id).await;
+                return report_err(
+                    req.agent_type,
+                    DelegationError::ContinuationBusy(format!(
+                        "source task {source_task_id} has not finished process cleanup"
+                    )),
+                    None,
+                );
+            }
+            let binding = source.resume_binding;
+            if binding.agent_type != req.agent_type
+                || !same_effective_working_dir(req.working_dir.as_deref(), &binding.working_dir)
+            {
+                self.drop_inflight(inflight_id).await;
+                return report_err(
+                    req.agent_type,
+                    DelegationError::ContinuationConflict(
+                        "agent or working directory differs from the source task".into(),
+                    ),
+                    None,
+                );
+            }
+            req.working_dir = Some(binding.working_dir.clone());
+            preferred_mode_id = binding.preferred_mode_id.clone();
+            preferred_config_values = binding.preferred_config_values.clone();
+            Some(binding)
+        } else {
+            None
+        };
         // Checkpoint #1 (opportunistic): if a parent cancel already landed
         // during the claim/depth phase, bail before spawning a child the parent
         // has abandoned. No child exists yet, so there's nothing to tear down.
@@ -2480,19 +2750,33 @@ impl DelegationBroker {
                 None,
             );
         }
+        self.register_release_slot(&call_id, req.parent_conversation_id)
+            .await;
         let child_connection_id = match self
             .spawner
-            .spawn(
+            .spawn_for_delegation(
                 &req.parent_connection_id,
                 req.agent_type,
                 req.working_dir.clone(),
-                preferred_mode_id,
-                preferred_config_values,
+                preferred_mode_id.clone(),
+                preferred_config_values.clone(),
+                call_id.clone(),
+                resume_binding.clone(),
             )
             .await
         {
             Ok(id) => id,
+            Err(crate::acp::delegation::spawner::SpawnerError::Busy(message)) => {
+                self.abandon_release_slot(&call_id).await;
+                self.drop_inflight(inflight_id).await;
+                return report_err(
+                    req.agent_type,
+                    DelegationError::ContinuationBusy(message),
+                    None,
+                );
+            }
             Err(e) => {
+                self.abandon_release_slot(&call_id).await;
                 self.drop_inflight(inflight_id).await;
                 return report_err(
                     req.agent_type,
@@ -2508,6 +2792,7 @@ impl DelegationBroker {
         // the primary guard for the spawn window, which can block while the
         // agent process starts up.
         if self.take_inflight_cancel(inflight_id).await {
+            self.abandon_release_slot(&call_id).await;
             let _ = self.spawner.disconnect(&child_connection_id).await;
             return report_err(
                 req.agent_type,
@@ -2519,11 +2804,10 @@ impl DelegationBroker {
         }
 
         // --- Send linked prompt ------------------------------------------------
-        let call_id = uuid::Uuid::new_v4().to_string();
         // Bounded task label used by the started event and every meta write —
         // the frontend card's fallback when the parent tool call's `raw_input`
         // never carried the arguments (Cursor's identity-less announcements).
-        let task_preview = truncate_on_char_boundary(&req.task, TASK_PREVIEW_CAP);
+        let task_preview = super::task_preview(&req.task);
         // Now that the child connection and task id exist, fill the span's empty
         // fields so every subsequent log line in this delegation carries the
         // parent→child linkage (see the `delegation_task` span on this fn).
@@ -2533,6 +2817,14 @@ impl DelegationBroker {
             parent_conversation_id: req.parent_conversation_id,
             parent_tool_use_id: req.parent_tool_use_id.clone(),
             delegation_call_id: call_id.clone(),
+            admission: self.ledger_db.as_ref().map(|_| DelegationAdmission {
+                source_task_id: req.continue_from_task_id.clone(),
+                task: req.task.clone(),
+                requested_working_dir: req.requested_working_dir.clone(),
+                preferred_mode_id,
+                preferred_config_values,
+                resume_binding,
+            }),
         };
 
         // Reserve this delegation (both ids) BEFORE sending its first prompt.
@@ -2560,7 +2852,43 @@ impl DelegationBroker {
             .send_prompt_linked_for_delegation(&child_connection_id, req.task.clone(), link)
             .await
         {
-            Ok(cid) => cid,
+            Ok(DelegationDispatch::Started(cid)) => cid,
+            Ok(DelegationDispatch::Existing(report)) => {
+                let mut inner = self.pending.inner.lock().await;
+                inner.unreserve(&call_id, &child_connection_id);
+                inner.deregister_inflight(inflight_id);
+                drop(inner);
+                let _ = self.spawner.disconnect(&child_connection_id).await;
+                self.abandon_release_slot(&call_id).await;
+                return report;
+            }
+            Ok(DelegationDispatch::Conflict {
+                next_task_id,
+                reason,
+            }) => {
+                let mut inner = self.pending.inner.lock().await;
+                inner.unreserve(&call_id, &child_connection_id);
+                inner.deregister_inflight(inflight_id);
+                drop(inner);
+                let _ = self.spawner.disconnect(&child_connection_id).await;
+                self.abandon_release_slot(&call_id).await;
+                return report_err(
+                    req.agent_type,
+                    DelegationError::ContinuationConflict(format!(
+                        "{reason}; existing successor is {next_task_id}"
+                    )),
+                    None,
+                );
+            }
+            Ok(DelegationDispatch::Failed(report)) => {
+                let mut inner = self.pending.inner.lock().await;
+                inner.unreserve(&call_id, &child_connection_id);
+                inner.deregister_inflight(inflight_id);
+                drop(inner);
+                self.mark_admission_ready(&call_id).await;
+                let _ = self.spawner.disconnect(&child_connection_id).await;
+                return report;
+            }
             Err(e) => {
                 // Setup failed before parking — release the reservation (and
                 // discard any terminal that buffered against this delegation in
@@ -2572,6 +2900,7 @@ impl DelegationBroker {
                     inner.deregister_inflight(inflight_id);
                 }
                 let _ = self.spawner.disconnect(&child_connection_id).await;
+                self.abandon_release_slot(&call_id).await;
                 return report_err(
                     req.agent_type,
                     DelegationError::SpawnFailed(e.to_string()),
@@ -2579,6 +2908,7 @@ impl DelegationBroker {
                 );
             }
         };
+        self.mark_admission_ready(&call_id).await;
 
         // The child is now running. Stamp the start so terminal paths can
         // report a real `duration_ms`.
@@ -2735,6 +3065,7 @@ impl DelegationBroker {
                             child_connection_id: child_connection_id.clone(),
                             child_conversation_id,
                             parent_connection_id: req.parent_connection_id.clone(),
+                            parent_conversation_id: req.parent_conversation_id,
                             parent_tool_use_id: req.parent_tool_use_id.clone(),
                             agent_type: req.agent_type,
                             task_preview: task_preview.clone(),
@@ -2758,6 +3089,7 @@ impl DelegationBroker {
             Disposition::ChildTerminal(outcome) => {
                 self.finalize_delegation(
                     &req.parent_connection_id,
+                    req.parent_conversation_id,
                     &req.parent_tool_use_id,
                     &child_connection_id,
                     child_conversation_id,
@@ -2781,6 +3113,15 @@ impl DelegationBroker {
             // ourselves (cancel + disconnect, since a turn is in flight) and
             // return a canceled report. The canceled result was recorded above.
             Disposition::ParentCanceled => {
+                self.freeze_ledger_outcome(
+                    req.parent_conversation_id,
+                    &call_id,
+                    req.agent_type,
+                    child_conversation_id,
+                    setup_duration_ms,
+                    &canceled_outcome(child_conversation_id, "parent canceled"),
+                )
+                .await;
                 self.write_meta_if_real(
                     &req.parent_connection_id,
                     &req.parent_tool_use_id,
@@ -2855,6 +3196,15 @@ impl DelegationBroker {
                     }
                 };
                 if let Some(duration_ms) = canceled_duration_ms {
+                    self.freeze_ledger_outcome(
+                        req.parent_conversation_id,
+                        &call_id,
+                        req.agent_type,
+                        child_conversation_id,
+                        duration_ms,
+                        &canceled_outcome(child_conversation_id, "canceled before await"),
+                    )
+                    .await;
                     self.write_meta_if_real(
                         &req.parent_connection_id,
                         &req.parent_tool_use_id,
@@ -2947,6 +3297,7 @@ impl DelegationBroker {
         if let Some((task, duration_ms)) = task {
             self.finalize_delegation(
                 &task.parent_connection_id,
+                task.parent_conversation_id,
                 &task.parent_tool_use_id,
                 &task.child_connection_id,
                 task.child_conversation_id,
@@ -2976,6 +3327,7 @@ impl DelegationBroker {
     async fn finalize_delegation(
         &self,
         parent_connection_id: &str,
+        parent_conversation_id: i32,
         parent_tool_use_id: &str,
         child_connection_id: &str,
         child_conversation_id: i32,
@@ -2985,6 +3337,15 @@ impl DelegationBroker {
         task_preview: &str,
         task_id: &str,
     ) {
+        self.freeze_ledger_outcome(
+            parent_conversation_id,
+            task_id,
+            agent_type,
+            child_conversation_id,
+            duration_ms,
+            outcome,
+        )
+        .await;
         let meta = match outcome {
             DelegationOutcome::Ok(ok) => build_delegation_meta(
                 "completed",
@@ -3020,6 +3381,36 @@ impl DelegationBroker {
         .await;
         // v1 one-shot: always tear down the child.
         let _ = self.spawner.disconnect(child_connection_id).await;
+    }
+
+    async fn freeze_ledger_outcome(
+        &self,
+        parent_conversation_id: i32,
+        task_id: &str,
+        agent_type: AgentType,
+        _child_conversation_id: i32,
+        duration_ms: u64,
+        outcome: &DelegationOutcome,
+    ) {
+        let Some(db) = self.ledger_db.as_ref() else {
+            return;
+        };
+        let report = report_from_outcome(
+            Some(task_id.to_string()),
+            Some(agent_type),
+            outcome,
+            Some(duration_ms),
+        );
+        if let Err(error) = crate::db::service::delegation_task_service::finish(
+            &db.conn,
+            parent_conversation_id,
+            task_id,
+            &report,
+        )
+        .await
+        {
+            tracing::error!(task_id, %error, "[delegation] failed to freeze terminal report");
+        }
     }
 
     /// Internal helper — apply the meta write iff the parent's
@@ -3323,6 +3714,15 @@ impl DelegationBroker {
         duration_ms: u64,
         cancel_turn: bool,
     ) {
+        self.freeze_ledger_outcome(
+            task.parent_conversation_id,
+            &task.task_id,
+            task.agent_type,
+            task.child_conversation_id,
+            duration_ms,
+            &canceled_outcome(task.child_conversation_id, "delegation canceled"),
+        )
+        .await;
         self.write_meta_if_real(
             &task.parent_connection_id,
             &task.parent_tool_use_id,
@@ -3436,13 +3836,49 @@ impl DelegationBroker {
             // One lock acquisition classifies every requested id. The async
             // resolution of running (live reply) / not-in-memory (DB) ids is
             // deferred to `assemble_reports`, OUTSIDE this lock.
-            let classes: Vec<StatusClass> = {
-                let inner = self.pending.inner.lock().await;
-                task_ids
-                    .iter()
-                    .map(|id| classify_locked(&inner, parent_connection_id, id))
-                    .collect()
+            let ledger_scopes = if let (Some(db), Some(parent)) =
+                (self.ledger_db.as_ref(), parent_conversation_id)
+            {
+                let mut scopes = Vec::with_capacity(task_ids.len());
+                for id in task_ids {
+                    let scope = crate::db::service::delegation_task_service::lookup_scoped(
+                        &db.conn, parent, id,
+                    )
+                    .await
+                    .unwrap_or(crate::db::service::delegation_task_service::ScopedLookup::Hidden);
+                    scopes.push(scope);
+                }
+                Some(scopes)
+            } else {
+                None
             };
+            let classes: Vec<StatusClass> =
+                {
+                    let inner = self.pending.inner.lock().await;
+                    task_ids
+                        .iter()
+                        .enumerate()
+                        .map(
+                            |(index, id)| {
+                                match ledger_scopes.as_ref().map(|v| &v[index]) {
+                        Some(crate::db::service::delegation_task_service::ScopedLookup::Visible(
+                            entry,
+                        )) if entry.status != TaskStatus::Running => {
+                            StatusClass::Settled(entry.report.clone())
+                        }
+                        Some(crate::db::service::delegation_task_service::ScopedLookup::Visible(
+                            entry,
+                        )) => classify_authorized_locked(&inner, id, &entry.report),
+                        Some(crate::db::service::delegation_task_service::ScopedLookup::Hidden) => {
+                            StatusClass::Settled(unknown_report(id))
+                        }
+                        Some(crate::db::service::delegation_task_service::ScopedLookup::Absent)
+                        | None => classify_locked(&inner, parent_connection_id, id),
+                    }
+                            },
+                        )
+                        .collect()
+                };
             let running_count = classes
                 .iter()
                 .filter(|c| matches!(c, StatusClass::Running { .. }))
@@ -3677,16 +4113,40 @@ impl DelegationBroker {
         parent_conversation_id: Option<i32>,
         task_id: &str,
     ) -> DelegationTaskReport {
+        let durable_authorized = if let (Some(db), Some(parent)) =
+            (self.ledger_db.as_ref(), parent_conversation_id)
+        {
+            match crate::db::service::delegation_task_service::lookup_scoped(
+                &db.conn, parent, task_id,
+            )
+            .await
+            {
+                Ok(crate::db::service::delegation_task_service::ScopedLookup::Visible(entry)) => {
+                    if entry.status != TaskStatus::Running {
+                        return entry.report;
+                    }
+                    true
+                }
+                Ok(crate::db::service::delegation_task_service::ScopedLookup::Hidden) | Err(_) => {
+                    return unknown_report(task_id);
+                }
+                Ok(crate::db::service::delegation_task_service::ScopedLookup::Absent) => false,
+            }
+        } else {
+            false
+        };
         let drained = {
             let mut inner = self.pending.inner.lock().await;
             if let Some(c) = inner.completed.get(task_id) {
-                if c.parent_connection_id == parent_connection_id {
+                if durable_authorized || c.parent_connection_id == parent_connection_id {
                     return completed_report(task_id, c);
                 }
                 return unknown_report(task_id);
             }
             match inner.running.get(task_id) {
-                Some(r) if r.parent_connection_id == parent_connection_id => {
+                Some(r)
+                    if durable_authorized || r.parent_connection_id == parent_connection_id =>
+                {
                     drain_and_record_canceled(
                         &mut inner,
                         vec![task_id.to_string()],
@@ -3724,6 +4184,21 @@ impl DelegationBroker {
         parent_conversation_id: Option<i32>,
         task_id: &str,
     ) -> DelegationTaskReport {
+        if let (Some(db), Some(parent)) = (self.ledger_db.as_ref(), parent_conversation_id) {
+            match crate::db::service::delegation_task_service::lookup_scoped(
+                &db.conn, parent, task_id,
+            )
+            .await
+            {
+                Ok(crate::db::service::delegation_task_service::ScopedLookup::Visible(entry)) => {
+                    return self.project_ledger_report(&entry).await;
+                }
+                Ok(crate::db::service::delegation_task_service::ScopedLookup::Hidden) | Err(_) => {
+                    return unknown_report(task_id);
+                }
+                Ok(crate::db::service::delegation_task_service::ScopedLookup::Absent) => {}
+            }
+        }
         match self.status_lookup.find_by_call_id(task_id).await {
             Some(rec)
                 if parent_conversation_id.is_some() && rec.parent_id == parent_conversation_id =>
@@ -3818,6 +4293,37 @@ impl DelegationBroker {
                 ),
                 None,
             );
+        }
+
+        // Tasks admitted by the durable continuation protocol must advance to
+        // a new task id. Keep the legacy same-id resume path only for rows that
+        // predate the ledger.
+        if let Some(db) = self.ledger_db.as_ref() {
+            use crate::db::service::delegation_task_service::ScopedLookup;
+            match crate::db::service::delegation_task_service::lookup_scoped(
+                &db.conn,
+                req.parent_conversation_id,
+                &req.task_id,
+            )
+            .await
+            {
+                Ok(ScopedLookup::Visible(entry)) => {
+                    self.drop_inflight(inflight_id).await;
+                    return not_resumable_report(
+                        &req.task_id,
+                        entry.status,
+                        Some(entry.child_conversation_id),
+                        Some(entry.resume_binding.agent_type),
+                        "this task uses durable continuation. Start the next round with \
+                         delegate_to_agent and continue_from_task_id set to this task id.",
+                    );
+                }
+                Ok(ScopedLookup::Absent) => {}
+                Ok(ScopedLookup::Hidden) | Err(_) => {
+                    self.drop_inflight(inflight_id).await;
+                    return unknown_report(&req.task_id);
+                }
+            }
         }
 
         // --- In-memory gate ---------------------------------------------------
@@ -4053,6 +4559,7 @@ impl DelegationBroker {
             .spawner
             .spawn_for_resume(
                 &req.parent_connection_id,
+                &req.task_id,
                 ctx.agent_type,
                 Some(working_dir),
                 &external_id,
@@ -4101,7 +4608,7 @@ impl DelegationBroker {
         let task_preview = ctx
             .title
             .as_deref()
-            .map(|t| truncate_on_char_boundary(t, TASK_PREVIEW_CAP))
+            .map(super::task_preview)
             .unwrap_or_else(|| "(resumed delegation)".to_string());
         // The resumed run reuses the ORIGINAL parent-side tool_use_id persisted
         // on the row so the parent's original delegation card re-binds; a row
@@ -4132,6 +4639,12 @@ impl DelegationBroker {
                 build_resume_prompt(req.reason.as_deref()),
                 ctx.folder_id,
                 ctx.child_conversation_id,
+                DelegationLink {
+                    parent_conversation_id: req.parent_conversation_id,
+                    parent_tool_use_id: parent_tool_use_id.clone(),
+                    delegation_call_id: call_id.clone(),
+                    admission: None,
+                },
             )
             .await
         {
@@ -4275,6 +4788,7 @@ impl DelegationBroker {
                             child_connection_id: child_connection_id.clone(),
                             child_conversation_id: ctx.child_conversation_id,
                             parent_connection_id: req.parent_connection_id.clone(),
+                            parent_conversation_id: req.parent_conversation_id,
                             parent_tool_use_id: parent_tool_use_id.clone(),
                             agent_type: ctx.agent_type,
                             task_preview: task_preview.clone(),
@@ -4294,6 +4808,7 @@ impl DelegationBroker {
             Disposition::ChildTerminal(outcome) => {
                 self.finalize_delegation(
                     &req.parent_connection_id,
+                    req.parent_conversation_id,
                     &parent_tool_use_id,
                     &child_connection_id,
                     ctx.child_conversation_id,
@@ -4313,6 +4828,15 @@ impl DelegationBroker {
                 );
             }
             Disposition::ParentCanceled => {
+                self.freeze_ledger_outcome(
+                    req.parent_conversation_id,
+                    &call_id,
+                    ctx.agent_type,
+                    ctx.child_conversation_id,
+                    setup_duration_ms,
+                    &canceled_outcome(ctx.child_conversation_id, "parent canceled"),
+                )
+                .await;
                 self.write_meta_if_real(
                     &req.parent_connection_id,
                     &parent_tool_use_id,
@@ -4360,10 +4884,8 @@ impl DelegationBroker {
                 let canceled_duration_ms = {
                     let mut inner = self.pending.inner.lock().await;
                     if inner.running.remove(&call_id).is_some() {
-                        let outcome = canceled_outcome(
-                            ctx.child_conversation_id,
-                            "canceled before await",
-                        );
+                        let outcome =
+                            canceled_outcome(ctx.child_conversation_id, "canceled before await");
                         let duration_ms = started_at.elapsed().as_millis() as u64;
                         inner.insert_completed(
                             &call_id,
@@ -4381,6 +4903,15 @@ impl DelegationBroker {
                     }
                 };
                 if let Some(duration_ms) = canceled_duration_ms {
+                    self.freeze_ledger_outcome(
+                        req.parent_conversation_id,
+                        &call_id,
+                        ctx.agent_type,
+                        ctx.child_conversation_id,
+                        duration_ms,
+                        &canceled_outcome(ctx.child_conversation_id, "canceled before await"),
+                    )
+                    .await;
                     self.write_meta_if_real(
                         &req.parent_connection_id,
                         &parent_tool_use_id,
@@ -4656,6 +5187,7 @@ mod tests {
             task: "do x".into(),
             working_dir: None,
             requested_working_dir: None,
+            continue_from_task_id: None,
             external_handle: None,
         }
     }
@@ -5140,6 +5672,212 @@ mod tests {
         assert_eq!(batch[0].task_id, single.task_id);
     }
 
+    #[tokio::test]
+    async fn ledger_authorizes_cache_and_marks_orphaned_running_as_interrupted() {
+        use crate::db::service::{
+            conversation_service, delegation_task_service as ledger, folder_service,
+        };
+        use std::collections::BTreeMap;
+
+        let db = Arc::new(crate::db::test_helpers::fresh_in_memory_db().await);
+        let folder = folder_service::add_folder(&db.conn, "/tmp/broker-ledger")
+            .await
+            .unwrap();
+        let parent =
+            conversation_service::create(&db.conn, folder.id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let child = conversation_service::create(&db.conn, folder.id, AgentType::Codex, None, None)
+            .await
+            .unwrap();
+        let binding = ledger::ResumeBinding {
+            agent_type: AgentType::Codex,
+            external_session_id: "session-1".into(),
+            child_conversation_id: child.id,
+            working_dir: "/tmp/broker-ledger".into(),
+            preferred_mode_id: None,
+            preferred_config_values: BTreeMap::new(),
+            config_fingerprint: "cfg".into(),
+        };
+        ledger::admit(
+            &db.conn,
+            ledger::AdmissionInput {
+                task_id: "durable-running".into(),
+                parent_conversation_id: parent.id,
+                child_conversation_id: child.id,
+                source_task_id: None,
+                task: "work".into(),
+                requested_working_dir: None,
+                resume_binding: binding.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        let broker = DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            shallow_lookup(),
+        )
+        .with_ledger(db.clone());
+
+        let interrupted = broker
+            .get_task_status(
+                "reconnected-parent",
+                Some(parent.id),
+                "durable-running",
+                StatusWait::Immediate,
+            )
+            .await;
+        assert_eq!(interrupted.task_id.as_deref(), Some("durable-running"));
+        assert_eq!(interrupted.status, TaskStatus::Unknown);
+        assert_eq!(interrupted.error_code.as_deref(), Some("interrupted"));
+        let running_entry = ledger::lookup(&db.conn, parent.id, "durable-running")
+            .await
+            .unwrap()
+            .unwrap();
+        let history = broker.project_ledger_report(&running_entry).await;
+        assert_eq!(history.status, TaskStatus::Unknown);
+        assert_eq!(history.error_code.as_deref(), Some("interrupted"));
+
+        let terminal = DelegationTaskReport {
+            task_id: Some("durable-running".into()),
+            status: TaskStatus::Completed,
+            child_conversation_id: Some(child.id),
+            agent_type: Some(AgentType::Codex),
+            text: Some("durable result".into()),
+            error_code: None,
+            message: None,
+            duration_ms: Some(1),
+            blocked_on: None,
+        };
+        ledger::finish(&db.conn, parent.id, "durable-running", &terminal)
+            .await
+            .unwrap();
+        let restored = broker
+            .get_task_status(
+                "new-parent-connection",
+                Some(parent.id),
+                "durable-running",
+                StatusWait::Immediate,
+            )
+            .await;
+        assert_eq!(restored.text.as_deref(), Some("durable result"));
+
+        let foreign =
+            conversation_service::create(&db.conn, folder.id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        assert_eq!(
+            broker
+                .get_task_status(
+                    "new-parent-connection",
+                    Some(foreign.id),
+                    "durable-running",
+                    StatusWait::Immediate,
+                )
+                .await
+                .status,
+            TaskStatus::Unknown
+        );
+        conversation_service::soft_delete(&db.conn, child.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            broker
+                .get_task_status(
+                    "new-parent-connection",
+                    Some(parent.id),
+                    "durable-running",
+                    StatusWait::Immediate,
+                )
+                .await
+                .status,
+            TaskStatus::Unknown
+        );
+    }
+
+    #[tokio::test]
+    async fn ledger_authorizes_cancel_after_parent_reconnect_and_hides_foreign_parent() {
+        use crate::db::service::{
+            conversation_service, delegation_task_service as ledger, folder_service,
+        };
+
+        let db = Arc::new(crate::db::test_helpers::fresh_in_memory_db().await);
+        let folder = folder_service::add_folder(&db.conn, "/tmp/broker-ledger-cancel")
+            .await
+            .unwrap();
+        let parent =
+            conversation_service::create(&db.conn, folder.id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let foreign =
+            conversation_service::create(&db.conn, folder.id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let child = conversation_service::create(&db.conn, folder.id, AgentType::Codex, None, None)
+            .await
+            .unwrap();
+        let mock = Arc::new(MockSpawner::new());
+        let broker = DelegationBroker::new(
+            mock.clone() as Arc<dyn ConnectionSpawner>,
+            shallow_lookup(),
+        )
+        .with_ledger(db.clone());
+        enable_delegation(&broker).await;
+        let task_id = start_running(&broker, &mock, "child-ledger-cancel", child.id, "tu").await;
+        ledger::admit(
+            &db.conn,
+            ledger::AdmissionInput {
+                task_id: task_id.clone(),
+                parent_conversation_id: parent.id,
+                child_conversation_id: child.id,
+                source_task_id: None,
+                task: "work".into(),
+                requested_working_dir: None,
+                resume_binding: ledger::ResumeBinding {
+                    agent_type: AgentType::Codex,
+                    external_session_id: "session-cancel".into(),
+                    child_conversation_id: child.id,
+                    working_dir: "/tmp/broker-ledger-cancel".into(),
+                    preferred_mode_id: None,
+                    preferred_config_values: BTreeMap::new(),
+                    config_fingerprint: "cfg".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+        let running_entry = ledger::lookup(&db.conn, parent.id, &task_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let history = broker.project_ledger_report(&running_entry).await;
+        assert_eq!(
+            history.status,
+            TaskStatus::Running,
+            "history must not mislabel a task still owned by this broker"
+        );
+        assert_eq!(history.error_code, None);
+
+        assert_eq!(
+            broker
+                .cancel_task_by_id("guessed-connection", Some(foreign.id), &task_id)
+                .await
+                .status,
+            TaskStatus::Unknown
+        );
+        assert!(mock.cancels.lock().await.is_empty());
+
+        let report = broker
+            .cancel_task_by_id("reconnected-parent", Some(parent.id), &task_id)
+            .await;
+        assert_eq!(report.status, TaskStatus::Canceled);
+        assert_eq!(
+            mock.cancels.lock().await.as_slice(),
+            &["child-ledger-cancel".to_string()]
+        );
+    }
+
     /// An immediate batch poll resolves a mix of completed / running / unknown
     /// tasks in ONE pass, preserving request order.
     #[tokio::test]
@@ -5334,6 +6072,32 @@ mod tests {
             DelegationOutcome::Err { code, .. } => assert_eq!(code, "spawn_failed"),
             other => panic!("expected Err, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn admission_race_preserves_continuation_conflict() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("losing-child".into())).await;
+        mock.queue_dispatch(DelegationDispatch::Conflict {
+            next_task_id: "winning-task".into(),
+            reason: "source already has a successor".into(),
+        })
+        .await;
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
+
+        let report = broker.start_delegation(request(1, "pt-race")).await;
+
+        assert_eq!(report.error_code.as_deref(), Some("continuation_conflict"));
+        assert!(report.message.as_deref().unwrap().contains("winning-task"));
+        assert_eq!(
+            mock.disconnects.lock().await.as_slice(),
+            &["losing-child".to_string()]
+        );
+        assert_eq!(broker.inflight_count().await, 0);
+        assert_eq!(broker.reserved_call_count().await, 0);
+        assert_eq!(broker.pending_count().await, 0);
     }
 
     #[tokio::test]
@@ -5884,6 +6648,7 @@ mod tests {
             agent_type,
             task: task.to_string(),
             working_dir: None,
+            continue_from_task_id: None,
         }
     }
 
@@ -5892,6 +6657,7 @@ mod tests {
             agent_type: AgentType::Codex,
             task: task.to_string(),
             working_dir: Some(working_dir.to_string()),
+            continue_from_task_id: None,
         }
     }
 
@@ -5932,6 +6698,40 @@ mod tests {
             .take_matching_tool_call("p1", &task_key("task A"))
             .await
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn parallel_continuations_bind_by_source_regardless_of_order() {
+        let broker = DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            shallow_lookup(),
+        );
+        let key = |source: &str| DelegationMatchKey {
+            agent_type: AgentType::Codex,
+            task: "same follow-up".into(),
+            working_dir: None,
+            continue_from_task_id: Some(source.into()),
+        };
+        broker
+            .register_pending_tool_call_with_key("p1", "tc-A".into(), Some(key("source-A")))
+            .await;
+        broker
+            .register_pending_tool_call_with_key("p1", "tc-B".into(), Some(key("source-B")))
+            .await;
+        assert_eq!(
+            broker
+                .take_matching_tool_call("p1", &key("source-B"))
+                .await
+                .as_deref(),
+            Some("tc-B")
+        );
+        assert_eq!(
+            broker
+                .take_matching_tool_call("p1", &key("source-A"))
+                .await
+                .as_deref(),
+            Some("tc-A")
+        );
     }
 
     #[tokio::test]
@@ -7196,6 +7996,7 @@ mod tests {
                     agent_type: AgentType::ClaudeCode,
                     task: "do x".into(),
                     working_dir: None,
+                    continue_from_task_id: None,
                 }),
             )
             .await;
@@ -9175,6 +9976,7 @@ mod tests {
             agent_type: AgentType::ClaudeCode,
             task: "do x".into(),
             working_dir: None,
+            continue_from_task_id: None,
         };
         // The lifecycle registered the keyed tool_call for this delegation.
         broker
@@ -9437,11 +10239,9 @@ mod tests {
         let mock = Arc::new(MockSpawner::new());
         let lookup = Arc::new(MockResumeLookup::default());
         *lookup.ctx.lock().await = ctx;
-        let broker = DelegationBroker::new(
-            mock.clone() as Arc<dyn ConnectionSpawner>,
-            shallow_lookup(),
-        )
-        .with_status_lookup(lookup.clone() as Arc<dyn ChildStatusLookup>);
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup())
+                .with_status_lookup(lookup.clone() as Arc<dyn ChildStatusLookup>);
         enable_delegation(&broker).await;
         (mock, lookup, broker)
     }
@@ -9484,6 +10284,7 @@ mod tests {
         // The spawn resumed the recorded agent session in the recorded dir.
         let spawns = mock.resume_spawn_args.lock().await;
         assert_eq!(spawns.len(), 1);
+        assert_eq!(spawns[0].task_id, "task-1");
         assert_eq!(spawns[0].external_session_id, "ext-session-1");
         assert_eq!(spawns[0].working_dir.as_deref(), Some("/work"));
         drop(spawns);
@@ -9493,6 +10294,8 @@ mod tests {
         assert_eq!(sends.len(), 1);
         assert_eq!(sends[0].child_conversation_id, 42);
         assert_eq!(sends[0].folder_id, 7);
+        assert_eq!(sends[0].link.delegation_call_id, "task-1");
+        assert_eq!(sends[0].link.parent_conversation_id, 1);
         assert!(sends[0].prompt.contains("machine rebooted"));
         drop(sends);
 
