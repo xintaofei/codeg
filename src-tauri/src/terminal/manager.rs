@@ -492,9 +492,18 @@ impl TerminalManager {
         infos
     }
 
+    /// Poison-tolerant, unlike the command-driven accessors above: this one and
+    /// [`Self::kill_all`] are called from inside Tauri's `on_window_event` and
+    /// `RunEvent::ExitRequested` handlers, which run on the main thread inside
+    /// the platform event loop. A panic there unwinds across an `extern
+    /// "system"` boundary, which Rust turns into an immediate `abort` (Windows
+    /// reports that as `0xc0000409`), so an unrelated earlier panic that merely
+    /// poisoned this mutex would take the whole process down at the next window
+    /// close. The map is a plain `HashMap` that cannot be left half-updated, so
+    /// there is nothing for the poison flag to protect.
     pub fn kill_by_owner_window(&self, owner_window_label: &str) -> usize {
         let mut instances = {
-            let mut terminals = self.terminals.lock().unwrap();
+            let mut terminals = self.terminals.lock().unwrap_or_else(|p| p.into_inner());
             let ids: Vec<String> = terminals
                 .iter()
                 .filter_map(|(id, instance)| {
@@ -522,9 +531,11 @@ impl TerminalManager {
         killed
     }
 
+    /// Poison-tolerant for the reason given on [`Self::kill_by_owner_window`]:
+    /// the quit path runs inside `RunEvent::ExitRequested` on the main thread.
     pub fn kill_all(&self) -> usize {
         let mut instances: Vec<TerminalInstance> = {
-            let mut terminals = self.terminals.lock().unwrap();
+            let mut terminals = self.terminals.lock().unwrap_or_else(|p| p.into_inner());
             terminals.drain().map(|(_, inst)| inst).collect()
         };
         let killed = instances.len();
@@ -602,8 +613,15 @@ fn read_loop(
         }
     }
 
-    // Terminal exited — remove from map and clean up temp files
-    if let Some(mut instance) = terminals.lock().unwrap().remove(&terminal_id) {
+    // Terminal exited — remove from map and clean up temp files. Poison-tolerant
+    // like the scrollback lock above: this runs on the long-lived `pty-reader-*`
+    // thread, and refusing the removal would leak the entry and its temp files
+    // for the rest of the process.
+    if let Some(mut instance) = terminals
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&terminal_id)
+    {
         cleanup_temp_files(&mut instance.temp_files);
     }
 

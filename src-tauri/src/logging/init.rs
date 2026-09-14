@@ -474,6 +474,10 @@ fn init_file_writer(dir: &Path, prefix: &str) -> Option<(NonBlocking, WorkerGuar
         day,
         already_written,
     );
+    // Tell the panic hook which file to append its record to. Recorded only now
+    // that the appender exists, so the name it reconstructs is the file being
+    // written and the directory is known to have been created above.
+    crate::logging::panic_hook::set_log_file(dir, prefix, LOG_FILE_SUFFIX);
     Some(tracing_appender::non_blocking(budgeted))
 }
 
@@ -535,6 +539,13 @@ fn build_subscriber(
             None
         }
     };
+
+    // Last here, because the hook logs through the subscriber that was just
+    // installed. Early everywhere else: every binary builds its subscriber
+    // through this one function, so this single call covers the desktop app,
+    // the server, `codeg-mcp`, the supervisor and the credential helper, and it
+    // runs before any of them does real work.
+    crate::logging::panic_hook::install();
 
     (reload_handle, guard)
 }
