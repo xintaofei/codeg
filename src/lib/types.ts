@@ -3663,6 +3663,154 @@ export interface SkillSyncReport {
   errors: string[]
 }
 
+/**
+ * Which dialect the translation endpoint speaks. `auto` lets the backend read
+ * it off the host (Anthropic / Gemini / Ollama are recognised, anything else is
+ * treated as OpenAI-compatible); the rest pin it when a reverse proxy hides the
+ * provider.
+ */
+export type TranslationApiFormat =
+  | "auto"
+  | "openai"
+  | "anthropic"
+  | "gemini"
+  | "ollama"
+
+/**
+ * One configured translation endpoint. The settings page edits a list of
+ * these; the runtime picks the enabled ones.
+ */
+export interface TranslationProvider {
+  /** Stable identity; generated client-side so a draft row can be tested
+   * before the first save. Empty rows are keyed by list position. */
+  id: string
+  /** Optional label shown in the settings page. */
+  name?: string | null
+  baseUrl: string
+  /** Masked on every read; the real key never leaves the backend. */
+  apiKey: string
+  model: string
+  apiFormat: TranslationApiFormat
+  /** Row membership; the master `enabled` still gates the whole feature. */
+  enabled: boolean
+  /**
+   * Requests-per-minute ceiling. `null` lets the backend adapt on its own;
+   * the backend clamps to 2-600.
+   */
+  rpmCap: number | null
+}
+
+export interface TranslationSettings {
+  enabled: boolean
+  /** The configured endpoints; at least one enabled row is required. */
+  providers: TranslationProvider[]
+  baseUrl: string
+  /** Legacy single-endpoint mirror of `providers[0]`. */
+  apiKey: string
+  model: string
+  /** `null` follows the current interface locale. */
+  targetLang: string | null
+  translateThinking: boolean
+  apiFormat: TranslationApiFormat
+  /** Offer 翻译 in the text-selection bubble. */
+  selectionTranslate: boolean
+  /** Target language for selection translation; `null` follows `targetLang`. */
+  selectionTargetLang: string | null
+  /** Show translation toggle buttons without waiting for a hover. */
+  toggleAlwaysVisible: boolean
+  /**
+   * Whether reply body prose translates automatically. Thinking has its own
+   * opt-in (`translateThinking`); the body is the default-on switch. The
+   * Rust side applies `serde(default)`, so stored settings without the
+   * field read back as `true` — existing configurations keep translating.
+   */
+  translateBody: boolean
+  /**
+   * Concurrency ceiling for the priority (reader-facing prose) lane.
+   * `null` keeps the built-in default (4).
+   */
+  priorityMaxConcurrent: number | null
+  /**
+   * Concurrency ceiling for the background (thinking polish) lane.
+   * `null` keeps the built-in default (3).
+   */
+  backgroundMaxConcurrent: number | null
+  /**
+   * Character ceiling for one outbound request when small adjacent segments
+   * are coalesced into one numbered request. `null` keeps the built-in
+   * default (3000); the backend clamps to 500-20000.
+   */
+  batchMaxChars: number | null
+  /**
+   * Consecutive failed dispatches before an endpoint is sidelined.
+   * `null` keeps the built-in default (3).
+   */
+  failureThreshold: number | null
+  /**
+   * How long a sidelined endpoint stays out, in seconds. `null` keeps the
+   * built-in default (60).
+   */
+  cooldownSeconds: number | null
+  /**
+   * Prepend the previous segment's source and translation as a read-only
+   * terminology reference (at most 500+500 chars), so the independent
+   * per-segment requests stay consistent. Default on; adds no extra requests.
+   */
+  carryContext: boolean
+}
+
+export interface TranslationResult {
+  key: string
+  text: string
+  fromCache: boolean
+  /**
+   * The backend judged this text already in the target language and returned
+   * it unchanged without an endpoint call. The frontend then renders the
+   * original verbatim and records the block as translated — every display
+   * gate (echo, placeholder, structure) would only misjudge an identity.
+   */
+  skipped: boolean
+  /** Why this chunk has no translation; present only when it failed. The
+   * successful siblings of a failed batch are still returned (and cached),
+   * so a retry only re-requests the failed chunks. */
+  error?: string
+}
+
+/**
+ * Process-wide translation counters for the single configured endpoint —
+ * one row, in-memory only, resets on restart.
+ */
+/**
+ * Full metrics snapshot behind `translation_metrics`. Single row in PR1 —
+ * per-provider rows return with the rotation pool (PR2).
+ */
+export interface TranslationMetricsSnapshot {
+  dispatchedTotal: number
+  okTotal: number
+  failedTotal: number
+  gateRejectedTotal: number
+  gateRejectedInvented: number
+  gateRejectedEcho: number
+  gateRejectedDroppedNumbers: number
+  truncatedTotal: number
+  cacheHits: number
+  servedTotal: number
+  avgLatencyMs: number
+}
+
+export interface TranslationStats {
+  /** Outbound dispatches attempted. */
+  requests: number
+  /** Dispatches that produced an accepted translation. */
+  ok: number
+  /** Replies refused by the backend's sanity gates. */
+  rejected: number
+  /** Dispatches that failed outright (transport, HTTP, parse). */
+  failures: number
+  /** Mean round-trip of the deciding attempt, milliseconds. */
+  avgLatencyMs: number
+}
+
 export interface SystemProxySettings {
   enabled: boolean
   proxy_url: string | null

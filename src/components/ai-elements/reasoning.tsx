@@ -227,6 +227,13 @@ export type ReasoningContentProps = ComponentProps<
   typeof CollapsibleContent
 > & {
   children: string
+  /**
+   * Opt the text out of remend even while the turn streams. A live
+   * translation interleaves translated pieces with the raw untranslated
+   * tail, where an unclosed fence is REAL (its closer arrives with the next
+   * piece) and remend's "repair" wraps the whole tail in a code block.
+   */
+  forceStatic?: boolean
 }
 
 const remarkPlugins = [
@@ -250,6 +257,13 @@ export const ReasoningContent = memo(
     // reply prose does: remend while the text is still growing, static — and
     // therefore free of remend's leftover `*` / `_` — once it has settled.
     const { isStreaming } = useReasoning()
+    // A live translation is exempt from remend even mid-stream: its display
+    // interleaves translated pieces with the raw untranslated tail, where an
+    // unclosed fence is REAL (the closer rides the next piece) and remend's
+    // "repair" wraps the whole tail in a code block. Callers signal that by
+    // passing `forceStatic` alongside the translation.
+    const { forceStatic, ...rest } = props
+    const live = isStreaming && !forceStatic
     const normalized = useMemo(
       () => normalizeMathDelimiters(children),
       [children]
@@ -263,14 +277,14 @@ export const ReasoningContent = memo(
           "data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 text-muted-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
           className
         )}
-        {...props}
+        {...rest}
       >
         <Streamdown
           plugins={plugins}
           remarkPlugins={remarkPlugins}
-          {...props}
-          mode={isStreaming ? "streaming" : "static"}
-          parseIncompleteMarkdown={isStreaming}
+          {...rest}
+          mode={live ? "streaming" : "static"}
+          parseIncompleteMarkdown={live}
           // Enforce the link icon + safety override after spreading props.
           components={reasoningComponents}
         >

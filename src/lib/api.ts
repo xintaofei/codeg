@@ -148,6 +148,10 @@ import type {
   SystemRenderingSettings,
   SystemAutostartSettings,
   SystemTerminalSettings,
+  TranslationResult,
+  TranslationSettings,
+  TranslationStats,
+  TranslationMetricsSnapshot,
   LogSettings,
   LogSettingsView,
   LogRecord,
@@ -1767,6 +1771,98 @@ export async function stopOfficeWatch(
   path: string
 ): Promise<void> {
   return getTransport().call("stop_office_watch", { rootPath, path })
+}
+
+export async function getTranslationSettings(): Promise<TranslationSettings> {
+  return getTransport().call("translation_get_settings")
+}
+
+export async function updateTranslationSettings(
+  settings: TranslationSettings
+): Promise<TranslationSettings> {
+  return getTransport().call("translation_update_settings", { settings })
+}
+
+export async function testTranslationSettings(
+  settings: TranslationSettings,
+  uiLocale: string,
+  providerId?: string | null
+): Promise<string> {
+  return getTransport().call("translation_test", {
+    settings,
+    uiLocale,
+    providerId: providerId ?? null,
+  })
+}
+
+export async function translateTexts(
+  texts: string[],
+  uiLocale: string,
+  priority: boolean = false,
+  targetLang?: string | null,
+  trace?: string,
+  variant: number = 0
+): Promise<TranslationResult[]> {
+  // Long thinking blocks run many backend chunks, each with its own scaled
+  // deadline (up to ~120 s); the transport's default 60 s web-call timeout
+  // would otherwise cut the whole batch off mid-flight. Tauri ignores this.
+  // `priority` puts reader-facing prose on the backend's fast lane; background
+  // thinking polish queues separately so it can never delay the reply body.
+  // `targetLang` lets the selection card aim at its own language without
+  // touching the configured one. `trace` carries the calling block's short id
+  // so the backend's dispatch logs correlate with one UI block. `variant`
+  // escalates on retries — the backend folds it into the cache key, so a
+  // changed request cannot be answered by the failed attempt's cached entry.
+  return getTransport().call(
+    "translation_translate",
+    {
+      texts,
+      uiLocale,
+      priority,
+      targetLang: targetLang ?? null,
+      trace: trace ?? null,
+      variant,
+    },
+    { timeoutMs: 300_000 }
+  )
+}
+
+/**
+ * Ask the configured endpoint for its model list (`GET {base}/models`).
+ * Runs against the unsaved form: the backend refills a masked key from the
+ * stored one, exactly like {@link testTranslationSettings}. `providerId`
+ * aims the probe at one configured row (the settings-page row being edited).
+ */
+export async function listTranslationModels(
+  settings: TranslationSettings,
+  providerId?: string | null
+): Promise<string[]> {
+  return getTransport().call("translation_list_models", {
+    settings,
+    providerId: providerId ?? null,
+  })
+}
+
+/**
+ * Process-wide translation counters for the single configured endpoint:
+ * dispatch volume, gate rejections, outright failures, mean latency.
+ * In-memory only — the numbers reset with the process.
+ *
+ * The backend exposes the richer `translation_metrics` snapshot; this folds
+ * it into the one-line stats view (`failedTotal` includes gate rejections,
+ * so outright failures subtract them).
+ */
+export async function getTranslationStats(): Promise<TranslationStats> {
+  const m = await getTransport().call<TranslationMetricsSnapshot>(
+    "translation_metrics"
+  )
+  return {
+    requests: m.dispatchedTotal,
+    ok: m.okTotal,
+    rejected: m.gateRejectedTotal,
+    failures: m.failedTotal - m.gateRejectedTotal,
+    avgLatencyMs: m.avgLatencyMs,
+  }
 }
 
 export async function getSystemProxySettings(): Promise<SystemProxySettings> {
