@@ -1364,6 +1364,7 @@
       "uninstallCompleted": "{name} のアンインストールが完了しました",
       "uninstallFailed": "{name} のアンインストールに失敗しました",
       "localVersionRemoved": "ローカルバージョンを削除しました",
+      "unmanagedInstallRemains": "バージョン {version} は codeg の外に残っており、接続時にはこれが使われます",
       "saveAgentOrderFailed": "Agent の並び順の保存に失敗しました",
       "saveAgentSwitchFailed": "Agent の有効スイッチ保存に失敗しました",
       "saveEnvFailed": "環境変数の保存に失敗しました",

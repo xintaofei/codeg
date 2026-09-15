@@ -29,6 +29,7 @@ import {
   setClaudeEnvFlagInConfigText,
   setHostToolsAgentMode,
   showsCodexReadOnlyAcpWarning,
+  survivingInstallVersion,
 } from "./acp-agent-settings"
 import { parse as parseTomlDocument } from "smol-toml"
 import type {
@@ -147,6 +148,24 @@ function codexSandboxDraft(
     codexSandboxBaseline: codexSandboxBaselineOf(seeded),
   }
 }
+
+// #631: uninstall removes only the copy codeg manages. A version still
+// answering a re-probe afterwards belongs to an install codeg does not own and
+// is what the next connection launches, so the row must keep showing it and the
+// toast must not claim the local version was removed.
+describe("survivingInstallVersion", () => {
+  it("keeps a version that outlived the uninstall", () => {
+    expect(survivingInstallVersion("1.18.25")).toBe("1.18.25")
+    expect(survivingInstallVersion("  1.18.25  ")).toBe("1.18.25")
+  })
+
+  it("reports nothing left for an empty or absent probe", () => {
+    expect(survivingInstallVersion(null)).toBeNull()
+    expect(survivingInstallVersion(undefined)).toBeNull()
+    expect(survivingInstallVersion("")).toBeNull()
+    expect(survivingInstallVersion("   ")).toBeNull()
+  })
+})
 
 describe("buildCodexSandboxConfig — Codex sandbox/approval save patch", () => {
   // The core contract. The panel also sends the raw config.toml text and the

@@ -3870,6 +3870,23 @@ export function buildAcpAdapterCheck(
   }
 }
 
+/**
+ * The version that survived an uninstall, read from a re-probe run AFTER it.
+ *
+ * Uninstall only ever removes the copy codeg manages, so a version still
+ * answering here belongs to an install codeg does not own (PATH,
+ * `~/.local/bin`, a package manager) and is exactly what the next connection
+ * will launch. Reporting that as "local version removed" while forcing the
+ * agent row to "not installed" is #631. A blank probe result means nothing
+ * answered rather than a version, so it collapses to `null` instead of putting
+ * an empty version string on the row.
+ */
+export function survivingInstallVersion(
+  probed: string | null | undefined
+): string | null {
+  return probed?.trim() || null
+}
+
 // `uvReady` reports whether the uv runtime (uvx) is installed — only meaningful
 // for uvx agents (custom Python-package agents; built-in Hermes moved to the
 // npm bridge). Derived from the uv preflight check by the caller. uvx agents
@@ -5127,16 +5144,24 @@ export function AcpAgentSettings() {
       await installStream.start(taskId)
       try {
         await acpUninstallAgent(agent.agent_type, taskId)
+        // Re-probe instead of assuming the agent is gone: uninstall only ever
+        // removes the copy codeg manages, and an install from somewhere else
+        // survives it untouched. See `survivingInstallVersion`.
+        const surviving = survivingInstallVersion(
+          await acpDetectAgentLocalVersion(agent.agent_type).catch(() => null)
+        )
         setAgents((prev) =>
           prev.map((item) =>
             item.agent_type === agent.agent_type
-              ? { ...item, installed_version: null }
+              ? { ...item, installed_version: surviving }
               : item
           )
         )
         await runPreflight(agent.agent_type)
         toast.success(t("toasts.uninstallCompleted", { name: agent.name }), {
-          description: t("toasts.localVersionRemoved"),
+          description: surviving
+            ? t("toasts.unmanagedInstallRemains", { version: surviving })
+            : t("toasts.localVersionRemoved"),
         })
       } catch (err) {
         const message = toErrorMessage(err)
