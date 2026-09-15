@@ -493,12 +493,53 @@ fn build_uv_version_check(current: Option<&str>, required: &str) -> CheckItem {
     }
 }
 
-/// The registry `dir_entry` for a binary agent (None for single-file agents
-/// and non-binary distributions).
-fn binary_dir_entry(agent_type: AgentType) -> Option<registry::BinaryDirEntry> {
-    match registry::get_agent_meta(agent_type).distribution {
-        AgentDistribution::Binary { dir_entry, .. } => dir_entry,
-        _ => None,
+/// Build the `binary_cached` check from the two facts the launch path uses, in
+/// the launch path's own order: the best cached version first, then a CLI the
+/// user installed themselves (PATH or `~/.local/bin`).
+///
+/// Kept pure — no cache dir, no PATH — so the verdict is unit-testable and so
+/// it stays literally the same decision `connection.rs` makes when it picks the
+/// binary to spawn. Preflight disagreeing with that choice is what users read
+/// as a codeg bug.
+fn build_binary_cache_check(
+    cached_version: Option<&str>,
+    recommended: &str,
+    cmd: &str,
+    system_path: Option<&std::path::Path>,
+) -> CheckItem {
+    let (status, message) = match (cached_version, system_path) {
+        (Some(cached), _) if cached == recommended => {
+            (CheckStatus::Pass, "Binary is cached locally".to_string())
+        }
+        (Some(cached), _) => (
+            CheckStatus::Pass,
+            format!("Binary {cached} is cached locally (recommended: {recommended})"),
+        ),
+        // Nothing cached, but the user has their own CLI — the connect path
+        // launches exactly this file, so report ready and NAME it. Saying
+        // "not installed" here while the version card counts that same CLI as
+        // installed is the pass/warn split reported in #631.
+        (None, Some(path)) => (
+            CheckStatus::Pass,
+            format!(
+                "No codeg-managed binary; will launch the system-installed {cmd} at {} \
+                 (download {recommended} from Agent Settings to use the pinned build instead)",
+                path.display()
+            ),
+        ),
+        (None, None) => (
+            CheckStatus::Warn,
+            "Binary is not installed. Download it from Agent Settings before connecting."
+                .to_string(),
+        ),
+    };
+
+    CheckItem {
+        check_id: "binary_cached".into(),
+        label: "Binary cache".into(),
+        status,
+        message,
+        fixes: vec![],
     }
 }
 
@@ -544,46 +585,23 @@ async fn check_binary_environment(
     // canonical place to surface "upgrade available".
     if platform_supported {
         let cache_check = match binary_cache::find_best_cached_binary_for_agent(agent_type, cmd) {
-            Ok(Some((_, cached_version))) => {
-                let message = if cached_version == version {
-                    "Binary is cached locally".to_string()
+            Ok(cached) => {
+                // `connection.rs` falls back to `resolve_system_agent_binary`
+                // for EVERY binary agent, not just the dir-tree ones, and so do
+                // the connect gate and the version card. Probe the same
+                // fallback whenever nothing is cached so all four agree.
+                let system = if cached.is_none() {
+                    crate::commands::acp::resolve_system_agent_binary(cmd)
                 } else {
-                    format!("Binary {cached_version} is cached locally (recommended: {version})")
+                    None
                 };
-                CheckItem {
-                    check_id: "binary_cached".into(),
-                    label: "Binary cache".into(),
-                    status: CheckStatus::Pass,
-                    message,
-                    fixes: vec![],
-                }
+                build_binary_cache_check(
+                    cached.as_ref().map(|(_, v)| v.as_str()),
+                    version,
+                    cmd,
+                    system.as_deref(),
+                )
             }
-            // Dir-tree agents (Cursor): a user-installed CLI on PATH /
-            // ~/.local/bin is launchable as-is — the connect path falls back
-            // to it — so report ready instead of a misleading warn.
-            Ok(None)
-                if binary_dir_entry(agent_type).is_some()
-                    && crate::commands::acp::resolve_system_agent_binary(cmd).is_some() =>
-            {
-                CheckItem {
-                    check_id: "binary_cached".into(),
-                    label: "Binary cache".into(),
-                    status: CheckStatus::Pass,
-                    message: format!(
-                        "Using the system-installed {cmd} (codeg-managed download also available)"
-                    ),
-                    fixes: vec![],
-                }
-            }
-            Ok(None) => CheckItem {
-                check_id: "binary_cached".into(),
-                label: "Binary cache".into(),
-                status: CheckStatus::Warn,
-                message:
-                    "Binary is not installed. Download it from Agent Settings before connecting."
-                        .into(),
-                fixes: vec![],
-            },
             Err(_) => CheckItem {
                 check_id: "binary_cached".into(),
                 label: "Binary cache".into(),
@@ -694,6 +712,86 @@ async fn check_binary_environment(
     }
 
     checks
+}
+
+#[cfg(test)]
+mod binary_cache_check_tests {
+    use super::*;
+    use std::path::Path;
+
+    // Regression for #631. `connection.rs` spawns the best cached binary and
+    // otherwise falls back to the user's own CLI — for every binary agent, not
+    // just the dir-tree one. The version card counts that same CLI as
+    // installed. Preflight used to gate the fallback on `dir_entry.is_some()`,
+    // so a user whose only OpenCode was `~/.local/bin/opencode.exe` saw
+    // "Version Status: pass" next to "Binary cache: not installed" — two
+    // sentences about the one file codeg was about to launch.
+    #[test]
+    fn system_install_reports_ready_for_single_file_agents() {
+        let path = Path::new("/home/u/.local/bin/opencode");
+        let check = build_binary_cache_check(None, "1.18.18", "opencode", Some(path));
+
+        assert!(
+            matches!(check.status, CheckStatus::Pass),
+            "system install must not warn: {:?}",
+            check.status
+        );
+        // Naming the file is the point: the old text sent the user to a
+        // download button for a binary they already had.
+        assert!(
+            check.message.contains("/home/u/.local/bin/opencode"),
+            "{}",
+            check.message
+        );
+        assert!(check.message.contains("1.18.18"), "{}", check.message);
+    }
+
+    // The warn is still correct when there is genuinely nothing to launch —
+    // that is the state the connect gate rejects.
+    #[test]
+    fn nothing_cached_and_nothing_on_path_still_warns() {
+        let check = build_binary_cache_check(None, "1.18.18", "opencode", None);
+        assert!(matches!(check.status, CheckStatus::Warn), "{check:?}");
+        assert!(check.message.contains("not installed"), "{}", check.message);
+    }
+
+    // Launch order, not "whatever we found": a cached binary wins, so the card
+    // must never describe the system copy when codeg will not spawn it.
+    #[test]
+    fn cached_binary_wins_over_a_system_install() {
+        let check = build_binary_cache_check(
+            Some("1.18.18"),
+            "1.18.18",
+            "opencode",
+            Some(Path::new("/usr/local/bin/opencode")),
+        );
+        assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
+        assert_eq!(check.message, "Binary is cached locally");
+    }
+
+    #[test]
+    fn older_cached_binary_passes_and_names_the_recommended_version() {
+        let check = build_binary_cache_check(Some("1.18.10"), "1.18.18", "opencode", None);
+        assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
+        assert!(check.message.contains("1.18.10"), "{}", check.message);
+        assert!(check.message.contains("1.18.18"), "{}", check.message);
+    }
+
+    // Every branch is a `binary_cached` item, because the frontend keys the
+    // card (and its position) off the id.
+    #[test]
+    fn every_branch_keeps_the_binary_cached_id() {
+        for check in [
+            build_binary_cache_check(None, "1", "c", None),
+            build_binary_cache_check(None, "1", "c", Some(Path::new("/x/c"))),
+            build_binary_cache_check(Some("1"), "1", "c", None),
+            build_binary_cache_check(Some("0"), "1", "c", None),
+        ] {
+            assert_eq!(check.check_id, "binary_cached");
+            assert_eq!(check.label, "Binary cache");
+            assert!(check.fixes.is_empty());
+        }
+    }
 }
 
 #[cfg(test)]
