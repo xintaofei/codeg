@@ -68,6 +68,7 @@ export function DelegationSettingsSection() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [enabled, setEnabled] = useState(false)
+  const [allowSelfInitiate, setAllowSelfInitiate] = useState(true)
   const [depth, setDepth] = useState<number>(1)
   const [cacheMb, setCacheMb] = useState<number>(DEFAULT_CACHE_MB)
   const [agentDefaults, setAgentDefaults] = useState<
@@ -96,6 +97,7 @@ export function DelegationSettingsSection() {
           setEnabled(s.enabled)
           baselineEnabledRef.current = s.enabled
         }
+        setAllowSelfInitiate(s.allow_self_initiate !== false)
         setDepth(s.depth_limit)
         setCacheMb(s.completed_cache_max_mb)
         setAgentDefaults(s.agent_defaults ?? {})
@@ -194,6 +196,7 @@ export function DelegationSettingsSection() {
   const save = useCallback(async () => {
     const payload: DelegationSettings = {
       enabled,
+      allow_self_initiate: allowSelfInitiate,
       depth_limit: clamp(depth, DEPTH_MIN, DEPTH_MAX),
       completed_cache_max_mb: clampCacheMb(cacheMb),
       agent_defaults: agentDefaults,
@@ -205,6 +208,7 @@ export function DelegationSettingsSection() {
       // inputs reflect what was actually persisted.
       setEnabled(applied.enabled)
       baselineEnabledRef.current = applied.enabled
+      setAllowSelfInitiate(applied.allow_self_initiate !== false)
       setDepth(applied.depth_limit)
       setCacheMb(applied.completed_cache_max_mb)
       setAgentDefaults(applied.agent_defaults ?? {})
@@ -216,7 +220,7 @@ export function DelegationSettingsSection() {
     } finally {
       setSaving(false)
     }
-  }, [enabled, depth, cacheMb, agentDefaults, t])
+  }, [enabled, allowSelfInitiate, depth, cacheMb, agentDefaults, t])
 
   return (
     <SettingsSection
@@ -268,6 +272,20 @@ export function DelegationSettingsSection() {
                 </span>
               </p>
             )}
+            <SettingRow
+              icon={Bubbles}
+              title={t("selfInitiate")}
+              description={t("selfInitiateHint")}
+              htmlFor="delegation-self-initiate"
+              control={
+                <Switch
+                  id="delegation-self-initiate"
+                  checked={allowSelfInitiate}
+                  onCheckedChange={setAllowSelfInitiate}
+                  disabled={loading || !enabled}
+                />
+              }
+            />
             <SettingRow
               icon={Gauge}
               title={t("depthLimit")}
