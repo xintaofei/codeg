@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use base64::Engine;
 
 use crate::app_error::{
     AppCommandError, UPLOAD_I18N_KEY_QUOTA_EXCEEDED, UPLOAD_I18N_KEY_TOO_LARGE,
@@ -1031,6 +1034,170 @@ async fn stream_and_finalize(
         size: written,
         mime_type,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Draft-attachment read / local stage
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadUploadAttachmentParams {
+    pub path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadUploadAttachmentResult {
+    pub data: String,
+    pub name: String,
+    pub size: u64,
+    pub mime_type: Option<String>,
+}
+
+/// Authenticated read of one file that already lives in the uploads jail.
+/// Used by the other device to hydrate a draft-image thumbnail. Arbitrary
+/// workspace paths are refused — that is `read_file_base64`, not this.
+pub async fn read_upload_attachment_core(
+    path: String,
+) -> Result<ReadUploadAttachmentResult, AppCommandError> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err(AppCommandError::invalid_input("Path cannot be empty"));
+    }
+    let uploads_root = codeg_uploads_root();
+    let checked = crate::db::service::conversation_composer_draft_service::path_is_inside_uploads(
+        Path::new(trimmed),
+        &uploads_root,
+    )
+    .await?;
+    let bytes = tokio::fs::read(&checked).await.map_err(|e| {
+        AppCommandError::io_error("Failed to read uploaded attachment").with_detail(e.to_string())
+    })?;
+    let name = checked
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file")
+        .to_string();
+    Ok(ReadUploadAttachmentResult {
+        size: bytes.len() as u64,
+        data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        name,
+        mime_type: None,
+    })
+}
+
+pub async fn read_upload_attachment(
+    Json(params): Json<ReadUploadAttachmentParams>,
+) -> Result<Json<ReadUploadAttachmentResult>, AppCommandError> {
+    Ok(Json(read_upload_attachment_core(params.path).await?))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageComposerAttachmentParams {
+    pub file_name: String,
+    pub mime_type: Option<String>,
+    pub session_id: Option<String>,
+    pub data_base64: String,
+}
+
+/// Copy in-memory bytes into the uploads jail (Tauri local desktop). Web
+/// clients already go through `/upload_attachment`; this exists so a
+/// desktop-local image can be fetched by the phone.
+pub async fn stage_composer_attachment_core(
+    params: StageComposerAttachmentParams,
+) -> Result<UploadAttachmentResult, AppCommandError> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(params.data_base64.trim())
+        .map_err(|_| AppCommandError::invalid_input("attachment payload is not valid base64"))?;
+    if bytes.is_empty() {
+        return Err(AppCommandError::io_error("Uploaded file is empty"));
+    }
+    if bytes.len() as u64 > UPLOAD_MAX_BYTES {
+        let mut i18n_params = BTreeMap::new();
+        i18n_params.insert("size".to_string(), bytes.len().to_string());
+        i18n_params.insert("limit".to_string(), UPLOAD_MAX_BYTES.to_string());
+        return Err(AppCommandError::io_error("Upload exceeds the maximum allowed size")
+            .with_detail(format!("size={} limit={UPLOAD_MAX_BYTES}", bytes.len()))
+            .with_i18n(UPLOAD_I18N_KEY_TOO_LARGE, i18n_params));
+    }
+
+    let uploads_root = codeg_uploads_root();
+    tokio::fs::create_dir_all(&uploads_root).await.map_err(|e| {
+        AppCommandError::io_error("Failed to create uploads root").with_detail(e.to_string())
+    })?;
+    let tmp_dir = uploads_root.join(".tmp");
+    tokio::fs::create_dir_all(&tmp_dir).await.map_err(|e| {
+        AppCommandError::io_error("Failed to create tmp directory").with_detail(e.to_string())
+    })?;
+    ensure_path_inside(&tmp_dir, &uploads_root).await?;
+
+    let staging_id = uuid::Uuid::new_v4().simple().to_string();
+    let staging_name = format!("{staging_id}.part");
+    let mut out = upload_jail::create_staging_file(&tmp_dir, &staging_name)
+        .await
+        .map_err(|e| {
+            AppCommandError::io_error("Failed to create staging file").with_detail(e.to_string())
+        })?;
+    if let Err(err) = out.write_all(&bytes).await {
+        upload_jail::remove_staging_best_effort(&tmp_dir, &staging_name).await;
+        return Err(AppCommandError::io_error("Failed to write staged attachment")
+            .with_detail(err.to_string()));
+    }
+    if let Err(err) = out.flush().await {
+        upload_jail::remove_staging_best_effort(&tmp_dir, &staging_name).await;
+        return Err(
+            AppCommandError::io_error("Failed to flush staged attachment").with_detail(err.to_string())
+        );
+    }
+    drop(out);
+
+    let safe_name = sanitize_upload_filename(&params.file_name);
+    let bucket = sanitize_session_bucket(params.session_id.as_deref().unwrap_or("draft"));
+    let dir = uploads_root.join(&bucket);
+    tokio::fs::create_dir_all(&dir).await.map_err(|e| {
+        AppCommandError::io_error("Failed to create uploads directory").with_detail(e.to_string())
+    })?;
+    if let Err(err) = ensure_path_inside(&dir, &uploads_root).await {
+        upload_jail::remove_staging_best_effort(&tmp_dir, &staging_name).await;
+        return Err(err);
+    }
+
+    let final_name = match finalize_with_available_upload_name(
+        &tmp_dir,
+        &staging_name,
+        &dir,
+        &safe_name,
+    )
+    .await
+    {
+        Ok(name) => name,
+        Err(err) => {
+            upload_jail::remove_staging_best_effort(&tmp_dir, &staging_name).await;
+            return Err(err);
+        }
+    };
+    let final_path = dir.join(&final_name);
+    let canon = match ensure_path_inside(&final_path, &uploads_root).await {
+        Ok(p) => p,
+        Err(err) => {
+            let _ = tokio::fs::remove_file(&final_path).await;
+            return Err(err);
+        }
+    };
+    Ok(UploadAttachmentResult {
+        path: simplify_verbatim_path(&canon).to_string_lossy().to_string(),
+        name: final_name,
+        size: bytes.len() as u64,
+        mime_type: params.mime_type,
+    })
+}
+
+pub async fn stage_composer_attachment(
+    Json(params): Json<StageComposerAttachmentParams>,
+) -> Result<Json<UploadAttachmentResult>, AppCommandError> {
+    Ok(Json(stage_composer_attachment_core(params).await?))
 }
 
 #[cfg(test)]
