@@ -53,6 +53,10 @@ docs/superpowers
 # release.yml, not git.
 src-tauri/binaries/
 
+# Built userspace Tailscale sidecar (go build in codeg-tsnet/)
+codeg-tsnet/codeg-tsnet
+codeg-tsnet/codeg-tsnet.exe
+
 # pnpm local store (pnpm 11+)
 .pnpm-store/
 
