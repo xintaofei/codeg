@@ -770,6 +770,11 @@ pub fn build_router(
         .route("/acp_cancel", post(handlers::acp::acp_cancel))
         .route("/acp_fork", post(handlers::acp::acp_fork))
         .route(
+            "/acp_handoff_plan",
+            post(handlers::handoff::acp_handoff_plan),
+        )
+        .route("/acp_handoff", post(handlers::handoff::acp_handoff))
+        .route(
             "/acp_stop_async_task",
             post(handlers::acp::acp_stop_async_task),
         )

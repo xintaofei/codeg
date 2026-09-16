@@ -17,6 +17,7 @@ import { normalizeToolName } from "@/lib/tool-call-normalization"
 import { isCodexGrepNoMatchEnvelope } from "@/lib/codex-command-action"
 import { isBackgroundTaskToolCall } from "@/lib/background-task"
 import { isContextCompactionMeta } from "@/lib/context-compaction"
+import { isAgentHandoffMeta } from "@/lib/agent-handoff"
 import { isUnsettledToolCall } from "@/lib/tool-call-lifecycle"
 import { feedbackCheckHasContent } from "@/lib/feedback-check"
 import {
@@ -1403,7 +1404,10 @@ export function groupConsecutiveToolCalls(
       // synthesized auto_compact card) render through the dedicated subtle
       // <ContextCompactionCard>, so they break the run and render standalone
       // instead of being wrapped in a single-item "调用 1 个工具" tool-group.
-      !isContextCompactionMeta(part.meta)
+      !isContextCompactionMeta(part.meta) &&
+      // Agent-handoff dividers (`_meta["codeg.handoff"]`) are the other
+      // between-turns boundary marker and render through <AgentHandoffCard>.
+      !isAgentHandoffMeta(part.meta)
     ) {
       buffer.push(part)
       continue

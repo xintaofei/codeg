@@ -6,6 +6,7 @@ import { isImeCompositionKey } from "@/lib/ime-composition"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
+  ArrowRightLeft,
   BookOpenText,
   Check,
   ChevronUp,
@@ -243,6 +244,9 @@ interface MessageInputProps {
   /** Grey out the live-feedback "+" entry when a note can't be sent right now
    *  (no active turn / agent lacks the tool). */
   feedbackAddDisabled?: boolean
+  /** Open the "hand off to another agent" dialog from the composer's agent
+   *  control. Present only for a persisted conversation. */
+  onHandoff?: () => void
   injectContent?: ComposerInjectContent | null
   onInjectConsumed?: () => void
 }
@@ -369,10 +373,12 @@ export function MessageInput({
   steerChannel = "pull",
   onAddFeedback,
   feedbackAddDisabled,
+  onHandoff,
   injectContent,
   onInjectConsumed,
 }: MessageInputProps) {
   const t = useTranslations("Folder.chat.messageInput")
+  const tHandoff = useTranslations("Folder.chat.agentHandoff")
   const tQueue = useTranslations("Folder.chat.messageQueue")
   // Kept as a separate binding from `t` so its call sites — exclusively
   // upload / attachment toasts — read as a single coherent group when
@@ -2050,11 +2056,13 @@ export function MessageInput({
                       {inlineSelectorItems}
                     </div>
                   )}
-                  {hasAnySelector && (
+                  {(hasAnySelector || onHandoff) && (
                     <div
                       className={cn(
                         "flex",
-                        hasInlineSelectors && "@[30rem]:hidden"
+                        // Keep the cog reachable at every width when it is the
+                        // only way to the handoff entry.
+                        hasInlineSelectors && !onHandoff && "@[30rem]:hidden"
                       )}
                     >
                       <Popover
@@ -2114,6 +2122,31 @@ export function MessageInput({
                                 setCollapsedSelectorsOpen(false)
                               }
                             />
+                          )}
+                          {onHandoff && (
+                            // The agent control of a persisted conversation:
+                            // the agent itself cannot be flipped here (the row
+                            // and its history belong to it), so the way to
+                            // change agents is a handoff.
+                            <button
+                              type="button"
+                              data-slot="agent-handoff-entry"
+                              onClick={() => {
+                                setCollapsedSelectorsOpen(false)
+                                onHandoff()
+                              }}
+                              className={cn(
+                                "flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent hover:text-accent-foreground",
+                                (hasAnySelector ||
+                                  collapsedSettings.length > 0) &&
+                                  "mt-1 border-t border-border/50 pt-2"
+                              )}
+                            >
+                              <ArrowRightLeft className="size-3.5 shrink-0" />
+                              <span className="min-w-0 flex-1 truncate">
+                                {tHandoff("menuLabel")}
+                              </span>
+                            </button>
                           )}
                         </PopoverContent>
                       </Popover>

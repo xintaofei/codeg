@@ -56,6 +56,8 @@ import {
   ContextCompactionCard,
   isContextCompactionMeta,
 } from "./context-compaction-card"
+import { AgentHandoffCard } from "./agent-handoff-card"
+import { isAgentHandoffMeta } from "@/lib/agent-handoff"
 import { FeedbackCheckResultCard } from "./feedback-check-result-card"
 import { SearchResultsOutput } from "./search-results-output"
 import {
@@ -2645,6 +2647,11 @@ const ToolCallPart = memo(function ToolCallPart({
   // status card instead of the generic tool shell.
   if (isContextCompactionMeta(part.meta)) {
     return <ContextCompactionCard state={part.state} meta={part.meta} />
+  }
+  // The other between-turns marker: a conversation handed to a different
+  // agent (`_meta["codeg.handoff"]`, see `acp::handoff`).
+  if (isAgentHandoffMeta(part.meta)) {
+    return <AgentHandoffCard meta={part.meta} />
   }
 
   // Agent/subagent tools get a dedicated container rendering

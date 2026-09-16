@@ -20,6 +20,7 @@ pub mod folder_commands;
 pub mod folder_links;
 pub mod folders;
 pub mod forge;
+pub mod handoff;
 pub mod logging;
 pub mod mcp;
 pub mod mcp_service;
