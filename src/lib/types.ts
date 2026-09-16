@@ -3903,6 +3903,7 @@ export type McpAppType =
   | "qoder"
   | "antigravity"
   | "pi"
+  | "mcp_over_acp"
 
 export interface LocalMcpServer {
   id: string
