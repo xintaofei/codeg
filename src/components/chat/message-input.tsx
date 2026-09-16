@@ -219,6 +219,9 @@ interface MessageInputProps {
   isEditingQueueItem?: boolean
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
+  /** Editing a previous user message: hydrate like a queue edit, but Send
+   *  goes through `onSend` so the parent can truncate and resubmit. */
+  isEditingUserMessage?: boolean
   /** Send the draft into the RUNNING turn over the session's live-feedback
    *  channel (see {@link steerChannel}). Present only on sessions with a
    *  working delivery channel — when absent, the prompting branch renders its
@@ -363,6 +366,7 @@ export function MessageInput({
   editingDraftText,
   editingDraftBlocks,
   isEditingQueueItem = false,
+  isEditingUserMessage = false,
   onSaveQueueEdit,
   onCancelQueueEdit,
   onSteer,
@@ -494,6 +498,8 @@ export function MessageInput({
     isPromptingRef.current = isPrompting
   }, [isPrompting])
 
+  const isComposerEdit = isEditingQueueItem || isEditingUserMessage
+
   useEffect(() => {
     // navigator.clipboard is undefined at runtime in non-secure contexts even
     // though the DOM types claim it is always present, so guard with typeof.
@@ -521,7 +527,7 @@ export function MessageInput({
   const draftSaveTimerRef = useRef<number | null>(null)
   const scheduleDraftSave = useCallback(() => {
     if (typeof window === "undefined") return
-    if (!effectiveDraftStorageKey || isEditingQueueItem) return
+    if (!effectiveDraftStorageKey || isComposerEdit) return
     if (draftSaveTimerRef.current != null) {
       window.clearTimeout(draftSaveTimerRef.current)
     }
@@ -538,7 +544,7 @@ export function MessageInput({
         )
       }
     }, 300)
-  }, [effectiveDraftStorageKey, isEditingQueueItem])
+  }, [effectiveDraftStorageKey, isComposerEdit])
 
   useEffect(() => {
     return () => {
@@ -562,7 +568,7 @@ export function MessageInput({
     // with a synchronous flushSync() — running that here in the effect body
     // trips React's "flushSync from inside a lifecycle method" warning.
     if (
-      isEditingQueueItem &&
+      isComposerEdit &&
       (editingDraftBlocks != null || editingDraftText != null)
     ) {
       prevEditingItemIdRef.current = editingItemId ?? null
@@ -571,7 +577,7 @@ export function MessageInput({
       const ed = editorRef.current
       if (!ed) return
       if (
-        isEditingQueueItem &&
+        isComposerEdit &&
         (editingDraftBlocks != null || editingDraftText != null)
       ) {
         const editor = ed.getEditor()
@@ -599,7 +605,7 @@ export function MessageInput({
     return () => cancelAnimationFrame(raf)
   }, [
     composerReady,
-    isEditingQueueItem,
+    isComposerEdit,
     editingItemId,
     editingDraftText,
     editingDraftBlocks,
@@ -631,7 +637,7 @@ export function MessageInput({
   // switching between two items with identical text still reloads.
   useEffect(() => {
     if (
-      isEditingQueueItem &&
+      isComposerEdit &&
       editingItemId != null &&
       editingItemId !== prevEditingItemIdRef.current
     ) {
@@ -654,11 +660,11 @@ export function MessageInput({
         editorRef.current?.focus()
       })
       return () => cancelAnimationFrame(raf)
-    } else if (!isEditingQueueItem) {
+    } else if (!isComposerEdit) {
       prevEditingItemIdRef.current = null
     }
   }, [
-    isEditingQueueItem,
+    isComposerEdit,
     editingItemId,
     editingDraftText,
     editingDraftBlocks,
@@ -1331,7 +1337,7 @@ export function MessageInput({
     // The editor stays editable while `disabled` (the agent is busy) so the user
     // can keep typing, but a plain send is blocked — only enqueue / queue-edit
     // save go through. Mirrors the legacy textarea's keydown guard.
-    if (disabled && !isPrompting && !isEditingQueueItem) return
+    if (disabled && !isPrompting && !isComposerEdit) return
     // An image whose web/remote upload hasn't settled has no server-side uri
     // yet — the transport would strip its base64 and the backend would have
     // nothing to hydrate. Block ALL three branches below (send / enqueue /
@@ -1369,6 +1375,7 @@ export function MessageInput({
     tAttach,
     buildDraft,
     isEditingQueueItem,
+    isComposerEdit,
     isPrompting,
     onSaveQueueEdit,
     onEnqueue,
@@ -1515,7 +1522,7 @@ export function MessageInput({
     (e: React.KeyboardEvent) => {
       if (isImeCompositionKey(e)) return
       if (
-        isEditingQueueItem &&
+        isComposerEdit &&
         e.key === "Escape" &&
         !slashMenuVisible &&
         onCancelQueueEdit
@@ -1524,7 +1531,7 @@ export function MessageInput({
         onCancelQueueEdit()
       }
     },
-    [isEditingQueueItem, slashMenuVisible, onCancelQueueEdit]
+    [isComposerEdit, slashMenuVisible, onCancelQueueEdit]
   )
 
   // Clicking the input's empty chrome (its padding, the blank space below a
@@ -1746,7 +1753,7 @@ export function MessageInput({
     t,
   ])
 
-  const actionButtons = isEditingQueueItem ? (
+  const actionButtons = isComposerEdit ? (
     <div className="flex items-center gap-1">
       <Button
         onClick={onCancelQueueEdit}
@@ -1762,9 +1769,13 @@ export function MessageInput({
         disabled={!hasSendableContent}
         size="icon"
         className="h-8 w-8"
-        title={tQueue("saveEdit")}
+        title={isEditingUserMessage ? t("send") : tQueue("saveEdit")}
       >
-        <Check className="size-4" />
+        {isEditingUserMessage ? (
+          <Send className="size-4" />
+        ) : (
+          <Check className="size-4" />
+        )}
       </Button>
     </div>
   ) : isPrompting && onCancel ? (
