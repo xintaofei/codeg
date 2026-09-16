@@ -34,6 +34,22 @@ export const STORAGE_KEY_TERMINAL_FONT = "codeg-terminal-font"
 export const STORAGE_KEY_TERMINAL_FONT_CUSTOM = "codeg-terminal-font-custom"
 export const STORAGE_KEY_TERMINAL_FONT_SIZE = "codeg-terminal-font-size"
 export const STORAGE_KEY_TERMINAL_LIGATURES = "codeg-terminal-ligatures"
+// Monospace font for code in messages (drives --font-mono: Streamdown code
+// blocks, inline code, `font-mono` utilities). Same three keys and the same
+// pre-paint treatment as the interface font: the resolved stack is cached so
+// the inline script can apply it without the font catalog.
+export const STORAGE_KEY_MONO_FONT = "codeg-mono-font"
+export const STORAGE_KEY_MONO_FONT_CUSTOM = "codeg-mono-font-custom"
+export const STORAGE_KEY_MONO_FONT_STACK = "codeg-mono-font-stack"
+
+// Appearance presets. Applying one writes the same theme-color / custom-theme
+// / font keys a hand edit would, so nothing at boot reads the preset itself.
+// CODE_THEME is `{ light, dark }` Shiki theme ids for code blocks in messages
+// (applied after hydration; highlighting is async anyway). APPEARANCE_PRESET
+// keeps the last applied preset document so the settings page can tell
+// "Warm terminal" from "Warm terminal (modified)" and name an imported one.
+export const STORAGE_KEY_CODE_THEME = "codeg-code-theme"
+export const STORAGE_KEY_APPEARANCE_PRESET = "codeg-appearance-preset"
 
 // Workspace 背景图片。图片本身存磁盘（~/.codeg/backgrounds/），localStorage 只存
 // 展示配置。仅 enabled 与 panel-opacity 需要预水合（它们作用于首帧就存在的结构性
@@ -112,6 +128,15 @@ const SCRIPT = `
     var uiFontStack = localStorage.getItem("${STORAGE_KEY_UI_FONT_STACK}");
     if (uiFontId && uiFontStack && uiFontStack.length < 512 && !/[;{}<>]/.test(uiFontStack)) {
       document.documentElement.style.setProperty("--font-sans", uiFontStack);
+    }
+
+    // Code font for messages: same rule as the interface font, writing
+    // --font-mono. No stored id means the :root default (the system monospace
+    // stack Tailwind ships), so an upgrade paints code exactly as before.
+    var monoFontId = localStorage.getItem("${STORAGE_KEY_MONO_FONT}");
+    var monoFontStack = localStorage.getItem("${STORAGE_KEY_MONO_FONT_STACK}");
+    if (monoFontId && monoFontStack && monoFontStack.length < 512 && !/[;{}<>]/.test(monoFontStack)) {
+      document.documentElement.style.setProperty("--font-mono", monoFontStack);
     }
 
     // Workspace 背景：预水合仅处理首帧就存在的结构性表面。启用时给 <html> 打

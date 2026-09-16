@@ -6,10 +6,14 @@ import {
   STORAGE_KEY_CUSTOM_STYLE_SUSPENDED,
   STORAGE_KEY_CUSTOM_THEME,
   STORAGE_KEY_CUSTOM_THEME_ENABLED,
+  STORAGE_KEY_MONO_FONT,
+  STORAGE_KEY_MONO_FONT_STACK,
   STORAGE_KEY_THEME_COLOR,
   STORAGE_KEY_ZOOM_LEVEL,
 } from "./appearance-script"
-import { CUSTOM_CSS_ELEMENT_ID } from "./custom-style"
+import { CUSTOM_CSS_ELEMENT_ID, CUSTOM_THEME_TOKENS } from "./custom-style"
+import { presetToApplication } from "./appearance-preset"
+import { BUNDLED_PRESET_BY_ID } from "./appearance-presets-bundled"
 
 /**
  * 这段脚本跑在第一帧渲染之前、任何模块加载之前，是整个外观体系里最脆弱的一环：
@@ -142,6 +146,90 @@ describe("APPEARANCE_INIT_SCRIPT — custom theme tokens", () => {
     // 主题损坏不该连累后面的 CSS 注入 —— 两段各自包了 try/catch。
     expect(document.getElementById(CUSTOM_CSS_ELEMENT_ID)?.textContent).toBe(
       ".x{color:red}"
+    )
+  })
+})
+
+describe("APPEARANCE_INIT_SCRIPT — appearance presets", () => {
+  it("carries every custom-theme token, so a preset's surface and layout tokens paint before first paint", () => {
+    // The token list is inlined into the script at build time. Pin the
+    // inlined copy to the source list the same way the zoom rungs are pinned:
+    // a token the provider applies but the script does not would flash from
+    // the default to the preset value on every launch.
+    const listed = JSON.parse(
+      /var TOKENS = (\[[^\]]*\])/.exec(APPEARANCE_INIT_SCRIPT)![1]
+    )
+    expect(listed).toEqual([...CUSTOM_THEME_TOKENS])
+  })
+
+  it("applies a bundled preset's tokens exactly as the provider stores them", () => {
+    // What applyPreset writes to storage is what the script reads: the fanned
+    // out light/dark map. Everything a preset can set through tokens (colours,
+    // surfaces, density, message text, bubble shape) lands inline on <html>
+    // in the mode the window resolves to.
+    const application = presetToApplication(BUNDLED_PRESET_BY_ID["dense-ide"])
+    localStorage.setItem("theme", "dark")
+    localStorage.setItem(STORAGE_KEY_THEME_COLOR, application.themeColor)
+    localStorage.setItem(
+      STORAGE_KEY_CUSTOM_THEME,
+      JSON.stringify(application.customTheme)
+    )
+
+    runInitScript()
+
+    const style = document.documentElement.style
+    expect(document.documentElement.getAttribute("data-theme")).toBe("slate")
+    expect(style.getPropertyValue("--primary")).toBe(
+      application.customTheme.dark.primary
+    )
+    expect(style.getPropertyValue("--status-bar-bg")).toBe(
+      application.customTheme.dark["status-bar-bg"]
+    )
+    expect(style.getPropertyValue("--spacing")).toBe("0.2125rem")
+    expect(style.getPropertyValue("--chat-font-size")).toBe("0.8125rem")
+    expect(style.getPropertyValue("--bubble-user-radius")).toBe("0.25rem")
+  })
+
+  it("applies the stored code font stack to --font-mono like the interface font", () => {
+    localStorage.setItem(STORAGE_KEY_MONO_FONT, "jetbrains-mono")
+    localStorage.setItem(
+      STORAGE_KEY_MONO_FONT_STACK,
+      '"JetBrains Mono Variable", ui-monospace, monospace'
+    )
+
+    runInitScript()
+
+    expect(document.documentElement.style.getPropertyValue("--font-mono")).toBe(
+      '"JetBrains Mono Variable", ui-monospace, monospace'
+    )
+  })
+
+  it("leaves --font-mono to the stylesheet default without an explicit choice", () => {
+    // A cached stack without an id is not a preference (see the ui font
+    // rule); the :root default paints the stock system monospace.
+    localStorage.setItem(
+      STORAGE_KEY_MONO_FONT_STACK,
+      '"JetBrains Mono Variable", ui-monospace, monospace'
+    )
+
+    runInitScript()
+
+    expect(document.documentElement.style.getPropertyValue("--font-mono")).toBe(
+      ""
+    )
+  })
+
+  it("refuses a code font stack that could break out of the declaration", () => {
+    localStorage.setItem(STORAGE_KEY_MONO_FONT, "custom")
+    localStorage.setItem(
+      STORAGE_KEY_MONO_FONT_STACK,
+      "x; } body { display:none"
+    )
+
+    runInitScript()
+
+    expect(document.documentElement.style.getPropertyValue("--font-mono")).toBe(
+      ""
     )
   })
 })

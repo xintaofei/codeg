@@ -7,6 +7,7 @@ import { normalizeMathDelimiters } from "@/components/ai-elements/message"
 import { mermaidComponents } from "@/components/ai-elements/mermaid-block"
 import { useStreamdownPlugins } from "@/components/ai-elements/streamdown-plugins"
 import { BrowserLink } from "@/components/ui/browser-link"
+import { useCodeTheme } from "@/hooks/use-appearance"
 import { isUncPath, normalizeAbsPath } from "@/lib/file-open-target"
 import { cn } from "@/lib/utils"
 
@@ -249,6 +250,7 @@ export function MarkdownDocumentPreview({
       : content
   )
   const plugins = useStreamdownPlugins(preprocessed)
+  const shikiTheme = useCodeTheme()
 
   return (
     <div
@@ -258,6 +260,7 @@ export function MarkdownDocumentPreview({
       )}
     >
       <Streamdown
+        shikiTheme={shikiTheme}
         plugins={plugins}
         mode="static"
         parseIncompleteMarkdown={false}

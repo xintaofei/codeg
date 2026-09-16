@@ -67,22 +67,72 @@ export const ADVANCED_THEME_TOKENS = [
   "sidebar-ring",
 ] as const
 
-export const CUSTOM_THEME_TOKENS = [
+/**
+ * The 31 shadcn semantic colours plus `radius`: the slice of the map that is
+ * byte-compatible with shadcn's `cssVars`, so a pasted shadcn theme lands on
+ * exactly these keys.
+ */
+export const SHADCN_THEME_TOKENS = [
   ...BASIC_THEME_TOKENS,
   ...ADVANCED_THEME_TOKENS,
+] as const
+
+/**
+ * codeg's own surfaces, routed through tokens so an appearance preset can
+ * restyle them. These get a swatch in the editor like the shadcn colours. The
+ * defaults live in globals.css `:root` and point back at the shadcn tokens
+ * (the user bubble is `--secondary`, the status bar is `--muted`, ...), so a
+ * theme that never mentions them renders exactly as it did before they
+ * existed.
+ */
+export const SURFACE_COLOR_TOKENS = [
+  "bubble-user-bg",
+  "bubble-user-fg",
+  "bubble-user-border",
+  "bubble-assistant-bg",
+  "bubble-assistant-fg",
+  "bubble-assistant-border",
+  "composer-bg",
+  "composer-border",
+  "status-bar-bg",
+  "status-bar-fg",
+  "status-bar-border",
+] as const
+
+/**
+ * Lengths and ratios rather than colours: no swatch, set through the preset
+ * controls. `spacing` is Tailwind's `--spacing` unit (every `p-*` / `gap-*` /
+ * `h-*` utility is a multiple of it), which is what makes one value a density
+ * knob for the whole interface.
+ */
+export const LAYOUT_THEME_TOKENS = [
+  "spacing",
+  "chat-font-size",
+  "chat-line-height",
+  "bubble-user-radius",
+  "bubble-assistant-radius",
+  "bubble-assistant-padding",
+  "composer-radius",
+] as const
+
+export const CUSTOM_THEME_TOKENS = [
+  ...SHADCN_THEME_TOKENS,
+  ...SURFACE_COLOR_TOKENS,
+  ...LAYOUT_THEME_TOKENS,
 ] as const
 
 export type CustomThemeToken = (typeof CUSTOM_THEME_TOKENS)[number]
 
 const TOKEN_SET = new Set<string>(CUSTOM_THEME_TOKENS)
+const LAYOUT_TOKEN_SET = new Set<string>(LAYOUT_THEME_TOKENS)
 
 export function isCustomThemeToken(name: unknown): name is CustomThemeToken {
   return typeof name === "string" && TOKEN_SET.has(name)
 }
 
-/** `radius` 之外的都是颜色，UI 用它决定渲染色板还是滑块。 */
+/** 颜色 token 渲染色板；`radius` 与布局类 token（长度 / 比例）走滑块或选择器。 */
 export function isColorToken(token: string): boolean {
-  return token !== "radius"
+  return token !== "radius" && !LAYOUT_TOKEN_SET.has(token)
 }
 
 // ─── 取值校验 ───

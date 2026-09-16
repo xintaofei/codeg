@@ -107,6 +107,13 @@ export const MONO_FONTS: readonly FontDef[] = FONTS.filter(
 export const DEFAULT_UI_FONT_ID = "inter"
 export const DEFAULT_EDITOR_FONT_ID = "system-mono"
 export const DEFAULT_TERMINAL_FONT_ID = "system-mono"
+/**
+ * Code in messages (--font-mono). Must resolve to the `:root --font-mono` stack
+ * in globals.css, which is also Tailwind's default monospace stack: with no
+ * stored choice the inline script writes nothing and the CSS default paints
+ * code exactly as it did before the preference existed.
+ */
+export const DEFAULT_MONO_FONT_ID = "system-mono"
 
 /** 编辑器 / 终端基础字号（px）。最终字号 = base × zoom% / 100，与现有缩放叠加。 */
 export const FONT_SIZES = [10, 11, 12, 13, 14, 15, 16, 18, 20] as const

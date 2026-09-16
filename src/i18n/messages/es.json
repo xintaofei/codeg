@@ -106,6 +106,7 @@
       "radius": "Radio de esquina",
       "radiusHint": "De él deriva toda la escala de radios, de sm a 4xl, así que un único control redondea toda la aplicación.",
       "advanced": "Avanzado ({count} variables más)",
+      "surfaces": "Superficies del chat ({count} variables más)",
       "enableCss": "Activar CSS personalizado",
       "cssRisk": "Función avanzada. El CSS personalizado anula todos los estilos integrados y puede dejar la interfaz inutilizable.",
       "editCss": "Editar CSS…",
@@ -144,6 +145,119 @@
         "hintTokens": "Consejo: tus colores anulados están disponibles como var(--primary), var(--background), etc."
       }
     },
+    "presets": {
+      "sectionTitle": "Preajustes",
+      "sectionDescription": "Un aspecto completo con un clic: paleta, fuentes, espaciado, burbujas de mensaje y colores del código. Todo lo que fija un preajuste sigue siendo editable en las secciones de abajo, y el resultado puede guardarse como archivo para compartirlo.",
+      "current": "Actual: {name}",
+      "currentModified": "Actual: {name} (modificado)",
+      "currentCustom": "Actual: aspecto personalizado",
+      "customName": "Personalizado",
+      "apply": "Aplicar {name}",
+      "disabledHint": "Los colores personalizados están desactivados en Estilo personalizado, así que los colores, el espaciado y el tamaño de texto de un preajuste no se aplican hasta que los vuelvas a activar.",
+      "codeTheme": "Colores del código",
+      "codeThemeLight": "Colores del código en modo claro",
+      "codeThemeDark": "Colores del código en modo oscuro",
+      "codeThemeGroupLight": "Temas claros",
+      "codeThemeGroupDark": "Temas oscuros",
+      "codeThemeHint": "Colores de sintaxis de los bloques de código en los mensajes, un tema por modo.",
+      "density": "Densidad",
+      "densityHint": "Escala todos los espacios, rellenos y alturas de controles de la interfaz.",
+      "densityOptions": {
+        "compact": "Compacta",
+        "snug": "Ajustada",
+        "default": "Predeterminada",
+        "relaxed": "Holgada",
+        "custom": "Personalizada"
+      },
+      "chatText": "Texto de los mensajes",
+      "chatTextHint": "Tamaño de lectura de los mensajes. El zoom de la ventana escala toda la interfaz.",
+      "chatTextOptions": {
+        "small": "Pequeño",
+        "default": "Predeterminado",
+        "large": "Grande",
+        "larger": "Más grande",
+        "custom": "Personalizado"
+      },
+      "import": "Importar preajuste…",
+      "export": "Exportar preajuste…",
+      "sharingNote": "Un archivo de preajuste lleva colores, fuentes, espaciado y los nombres de los temas de código incluidos, nada más. El CSS personalizado nunca sale de este dispositivo.",
+      "importTitle": "Importar preajuste",
+      "importPreview": "Revisa qué cambia este archivo y luego aplícalo.",
+      "importErrorsTitle": "Este archivo no se puede aplicar",
+      "importErrorsDescription": "No se cambió nada. Corrige los problemas de abajo o elige otro archivo.",
+      "importApply": "Aplicar preajuste",
+      "cancel": "Cancelar",
+      "preview": {
+        "base": "Paleta base",
+        "mode": "Modo",
+        "overrides": "Colores anulados",
+        "overridesValue": "{light} en claro, {dark} en oscuro",
+        "fonts": "Fuentes (interfaz / código)",
+        "code": "Colores del código",
+        "density": "Densidad",
+        "chatText": "Texto de los mensajes",
+        "unchanged": "Sin cambios"
+      },
+      "modes": {
+        "light": "Claro",
+        "dark": "Oscuro",
+        "system": "Seguir al sistema"
+      },
+      "toasts": {
+        "applied": "Preajuste aplicado: {name}",
+        "exported": "Preajuste guardado",
+        "exportFailed": "No se pudo guardar el preajuste",
+        "readFailed": "No se pudo leer ese archivo",
+        "partialExport": "Quedó fuera del archivo: {items}"
+      },
+      "errors": {
+        "invalid-json": "No es JSON válido",
+        "too-large": "El archivo es demasiado grande (límite {limit} KB)",
+        "not-object": "Se esperaba un objeto",
+        "unknown-key": "Campo desconocido",
+        "missing": "Falta un campo obligatorio",
+        "wrong-type": "Tipo incorrecto",
+        "invalid-value": "Valor no permitido",
+        "unsupported-version": "Escrito para otra versión del formato de preajuste",
+        "unknown-token": "No es un token del tema",
+        "invalid-color": "No es un color (usa hex, rgb, hsl u oklch)",
+        "invalid-length": "No es una longitud (usa rem, px o em)",
+        "out-of-range": "Fuera de rango",
+        "unknown-font": "No es una fuente incluida ni del sistema",
+        "unknown-code-theme": "No es un tema de código incluido",
+        "unknown-base": "No es una paleta integrada"
+      },
+      "bundled": {
+        "default": {
+          "name": "Predeterminado",
+          "description": "El aspecto original de codeg: paleta neutra, Inter y colores de código de GitHub."
+        },
+        "warm-terminal": {
+          "name": "Terminal cálida",
+          "description": "Carbón cálido, acentos ámbar e interfaz monoespaciada, como se siente un agente nacido en la terminal. El modo claro es papel cálido."
+        },
+        "ink": {
+          "name": "Tinta",
+          "description": "Monocromo y cuadrado: negro, blanco y unos pocos grises, burbujas con contorno, sin ningún color de acento."
+        },
+        "dense-ide": {
+          "name": "IDE densa",
+          "description": "Espaciado compacto, texto pequeño, acentos azules y una barra de estado de color, como un editor con panel de chat."
+        },
+        "high-contrast": {
+          "name": "Alto contraste",
+          "description": "Negro puro sobre blanco (y blanco sobre negro), bordes marcados, texto más grande y colores de código de alto contraste."
+        },
+        "midnight": {
+          "name": "Medianoche",
+          "description": "Superficies azul violeta profundo, burbujas redondeadas y un acento lila, el ambiente de un cliente de chat de madrugada."
+        },
+        "paper": {
+          "name": "Papel",
+          "description": "Una superficie de lectura clara y cálida con espaciado amplio y texto más grande. El modo oscuro es un atardecer tenue en lugar de negro."
+        }
+      }
+    },
     "zoomLevel": {
       "sectionTitle": "Zoom de ventana",
       "sectionDescription": "Escala toda la interfaz. Se aplica al instante y se guarda por dispositivo. ⌘/Ctrl + y - recorren los mismos niveles de zoom que este menú (⌘/Ctrl 0 vuelve al 100%).",
@@ -157,6 +271,7 @@
       "interface": "Interfaz",
       "editor": "Editor",
       "terminal": "Terminal",
+      "code": "Código en los mensajes",
       "groupSans": "Sans-serif",
       "groupMono": "Monoespaciada",
       "custom": "Personalizada…",

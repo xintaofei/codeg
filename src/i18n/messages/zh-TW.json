@@ -106,6 +106,7 @@
       "radius": "圓角",
       "radiusHint": "從 sm 到 4xl 的整套圓角尺寸都由它衍生，一個滑桿即可改變全域圓角。",
       "advanced": "進階（另有 {count} 個變數）",
+      "surfaces": "對話表面（另 {count} 個變數）",
       "enableCss": "啟用自訂 CSS",
       "cssRisk": "進階功能。自訂 CSS 會壓過所有內建樣式，寫壞可能導致介面無法使用。",
       "editCss": "編輯 CSS…",
@@ -144,6 +145,119 @@
         "hintTokens": "提示：你覆寫的顏色可以直接用 var(--primary)、var(--background) 等引用。"
       }
     },
+    "presets": {
+      "sectionTitle": "外觀預設",
+      "sectionDescription": "一鍵切換整套外觀：配色、字型、間距、訊息氣泡與程式碼配色。預設設定的每一項仍可在下方各節繼續調整，調好的結果可以另存為檔案分享。",
+      "current": "目前：{name}",
+      "currentModified": "目前：{name}（已修改）",
+      "currentCustom": "目前：自訂外觀",
+      "customName": "自訂",
+      "apply": "套用 {name}",
+      "disabledHint": "「自訂樣式」裡的自訂配色已關閉，預設的配色、間距與字級要等重新開啟後才會生效。",
+      "codeTheme": "程式碼配色",
+      "codeThemeLight": "淺色模式程式碼配色",
+      "codeThemeDark": "深色模式程式碼配色",
+      "codeThemeGroupLight": "淺色主題",
+      "codeThemeGroupDark": "深色主題",
+      "codeThemeHint": "訊息內程式碼區塊的語法標示配色，明暗兩種模式各選一套。",
+      "density": "密度",
+      "densityHint": "按比例縮放介面裡的所有間距、內距與控制項高度。",
+      "densityOptions": {
+        "compact": "緊湊",
+        "snug": "略緊",
+        "default": "預設",
+        "relaxed": "寬鬆",
+        "custom": "自訂"
+      },
+      "chatText": "訊息文字",
+      "chatTextHint": "訊息的閱讀字級。整體縮放請用視窗縮放。",
+      "chatTextOptions": {
+        "small": "小",
+        "default": "預設",
+        "large": "大",
+        "larger": "更大",
+        "custom": "自訂"
+      },
+      "import": "匯入預設…",
+      "export": "匯出預設…",
+      "sharingNote": "預設檔只包含配色、字型、間距以及內建程式碼主題的名稱，不含其他內容。自訂 CSS 永遠不會離開這台裝置。",
+      "importTitle": "匯入預設",
+      "importPreview": "先看看這個檔案會改動什麼，再決定是否套用。",
+      "importErrorsTitle": "這個檔案無法套用",
+      "importErrorsDescription": "沒有做任何改動。請修正下列問題，或換一個檔案。",
+      "importApply": "套用預設",
+      "cancel": "取消",
+      "preview": {
+        "base": "基底配色",
+        "mode": "模式",
+        "overrides": "顏色覆寫",
+        "overridesValue": "淺色 {light} 項，深色 {dark} 項",
+        "fonts": "字型（介面 / 程式碼）",
+        "code": "程式碼配色",
+        "density": "密度",
+        "chatText": "訊息文字",
+        "unchanged": "不改動"
+      },
+      "modes": {
+        "light": "淺色",
+        "dark": "深色",
+        "system": "跟隨系統"
+      },
+      "toasts": {
+        "applied": "已套用預設：{name}",
+        "exported": "預設已儲存",
+        "exportFailed": "無法儲存預設",
+        "readFailed": "無法讀取該檔案",
+        "partialExport": "未寫入檔案的內容：{items}"
+      },
+      "errors": {
+        "invalid-json": "不是有效的 JSON",
+        "too-large": "檔案過大（上限 {limit} KB）",
+        "not-object": "應為物件",
+        "unknown-key": "未知欄位",
+        "missing": "缺少必填欄位",
+        "wrong-type": "型別不對",
+        "invalid-value": "不是允許的值",
+        "unsupported-version": "預設格式版本不受支援",
+        "unknown-token": "不是主題變數",
+        "invalid-color": "不是顏色（請用 hex、rgb、hsl 或 oklch）",
+        "invalid-length": "不是長度（請用 rem、px 或 em）",
+        "out-of-range": "超出範圍",
+        "unknown-font": "不是內建字型或系統字型",
+        "unknown-code-theme": "不是內建程式碼主題",
+        "unknown-base": "不是內建配色"
+      },
+      "bundled": {
+        "default": {
+          "name": "預設",
+          "description": "codeg 原本的樣子：中性配色、Inter 字型、GitHub 程式碼配色。"
+        },
+        "warm-terminal": {
+          "name": "暖色終端機",
+          "description": "暖炭灰底、琥珀色強調與等寬字型介面，像終端機裡的 Agent。淺色模式是暖紙色。"
+        },
+        "ink": {
+          "name": "墨",
+          "description": "單色且方正：黑、白和幾階灰，描邊氣泡，沒有任何強調色。"
+        },
+        "dense-ide": {
+          "name": "緊湊 IDE",
+          "description": "緊湊的間距、小字級、藍色強調與帶色狀態列，像帶聊天面板的編輯器。"
+        },
+        "high-contrast": {
+          "name": "高對比",
+          "description": "純黑配純白（深色模式則反過來），粗邊框、更大的文字與高對比程式碼配色。"
+        },
+        "midnight": {
+          "name": "午夜",
+          "description": "深藍紫表面、柔和的圓角氣泡與丁香色強調，深夜聊天用戶端的氣氛。"
+        },
+        "paper": {
+          "name": "紙張",
+          "description": "溫暖的淺色閱讀面，間距寬裕、文字更大。深色模式是昏暗的暮色而非純黑。"
+        }
+      }
+    },
     "zoomLevel": {
       "sectionTitle": "視窗縮放",
       "sectionDescription": "整體放大或縮小介面，立即生效，依裝置分別儲存。⌘/Ctrl + 和 - 依與此選單相同的檔位調節（⌘/Ctrl 0 恢復為 100%）。",
@@ -157,6 +271,7 @@
       "interface": "介面",
       "editor": "編輯器",
       "terminal": "終端機",
+      "code": "訊息內程式碼",
       "groupSans": "無襯線",
       "groupMono": "等寬",
       "custom": "自訂…",

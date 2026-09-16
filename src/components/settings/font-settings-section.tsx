@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import {
   useEditorFont,
+  useMonoFont,
   useTerminalFont,
   useUiFont,
 } from "@/hooks/use-appearance"
@@ -169,6 +170,7 @@ function LigatureRow({
 export function FontSettingsSection() {
   const t = useTranslations("AppearanceSettings")
   const { uiFont, setUiFont, uiFontStack } = useUiFont()
+  const { monoFont, setMonoFont } = useMonoFont()
   const {
     editorFont,
     setEditorFont,
@@ -223,6 +225,24 @@ export function FontSettingsSection() {
           customLabel={customLabel}
           customPlaceholder={customPlaceholder}
           ariaLabel={t("fonts.interface")}
+        />
+      </div>
+
+      {/* ===== 消息内代码字体（--font-mono）=====
+          Code blocks and inline code in messages. Editor and terminal keep their
+          own pickers below; this one is what an appearance preset sets. */}
+      <div className="space-y-2">
+        <label className={fieldLabel}>{t("fonts.code")}</label>
+        <FontPicker
+          value={monoFont.id}
+          custom={monoFont.custom}
+          onChange={setMonoFont}
+          fonts={MONO_FONTS}
+          groupSansLabel={groupSans}
+          groupMonoLabel={groupMono}
+          customLabel={customLabel}
+          customPlaceholder={customPlaceholder}
+          ariaLabel={t("fonts.code")}
         />
       </div>
 

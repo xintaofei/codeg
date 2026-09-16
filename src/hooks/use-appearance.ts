@@ -1,7 +1,11 @@
 "use client"
 
 import { useContext } from "react"
-import { AppearanceContext } from "@/components/appearance-provider"
+import type { BundledTheme } from "shiki"
+import {
+  AppearanceContext,
+  CodeThemeContext,
+} from "@/components/appearance-provider"
 import { resolveFontStack } from "@/lib/font-presets"
 
 export function useAppearance() {
@@ -88,6 +92,60 @@ export function useTerminalFont() {
     setTerminalFontSize,
     terminalLigatures,
     setTerminalLigatures,
+  }
+}
+
+/** 消息内代码字体（--font-mono）。stack 已解析。 */
+export function useMonoFont() {
+  const { monoFont, setMonoFont } = useAppearance()
+  return {
+    monoFont,
+    setMonoFont,
+    monoFontStack: resolveFontStack(monoFont.id, monoFont.custom, "mono"),
+  }
+}
+
+/**
+ * The `[light, dark]` Shiki theme tuple for Streamdown's `shikiTheme` prop and
+ * the ai-elements code block. Reads its own context (not the appearance
+ * context), so a message re-renders for a change of code colours and for
+ * nothing else the appearance provider does. Safe without the provider: the
+ * default tuple is Streamdown's own.
+ */
+export function useCodeTheme(): [BundledTheme, BundledTheme] {
+  return useContext(CodeThemeContext)
+}
+
+/**
+ * Appearance presets: everything the presets section needs to show which
+ * preset is active, apply one, export the current look, and drive the
+ * preset-level knobs (code colours, density, message text) that write the same
+ * tokens a preset does.
+ */
+export function useAppearancePresets() {
+  const {
+    themeColor,
+    customTheme,
+    customThemeEnabled,
+    uiFont,
+    monoFont,
+    codeTheme,
+    setCodeTheme,
+    appliedPreset,
+    applyPreset,
+    setSharedThemeToken,
+  } = useAppearance()
+  return {
+    themeColor,
+    customTheme,
+    customThemeEnabled,
+    uiFont,
+    monoFont,
+    codeTheme,
+    setCodeTheme,
+    appliedPreset,
+    applyPreset,
+    setSharedThemeToken,
   }
 }
 

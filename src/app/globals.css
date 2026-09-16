@@ -55,6 +55,43 @@
      在任何面板透明度下都稳定。全族统一用中性 --muted 染色（不再按角色分 card/secondary/primary），
      配 backdrop 磨砂 + 1px 描边（见下方 ws-msg-* 各规则），在忙碌背景图上仍看得清、分得出边界。 */
   --ws-msg-alpha: 0.5;
+
+  /* Preset-driven surfaces (custom-style.ts SURFACE_COLOR_TOKENS and
+     LAYOUT_THEME_TOKENS). Every default points back at a shadcn token or at the
+     value the surface was hard-coded to before it had a token, so a theme that
+     never mentions these renders byte-for-byte as it did. An appearance preset
+     (or the Custom Style editor) overrides them as inline custom properties on
+     <html>, exactly the way it overrides --primary, and the pre-paint script
+     applies the stored values before first paint.
+
+     --font-mono shadows Tailwind's theme variable of the same name with the
+     same stack (MONO_FALLBACK in font-presets.ts), so `font-mono` utilities and
+     Streamdown's code blocks follow the "code in messages" font preference
+     while the editor and terminal keep their own settings.
+
+     --bubble-assistant-radius is 0 on purpose: the assistant column is
+     `overflow-hidden`, so a radius would clip the corners of full-width content
+     even with a transparent background. */
+  --font-mono:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+  --chat-font-size: 0.875rem;
+  --chat-line-height: calc(1.25 / 0.875);
+  --bubble-user-bg: var(--secondary);
+  --bubble-user-fg: var(--foreground);
+  --bubble-user-border: transparent;
+  --bubble-user-radius: var(--radius);
+  --bubble-assistant-bg: transparent;
+  --bubble-assistant-fg: var(--foreground);
+  --bubble-assistant-border: transparent;
+  --bubble-assistant-radius: 0px;
+  --bubble-assistant-padding: 0px;
+  --composer-bg: transparent;
+  --composer-border: color-mix(in oklab, var(--foreground) 20%, transparent);
+  --composer-radius: calc(var(--radius) * 1.4);
+  --status-bar-bg: var(--muted);
+  --status-bar-fg: var(--muted-foreground);
+  --status-bar-border: var(--border);
 }
 
 /* ===========================================================================
@@ -1043,6 +1080,15 @@
   font-size: 0.625rem; /* 10px @100% */
 }
 
+/* Message text (user bubble + assistant markdown). The stock values equal
+   Tailwind's `text-sm` (0.875rem in a 1.25rem line box), so this is a rename at
+   100%; a preset moves the reading size of messages through the two variables
+   without touching the rest of the interface, which the window zoom scales. */
+@utility chat-text {
+  font-size: var(--chat-font-size);
+  line-height: var(--chat-line-height);
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -1076,6 +1122,12 @@
 .ws-surface-sidebar {
   background-color: var(--sidebar);
 }
+/* Status bar. Same contract as .ws-surface-muted (which it replaced there),
+   with the colour routed through --status-bar-bg so a preset can give the bar
+   its own surface; the default is --muted, so nothing moves without one. */
+.ws-surface-status {
+  background-color: var(--status-bar-bg);
+}
 
 [data-workspace-bg="on"] .ws-surface {
   background-color: color-mix(
@@ -1099,6 +1151,15 @@
   background-color: color-mix(
     in oklch,
     var(--sidebar) calc(var(--ws-surface-alpha) * 100%),
+    transparent
+  );
+  -webkit-backdrop-filter: blur(var(--ws-surface-blur));
+  backdrop-filter: blur(var(--ws-surface-blur));
+}
+[data-workspace-bg="on"] .ws-surface-status {
+  background-color: color-mix(
+    in oklch,
+    var(--status-bar-bg) calc(var(--ws-surface-alpha) * 100%),
     transparent
   );
   -webkit-backdrop-filter: blur(var(--ws-surface-blur));
@@ -1325,6 +1386,7 @@
   [data-workspace-bg="on"] .ws-surface,
   [data-workspace-bg="on"] .ws-surface-muted,
   [data-workspace-bg="on"] .ws-surface-sidebar,
+  [data-workspace-bg="on"] .ws-surface-status,
   [data-workspace-bg="on"] .ws-surface-card {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
@@ -2796,8 +2858,7 @@ div.monaco-diff-editor.side-by-side .editor.modified {
   0%,
   100% {
     box-shadow:
-      var(--tw-ring-offset-shadow, 0 0 #0000),
-      var(--tw-ring-shadow, 0 0 #0000);
+      var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000);
   }
   50% {
     box-shadow:

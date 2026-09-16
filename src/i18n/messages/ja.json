@@ -106,6 +106,7 @@
       "radius": "角丸",
       "radiusHint": "sm から 4xl までの角丸スケール全体がこの値から導出されるため、スライダー 1 つでアプリ全体の角丸が変わります。",
       "advanced": "詳細（他 {count} 個の変数）",
+      "surfaces": "チャットのサーフェス（他 {count} 個の変数）",
       "enableCss": "カスタム CSS を有効にする",
       "cssRisk": "上級者向け機能です。カスタム CSS は組み込みスタイルをすべて上書きするため、画面が使用不能になることがあります。",
       "editCss": "CSS を編集…",
@@ -144,6 +145,119 @@
         "hintTokens": "ヒント: 上書きした色は var(--primary) や var(--background) などで参照できます。"
       }
     },
+    "presets": {
+      "sectionTitle": "プリセット",
+      "sectionDescription": "配色、フォント、余白、メッセージの吹き出し、コードの配色をひとまとめにして一度に切り替えます。プリセットが設定した項目はすべて下のセクションで引き続き調整でき、結果をファイルとして保存して共有できます。",
+      "current": "現在：{name}",
+      "currentModified": "現在：{name}（変更あり）",
+      "currentCustom": "現在：カスタムの外観",
+      "customName": "カスタム",
+      "apply": "{name} を適用",
+      "disabledHint": "「カスタムスタイル」でカスタムカラーがオフになっているため、プリセットの配色・余白・文字サイズは再びオンにするまで反映されません。",
+      "codeTheme": "コードの配色",
+      "codeThemeLight": "ライトモードのコード配色",
+      "codeThemeDark": "ダークモードのコード配色",
+      "codeThemeGroupLight": "ライトテーマ",
+      "codeThemeGroupDark": "ダークテーマ",
+      "codeThemeHint": "メッセージ内のコードブロックのシンタックスカラー。モードごとにテーマを一つ選びます。",
+      "density": "密度",
+      "densityHint": "インターフェース内のすべての間隔、余白、コントロールの高さを比例して拡大縮小します。",
+      "densityOptions": {
+        "compact": "コンパクト",
+        "snug": "やや詰める",
+        "default": "デフォルト",
+        "relaxed": "ゆったり",
+        "custom": "カスタム"
+      },
+      "chatText": "メッセージの文字",
+      "chatTextHint": "メッセージを読むときの文字サイズです。インターフェース全体はウィンドウのズームで拡大縮小します。",
+      "chatTextOptions": {
+        "small": "小",
+        "default": "デフォルト",
+        "large": "大",
+        "larger": "特大",
+        "custom": "カスタム"
+      },
+      "import": "プリセットをインポート…",
+      "export": "プリセットをエクスポート…",
+      "sharingNote": "プリセットファイルに含まれるのは配色、フォント、余白、同梱コードテーマの名前だけです。カスタム CSS がこのデバイスの外に出ることはありません。",
+      "importTitle": "プリセットをインポート",
+      "importPreview": "このファイルが変更する内容を確認してから適用してください。",
+      "importErrorsTitle": "このファイルは適用できません",
+      "importErrorsDescription": "何も変更していません。以下の問題を修正するか、別のファイルを選んでください。",
+      "importApply": "プリセットを適用",
+      "cancel": "キャンセル",
+      "preview": {
+        "base": "ベースの配色",
+        "mode": "モード",
+        "overrides": "色の上書き",
+        "overridesValue": "ライト {light} 件、ダーク {dark} 件",
+        "fonts": "フォント（インターフェース / コード）",
+        "code": "コードの配色",
+        "density": "密度",
+        "chatText": "メッセージの文字",
+        "unchanged": "変更なし"
+      },
+      "modes": {
+        "light": "ライト",
+        "dark": "ダーク",
+        "system": "システムに従う"
+      },
+      "toasts": {
+        "applied": "プリセットを適用しました：{name}",
+        "exported": "プリセットを保存しました",
+        "exportFailed": "プリセットを保存できませんでした",
+        "readFailed": "そのファイルを読み込めませんでした",
+        "partialExport": "ファイルに含められなかった項目：{items}"
+      },
+      "errors": {
+        "invalid-json": "有効な JSON ではありません",
+        "too-large": "ファイルが大きすぎます（上限 {limit} KB）",
+        "not-object": "オブジェクトである必要があります",
+        "unknown-key": "不明なフィールドです",
+        "missing": "必須フィールドがありません",
+        "wrong-type": "型が違います",
+        "invalid-value": "許可されていない値です",
+        "unsupported-version": "このプリセット形式のバージョンには対応していません",
+        "unknown-token": "テーマの変数ではありません",
+        "invalid-color": "色ではありません（hex、rgb、hsl、oklch を使ってください）",
+        "invalid-length": "長さではありません（rem、px、em を使ってください）",
+        "out-of-range": "範囲外です",
+        "unknown-font": "同梱フォントでもシステムフォントでもありません",
+        "unknown-code-theme": "同梱のコードテーマではありません",
+        "unknown-base": "組み込みの配色ではありません"
+      },
+      "bundled": {
+        "default": {
+          "name": "デフォルト",
+          "description": "codeg 標準の外観：ニュートラルな配色、Inter、GitHub のコード配色。"
+        },
+        "warm-terminal": {
+          "name": "ウォームターミナル",
+          "description": "暖かいチャコール、アンバーのアクセント、等幅フォントのインターフェース。ターミナル型エージェントの手触りです。ライトモードは暖かい紙色。"
+        },
+        "ink": {
+          "name": "インク",
+          "description": "モノクロで角張った外観：黒、白、数段階のグレー、枠線だけの吹き出し、アクセントカラーなし。"
+        },
+        "dense-ide": {
+          "name": "高密度 IDE",
+          "description": "詰めた余白、小さめの文字、青のアクセント、色付きのステータスバー。チャットパネル付きのエディターのように。"
+        },
+        "high-contrast": {
+          "name": "ハイコントラスト",
+          "description": "白地に純黒（ダークでは黒地に純白）、強い境界線、大きめの文字、高コントラストのコード配色。"
+        },
+        "midnight": {
+          "name": "ミッドナイト",
+          "description": "深い青紫のサーフェス、柔らかな角丸の吹き出し、ライラックのアクセント。深夜のチャットクライアントの雰囲気です。"
+        },
+        "paper": {
+          "name": "ペーパー",
+          "description": "暖かく明るい読書向けのサーフェス。余白は広めで文字は大きめ。ダークモードは黒ではなく薄暗い夕暮れ。"
+        }
+      }
+    },
     "zoomLevel": {
       "sectionTitle": "ウィンドウズーム",
       "sectionDescription": "インターフェイス全体を拡大・縮小します。すぐに反映され、デバイスごとに保存されます。⌘/Ctrl + と - で、このメニューと同じ段階で拡大縮小します（⌘/Ctrl 0 で 100% に戻します）。",
@@ -157,6 +271,7 @@
       "interface": "インターフェース",
       "editor": "エディター",
       "terminal": "ターミナル",
+      "code": "メッセージ内のコード",
       "groupSans": "サンセリフ",
       "groupMono": "等幅",
       "custom": "カスタム…",

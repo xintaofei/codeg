@@ -106,6 +106,7 @@
       "radius": "Raio dos cantos",
       "radiusHint": "Toda a escala de raios, de sm a 4xl, deriva dele: um único cursor arredonda a aplicação inteira.",
       "advanced": "Avançado (mais {count} variáveis)",
+      "surfaces": "Superfícies da conversa ({count} variáveis adicionais)",
       "enableCss": "Ativar CSS personalizado",
       "cssRisk": "Funcionalidade avançada. O CSS personalizado substitui todos os estilos integrados e pode tornar a interface inutilizável.",
       "editCss": "Editar CSS…",
@@ -144,6 +145,119 @@
         "hintTokens": "Dica: as cores que substituiu ficam disponíveis como var(--primary), var(--background), etc."
       }
     },
+    "presets": {
+      "sectionTitle": "Predefinições",
+      "sectionDescription": "Um visual completo num clique: paleta, tipos de letra, espaçamento, balões de mensagem e cores do código. Tudo o que uma predefinição define continua editável nas secções abaixo, e o resultado pode ser guardado como ficheiro para partilhar.",
+      "current": "Atual: {name}",
+      "currentModified": "Atual: {name} (modificado)",
+      "currentCustom": "Atual: visual personalizado",
+      "customName": "Personalizado",
+      "apply": "Aplicar {name}",
+      "disabledHint": "As cores personalizadas estão desligadas em Estilo personalizado, por isso as cores, o espaçamento e o tamanho do texto de uma predefinição só se aplicam depois de as voltar a ligar.",
+      "codeTheme": "Cores do código",
+      "codeThemeLight": "Cores do código no modo claro",
+      "codeThemeDark": "Cores do código no modo escuro",
+      "codeThemeGroupLight": "Temas claros",
+      "codeThemeGroupDark": "Temas escuros",
+      "codeThemeHint": "Cores de sintaxe dos blocos de código nas mensagens, um tema por modo.",
+      "density": "Densidade",
+      "densityHint": "Escala todos os espaços, preenchimentos e alturas de controlos da interface.",
+      "densityOptions": {
+        "compact": "Compacta",
+        "snug": "Justa",
+        "default": "Predefinida",
+        "relaxed": "Folgada",
+        "custom": "Personalizada"
+      },
+      "chatText": "Texto das mensagens",
+      "chatTextHint": "Tamanho de leitura das mensagens. O zoom da janela escala a interface inteira.",
+      "chatTextOptions": {
+        "small": "Pequeno",
+        "default": "Predefinido",
+        "large": "Grande",
+        "larger": "Maior",
+        "custom": "Personalizado"
+      },
+      "import": "Importar predefinição…",
+      "export": "Exportar predefinição…",
+      "sharingNote": "Um ficheiro de predefinição transporta cores, tipos de letra, espaçamento e os nomes dos temas de código incluídos, nada mais. O CSS personalizado nunca sai deste dispositivo.",
+      "importTitle": "Importar predefinição",
+      "importPreview": "Reveja o que este ficheiro altera e depois aplique-o.",
+      "importErrorsTitle": "Este ficheiro não pode ser aplicado",
+      "importErrorsDescription": "Nada foi alterado. Corrija os problemas abaixo ou escolha outro ficheiro.",
+      "importApply": "Aplicar predefinição",
+      "cancel": "Cancelar",
+      "preview": {
+        "base": "Paleta base",
+        "mode": "Modo",
+        "overrides": "Cores substituídas",
+        "overridesValue": "{light} no claro, {dark} no escuro",
+        "fonts": "Tipos de letra (interface / código)",
+        "code": "Cores do código",
+        "density": "Densidade",
+        "chatText": "Texto das mensagens",
+        "unchanged": "Sem alterações"
+      },
+      "modes": {
+        "light": "Claro",
+        "dark": "Escuro",
+        "system": "Seguir o sistema"
+      },
+      "toasts": {
+        "applied": "Predefinição aplicada: {name}",
+        "exported": "Predefinição guardada",
+        "exportFailed": "Não foi possível guardar a predefinição",
+        "readFailed": "Não foi possível ler esse ficheiro",
+        "partialExport": "Ficou de fora do ficheiro: {items}"
+      },
+      "errors": {
+        "invalid-json": "JSON inválido",
+        "too-large": "O ficheiro é demasiado grande (limite de {limit} KB)",
+        "not-object": "Era esperado um objeto",
+        "unknown-key": "Campo desconhecido",
+        "missing": "Falta um campo obrigatório",
+        "wrong-type": "Tipo errado",
+        "invalid-value": "Valor não permitido",
+        "unsupported-version": "Escrito para outra versão do formato de predefinição",
+        "unknown-token": "Não é um token do tema",
+        "invalid-color": "Não é uma cor (use hex, rgb, hsl ou oklch)",
+        "invalid-length": "Não é um comprimento (use rem, px ou em)",
+        "out-of-range": "Fora do intervalo",
+        "unknown-font": "Não é um tipo de letra incluído nem do sistema",
+        "unknown-code-theme": "Não é um tema de código incluído",
+        "unknown-base": "Não é uma paleta integrada"
+      },
+      "bundled": {
+        "default": {
+          "name": "Predefinido",
+          "description": "O visual original do codeg: paleta neutra, Inter e cores de código do GitHub."
+        },
+        "warm-terminal": {
+          "name": "Terminal quente",
+          "description": "Carvão quente, acentos âmbar e uma interface monoespaçada, como um agente nascido no terminal. O modo claro é papel quente."
+        },
+        "ink": {
+          "name": "Tinta",
+          "description": "Monocromático e quadrado: preto, branco e alguns cinzentos, balões contornados, sem qualquer cor de destaque."
+        },
+        "dense-ide": {
+          "name": "IDE densa",
+          "description": "Espaçamento compacto, texto pequeno, acentos azuis e uma barra de estado colorida, como um editor com painel de conversa."
+        },
+        "high-contrast": {
+          "name": "Alto contraste",
+          "description": "Preto puro sobre branco (e branco sobre preto), contornos fortes, texto maior e cores de código de alto contraste."
+        },
+        "midnight": {
+          "name": "Meia-noite",
+          "description": "Superfícies azul-violeta profundas, balões arredondados e um acento lilás, o ambiente de um cliente de conversa de madrugada."
+        },
+        "paper": {
+          "name": "Papel",
+          "description": "Uma superfície de leitura clara e quente, com espaçamento amplo e texto maior. O modo escuro é um crepúsculo suave em vez de preto."
+        }
+      }
+    },
     "zoomLevel": {
       "sectionTitle": "Zoom da janela",
       "sectionDescription": "Dimensiona toda a interface. Aplica imediatamente e é salvo por dispositivo. ⌘/Ctrl + e - percorrem os mesmos níveis de zoom deste menu (⌘/Ctrl 0 volta para 100%).",
@@ -157,6 +271,7 @@
       "interface": "Interface",
       "editor": "Editor",
       "terminal": "Terminal",
+      "code": "Código nas mensagens",
       "groupSans": "Sem serifa",
       "groupMono": "Monoespaçada",
       "custom": "Personalizada…",

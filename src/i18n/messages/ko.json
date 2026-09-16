@@ -106,6 +106,7 @@
       "radius": "모서리 둥글기",
       "radiusHint": "sm부터 4xl까지의 둥글기 척도 전체가 이 값에서 파생되므로 슬라이더 하나로 앱 전체가 바뀝니다.",
       "advanced": "고급 (변수 {count}개 더)",
+      "surfaces": "채팅 표면 ({count}개 변수 더 보기)",
       "enableCss": "사용자 지정 CSS 사용",
       "cssRisk": "고급 기능입니다. 사용자 지정 CSS는 모든 기본 스타일을 덮어쓰므로 화면을 사용할 수 없게 만들 수 있습니다.",
       "editCss": "CSS 편집…",
@@ -144,6 +145,119 @@
         "hintTokens": "팁: 재정의한 색상은 var(--primary), var(--background) 등으로 참조할 수 있습니다."
       }
     },
+    "presets": {
+      "sectionTitle": "프리셋",
+      "sectionDescription": "색상 팔레트, 글꼴, 간격, 메시지 말풍선, 코드 색상까지 한 번에 바꿉니다. 프리셋이 정한 항목은 아래 섹션에서 계속 수정할 수 있고, 결과를 파일로 저장해 공유할 수 있습니다.",
+      "current": "현재: {name}",
+      "currentModified": "현재: {name} (수정됨)",
+      "currentCustom": "현재: 사용자 지정 모양",
+      "customName": "사용자 지정",
+      "apply": "{name} 적용",
+      "disabledHint": "사용자 지정 스타일에서 사용자 지정 색상이 꺼져 있어, 다시 켜기 전까지 프리셋의 색상, 간격, 글자 크기가 적용되지 않습니다.",
+      "codeTheme": "코드 색상",
+      "codeThemeLight": "라이트 모드 코드 색상",
+      "codeThemeDark": "다크 모드 코드 색상",
+      "codeThemeGroupLight": "라이트 테마",
+      "codeThemeGroupDark": "다크 테마",
+      "codeThemeHint": "메시지 안 코드 블록의 구문 색상입니다. 모드마다 테마를 하나씩 고릅니다.",
+      "density": "밀도",
+      "densityHint": "인터페이스의 모든 간격, 여백, 컨트롤 높이를 비율대로 조정합니다.",
+      "densityOptions": {
+        "compact": "조밀",
+        "snug": "약간 조밀",
+        "default": "기본",
+        "relaxed": "여유",
+        "custom": "사용자 지정"
+      },
+      "chatText": "메시지 글자",
+      "chatTextHint": "메시지를 읽을 때의 글자 크기입니다. 인터페이스 전체는 창 확대/축소로 조정합니다.",
+      "chatTextOptions": {
+        "small": "작게",
+        "default": "기본",
+        "large": "크게",
+        "larger": "더 크게",
+        "custom": "사용자 지정"
+      },
+      "import": "프리셋 가져오기…",
+      "export": "프리셋 내보내기…",
+      "sharingNote": "프리셋 파일에는 색상, 글꼴, 간격, 기본 제공 코드 테마의 이름만 담깁니다. 사용자 지정 CSS는 이 기기를 벗어나지 않습니다.",
+      "importTitle": "프리셋 가져오기",
+      "importPreview": "이 파일이 바꾸는 내용을 확인한 뒤 적용하세요.",
+      "importErrorsTitle": "이 파일은 적용할 수 없습니다",
+      "importErrorsDescription": "아무것도 바뀌지 않았습니다. 아래 문제를 고치거나 다른 파일을 고르세요.",
+      "importApply": "프리셋 적용",
+      "cancel": "취소",
+      "preview": {
+        "base": "기본 팔레트",
+        "mode": "모드",
+        "overrides": "색상 재정의",
+        "overridesValue": "라이트 {light}개, 다크 {dark}개",
+        "fonts": "글꼴 (인터페이스 / 코드)",
+        "code": "코드 색상",
+        "density": "밀도",
+        "chatText": "메시지 글자",
+        "unchanged": "변경 없음"
+      },
+      "modes": {
+        "light": "라이트",
+        "dark": "다크",
+        "system": "시스템 따르기"
+      },
+      "toasts": {
+        "applied": "프리셋을 적용했습니다: {name}",
+        "exported": "프리셋을 저장했습니다",
+        "exportFailed": "프리셋을 저장할 수 없습니다",
+        "readFailed": "그 파일을 읽을 수 없습니다",
+        "partialExport": "파일에 담지 못한 항목: {items}"
+      },
+      "errors": {
+        "invalid-json": "유효한 JSON이 아닙니다",
+        "too-large": "파일이 너무 큽니다 (최대 {limit} KB)",
+        "not-object": "객체여야 합니다",
+        "unknown-key": "알 수 없는 필드입니다",
+        "missing": "필수 필드가 없습니다",
+        "wrong-type": "형식이 잘못되었습니다",
+        "invalid-value": "허용되지 않는 값입니다",
+        "unsupported-version": "지원하지 않는 프리셋 형식 버전입니다",
+        "unknown-token": "테마 변수가 아닙니다",
+        "invalid-color": "색상이 아닙니다 (hex, rgb, hsl, oklch를 사용하세요)",
+        "invalid-length": "길이가 아닙니다 (rem, px, em을 사용하세요)",
+        "out-of-range": "범위를 벗어났습니다",
+        "unknown-font": "기본 제공 글꼴이나 시스템 글꼴이 아닙니다",
+        "unknown-code-theme": "기본 제공 코드 테마가 아닙니다",
+        "unknown-base": "기본 제공 팔레트가 아닙니다"
+      },
+      "bundled": {
+        "default": {
+          "name": "기본",
+          "description": "codeg 본래의 모습: 중립 팔레트, Inter, GitHub 코드 색상."
+        },
+        "warm-terminal": {
+          "name": "따뜻한 터미널",
+          "description": "따뜻한 차콜, 앰버 강조, 고정폭 인터페이스. 터미널 기반 에이전트의 느낌입니다. 라이트 모드는 따뜻한 종이색."
+        },
+        "ink": {
+          "name": "잉크",
+          "description": "단색에 각진 모양: 검정, 흰색, 몇 단계의 회색, 테두리만 있는 말풍선, 강조색 없음."
+        },
+        "dense-ide": {
+          "name": "조밀한 IDE",
+          "description": "촘촘한 간격, 작은 글자, 파란 강조, 색이 있는 상태 표시줄. 채팅 패널이 달린 편집기처럼."
+        },
+        "high-contrast": {
+          "name": "고대비",
+          "description": "흰 바탕에 순검정 (다크에서는 검은 바탕에 순백), 굵은 테두리, 큰 글자, 고대비 코드 색상."
+        },
+        "midnight": {
+          "name": "미드나이트",
+          "description": "깊은 청보라 표면, 부드럽게 둥근 말풍선, 라일락 강조. 늦은 밤 채팅 클라이언트의 분위기."
+        },
+        "paper": {
+          "name": "종이",
+          "description": "따뜻하고 밝은 읽기용 표면에 넉넉한 간격과 큰 글자. 다크 모드는 검정 대신 어스름한 저녁빛."
+        }
+      }
+    },
     "zoomLevel": {
       "sectionTitle": "창 확대/축소",
       "sectionDescription": "전체 인터페이스를 확대하거나 축소합니다. 즉시 적용되며 장치별로 저장됩니다. ⌘/Ctrl +와 -는 이 메뉴와 같은 단계로 확대/축소합니다(⌘/Ctrl 0은 100%로 되돌립니다).",
@@ -157,6 +271,7 @@
       "interface": "인터페이스",
       "editor": "편집기",
       "terminal": "터미널",
+      "code": "메시지 안의 코드",
       "groupSans": "산세리프",
       "groupMono": "고정폭",
       "custom": "사용자 지정…",
