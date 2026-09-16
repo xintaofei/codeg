@@ -19,7 +19,10 @@ import {
   importantEnvKeysByAgent,
   importantFieldsFor,
   inferGrokMode,
+  applyClaudePermissionModeToConfigText,
   materializeClaudeHardeningFlags,
+  normalizeClaudePermissionMode,
+  readClaudePermissionMode,
   patchCodexConfigTomlText,
   patchEnvByImportantKey,
   patchImportantConfigText,
@@ -1292,6 +1295,88 @@ describe("materializeClaudeHardeningFlags — save-time toggle defaults", () => 
     )
     expect(configText).toBe(invalid)
     expect(envText).toBe("EXISTING=1")
+  })
+})
+
+describe("Claude permission mode — official settings.json defaultMode", () => {
+  it("maps the documented manual alias to default", () => {
+    expect(normalizeClaudePermissionMode("manual")).toBe("default")
+    expect(normalizeClaudePermissionMode("bypassPermissions")).toBe(
+      "bypassPermissions"
+    )
+    expect(normalizeClaudePermissionMode("plan")).toBe("plan")
+    expect(normalizeClaudePermissionMode("dontAsk")).toBe("dontAsk")
+    expect(normalizeClaudePermissionMode("nope")).toBe("")
+  })
+
+  it("reads permissions.defaultMode from a nested settings object", () => {
+    expect(
+      readClaudePermissionMode({
+        permissions: { defaultMode: "acceptEdits", allow: ["Bash"] },
+      })
+    ).toBe("acceptEdits")
+    expect(readClaudePermissionMode({ theme: "dark" })).toBe("")
+  })
+
+  it("sets bypass without dropping existing allow/deny rules", () => {
+    const base = JSON.stringify({
+      theme: "dark",
+      permissions: { allow: ["Bash"], deny: ["Read(./.env)"] },
+    })
+    const { configText, recoveredFromInvalid } =
+      applyClaudePermissionModeToConfigText(base, "bypassPermissions")
+    expect(recoveredFromInvalid).toBe(false)
+    const parsed = JSON.parse(configText) as {
+      theme?: string
+      skipDangerousModePermissionPrompt?: boolean
+      permissions?: { defaultMode?: string; allow?: string[]; deny?: string[] }
+    }
+    expect(parsed.theme).toBe("dark")
+    expect(parsed.permissions?.defaultMode).toBe("bypassPermissions")
+    expect(parsed.permissions?.allow).toEqual(["Bash"])
+    expect(parsed.permissions?.deny).toEqual(["Read(./.env)"])
+    expect(parsed.skipDangerousModePermissionPrompt).toBeUndefined()
+  })
+
+  it("round-trips plan without turning it into unset", () => {
+    const { configText } = applyClaudePermissionModeToConfigText(
+      JSON.stringify({ permissions: { defaultMode: "plan", allow: ["Bash"] } }),
+      "plan"
+    )
+    const parsed = JSON.parse(configText) as {
+      permissions?: { defaultMode?: string; allow?: string[] }
+    }
+    expect(parsed.permissions?.defaultMode).toBe("plan")
+    expect(parsed.permissions?.allow).toEqual(["Bash"])
+  })
+
+  it("clears defaultMode but keeps other permission rules", () => {
+    const base = JSON.stringify({
+      permissions: { defaultMode: "bypassPermissions", allow: ["Bash"] },
+      skipDangerousModePermissionPrompt: true,
+    })
+    const { configText } = applyClaudePermissionModeToConfigText(base, "")
+    const parsed = JSON.parse(configText) as {
+      skipDangerousModePermissionPrompt?: boolean
+      permissions?: { defaultMode?: string; allow?: string[] }
+    }
+    expect(parsed.permissions?.defaultMode).toBeUndefined()
+    expect(parsed.permissions?.allow).toEqual(["Bash"])
+    expect(parsed.skipDangerousModePermissionPrompt).toBe(true)
+  })
+
+  it("drops an empty permissions object when unsetting the only key", () => {
+    const base = JSON.stringify({
+      permissions: { defaultMode: "auto" },
+      theme: "dark",
+    })
+    const { configText } = applyClaudePermissionModeToConfigText(base, "")
+    const parsed = JSON.parse(configText) as {
+      theme?: string
+      permissions?: unknown
+    }
+    expect(parsed.theme).toBe("dark")
+    expect(parsed.permissions).toBeUndefined()
   })
 })
 
