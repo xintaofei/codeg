@@ -4,10 +4,17 @@
  * Persists user's selector preferences (mode & config option selections)
  * per agentType to localStorage, so they survive session restarts.
  *
- * Structure hash is stored alongside values — when the saved value no
- * longer exists in the current option set (item renamed / removed) the
- * backend's `set_session_config_option` will reject the application and
- * the stale value is naturally dropped on the next user pick.
+ * An entry can outlive the option it names (renamed, removed, or scoped to
+ * a model that is no longer selected). It is not dropped here, and it
+ * cannot be: the selector is gone from the UI, so there is no further user
+ * pick to rewrite it with, and this store is keyed per agentType while an
+ * option's presence is narrower than that — cursor-agent hangs `fast` and
+ * the thinking parameters off the model in EFFECT, so the same agent
+ * advertises the id under one model and not under another. The backend
+ * owns the decision instead: it applies a saved value only when the agent
+ * currently advertises the id, and leaves the entry alone otherwise, so it
+ * applies again as soon as the option comes back (see
+ * `applies_preferred_config_option` in `src-tauri/src/acp/connection.rs`).
  *
  * Preferences are shipped to the backend at `acp_connect` time (see
  * `getSavedPrefsForConnect`) which applies them to the agent BEFORE
