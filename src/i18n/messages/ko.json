@@ -544,6 +544,21 @@
     "noSelectionHint": "왼쪽에서 Skill을 선택하거나 \"새 Skill\"을 클릭하여 만드세요.",
     "systemBadge": "시스템",
     "systemHint": "CLI 내장 Skill · 읽기 전용",
+    "availability": {
+      "enabled": "사용",
+      "disabled": "사용 안 함",
+      "toggleAria": "{agent}에서 {skill} 사용 여부 전환",
+      "readOnly": "이 Skill의 파일은 읽기 전용이므로 여기에서 전환할 수 없습니다.",
+      "sharedRoot": "이 Skill은 여러 Agent가 공유하는 디렉터리에 설치되어 있어 현재 Agent에서만 비활성화할 수 없습니다.",
+      "managedElsewhere": "이 Skill은 전문가, Office, Science 또는 사용자 지정 Skill 페이지에서 관리됩니다.",
+      "storageConflict": "전환하기 전에 중복 Skill 또는 대상 위치 충돌을 해결하세요.",
+      "unsafeLink": "이 Skill에는 이동하면 끊어지거나 대상이 바뀌는 링크가 포함되어 있습니다.",
+      "crossFilesystem": "Skill과 비활성 보관소가 서로 다른 파일 시스템에 있어 안전하게 이동할 수 없습니다.",
+      "legacyState": "이 Skill은 이전 비활성 레이아웃을 사용하므로 전환 전에 수동으로 복구해야 합니다.",
+      "bundledDisabled": "Codex 전역 설정에서 기본 제공 Skills가 비활성화되어 있습니다.",
+      "configError": "Agent의 Skill 사용 가능성 설정을 안전하게 읽을 수 없습니다.",
+      "unavailable": "이 Skill은 전환할 수 없습니다."
+    },
     "scope": {
       "global": "전역",
       "folder": "폴더",
@@ -579,7 +594,11 @@
       "created": "Skill이 생성되었습니다",
       "saveFailed": "Skill 저장에 실패했습니다",
       "deleted": "Skill이 삭제되었습니다",
-      "deleteFailed": "Skill 삭제에 실패했습니다"
+      "deleteFailed": "Skill 삭제에 실패했습니다",
+      "enabled": "Skill이 활성화되었습니다",
+      "disabled": "Skill이 비활성화되었습니다",
+      "codexNewSession": "새로 만든 Codex 세션에 적용됩니다. 기존 세션에는 이미 불러온 Skill이 남아 있을 수 있습니다.",
+      "toggleFailed": "Skill 사용 여부를 업데이트하지 못했습니다"
     },
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",

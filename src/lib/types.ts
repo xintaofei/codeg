@@ -3494,6 +3494,16 @@ export interface AgentDiagnosticsReport {
 
 export type AgentSkillScope = "global" | "project"
 export type AgentSkillLayout = "markdown_file" | "skill_directory"
+export type AgentSkillToggleReason =
+  | "read_only"
+  | "shared_root"
+  | "managed_elsewhere"
+  | "storage_conflict"
+  | "unsafe_link"
+  | "cross_filesystem"
+  | "legacy_state"
+  | "bundled_disabled"
+  | "config_error"
 
 export interface AgentSkillLocation {
   scope: AgentSkillScope
@@ -3509,6 +3519,9 @@ export interface AgentSkillItem {
   path: string
   description: string | null
   read_only: boolean
+  enabled: boolean
+  can_toggle: boolean
+  toggle_reason: AgentSkillToggleReason | null
 }
 
 export interface AgentSkillsListResult {

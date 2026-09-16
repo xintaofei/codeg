@@ -281,6 +281,22 @@ export async function acpListAgentSkills(params: {
   })
 }
 
+export async function acpSetAgentSkillEnabled(params: {
+  agentType: AgentType
+  scope: AgentSkillScope
+  skillId: string
+  workspacePath?: string | null
+  enabled: boolean
+}): Promise<AgentSkillItem> {
+  return invoke("acp_set_agent_skill_enabled", {
+    agentType: params.agentType,
+    scope: params.scope,
+    skillId: params.skillId,
+    workspacePath: params.workspacePath ?? null,
+    enabled: params.enabled,
+  })
+}
+
 export async function acpReadAgentSkill(params: {
   agentType: AgentType
   scope: AgentSkillScope

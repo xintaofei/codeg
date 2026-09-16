@@ -544,6 +544,21 @@
     "noSelectionHint": "左側から Skill を選択するか、「新規 Skill」をクリックして作成してください。",
     "systemBadge": "システム",
     "systemHint": "CLI 組み込み Skill・読み取り専用",
+    "availability": {
+      "enabled": "有効",
+      "disabled": "無効",
+      "toggleAria": "{agent} で {skill} の有効状態を切り替える",
+      "readOnly": "この Skill のファイルは読み取り専用のため、ここでは切り替えられません。",
+      "sharedRoot": "この Skill は複数の Agent が共有するディレクトリにあるため、この Agent だけ無効にはできません。",
+      "managedElsewhere": "この Skill はエキスパート、Office、Science、またはカスタム Skill ページで管理されています。",
+      "storageConflict": "切り替える前に、重複した Skill または保存先の競合を解消してください。",
+      "unsafeLink": "この Skill には、移動すると壊れるか参照先が変わるリンクが含まれています。",
+      "crossFilesystem": "Skill と無効化用ストレージが別のファイルシステムにあるため、安全に移動できません。",
+      "legacyState": "この Skill は旧形式の無効化レイアウトを使用しています。切り替える前に手動で復元してください。",
+      "bundledDisabled": "Codex のグローバル設定で組み込み Skills が無効になっています。",
+      "configError": "Agent の Skill 可用性設定を安全に読み取れませんでした。",
+      "unavailable": "この Skill は切り替えられません。"
+    },
     "scope": {
       "global": "グローバル",
       "folder": "フォルダ",
@@ -579,7 +594,11 @@
       "created": "Skillを作成しました",
       "saveFailed": "Skillの保存に失敗しました",
       "deleted": "Skillを削除しました",
-      "deleteFailed": "Skillの削除に失敗しました"
+      "deleteFailed": "Skillの削除に失敗しました",
+      "enabled": "Skillを有効にしました",
+      "disabled": "Skillを無効にしました",
+      "codexNewSession": "新しく作成した Codex セッションに適用されます。既存のセッションには、すでに読み込まれた Skill が残る場合があります。",
+      "toggleFailed": "Skillの利用可否の更新に失敗しました"
     },
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",

@@ -15,7 +15,7 @@
 //! Not covered: WebSocket attach (separate concern), endpoints that touch the
 //! Tauri webview (those are gated behind `tauri-runtime`).
 
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use axum_test::TestServer;
 use codeg_lib::app_state::AppState;
@@ -44,6 +44,21 @@ async fn build_test_server() -> (TestServer, tempfile::TempDir, tempfile::TempDi
     let server = TestServer::new(router).expect("test server");
     // Keep data_dir and static_dir alive for the whole test by returning them.
     (server, data_dir, static_dir)
+}
+
+async fn build_test_server_at(data_dir: &Path) -> (TestServer, tempfile::TempDir) {
+    let static_dir = tempfile::tempdir().expect("static dir");
+    let db = fresh_in_memory_db().await;
+    let state = Arc::new(AppState::new_for_test(db, data_dir.to_path_buf()));
+    let shutdown = Arc::new(ShutdownSignal::new());
+    let router = build_router(
+        state,
+        TEST_TOKEN.to_string(),
+        static_dir.path().to_path_buf(),
+        shutdown,
+    );
+
+    (TestServer::new(router).expect("test server"), static_dir)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -200,6 +215,100 @@ async fn unknown_endpoint_returns_501_with_typed_error() {
     let body: Value = resp.json();
     assert_eq!(body["code"], "not_implemented");
     assert!(body["message"].is_string());
+}
+
+#[tokio::test]
+async fn agent_skill_toggle_route_rejects_snake_case_params() {
+    let (server, _data, _static) = build_test_server().await;
+    let resp = server
+        .post("/api/acp_set_agent_skill_enabled")
+        .add_header("authorization", format!("Bearer {TEST_TOKEN}"))
+        .json(&json!({
+            "agent_type": "codex",
+            "scope": "project",
+            "skill_id": "example",
+            "workspace_path": null,
+            "enabled": false
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 422);
+}
+
+#[tokio::test]
+async fn project_skill_vault_is_isolated_by_server_data_directory() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let first_data = tempfile::tempdir().expect("first data dir");
+    let second_data = tempfile::tempdir().expect("second data dir");
+    let skill_id = "api-data-dir-isolation";
+    let skill_dir = workspace.path().join(".kimi-code/skills").join(skill_id);
+    std::fs::create_dir_all(&skill_dir).expect("create project skill");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: API data directory isolation\n---\n",
+    )
+    .expect("write project skill");
+
+    let (first_server, _first_static) = build_test_server_at(first_data.path()).await;
+    let (second_server, _second_static) = build_test_server_at(second_data.path()).await;
+    let workspace_path = workspace.path().to_string_lossy().into_owned();
+
+    let toggle = first_server
+        .post("/api/acp_set_agent_skill_enabled")
+        .add_header("authorization", format!("Bearer {TEST_TOKEN}"))
+        .json(&json!({
+            "agentType": "kimi_code",
+            "scope": "project",
+            "skillId": skill_id,
+            "workspacePath": workspace_path,
+            "enabled": false
+        }))
+        .await;
+    assert_eq!(toggle.status_code(), 200, "body: {}", toggle.text());
+    let disabled: Value = toggle.json();
+    assert_eq!(disabled["enabled"], false);
+    assert!(disabled["path"]
+        .as_str()
+        .expect("disabled path")
+        .starts_with(first_data.path().to_string_lossy().as_ref()));
+
+    let first_list = first_server
+        .post("/api/acp_list_agent_skills")
+        .add_header("authorization", format!("Bearer {TEST_TOKEN}"))
+        .json(&json!({
+            "agentType": "kimi_code",
+            "workspacePath": workspace_path
+        }))
+        .await;
+    assert_eq!(first_list.status_code(), 200, "body: {}", first_list.text());
+    let first_body: Value = first_list.json();
+    let first_skill = first_body["skills"]
+        .as_array()
+        .expect("skills array")
+        .iter()
+        .find(|skill| skill["id"] == skill_id)
+        .expect("first server sees its disabled skill");
+    assert_eq!(first_skill["enabled"], false);
+
+    let second_list = second_server
+        .post("/api/acp_list_agent_skills")
+        .add_header("authorization", format!("Bearer {TEST_TOKEN}"))
+        .json(&json!({
+            "agentType": "kimi_code",
+            "workspacePath": workspace_path
+        }))
+        .await;
+    assert_eq!(
+        second_list.status_code(),
+        200,
+        "body: {}",
+        second_list.text()
+    );
+    let second_body: Value = second_list.json();
+    assert!(!second_body["skills"]
+        .as_array()
+        .expect("skills array")
+        .iter()
+        .any(|skill| skill["id"] == skill_id));
 }
 
 // ────────────────────────────────────────────────────────────────────────────

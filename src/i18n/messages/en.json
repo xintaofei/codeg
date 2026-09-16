@@ -544,6 +544,21 @@
     "noSelectionHint": "Select a skill on the left, or click \"New Skill\" to create one.",
     "systemBadge": "System",
     "systemHint": "Built-in CLI skill · read-only",
+    "availability": {
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "toggleAria": "Toggle {skill} for {agent}",
+      "readOnly": "This skill's files are read-only and cannot be toggled here.",
+      "sharedRoot": "This skill is installed in a directory shared by multiple agents, so it cannot be disabled for only this agent.",
+      "managedElsewhere": "This skill is managed from the Experts, Office, Science, or Custom Skills page.",
+      "storageConflict": "Resolve the duplicate skill or destination conflict before toggling.",
+      "unsafeLink": "This skill contains a link that would change or break if moved.",
+      "crossFilesystem": "This skill and its disabled vault are on different filesystems, so it cannot be moved safely.",
+      "legacyState": "This skill uses an older disabled layout and must be recovered manually before toggling.",
+      "bundledDisabled": "Bundled skills are disabled by the global Codex configuration.",
+      "configError": "The agent's skill availability configuration could not be read safely.",
+      "unavailable": "This skill cannot be toggled."
+    },
     "scope": {
       "global": "Global",
       "folder": "Folder",
@@ -579,7 +594,11 @@
       "created": "Skill created",
       "saveFailed": "Failed to save skill",
       "deleted": "Skill deleted",
-      "deleteFailed": "Failed to delete skill"
+      "deleteFailed": "Failed to delete skill",
+      "enabled": "Skill enabled",
+      "disabled": "Skill disabled",
+      "codexNewSession": "Applies to new Codex sessions. Existing sessions may retain skills they already loaded.",
+      "toggleFailed": "Failed to update skill availability"
     },
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",

@@ -1699,6 +1699,7 @@ mod tauri_app {
                 crate::commands::custom_agents::acp_add_registry_agent,
                 crate::commands::custom_agents::acp_current_platform,
                 acp_commands::acp_list_agent_skills,
+                acp_commands::acp_set_agent_skill_enabled,
                 acp_commands::acp_read_agent_skill,
                 acp_commands::acp_save_agent_skill,
                 acp_commands::acp_delete_agent_skill,
