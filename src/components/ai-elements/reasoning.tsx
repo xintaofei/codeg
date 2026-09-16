@@ -9,6 +9,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/instant-collapsible"
+import { useCodeTheme } from "@/hooks/use-appearance"
 import { cn } from "@/lib/utils"
 import { BrainIcon, ChevronDownIcon } from "lucide-react"
 import {
@@ -255,6 +256,7 @@ export const ReasoningContent = memo(
       [children]
     )
     const plugins = useStreamdownPlugins(normalized)
+    const shikiTheme = useCodeTheme()
 
     return (
       <CollapsibleContent
@@ -266,6 +268,7 @@ export const ReasoningContent = memo(
         {...props}
       >
         <Streamdown
+          shikiTheme={shikiTheme}
           plugins={plugins}
           remarkPlugins={remarkPlugins}
           {...props}
