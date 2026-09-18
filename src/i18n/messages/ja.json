@@ -3422,7 +3422,13 @@
         "completedAt": "完了時刻",
         "jumpToPreviousUserMessage": "前のユーザーメッセージへ",
         "showMore": "もっと見る",
-        "showLess": "折りたたむ"
+        "showLess": "折りたたむ",
+        "findPlaceholder": "Find in conversation…",
+        "findMatchOf": "{index} of {count}",
+        "findNoResults": "No results",
+        "findPrev": "Previous match",
+        "findNext": "Next match",
+        "findClose": "Close find"
       },
       "liveTurnStats": {
         "thinking": "考え中...",

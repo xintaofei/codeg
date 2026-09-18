@@ -3422,7 +3422,13 @@
         "completedAt": "완료 시각",
         "jumpToPreviousUserMessage": "이전 사용자 메시지로 이동",
         "showMore": "더보기",
-        "showLess": "접기"
+        "showLess": "접기",
+        "findPlaceholder": "Find in conversation…",
+        "findMatchOf": "{index} of {count}",
+        "findNoResults": "No results",
+        "findPrev": "Previous match",
+        "findNext": "Next match",
+        "findClose": "Close find"
       },
       "liveTurnStats": {
         "thinking": "생각 중...",

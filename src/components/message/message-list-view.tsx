@@ -69,7 +69,7 @@ import {
   extractLatestPlanEntriesFromMessages,
 } from "@/lib/agent-plan"
 import type { AgentType, ConnectionStatus, MessageTurn } from "@/lib/types"
-import { copyTextToClipboard } from "@/lib/utils"
+import { copyTextToClipboard, cn } from "@/lib/utils"
 import { VirtualizedMessageThread } from "@/components/message/virtualized-message-thread"
 import { SelectionActionBubble } from "@/components/message/selection-action-bubble"
 import {
@@ -77,6 +77,10 @@ import {
   type MessageNavEntry,
 } from "@/components/message/conversation-message-nav"
 import type { MessageScrollContextValue } from "@/components/message/message-scroll-context"
+import {
+  extractFindableText,
+  FindInChatBar,
+} from "@/components/message/find-in-chat"
 import { extractSessionFilesGrouped } from "@/lib/session-files"
 import { unescapeComposerText } from "@/lib/composer-copy-text"
 import { useStickToBottomContext } from "use-stick-to-bottom"
@@ -1322,6 +1326,97 @@ export function MessageListView({
     [historicalPlanEntries]
   )
 
+  // --- Find in chat (⌘F / Ctrl+F) -----------------------------------------
+  // Searches the message prose of the LOADED transcript window only — the same
+  // accepted degradation as the message navigator (paging in older history
+  // extends what's findable; match indices are recomputed per prepend, so
+  // they never go stale).
+  const [findOpen, setFindOpen] = useState(false)
+  const [findQuery, setFindQuery] = useState("")
+  const [findHit, setFindHit] = useState(0)
+
+  const findClose = useCallback(() => {
+    setFindOpen(false)
+    setFindQuery("")
+  }, [])
+
+  // New query → restart at the first hit. Adjusted during render (the React
+  // pattern for state derived from other state) — an effect here would paint
+  // a stale hit first.
+  const [prevFindQuery, setPrevFindQuery] = useState(findQuery)
+  if (prevFindQuery !== findQuery) {
+    setPrevFindQuery(findQuery)
+    setFindHit(0)
+  }
+
+  const findMatches = useMemo(() => {
+    const q = findQuery.trim().toLowerCase()
+    if (!findOpen || q.length === 0) {
+      return [] as { threadIndex: number; key: string }[]
+    }
+    const out: { threadIndex: number; key: string }[] = []
+    // Occurrence-level granularity: one row can hold several hits. The cap
+    // keeps a pathological query ("e") over a huge window bounded.
+    const MAX_MATCHES = 500
+    for (let i = 0; i < threadItems.length && out.length < MAX_MATCHES; i++) {
+      const item = threadItems[i]
+      if (item.kind !== "turn") continue
+      const hay = extractFindableText(item).toLowerCase()
+      let pos = hay.indexOf(q)
+      while (pos !== -1 && out.length < MAX_MATCHES) {
+        out.push({ threadIndex: i, key: item.key })
+        pos = hay.indexOf(q, pos + q.length)
+      }
+    }
+    return out
+  }, [findOpen, findQuery, threadItems])
+
+  const findMatchCount = findMatches.length
+  const activeFindHit =
+    findMatchCount > 0
+      ? findMatches[Math.min(findHit, findMatchCount - 1)]
+      : null
+  const activeFindThreadIndex = activeFindHit?.threadIndex ?? null
+
+  // Scoped to the active transcript so background tabs never steal the
+  // shortcut. Declines inside terminal regions, where ⌘F may belong to the
+  // multiplexer (same precedent as the tab-switch chord decline in
+  // workspace-chrome-controller).
+  useEffect(() => {
+    if (!isActive) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (findOpen && e.key === "Escape") {
+        e.preventDefault()
+        setFindOpen(false)
+        setFindQuery("")
+        return
+      }
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "f") return
+      const target = e.target as Element | null
+      if (target && target.closest('[data-terminal-panel-region="true"]')) {
+        return
+      }
+      e.preventDefault()
+      setFindOpen(true)
+    }
+    document.addEventListener("keydown", onKeyDown)
+    return () => document.removeEventListener("keydown", onKeyDown)
+  }, [isActive, findOpen])
+
+  // Jump the virtualizer to the current hit; re-runs when the hit moves
+  // (next/prev) or a new query recomputes the match list.
+  useEffect(() => {
+    if (!findOpen || activeFindThreadIndex == null) return
+    scrollApiRef.current?.scrollToIndex(activeFindThreadIndex, {
+      align: "center",
+    })
+  }, [findOpen, activeFindThreadIndex])
+
+  // Lifted scroll handle — shared by find-in-chat above and the message
+  // navigator panel below (both live outside the MessageScrollProvider
+  // subtree and drive scrollToIndex).
+  const scrollApiRef = useRef<MessageScrollContextValue | null>(null)
+
   // A turn in flight doesn't take the fork affordance away, it greys it out:
   // the host keeps `onForkFromTurn` set for the whole "prompting" window (see
   // its gate in `conversation-detail-panel`), and every reply's footer says
@@ -1337,8 +1432,16 @@ export function MessageListView({
             item.group.role === "user" && userTurnHeader
               ? userTurnHeader(item.group)
               : null
+          const isFindHit = findOpen && activeFindHit?.key === item.key
           return (
-            <div style={pt > 0 ? { paddingTop: pt } : undefined}>
+            <div
+              style={pt > 0 ? { paddingTop: pt } : undefined}
+              className={cn(
+                "rounded-lg",
+                isFindHit &&
+                  "ring-2 ring-amber-400/70 ring-offset-2 ring-offset-background"
+              )}
+            >
               {phaseLabel ? (
                 <div className="flex items-center gap-2 px-1 pb-3 pt-1">
                   <span aria-hidden="true" className="h-px flex-1 bg-border" />
@@ -1387,6 +1490,8 @@ export function MessageListView({
       handleRoundOpenChange,
       onForkFromTurn,
       forkBusy,
+      findOpen,
+      activeFindHit?.key,
     ]
   )
 
@@ -1441,9 +1546,6 @@ export function MessageListView({
     : `subagents-history-${conversationId}`
 
   // --- Message navigator panel ------------------------------------------------
-  // Lifted scroll handle so the panel (which lives in the overlay stack, outside
-  // the MessageScrollProvider subtree) can drive scrollToIndex.
-  const scrollApiRef = useRef<MessageScrollContextValue | null>(null)
   // Collapse state is owned here (not in the panel) so the expensive per-file
   // `navEntries` is computed only while the panel is open.
   const [navExpanded, setNavExpanded] = useState(false)
@@ -1634,6 +1736,28 @@ export function MessageListView({
               )}
               {t("loadBackgroundActivity")}
             </Button>
+          )}
+          {findOpen && (
+            <FindInChatBar
+              query={findQuery}
+              onQueryChange={setFindQuery}
+              count={findMatchCount}
+              index={activeFindHit ? Math.min(findHit, findMatchCount - 1) : 0}
+              onNext={
+                findMatchCount > 0
+                  ? () => setFindHit((h) => (h + 1) % findMatchCount)
+                  : () => {}
+              }
+              onPrev={
+                findMatchCount > 0
+                  ? () =>
+                      setFindHit(
+                        (h) => (h - 1 + findMatchCount) % findMatchCount
+                      )
+                  : () => {}
+              }
+              onClose={findClose}
+            />
           )}
         </MessageThread>
         {liveMessage && connStatus === "prompting" && (

@@ -3422,7 +3422,13 @@
         "completedAt": "Concluído às",
         "jumpToPreviousUserMessage": "Ir para a mensagem do usuário",
         "showMore": "Mostrar mais",
-        "showLess": "Mostrar menos"
+        "showLess": "Mostrar menos",
+        "findPlaceholder": "Find in conversation…",
+        "findMatchOf": "{index} of {count}",
+        "findNoResults": "No results",
+        "findPrev": "Previous match",
+        "findNext": "Next match",
+        "findClose": "Close find"
       },
       "liveTurnStats": {
         "thinking": "Pensando...",
