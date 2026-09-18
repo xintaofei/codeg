@@ -9,6 +9,7 @@ import type {
   FolderDetail,
   FolderLinkDetail,
   FolderLinkPlan,
+  RemoteWorkspaceConnection,
 } from "@/lib/types"
 import { WorkspaceFolderDialog } from "./workspace-folder-dialog"
 
@@ -36,6 +37,21 @@ vi.mock("@/lib/platform", () => ({
 }))
 vi.mock("@/lib/transport", () => ({
   getActiveRemoteConnectionId: () => null,
+}))
+
+// The chooser runs on top of the real `useRemoteWorkspaceConnections` hook, so
+// only the module it reads from is faked.
+const remote = vi.hoisted(() => ({
+  listRemoteWorkspaceConnections: vi.fn<() => Promise<unknown[]>>(
+    async () => []
+  ),
+  getRemoteHomeDirectory: vi.fn<() => Promise<string>>(async () => "/srv"),
+  listRemoteDirectoryEntries: vi.fn<() => Promise<unknown[]>>(async () => []),
+  openRemoteWorkspaceFolder: vi.fn<() => Promise<void>>(async () => {}),
+}))
+vi.mock("@/lib/remote-workspace", () => ({
+  ...remote,
+  REMOTE_OPEN_FOLDER_EVENT: "remote-open-folder",
 }))
 
 const openFolder = vi.hoisted(() => vi.fn())
@@ -82,6 +98,22 @@ const link = (overrides: Partial<FolderLinkDetail> = {}): FolderLinkDetail => ({
   ...overrides,
 })
 
+/**
+ * Mounted closed, like the real dialogs: the connection list loads before the
+ * first open, which is what lets the chooser be the first thing shown.
+ */
+function ClosedHarness() {
+  const [open, setOpen] = useState(false)
+  return (
+    <NextIntlClientProvider locale="en" messages={enMessages}>
+      <button type="button" onClick={() => setOpen(true)}>
+        show
+      </button>
+      <WorkspaceFolderDialog open={open} onOpenChange={setOpen} />
+    </NextIntlClientProvider>
+  )
+}
+
 const plan = (overrides: Partial<FolderLinkPlan> = {}): FolderLinkPlan => ({
   targetPath: "/home/me/work/api",
   baseName: "api",
@@ -90,6 +122,20 @@ const plan = (overrides: Partial<FolderLinkPlan> = {}): FolderLinkPlan => ({
   collidesWithExistingEntry: false,
   rejection: null,
   existingLinkName: null,
+  ...overrides,
+})
+
+const connection = (
+  overrides: Partial<RemoteWorkspaceConnection> = {}
+): RemoteWorkspaceConnection => ({
+  id: 3,
+  name: "Beast",
+  base_url: "http://beast.local:3000",
+  token: "secret",
+  headers: [],
+  sort_order: 0,
+  created_at: "2026-08-03T00:00:00Z",
+  updated_at: "2026-08-03T00:00:00Z",
   ...overrides,
 })
 
@@ -115,6 +161,10 @@ beforeEach(() => {
   api.previewFolderLinks.mockResolvedValue([])
   api.createFolderLinks.mockResolvedValue([])
   openFolder.mockResolvedValue(folder())
+  remote.listRemoteWorkspaceConnections.mockResolvedValue([])
+  remote.getRemoteHomeDirectory.mockResolvedValue("/srv")
+  remote.listRemoteDirectoryEntries.mockResolvedValue([])
+  remote.openRemoteWorkspaceFolder.mockResolvedValue(undefined)
 })
 
 describe("WorkspaceFolderDialog — creation flow", () => {
@@ -569,6 +619,172 @@ describe("WorkspaceFolderDialog — native picker", () => {
     render(<Harness />)
     await screen.findByDisplayValue("/home/me")
     expect(screen.queryByRole("button", { name: "System picker" })).toBeNull()
+  })
+})
+
+describe("WorkspaceFolderDialog — workspace chooser", () => {
+  // Every case opens the dialog only after the connection list has settled:
+  // the view shown on open is decided at that moment.
+  async function openWithConnections(list: RemoteWorkspaceConnection[]) {
+    platform.desktop = true
+    remote.listRemoteWorkspaceConnections.mockResolvedValue(list)
+    render(<ClosedHarness />)
+    await act(async () => {})
+    await act(async () => {
+      fireEvent.click(screen.getByText("show"))
+    })
+  }
+
+  it("asks which workspace to browse when connections exist", async () => {
+    await openWithConnections([connection()])
+
+    expect(
+      screen.getByText("Choose which workspace to open a folder from.")
+    ).toBeInTheDocument()
+    expect(screen.getByText("This PC")).toBeInTheDocument()
+    expect(screen.getByText("Beast")).toBeInTheDocument()
+    expect(screen.getByText("http://beast.local:3000")).toBeInTheDocument()
+  })
+
+  it("goes straight to the local browser when nothing is connected", async () => {
+    await openWithConnections([])
+
+    await screen.findByDisplayValue("/home/me")
+    expect(screen.queryByText("This PC")).toBeNull()
+  })
+
+  it("offers the chooser for a connection added while it sat closed", async () => {
+    // Nothing connected when the dialog mounts...
+    platform.desktop = true
+    render(<ClosedHarness />)
+    await act(async () => {})
+    // ...then a connection appears from the settings window.
+    remote.listRemoteWorkspaceConnections.mockResolvedValue([connection()])
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("show"))
+    })
+
+    // The stale list would have opened straight into this machine's folders;
+    // the load that runs on open has to correct it.
+    expect(await screen.findByText("Beast")).toBeInTheDocument()
+  })
+
+  it("drops the chooser when the last connection is removed", async () => {
+    platform.desktop = true
+    remote.listRemoteWorkspaceConnections.mockResolvedValue([connection()])
+    render(<ClosedHarness />)
+    await act(async () => {})
+    remote.listRemoteWorkspaceConnections.mockResolvedValue([])
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("show"))
+    })
+
+    // Nothing left to choose between, so it settles on this machine instead of
+    // leaving an empty chooser on screen.
+    await screen.findByDisplayValue("/home/me")
+    expect(screen.queryByText("This PC")).toBeNull()
+  })
+
+  it("filters the workspaces by name", async () => {
+    await openWithConnections([
+      connection(),
+      connection({ id: 4, name: "Garage", base_url: "http://garage.local" }),
+    ])
+
+    const search = await screen.findByPlaceholderText("Search workspaces")
+    fireEvent.change(search, { target: { value: "gar" } })
+
+    expect(screen.getByText("Garage")).toBeInTheDocument()
+    expect(screen.queryByText("Beast")).toBeNull()
+    // The local machine drops out too — the filter covers the whole list.
+    expect(screen.queryByText("This PC")).toBeNull()
+  })
+
+  it("says so when nothing matches", async () => {
+    await openWithConnections([connection()])
+
+    const search = await screen.findByPlaceholderText("Search workspaces")
+    fireEvent.change(search, { target: { value: "nope" } })
+
+    expect(screen.getByText("No workspace matches “nope”")).toBeInTheDocument()
+  })
+
+  it("browses the chosen remote host, not this machine", async () => {
+    remote.listRemoteDirectoryEntries.mockResolvedValue([
+      dir("projects", "/srv/projects"),
+    ])
+    await openWithConnections([connection()])
+    await act(async () => {
+      fireEvent.click(await screen.findByText("Beast"))
+    })
+
+    await screen.findByDisplayValue("/srv")
+    expect(api.getHomeDirectory).not.toHaveBeenCalled()
+    expect(remote.getRemoteHomeDirectory).toHaveBeenCalledWith(3)
+    expect(remote.listRemoteDirectoryEntries).toHaveBeenCalledWith(3, "/srv")
+    // The system picker opens a dialog on this machine — useless for a remote.
+    expect(screen.queryByRole("button", { name: "System picker" })).toBeNull()
+  })
+
+  it("opens a remote folder in its own workspace window", async () => {
+    remote.listRemoteDirectoryEntries.mockResolvedValue([
+      dir("projects", "/srv/projects"),
+    ])
+    await openWithConnections([connection()])
+    await act(async () => {
+      fireEvent.click(await screen.findByText("Beast"))
+    })
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: /projects/ }))
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Open" }))
+    })
+
+    // The folder lives on the other host, so it is handed over rather than
+    // opened here — and there is no linking step to advance to.
+    expect(remote.openRemoteWorkspaceFolder).toHaveBeenCalledWith(
+      3,
+      "/srv/projects"
+    )
+    expect(openFolder).not.toHaveBeenCalled()
+  })
+
+  it("surfaces a failed handoff with the workspace name", async () => {
+    remote.openRemoteWorkspaceFolder.mockRejectedValue(new Error("offline"))
+    await openWithConnections([connection()])
+    await act(async () => {
+      fireEvent.click(await screen.findByText("Beast"))
+    })
+    const box = await screen.findByDisplayValue("/srv")
+    fireEvent.change(box, { target: { value: "/srv/projects" } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Open" }))
+    })
+
+    expect(toast.error).toHaveBeenCalledWith(
+      "Failed to open the folder on Beast",
+      expect.anything()
+    )
+  })
+
+  it("can switch workspace from the browser and back to this PC", async () => {
+    await openWithConnections([connection()])
+    await act(async () => {
+      fireEvent.click(await screen.findByText("Beast"))
+    })
+    await act(async () => {
+      fireEvent.click(await screen.findByText("Change"))
+    })
+    await act(async () => {
+      fireEvent.click(await screen.findByText("This PC"))
+    })
+
+    // Back on the local source: this machine's own home directory.
+    await screen.findByDisplayValue("/home/me")
+    expect(api.getHomeDirectory).toHaveBeenCalled()
   })
 })
 

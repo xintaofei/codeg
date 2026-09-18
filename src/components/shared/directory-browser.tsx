@@ -48,6 +48,24 @@ import type { DirectoryEntry } from "@/lib/types"
 export const normalizeFsPath = (path: string) =>
   path.replace(/[/\\]+$/, "") || path
 
+/**
+ * Where a browsing session reads its directories from. Defaults to this
+ * window's own backend; a host browsing another workspace (a remote codeg
+ * -server, say) swaps in a source that talks to it directly.
+ */
+export interface DirectoryBrowserFileSystem {
+  home: () => Promise<string>
+  list: (path: string) => Promise<DirectoryEntry[]>
+}
+
+// Wrapped rather than passed by reference: a module-scope binding to the mock
+// would make every test that imports this panel (minimally mocked `@/lib/api`
+// included) need those two exports at import time.
+const localFileSystem: DirectoryBrowserFileSystem = {
+  home: () => getHomeDirectory(),
+  list: (path: string) => listDirectoryEntries(path),
+}
+
 // Synchronous layout effect on the client (so the session/selection guards see
 // the latest committed values before any pending async work resolves), but a
 // passive effect during the static-export prerender to avoid the SSR warning.
@@ -85,6 +103,12 @@ interface DirectoryBrowserProps {
   onQuickSelect?: (path: string) => void
   /** Mirrors the panel's in-flight confirm so hosts can disable their button. */
   onBusyChange?: (busy: boolean) => void
+  /**
+   * Backend the tree is read from. Changing this while mounted is not
+   * supported — hosts that switch source (local ↔ remote workspace) unmount
+   * the panel or drop `active` first so the next session starts clean.
+   */
+  fileSystem?: DirectoryBrowserFileSystem
   /** Turns rows into checkboxes; `value` still tracks the last row clicked. */
   multiple?: boolean
   selectedPaths?: string[]
@@ -115,6 +139,7 @@ export const DirectoryBrowser = forwardRef<
     onValueChange,
     onQuickSelect,
     onBusyChange,
+    fileSystem,
     multiple = false,
     selectedPaths,
     onToggleSelected,
@@ -125,6 +150,9 @@ export const DirectoryBrowser = forwardRef<
 ) {
   const t = useTranslations("DirectoryBrowser")
   const ime = useImeGuard()
+  // Hosts pass a stable (memoized) source: an inline object would restart the
+  // session on every render.
+  const fs = fileSystem ?? localFileSystem
 
   const [rootPath, setRootPath] = useState("")
   const [entries, setEntries] = useState<Map<string, DirectoryEntry[]>>(
@@ -144,12 +172,19 @@ export const DirectoryBrowser = forwardRef<
   // would otherwise bump again and strand the first init's in-flight writes).
   const sessionGen = useRef(0)
   const prevActive = useRef(active)
+  const prevFileSystem = useRef(fileSystem)
   useIsomorphicLayoutEffect(() => {
-    if (prevActive.current !== active) {
+    // A source swap (local ↔ remote workspace) is a new session for the same
+    // reason a hide/show is: everything the previous source cached is invalid.
+    if (
+      prevActive.current !== active ||
+      prevFileSystem.current !== fileSystem
+    ) {
       prevActive.current = active
+      prevFileSystem.current = fileSystem
       sessionGen.current += 1
     }
-  }, [active])
+  }, [active, fileSystem])
   // Monotonic navigation id. Each navigateTo() bumps it and the open-time init()
   // captures it, so within a single session a slower earlier navigation (or a
   // late init) can't overwrite the destination of a newer one — the latest user
@@ -179,7 +214,7 @@ export const DirectoryBrowser = forwardRef<
       setLoading((prev) => new Set(prev).add(path))
       setError(null)
       try {
-        const result = await listDirectoryEntries(path)
+        const result = await fs.list(path)
         // Skip writes if a hide/show happened mid-flight — they belong to a
         // session that no longer exists and would surface stale data.
         if (gen === sessionGen.current) {
@@ -199,7 +234,7 @@ export const DirectoryBrowser = forwardRef<
         }
       }
     },
-    [entries, t]
+    [entries, fs, t]
   )
 
   const navigateTo = useCallback(
@@ -243,7 +278,7 @@ export const DirectoryBrowser = forwardRef<
 
     const init = async () => {
       try {
-        const startPath = initialPath || (await getHomeDirectory())
+        const startPath = initialPath || (await fs.home())
         // Drop these writes if a hide/show superseded this init, or the user
         // already navigated somewhere else while the start dir was loading.
         if (gen !== sessionGen.current || seq !== navSeq.current) return
@@ -251,7 +286,7 @@ export const DirectoryBrowser = forwardRef<
         onValueChange(startPath)
         setLoading(new Set([startPath]))
 
-        const result = await listDirectoryEntries(startPath)
+        const result = await fs.list(startPath)
         if (gen !== sessionGen.current || seq !== navSeq.current) return
         setEntries(new Map([[startPath, result]]))
         setLoading(new Set())
@@ -322,14 +357,14 @@ export const DirectoryBrowser = forwardRef<
   const handleGoHome = useCallback(async () => {
     const gen = sessionGen.current
     try {
-      const home = await getHomeDirectory()
+      const home = await fs.home()
       if (gen !== sessionGen.current) return
       navigateTo(home)
     } catch {
       if (gen !== sessionGen.current) return
       setError(t("errorLoadingDir"))
     }
-  }, [navigateTo, t])
+  }, [fs, navigateTo, t])
 
   const handlePathInputKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
