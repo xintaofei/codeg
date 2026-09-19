@@ -2149,7 +2149,13 @@ export function MessageInput({
                 isExternalMenuOpen={slashMenuVisible}
                 onExternalMenuKeyDown={handleExternalMenuKeyDown}
                 onHistoryKeyDown={handleHistoryKeyDown}
-                className="min-h-0 flex-1"
+                // `grow`, not `flex-1`: this box's height comes from the
+                // `min-height` the host passes below, and an engine that reads
+                // a min-height-only flex column as main-size-indefinite gives
+                // its `flex-grow` children nothing. A zero basis then collapses
+                // the editor to 0px and strands the action row at the top of
+                // the box (#746); a content basis cannot. See RichComposer.
+                className="min-h-0 grow"
               />
               <div className="flex shrink-0 items-end justify-between gap-1 px-2 pb-2">
                 <div className="flex min-w-0 items-end gap-1">

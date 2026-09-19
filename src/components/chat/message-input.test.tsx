@@ -1965,3 +1965,64 @@ describe("MessageInput prompt history", () => {
     expect(handle.getText()).toBe("queued edit")
   })
 })
+
+/**
+ * The composer box is a flex column: editor on top, action row pinned under
+ * it. On mobile web the editor was collapsing to 0px, which floated the add /
+ * agent / stop controls to the TOP of the box and left the rest of it as blank
+ * dead space that could not be focused (#746).
+ *
+ * jsdom cannot measure any of that, so these lock the declared contract the
+ * geometry rests on. Real pixel behaviour is covered by the manual pass in the
+ * PR description.
+ */
+describe("MessageInput composer box sizing (#746)", () => {
+  it("sizes the editor off a content basis so it cannot collapse to zero", async () => {
+    const { container } = renderInput({})
+    await waitFor(() =>
+      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+
+    const chrome = container.querySelector(".codeg-composer-chrome")
+    expect(chrome).not.toBeNull()
+    const chromeClasses = chrome!.className.split(/\s+/)
+    expect(chromeClasses).toContain("flex")
+    expect(chromeClasses).toContain("flex-col")
+
+    const editorRoot = chrome!.querySelector(".codeg-composer")
+    expect(editorRoot).not.toBeNull()
+    const editorClasses = editorRoot!.className.split(/\s+/)
+    // A zero basis (`flex-1`) only reaches its intended height by absorbing the
+    // box's free space. Engines that read a min-height-only flex column as
+    // main-size-indefinite hand out none, and the editor lands at 0px.
+    expect(editorClasses).not.toContain("flex-1")
+    expect(editorClasses).toContain("grow")
+  })
+
+  it("keeps the action row a fixed-height last child, below the editor", async () => {
+    const { container } = renderInput({ isPrompting: true, onCancel: vi.fn() })
+    await waitFor(() =>
+      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+
+    const chrome = container.querySelector(".codeg-composer-chrome")!
+    const editorRoot = chrome.querySelector(".codeg-composer")!
+    // The row holding the add menu / agent settings / stop button.
+    const actionRow = chrome.querySelector(":scope > .shrink-0.items-end")
+    expect(actionRow).not.toBeNull()
+
+    // Stop lives in that row (it is what appeared top-right in the report).
+    expect(
+      actionRow!.querySelector(
+        `button[title="${enMessages.Folder.chat.messageInput.cancel}"]`
+      )
+    ).not.toBeNull()
+
+    // Document order: editor first, action row after it. Anything else and the
+    // controls render above the text, which is the reported symptom.
+    expect(
+      editorRoot.compareDocumentPosition(actionRow!) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+  })
+})
