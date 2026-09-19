@@ -1641,6 +1641,7 @@ export function MessageListView({
             message={liveMessage}
             agentType={agentType}
             isStreaming={connStatus === "prompting"}
+            conversationId={conversationId}
           />
         )}
         {/* Shared overlay stack pinned to the inline-start edge (top-left in LTR,
