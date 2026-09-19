@@ -397,6 +397,12 @@ pub enum AcpEvent {
     /// itself is not rendered. Omitted when the update carries no title so
     /// goal-only `session_info_update`s stay off the lifecycle path.
     NativeSessionTitle { title: String },
+    /// Claude Code `/clear` rolled the on-disk transcript to a new uuid while
+    /// the public ACP session id stayed the same. The watcher adopted the new
+    /// file; the lifecycle worker re-points `conversation.external_id` so
+    /// reopen reads post-clear turns. Does NOT change `SessionState.external_id`
+    /// (that id is still the live ACP session).
+    TranscriptRolledOver { transcript_id: String },
     /// Backend has transitioned the conversation row's `status` column.
     /// Emitted by `send_prompt_linked` (`InProgress`) and the lifecycle
     /// subscriber on `TurnComplete` (`PendingReview`). The frontend mirrors

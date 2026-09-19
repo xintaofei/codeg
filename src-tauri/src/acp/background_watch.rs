@@ -66,8 +66,9 @@ use crate::acp::types::{AcpEvent, BackgroundSettledInfo, ConnectionStatus};
 use crate::models::agent::AgentType;
 use crate::models::message::MessageTurn;
 use crate::parsers::claude::{
-    capture_tag, capture_title_record, find_session_file, group_into_turns, is_meta_message,
-    slash_command_display, task_notification_result_regex, task_notification_status_regex,
+    capture_tag, capture_title_record, find_clear_rollover_successor, find_session_file,
+    follow_clear_rollover_chain, group_into_turns, is_meta_message, slash_command_display,
+    task_notification_result_regex, task_notification_status_regex,
     task_notification_summary_regex, task_notification_task_id_regex,
     task_notification_tool_use_id_regex, ClaudeRecordAccumulator, BACKGROUND_RESULT_MAX_CHARS,
     CONTEXT_CONTINUATION_PREFIX,
@@ -389,6 +390,22 @@ async fn run_watch(
             }
         }
 
+        if let Some(new_id) = ws.pending_transcript_id.take() {
+            tracing::info!(
+                "[bg-watch] transcript rollover connection={} to={}",
+                conn_id,
+                new_id
+            );
+            emit_with_state(
+                &state,
+                &emitter,
+                AcpEvent::TranscriptRolledOver {
+                    transcript_id: new_id,
+                },
+            )
+            .await;
+        }
+
         if let Some(event) = event {
             if let AcpEvent::BackgroundActivity {
                 turns,
@@ -554,6 +571,10 @@ pub(crate) struct WatchState {
     /// when a title RECORD actually changed the resolution, so a session with
     /// a settled name costs nothing per tick.
     pending_title: Option<String>,
+    /// Transcript uuid of a Claude `/clear` rollover this watch just adopted.
+    /// The ACP session id is unchanged, so this is the id `conversation.external_id`
+    /// must be re-pointed at. Consumed by `run_watch` after the tick.
+    pending_transcript_id: Option<String>,
 }
 
 impl WatchState {
@@ -585,6 +606,7 @@ impl WatchState {
             custom_title: None,
             ai_title: None,
             pending_title: None,
+            pending_transcript_id: None,
         }
     }
 
@@ -648,6 +670,20 @@ impl WatchState {
         self.settled_ids = settled_ids;
         self.session_id = Some(session_id);
         self.epoch = Some(epoch);
+    }
+
+    /// Switch onto a `/clear` successor transcript without changing the ACP
+    /// session id (the adapter keeps that id). The new file is a fresh
+    /// conversation, so accounting and overlay state reset; overlay events
+    /// still carry the original session id so the frontend can map them.
+    fn adopt_rollover(&mut self, f: PathBuf) {
+        let session_id = self.session_id.take();
+        let pending = self.pending_transcript_id.take();
+        *self = Self::new();
+        self.session_id = session_id;
+        self.pending_transcript_id = pending;
+        self.epoch = Some(std::time::UNIX_EPOCH);
+        self.adopt_file(f);
     }
 
     fn poll_delay(&self) -> Duration {
@@ -737,10 +773,26 @@ impl WatchState {
         let expired_any = self.tasks.len() != before;
 
         // Locate the transcript (it may not exist yet for a brand-new
-        // session; retry every tick until it does).
+        // session; retry every tick until it does). `/clear` leaves the
+        // original `{session_id}.jsonl` in place and writes a sibling uuid
+        // file — follow that chain so we never arm the frozen file.
         if self.file.is_none() {
             if let Some(f) = find_session_file(&session_id) {
-                self.adopt_file(f);
+                let (resolved_id, resolved_path) =
+                    follow_clear_rollover_chain(&f, &session_id);
+                if resolved_id != session_id {
+                    tracing::info!(
+                        "[bg-watch] /clear rollover on arm connection={} from={} to={} file={}",
+                        conn_id,
+                        session_id,
+                        resolved_id,
+                        resolved_path.display()
+                    );
+                    self.pending_transcript_id = Some(resolved_id);
+                    self.adopt_rollover(resolved_path);
+                } else {
+                    self.adopt_file(f);
+                }
             }
             if let Some(f) = &self.file {
                 if !self.armed_logged {
@@ -752,6 +804,22 @@ impl WatchState {
                         self.committed,
                         f.display()
                     );
+                }
+            }
+        } else if let Some(current) = self.file.clone() {
+            if let Some((new_id, new_path)) =
+                find_clear_rollover_successor(&current, &session_id)
+            {
+                if self.file.as_ref() != Some(&new_path) {
+                    tracing::info!(
+                        "[bg-watch] /clear rollover connection={} from={} to={} file={}",
+                        conn_id,
+                        session_id,
+                        new_id,
+                        new_path.display()
+                    );
+                    self.pending_transcript_id = Some(new_id);
+                    self.adopt_rollover(new_path);
                 }
             }
         }
@@ -1881,6 +1949,83 @@ mod tests {
             unpack(tick_now(&mut ws, &ledger).unwrap());
         assert_eq!(outstanding, 0);
         assert_eq!(settled.len(), 1);
+    }
+
+    fn clear_command(session_id: &str, ts: &str) -> String {
+        format!(
+            r#"{{"type":"user","timestamp":"{ts}","uuid":"u-clear","sessionId":"{session_id}","message":{{"role":"user","content":"<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>"}}}}"#
+        )
+    }
+
+    fn dated_user(session_id: &str, uuid: &str, ts: &str, text: &str) -> String {
+        format!(
+            r#"{{"type":"user","timestamp":"{ts}","uuid":"{uuid}","sessionId":"{session_id}","message":{{"role":"user","content":[{{"type":"text","text":"{text}"}}]}}}}"#
+        )
+    }
+
+    fn dated_assistant(session_id: &str, uuid: &str, ts: &str, text: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"{ts}","uuid":"{uuid}","sessionId":"{session_id}","message":{{"role":"assistant","content":[{{"type":"text","text":"{text}"}}]}}}}"#
+        )
+    }
+
+    /// `/clear` keeps the ACP session id but writes a NEW sibling jsonl.
+    /// The watcher must leave the frozen file and tail the successor so
+    /// post-clear out-of-turn records (and the reopen reader, via the
+    /// pending transcript id) are not stranded on a file nobody writes to.
+    #[test]
+    fn clear_rollover_adopts_the_new_transcript_while_acp_id_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old-sess.jsonl");
+        let new = dir.path().join("new-sess.jsonl");
+        write_lines(
+            &old,
+            &[
+                &dated_user("old-sess", "u1", "2026-09-01T10:00:00Z", "hello before"),
+                &dated_assistant("old-sess", "a1", "2026-09-01T10:00:05Z", "hi before"),
+            ],
+        );
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("old-sess", old.clone());
+        let _ = tick_now(&mut ws, &ledger);
+
+        write_lines(
+            &new,
+            &[
+                &clear_command("new-sess", "2026-09-01T10:00:06Z"),
+                &dated_user("new-sess", "u2", "2026-09-01T10:01:00Z", "hello after"),
+                &cron_prompt("autonomous after clear"),
+                &dated_assistant("new-sess", "a2", "2026-09-01T10:02:00Z", "hi after"),
+            ],
+        );
+
+        let event = tick_now(&mut ws, &ledger);
+        assert_eq!(
+            ws.file.as_ref(),
+            Some(&new),
+            "watcher must follow the /clear successor file"
+        );
+        assert_eq!(
+            ws.session_id.as_deref(),
+            Some("old-sess"),
+            "ACP session id is unchanged; overlay mapping still uses it"
+        );
+        assert_eq!(
+            ws.pending_transcript_id.as_deref(),
+            Some("new-sess"),
+            "the new transcript uuid is what conversation.external_id must bind"
+        );
+
+        let (turns, ..) = unpack(event.expect("post-clear tail must produce activity"));
+        let blob = serde_json::to_string(&turns).unwrap();
+        assert!(
+            blob.contains("autonomous after clear") || blob.contains("hi after"),
+            "post-clear records on the new file must be tailed: {blob}"
+        );
+        assert!(
+            !blob.contains("hello before"),
+            "pre-clear content stays on the abandoned file"
+        );
     }
 
     /// A `_session/steering` injection reaches the agent outside

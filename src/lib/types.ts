@@ -2528,6 +2528,13 @@ export type AcpEvent =
       title: string
     }
   | {
+      // Claude `/clear` rolled the on-disk transcript to a new uuid. The
+      // backend re-points conversation.external_id; the frontend does not
+      // apply this event itself.
+      type: "transcript_rolled_over"
+      transcript_id: string
+    }
+  | {
       type: "conversation_status_changed"
       conversation_id: number
       status: ConversationStatus

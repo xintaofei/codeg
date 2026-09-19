@@ -4372,6 +4372,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // and reaches the sidebar via `conversation://changed`. Do not flush
           // the streaming queue: this can arrive mid-turn.
           break
+        case "transcript_rolled_over":
+          // Backend re-points conversation.external_id after Claude `/clear`.
+          // Sidebar converges via `conversation://changed`; do not reconnect.
+          break
         case "conversation_linked":
           // Backend just bound (or reaffirmed) the connection's DB conversation
           // row. Phase 3a frontend pre-creates rows for new-tab sends so this
