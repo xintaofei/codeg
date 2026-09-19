@@ -177,6 +177,10 @@ import {
 import { cn } from "@/lib/utils"
 import { FolderAliasLabel } from "./folder-alias-label"
 import { toErrorMessage } from "@/lib/app-error"
+import {
+  useSidebarConversationAttention,
+  useSidebarConversationCompletion,
+} from "./sidebar-conversation-attention"
 
 // Layout effect on the client (so the sticky overlay is positioned before
 // paint) but a no-op-safe passive effect during the static-export prerender.
@@ -926,6 +930,11 @@ export function SidebarConversationList({
 
   const activeTabId = useTabStore((s) => s.activeTabId)
   const tabs = useTabStore((s) => s.tabs)
+  const attentionConversationKeys = useSidebarConversationAttention(tabs)
+  const completedConversationKeys = useSidebarConversationCompletion(
+    tabs,
+    activeTabId
+  )
   const {
     openTab,
     closeConversationTab,
@@ -3009,6 +3018,12 @@ export function SidebarConversationList({
           selectedConversation?.id === conv.id
         }
         isOpenInTab={openTabKeys.has(`${conv.agent_type}:${conv.id}`)}
+        needsAttention={attentionConversationKeys.has(
+          `${conv.agent_type}:${conv.id}`
+        )}
+        hasUnreadCompletion={completedConversationKeys.has(
+          `${conv.agent_type}:${conv.id}`
+        )}
         timeLabel={formatRelative(
           sortMode === "updated" ? conv.updated_at : conv.created_at,
           now
