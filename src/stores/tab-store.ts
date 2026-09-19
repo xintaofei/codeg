@@ -182,6 +182,14 @@ export interface TabStoreState {
   } | null
   childSummaries: Map<number, DbConversationSummary>
   /**
+   * Native sub-session tabs opened from the session-details row, keyed by
+   * child conversation id → parent conversation id. Lets `closeTab` cascade
+   * a child tab away when its parent's tab is closed. This map is in-memory
+   * only (never persisted); after a restart the seeded `childSummaries`
+   * entries — which carry `parent_id` — cover the same set.
+   */
+  childTabParents: Map<number, number>
+  /**
    * Derived from `rawTabs` × `conversations` × `childSummaries`: tab titles and
    * status decorated from the live conversation list, with cross-derive
    * reference reuse so an update that touches no open tab keeps the array (and
@@ -217,6 +225,16 @@ export interface TabStoreState {
    * an `opened_tabs` row) pointing at a deleted conversation.
    */
   closeTab: (tabId: string, options?: { recordForReopen?: boolean }) => void
+  /**
+   * Record that a conversation tab was opened as a native sub-session of
+   * `parentConversationId`, so closing the parent's tab cascades this tab
+   * away too. Called right before `openTab` from the session-details row —
+   * idempotent; re-registering the same pair is a no-op.
+   */
+  registerNativeChildTab: (
+    childConversationId: number,
+    parentConversationId: number
+  ) => void
   closeConversationTab: (
     folderId: number,
     conversationId: number,
@@ -1102,6 +1120,7 @@ function initialTabState() {
     ...readPersistedGroupState(),
     tabDrag: null as TabStoreState["tabDrag"],
     childSummaries: new Map<number, DbConversationSummary>(),
+    childTabParents: new Map<number, number>(),
     tabs: [] as TabItemInternal[],
     reseedTick: 0,
     saveReconcileTick: 0,
@@ -1211,6 +1230,15 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     runtime.activateConversationPane()
   },
 
+  registerNativeChildTab: (childConversationId, parentConversationId) => {
+    if (childConversationId === parentConversationId) return
+    const prev = get().childTabParents
+    if (prev.get(childConversationId) === parentConversationId) return
+    const next = new Map(prev)
+    next.set(childConversationId, parentConversationId)
+    set({ childTabParents: next })
+  },
+
   closeTab: (tabId, options) => {
     const shouldActivateConversation = tabId === get().activeTabId
 
@@ -1285,6 +1313,36 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         clearMessageInputDraftV2(closingDraftKey)
       }
       recomputeTabs()
+
+      // Cascade: native sub-session tabs opened from this conversation go
+      // away with it (the row lives in the parent's session details — an
+      // orphaned child tab is a dead end). Sources: the in-memory link map
+      // (this session) plus seeded child summaries' `parent_id` (covers tabs
+      // restored after a restart). Never offered to reopen: the user closed
+      // the parent, not the child. Recursion prunes each child's own link.
+      if (closingTab.conversationId != null) {
+        const parentConvId = closingTab.conversationId
+        if (get().childTabParents.has(parentConvId)) {
+          const prunedLinks = new Map(get().childTabParents)
+          prunedLinks.delete(parentConvId)
+          set({ childTabParents: prunedLinks })
+        }
+        const childConvIds = new Set<number>()
+        for (const [childId, parentId] of get().childTabParents) {
+          if (parentId === parentConvId) childConvIds.add(childId)
+        }
+        for (const [id, summary] of get().childSummaries) {
+          if (summary.parent_id === parentConvId) childConvIds.add(id)
+        }
+        for (const childConvId of childConvIds) {
+          const childTab = get().rawTabs.find(
+            (t) => t.conversationId === childConvId
+          )
+          if (childTab) {
+            get().closeTab(childTab.id, { recordForReopen: false })
+          }
+        }
+      }
     }
 
     if (shouldActivateConversation) {

@@ -3324,6 +3324,35 @@ export async function createConversation(
   })
 }
 
+export interface OpenNativeSubagentSessionResult {
+  conversationId: number
+  agentType: AgentType
+  folderId: number
+}
+
+/**
+ * Register an agent's OWN spawned child session (the handle from a native
+ * sub-agent launch — grok/codex/opencode/cursor/claude/…) as a regular
+ * conversation row so it can open as an ordinary chat tab: `external_id`
+ * carries the child's own session id and `parent_id` links it back to the
+ * launching conversation, which keeps it out of the sidebar.
+ *
+ * Idempotent on (agentType, childSessionId): repeated clicks return the same
+ * row. The returned `agentType`/`folderId` are read from the PARENT row and
+ * are the authoritative pair for `openTab` / ACP connect.
+ */
+export async function openNativeSubagentSession(
+  parentConversationId: number,
+  childSessionId: string,
+  title?: string
+): Promise<OpenNativeSubagentSessionResult> {
+  return getTransport().call("open_native_subagent_session", {
+    parentConversationId,
+    childSessionId,
+    title: title ?? null,
+  })
+}
+
 /**
  * Create a folderless "chat mode" conversation. The backend lazily creates a
  * dated per-conversation scratch dir and a dedicated hidden chat folder

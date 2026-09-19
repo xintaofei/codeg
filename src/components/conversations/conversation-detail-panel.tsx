@@ -11,6 +11,7 @@ import {
   FileText,
   Info,
   Loader2,
+  Lock,
   Plus,
   RefreshCw,
   SquarePen,
@@ -73,7 +74,7 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import { usePlatform } from "@/hooks/use-platform"
 import { useZoomLevel } from "@/hooks/use-appearance"
 import { isDesktop } from "@/lib/platform"
-import { leftChromeReserve, rightChromeReserve } from "@/lib/window-chrome"
+import { captionOverhangPastRail, leftChromeReserve } from "@/lib/window-chrome"
 import {
   acpFork,
   acpStopAsyncTask,
@@ -1914,6 +1915,34 @@ const ConversationTabView = memo(function ConversationTabView({
       </div>
     ) : null
 
+  // Native sub-session tab (the session-details row upserted a child handle
+  // into a hidden delegate row): the transcript always renders, but the
+  // composer appears ONLY once the connection has landed on the child's own
+  // handle. resume/load keep that id; the session/new fallback does not, and
+  // only a landing that preserved the id proves the agent can continue the
+  // child. Codeg's OWN delegation children are excluded — they are linked by
+  // `parent_tool_use_id` / `delegation_call_id` and continue through codeg,
+  // so their composer must not flicker behind a landing gate.
+  const childHandleExternalId =
+    hasPersistedConversation &&
+    detail?.summary.kind === "delegate" &&
+    detail.summary.parent_tool_use_id == null &&
+    detail.summary.delegation_call_id == null
+      ? detail.summary.external_id
+      : null
+  const childSessionReadOnly =
+    childHandleExternalId != null &&
+    (conn.connectionId == null || connSessionId !== childHandleExternalId)
+  const childSessionReadOnlyBanner = childSessionReadOnly ? (
+    <div
+      role="status"
+      className="flex w-full items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+    >
+      <Lock aria-hidden="true" className="h-4 w-4 shrink-0" />
+      <span>{t("childSessionReadOnly")}</span>
+    </div>
+  ) : null
+
   // Goal pause/clear is a live, owner-only action, so decide availability once
   // here (where the connection is owned) rather than in the deep goal card.
   // `null` when the session isn't live or the user is a viewer → the card hides
@@ -2215,10 +2244,10 @@ const ConversationTabView = memo(function ConversationTabView({
       availableCommands={connectionCommands}
       attachmentTabId={tabId}
       draftStorageKey={draftStorageKey}
-      hideInput={isWelcomeMode || Boolean(acpLoadError)}
+      hideInput={isWelcomeMode || Boolean(acpLoadError) || childSessionReadOnly}
       injectContent={composerInject}
       onInjectConsumed={handleComposerInjectConsumed}
-      composerBanner={acpLoadErrorBanner}
+      composerBanner={acpLoadErrorBanner ?? childSessionReadOnlyBanner}
       feedbackList={
         feedback.showList ? (
           <FeedbackNotesDisplay
@@ -2464,7 +2493,10 @@ function SplitStripCornerReserve({ side }: { side: "left" | "right" }) {
         ? 0
         : leftChromeReserve(isMac && isDesktop(), zoomLevel)
       : !auxOpen && mode === "conversation"
-        ? rightChromeReserve(isDesktop() && (isWindows || isLinux), zoomLevel)
+        ? captionOverhangPastRail(
+            isDesktop() && (isWindows || isLinux),
+            zoomLevel
+          )
         : 0
   if (width <= 0) return null
   return (

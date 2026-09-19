@@ -2032,7 +2032,8 @@
         "toolResult": "النتيجة",
         "toolError": "خطأ"
       },
-      "moreActions": "إجراءات إضافية"
+      "moreActions": "إجراءات إضافية",
+      "childSessionReadOnly": "لا يمكن متابعة جلسة الوكيل الفرعي هذه — السجل للقراءة فقط."
     },
     "sessionDetails": {
       "menuLabel": "تفاصيل الجلسة",
@@ -2067,7 +2068,9 @@
       "updatedAt": "تاريخ التحديث",
       "none": "—",
       "copyField": "نسخ {field}",
-      "copiedField": "تم نسخ {field}"
+      "copiedField": "تم نسخ {field}",
+      "tasksHeading": "المهام",
+      "subAgentsHeading": "الوكلاء الفرعيون"
     },
     "conversationCard": {
       "untitledConversation": "محادثة بدون عنوان",

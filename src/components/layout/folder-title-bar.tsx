@@ -30,15 +30,15 @@ import { WindowControls } from "./window-controls"
 /**
  * Mobile-only workspace title bar (`h-10`, matching the desktop column strip).
  *
- * On desktop the full-width title bar was removed: its buttons were relocated
- * into fixed corner overlays (`LeftEdgeChrome` / `RightEdgeChrome`) and its
+ * On desktop the full-width title bar was removed: its buttons live in the
+ * corner overlays / rail (`LeftEdgeChrome` / `RightEdgeRail`) and its
  * global shortcuts + dialogs moved to `WorkspaceChromeController`. This bar is
  * mounted only on the mobile path (`FolderLayoutShell`), where the sidebar / aux
  * / terminal are `Drawer` overlays that need a compact bar to summon them.
  *
  * It mirrors the desktop chrome directly (rather than via `AppTitleBar`): the
  * left holds the sidebar toggle + a new-conversation shortcut; the right holds
- * the same terminal / aux / settings cluster as `RightEdgeChrome` (active
+ * the same terminal / aux / settings cluster as `RightEdgeRail` (active
  * `bg-accent`, same disabled predicates). The empty middle is a full-height
  * `data-tauri-drag-region` filler so the window drags by it — plus a macOS
  * traffic-light inset and the Windows/Linux caption buttons (`WindowControls`

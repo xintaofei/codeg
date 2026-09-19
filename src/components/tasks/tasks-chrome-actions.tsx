@@ -19,8 +19,7 @@ export const OPEN_TASK_SETTINGS_EVENT = "codeg:open-task-settings"
  *
  * They cost nothing in width: a full-page route hides the terminal and aux
  * toggles (they act on the workspace this route covers), so these two take
- * their place and the cluster keeps its three-button reservation
- * (RIGHT_CHROME_CLUSTER).
+ * their place in the top-right caption cluster.
  */
 export function TasksChromeActions({
   buttonClassName,

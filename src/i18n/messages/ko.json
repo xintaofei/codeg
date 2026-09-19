@@ -2032,7 +2032,8 @@
         "toolResult": "결과",
         "toolError": "오류"
       },
-      "moreActions": "추가 작업"
+      "moreActions": "추가 작업",
+      "childSessionReadOnly": "이 하위 에이전트 세션은 계속할 수 없습니다. 기록은 읽기 전용입니다."
     },
     "sessionDetails": {
       "menuLabel": "세션 세부 정보",
@@ -2067,7 +2068,9 @@
       "updatedAt": "업데이트됨",
       "none": "—",
       "copyField": "{field} 복사",
-      "copiedField": "{field} 복사됨"
+      "copiedField": "{field} 복사됨",
+      "tasksHeading": "작업",
+      "subAgentsHeading": "서브 에이전트"
     },
     "conversationCard": {
       "untitledConversation": "제목 없는 대화",

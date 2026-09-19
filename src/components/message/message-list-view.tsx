@@ -37,12 +37,7 @@ import { UserImageAttachments } from "./user-image-attachments"
 import { AgentPlanOverlay } from "@/components/chat/agent-plan-overlay"
 import { SubAgentOverlay } from "@/components/chat/sub-agent-overlay"
 import { SessionViewerHost } from "@/components/message/session-viewer-host"
-import { normalizeToolName } from "@/lib/tool-call-normalization"
-import { parseResumeTaskId } from "@/lib/codeg-mcp-tool"
-import {
-  isDelegateToAgentToolName,
-  isRefusedResume,
-} from "@/lib/delegation-card"
+import { extractDelegationSources } from "@/lib/delegation-sources"
 import type { DelegationCardSource } from "@/hooks/use-delegation-card-model"
 import {
   MessageThread,
@@ -388,84 +383,6 @@ export function singletonSourceTurns(turn: MessageTurn): MessageTurn[] {
     sourceTurnsSingletonCache.set(turn, cached)
   }
   return cached
-}
-
-// Collect the sub-agent delegations within a turn's adapted parts, recursing
-// through tool-groups and goal-runs (both kinds are normally standalone parts —
-// `isAgentLikeToolName` keeps them out of tool-groups — but we scan nested
-// containers defensively so a delegation is never missed).
-//
-// Two kinds qualify:
-//   - `delegate_to_agent`, which STARTED a sub-agent, keyed by its own
-//     tool_use_id;
-//   - `resume_delegation`, which brought an interrupted one BACK. Its own
-//     tool_call_id is not a binding key (the broker re-binds the child to the
-//     original delegate call, usually in an earlier turn), so it is keyed by
-//     the task id in its arguments — `taskIdHint`, exactly as
-//     `ResumedDelegationCard` does. Without this arm a resumed sub-agent would
-//     be missing from the overlay while it runs, because the reply that
-//     resumed it contains no `delegate_to_agent` call at all.
-//
-// `seenTaskIds` de-dupes repeated resumes of one task inside a single reply
-// (the second is refused, but the overlay renders a row per source regardless).
-function collectDelegationSources(
-  parts: AdaptedContentPart[],
-  out: DelegationCardSource[],
-  seenTaskIds: Set<string>
-): void {
-  for (const part of parts) {
-    if (part.type === "tool-call") {
-      if (!part.toolCallId) continue
-      const name = normalizeToolName(part.toolName)
-      if (isDelegateToAgentToolName(name)) {
-        out.push({
-          parentToolUseId: part.toolCallId,
-          input: part.input ?? null,
-          output: part.output ?? null,
-          errorText: part.errorText ?? null,
-          state: part.state,
-          meta: part.meta ?? null,
-        })
-      } else if (name === "resume_delegation") {
-        // A refusal names the task's agent and child but revived nothing —
-        // listing it would put a sub-agent in the overlay that is not running
-        // on this turn's behalf. Same judgement as `ResumedDelegationCard`,
-        // which falls back to the plain tool card here.
-        if (isRefusedResume(part.output ?? null, part.errorText ?? null)) {
-          continue
-        }
-        const taskId = parseResumeTaskId(part.input ?? null)
-        // No task id ⇒ nothing to resolve the sub-agent by; a duplicate ⇒
-        // already listed.
-        if (!taskId || seenTaskIds.has(taskId)) continue
-        seenTaskIds.add(taskId)
-        out.push({
-          parentToolUseId: part.toolCallId,
-          taskIdHint: taskId,
-          // Deliberately not the resume's `{task_id, reason}` arguments —
-          // `parseInput` looks for `task`/`agent_type`/`working_dir` and would
-          // only warn about an unrecognized shape. See `ResumedDelegationCard`.
-          input: null,
-          output: part.output ?? null,
-          errorText: part.errorText ?? null,
-          state: part.state,
-          meta: part.meta ?? null,
-        })
-      }
-    } else if (part.type === "tool-group") {
-      collectDelegationSources(part.items, out, seenTaskIds)
-    } else if (part.type === "goal-run") {
-      collectDelegationSources(part.items, out, seenTaskIds)
-    }
-  }
-}
-
-export function extractDelegationSources(
-  parts: AdaptedContentPart[]
-): DelegationCardSource[] {
-  const out: DelegationCardSource[] = []
-  collectDelegationSources(parts, out, new Set())
-  return out
 }
 
 function extractTextFromParts(parts: AdaptedContentPart[]): string {

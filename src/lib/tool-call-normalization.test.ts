@@ -625,6 +625,23 @@ describe("normalizeToolName collapses Codex goal tools across wrappers", () => {
   })
 })
 
+describe("normalizeToolName collapses codex multi-agent family", () => {
+  it.each([
+    ["multi_agent_v1__spawn_agent", "agent"],
+    ["multi_agent_v2__spawn_agent", "agent"],
+    ["multi_agent_v1__wait_agent", "task"],
+    ["multi_agent_v1__close_agent", "task"],
+  ])("%s -> %s", (input, expected) => {
+    expect(normalizeToolName(input)).toBe(expected)
+  })
+
+  it("does not collapse unrelated names containing agent", () => {
+    // The rule keys on the op suffix only; a bare word "agent" inside any
+    // other spelling must not hit it.
+    expect(normalizeToolName("agents_status")).not.toBe("agent")
+  })
+})
+
 describe("inferLiveToolName codex collab detection", () => {
   const collabRaw = JSON.stringify({
     prompt: "run pnpm build",
@@ -1350,6 +1367,19 @@ describe("normalizeToolName collapses the codeg-mcp workbench companions", () =>
     // …without disturbing the generic task tools that rule exists for.
     expect(normalizeToolName("task")).toBe("task")
     expect(normalizeToolName("task_update")).toBe("taskupdate")
+  })
+})
+
+describe("Claude Code PowerShell tool joins the Terminal card", () => {
+  it("classifies PowerShell / pwsh as bash", () => {
+    // claude-agent-acp only lifts Bash's `description` into
+    // `_meta.claudeCode.title`, so the PowerShell card reaching the
+    // command-card branch is what lets it read `{command, description}` off
+    // its own input — otherwise its cards head with the raw command and
+    // never show the model's description.
+    expect(normalizeToolName("PowerShell")).toBe("bash")
+    expect(normalizeToolName("powershell")).toBe("bash")
+    expect(normalizeToolName("pwsh")).toBe("bash")
   })
 })
 

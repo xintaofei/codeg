@@ -263,6 +263,16 @@ export function mergeCollabOp(
   return JSON.stringify({ ...parsed, [COLLAB_OP_KEY]: cleanOp })
 }
 
+/** Read the merged op back out of a collab `rawInput` (the reader half of
+ *  `mergeCollabOp`; null for any non-collab or un-merged input). */
+export function parseCollabOp(
+  rawInput: string | null | undefined
+): string | null {
+  const parsed = tryParseObject(rawInput)
+  if (!parsed) return null
+  return asText(parsed[COLLAB_OP_KEY])
+}
+
 /** Parse the displayable fields out of a collab tool call's `rawInput`. */
 export function parseCollabToolInput(
   rawInput: string | null | undefined

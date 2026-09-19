@@ -67,7 +67,7 @@ import { TabBar } from "@/components/tabs/tab-bar"
 import { TerminalPanel } from "@/components/terminal/terminal-panel"
 import { AuxPanel } from "@/components/layout/aux-panel"
 import { LeftEdgeChrome } from "@/components/layout/left-edge-chrome"
-import { RightEdgeChrome } from "@/components/layout/right-edge-chrome"
+import { RightEdgeRail } from "@/components/layout/right-edge-rail"
 import { WorkspaceChromeController } from "@/components/layout/workspace-chrome-controller"
 import { WindowControls } from "@/components/layout/window-controls"
 import { FileWorkspaceTabBar } from "@/components/files/file-workspace-tab-bar"
@@ -88,11 +88,7 @@ import {
 } from "@/components/ui/resizable"
 import { cn } from "@/lib/utils"
 import { isDesktop } from "@/lib/platform"
-import {
-  WINDOW_CAPTION_WIDTH,
-  leftChromeReserve,
-  rightChromeReserve,
-} from "@/lib/window-chrome"
+import { captionOverhangPastRail, leftChromeReserve } from "@/lib/window-chrome"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { usePlatform } from "@/hooks/use-platform"
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
@@ -324,15 +320,20 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
   const hasConvTabs = useTabStore((s) => s.tabs.length > 0)
   const isConvSplit = useTabStore(selectIsSplit)
   const winLinuxControls = isDesktop() && (isWindows || isLinux)
-  // The window chrome (toggle/search left, terminal/aux/settings right) now
-  // lives in fixed corner overlays (see FolderLayoutShell) that never move on
-  // panel toggles. Each edge column just reserves the overlay's width so its
-  // tabs never render underneath. The reserve scales with the app zoom so it
-  // tracks the rem-sized overlay buttons (which grow with zoom).
+  // The left window chrome (sidebar toggle / search) still lives in a fixed
+  // corner overlay (see FolderLayoutShell) that never moves on panel toggles,
+  // so the edge column reserves the overlay's width (zoom-scaled) so its tabs
+  // never render underneath. On the RIGHT the old button cluster became the
+  // layout-level RightEdgeRail column — but on Windows/Linux the native caption
+  // strip still floats over the window's top-right corner, and the part of it
+  // that reaches PAST the rail must be reserved by whichever edge column is
+  // exposed (the middle column when the aux panel is closed; the aux panel's
+  // own strip does the same when it's open — see aux-panel.tsx).
   const leftReserve = leftChromeReserve(isMac && isDesktop(), zoomLevel)
-  const rightReserve = rightChromeReserve(winLinuxControls, zoomLevel)
-  // A middle column reserves the right overlay only when it (not the aux panel)
-  // is the window's right edge: the file column in fusion, else conversation.
+  const rightReserve = captionOverhangPastRail(winLinuxControls, zoomLevel)
+  // A middle column reserves the caption overhang only when it (not the aux
+  // panel) is the window's right edge: the file column in fusion, else
+  // conversation.
   const convReservesRight = !auxOpen && mode === "conversation"
   const fileReservesRight = !auxOpen && mode === "fusion"
   // Maximizing files overlays the whole middle area, so the file column then
@@ -414,7 +415,7 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                         />
                       )}
                     </div>
-                    {convReservesRight && (
+                    {convReservesRight && rightReserve > 0 && (
                       <div
                         data-tauri-drag-region
                         className="h-full shrink-0 ws-strip-line"
@@ -513,7 +514,7 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                 <div className="flex min-w-0 flex-1 items-stretch">
                   <FileWorkspaceTabBar />
                 </div>
-                {fileReservesRight && (
+                {fileReservesRight && rightReserve > 0 && (
                   <div
                     data-tauri-drag-region
                     className="h-full shrink-0 ws-strip-line"
@@ -726,7 +727,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
   // A full-page workbench route (tasks / automations) replaces only the CENTER
   // panel — the terminal sits below it and the aux panel beside it, both
   // outside the overlay. Their toggles are hidden on those routes
-  // (RightEdgeChrome), so anything left open would be stranded on screen with
+  // (RightEdgeRail), so anything left open would be stranded on screen with
   // no way to close it. Collapse both for the duration; the contexts keep the
   // user's real open state (and the terminal keeps running), so switching back
   // to conversations restores exactly what was there.
@@ -1033,130 +1034,135 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
   )
 
   return (
-    <div
-      ref={shellContainerRef}
-      className="flex flex-1 min-h-0 overflow-hidden"
-    >
-      <ResizablePanelGroup
-        id={FOLDER_SHELL_GROUP_ID}
-        ref={shellGroupRef}
-        direction="horizontal"
-        onLayout={handleShellLayout}
-        className={shellSlideAnimating ? "panel-slide-animating" : undefined}
+    <div className="flex flex-1 min-h-0 overflow-hidden">
+      {/* The ResizeObserver container holds ONLY the resizable group: the rail
+          beside it is a fixed-width flex sibling, so panel px↔% math (which
+          converts requested pixel widths against this container's measured
+          width) never has the rail's 40px smuggled into it. */}
+      <div
+        ref={shellContainerRef}
+        className="flex min-h-0 min-w-0 flex-1 overflow-hidden"
       >
-        <ResizablePanel
-          id={FOLDER_SHELL_LEFT_PANEL_ID}
-          order={1}
-          defaultSize={18}
-          minSize={sidebarOpen ? sidebarSizeRange.minSize : 0}
-          maxSize={sidebarOpen ? sidebarSizeRange.maxSize : 0}
+        <ResizablePanelGroup
+          id={FOLDER_SHELL_GROUP_ID}
+          ref={shellGroupRef}
+          direction="horizontal"
+          onLayout={handleShellLayout}
+          className={shellSlideAnimating ? "panel-slide-animating" : undefined}
         >
-          {/* `bg-sidebar` on the wrapper (not just the Sidebar surface) so the
+          <ResizablePanel
+            id={FOLDER_SHELL_LEFT_PANEL_ID}
+            order={1}
+            defaultSize={18}
+            minSize={sidebarOpen ? sidebarSizeRange.minSize : 0}
+            maxSize={sidebarOpen ? sidebarSizeRange.maxSize : 0}
+          >
+            {/* `bg-sidebar` on the wrapper (not just the Sidebar surface) so the
               collapse never flashes white: Sidebar `return null`s the instant
               it closes, but the panel keeps a shrinking width for the 240ms
               slide — an un-backed wrapper would show the root `bg-background`
               (white) through that gap. */}
-          <div className="h-full min-h-0 overflow-hidden ws-surface-sidebar">
-            <Sidebar />
-          </div>
-        </ResizablePanel>
+            <div className="h-full min-h-0 overflow-hidden ws-surface-sidebar">
+              <Sidebar />
+            </div>
+          </ResizablePanel>
 
-        <ResizableHandle
-          withHandle
-          disabled={!sidebarOpen}
-          className={
-            sidebarOpen ? "" : "pointer-events-none w-0 opacity-0 after:w-0"
-          }
-        />
+          <ResizableHandle
+            withHandle
+            disabled={!sidebarOpen}
+            className={
+              sidebarOpen ? "" : "pointer-events-none w-0 opacity-0 after:w-0"
+            }
+          />
 
-        <ResizablePanel
-          id={FOLDER_SHELL_MAIN_PANEL_ID}
-          order={2}
-          defaultSize={64}
-          minSize={10}
-        >
-          <main
-            ref={mainContainerRef}
-            className="flex h-full min-h-0 flex-col overflow-hidden"
+          <ResizablePanel
+            id={FOLDER_SHELL_MAIN_PANEL_ID}
+            order={2}
+            defaultSize={64}
+            minSize={10}
           >
-            <ResizablePanelGroup
-              id={FOLDER_MAIN_GROUP_ID}
-              ref={mainGroupRef}
-              direction="vertical"
-              onLayout={handleMainLayout}
-              className={
-                terminalAnimating ? "panel-slide-animating" : undefined
-              }
+            <main
+              ref={mainContainerRef}
+              className="flex h-full min-h-0 flex-col overflow-hidden"
             >
-              <ResizablePanel
-                id={FOLDER_MAIN_WORKSPACE_PANEL_ID}
-                order={1}
-                defaultSize={72}
-                minSize={15}
-              >
-                <WorkspaceContent>{children}</WorkspaceContent>
-              </ResizablePanel>
-
-              <ResizableHandle
-                withHandle
-                disabled={!terminalOpen}
+              <ResizablePanelGroup
+                id={FOLDER_MAIN_GROUP_ID}
+                ref={mainGroupRef}
+                direction="vertical"
+                onLayout={handleMainLayout}
                 className={
-                  terminalOpen
-                    ? ""
-                    : "pointer-events-none h-0 opacity-0 after:h-0"
+                  terminalAnimating ? "panel-slide-animating" : undefined
                 }
-              />
-
-              <ResizablePanel
-                id={FOLDER_MAIN_TERMINAL_PANEL_ID}
-                order={2}
-                defaultSize={28}
-                minSize={terminalOpen ? terminalSizeRange.minSize : 0}
-                maxSize={terminalOpen ? terminalSizeRange.maxSize : 0}
               >
-                <div className="h-full min-h-0 overflow-hidden">
-                  <TerminalPanel />
-                </div>
-              </ResizablePanel>
-            </ResizablePanelGroup>
-          </main>
-        </ResizablePanel>
+                <ResizablePanel
+                  id={FOLDER_MAIN_WORKSPACE_PANEL_ID}
+                  order={1}
+                  defaultSize={72}
+                  minSize={15}
+                >
+                  <WorkspaceContent>{children}</WorkspaceContent>
+                </ResizablePanel>
 
-        <ResizableHandle
-          withHandle
-          disabled={!auxOpen}
-          className={
-            auxOpen ? "" : "pointer-events-none w-0 opacity-0 after:w-0"
-          }
-        />
+                <ResizableHandle
+                  withHandle
+                  disabled={!terminalOpen}
+                  className={
+                    terminalOpen
+                      ? ""
+                      : "pointer-events-none h-0 opacity-0 after:h-0"
+                  }
+                />
 
-        <ResizablePanel
-          id={FOLDER_SHELL_RIGHT_PANEL_ID}
-          order={3}
-          defaultSize={18}
-          minSize={auxOpen ? auxSizeRange.minSize : 0}
-          maxSize={auxOpen ? auxSizeRange.maxSize : 0}
-        >
-          {/* Transparent canvas so the right column reads like the middle
+                <ResizablePanel
+                  id={FOLDER_MAIN_TERMINAL_PANEL_ID}
+                  order={2}
+                  defaultSize={28}
+                  minSize={terminalOpen ? terminalSizeRange.minSize : 0}
+                  maxSize={terminalOpen ? terminalSizeRange.maxSize : 0}
+                >
+                  <div className="h-full min-h-0 overflow-hidden">
+                    <TerminalPanel />
+                  </div>
+                </ResizablePanel>
+              </ResizablePanelGroup>
+            </main>
+          </ResizablePanel>
+
+          <ResizableHandle
+            withHandle
+            disabled={!auxOpen}
+            className={
+              auxOpen ? "" : "pointer-events-none w-0 opacity-0 after:w-0"
+            }
+          />
+
+          <ResizablePanel
+            id={FOLDER_SHELL_RIGHT_PANEL_ID}
+            order={3}
+            defaultSize={18}
+            minSize={auxOpen ? auxSizeRange.minSize : 0}
+            maxSize={auxOpen ? auxSizeRange.maxSize : 0}
+          >
+            {/* Transparent canvas so the right column reads like the middle
               conversation area (its own frosted chrome — the aux toolbar — sits
               on top): with a background image on, the file tree shows the image
               through instead of a second frosted layer over the toolbar. The
               paired `bg-background` is the off-state (image disabled): equivalent
               to the old opaque wrapper, so the 240ms collapse slide still never
               flashes white while AuxPanel `return null`s. */}
-          <div className="h-full min-h-0 overflow-hidden bg-background ws-transparent-bg">
-            <AuxPanel />
-          </div>
-        </ResizablePanel>
-      </ResizablePanelGroup>
+            <div className="h-full min-h-0 overflow-hidden bg-background ws-transparent-bg">
+              <AuxPanel />
+            </div>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      </div>
+      <RightEdgeRail />
     </div>
   )
 }
 
 function FolderLayoutShell({ children }: { children: React.ReactNode }) {
   const isMobile = useIsMobile()
-  const { isWindows, isLinux } = usePlatform()
-  const winLinuxControls = isDesktop() && (isWindows || isLinux)
   const {
     workspaceBgEnabled,
     workspaceBgImageUrl,
@@ -1212,23 +1218,18 @@ function FolderLayoutShell({ children }: { children: React.ReactNode }) {
         <FolderWorkspaceShell>{children}</FolderWorkspaceShell>
       )}
       <StatusBar />
-      {/* Desktop window chrome, pinned to the window corners so it never moves —
-          or re-mounts — when the side panels open/close (that re-parenting is
+      {/* Desktop window chrome, pinned to the window corners so it never moves
+          — or re-mounts — when the side panels open/close (that re-parenting is
           what made the old in-header clusters flicker). Left = sidebar toggle +
-          search; right = terminal/aux/settings, sitting to the LEFT of the
-          Windows/Linux caption buttons; then the caption buttons themselves
-          (self-null on macOS/web). Each edge column reserves the matching width
-          beneath these (see leftChromeReserve / rightChromeReserve). */}
+          search. The right-side buttons (aux tabs / terminal / settings) now
+          live in the always-present right-edge rail column (RightEdgeRail,
+          rendered by FolderWorkspaceShell), so the only overlay left on the
+          right is the caption buttons themselves (self-null on macOS/web),
+          which float over the rail's leading drag filler. */}
       {!isMobile && (
         <>
           <div className="absolute left-0 top-0 z-50 h-10">
             <LeftEdgeChrome />
-          </div>
-          <div
-            className="absolute top-0 z-50 h-10"
-            style={{ right: winLinuxControls ? WINDOW_CAPTION_WIDTH : 0 }}
-          >
-            <RightEdgeChrome />
           </div>
           <div className="absolute right-0 top-0 z-50 h-10">
             <WindowControls />

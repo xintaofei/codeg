@@ -19,7 +19,7 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import { usePlatform } from "@/hooks/use-platform"
 import { useZoomLevel } from "@/hooks/use-appearance"
 import { isDesktop } from "@/lib/platform"
-import { rightChromeReserve } from "@/lib/window-chrome"
+import { captionOverhangPastRail } from "@/lib/window-chrome"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import {
@@ -183,13 +183,15 @@ export function AuxPanel() {
     [setActiveTab]
   )
 
-  // The window-chrome overlay claims a fixed strip on the panel's right edge;
-  // on desktop Windows/Linux the native caption buttons sit beyond it. The
-  // segmented control has to fit LEFT of all that — otherwise collapse it into
-  // a dropdown. Only relevant to the desktop layout (mobile is a full-width
-  // Drawer), and only when there's more than the lone Session Details tab.
+  // The right-edge rail is a layout column beside us (no overlap), but on
+  // desktop Windows/Linux the fixed native caption strip floats over the
+  // window's top-right corner and reaches past the rail into this strip — the
+  // segmented control has to fit LEFT of that overhang — otherwise collapse it
+  // into a dropdown. Only relevant to the desktop layout (mobile is a
+  // full-width Drawer), and only when there's more than the lone Session
+  // Details tab.
   const winLinuxControls = isDesktop() && (isWindows || isLinux)
-  const rightReserve = rightChromeReserve(winLinuxControls, zoomLevel)
+  const rightReserve = captionOverhangPastRail(winLinuxControls, zoomLevel)
   const collapsed =
     !isMobile &&
     showFolderTabs &&

@@ -2032,7 +2032,8 @@
         "toolResult": "Result",
         "toolError": "Error"
       },
-      "moreActions": "More actions"
+      "moreActions": "More actions",
+      "childSessionReadOnly": "This sub-agent session can't be continued — its transcript is read-only."
     },
     "sessionDetails": {
       "menuLabel": "Session Details",
@@ -2067,7 +2068,9 @@
       "updatedAt": "Updated",
       "none": "—",
       "copyField": "Copy {field}",
-      "copiedField": "Copied {field}"
+      "copiedField": "Copied {field}",
+      "tasksHeading": "Tasks",
+      "subAgentsHeading": "Sub-agents"
     },
     "conversationCard": {
       "untitledConversation": "Untitled conversation",

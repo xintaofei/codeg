@@ -2032,7 +2032,8 @@
         "toolResult": "結果",
         "toolError": "エラー"
       },
-      "moreActions": "その他の操作"
+      "moreActions": "その他の操作",
+      "childSessionReadOnly": "このサブエージェントのセッションは続行できません。記録は閲覧専用です。"
     },
     "sessionDetails": {
       "menuLabel": "セッション詳細",
@@ -2067,7 +2068,9 @@
       "updatedAt": "更新日時",
       "none": "—",
       "copyField": "{field}をコピー",
-      "copiedField": "{field}をコピーしました"
+      "copiedField": "{field}をコピーしました",
+      "tasksHeading": "タスク",
+      "subAgentsHeading": "サブエージェント"
     },
     "conversationCard": {
       "untitledConversation": "無題の会話",

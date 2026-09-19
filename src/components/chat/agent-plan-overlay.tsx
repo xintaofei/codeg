@@ -3,23 +3,12 @@
 import { memo, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import { CollapsedOverlayChip } from "@/components/chat/collapsed-overlay-chip"
-import {
-  getPriorityClassName,
-  getPriorityKey,
-  getStatusKey,
-} from "@/components/message/plan-card"
+import { PlanEntryRow } from "@/components/chat/plan-entry-row"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import type { LiveMessage } from "@/contexts/acp-connections-context"
 import type { PlanEntryInfo } from "@/lib/types"
-import { cn } from "@/lib/utils"
-import {
-  CheckCircle2Icon,
-  ChevronDownIcon,
-  CircleDashedIcon,
-  ListTodoIcon,
-  Loader2Icon,
-} from "lucide-react"
+import { ChevronDownIcon, ListTodoIcon } from "lucide-react"
 
 interface AgentPlanOverlayProps {
   message?: LiveMessage | null
@@ -41,24 +30,6 @@ function getLatestPlanEntries(message: LiveMessage | null): PlanEntryInfo[] {
   }
 
   return []
-}
-
-function StatusIcon({
-  status,
-  isStreaming,
-}: {
-  status: string
-  isStreaming: boolean
-}) {
-  if (status === "completed") {
-    return <CheckCircle2Icon className="h-3.5 w-3.5 text-emerald-500" />
-  }
-
-  if (status === "in_progress" && isStreaming) {
-    return <Loader2Icon className="h-3.5 w-3.5 text-blue-500 animate-spin" />
-  }
-
-  return <CircleDashedIcon className="h-3.5 w-3.5 text-muted-foreground" />
 }
 
 export const AgentPlanOverlay = memo(function AgentPlanOverlay({
@@ -185,40 +156,17 @@ export const AgentPlanOverlay = memo(function AgentPlanOverlay({
           </Button>
         </div>
 
+        {/* Height-capped: the panel rides a PINNED absolute overlay stack
+            inside a fixed-height pane (message-list-view), so an unbounded
+            body would push long plans past the viewport with no scroll
+            context anywhere — the trailing entries become unreachable. */}
         <div className="max-h-96 overflow-y-auto p-3 space-y-2">
           {resolvedEntries.map((entry, index) => (
-            <div
+            <PlanEntryRow
               key={`${entry.content}-${index}`}
-              className="rounded-lg border bg-transparent px-2.5 py-2"
-            >
-              <div className="flex items-start gap-2">
-                <StatusIcon status={entry.status} isStreaming={isStreaming} />
-                <p
-                  className={cn(
-                    "min-w-0 flex-1 text-sm leading-5 break-words [overflow-wrap:anywhere]",
-                    entry.status === "completed"
-                      ? "text-muted-foreground line-through"
-                      : "text-foreground"
-                  )}
-                >
-                  {entry.content}
-                </p>
-              </div>
-              <div className="mt-2 flex items-center gap-1.5 pl-5">
-                <Badge variant="outline" className="h-5 text-3xs uppercase">
-                  {t(getStatusKey(entry.status))}
-                </Badge>
-                <Badge
-                  variant="outline"
-                  className={cn(
-                    "h-5 text-3xs uppercase",
-                    getPriorityClassName(entry.priority)
-                  )}
-                >
-                  {t(getPriorityKey(entry.priority))}
-                </Badge>
-              </div>
-            </div>
+              entry={entry}
+              isStreaming={isStreaming}
+            />
           ))}
         </div>
       </div>

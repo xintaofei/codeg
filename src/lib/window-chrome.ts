@@ -28,11 +28,14 @@ export const WINDOW_CAPTION_WIDTH = 138
 export const LEFT_CHROME_CLUSTER = 80
 
 /**
- * Right cluster: terminal + aux + settings (three icon buttons + padding).
- * A full-page workbench route swaps the first two for its own controls (see
- * `WorkbenchRouteChromeActions`), so the count — and this reservation — holds.
+ * The desktop right-edge icon rail's own width (`RightEdgeRail`, w-10 = 2.5rem).
+ * It is a layout column (a flex sibling of the shell group), not an overlay, so
+ * columns no longer reserve anything for it — the only thing still floating
+ * over the window's right edge is the NATIVE caption strip, which the rail's
+ * leading h-10 filler yields to. The rail is rem-sized (grows with zoom) so
+ * its pixel footprint scales like the old chrome cluster did.
  */
-export const RIGHT_CHROME_CLUSTER = 116
+export const RIGHT_EDGE_RAIL_WIDTH = 40
 
 /**
  * Scale a DOM button-cluster width by the app's rem-based zoom.
@@ -64,26 +67,22 @@ export function leftChromeReserve(macInset: boolean, zoom = 100): number {
 }
 
 /**
- * Width the window's right-edge column reserves for the right overlay.
- * `winLinuxCaption` adds the native caption-button strip (desktop Win/Linux);
- * `zoom` (a percent, default 100) scales the rem-sized button cluster, while the
- * fixed native caption strip stays constant.
+ * How far the native caption strip (Windows/Linux desktop) overhangs PAST the
+ * right-edge rail into whichever column owns the window's right edge at a given
+ * moment (the aux panel when open, else the middle column's top strip).
+ *
+ * The caption buttons stay a fixed top-right overlay 138px wide; the rail
+ * absorbs the rightmost (zoom-scaled) 40px of it with its leading drag filler,
+ * so only the remainder can collide with strip content and needs reserving.
+ * macOS/web have no caption strip → 0.
  */
-export function rightChromeReserve(
+export function captionOverhangPastRail(
   winLinuxCaption: boolean,
   zoom = 100
 ): number {
-  return (
-    scaleCluster(RIGHT_CHROME_CLUSTER, zoom) +
-    (winLinuxCaption ? WINDOW_CAPTION_WIDTH : 0)
+  if (!winLinuxCaption) return 0
+  return Math.max(
+    0,
+    WINDOW_CAPTION_WIDTH - scaleCluster(RIGHT_EDGE_RAIL_WIDTH, zoom)
   )
-}
-
-/**
- * The right-edge overlay's OWN width — just the (zoom-scaled) button cluster.
- * The native caption strip isn't part of this box; it's cleared by the overlay's
- * `right` offset (see `FolderLayoutShell`), so only the cluster is measured here.
- */
-export function rightChromeClusterWidth(zoom = 100): number {
-  return scaleCluster(RIGHT_CHROME_CLUSTER, zoom)
 }

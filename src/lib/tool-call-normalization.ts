@@ -46,6 +46,8 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   // tool name back out of the transcript — so the same call rendered one way
   // while it ran and another way on reload.
   powershell: "bash",
+  // `pwsh` reaches clients as the same tool's other spelling.
+  pwsh: "bash",
   exec_command: "exec_command",
   "functions.exec_command": "exec_command",
   "functions.read": "read",
@@ -596,6 +598,19 @@ export function normalizeToolName(toolName: string): string {
   // catches the unprefixed form, so collapse every separator here. Note the
   // freeform matcher below intentionally does NOT catch the underscore form.
   if (/[^a-z0-9]ask_user_question$/.test(canonical)) return "question"
+
+  // Multi-agent companion tools exposed under an implementation namespace.
+  // codex 0.147's native team-of-agents reaches the transcript as
+  // `multi_agent_v1__spawn_agent` / `…__wait_agent` / `…__close_agent` — the
+  // bare `spawn_agent` aliases above never see it, and the freeform `\bagent\b`
+  // matcher CANNOT (no word boundary inside the underscore form), so the spawn
+  // calls used to fall through to the generic tool shell: no Agent capsule in
+  // the message area, no sub-agent rows in the aux panel. Collapse the family
+  // on its op suffix, the same way the delegation tools above collapse on
+  // theirs. A codex thread id never spells like this, so no false positive.
+  if (/[^a-z0-9]spawn_agent$/.test(canonical)) return "agent"
+  if (/[^a-z0-9]wait_agent$/.test(canonical)) return "task"
+  if (/[^a-z0-9]close_agent$/.test(canonical)) return "task"
 
   // codeg-mcp live-feedback poll. Same host-prefix story as the delegation tools
   // (`mcp__<server>__check_user_feedback`, `<server>/check_user_feedback`, …) —

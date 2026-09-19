@@ -272,6 +272,30 @@ pub async fn create_conversation(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OpenNativeSubagentSessionParams {
+    pub parent_conversation_id: i32,
+    pub child_session_id: String,
+    pub title: Option<String>,
+}
+
+pub async fn open_native_subagent_session(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<OpenNativeSubagentSessionParams>,
+) -> Result<Json<conv_commands::OpenNativeSubagentSessionResult>, AppCommandError> {
+    let db = &state.db;
+    let result = conv_commands::open_native_subagent_session_core(
+        &db.conn,
+        params.parent_conversation_id,
+        params.child_session_id,
+        params.title,
+    )
+    .await?;
+    conv_commands::emit_conversation_upsert(&state.emitter, &db.conn, result.conversation_id).await;
+    Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateChatConversationParams {
     pub agent_type: AgentType,
     pub title: Option<String>,

@@ -2032,7 +2032,8 @@
         "toolResult": "Resultado",
         "toolError": "Error"
       },
-      "moreActions": "Más acciones"
+      "moreActions": "Más acciones",
+      "childSessionReadOnly": "Esta sesión de subagente no se puede continuar: el registro es de solo lectura."
     },
     "sessionDetails": {
       "menuLabel": "Detalles de la sesión",
@@ -2067,7 +2068,9 @@
       "updatedAt": "Actualizado",
       "none": "—",
       "copyField": "Copiar {field}",
-      "copiedField": "{field} copiado"
+      "copiedField": "{field} copiado",
+      "tasksHeading": "Tareas",
+      "subAgentsHeading": "Subagentes"
     },
     "conversationCard": {
       "untitledConversation": "Conversación sin título",

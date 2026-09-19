@@ -44,6 +44,15 @@ interface SessionDetailsContentProps {
    */
   model?: string | null
   /**
+   * Optional block rendered between the identifier grid and the token-usage
+   * section — the aux panel's Session Details tab passes its 子代理 rows here
+   * so they sit right under the identifiers, where the conversation's own
+   * children belong next to its identity. The dialog and hover bubble omit
+   * it. Pass a memoized element when the data churns (streaming), or this
+   * defeats the caller's memo on this component.
+   */
+  beforeTokens?: ReactNode
+  /**
    * Whether the content is currently visible/active. Gates the sidebar
    * cold-fetch effect and the loading state so it only runs while shown. The
    * dialog passes its `open` flag; the always-mounted sidebar tab passes whether
@@ -250,6 +259,7 @@ export function SessionDetailsContent({
   summary: summaryProp,
   stats: statsProp,
   model: modelProp,
+  beforeTokens,
   active = true,
 }: SessionDetailsContentProps) {
   const t = useTranslations("Folder.sessionDetails")
@@ -375,9 +385,12 @@ export function SessionDetailsContent({
   const numeric = "font-mono tabular-nums"
 
   return (
-    // `@container` drives the identifier / token / timestamp grids: one column
-    // in the narrow aux-panel tab, two in the wider details dialog.
-    <div className="@container min-w-0 space-y-5 text-sm">
+    // The identifier / token grids are always two-up: the aux panel is narrow
+    // but its values there (ids, numbers, durations) fit a half-width column,
+    // and the genuinely wide values (external id, context window) span the
+    // full row. Timestamps stay one-up — their date+time strings are the one
+    // field whose half-width column would force wrapping.
+    <div className="min-w-0 space-y-5 text-sm">
       {/* Identity: the conversation title with its agent and status. */}
       <div className="min-w-0 space-y-2">
         <p className="wrap-anywhere text-base font-medium leading-snug">
@@ -390,7 +403,7 @@ export function SessionDetailsContent({
       </div>
 
       {/* Identifiers, packed two-up to keep the view short. */}
-      <dl className="grid grid-cols-1 gap-x-4 gap-y-3 border-t pt-4 @[20rem]:grid-cols-2">
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-t pt-4">
         <InfoItem label={t("sessionId")}>
           <CopyableValue
             text={String(summary.id)}
@@ -412,7 +425,7 @@ export function SessionDetailsContent({
             {summary.parent_id}
           </InfoItem>
         )}
-        <InfoItem label={t("externalId")} className="@[20rem]:col-span-2">
+        <InfoItem label={t("externalId")} className="col-span-2">
           {summary.external_id ? (
             <CopyableValue
               text={summary.external_id}
@@ -428,6 +441,8 @@ export function SessionDetailsContent({
         </InfoItem>
       </dl>
 
+      {beforeTokens}
+
       <section className="min-w-0 space-y-3 border-t pt-4">
         <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           {t("tokensHeading")}
@@ -440,7 +455,7 @@ export function SessionDetailsContent({
         ) : statsError ? (
           <div className="text-muted-foreground">{t("loadFailed")}</div>
         ) : hasTokenInfo ? (
-          <dl className="grid grid-cols-1 gap-x-4 gap-y-3 @[20rem]:grid-cols-2">
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-3">
             {totalTokens != null && (
               <InfoItem label={t("totalTokens")} valueClassName={numeric}>
                 {formatTokenCount(totalTokens)}
@@ -467,7 +482,13 @@ export function SessionDetailsContent({
               </>
             )}
             {contextWindowValue != null && (
-              <InfoItem label={t("contextWindow")} valueClassName={numeric}>
+              <InfoItem
+                label={t("contextWindow")}
+                // The "used / max (pct)" form is the one value in this grid too
+                // wide for a half column; the bare-used form stays two-up.
+                className={ctxMax != null ? "col-span-2" : undefined}
+                valueClassName={numeric}
+              >
                 {contextWindowValue}
               </InfoItem>
             )}
@@ -486,7 +507,7 @@ export function SessionDetailsContent({
         <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           {t("timestampsHeading")}
         </h3>
-        <dl className="grid grid-cols-1 gap-x-4 gap-y-3 @[20rem]:grid-cols-2">
+        <dl className="grid grid-cols-1 gap-x-4 gap-y-3">
           <InfoItem label={t("createdAt")}>
             {formatDate(summary.created_at)}
           </InfoItem>

@@ -21,7 +21,7 @@ pub struct AgentToolCall {
     pub is_error: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentExecutionStats {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_type: Option<String>,

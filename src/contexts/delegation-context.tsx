@@ -69,6 +69,14 @@ interface DelegationContextValue {
    * tool_call_id matches no binding — the task id is the only handle it holds.
    */
   findByTaskId(taskId: string): DelegationBinding | undefined
+  /**
+   * Every live binding, in insertion order. The aux panel's session-details
+   * sub-agents section needs a whole-collection view the keyed lookups can't
+   * give it — the provider is mounted once above every conversation, so the
+   * caller scopes the result itself (by `parentConnectionId`). Read-only:
+   * mutating the array does not touch provider state.
+   */
+  listAllBindings(): DelegationBinding[]
 }
 
 const DelegationContext = createContext<DelegationContextValue | null>(null)
@@ -251,9 +259,24 @@ export function DelegationProvider({ children }: { children: ReactNode }) {
     [byToolUseId]
   )
 
+  const listAllBindings = useCallback(
+    (): DelegationBinding[] => Array.from(byToolUseId.values()),
+    [byToolUseId]
+  )
+
   const value = useMemo(
-    () => ({ findByParentToolUseId, findByChildConversationId, findByTaskId }),
-    [findByParentToolUseId, findByChildConversationId, findByTaskId]
+    () => ({
+      findByParentToolUseId,
+      findByChildConversationId,
+      findByTaskId,
+      listAllBindings,
+    }),
+    [
+      findByParentToolUseId,
+      findByChildConversationId,
+      findByTaskId,
+      listAllBindings,
+    ]
   )
 
   return (

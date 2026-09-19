@@ -2032,7 +2032,8 @@
         "toolResult": "結果",
         "toolError": "錯誤"
       },
-      "moreActions": "更多操作"
+      "moreActions": "更多操作",
+      "childSessionReadOnly": "該子代理會話無法繼續，記錄僅供檢視。"
     },
     "sessionDetails": {
       "menuLabel": "對話詳情",
@@ -2067,7 +2068,9 @@
       "updatedAt": "更新時間",
       "none": "—",
       "copyField": "複製{field}",
-      "copiedField": "已複製{field}"
+      "copiedField": "已複製{field}",
+      "tasksHeading": "任務",
+      "subAgentsHeading": "子代理"
     },
     "conversationCard": {
       "untitledConversation": "未命名會話",

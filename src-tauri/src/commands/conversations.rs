@@ -2126,6 +2126,174 @@ pub async fn create_conversation(
     Ok(id)
 }
 
+/// Result of [`open_native_subagent_session_core`]: the child's tab coordinates.
+/// `agent_type` and `folder_id` are read from the PARENT row rather than
+/// trusted from the caller — a native child is always a session of the parent's
+/// own kind living in the parent's folder, and the tab id / ACP connect key must
+/// match the row's stored values exactly.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenNativeSubagentSessionResult {
+    pub conversation_id: i32,
+    pub agent_type: AgentType,
+    pub folder_id: i32,
+}
+
+/// Register an agent's OWN spawned child (grok `spawn_subagent`, codex
+/// `spawn_agent`, opencode `call_omo_agent`, cursor `task`, …) as a
+/// conversation row so the frontend can open it as an ordinary chat tab:
+/// `external_id` carries the agent's own child-session handle and `parent_id`
+/// points back at the launching conversation.
+///
+/// Idempotent on (agent_type, external_id) within the folder: the first click
+/// inserts, every later click (including after the row was soft-deleted)
+/// re-points and returns the same id. `kind = Delegate` keeps the row out of
+/// the sidebar (the list filters `parent_id IS NULL`) and satisfies the
+/// entity's Delegate ⟺ parent_id invariant.
+pub async fn open_native_subagent_session_core(
+    conn: &sea_orm::DatabaseConnection,
+    parent_conversation_id: i32,
+    child_session_id: String,
+    title: Option<String>,
+) -> Result<OpenNativeSubagentSessionResult, AppCommandError> {
+    use sea_orm::ActiveValue::{NotSet, Set};
+    use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter};
+
+    // The handle lands in `external_id`, which every parser later joins into a
+    // disk path for the child's transcript. Each parser re-validates at read
+    // time; the write side stays defenseless no worse for it, but a path-ish
+    // string has no business being persisted as a session handle.
+    if child_session_id.is_empty()
+        || child_session_id.len() > 256
+        || child_session_id.contains('/')
+        || child_session_id.contains('\\')
+        || child_session_id.contains("..")
+    {
+        return Err(AppCommandError::invalid_input("invalid child session id"));
+    }
+
+    let parent = conversation::Entity::find_by_id(parent_conversation_id)
+        .one(conn)
+        .await
+        .map_err(crate::db::error::DbError::from)
+        .map_err(AppCommandError::from)?
+        .ok_or_else(|| {
+            AppCommandError::not_found(format!("Conversation not found: {parent_conversation_id}"))
+        })?;
+    let agent_type: AgentType = serde_json::from_value(serde_json::Value::String(
+        parent.agent_type.clone(),
+    ))
+    .map_err(|_| {
+        AppCommandError::invalid_input(format!("unknown agent type: {}", parent.agent_type))
+    })?;
+    let folder_id = parent.folder_id;
+
+    let existing = conversation::Entity::find()
+        .filter(conversation::Column::FolderId.eq(folder_id))
+        .filter(conversation::Column::AgentType.eq(&parent.agent_type))
+        .filter(conversation::Column::ExternalId.eq(&child_session_id))
+        .one(conn)
+        .await
+        .map_err(crate::db::error::DbError::from)
+        .map_err(AppCommandError::from)?;
+
+    if let Some(row) = existing {
+        let mut active: conversation::ActiveModel = row.clone().into();
+        let mut dirty = false;
+        if row.deleted_at.is_some() {
+            active.deleted_at = Set(None);
+            dirty = true;
+        }
+        // Re-point on a parent move, and fold whatever the row looked like
+        // before into the child shape (Delegate ⟺ parent_id).
+        if row.parent_id != Some(parent_conversation_id)
+            || row.kind != conversation::ConversationKind::Delegate
+        {
+            active.parent_id = Set(Some(parent_conversation_id));
+            active.kind = Set(conversation::ConversationKind::Delegate);
+            dirty = true;
+        }
+        // The title comes from the launch payload, so this call's is always
+        // the freshest — but a deliberate user rename still wins.
+        if !row.title_locked {
+            if let Some(t) = title.as_deref() {
+                if row.title.as_deref() != Some(t) {
+                    active.title = Set(Some(t.to_string()));
+                    dirty = true;
+                }
+            }
+        }
+        if dirty {
+            active.updated_at = Set(chrono::Utc::now());
+            active
+                .update(conn)
+                .await
+                .map_err(crate::db::error::DbError::from)
+                .map_err(AppCommandError::from)?;
+        }
+        return Ok(OpenNativeSubagentSessionResult {
+            conversation_id: row.id,
+            agent_type,
+            folder_id,
+        });
+    }
+
+    let now = chrono::Utc::now();
+    let model = conversation::ActiveModel {
+        id: NotSet,
+        folder_id: Set(folder_id),
+        title: Set(title),
+        title_locked: Set(false),
+        agent_type: Set(parent.agent_type),
+        // Same posture an imported session takes: surfaced for review, not
+        // `InProgress` (nothing is connected to it from codeg's side).
+        status: Set(conversation::ConversationStatus::PendingReview),
+        kind: Set(conversation::ConversationKind::Delegate),
+        model: Set(None),
+        git_branch: Set(parent.git_branch.clone()),
+        external_id: Set(Some(child_session_id)),
+        parent_id: Set(Some(parent_conversation_id)),
+        parent_tool_use_id: Set(None),
+        delegation_call_id: Set(None),
+        message_count: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+        deleted_at: Set(None),
+        pinned_at: Set(None),
+        origin_cwd: Set(parent.origin_cwd.clone()),
+    };
+    let created = model
+        .insert(conn)
+        .await
+        .map_err(crate::db::error::DbError::from)
+        .map_err(AppCommandError::from)?;
+    Ok(OpenNativeSubagentSessionResult {
+        conversation_id: created.id,
+        agent_type,
+        folder_id,
+    })
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn open_native_subagent_session(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    parent_conversation_id: i32,
+    child_session_id: String,
+    title: Option<String>,
+) -> Result<OpenNativeSubagentSessionResult, AppCommandError> {
+    let result = open_native_subagent_session_core(
+        &db.conn,
+        parent_conversation_id,
+        child_session_id,
+        title,
+    )
+    .await?;
+    emit_conversation_upsert(&EventEmitter::Tauri(app), &db.conn, result.conversation_id).await;
+    Ok(result)
+}
+
 /// Result of [`create_chat_conversation_core`]: the new conversation id plus the
 /// hidden chat folder backing it, so the frontend can drop the folder straight
 /// into `allFolders` (resolving cwd / active-folder) without a refetch.
@@ -6475,10 +6643,220 @@ mod tests {
         assert_eq!((start, end), (0, 2));
         let own = crate::commands::turn_window::window_meta(&turns, start);
         let seam = crate::commands::turn_window::window_meta(&turns, 2);
-        assert_eq!(own.prefix_hash, crate::commands::turn_window::prefix_fingerprint(&[]));
+        assert_eq!(
+            own.prefix_hash,
+            crate::commands::turn_window::prefix_fingerprint(&[])
+        );
         assert_eq!(
             seam.prefix_hash,
             crate::commands::turn_window::prefix_fingerprint(&turns[..2])
         );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // open_native_subagent_session_core: the idempotent upsert that turns a
+    // native sub-agent handle into a plain conversation row the chat tab
+    // (and the ACP resume path) can key on.
+    // ──────────────────────────────────────────────────────────────────────
+
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
+
+    fn at_str(at: AgentType) -> String {
+        serde_json::to_value(at)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap()
+    }
+
+    async fn seed_parent(conn: &sea_orm::DatabaseConnection, folder_id: i32) -> i32 {
+        conversation_service::create(
+            conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            Some("父会话".into()),
+            None,
+        )
+        .await
+        .expect("create parent")
+        .id
+    }
+
+    async fn find_by_handle(
+        conn: &sea_orm::DatabaseConnection,
+        folder_id: i32,
+        handle: &str,
+    ) -> Vec<conversation::Model> {
+        conversation::Entity::find()
+            .filter(conversation::Column::FolderId.eq(folder_id))
+            .filter(conversation::Column::ExternalId.eq(handle))
+            .all(conn)
+            .await
+            .expect("find by handle")
+    }
+
+    #[tokio::test]
+    async fn open_native_subagent_inserts_child_row_once_and_reopens_same_id() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-native-child").await;
+        let parent = seed_parent(&db.conn, folder).await;
+
+        let first = open_native_subagent_session_core(
+            &db.conn,
+            parent,
+            "child-uuid-1".into(),
+            Some("法语问候".into()),
+        )
+        .await
+        .expect("open child");
+        assert_eq!(first.agent_type, AgentType::ClaudeCode);
+        assert_eq!(first.folder_id, folder);
+
+        let rows = find_by_handle(&db.conn, folder, "child-uuid-1").await;
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.id, first.conversation_id);
+        assert_eq!(row.kind, conversation::ConversationKind::Delegate);
+        assert_eq!(row.parent_id, Some(parent));
+        // Same posture as an imported session, and never a pinned sidebar row.
+        assert_eq!(row.status, conversation::ConversationStatus::PendingReview);
+        assert_eq!(row.title.as_deref(), Some("法语问候"));
+        assert_eq!(row.agent_type, at_str(AgentType::ClaudeCode));
+
+        let second = open_native_subagent_session_core(
+            &db.conn,
+            parent,
+            "child-uuid-1".into(),
+            Some("法语问候（刷新）".into()),
+        )
+        .await
+        .expect("re-open child");
+        assert_eq!(second.conversation_id, first.conversation_id);
+        let rows = find_by_handle(&db.conn, folder, "child-uuid-1").await;
+        assert_eq!(rows.len(), 1, "upsert must not mint a second row");
+        // Unlocked rows take the launch payload's fresher title.
+        assert_eq!(rows[0].title.as_deref(), Some("法语问候（刷新）"));
+    }
+
+    #[tokio::test]
+    async fn open_native_subagent_restores_a_soft_deleted_child() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-native-child-restore").await;
+        let parent = seed_parent(&db.conn, folder).await;
+
+        let opened = open_native_subagent_session_core(&db.conn, parent, "c-2".into(), None)
+            .await
+            .expect("open");
+        conversation_service::soft_delete(&db.conn, opened.conversation_id)
+            .await
+            .expect("soft delete");
+
+        let again = open_native_subagent_session_core(&db.conn, parent, "c-2".into(), None)
+            .await
+            .expect("re-open deleted child");
+        assert_eq!(again.conversation_id, opened.conversation_id);
+        let rows = find_by_handle(&db.conn, folder, "c-2").await;
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].deleted_at.is_none(), "explicit open un-deletes");
+        assert_eq!(rows[0].kind, conversation::ConversationKind::Delegate);
+        assert_eq!(rows[0].parent_id, Some(parent));
+    }
+
+    #[tokio::test]
+    async fn open_native_subagent_adopts_a_regular_row_with_the_same_handle() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-native-child-adopt").await;
+        let parent = seed_parent(&db.conn, folder).await;
+
+        // The agent's own CLI listed this child as a session once and an
+        // import turned it into a plain sidebar row — same disk transcript, so
+        // the open re-points THAT row rather than minting a twin.
+        let now = chrono::Utc::now();
+        let stray = conversation::ActiveModel {
+            id: sea_orm::ActiveValue::NotSet,
+            folder_id: Set(folder),
+            title: Set(Some("imported child".into())),
+            title_locked: Set(false),
+            agent_type: Set(at_str(AgentType::ClaudeCode)),
+            status: Set(conversation::ConversationStatus::Completed),
+            kind: Set(conversation::ConversationKind::Regular),
+            model: Set(None),
+            git_branch: Set(None),
+            external_id: Set(Some("c-3".into())),
+            parent_id: Set(None),
+            parent_tool_use_id: Set(None),
+            delegation_call_id: Set(None),
+            message_count: Set(4),
+            created_at: Set(now),
+            updated_at: Set(now),
+            deleted_at: Set(None),
+            pinned_at: Set(None),
+            origin_cwd: Set(None),
+        }
+        .insert(&db.conn)
+        .await
+        .expect("insert stray regular row");
+
+        let opened = open_native_subagent_session_core(&db.conn, parent, "c-3".into(), None)
+            .await
+            .expect("adopt child");
+        assert_eq!(opened.conversation_id, stray.id);
+        let rows = find_by_handle(&db.conn, folder, "c-3").await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, conversation::ConversationKind::Delegate);
+        assert_eq!(rows[0].parent_id, Some(parent));
+    }
+
+    #[tokio::test]
+    async fn open_native_subagent_never_overwrites_a_locked_title() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-native-child-title").await;
+        let parent = seed_parent(&db.conn, folder).await;
+
+        let opened = open_native_subagent_session_core(
+            &db.conn,
+            parent,
+            "c-4".into(),
+            Some("启动文案".into()),
+        )
+        .await
+        .expect("open");
+        conversation_service::update_title(&db.conn, opened.conversation_id, "用户改名".into())
+            .await
+            .expect("manual rename locks the title");
+
+        open_native_subagent_session_core(
+            &db.conn,
+            parent,
+            "c-4".into(),
+            Some("启动文案变体".into()),
+        )
+        .await
+        .expect("re-open");
+        let rows = find_by_handle(&db.conn, folder, "c-4").await;
+        assert_eq!(rows[0].title.as_deref(), Some("用户改名"));
+    }
+
+    #[tokio::test]
+    async fn open_native_subagent_rejects_path_shapes_and_missing_parent() {
+        use crate::app_error::AppErrorCode;
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-native-child-guard").await;
+        let parent = seed_parent(&db.conn, folder).await;
+
+        let too_long = "x".repeat(257);
+        for bad in ["", "..", "../evil", "a/b", "a\\b", too_long.as_str()] {
+            let err = open_native_subagent_session_core(&db.conn, parent, bad.into(), None)
+                .await
+                .expect_err("handle must be rejected");
+            assert!(
+                matches!(err.code, AppErrorCode::InvalidInput),
+                "expected InvalidInput for {bad:?}, got {err:?}"
+            );
+        }
+
+        let err = open_native_subagent_session_core(&db.conn, 99_999, "c-ok".into(), None)
+            .await
+            .expect_err("missing parent");
+        assert!(matches!(err.code, AppErrorCode::NotFound), "got {err:?}");
     }
 }

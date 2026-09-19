@@ -2032,7 +2032,8 @@
         "toolResult": "Ergebnis",
         "toolError": "Fehler"
       },
-      "moreActions": "Weitere Aktionen"
+      "moreActions": "Weitere Aktionen",
+      "childSessionReadOnly": "Diese Unteragent-Sitzung kann nicht fortgesetzt werden — das Protokoll ist schreibgeschützt."
     },
     "sessionDetails": {
       "menuLabel": "Sitzungsdetails",
@@ -2067,7 +2068,9 @@
       "updatedAt": "Aktualisiert",
       "none": "—",
       "copyField": "{field} kopieren",
-      "copiedField": "{field} kopiert"
+      "copiedField": "{field} kopiert",
+      "tasksHeading": "Aufgaben",
+      "subAgentsHeading": "Unter-Agenten"
     },
     "conversationCard": {
       "untitledConversation": "Unbenannte Konversation",

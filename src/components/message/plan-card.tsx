@@ -70,7 +70,9 @@ export function getPriorityClassName(priority: string): string {
   }
 }
 
-function StatusIcon({
+// Exported: `PlanEntryRow` (overlay + aux-panel rows) renders the SAME icon
+// set, so a status can never look different across plan surfaces.
+export function StatusIcon({
   status,
   isStreaming,
 }: {

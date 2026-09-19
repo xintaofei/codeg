@@ -14,8 +14,6 @@ import {
   savePersistedPanelState,
 } from "@/lib/panel-state-storage"
 import { useActiveFolder } from "@/contexts/active-folder-context"
-import { detectPlatform } from "@/hooks/use-platform"
-import { isDesktop } from "@/lib/platform"
 
 export type AuxPanelTab =
   | "session_details"
@@ -29,19 +27,6 @@ const DEFAULT_WIDTH = 320
 const MIN_WIDTH = 200
 const MAX_WIDTH = 900
 const DEFAULT_IS_OPEN = false
-
-// The tabs now sit on their own row below the fixed top-right window-chrome
-// overlay (terminal/aux/settings), so they no longer need extra width to clear
-// it. The minimum only has to keep that overlay — and, on Windows/Linux, the
-// native caption strip beside it (~116 + 138) — from spilling past the panel's
-// left edge over the middle column. Elsewhere the base 200 is plenty.
-function resolveAuxMinWidth(): number {
-  const platform = detectPlatform()
-  if (isDesktop() && (platform === "windows" || platform === "linux")) {
-    return 260
-  }
-  return MIN_WIDTH
-}
 
 interface AuxPanelContextValue {
   isOpen: boolean
@@ -89,8 +74,10 @@ export function AuxPanelProvider({ children }: AuxPanelProviderProps) {
   const [pendingRevealPath, setPendingRevealPath] = useState<string | null>(
     null
   )
-  // Platform-derived minimum (see resolveAuxMinWidth); stable for the session.
-  const minWidth = useMemo(() => resolveAuxMinWidth(), [])
+  // Uniform minimum: the right-edge rail is a beside-column now and the
+  // Windows/Linux caption overhang past it (98px) only affects the strip's
+  // collapse-to-dropdown switch, not the panel's usable floor.
+  const minWidth = MIN_WIDTH
 
   const toggle = useCallback(() => setIsOpen((prev) => !prev), [])
 

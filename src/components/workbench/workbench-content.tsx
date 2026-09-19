@@ -83,7 +83,7 @@ export function WorkbenchRouteStrip() {
 }
 
 /** The active route's chrome-cluster buttons, or nothing. Rendered by both
- *  chrome hosts (RightEdgeChrome on desktop, FolderTitleBar on mobile). */
+ *  chrome hosts (RightEdgeRail on desktop, FolderTitleBar on mobile). */
 export function WorkbenchRouteChromeActions(
   props: WorkbenchChromeActionsProps
 ) {

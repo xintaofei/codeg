@@ -1,10 +1,13 @@
 import { memo, useMemo, useState, type ReactNode } from "react"
 import type { AdaptedContentPart } from "@/lib/adapters/ai-elements-adapter"
-import type { AgentToolCall, AgentType } from "@/lib/types"
-import { tryParseJson, extractJsonField } from "./content-parts-renderer"
+import type { AgentToolCall } from "@/lib/types"
 import { SubagentSessionDialog } from "./subagent-session-dialog"
 import { useSessionViewerHost } from "./session-viewer-host"
 import { shortAgentId } from "@/lib/collab-tool"
+import {
+  childSessionOfLaunch,
+  parseSubAgentLaunchFields,
+} from "@/lib/native-subagent-fields"
 import { MessageResponse } from "@/components/ai-elements/message"
 import { Shimmer } from "@/components/ai-elements/shimmer"
 import {
@@ -52,15 +55,6 @@ function adaptToolCalls(
       errorText: call.is_error ? (call.output_preview ?? undefined) : undefined,
     })
   )
-}
-
-// A parsed JSON field is only usable here if it's a non-empty STRING. Some
-// hosts (e.g. CodeBuddy) hand us inputs where `subagent_type` / `description`
-// arrive as objects (or empty `{}`); the old `as string` casts let those leak
-// straight into the rendered `title`, crashing React with "Objects are not
-// valid as a React child". Coerce so a non-string field is treated as absent.
-function asText(v: unknown): string | null {
-  return typeof v === "string" && v.length > 0 ? v : null
 }
 
 interface TaskOutcomeEnvelope {
@@ -164,49 +158,6 @@ function parseGrokSubagentProgress(
 }
 
 /**
- * The child's own session, when the sub-agent ran as a standalone session on
- * disk. TWO agents do this, and for the same reason: the child is a full
- * session that streams its transcript to disk while none of it is forwarded
- * over ACP, so opening that session is the ONLY way to see the child's work.
- *
- * Grok, live, arrives as `meta.grokSubagentSession.childSessionId`
- * (`connection.rs::grok_subagent_meta`, re-sent on every progress tick because
- * meta is replaced wholesale); in history it comes off the parsed
- * `agent_stats.child_session_id` (`parsers/grok.rs::subagent_stats`).
- *
- * Codex needs neither, because its child's thread id IS its rollout's id and
- * the card already carries it as `agent_id` — the badge and the session key are
- * the same string. Both of its paths already write it
- * (`connection.rs::classify_codex_subagent_activity` live,
- * `parsers/codex.rs::inject_agent_id_into_input` on reload), alongside the
- * launch marker that identifies the producer.
- *
- * The agent type is pinned per branch rather than read from the conversation:
- * the card has no conversation-level agent type of its own, and a parent's
- * child is a session of the parent's own kind in both cases. A third producer
- * of `child_session_id` is the line to revisit.
- */
-function parseChildSessionId(
-  meta: Record<string, unknown> | null | undefined,
-  statsChildSessionId: string | null | undefined,
-  codexSubagentId: string | null
-): { sessionId: string; agentType: AgentType } | null {
-  const raw = meta?.grokSubagentSession
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    const live = (raw as Record<string, unknown>).childSessionId
-    if (typeof live === "string" && live.length > 0) {
-      return { sessionId: live, agentType: "grok" }
-    }
-  }
-  if (statsChildSessionId && statsChildSessionId.length > 0) {
-    return { sessionId: statsChildSessionId, agentType: "grok" }
-  }
-  return codexSubagentId
-    ? { sessionId: codexSubagentId, agentType: "codex" }
-    : null
-}
-
-/**
  * How the codex sub-agent itself ended, as a pill chip.
  *
  * Separate from the capsule's own status chrome, and deliberately so: the card
@@ -263,10 +214,25 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
     part.state === "input-available" || part.state === "input-streaming"
   const isError = part.state === "output-error"
 
-  const parsed = useMemo(
-    () => (part.input ? tryParseJson(part.input) : null),
+  // Shared with the aux panel's native-sub-agent rows: one parser for the
+  // launch payload, so the two surfaces never drift on field spellings.
+  const launchFields = useMemo(
+    () => parseSubAgentLaunchFields(part.input ?? null),
     [part.input]
   )
+  const {
+    subagentType,
+    description,
+    prompt,
+    model,
+    agentId,
+    isCursorTask,
+    // The launch capsule's own status describes the spawn, so the codex
+    // child's outcome (codexSubagentState) needs its own chip — see
+    // `SubAgentLaunchFields`.
+    isCodexSubagentLaunch: isCodexSubagent,
+    codexSubagentState,
+  } = launchFields
 
   // Background sub-agent lifecycle. Historical/refetched turns carry the
   // parser's structured marker (settled state + summary + result folded from
@@ -282,8 +248,8 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
   // suffix / error box / background label) instead of dumping raw JSON into
   // the body. Gated on the live input's `_toolName:"task"` identity stamp.
   const taskOutcome = useMemo(
-    () => parseTaskOutcomeEnvelope(part.output, parsed?._toolName === "task"),
-    [part.output, parsed]
+    () => parseTaskOutcomeEnvelope(part.output, isCursorTask),
+    [part.output, isCursorTask]
   )
   const outcomeError = taskOutcome?.error ?? null
   const outcomeBackground = taskOutcome?.isBackground === true
@@ -300,68 +266,6 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
   const transcriptTail = useMemo(
     () => (part.agentTranscript ?? []).slice(-AGENT_TRANSCRIPT_RENDER_TAIL),
     [part.agentTranscript]
-  )
-
-  const subagentType = useMemo(
-    () =>
-      asText(parsed?.subagent_type) ??
-      // Codex's live `spawn_agent` payload labels the agent with `agent_type`
-      // instead of `subagent_type` (the historical parser already maps it
-      // across). Read both so the prefix shows during streaming too.
-      asText(parsed?.agent_type) ??
-      // Cursor's live task payload carries `subagentType` as a protobuf-es
-      // oneof object ({case: "generalPurpose", …}); its history parser emits
-      // a plain snake_case string, so read the live case here for parity.
-      asText(parsed?.subagentType) ??
-      asText((parsed?.subagentType as { case?: unknown } | undefined)?.case) ??
-      (part.input ? extractJsonField(part.input, "subagent_type") : null) ??
-      (part.input ? extractJsonField(part.input, "agent_type") : null),
-    [parsed, part.input]
-  )
-
-  const description = useMemo(
-    () =>
-      asText(parsed?.description) ??
-      (part.input ? extractJsonField(part.input, "description") : null),
-    [parsed, part.input]
-  )
-
-  const prompt = useMemo(
-    () =>
-      asText(parsed?.prompt) ??
-      (part.input ? extractJsonField(part.input, "prompt") : null),
-    [parsed, part.input]
-  )
-
-  const model = useMemo(
-    () =>
-      asText(parsed?.model) ??
-      (part.input ? extractJsonField(part.input, "model") : null),
-    [parsed, part.input]
-  )
-
-  // codex 0.147's native team-of-agents marks its capsules as LAUNCH-only
-  // (`CODEX_SUBAGENT_LAUNCH_KEY`, written by both the live path and the rollout
-  // parser). The card settles when codex acknowledges the spawn, which is not
-  // when the child finishes — an asynchronous child can still be working long
-  // after. Say so, rather than let a green "completed" claim the sub-agent is
-  // done.
-  const isCodexSubagent = parsed?.__codegCodexSubagentLaunch === true
-
-  // …and codex DOES eventually say how the child ended
-  // (`SubAgentActivity{kind}`), which both paths stamp here. Present only once
-  // that has been heard; while it is absent the child's fate is genuinely
-  // unknown, which is what the launch note describes.
-  const codexSubagentState = asText(parsed?.__codegCodexSubagentState)
-
-  // codex spawn capsules carry the sub-agent's UUID (`agent_id`); show it in the
-  // pill so the execution capsule reads uniformly with the live/wait collab
-  // capsules. Other agents (e.g. Claude Task) have no `agent_id` → no badge.
-  const agentId = useMemo(
-    () =>
-      asText(parsed?.agent_id) ??
-      (part.input ? extractJsonField(part.input, "agent_id") : null),
-    [parsed, part.input]
   )
 
   const title = useMemo(() => {
@@ -421,13 +325,8 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
   // running child can be watched while it works instead of only after it
   // reports back.
   const childSession = useMemo(
-    () =>
-      parseChildSessionId(
-        part.meta,
-        agentStats?.child_session_id,
-        isCodexSubagent ? agentId : null
-      ),
-    [part.meta, agentStats?.child_session_id, isCodexSubagent, agentId]
+    () => childSessionOfLaunch(launchFields, part.meta, agentStats),
+    [launchFields, part.meta, agentStats]
   )
   const viewerHost = useSessionViewerHost()
   const [sessionOpen, setSessionOpen] = useState(false)

@@ -2032,7 +2032,8 @@
         "toolResult": "Résultat",
         "toolError": "Erreur"
       },
-      "moreActions": "Plus d’actions"
+      "moreActions": "Plus d’actions",
+      "childSessionReadOnly": "Cette session de sous-agent ne peut pas être reprise : le journal est en lecture seule."
     },
     "sessionDetails": {
       "menuLabel": "Détails de la session",
@@ -2067,7 +2068,9 @@
       "updatedAt": "Mis à jour",
       "none": "—",
       "copyField": "Copier {field}",
-      "copiedField": "{field} copié"
+      "copiedField": "{field} copié",
+      "tasksHeading": "Tâches",
+      "subAgentsHeading": "Sous-agents"
     },
     "conversationCard": {
       "untitledConversation": "Conversation sans titre",

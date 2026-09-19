@@ -44,7 +44,7 @@ const messageListViewSource = readFileSync(
 describe("ConversationDetailPanel new conversation layout", () => {
   it("keeps the new-conversation input in the welcome panel with the original scroll layout", () => {
     expect(source).toContain(
-      "hideInput={isWelcomeMode || Boolean(acpLoadError)}"
+      "isWelcomeMode || Boolean(acpLoadError) || childSessionReadOnly"
     )
 
     const welcomeBranchStart = source.indexOf("{isWelcomeMode ? (")
@@ -488,11 +488,15 @@ describe("ConversationDetailPanel session-load failure surface", () => {
 
   it("docks the load error at the composer with the recovery actions", () => {
     // The composer input stays hidden (a send can't reach the dead session)…
+    // (`|| childSessionReadOnly` additionally hides it for a native
+    // sub-session tab whose connection never landed on the child's handle.)
     expect(source).toContain(
-      "hideInput={isWelcomeMode || Boolean(acpLoadError)}"
+      "isWelcomeMode || Boolean(acpLoadError) || childSessionReadOnly"
     )
     // …and the banner takes its place, explaining why and offering recovery.
-    expect(source).toContain("composerBanner={acpLoadErrorBanner}")
+    expect(source).toContain(
+      "composerBanner={acpLoadErrorBanner ?? childSessionReadOnlyBanner}"
+    )
     const bannerStart = source.indexOf("const acpLoadErrorBanner")
     expect(bannerStart).toBeGreaterThan(-1)
     const bannerEnd = source.indexOf("const goalControlValue", bannerStart)
