@@ -440,6 +440,24 @@ const AntigravityMonoIcon = memo(function AntigravityMonoIcon({
   )
 })
 
+const ZCodeMonoIcon = memo(function ZCodeMonoIcon({ size = "1em" }: IconProps) {
+  // A plain "Z" monogram — NOT an official ZCode mark (none is published to
+  // the ACP registry CDN yet). Replace with the official glyph when one lands.
+  return (
+    <svg
+      fill="currentColor"
+      height={size}
+      style={baseSvgStyle}
+      viewBox="0 0 16 16"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <title>ZCode</title>
+      <path d="M3 2h10v2.3L6.7 11.7H13V14H3v-2.3L9.3 4.3H3V2Z" />
+    </svg>
+  )
+})
+
 const CursorMonoIcon = memo(function CursorMonoIcon({
   size = "1em",
 }: IconProps) {
@@ -483,6 +501,7 @@ const MONO_ICONS: Partial<Record<AgentType, AnyIcon>> = {
   cursor: CursorMonoIcon,
   qoder: QoderMonoIcon,
   antigravity: AntigravityMonoIcon,
+  zcode: ZCodeMonoIcon,
 }
 
 // Per-agent color override for mono marks, layered on top of the default

@@ -1423,13 +1423,18 @@ fn pi_launch_preflight(runtime_env: &BTreeMap<String, String>) -> Option<String>
 /// Transcript directory for an agent that codeg must record itself, or `None`
 /// for agents with their own store parser.
 ///
-/// Only custom ACP agents are recorded: every built-in has a dedicated parser
-/// reading the agent's native transcript, and recording those too would double
-/// the storage while risking two disagreeing histories.
+/// Custom ACP agents are recorded because they have no native store to parse.
+/// ZCode is the exception among built-ins: its adapter keeps history in ZCode's
+/// private (undocumented) store, which codeg deliberately does not read, so the
+/// built-in records its own ACP transcript through the same path. Every other
+/// built-in has a dedicated parser reading the agent's native transcript, and
+/// recording those too would double the storage while risking two disagreeing
+/// histories.
 fn transcript_dir_for(agent_type: AgentType) -> Option<&'static str> {
-    agent_type
-        .custom_id()
-        .map(|_| registry::registry_id_for(agent_type))
+    match agent_type {
+        AgentType::Custom(_) | AgentType::ZCode => Some(registry::registry_id_for(agent_type)),
+        _ => None,
+    }
 }
 
 /// Ensure a custom agent's transcript file exists with its header. No-op for
@@ -1737,6 +1742,77 @@ fn agent_debug_callback(
     }
 }
 
+/// Standard install locations of the ZCode CLI `.cjs` entry, probed when the
+/// settings env does not carry an explicit `ZCODE_CODEG_ENTRY`. The adapter
+/// refuses to guess this itself ("this binary never searches for it"), so the
+/// host must.
+fn zcode_entry_candidates(home: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if cfg!(target_os = "macos") {
+        candidates.push(PathBuf::from(
+            "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs",
+        ));
+    }
+    // Per-user app installs live under ~/Applications on every platform's
+    // bundle convention; harmless to probe where no such layout exists.
+    if let Some(home) = home {
+        candidates.push(home.join("Applications/ZCode.app/Contents/Resources/glm/zcode.cjs"));
+    }
+    candidates
+}
+
+/// Ensure `ZCODE_CODEG_ENTRY` names a readable ZCode CLI entry, or fail the
+/// launch with an install-prompt-routable message instead of letting the
+/// adapter exit `E_ENTRY` mid-handshake.
+///
+/// An explicit value from Agent Settings → ZCode always wins (and is validated
+/// — a stale absolute path must not silently fall back to a probe hit). Only
+/// when it is absent are the standard locations probed.
+fn ensure_zcode_entry_env(
+    merged_env: &mut Vec<(String, String)>,
+    home: Option<&Path>,
+) -> Result<(), String> {
+    ensure_zcode_entry_env_with(merged_env, &zcode_entry_candidates(home))
+}
+
+/// The testable core of [`ensure_zcode_entry_env`]: probe a GIVEN candidate
+/// list so tests never depend on what happens to be installed on the machine.
+fn ensure_zcode_entry_env_with(
+    merged_env: &mut Vec<(String, String)>,
+    candidates: &[PathBuf],
+) -> Result<(), String> {
+    if let Some(index) = merged_env
+        .iter()
+        .position(|(k, _)| k == "ZCODE_CODEG_ENTRY")
+    {
+        let value = merged_env[index].1.clone();
+        let path = Path::new(&value);
+        if path.is_absolute() && path.is_file() {
+            return Ok(());
+        }
+        return Err(format!(
+            "ZCODE_CODEG_ENTRY is set to \"{value}\", which is not an absolute path to a \
+             readable file. Fix or clear it in Agent Settings → ZCode → Environment."
+        ));
+    }
+    for candidate in candidates {
+        if candidate.is_file() {
+            merged_env.push((
+                "ZCODE_CODEG_ENTRY".to_string(),
+                candidate.to_string_lossy().to_string(),
+            ));
+            return Ok(());
+        }
+    }
+    Err(
+        "ZCode CLI entry not found. Install the ZCode app, or set ZCODE_CODEG_ENTRY to the \
+         absolute path of its .cjs entry (e.g. \
+         /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs) in Agent Settings → \
+         ZCode → Environment."
+            .to_string(),
+    )
+}
+
 async fn build_agent(
     agent_type: AgentType,
     runtime_env: &BTreeMap<String, String>,
@@ -1794,6 +1870,16 @@ async fn build_agent(
                 }
             }
             let mut merged_env = merge_agent_env(env, runtime_env, scratch);
+            // The zcode-codeg adapter requires the ZCode app's .cjs entry via
+            // env and exits E_ENTRY without it; resolve or fail fast here,
+            // before the spawn turns it into an opaque protocol error.
+            if agent_type == AgentType::ZCode {
+                if let Err(message) =
+                    ensure_zcode_entry_env(&mut merged_env, dirs::home_dir().as_deref())
+                {
+                    return Err(AcpError::SdkNotInstalled(message));
+                }
+            }
             // Resolve the config-derived preset HERE (like Grok's
             // `grok_launch_permission_mode` below) so the policy helper stays a
             // pure function over the env list.
@@ -22146,6 +22232,107 @@ mod tests {
             cursor_companion_title_from_content(Some(&format!("  {ack}"))),
             Some("codeg-mcp__delegate_to_agent")
         );
+    }
+
+    #[test]
+    fn zcode_entry_env_accepts_explicit_absolute_file() {
+        let entry = std::env::temp_dir().join("codeg-zcode-test-entry.cjs");
+        std::fs::write(&entry, "// stub\n").unwrap();
+        let mut env = vec![(
+            "ZCODE_CODEG_ENTRY".to_string(),
+            entry.to_string_lossy().to_string(),
+        )];
+        assert!(ensure_zcode_entry_env_with(&mut env, &[]).is_ok());
+        // The explicit value is kept verbatim, never replaced by a probe.
+        assert_eq!(env[0].1, entry.to_string_lossy().to_string());
+        let _ = std::fs::remove_file(&entry);
+    }
+
+    #[test]
+    fn zcode_entry_env_rejects_stale_override_without_falling_back() {
+        // A configured path that no longer resolves must fail loudly —
+        // silently probing past it would hand the adapter a DIFFERENT ZCode
+        // install than the one the user pinned.
+        let mut env = vec![(
+            "ZCODE_CODEG_ENTRY".to_string(),
+            "/definitely/not/a/real/zcode.cjs".to_string(),
+        )];
+        let hit = std::env::temp_dir().join("codeg-zcode-stale-override-hit.cjs");
+        std::fs::write(&hit, "// stub\n").unwrap();
+        let err =
+            ensure_zcode_entry_env_with(&mut env, std::slice::from_ref(&hit)).unwrap_err();
+        assert!(err.contains("ZCODE_CODEG_ENTRY"), "got: {err}");
+        assert!(!env.iter().any(|(k, _)| k != "ZCODE_CODEG_ENTRY"));
+        let _ = std::fs::remove_file(&hit);
+    }
+
+    #[test]
+    fn zcode_entry_env_probes_first_existing_candidate_when_unset() {
+        let miss = std::env::temp_dir().join("codeg-zcode-probe-miss.cjs");
+        let hit = std::env::temp_dir().join("codeg-zcode-probe-own-hit.cjs");
+        std::fs::write(&hit, "// stub\n").unwrap();
+        let mut env: Vec<(String, String)> = Vec::new();
+        ensure_zcode_entry_env_with(&mut env, &[miss, hit.clone()]).unwrap();
+        assert_eq!(
+            env,
+            vec![(
+                "ZCODE_CODEG_ENTRY".to_string(),
+                hit.to_string_lossy().to_string()
+            )]
+        );
+        let _ = std::fs::remove_file(&hit);
+    }
+
+    #[test]
+    fn zcode_entry_env_errors_with_guidance_when_nothing_resolves() {
+        let mut env: Vec<(String, String)> = Vec::new();
+        let miss = std::env::temp_dir().join("codeg-zcode-probe-miss.cjs");
+        let err = ensure_zcode_entry_env_with(&mut env, &[miss]).unwrap_err();
+        assert!(err.contains("ZCODE_CODEG_ENTRY"), "got: {err}");
+        assert!(err.contains("Agent Settings"), "got: {err}");
+        assert!(env.is_empty(), "no entry may be injected on failure");
+    }
+
+    #[test]
+    fn zcode_entry_candidates_cover_standard_locations() {
+        let home = PathBuf::from("/home/tester");
+        let candidates = zcode_entry_candidates(Some(&home));
+        // The per-user bundle location is always probed...
+        assert!(candidates.contains(
+            &home.join("Applications/ZCode.app/Contents/Resources/glm/zcode.cjs")
+        ));
+        // ...and on macOS the system /Applications bundle comes first so the
+        // common install wins without touching $HOME.
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                candidates.first().map(PathBuf::as_path),
+                Some(Path::new(
+                    "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs"
+                ))
+            );
+        }
+        // Nothing to probe without a home — the error path guides the user.
+        assert!(zcode_entry_candidates(None).is_empty() || cfg!(target_os = "macos"));
+    }
+
+    #[test]
+    fn transcript_recording_covers_custom_agents_and_zcode_only() {
+        // ZCode is the one built-in whose history codeg must record itself;
+        // every other built-in has a dedicated native-store parser, and
+        // recording those too would double the storage.
+        assert_eq!(transcript_dir_for(AgentType::ZCode), Some("zcode-acp"));
+        assert_eq!(
+            transcript_dir_for(AgentType::custom("goose").unwrap()),
+            Some("goose")
+        );
+        for builtin in crate::models::agent::BUILTIN_AGENT_TYPES {
+            let expected = matches!(builtin, AgentType::ZCode);
+            assert_eq!(
+                transcript_dir_for(*builtin).is_some(),
+                expected,
+                "unexpected transcript recording for {builtin:?}"
+            );
+        }
     }
 
     #[test]

@@ -694,6 +694,11 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
                 default_rel: &[".pi", "agent", "sessions"],
             },
         ],
+        // ZCode, like a custom ACP agent, has no codeg-known private directory
+        // layout: codeg never reads ZCode's store (the built-in's history is
+        // codeg's own ACP transcript), so there is nothing to widen the
+        // sandbox roots for.
+        AgentType::ZCode => &[],
         // A custom ACP agent has no codeg-known private directory layout —
         // codeg never reads its store (history comes from codeg's own ACP
         // transcript), so there is nothing to widen the sandbox roots for.

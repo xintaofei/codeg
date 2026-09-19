@@ -8545,6 +8545,11 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
             ],
             project_rel_dirs: vec![".gemini/skills", ".agents/skills"],
         }),
+        // ZCode's skills directories are deliberately undeclared: nothing has
+        // verified which directory (if any) the ZCode backend actually loads
+        // skills from, and declaring a guessed path would install skills the
+        // agent never reads. Revisit only with evidence from the ZCode side.
+        AgentType::ZCode => None,
         // codeg cannot detect where an arbitrary ACP agent loads skills from,
         // so custom agents are gated on the user's own declaration: that the
         // agent reads the shared `.agents/skills` store (the cross-agent
@@ -10233,6 +10238,13 @@ fn cascade_update_agent_config(
             // `sync_antigravity_settings_file`); that file carries the chosen
             // METHOD, never a credential, so there is nothing here to
             // reconcile either.
+        }
+        AgentType::ZCode => {
+            // ZCode authenticates against the user's existing ZCode login and
+            // its adapter neither reads nor refreshes credentials, so there is
+            // no model-provider surface for the cascade to reconcile. The
+            // launch-contract env (`ZCODE_CODEG_ENTRY`, optional
+            // `ZCODE_CODEG_CONFIG`) is managed through the generic env panel.
         }
         AgentType::Custom(_) => {
             // Custom agents are deliberately configuration-free: codeg writes

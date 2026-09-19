@@ -316,6 +316,10 @@ pub fn build_agent_parser(agent_type: AgentType) -> Box<dyn AgentParser> {
         AgentType::DeepSeek => Box::new(deepseek::DeepSeekParser::new()),
         AgentType::Qoder => Box::new(qoder::QoderParser::new()),
         AgentType::Antigravity => Box::new(antigravity::AntigravityParser::new()),
+        // ZCode's adapter keeps history in ZCode's private store, which codeg
+        // deliberately does not read; the built-in records its own ACP
+        // transcript instead — the same store custom agents use.
+        AgentType::ZCode => Box::new(acp_native::AcpNativeParser::new(agent_type)),
         // Custom ACP agents have no native store to reverse-engineer; their
         // history is codeg's own ACP transcript.
         AgentType::Custom(_) => Box::new(acp_native::AcpNativeParser::new(agent_type)),

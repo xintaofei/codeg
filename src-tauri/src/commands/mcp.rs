@@ -3276,6 +3276,12 @@ pub fn read_servers_for_agent_type(
         // itself at session setup — see the Antigravity section above for why
         // it rides the forward skip list rather than the wire.
         AgentType::Antigravity => read_antigravity_servers(),
+        // The zcode-codeg adapter takes MCP servers as `session/new`'s
+        // `mcpServers` (stdio) — the ACP wire is the delivery path, so ZCode
+        // must stay OFF the forward skip list in `connection.rs`. Like DeepSeek
+        // it has no codeg-managed native MCP store to read back here; unlike
+        // DeepSeek there is not even a codeg-side `$HOME/mcp.json` record yet.
+        AgentType::ZCode => Ok(BTreeMap::new()),
         // Custom agents get MCP purely over the ACP wire (`session/new`'s
         // `mcpServers`); codeg deliberately knows nothing about their native
         // config files, so there is no per-agent store to read back here.
