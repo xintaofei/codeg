@@ -200,45 +200,88 @@ fn prompt_text(payload: &serde_json::Value) -> String {
 }
 
 /// Blocks for a user turn recorded from a `session/prompt` payload. Text and
-/// images are kept; resource links degrade to their text form, which is what
-/// the composer serialized them from.
+/// images are kept; resources use the same lightweight attachment markers as
+/// the live user-message projection. The original bytes stay in the transcript.
 fn prompt_blocks(payload: &serde_json::Value) -> Vec<ContentBlock> {
     let Some(items) = payload.as_array() else {
         return Vec::new();
     };
-    let mut blocks = Vec::new();
-    for item in items {
-        match item.get("type").and_then(|t| t.as_str()) {
-            Some("image") => {
-                let data = item.get("data").and_then(|d| d.as_str()).unwrap_or_default();
-                let mime_type = item
-                    .get("mimeType")
-                    .or_else(|| item.get("mime_type"))
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("image/png");
-                if !data.is_empty() {
-                    blocks.push(ContentBlock::Image {
-                        data: data.to_string(),
-                        mime_type: mime_type.to_string(),
-                        uri: item
-                            .get("uri")
-                            .and_then(|u| u.as_str())
-                            .map(str::to_string),
+    items.iter().filter_map(user_content_block).collect()
+}
+
+/// Shared by recorded prompts and session/load replay, whose ACP resources nest
+/// their URI/MIME/body under `resource` rather than a top-level `text` field.
+fn user_content_block(item: &serde_json::Value) -> Option<ContentBlock> {
+    match item.get("type").and_then(|t| t.as_str()) {
+        Some("image") => {
+            let data = item
+                .get("data")
+                .and_then(|d| d.as_str())
+                .unwrap_or_default();
+            let mime_type = item
+                .get("mimeType")
+                .or_else(|| item.get("mime_type"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("image/png");
+            if !data.is_empty() {
+                return Some(ContentBlock::Image {
+                    data: data.to_string(),
+                    mime_type: mime_type.to_string(),
+                    uri: item.get("uri").and_then(|u| u.as_str()).map(str::to_string),
+                });
+            }
+        }
+        Some("resource") => {
+            let resource = item.get("resource")?;
+            let uri = resource
+                .get("uri")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let mime = resource
+                .get("mimeType")
+                .or_else(|| resource.get("mime_type"))
+                .and_then(|v| v.as_str());
+            let blob = resource.get("blob").and_then(|v| v.as_str());
+            if let (Some(mime), Some(blob)) = (mime, blob) {
+                if mime.starts_with("image/") && !blob.is_empty() {
+                    return Some(ContentBlock::Image {
+                        data: blob.to_string(),
+                        mime_type: mime.to_string(),
+                        uri: (!uri.is_empty()).then(|| uri.to_string()),
                     });
                 }
             }
-            _ => {
-                if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                    if !text.is_empty() {
-                        blocks.push(ContentBlock::Text {
-                            text: text.to_string(),
-                        });
-                    }
+            if !uri.is_empty() {
+                return Some(ContentBlock::Text {
+                    text: format!("[{uri}]({uri})"),
+                });
+            }
+        }
+        Some("resource_link") => {
+            let uri = item
+                .get("uri")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())?;
+            let name = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(uri);
+            return Some(ContentBlock::Text {
+                text: format!("[{name}]({uri})"),
+            });
+        }
+        _ => {
+            if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                if !text.is_empty() {
+                    return Some(ContentBlock::Text {
+                        text: text.to_string(),
+                    });
                 }
             }
         }
     }
-    blocks
+    None
 }
 
 /// Accumulated state of one assistant turn under construction.
@@ -516,33 +559,42 @@ fn apply_update(
             if *prompt_just_recorded {
                 return;
             }
-            let text = content_block_text(&chunk.content);
-            if text.is_empty() {
+            let Ok(content) = serde_json::to_value(&chunk.content) else {
                 return;
-            }
+            };
+            let Some(block) = user_content_block(&content) else {
+                return;
+            };
+            // Resource/image chunks append in order to the same user turn;
+            // incoming text chunks retain the existing text-coalescing behavior.
+            let is_text = matches!(chunk.content, sacp::schema::ContentBlock::Text(_));
             flush(pending, turns, seq);
             *turn_start_hint = Some(at_ms);
             match turns.last_mut() {
                 // Consecutive replay chunks belong to one user message.
-                Some(last)
-                    if matches!(last.role, TurnRole::User)
-                        && matches!(last.blocks.last(), Some(ContentBlock::Text { .. })) =>
-                {
-                    if let Some(ContentBlock::Text { text: existing }) = last.blocks.last_mut() {
-                        existing.push_str(&text);
+                Some(last) if matches!(last.role, TurnRole::User) => {
+                    if let (
+                        true,
+                        Some(ContentBlock::Text { text: existing }),
+                        ContentBlock::Text { text },
+                    ) = (is_text, last.blocks.last_mut(), &block)
+                    {
+                        existing.push_str(text);
+                    } else {
+                        last.blocks.push(block);
                     }
                 }
                 _ => {
                     turns.push(MessageTurn {
                         id: format!("acp-{seq}"),
                         role: TurnRole::User,
-                        blocks: vec![ContentBlock::Text { text }],
+                        blocks: vec![block],
                         timestamp: epoch_ms_to_utc(at_ms),
                         usage: None,
                         duration_ms: None,
                         model: None,
                         completed_at: None,
-                    agent_message_id: None,
+                        agent_message_id: None,
                     });
                     *seq += 1;
                 }
@@ -845,6 +897,110 @@ mod tests {
             "sessionUpdate": kind,
             "content": { "type": "text", "text": text }
         })
+    }
+
+    fn attachment_prompt() -> serde_json::Value {
+        serde_json::json!([
+            {"type":"text", "text":"Review these files"},
+            {"type":"resource_link", "name":"report.pdf", "uri":"file:///tmp/report.pdf", "mimeType":"application/pdf"},
+            {"type":"resource", "resource":{"uri":"attachment:///note.txt", "mimeType":"text/plain", "text":"private file contents"}},
+            {"type":"resource", "resource":{"uri":"attachment:///data.bin", "mimeType":"application/octet-stream", "blob":"c2VjcmV0"}},
+            {"type":"resource", "resource":{"uri":"attachment:///plot.png", "mimeType":"image/png", "blob":"aW1hZ2U="}},
+            {"type":"image", "data":"bmF0aXZl", "mimeType":"image/jpeg", "uri":"file:///tmp/photo.jpg"}
+        ])
+    }
+
+    #[test]
+    fn recorded_prompt_preserves_attachment_markers_and_images() {
+        let turns = project_turns(&[entry(1, EntryKind::Prompt, attachment_prompt())]);
+        assert_eq!(turns.len(), 1);
+        let blocks = &turns[0].blocks;
+        assert_eq!(blocks.len(), 6);
+        for (index, expected) in [
+            (1, "[report.pdf](file:///tmp/report.pdf)"),
+            (2, "[attachment:///note.txt](attachment:///note.txt)"),
+            (3, "[attachment:///data.bin](attachment:///data.bin)"),
+        ] {
+            assert!(matches!(&blocks[index], ContentBlock::Text { text } if text == expected));
+        }
+        assert!(
+            matches!(&blocks[4], ContentBlock::Image { data, mime_type, uri }
+            if data == "aW1hZ2U=" && mime_type == "image/png" && uri.as_deref() == Some("attachment:///plot.png"))
+        );
+        assert!(
+            matches!(&blocks[5], ContentBlock::Image { data, mime_type, .. }
+            if data == "bmF0aXZl" && mime_type == "image/jpeg")
+        );
+        let text = prompt_text(&attachment_prompt());
+        assert_eq!(text, "Review these files");
+    }
+
+    #[test]
+    fn replayed_attachments_match_recorded_prompt_and_stay_in_one_user_turn() {
+        let payload = attachment_prompt();
+        let mut entries = vec![];
+        for (i, content) in payload.as_array().unwrap().iter().enumerate() {
+            entries.push(update(
+                i as u64 + 1,
+                serde_json::json!({
+                    "sessionUpdate":"user_message_chunk", "content":content
+                }),
+            ));
+        }
+        entries.push(update(10, text_chunk("user_message_chunk", "after ")));
+        entries.push(update(11, text_chunk("user_message_chunk", "images")));
+        entries.push(update(12, text_chunk("agent_message_chunk", "done")));
+        let turns = project_turns(&entries);
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].blocks.len(), 7);
+        let expected = prompt_blocks(&payload);
+        assert_eq!(
+            serde_json::to_value(&turns[0].blocks[..6]).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert!(
+            matches!(&turns[0].blocks[6], ContentBlock::Text { text } if text == "after images")
+        );
+        assert!(matches!(turns[1].role, TurnRole::Assistant));
+    }
+
+    #[test]
+    fn recorded_attachment_echoes_do_not_duplicate_user_turns() {
+        let payload = attachment_prompt();
+        let mut entries = vec![entry(1, EntryKind::Prompt, payload.clone())];
+        for content in payload.as_array().unwrap() {
+            entries.push(update(
+                2,
+                serde_json::json!({"sessionUpdate":"user_message_chunk", "content":content}),
+            ));
+        }
+        entries.push(update(3, text_chunk("agent_message_chunk", "done")));
+        let turns = project_turns(&entries);
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].blocks.len(), 6);
+    }
+
+    #[test]
+    fn attachment_only_history_is_not_empty_and_malformed_resources_are_ignored() {
+        let blocks = prompt_blocks(&serde_json::json!([
+            {"type":"resource_link", "uri":"file:///tmp/unnamed", "name":""},
+            {"type":"resource", "resource":{"uri":"attachment:///empty.png", "mimeType":"image/png", "blob":""}},
+            {"type":"image", "data":"legacy", "mime_type":"image/jpeg"},
+            {"type":"resource"},
+            {"type":"resource", "resource":{"blob":"do not expose"}},
+            {"type":"resource_link", "name":"missing uri"},
+            {"type":"image", "data":""}
+        ]));
+        assert_eq!(blocks.len(), 3);
+        assert!(
+            matches!(&blocks[0], ContentBlock::Text { text } if text == "[file:///tmp/unnamed](file:///tmp/unnamed)")
+        );
+        assert!(
+            matches!(&blocks[1], ContentBlock::Text { text } if text == "[attachment:///empty.png](attachment:///empty.png)")
+        );
+        assert!(
+            matches!(&blocks[2], ContentBlock::Image { mime_type, .. } if mime_type == "image/jpeg")
+        );
     }
 
     #[test]
