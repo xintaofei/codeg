@@ -284,17 +284,38 @@ pub async fn pipeline_run_apply_core(run_id: i32, strategy: String) -> Result<()
         ));
     }
 
+    // A squash merge only STAGES, and the commit below takes whatever is in
+    // the index. Work the user had staged themselves would be swallowed by a
+    // commit they did not write, so refuse rather than mix the two.
+    if strategy == "squash" && !crate::work_task::git::staged_clean(&root_folder.path).await? {
+        return Err(AppCommandError::invalid_input(
+            "the project has staged changes; commit or unstage them before applying a run"
+                .to_string(),
+        ));
+    }
+
+    let message = format!("Pipeline run #{run_id}");
     let merged = match strategy {
         "squash" => crate::work_task::git::merge_squash(&root_folder.path, &branch).await,
-        _ => {
-            let message = format!("Merge pipeline run #{run_id}");
-            crate::work_task::git::merge_no_ff(&root_folder.path, &branch, &message).await
-        }
+        _ => crate::work_task::git::merge_no_ff(&root_folder.path, &branch, &message).await,
     };
     if let Err(e) = merged {
         // Leave the root repository usable rather than parked mid-merge.
         let _ = crate::work_task::git::reset_merge(&root_folder.path).await;
         return Err(e);
+    }
+
+    // `merge --squash` stages and stops; `merge --no-ff` already committed.
+    // Without this the run's only record would be the branch the cleanup
+    // below is about to delete.
+    if strategy == "squash" {
+        if let Err(e) =
+            crate::work_task::git::commit_staged(&engine.db().conn, &root_folder.path, &message)
+                .await
+        {
+            let _ = crate::work_task::git::reset_merge(&root_folder.path).await;
+            return Err(e);
+        }
     }
 
     // The run is landed, so its worktree and branch are dead weight; a failure

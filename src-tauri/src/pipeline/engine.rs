@@ -1029,7 +1029,31 @@ impl PipelineEngine {
                 if pre != post_hash {
                     verdict = PipelineVerdict::Inconclusive;
                     source = "guard".to_string();
-                    notes = Some("reviewer modified files".to_string());
+                    // Naming the paths matters: the change is often not the
+                    // agent's doing at all (a session-start hook writing a
+                    // file, a build cache the repo does not ignore), and a
+                    // bare "modified files" sends the user hunting.
+                    let changed = crate::pipeline::git_status::get_file_statuses(
+                        &attempt.working_dir,
+                        "HEAD",
+                    )
+                    .await
+                    .map(|list| {
+                        let mut names: Vec<String> =
+                            list.into_iter().map(|f| f.file).collect();
+                        names.sort();
+                        names.truncate(10);
+                        names.join(", ")
+                    })
+                    .unwrap_or_default();
+                    notes = Some(if changed.is_empty() {
+                        format!("step {} is read-only but modified files", attempt.step_id)
+                    } else {
+                        format!(
+                            "step {} is read-only but modified: {changed}",
+                            attempt.step_id
+                        )
+                    });
                 }
             }
         }

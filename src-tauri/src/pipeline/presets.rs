@@ -7,6 +7,15 @@ use crate::models::{AgentType, LoopBack, PipelineGraph, PipelineRole, PipelineSt
 const VERDICT_INSTRUCTION: &str =
     "Call the pipeline_verdict tool exactly once, right before you finish.";
 
+/// Instruction appended to every read-only step. The engine hashes the
+/// worktree around such a step and turns the verdict into `inconclusive` when
+/// files moved — so a step that is never TOLD to keep its hands off ends the
+/// run for doing what the prompt implied it should do.
+const READ_ONLY_INSTRUCTION: &str =
+    "Do not create, edit or delete any file in this step. Report what should \
+     change instead; a later step writes the code. Editing anything here stops \
+     the run.";
+
 fn default_agent(agent: Option<&str>) -> String {
     agent
         .filter(|slug| AgentType::from_wire(slug).is_some())
@@ -21,11 +30,15 @@ fn step(
     read_only: bool,
     agent_type: &str,
 ) -> PipelineStep {
-    let prompt_template = if matches!(role, PipelineRole::Reviewer | PipelineRole::Tests) {
-        format!("$task\n\n$plan\n$summary\n$review\n$memory\n\n{VERDICT_INSTRUCTION}")
-    } else {
-        "$task\n\n$plan\n$summary\n$review\n$memory".into()
-    };
+    let mut prompt_template = "$task\n\n$plan\n$summary\n$review\n$memory".to_string();
+    if read_only {
+        prompt_template.push_str("\n\n");
+        prompt_template.push_str(READ_ONLY_INSTRUCTION);
+    }
+    if matches!(role, PipelineRole::Reviewer | PipelineRole::Tests) {
+        prompt_template.push_str("\n\n");
+        prompt_template.push_str(VERDICT_INSTRUCTION);
+    }
     PipelineStep {
         id: id.into(),
         role,
@@ -98,6 +111,24 @@ mod tests {
     fn builtin_presets_pass_validation() {
         for (key, _name, graph) in builtin_presets(None) {
             assert_eq!(validate_graph(&graph), Ok(()), "preset {key} is invalid");
+        }
+    }
+
+    /// A read-only step is policed by the engine's worktree hash: if it edits
+    /// anything the verdict becomes `inconclusive` and the run stops. Found in
+    /// a live run — the planner rewrote the file it was meant to plan for and
+    /// the run died, because nothing in its prompt ever said not to.
+    #[test]
+    fn every_read_only_step_is_told_not_to_edit() {
+        for (key, _name, graph) in builtin_presets(None) {
+            for step in &graph.steps {
+                assert_eq!(
+                    step.read_only,
+                    step.prompt_template.contains("Do not create, edit or delete"),
+                    "preset {key}, step {}: read_only and the instruction must agree",
+                    step.id
+                );
+            }
         }
     }
 
