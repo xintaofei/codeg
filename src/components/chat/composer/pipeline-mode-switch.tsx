@@ -311,9 +311,11 @@ export function PipelineModeSwitch({
 
   const activeSteps = useMemo<PipelineStep[]>(() => {
     if (effectiveMode === "single") return []
-    if (effectiveMode === "custom" && graph?.steps && graph.steps.length > 0) {
-      return graph.steps
-    }
+    // The caller's graph wins for EVERY pipeline mode, not just custom: it is
+    // the chain that will actually run (a built-in plus the user's override),
+    // and it is what an edit made here updates. Falling back to the untouched
+    // preset would leave a change invisible the moment it was saved.
+    if (graph?.steps && graph.steps.length > 0) return graph.steps
     if (presets && effectiveMode === "duet") {
       return presets.duet?.steps ?? []
     }
@@ -325,9 +327,7 @@ export function PipelineModeSwitch({
 
   const activeLoops = useMemo<LoopBack[]>(() => {
     if (effectiveMode === "single") return []
-    if (effectiveMode === "custom" && graph?.loops && graph.loops.length > 0) {
-      return graph.loops
-    }
+    if (graph?.loops && graph.loops.length > 0) return graph.loops
     if (presets && effectiveMode === "duet") {
       return presets.duet?.loops ?? []
     }
@@ -399,10 +399,7 @@ export function PipelineModeSwitch({
       </div>
 
       {/* Role Chips & Loop Limit (shown in multi-agent pipeline modes) */}
-      {showChips &&
-      effectiveMode !== "single" &&
-      activeSteps.length > 0 &&
-      (effectiveMode === "custom" || presets) ? (
+      {showChips && effectiveMode !== "single" && activeSteps.length > 0 ? (
         <div
           className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground"
           data-testid="pipeline-mode-chips"

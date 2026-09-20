@@ -304,6 +304,34 @@ describe("PipelineModeSwitch", () => {
     expect(screen.getByText("gpt-4o")).toBeInTheDocument()
   })
 
+  it("shows the caller's chain in duet, not the untouched preset", async () => {
+    // Found live: editing a built-in chain saved correctly and the chip went
+    // on showing the shipped one, so the change looked like it had not
+    // happened. Whatever the caller passes is what will run.
+    const overridden: PipelineGraph = {
+      steps: [
+        {
+          id: "coder",
+          role: "coder",
+          label: "Coder",
+          agent_type: "claude_code",
+          config_values: { model: "haiku" },
+          prompt_template: "$task",
+          timeout_secs: 1800,
+          read_memory: false,
+          read_only: false,
+        },
+      ],
+      loops: [],
+    }
+
+    render(<PipelineModeSwitch mode="duet" graph={overridden} />)
+
+    await waitFor(() => {
+      expect(screen.getByText("haiku")).toBeInTheDocument()
+    })
+  })
+
   it("renders custom configure button when onConfigureCustom is provided and custom mode is active", () => {
     const onConfigureCustom = vi.fn()
     render(
