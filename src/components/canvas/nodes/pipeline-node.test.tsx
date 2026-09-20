@@ -1,6 +1,6 @@
 import type { ComponentProps } from "react"
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { IntlProvider } from "next-intl"
 import { ReactFlowProvider } from "@xyflow/react"
 import messages from "@/i18n/messages/en.json"
@@ -132,6 +132,42 @@ describe("PipelineNode", () => {
     await waitFor(() => {
       expect(vi.mocked(api.pipelineGet)).toHaveBeenCalledWith(1)
     })
+  })
+
+  it("persists an edit to the saved pipeline, not just to local state", async () => {
+    // The card used to keep every edit in React state: reassigning a step to
+    // another agent looked fine and was gone on the next open, and the run
+    // still used the old chain.
+    vi.mocked(api.pipelineGet).mockResolvedValue(mockPipeline)
+    vi.mocked(api.pipelineSave).mockImplementation(async (draft) => ({
+      ...mockPipeline,
+      ...draft,
+    }))
+
+    renderPipelineNode(makePipelineNode())
+    await waitFor(() => {
+      expect(vi.mocked(api.pipelineGet)).toHaveBeenCalledWith(1)
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: /add step/i }))
+
+    await waitFor(() => {
+      expect(vi.mocked(api.pipelineSave)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: "Test Pipeline",
+          isolation: "worktree_per_run",
+          graph: expect.objectContaining({
+            steps: expect.arrayContaining([
+              expect.objectContaining({ id: "planner_0" }),
+              expect.objectContaining({ id: "coder_0" }),
+            ]),
+          }),
+        }),
+        1
+      )
+    })
+    const [draft] = vi.mocked(api.pipelineSave).mock.calls[0]
+    expect(draft.graph.steps).toHaveLength(3)
   })
 
   it("renders loading state initially", () => {

@@ -13,7 +13,7 @@ import {
 import type { NodeTypes } from "@xyflow/react"
 import { useTranslations } from "next-intl"
 import { AlertCircle, Plus, Trash2 } from "lucide-react"
-import { pipelineGet } from "@/lib/api"
+import { pipelineGet, pipelineSave } from "@/lib/api"
 import {
   addStep,
   createDefaultStep,
@@ -21,7 +21,12 @@ import {
   removeLoop,
   validateGraph,
 } from "@/lib/pipeline-graph-edit"
-import type { LoopBack, PipelineGraph, PipelineStep } from "@/lib/types"
+import type {
+  LoopBack,
+  Pipeline,
+  PipelineGraph,
+  PipelineStep,
+} from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { PipelineNodeData } from "../canvas-model"
@@ -76,6 +81,10 @@ function PipelineNodeContent({
 }) {
   const t = useTranslations("Pipeline")
   const [graph, setGraph] = useState<PipelineGraph | null>(initialGraph ?? null)
+  // Name, folder and isolation of the saved row, so an edit can be written
+  // back without inventing them. A card that never loaded a row edits nothing
+  // persistent, which is why every write is guarded on this.
+  const [saved, setSaved] = useState<Pipeline | null>(null)
   const [loading, setLoading] = useState(!initialGraph && pipelineId != null)
   const [error, setError] = useState<string | null>(null)
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
@@ -88,6 +97,7 @@ function PipelineNodeContent({
     // when the fetch settles: setting it here would re-render mid-effect.
     pipelineGet(pipelineId)
       .then((pipeline) => {
+        setSaved(pipeline)
         setGraph(pipeline.graph)
         onGraphChange?.(pipeline.graph)
       })
@@ -174,17 +184,35 @@ function PipelineNodeContent({
     }
   }
 
+  /** Write the edited graph back to its row. Local state has already moved,
+   *  so a failed write has to say so rather than pass silently. */
+  const commit = (next: PipelineGraph) => {
+    setGraph(next)
+    onGraphChange?.(next)
+    if (pipelineId == null || !saved) return
+    void pipelineSave(
+      {
+        name: saved.name,
+        folder_id: saved.folder_id ?? null,
+        graph: next,
+        isolation: saved.isolation ?? "worktree_per_run",
+      },
+      pipelineId
+    )
+      .then((updated) => setSaved(updated))
+      .catch((e) => {
+        console.error("[PipelineNode] failed to save the pipeline:", e)
+        setValidationError(String(e))
+      })
+  }
+
   const handleAddStep = () => {
     const newStep = createDefaultStep(`step_${Date.now()}`, "coder", "New step")
-    const updated = addStep(graph, newStep)
-    setGraph(updated)
-    onGraphChange?.(updated)
+    commit(addStep(graph, newStep))
   }
 
   const handleDeleteStep = (stepId: string) => {
-    const updated = removeStep(graph, stepId)
-    setGraph(updated)
-    onGraphChange?.(updated)
+    commit(removeStep(graph, stepId))
     if (selectedStepId === stepId) {
       setSelectedStepId(null)
       setInspectorOpen(false)
@@ -216,10 +244,9 @@ function PipelineNodeContent({
       return
     }
 
-    setGraph(newGraph)
-    onGraphChange?.(newGraph)
-    setInspectorOpen(false)
     setValidationError(null)
+    commit(newGraph)
+    setInspectorOpen(false)
   }
 
   return (

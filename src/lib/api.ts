@@ -2969,6 +2969,9 @@ export interface CreateCanvasNodeInput {
   folderGroupId?: number
   agentType?: string
   conversationId?: number
+  /** pipeline → the saved pipeline this card edits and runs. Required for
+   *  that kind, rejected for the rest. */
+  pipelineId?: number
   title?: string
   content?: string
   /** file → the document's absolute path; terminal → its working directory.
