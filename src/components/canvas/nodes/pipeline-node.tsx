@@ -6,6 +6,7 @@ import {
   ReactFlowProvider,
   Background,
   Controls,
+  useReactFlow,
   type Node,
   type NodeProps,
   type Edge,
@@ -64,6 +65,17 @@ function StepNodeComponent({
       {step.label}
     </div>
   )
+}
+
+/** `fitView` on <ReactFlow> only runs for the first render, so a step added
+ *  later landed outside the card with nothing to say it was there. Re-fit
+ *  whenever the chain's length changes. */
+function FitOnStepCount({ count }: { count: number }) {
+  const { fitView } = useReactFlow()
+  useEffect(() => {
+    void fitView({ duration: 200 })
+  }, [count, fitView])
+  return null
 }
 
 const InnerNodeTypes = {
@@ -279,6 +291,7 @@ function PipelineNodeContent({
             fitView
             attributionPosition="bottom-left"
           >
+            <FitOnStepCount count={graph.steps.length} />
             <Background color="#aaa" gap={16} />
             <Controls />
           </ReactFlow>
