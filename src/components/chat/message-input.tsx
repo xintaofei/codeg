@@ -429,6 +429,31 @@ export function MessageInput({
     allFolders,
   ])
   const [pipelineMode, setPipelineMode] = useState<PipelineModeKey>("single")
+  // The custom graph the send path would run. Loaded here as well so the role
+  // chips can show it: without this, picking "Custom" says nothing about which
+  // agent writes and which one reviews.
+  const [customGraph, setCustomGraph] = useState<PipelineGraph | null>(null)
+  useEffect(() => {
+    if (pipelineMode !== "custom" || effectiveFolderId == null) {
+      setCustomGraph(null)
+      return
+    }
+    let cancelled = false
+    void pipelineList(effectiveFolderId)
+      .then((list) => {
+        if (cancelled) return
+        // Same pick as the send path, so the chips cannot describe one
+        // pipeline while another one runs.
+        const custom = list.find((p) => !p.preset_key) ?? list[0]
+        setCustomGraph(custom?.graph ?? null)
+      })
+      .catch((e) => {
+        console.error("[MessageInput] failed to load custom pipelines:", e)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [pipelineMode, effectiveFolderId])
   // The `$` prefix autocomplete is Codex-only: Codex advertises very few
   // native slash commands, so we augment the dropdown with the agent's
   // skills read from disk. Other agents already surface their full command
@@ -2244,6 +2269,7 @@ export function MessageInput({
                 folderId={effectiveFolderId ?? undefined}
                 mode={pipelineMode}
                 onModeChange={setPipelineMode}
+                graph={customGraph}
                 className="px-2 pt-2"
               />
               <RichComposer

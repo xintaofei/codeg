@@ -129,9 +129,11 @@ vi.mock("@/lib/turn-busy", () => ({
 vi.mock("@/components/chat/composer/pipeline-mode-switch", () => ({
   PipelineModeSwitch: ({
     onModeChange,
+    graph,
   }: {
     mode?: string
     onModeChange?: (mode: string) => void
+    graph?: { steps: { id: string; agent_type: string }[] } | null
   }) => (
     <div data-testid="pipeline-mode-switch">
       <button
@@ -143,6 +145,16 @@ vi.mock("@/components/chat/composer/pipeline-mode-switch", () => ({
       <button data-testid="mode-duet" onClick={() => onModeChange?.("duet")}>
         Duet
       </button>
+      <button
+        data-testid="mode-custom"
+        onClick={() => onModeChange?.("custom")}
+      >
+        Custom
+      </button>
+      {/* The chips are built from this prop, so the test reads it here. */}
+      <span data-testid="mode-switch-graph">
+        {(graph?.steps ?? []).map((s) => `${s.id}:${s.agent_type}`).join(",")}
+      </span>
     </div>
   ),
 }))
@@ -2118,6 +2130,50 @@ describe("MessageInput (pipeline mode)", () => {
         }),
         null
       )
+    })
+  })
+
+  it("custom mode: the saved pipeline reaches the mode switch, so the chips can name its agents", async () => {
+    // Issue found in use: picking "Custom" showed no role chips at all, so
+    // there was no way to tell which agent writes and which one reviews
+    // before sending. The send path already picks this pipeline; the switch
+    // has to be given the same one.
+    const graph = {
+      steps: [
+        { id: "coder", agent_type: "antigravity" },
+        { id: "reviewer", agent_type: "claude_code" },
+      ],
+      loops: [],
+    }
+    vi.mocked(api.pipelineList).mockResolvedValueOnce([
+      { id: 7, preset_key: null, graph },
+      // A preset must not win over the user's own pipeline.
+      { id: 8, preset_key: "duet", graph: { steps: [], loops: [] } },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any)
+
+    renderInput({
+      onSend: vi.fn(),
+      folderPickerOverride: {
+        folderId: 1,
+        editable: true,
+        onSelectFolder: () => {},
+        onSelectChatMode: () => {},
+      },
+    })
+
+    await userEvent.click(screen.getByTestId("mode-custom"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mode-switch-graph")).toHaveTextContent(
+        "coder:antigravity,reviewer:claude_code"
+      )
+    })
+
+    // Leaving custom mode clears it, so a stale graph cannot be described.
+    await userEvent.click(screen.getByTestId("mode-single"))
+    await waitFor(() => {
+      expect(screen.getByTestId("mode-switch-graph")).toHaveTextContent("")
     })
   })
 
