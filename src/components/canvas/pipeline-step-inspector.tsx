@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useReducer } from "react"
+import { useEffect, useMemo, useReducer, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
   AlertCircle,
@@ -14,8 +14,14 @@ import {
   type LucideIcon,
 } from "lucide-react"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
+import { describeAgentOptions } from "@/lib/api"
 import { getAgentLabel } from "@/lib/custom-agents"
-import type { LoopBack, PipelineRole, PipelineStep } from "@/lib/types"
+import type {
+  AgentType,
+  LoopBack,
+  PipelineRole,
+  PipelineStep,
+} from "@/lib/types"
 import { BUILTIN_AGENT_TYPES, STEP_ID_REGEX } from "@/lib/pipeline-graph-edit"
 import { Button } from "@/components/ui/button"
 import {
@@ -206,6 +212,55 @@ export function PipelineStepInspector({
   useEffect(() => {
     dispatch({ type: "reset", payload: getInitialState() })
   }, [getInitialState, open])
+
+  // What THIS agent says it accepts as a model. Probed live, like the
+  // delegation defaults do, rather than hardcoded: the ids differ per agent
+  // and change with the adapter version. The answer is stamped with the agent
+  // it belongs to, so switching agents cannot show the previous one's models.
+  const [probe, setProbe] = useState<{
+    agent: string
+    choices: { value: string; label: string }[]
+  } | null>(null)
+  useEffect(() => {
+    if (!open || !agentType) return
+    let cancelled = false
+    void describeAgentOptions(agentType as AgentType)
+      .then((snapshot) => {
+        if (cancelled) return
+        const models = snapshot.config_options.find(
+          (o) => o.id === "model" && o.kind.type === "select"
+        )
+        if (!models || models.kind.type !== "select") {
+          setProbe({ agent: agentType, choices: [] })
+          return
+        }
+        // Grouped agents (Antigravity groups by family) list their options
+        // only inside the groups, so both places have to be read.
+        const flat = [
+          ...models.kind.options,
+          ...models.kind.groups.flatMap((g) => g.options),
+        ]
+        setProbe({
+          agent: agentType,
+          choices: flat.map((o) => ({
+            value: o.value,
+            label: o.name || o.value,
+          })),
+        })
+      })
+      .catch((e) => {
+        // A probe that fails leaves the text box in place, which still works.
+        console.error("[PipelineStepInspector] model probe failed:", e)
+        if (!cancelled) setProbe({ agent: agentType, choices: [] })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, agentType])
+
+  const answered = probe?.agent === agentType
+  const modelChoices = answered ? (probe?.choices ?? []) : []
+  const probingModels = !answered
 
   const agentOptions = useMemo(() => {
     const list = agents.map((a) => a.agent_type)
@@ -411,13 +466,35 @@ export function PipelineStepInspector({
               <Label htmlFor="step-model" className="text-xs font-medium">
                 {t("model")}
               </Label>
-              <Input
-                id="step-model"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder={t("modelUnconfirmed")}
-                className="text-xs font-mono"
-              />
+              {/* A free text box here meant guessing the agent's own model id.
+                  When the probe answers, pick from what the agent actually
+                  accepts; fall back to typing for agents that advertise none
+                  (or while the probe is still out). */}
+              {modelChoices.length > 0 ? (
+                <select
+                  id="step-model"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs shadow-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <option value="">{t("modelUnconfirmed")}</option>
+                  {modelChoices.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <Input
+                  id="step-model"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  placeholder={
+                    probingModels ? t("modelProbing") : t("modelUnconfirmed")
+                  }
+                  className="text-xs font-mono"
+                />
+              )}
             </div>
           </div>
 

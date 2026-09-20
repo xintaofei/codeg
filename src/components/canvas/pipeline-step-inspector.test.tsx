@@ -1,9 +1,38 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { describe, expect, it, vi } from "vitest"
 import enMessages from "@/i18n/messages/en.json"
 import type { LoopBack, PipelineStep } from "@/lib/types"
 import { PipelineStepInspector } from "./pipeline-step-inspector"
+
+vi.mock("@/lib/api", () => ({
+  describeAgentOptions: vi.fn(async () => ({
+    modes: null,
+    available_commands: [],
+    config_options: [
+      {
+        id: "model",
+        name: "Model",
+        kind: {
+          type: "select" as const,
+          current_value: "sonnet",
+          options: [
+            { value: "opus", name: "Opus 5" },
+            { value: "sonnet", name: "Sonnet 5" },
+          ],
+          // Some agents publish their models only inside groups.
+          groups: [
+            {
+              group: "fast",
+              name: "Fast",
+              options: [{ value: "haiku", name: "Haiku 4.5" }],
+            },
+          ],
+        },
+      },
+    ],
+  })),
+}))
 
 vi.mock("@/hooks/use-acp-agents", () => ({
   useAcpAgents: () => ({
@@ -195,6 +224,25 @@ describe("PipelineStepInspector", () => {
         max_iterations: 3,
       })
     )
+  })
+
+  it("offers the agent's own models instead of a blank text box", async () => {
+    // The model used to be free text: picking one meant knowing the agent's
+    // internal id by heart, and a typo only surfaced when the step ran.
+    renderInspector({ step: makeStep() })
+
+    const model = await waitFor(() => {
+      const el = document.getElementById("step-model")
+      expect(el?.tagName).toBe("SELECT")
+      return el as HTMLSelectElement
+    })
+
+    const values = Array.from(model.options).map((o) => o.value)
+    // Grouped options count too — some agents publish models only in groups.
+    expect(values).toEqual(["", "opus", "sonnet", "haiku"])
+
+    fireEvent.change(model, { target: { value: "haiku" } })
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
   })
 
   it("calls onDeleteStep when delete is confirmed", () => {

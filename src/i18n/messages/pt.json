@@ -6175,7 +6175,8 @@
       "unknownAgent": "Agente desconhecido na etapa {id}"
     },
     "automationAction": "Executar pipeline",
-    "automationPipeline": "Pipeline"
+    "automationPipeline": "Pipeline",
+    "modelProbing": "Consultando o agente…"
   },
   "Memory": {
     "title": "Memória",

@@ -6175,7 +6175,8 @@
       "unknownAgent": "ステップ {id} のエージェントが不明です"
     },
     "automationAction": "パイプラインを実行",
-    "automationPipeline": "パイプライン"
+    "automationPipeline": "パイプライン",
+    "modelProbing": "エージェントに問い合わせ中…"
   },
   "Memory": {
     "title": "メモリ",

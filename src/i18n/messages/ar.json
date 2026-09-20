@@ -6175,7 +6175,8 @@
       "unknownAgent": "وكيل غير معروف في الخطوة {id}"
     },
     "automationAction": "تشغيل المسار",
-    "automationPipeline": "المسار"
+    "automationPipeline": "المسار",
+    "modelProbing": "جارٍ سؤال الوكيل…"
   },
   "Memory": {
     "title": "الذاكرة",

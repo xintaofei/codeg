@@ -6175,7 +6175,8 @@
       "unknownAgent": "步驟 {id} 中使用了未知的智能體"
     },
     "automationAction": "執行流程",
-    "automationPipeline": "流程"
+    "automationPipeline": "流程",
+    "modelProbing": "正在詢問代理…"
   },
   "Memory": {
     "title": "記憶",

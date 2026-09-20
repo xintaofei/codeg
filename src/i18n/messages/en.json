@@ -6175,7 +6175,8 @@
       "unknownAgent": "Unknown agent in step {id}"
     },
     "automationAction": "Run pipeline",
-    "automationPipeline": "Pipeline"
+    "automationPipeline": "Pipeline",
+    "modelProbing": "Asking the agent…"
   },
   "Memory": {
     "title": "Memory",

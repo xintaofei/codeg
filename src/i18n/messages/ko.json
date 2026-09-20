@@ -6175,7 +6175,8 @@
       "unknownAgent": "단계 {id}에 알 수 없는 에이전트가 있습니다"
     },
     "automationAction": "파이프라인 실행",
-    "automationPipeline": "파이프라인"
+    "automationPipeline": "파이프라인",
+    "modelProbing": "에이전트에 확인 중…"
   },
   "Memory": {
     "title": "메모리",
