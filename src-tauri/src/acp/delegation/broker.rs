@@ -90,6 +90,15 @@ const DEFAULT_COMPLETED_CACHE_CAP_BYTES: usize = 512 * 1024 * 1024;
 /// never the eviction victim in `insert_completed`.
 const COMPLETED_TEXT_CAP: usize = 256 * 1024;
 
+/// Hard cap on the number of completed entries retained per parent,
+/// independent of `completed_cap_bytes`. A `text: None` result (failure /
+/// cancel) contributes 0 bytes, so the byte-based eviction in
+/// `evict_completed_over_cap` never reclaims it: a parent that repeatedly
+/// delegates and gets errors would otherwise grow `completed` /
+/// `completed_order` forever. Generous — this only guards against
+/// unbounded growth, not normal usage.
+const MAX_COMPLETED_ENTRIES_PER_PARENT: usize = 2000;
+
 /// Cap on the `task_preview` carried by the `DelegationStarted` event and the
 /// parent-card meta writes. The full task text lives in the MCP call (and, on
 /// most hosts, in the parent tool call's own `raw_input`); the preview only
@@ -587,11 +596,14 @@ impl PendingInner {
     /// LLM's immediate `get_delegation_status` always hits.
     fn evict_completed_over_cap(&mut self, parent: &str) {
         let cap = self.completed_cap_bytes;
-        if cap == 0 {
-            return;
-        }
         loop {
-            if self.completed_bytes.get(parent).copied().unwrap_or(0) <= cap {
+            let over_bytes_cap =
+                cap != 0 && self.completed_bytes.get(parent).copied().unwrap_or(0) > cap;
+            let over_count_cap = self
+                .completed_order
+                .get(parent)
+                .is_some_and(|order| order.len() > MAX_COMPLETED_ENTRIES_PER_PARENT);
+            if !over_bytes_cap && !over_count_cap {
                 break;
             }
             let evicted = match self.completed_order.get_mut(parent) {
@@ -2572,10 +2584,17 @@ impl DelegationBroker {
                     inner.deregister_inflight(inflight_id);
                 }
                 let _ = self.spawner.disconnect(&child_connection_id).await;
+                let conversation_id = match &e {
+                    crate::acp::delegation::spawner::SpawnerError::SendWithConversation {
+                        conversation_id,
+                        ..
+                    } => Some(*conversation_id),
+                    _ => None,
+                };
                 return report_err(
                     req.agent_type,
                     DelegationError::SpawnFailed(e.to_string()),
-                    None,
+                    conversation_id,
                 );
             }
         };
@@ -2916,8 +2935,43 @@ impl DelegationBroker {
     /// the `call_id` is no longer reserved the call was already resolved by
     /// another terminal path, so the buffer is skipped (silent no-op).
     pub async fn complete_call(&self, call_id: &str, outcome: DelegationOutcome) {
+        self.complete_call_checked(call_id, None, outcome).await;
+    }
+
+    /// Same as [`Self::complete_call`], but when `expected_child_connection_id`
+    /// is `Some`, a `call_id` match whose CURRENT task no longer runs under
+    /// that connection is ignored instead of resolved.
+    ///
+    /// `resume_delegation` re-registers `call_id` against a NEW
+    /// `child_connection_id` while keeping the SAME `child_conversation_id`
+    /// (it adopts the existing row) — so a late `TurnComplete` from the
+    /// connection the resume superseded is indistinguishable from the
+    /// resumed run's own completion by `call_id` or conversation id alone; only
+    /// the connection id tells them apart. The caller (the
+    /// lifecycle `TurnComplete` subscriber) knows which connection emitted the
+    /// event and should pass it here; `None` (via [`Self::complete_call`])
+    /// keeps the unchecked behavior for callers that don't have it handy.
+    pub async fn complete_call_checked(
+        &self,
+        call_id: &str,
+        expected_child_connection_id: Option<&str>,
+        outcome: DelegationOutcome,
+    ) {
         let task = {
             let mut inner = self.pending.inner.lock().await;
+            if let (Some(running), Some(expected)) =
+                (inner.running.get(call_id), expected_child_connection_id)
+            {
+                if running.child_connection_id != expected {
+                    tracing::debug!(
+                        call_id,
+                        expected_child_connection_id = expected,
+                        current_child_connection_id = running.child_connection_id.as_str(),
+                        "ignoring stale complete_call from a connection a resume superseded"
+                    );
+                    return;
+                }
+            }
             match inner.running.remove(call_id) {
                 Some(task) => {
                     // Atomic running → completed so a concurrent status query
@@ -5431,6 +5485,33 @@ mod tests {
             other => panic!("expected Err, got {other:?}"),
         }
         assert_eq!(mock.disconnects.lock().await.as_slice(), &["c1"]);
+    }
+
+    #[tokio::test]
+    async fn send_failure_with_conversation_carries_conversation_id() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-1".into())).await;
+        mock.queue_send(Err(SpawnerError::SendWithConversation {
+            message: "send failed after creating conversation".into(),
+            conversation_id: 42,
+        }))
+        .await;
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
+        let outcome = broker.handle_request(request(1, "pt-1")).await;
+        match outcome {
+            DelegationOutcome::Err {
+                code,
+                child_conversation_id,
+                ..
+            } => {
+                assert_eq!(code, "spawn_failed");
+                assert_eq!(child_conversation_id, Some(42));
+            }
+            other => panic!("expected Err with conversation_id, got {other:?}"),
+        }
+        assert_eq!(mock.disconnects.lock().await.as_slice(), &["child-1"]);
     }
 
     #[tokio::test]
@@ -9298,6 +9379,47 @@ mod tests {
         assert_eq!(inner.completed_bytes.get("p1").copied(), Some(500_000));
     }
 
+    fn completed_without_text(parent: &str) -> CompletedTask {
+        CompletedTask {
+            parent_connection_id: parent.to_string(),
+            child_conversation_id: 1,
+            agent_type: AgentType::ClaudeCode,
+            status: TaskStatus::Failed,
+            text: None,
+            error_code: Some("subagent_error".into()),
+            message: Some("boom".into()),
+            duration_ms: 0,
+        }
+    }
+
+    /// A `text: None` result (failure / cancel) contributes 0 bytes
+    /// to the byte valve, so a parent that only ever fails would otherwise grow
+    /// `completed` / `completed_order` without bound even with a byte cap set.
+    /// The count-based cap (`MAX_COMPLETED_ENTRIES_PER_PARENT`) must reclaim
+    /// the oldest ones regardless of the byte budget.
+    #[test]
+    fn completed_cache_count_valve_evicts_text_none_entries() {
+        let mut inner = PendingInner {
+            completed_cap_bytes: 1000, // byte valve never trips: every entry is 0 bytes
+            ..Default::default()
+        };
+        for i in 0..(MAX_COMPLETED_ENTRIES_PER_PARENT + 10) {
+            inner.insert_completed(&format!("t{i}"), completed_without_text("p1"));
+        }
+        assert_eq!(
+            inner.completed_order.get("p1").map(|o| o.len()),
+            Some(MAX_COMPLETED_ENTRIES_PER_PARENT),
+            "entry count must be capped even though every entry is 0 bytes"
+        );
+        assert!(
+            !inner.completed.contains_key("t0"),
+            "oldest text:None entries must be evicted, not retained forever"
+        );
+        assert!(inner
+            .completed
+            .contains_key(&format!("t{}", MAX_COMPLETED_ENTRIES_PER_PARENT + 9)));
+    }
+
     #[test]
     fn completed_cache_valve_is_per_parent() {
         let mut inner = PendingInner {
@@ -9521,6 +9643,71 @@ mod tests {
             .await;
         assert_eq!(report.status, TaskStatus::Completed);
         assert_eq!(report.text.as_deref(), Some("finished"));
+    }
+
+    /// A late `TurnComplete` from the child connection a resume
+    /// superseded must not resolve the resumed run with its (stale) result.
+    /// `resume_delegation` re-registers `task-1` under a NEW
+    /// `child_connection_id` ("child-conn-2"); a `complete_call_checked`
+    /// naming the OLD connection ("child-conn-1") is ignored and the task
+    /// stays Running, while the SAME call naming the current connection
+    /// resolves it normally — proving the guard targets the right axis
+    /// (connection id, not call_id or conversation id, which stay unchanged
+    /// across a resume) without disturbing the ordinary resume/cancel paths.
+    #[tokio::test]
+    async fn late_complete_call_from_superseded_connection_is_ignored() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("child-conn-2"))).await;
+        mock.queue_resume_send(Ok(())).await;
+
+        let ack = broker.resume_delegation(resume_request("task-1")).await;
+        assert_eq!(ack.status, TaskStatus::Running);
+
+        // A stale completion from the superseded connection must be ignored:
+        // the resumed task stays Running.
+        broker
+            .complete_call_checked(
+                "task-1",
+                Some("child-conn-1"),
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "stale result from the old child".into(),
+                    child_conversation_id: 42,
+                    child_agent_type: AgentType::ClaudeCode,
+                    turn_count: 1,
+                    duration_ms: 5,
+                    token_usage: None,
+                }),
+            )
+            .await;
+        let report = broker
+            .get_task_status("parent-conn", Some(1), "task-1", StatusWait::Immediate)
+            .await;
+        assert_eq!(
+            report.status,
+            TaskStatus::Running,
+            "a completion from a superseded connection must not resolve the resumed task"
+        );
+
+        // The resumed connection's own completion resolves it normally.
+        broker
+            .complete_call_checked(
+                "task-1",
+                Some("child-conn-2"),
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "resumed result".into(),
+                    child_conversation_id: 42,
+                    child_agent_type: AgentType::ClaudeCode,
+                    turn_count: 1,
+                    duration_ms: 5,
+                    token_usage: None,
+                }),
+            )
+            .await;
+        let report = broker
+            .get_task_status("parent-conn", Some(1), "task-1", StatusWait::Immediate)
+            .await;
+        assert_eq!(report.status, TaskStatus::Completed);
+        assert_eq!(report.text.as_deref(), Some("resumed result"));
     }
 
     /// An in-session cancel leaves a Canceled completed-cache entry; resuming

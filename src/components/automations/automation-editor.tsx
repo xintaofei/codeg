@@ -30,9 +30,16 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { FolderSelect } from "@/components/shared/folder-select"
 import { cn } from "@/lib/utils"
-import { automationComputeNextRun } from "@/lib/api"
+import { automationComputeNextRun, pipelineList } from "@/lib/api"
 import type {
   AgentType,
   Automation,
@@ -40,6 +47,7 @@ import type {
   AutomationDraft,
   AutomationIsolation,
   AutomationTriggerKind,
+  Pipeline,
   PromptInputBlock,
 } from "@/lib/types"
 
@@ -76,12 +84,17 @@ export function AutomationEditor({
   onBackToTemplates,
 }: AutomationEditorProps) {
   const t = useTranslations("Automations")
+  const tPipeline = useTranslations("Pipeline")
   const folders = useAppWorkspaceStore((s) => s.folders)
 
   const [name, setName] = useState(automation?.name ?? "")
   const [action, setAction] = useState<AutomationAction>(
     automation?.config?.action ?? "launch_session"
   )
+  const [pipelineId, setPipelineId] = useState<number | null>(
+    automation?.config?.pipeline_id ?? null
+  )
+  const [pipelines, setPipelines] = useState<Pipeline[]>([])
   const [agentType, setAgentType] = useState<AgentType>(
     automation?.agent_type ?? "claude_code"
   )
@@ -118,6 +131,22 @@ export function AutomationEditor({
   const [saving, setSaving] = useState(false)
   const [nextRun, setNextRun] = useState<string | null>(null)
   const [cronBuilderOpen, setCronBuilderOpen] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    pipelineList(folderId ?? undefined)
+      .then((list) => {
+        if (!cancelled) {
+          setPipelines(list)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setPipelines([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [folderId])
 
   const editorRef = useRef<RichComposerHandle>(null)
   // The composer's outer box, so the `@` panel spans it like the `/` menu does.
@@ -218,6 +247,10 @@ export function AutomationEditor({
     if (!displayText) return setError(t("errorPrompt"))
     if (trigger === "schedule" && !cron.trim()) return setError(t("errorCron"))
     if (folderId == null) return setError(t("errorFolder"))
+    // A pipeline automation without a pipeline would fire and immediately fail.
+    if (action === "run_pipeline" && pipelineId == null) {
+      return setError(tPipeline("automationPipeline"))
+    }
     // Folder selected but its path is still resolving; the probe would be global.
     // The Save button is disabled in this state, so this is a race-safety net —
     // bail silently and let it re-enable once the path resolves.
@@ -263,9 +296,10 @@ export function AutomationEditor({
         ...snapshotLabels(snapshot, mode_id, config_values),
       }
 
-      // Enqueue-task automations never run in place: canonicalize the
+      // Enqueue-task and run-pipeline automations never run in place: canonicalize the
       // session-only fields so the stored row can't carry a stale branch.
       const enqueue = action === "enqueue_task"
+      const runPipeline = action === "run_pipeline"
       const draft: AutomationDraft = {
         name: name.trim(),
         // Enable/disable lives on the detail header + row menu now; preserve an
@@ -276,13 +310,19 @@ export function AutomationEditor({
         timezone,
         agent_type: persistedAgentType,
         root_folder_id: folderId,
-        isolation: enqueue ? "worktree_per_run" : isolation,
+        isolation: enqueue || runPipeline ? "worktree_per_run" : isolation,
         branch:
-          !enqueue && isolation === "shared_in_root" && branch.trim()
+          !enqueue &&
+          !runPipeline &&
+          isolation === "shared_in_root" &&
+          branch.trim()
             ? branch.trim()
             : null,
         is_remote_branch:
-          !enqueue && isolation === "shared_in_root" && branch.trim()
+          !enqueue &&
+          !runPipeline &&
+          isolation === "shared_in_root" &&
+          branch.trim()
             ? isRemoteBranch
             : false,
         config: fellBackToSubstitute
@@ -290,6 +330,7 @@ export function AutomationEditor({
               // Preserve the original agent's saved config verbatim; only the
               // user-editable prompt is refreshed.
               action,
+              ...(runPipeline ? { pipeline_id: pipelineId } : {}),
               prompt_blocks: blocks,
               display_text: displayText,
               mode_id: automation.config?.mode_id ?? null,
@@ -299,6 +340,7 @@ export function AutomationEditor({
             }
           : {
               action,
+              ...(runPipeline ? { pipeline_id: pipelineId } : {}),
               prompt_blocks: blocks,
               display_text: displayText,
               mode_id,
@@ -411,8 +453,8 @@ export function AutomationEditor({
         </div>
       </div>
 
-      {/* Action — what a fire does: launch a session (legacy) or enqueue a
-          task on the folder's board. */}
+      {/* Action — what a fire does: launch a session (legacy), enqueue a
+          task on the folder's board, or run a pipeline. */}
       <div className="flex flex-col gap-2">
         <h3 className="text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
           {t("sectionAction")}
@@ -426,6 +468,7 @@ export function AutomationEditor({
             [
               { value: "launch_session", label: t("actionLaunchSession") },
               { value: "enqueue_task", label: t("actionEnqueueTask") },
+              { value: "run_pipeline", label: tPipeline("automationAction") },
             ] as Array<{ value: AutomationAction; label: string }>
           ).map((opt) => (
             <button
@@ -464,7 +507,7 @@ export function AutomationEditor({
         ) : null}
       </div>
 
-      {/* Target — where the run happens: workspace folder, isolation, branch. */}
+      {/* Target — where the run happens: workspace folder, isolation, branch, pipeline. */}
       <div className="flex flex-col gap-2">
         <h3 className="text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
           {t("sectionTarget")}
@@ -486,6 +529,28 @@ export function AutomationEditor({
             placeholder={t("folderPlaceholder")}
             title={t("folder")}
           />
+
+          {action === "run_pipeline" ? (
+            <Select
+              value={pipelineId != null ? String(pipelineId) : ""}
+              onValueChange={(v) => setPipelineId(v ? Number(v) : null)}
+            >
+              <SelectTrigger
+                size="sm"
+                aria-label={tPipeline("automationPipeline")}
+                className="h-8 min-w-40 text-xs"
+              >
+                <SelectValue placeholder={tPipeline("automationPipeline")} />
+              </SelectTrigger>
+              <SelectContent>
+                {pipelines.map((p) => (
+                  <SelectItem key={p.id} value={String(p.id)}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
 
           {/* A worktree run gets its own fresh tree, so a branch only applies to
               the shared-folder case — the picker shows there and the checkbox

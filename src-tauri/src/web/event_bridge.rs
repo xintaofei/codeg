@@ -5,6 +5,7 @@ use serde::{ser::SerializeStruct, Serialize, Serializer};
 use tokio::sync::{broadcast, RwLock};
 
 use crate::acp::{AcpEvent, EventBusMetrics, EventEnvelope, InternalEventBus, SessionState};
+use crate::models::{PipelineRunStatus, PipelineVerdict};
 
 /// Broadcast-delivered event.
 ///
@@ -347,6 +348,38 @@ pub struct TabsChanged {
 /// so this broadcast is the only way an open automations view learns a run
 /// started or settled.
 pub const AUTOMATION_CHANGED_EVENT: &str = "automation://changed";
+
+pub const PIPELINE_CHANGED_EVENT: &str = "pipeline://changed";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PipelineChange {
+    Upsert {
+        id: i32,
+    },
+    Deleted {
+        id: i32,
+    },
+    RunStarted {
+        run_id: i32,
+        folder_id: i32,
+    },
+    StepStarted {
+        run_id: i32,
+        attempt_id: i32,
+        step_id: String,
+        iteration: u32,
+    },
+    StepSettled {
+        run_id: i32,
+        attempt_id: i32,
+        verdict: Option<PipelineVerdict>,
+    },
+    RunSettled {
+        run_id: i32,
+        status: PipelineRunStatus,
+    },
+}
 
 /// Payload for [`AUTOMATION_CHANGED_EVENT`]. Carries only ids — clients refetch
 /// the affected automation / its runs. All variants are small, so no boxing is

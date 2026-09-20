@@ -726,6 +726,7 @@ export type CanvasNodeKind =
   | "note"
   | "file"
   | "terminal"
+  | "pipeline"
 
 /** One element on the conversation canvas. Mirrors the Rust `CanvasNode`:
  *  a binding region (folder / folder group / agent / single conversation), a
@@ -740,6 +741,8 @@ export interface CanvasNode {
   folder_group_id: number | null
   agent_type: string | null
   conversation_id: number | null
+  /** kind=pipeline: the saved pipeline referenced by this canvas node. */
+  pipeline_id?: number | null
   /** kind=custom: pinned conversation ids in insertion order; `[]` otherwise. */
   member_ids: number[]
   title: string | null
@@ -1509,13 +1512,17 @@ export interface AutomationLabelSnapshot {
 
 /** What firing the automation does. Optional in stored configs — absent means
  *  the legacy `launch_session`. */
-export type AutomationAction = "launch_session" | "enqueue_task"
+export type AutomationAction =
+  | "launch_session"
+  | "enqueue_task"
+  | "run_pipeline"
 
 /** The captured composer snapshot stored in `automation.config`. `mode_id` +
  *  `config_values` are exactly AgentDelegationDefaults; the model rides inside
  *  `config_values["model"]`, never as its own field. */
 export interface AutomationConfig {
   action?: AutomationAction
+  pipeline_id?: number | null
   prompt_blocks: PromptInputBlock[]
   display_text: string
   mode_id?: string | null
@@ -5013,3 +5020,221 @@ export interface DeepSeekModelCatalog {
    *  fixed, sessions run on the agent's built-in catalog instead. */
   invalid: string | null
 }
+
+// ─── Pipelines
+
+export type PipelineRole = "planner" | "coder" | "reviewer" | "tests" | "custom"
+
+export interface PipelineStep {
+  id: string
+  role: PipelineRole
+  label: string
+  agent_type: string
+  mode_id?: string | null
+  config_values: Record<string, string>
+  prompt_template: string
+  timeout_secs: number
+  read_memory: boolean
+  read_only: boolean
+}
+
+export interface LoopBack {
+  from_step: string
+  to_step: string
+  max_iterations: number
+}
+
+export interface PipelineGraph {
+  steps: PipelineStep[]
+  loops: LoopBack[]
+}
+
+export type PipelineIsolation = "worktree_per_run" | "shared_in_root"
+
+export interface Pipeline {
+  id: number
+  name: string
+  preset_key: string | null
+  folder_id: number | null
+  graph: PipelineGraph
+  isolation: PipelineIsolation
+  created_at: string
+  updated_at: string
+}
+
+export interface PipelineDraft {
+  name: string
+  folder_id: number | null
+  graph: PipelineGraph
+  isolation: PipelineIsolation
+}
+
+export type PipelineRunStatus =
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "interrupted"
+  | "stopped_max_iterations"
+  | "inconclusive"
+
+export type PipelineVerdict = "pass" | "changes_requested" | "inconclusive"
+
+export type PipelineAttemptStatus =
+  | "running"
+  | "done"
+  | "cancelled"
+  | "timed_out"
+  | "failed"
+
+export interface PipelineAttempt {
+  id: number
+  run_id: number
+  step_id: string
+  iteration: number
+  status: PipelineAttemptStatus
+  conversation_id: number | null
+  model_requested: string | null
+  model_actual: string | null
+  verdict: PipelineVerdict | null
+  verdict_source: "tool" | "marker" | "guard" | "none" | null
+  notes: string | null
+  summary: string | null
+  started_at: string
+  ended_at: string | null
+}
+
+export interface PipelineRun {
+  id: number
+  pipeline_id: number | null
+  folder_id: number
+  worktree_folder_id: number | null
+  parent_conversation_id: number | null
+  graph: PipelineGraph
+  status: PipelineRunStatus
+  current_step_id: string | null
+  current_iteration: number
+  error: string | null
+  attempts: PipelineAttempt[]
+  started_at: string
+  ended_at: string | null
+}
+
+export interface PipelineRunRequest {
+  folderId: number
+  pipelineId?: number
+  graph?: PipelineGraph
+  isolation?: PipelineIsolation
+  promptBlocks: PromptInputBlock[]
+  displayText: string
+  parentConversationId?: number
+}
+
+export interface PipelineDiffFile {
+  path: string
+  status: "A" | "M" | "D" | "R"
+  additions: number
+  deletions: number
+}
+
+export interface PipelineDiff {
+  files: PipelineDiffFile[]
+  patch: string
+  truncated: boolean
+}
+
+export type PipelineChange =
+  | { kind: "upsert"; id: number }
+  | { kind: "deleted"; id: number }
+  | { kind: "run_started"; run_id: number; folder_id: number }
+  | {
+      kind: "step_started"
+      run_id: number
+      attempt_id: number
+      step_id: string
+      iteration: number
+    }
+  | {
+      kind: "step_settled"
+      run_id: number
+      attempt_id: number
+      verdict: PipelineVerdict | null
+    }
+  | { kind: "run_settled"; run_id: number; status: PipelineRunStatus }
+
+export type PipelineModeKey = "single" | "duet" | "team" | "custom"
+
+// ─── Memory
+
+export type MemoryBackendKind = "off" | "local_sqlite" | "external_mcp"
+
+export type MemoryMode = "auto" | "on_request" | "off"
+
+export type MemoryScope = "project" | "global"
+
+export type MemoryRel =
+  | "caused_by"
+  | "fixed_by"
+  | "relates_to"
+  | "part_of"
+  | "supersedes"
+
+export interface ExternalMcpMapping {
+  server_id: string
+  write_tool: string
+  search_tool: string
+  link_tool: string
+}
+
+export interface MemorySettings {
+  backend: MemoryBackendKind
+  scope: MemoryScope
+  external: ExternalMcpMapping | null
+}
+
+export interface MemoryKind {
+  id: number
+  key: string
+  name: string
+  instruction: string
+  mode: MemoryMode
+  builtin: boolean
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface MemoryKindDraft {
+  name: string
+  instruction: string
+  mode: MemoryMode
+}
+
+export interface MemoryProvenance {
+  run_id: number | null
+  step_id: string | null
+  agent_type: string | null
+  verified_by_tests: boolean
+  source: "agent" | "auto" | "user"
+}
+
+export interface MemoryNode {
+  id: number
+  kind: string
+  title: string
+  body: string
+  scope: MemoryScope
+  folder_id: number | null
+  provenance: MemoryProvenance
+  created_at: string
+  updated_at: string
+  stale_at: string | null
+}
+
+export interface MemoryHit {
+  node: MemoryNode
+  score: number
+  via: number[]
+}
+
+export type MemoryChange = { kind: "settings" | "kinds" | "nodes" }

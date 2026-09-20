@@ -24,12 +24,14 @@ pub mod forge;
 pub mod logging;
 pub mod mcp;
 pub mod mcp_service;
+pub mod memory;
 pub mod model_provider;
 pub mod office_tools;
 pub mod open_in;
 #[cfg(feature = "tauri-runtime")]
 pub mod notification;
 pub mod pet;
+pub mod pipeline;
 pub mod project_boot;
 pub mod question;
 pub mod quick_messages;

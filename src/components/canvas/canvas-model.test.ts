@@ -13,6 +13,8 @@ import {
   DRAG_HANDLE_SELECTOR,
   FILE_CARD_HEIGHT,
   FILE_CARD_WIDTH,
+  PIPELINE_CARD_HEIGHT,
+  PIPELINE_CARD_WIDTH,
   MAX_VISIBLE_MEMBERS,
   REGION_COLLAPSED_HEIGHT,
   REGION_FOOTER_HEIGHT,
@@ -42,6 +44,7 @@ import {
   type CanvasDragSource,
   type ConversationCardData,
   type FileNodeData,
+  type PipelineNodeData,
   type RegionNodeData,
   type TerminalNodeData,
 } from "./canvas-model"
@@ -1174,6 +1177,56 @@ describe("file and terminal cards", () => {
     })
     expect(pinRects).toEqual([])
     expect(regionRects).toEqual([])
+  })
+})
+
+describe("pipeline cards", () => {
+  it("derives a pipeline card at its default footprint, with a drag handle", () => {
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [
+        node(7, {
+          kind: "pipeline",
+          pipeline_id: 42,
+          title: "My Pipeline",
+          width: PIPELINE_CARD_WIDTH,
+          height: PIPELINE_CARD_HEIGHT,
+        }),
+      ],
+      conversations: [],
+      allFolders: [],
+      ...NO_DRAG,
+    })
+    expect(nodes).toHaveLength(1)
+    expect(nodes[0].type).toBe("pipeline")
+    expect(nodes[0].width).toBe(PIPELINE_CARD_WIDTH)
+    expect(nodes[0].height).toBe(PIPELINE_CARD_HEIGHT)
+    expect(nodes[0].dragHandle).toBe(DRAG_HANDLE_SELECTOR)
+    const data = nodes[0].data as PipelineNodeData
+    expect(data.pipelineId).toBe(42)
+    expect(data.label).toBe("My Pipeline")
+  })
+
+  it("derives a pipeline card with custom dimensions and default title", () => {
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [
+        node(8, {
+          kind: "pipeline",
+          pipeline_id: null,
+          width: 700,
+          height: 450,
+          title: null,
+        }),
+      ],
+      conversations: [],
+      allFolders: [],
+      ...NO_DRAG,
+    })
+    expect(nodes).toHaveLength(1)
+    expect(nodes[0].width).toBe(700)
+    expect(nodes[0].height).toBe(450)
+    const data = nodes[0].data as PipelineNodeData
+    expect(data.pipelineId).toBeNull()
+    expect(data.label).toBe("Pipeline")
   })
 })
 

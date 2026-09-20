@@ -33,6 +33,8 @@ use crate::workspace_transfer::{DownloadKind, DownloadTicketIssued, DownloadTick
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Grace period before an undownloaded export archive is reaped.
 const EXPORT_REAP_SECS: u64 = 120;
+/// Default maximum bytes for backup upload. Set via `CODEG_BACKUP_UPLOAD_MAX_BYTES` env.
+const BACKUP_UPLOAD_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024; // 4 GiB
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -159,16 +161,17 @@ pub async fn backup_upload(
     let id = uuid::Uuid::new_v4().simple().to_string();
     let dest = upload_dir.join(format!("{id}.bin"));
 
-    // Optional hard size cap (default unlimited, matching the attachment-upload
-    // convention). Operators on shared deployments can bound it via env.
+    // Hard size cap defaults to BACKUP_UPLOAD_MAX_BYTES. Operators on shared
+    // deployments can override it via `CODEG_BACKUP_UPLOAD_MAX_BYTES` env.
     let max_bytes = std::env::var("CODEG_BACKUP_UPLOAD_MAX_BYTES")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|v| *v > 0);
+        .filter(|v| *v > 0)
+        .unwrap_or(BACKUP_UPLOAD_MAX_BYTES);
 
     // Stream into the temp file; on ANY failure (read error, write error, over
     // cap) delete the partial file so a failed/aborted upload doesn't linger.
-    match receive_upload(&mut multipart, &dest, max_bytes).await {
+    match receive_upload(&mut multipart, &dest, Some(max_bytes)).await {
         Ok(file_name) => Ok(Json(UploadResult {
             upload_id: id,
             file_name,
@@ -415,4 +418,29 @@ fn resolve_upload(state: &AppState, upload_id: &str) -> Result<PathBuf, AppComma
         return Err(AppCommandError::not_found("Uploaded backup not found"));
     }
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backup_upload_limit_default_is_4gib() {
+        assert_eq!(BACKUP_UPLOAD_MAX_BYTES, 4 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn backup_upload_limit_can_be_overridden_by_env() {
+        // Mock parsing of CODEG_BACKUP_UPLOAD_MAX_BYTES env variable.
+        let test_cases = vec![
+            ("1048576", Some(1048576)), // 1 MiB
+            ("0", None),                 // 0 → filtered out
+            ("invalid", None),           // non-numeric
+            ("", None),                  // empty
+        ];
+        for (input, expected) in test_cases {
+            let result = input.trim().parse::<u64>().ok().filter(|v| *v > 0);
+            assert_eq!(result, expected, "parsing '{}' failed", input);
+        }
+    }
 }

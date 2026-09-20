@@ -274,5 +274,81 @@
         }
       }
     }
+  },
+  {
+    "name": "pipeline_verdict",
+    "description": "Report your verdict for the pipeline step you are running (review or tests). Call it exactly once, right before you finish. pass = the work is correct and complete; changes_requested = the coder must fix something (notes are REQUIRED and must list every problem with file and line); inconclusive = you could not judge (say why in notes). If you never call this tool the step is treated as inconclusive.",
+    "inputSchema": {
+      "type": "object",
+      "required": ["verdict"],
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": ["pass", "changes_requested", "inconclusive"]
+        },
+        "notes": {
+          "type": "string",
+          "description": "Findings for the coder or the reason the verdict is inconclusive."
+        }
+      }
+    }
+  },
+  {
+    "name": "memory_write",
+    "description": "Record something worth remembering across sessions: a decision, a fixed bug, a task summary, or a fact/preference about the user or project. Only kinds enabled in Memory settings are accepted.",
+    "inputSchema": {
+      "type": "object",
+      "required": ["kind", "title", "body"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["decision", "fixed_bug", "task_summary", "preference"]
+        },
+        "title": { "type": "string", "maxLength": 200 },
+        "body": { "type": "string", "maxLength": 8000 },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["to", "rel"],
+            "properties": {
+              "to": { "type": "integer" },
+              "rel": {
+                "type": "string",
+                "enum": ["caused_by", "fixed_by", "relates_to", "part_of", "supersedes"]
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "memory_search",
+    "description": "Search the project memory (decisions, fixed bugs, facts). Returns up to `limit` entries with ids you can link to.",
+    "inputSchema": {
+      "type": "object",
+      "required": ["query"],
+      "properties": {
+        "query": { "type": "string" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+      }
+    }
+  },
+  {
+    "name": "memory_link",
+    "description": "Link two memory entries.",
+    "inputSchema": {
+      "type": "object",
+      "required": ["from_id", "to_id", "rel"],
+      "properties": {
+        "from_id": { "type": "integer" },
+        "to_id": { "type": "integer" },
+        "rel": {
+          "type": "string",
+          "enum": ["caused_by", "fixed_by", "relates_to", "part_of", "supersedes"]
+        }
+      }
+    }
   }
 ]

@@ -33,6 +33,8 @@ pub enum CanvasNodeKind {
     /// runtime state keyed off the row id — only the placement is persisted.
     #[sea_orm(string_value = "terminal")]
     Terminal,
+    #[sea_orm(string_value = "pipeline")]
+    Pipeline,
 }
 
 impl CanvasNodeKind {
@@ -67,6 +69,7 @@ pub struct Model {
     pub id: i32,
     pub kind: CanvasNodeKind,
     pub folder_id: Option<i32>,
+    pub pipeline_id: Option<i32>,
     /// kind=group only: the sidebar folder group this region mirrors.
     pub folder_group_id: Option<i32>,
     #[sea_orm(column_type = "Text", nullable)]

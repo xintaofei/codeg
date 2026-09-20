@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// How an automation fires. `schedule` runs on its cron; `manual` only ever runs
 /// via an explicit "Run now" (it has no `next_run_at` and the scheduler skips it).
-#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
 #[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerKind {
@@ -17,7 +17,7 @@ pub enum TriggerKind {
 /// mints a fresh git worktree (branch `automation/<id>/run-<run_id>`) each fire so
 /// runs never collide on a working tree; `shared_in_root` checks the branch out in
 /// the root repo (serialized per root folder).
-#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
 #[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
 #[serde(rename_all = "snake_case")]
 pub enum IsolationMode {

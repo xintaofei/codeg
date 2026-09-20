@@ -344,6 +344,29 @@ const ConversationTabView = memo(function ConversationTabView({
     null
   )
   const [hasSentMessage, setHasSentMessage] = useState(false)
+  const [pipelineRunId, setPipelineRunId] = useState<number | null>(null)
+
+  useEffect(() => {
+    const handlePipelineRunStarted = (event: Event) => {
+      const customEvent = event as CustomEvent<{
+        runId: number
+        tabId?: string | null
+        contextKey?: string | null
+      }>
+      if (!customEvent.detail) return
+      const { runId, tabId: eventTabId, contextKey } = customEvent.detail
+      if (eventTabId === tabId || contextKey === tabId) {
+        setPipelineRunId(runId)
+        setHasSentMessage(true)
+      }
+    }
+
+    window.addEventListener("pipelineRunStarted", handlePipelineRunStarted)
+    return () => {
+      window.removeEventListener("pipelineRunStarted", handlePipelineRunStarted)
+    }
+  }, [tabId])
+
   // One inbox for everything pushed into this tab's composer from outside it:
   // welcome-page quick actions (replace) and quoted transcript selections
   // (append). Exactly one composer is mounted at a time — the welcome one or the
@@ -2158,6 +2181,7 @@ const ConversationTabView = memo(function ConversationTabView({
 
   return (
     <ConversationShell
+      pipelineRunId={pipelineRunId}
       getSentHistory={getSentHistory}
       topBanner={
         <>

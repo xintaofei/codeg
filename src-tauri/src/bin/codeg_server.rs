@@ -526,6 +526,23 @@ async fn async_main() -> ExitCode {
         tokio::spawn(codeg_lib::work_task::run_task_engine(engine));
     }
 
+    // Pipeline engine (mirrors lib.rs setup): orchestrates multi-agent workflows,
+    // event-bus settlement, boot recovery. One per process.
+    if let Some(engine) = codeg_lib::pipeline::engine::build_engine(
+        codeg_lib::db::AppDatabase {
+            conn: state.db.conn.clone(),
+        },
+        state.connection_manager.clone_ref(),
+        state.emitter.clone(),
+        state.acp_event_bus.clone(),
+        state.data_dir.clone(),
+    ) {
+        codeg_lib::memory::set_process_db(codeg_lib::db::AppDatabase {
+            conn: state.db.conn.clone(),
+        });
+        tokio::spawn(codeg_lib::pipeline::engine::run_pipeline_engine(engine));
+    }
+
     // Config-sync uploader (mirrors lib.rs setup): sleeps a minute, then
     // compares the configuration's hash every interval and uploads only when
     // it changed. Does nothing at all until a WebDAV endpoint is configured.

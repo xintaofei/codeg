@@ -30,6 +30,7 @@ import {
   SquareArrowOutUpRight,
   SquareKanban,
   Trash2,
+  Workflow,
   X,
   Zap,
 } from "lucide-react"
@@ -998,6 +999,7 @@ function AutomationDetail({
   onEdit: () => void
 }) {
   const t = useTranslations("Automations")
+  const tPipeline = useTranslations("Pipeline")
   const folders = useAppWorkspaceStore((s) => s.folders)
   const [busy, setBusy] = useState(false)
 
@@ -1119,6 +1121,10 @@ function AutomationDetail({
               // engine mints the worktree); show what firing does instead.
               <StatItem icon={<SquareKanban />} label={t("sectionAction")}>
                 {t("actionEnqueueTask")}
+              </StatItem>
+            ) : config?.action === "run_pipeline" ? (
+              <StatItem icon={<Workflow />} label={t("sectionAction")}>
+                {tPipeline("automationAction")}
               </StatItem>
             ) : (
               <StatItem icon={<GitBranch />} label={t("isolation")}>

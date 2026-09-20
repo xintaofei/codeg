@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { CanvasChange, CanvasNode, CanvasSnapshot } from "@/lib/types"
 import { canvasListNodes } from "@/lib/api"
 import {
+  getMutationEpoch,
   beginContentWrite,
   hasContentWriteInFlight,
   useCanvasStore,
@@ -145,7 +146,7 @@ describe("canvas-store revision protocol", () => {
   it("response-before-event: applies optimistically, the event then advances", () => {
     store().acceptSnapshot(snapshot(2, []))
     // Command response arrives first (its event still in flight).
-    store().applyResponse(3, (nodes) =>
+    store().applyResponse(3, getMutationEpoch(), (nodes) =>
       nodes.set(10, makeNode(10, { title: "optimistic" }))
     )
     expect(store().nodes.get(10)?.title).toBe("optimistic")
@@ -166,7 +167,7 @@ describe("canvas-store revision protocol", () => {
     )
     expect(store().lastRevision).toBe(3)
     // The response for that same mutation arrives after its event.
-    store().applyResponse(3, (nodes) =>
+    store().applyResponse(3, getMutationEpoch(), (nodes) =>
       nodes.set(10, makeNode(10, { title: "late-response" }))
     )
     expect(store().nodes.get(10)?.title).toBe("from-event")
@@ -306,5 +307,28 @@ describe("canvas-store revision protocol", () => {
     store().handleCanvasChanged(change)
     expect([...store().nodes.keys()]).toEqual([9])
     expect(store().lastRevision).toBe(5)
+  })
+})
+
+describe("canvas-store mutation epoch (reset crossing)", () => {
+  const store = () => useCanvasStore.getState()
+
+  it("drops a response whose request was issued before reset()", () => {
+    store().reset()
+    store().acceptSnapshot(snapshot(1, []))
+    const before = getMutationEpoch()
+    store().reset()
+    store().acceptSnapshot(snapshot(1, []))
+    store().applyResponse(2, before, (nodes) => nodes.set(7, makeNode(7)))
+    expect(store().nodes.has(7)).toBe(false)
+  })
+
+  it("applies a response issued in the current scope", () => {
+    store().reset()
+    store().acceptSnapshot(snapshot(1, []))
+    store().applyResponse(2, getMutationEpoch(), (nodes) =>
+      nodes.set(7, makeNode(7))
+    )
+    expect(store().nodes.has(7)).toBe(true)
   })
 })

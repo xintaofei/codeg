@@ -79,6 +79,9 @@ pub enum AutomationAction {
     /// Enqueue a work task (status todo) on the target folder's board; the
     /// work-task engine owns the actual execution.
     EnqueueTask,
+    /// Start a saved agent pipeline on the target folder; the pipeline engine
+    /// owns the steps, verdicts and fix rounds.
+    RunPipeline,
 }
 
 /// The structured shape stored inside `automation.config`. Kept tolerant
@@ -89,6 +92,9 @@ pub enum AutomationAction {
 pub struct AutomationConfig {
     #[serde(default)]
     pub action: AutomationAction,
+    /// Saved pipeline started by a `RunPipeline` automation.
+    #[serde(default)]
+    pub pipeline_id: Option<i32>,
     #[serde(default)]
     pub prompt_blocks: Vec<serde_json::Value>,
     #[serde(default)]

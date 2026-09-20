@@ -122,6 +122,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 axum = { version = "0.8", features = ["ws", "multipart"] }
 async_zip = { version = "0.0.18", features = ["tokio", "deflate"] }
 tower-http = { version = "0.6", features = ["fs", "cors", "compression-gzip", "compression-br"] }
+tower = { version = "0.5" }
 # Direct deps (already in the graph via axum) so the compression predicate can
 # name the exact types tower-http's `Predicate` trait is defined over.
 http = "1"

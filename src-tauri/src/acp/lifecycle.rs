@@ -305,6 +305,7 @@ pub(crate) async fn handle_event(
                 forward_turn_complete_to_broker(
                     db_conn,
                     b.as_ref(),
+                    &envelope.connection_id,
                     cid,
                     stop_reason.as_str(),
                     last_text,
@@ -359,14 +360,13 @@ pub(crate) async fn handle_event(
 /// On TurnComplete for a delegation child, resolve the pending broker call
 /// and let the broker drive the rest of the lifecycle (meta write, the
 /// `AcpEvent::DelegationCompleted` emit against the parent stream, child
-/// disconnect, tx.send). Keeping the emit responsibility inside
-/// `broker.complete_call` is what guarantees the broker's other terminal
-/// paths (`timeout` / `cancel_by_child_connection` / `cancel_by_parent`)
-/// also surface the event — see
-/// `.docs/issues/2026-05-24-delegation-termination-cascade.md`.
+/// disconnect, tx.send). Connection ID is passed to detect stale completions
+/// from a connection that was superseded by resume_delegation, ensuring only
+/// the current child connection's outcome is accepted.
 async fn forward_turn_complete_to_broker(
     db_conn: &DatabaseConnection,
     broker: &DelegationBroker,
+    connection_id: &str,
     conversation_id: i32,
     stop_reason: &str,
     last_text: Option<String>,
@@ -431,7 +431,7 @@ async fn forward_turn_complete_to_broker(
             Some(conversation_id),
         ),
     };
-    broker.complete_call(&call_id, outcome).await;
+    broker.complete_call_checked(&call_id, Some(connection_id), outcome).await;
 }
 
 /// Snapshot the connection's `(state, emitter)` into the lifecycle cache when

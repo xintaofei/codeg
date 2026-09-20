@@ -64,7 +64,14 @@ import type {
   PromptInputBlock,
   SessionConfigOptionInfo,
   SessionModeInfo,
+  PipelineModeKey,
+  PipelineGraph,
+  PipelineIsolation,
+  PipelineRun,
 } from "@/lib/types"
+import { useTabStore } from "@/contexts/tab-context"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { pipelineList, pipelinePresets, pipelineRun } from "@/lib/api"
 import {
   ATTACH_FILE_TO_SESSION_EVENT,
   ATTACH_SESSION_TO_SESSION_EVENT,
@@ -109,6 +116,7 @@ import {
   saveMessageInputDraftV2,
 } from "@/lib/message-input-draft"
 import { rankByTextMatch } from "@/lib/fuzzy-text-match"
+import { PipelineModeSwitch } from "@/components/chat/composer/pipeline-mode-switch"
 import {
   RichComposer,
   type RichComposerHandle,
@@ -172,7 +180,7 @@ export interface ComposerInjectContent {
 }
 
 interface MessageInputProps {
-  onSend: (draft: PromptDraft, modeId?: string | null) => void
+  onSend: (draft: PromptDraft, modeId?: string | null) => void | boolean
   placeholder?: string
   defaultPath?: string
   disabled?: boolean
@@ -259,6 +267,7 @@ interface MessageInputProps {
   getSentHistory?: () => string[]
   injectContent?: ComposerInjectContent | null
   onInjectConsumed?: () => void
+  onPipelineRun?: (run: PipelineRun) => void
 }
 
 // Non-image files attach as inline file badges in the editor (like `@`-file
@@ -386,6 +395,7 @@ export function MessageInput({
   injectContent,
   onInjectConsumed,
   getSentHistory,
+  onPipelineRun,
 }: MessageInputProps) {
   const t = useTranslations("Folder.chat.messageInput")
   const tQueue = useTranslations("Folder.chat.messageQueue")
@@ -393,6 +403,32 @@ export function MessageInput({
   // upload / attachment toasts — read as a single coherent group when
   // scanning the file. Same namespace, no extra runtime cost.
   const tAttach = useTranslations("Folder.chat.messageInput")
+  const tabs = useTabStore((s) => s.tabs)
+  const activeTabId = useTabStore((s) => s.activeTabId)
+  const allFolders = useAppWorkspaceStore((s) => s.allFolders)
+  const effectiveFolderId = useMemo(() => {
+    if (folderPickerOverride?.folderId != null) {
+      return folderPickerOverride.folderId
+    }
+    const lookupId = attachmentTabId ?? activeTabId
+    const ownTab = tabs.find((x) => x.id === lookupId)
+    if (ownTab?.folderId != null) {
+      return ownTab.folderId
+    }
+    if (defaultPath) {
+      const matched = allFolders.find((f) => f.path === defaultPath)
+      if (matched) return matched.id
+    }
+    return null
+  }, [
+    folderPickerOverride?.folderId,
+    attachmentTabId,
+    activeTabId,
+    tabs,
+    defaultPath,
+    allFolders,
+  ])
+  const [pipelineMode, setPipelineMode] = useState<PipelineModeKey>("single")
   // The `$` prefix autocomplete is Codex-only: Codex advertises very few
   // native slash commands, so we augment the dropdown with the agent's
   // skills read from disk. Other agents already surface their full command
@@ -593,12 +629,8 @@ export function MessageInput({
   }, [writeDraftNow])
 
   useEffect(() => {
-    return () => {
-      if (draftSaveTimerRef.current != null && typeof window !== "undefined") {
-        window.clearTimeout(draftSaveTimerRef.current)
-      }
-    }
-  }, [])
+    return () => flushDraftSave()
+  }, [flushDraftSave])
 
   // One-time hydration once the editor is ready: a queue-edit payload, else a v2
   // draft document (or a legacy v1 Markdown draft migrated forward). Guarded so
@@ -1481,7 +1513,87 @@ export function MessageInput({
       return
     }
 
-    onSend(draft, showModeSelector ? effectiveModeId : null)
+    // Pipeline mode: Duet/Team/Custom → pipelineRun instead of onSend
+    if (pipelineMode !== "single" && effectiveFolderId != null) {
+      const folderId = effectiveFolderId
+      void (async () => {
+        try {
+          let targetGraph: PipelineGraph | undefined
+          let targetIsolation: PipelineIsolation = "worktree_per_run"
+
+          if (pipelineMode === "duet" || pipelineMode === "team") {
+            const presets = await pipelinePresets()
+            const found = presets.find(
+              (p) => p.preset_key === pipelineMode || p.name === pipelineMode
+            )
+            if (found) {
+              targetGraph = found.graph
+              targetIsolation = found.isolation ?? "worktree_per_run"
+            }
+          } else if (pipelineMode === "custom") {
+            try {
+              const list = await pipelineList(folderId)
+              const custom = list.find((p) => !p.preset_key) ?? list[0]
+              if (custom) {
+                targetGraph = custom.graph
+                targetIsolation = custom.isolation ?? "worktree_per_run"
+              } else {
+                const presets = await pipelinePresets()
+                const found = presets[0]
+                if (found) {
+                  targetGraph = found.graph
+                  targetIsolation = found.isolation ?? "worktree_per_run"
+                }
+              }
+            } catch {
+              const presets = await pipelinePresets()
+              const found = presets[0]
+              if (found) {
+                targetGraph = found.graph
+                targetIsolation = found.isolation ?? "worktree_per_run"
+              }
+            }
+          }
+
+          const run = await pipelineRun({
+            folderId,
+            graph: targetGraph,
+            promptBlocks: draft.blocks,
+            displayText: draft.displayText,
+            parentConversationId: undefined,
+            isolation: targetIsolation,
+          })
+          if (onPipelineRun) {
+            onPipelineRun(run)
+          }
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(
+              new CustomEvent("pipelineRunStarted", {
+                detail: {
+                  run,
+                  runId: run.id,
+                  tabId: attachmentTabId,
+                  contextKey: attachmentTabId,
+                  folderId,
+                },
+              })
+            )
+          }
+          if (effectiveDraftStorageKey) {
+            clearMessageInputDraftV2(effectiveDraftStorageKey)
+          }
+          resetComposer()
+        } catch (err) {
+          console.error("[MessageInput] pipelineRun failed:", err)
+          toast.error(toErrorMessage(err))
+        }
+      })()
+      return
+    }
+
+    const accepted =
+      onSend(draft, showModeSelector ? effectiveModeId : null) !== false
+    if (!accepted) return
     if (effectiveDraftStorageKey) {
       clearMessageInputDraftV2(effectiveDraftStorageKey)
     }
@@ -1500,6 +1612,10 @@ export function MessageInput({
     showModeSelector,
     effectiveDraftStorageKey,
     resetComposer,
+    pipelineMode,
+    effectiveFolderId,
+    onPipelineRun,
+    attachmentTabId,
   ])
 
   // Mid-turn send over the session's live-feedback channel: a native push
@@ -2123,6 +2239,12 @@ export function MessageInput({
                     onRemove={attach.removeAttachment}
                   />
                 }
+              />
+              <PipelineModeSwitch
+                folderId={effectiveFolderId ?? undefined}
+                mode={pipelineMode}
+                onModeChange={setPipelineMode}
+                className="px-2 pt-2"
               />
               <RichComposer
                 ref={editorRef}

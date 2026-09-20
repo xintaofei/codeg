@@ -5087,6 +5087,81 @@ fn list_files_under(root: &Path, prefix: &str) -> Vec<WorkspaceFileEntry> {
     entries
 }
 
+/// Validate that `root_path` exists, can be canonicalized, and either matches
+/// or is located inside a registered folder from the database (table `folder`).
+pub async fn ensure_registered_root(
+    db: &AppDatabase,
+    root_path: &str,
+) -> Result<PathBuf, AppCommandError> {
+    let trimmed = root_path.trim();
+    if trimmed.is_empty() {
+        return Err(AppCommandError::invalid_input("Root path cannot be empty"));
+    }
+    let target = Path::new(trimmed);
+    let canonical_root = std::fs::canonicalize(target).map_err(|e| {
+        AppCommandError::not_found("Folder does not exist").with_detail(e.to_string())
+    })?;
+    if !canonical_root.is_dir() {
+        return Err(AppCommandError::invalid_input(
+            "Root path is not a directory",
+        ));
+    }
+
+    let folders = folder_service::list_all_folder_details(&db.conn).await?;
+    let canonical_registered: Vec<PathBuf> = folders
+        .iter()
+        .filter_map(|f| std::fs::canonicalize(&f.path).ok())
+        .collect();
+
+    let is_allowed = canonical_registered.iter().any(|reg| {
+        &canonical_root == reg
+            || canonical_root.starts_with(reg)
+            || crate::folder_links::is_allowed(reg, &canonical_root)
+    });
+
+    if !is_allowed {
+        return Err(AppCommandError::permission_denied(
+            "Access denied: root path is not within a registered workspace folder",
+        ));
+    }
+
+    Ok(canonical_root)
+}
+
+/// Validate that `path` exists, can be canonicalized, and is located inside a
+/// registered folder from the database (table `folder`).
+pub async fn ensure_path_in_registered_folder(
+    db: &AppDatabase,
+    path: &str,
+) -> Result<PathBuf, AppCommandError> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err(AppCommandError::invalid_input("Path cannot be empty"));
+    }
+    let target = Path::new(trimmed);
+    let canonical_path = std::fs::canonicalize(target).map_err(|e| {
+        AppCommandError::not_found("File does not exist").with_detail(e.to_string())
+    })?;
+
+    let folders = folder_service::list_all_folder_details(&db.conn).await?;
+    let canonical_registered: Vec<PathBuf> = folders
+        .iter()
+        .filter_map(|f| std::fs::canonicalize(&f.path).ok())
+        .collect();
+
+    let is_allowed = canonical_registered.iter().any(|reg| {
+        canonical_path.starts_with(reg) || crate::folder_links::is_allowed(reg, &canonical_path)
+    });
+
+    if !is_allowed {
+        return Err(AppCommandError::permission_denied(
+            "Access denied: path is not within a registered workspace folder",
+        ));
+    }
+
+    Ok(canonical_path)
+}
+
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn read_file_base64(
     path: String,
@@ -8325,6 +8400,8 @@ branch refs/heads/main";
 #[cfg(all(test, unix))]
 mod workspace_confinement_tests {
     use super::*;
+    use crate::db::test_helpers::fresh_in_memory_db;
+    use crate::app_error::AppErrorCode;
     use std::os::unix::fs::symlink;
 
     #[tokio::test]
@@ -9207,5 +9284,138 @@ mod workspace_confinement_tests {
             !strictly_within(root.path(), &root.path().join("api/ok.txt")),
             "revoking the link revokes access"
         );
+    }
+
+    #[tokio::test]
+    async fn registered_folder_passes_and_outside_paths_rejected() {
+        let db = fresh_in_memory_db().await;
+        let root_dir = tempfile::tempdir().expect("root tempdir");
+        let root_path = root_dir.path().to_string_lossy().into_owned();
+        let file_path = root_dir.path().join("test.txt");
+        std::fs::write(&file_path, b"hello").expect("write file");
+        let subdir = root_dir.path().join("subdir");
+        std::fs::create_dir(&subdir).expect("mkdir subdir");
+
+        // Register root_dir in DB
+        open_folder_core(&db, root_path.clone())
+            .await
+            .expect("open folder");
+
+        // 1. Registered folder passes
+        let res = ensure_registered_root(&db, &root_path).await;
+        assert!(res.is_ok(), "registered folder must pass: {:?}", res);
+
+        // 2. Subdirectory inside registered folder passes
+        let res_sub = ensure_registered_root(&db, &subdir.to_string_lossy()).await;
+        assert!(
+            res_sub.is_ok(),
+            "subdir inside registered folder must pass: {:?}",
+            res_sub
+        );
+
+        // 3. File inside registered folder passes ensure_path_in_registered_folder
+        let res_file = ensure_path_in_registered_folder(&db, &file_path.to_string_lossy()).await;
+        assert!(
+            res_file.is_ok(),
+            "file inside registered folder must pass: {:?}",
+            res_file
+        );
+
+        // 4. "/" is rejected
+        let res_slash = ensure_registered_root(&db, "/").await;
+        assert!(res_slash.is_err(), "'/' must be rejected");
+        assert_eq!(res_slash.unwrap_err().code, AppErrorCode::PermissionDenied);
+
+        let res_slash_path = ensure_path_in_registered_folder(&db, "/").await;
+        assert!(res_slash_path.is_err(), "'/' path must be rejected");
+
+        // 5. Unregistered outside folder is rejected
+        let outside_dir = tempfile::tempdir().expect("outside tempdir");
+        let outside_path = outside_dir.path().to_string_lossy().into_owned();
+        let outside_file = outside_dir.path().join("secret.txt");
+        std::fs::write(&outside_file, b"secret").expect("write secret");
+
+        let res_outside_root = ensure_registered_root(&db, &outside_path).await;
+        assert!(res_outside_root.is_err(), "outside root must be rejected");
+        assert_eq!(
+            res_outside_root.unwrap_err().code,
+            AppErrorCode::PermissionDenied
+        );
+
+        let res_outside_file =
+            ensure_path_in_registered_folder(&db, &outside_file.to_string_lossy()).await;
+        assert!(res_outside_file.is_err(), "outside file must be rejected");
+        assert_eq!(
+            res_outside_file.unwrap_err().code,
+            AppErrorCode::PermissionDenied
+        );
+    }
+
+    #[tokio::test]
+    async fn parent_traversal_and_symlink_escape_are_rejected() {
+        let db = fresh_in_memory_db().await;
+        let root_dir = tempfile::tempdir().expect("root tempdir");
+        let root_path = root_dir.path().to_string_lossy().into_owned();
+        open_folder_core(&db, root_path.clone())
+            .await
+            .expect("open folder");
+
+        let outside_dir = tempfile::tempdir().expect("outside tempdir");
+        let outside_file = outside_dir.path().join("outside.txt");
+        std::fs::write(&outside_file, b"outside").expect("write outside");
+
+        // 1. '..' traversal out of registered folder is rejected
+        let dotdot_path = format!(
+            "{}/../{}",
+            root_path,
+            outside_dir.path().file_name().unwrap().to_string_lossy()
+        );
+        let res_dotdot = ensure_registered_root(&db, &dotdot_path).await;
+        assert!(res_dotdot.is_err(), "'..' traversal must be rejected");
+
+        let dotdot_file = format!(
+            "{}/../{}",
+            root_path,
+            outside_file
+                .strip_prefix(outside_dir.path().parent().unwrap())
+                .unwrap()
+                .to_string_lossy()
+        );
+        let res_dotdot_file = ensure_path_in_registered_folder(&db, &dotdot_file).await;
+        assert!(
+            res_dotdot_file.is_err(),
+            "'..' traversal to file must be rejected"
+        );
+
+        // 2. Symlink out of registered folder is rejected
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let symlink_dir = root_dir.path().join("symlink_dir_out");
+            let symlink_file = root_dir.path().join("symlink_file_out");
+            symlink(outside_dir.path(), &symlink_dir).expect("symlink dir");
+            symlink(&outside_file, &symlink_file).expect("symlink file");
+
+            let res_sym_root = ensure_registered_root(&db, &symlink_dir.to_string_lossy()).await;
+            assert!(
+                res_sym_root.is_err(),
+                "symlink pointing outside must be rejected for root"
+            );
+            assert_eq!(
+                res_sym_root.unwrap_err().code,
+                AppErrorCode::PermissionDenied
+            );
+
+            let res_sym_file =
+                ensure_path_in_registered_folder(&db, &symlink_file.to_string_lossy()).await;
+            assert!(
+                res_sym_file.is_err(),
+                "symlink pointing outside must be rejected for file"
+            );
+            assert_eq!(
+                res_sym_file.unwrap_err().code,
+                AppErrorCode::PermissionDenied
+            );
+        }
     }
 }

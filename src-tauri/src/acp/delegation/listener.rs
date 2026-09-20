@@ -15,22 +15,25 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 
+use crate::acp::chat_authoring::{AuthoringContext, AuthoringOutcome, ChatAuthoringAccess};
 use crate::acp::delegation::broker::{DelegationBroker, StatusWait};
 use crate::acp::delegation::transport::{
     read_frame, write_frame, BrokerAskRequest, BrokerCancelRequest, BrokerCancelTaskRequest,
-    BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerMessage, BrokerRequest,
-    BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerResponse,
-    BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
+    BrokerCommitFeedbackRequest, BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest,
+    BrokerFeedbackRequest, BrokerMemoryLinkRequest, BrokerMemorySearchRequest,
+    BrokerMemoryWriteRequest, BrokerMessage, BrokerPipelineVerdictRequest, BrokerRequest,
+    BrokerResponse, BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
     BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
 };
 use crate::acp::delegation::types::{
     DelegationRequest, DelegationTaskReport, ResumeDelegationRequest, TaskStatus,
 };
 use crate::acp::feedback::{PendingFeedback, SessionFeedbackAccess};
+use crate::acp::memory_tools::{MemoryToolAccess, MemoryToolAck};
+use crate::acp::pipeline_tools::PipelineToolAccess;
 use crate::acp::question::{QuestionOutcome, SessionQuestionAccess};
 #[cfg(unix)]
 use crate::acp::scratch_dir::SUN_PATH_CAP;
-use crate::acp::chat_authoring::{AuthoringContext, AuthoringOutcome, ChatAuthoringAccess};
 use crate::acp::session_info::{SessionInfo, SessionInfoAccess};
 use crate::acp::work_task_tools::{TaskReportAck, WorkTaskToolAccess};
 use crate::models::AgentType;
@@ -41,7 +44,6 @@ use serde_json::Value;
 /// keeps running past this; the LLM simply re-issues the wait. An explicit
 /// `wait_ms = 0` opts out of the ceiling and blocks until the task is terminal.
 const STATUS_WAIT_MAX_MS: u64 = 60_000;
-
 
 /// The bound-but-not-yet-served socket handed from [`DelegationListener::bind`]
 /// to [`DelegationListener::accept_loop`]. A UDS listener on unix; on Windows,
@@ -146,6 +148,15 @@ pub struct DelegationListener {
     /// feature flags at call time, so flipping the setting off stops writes
     /// from sessions that were launched while it was on.
     pub authoring: Arc<dyn ChatAuthoringAccess>,
+    /// Records `pipeline_verdict` reports for the pipeline step attempt the
+    /// caller is running. `new()` wires a rejecting stub
+    /// ([`ProcessPipelineEngine`]) until a pipeline engine for verdict processing
+    /// is implemented. Can be replaced via `set_pipeline_engine()`.
+    pub pipeline: tokio::sync::RwLock<Arc<dyn PipelineToolAccess>>,
+    /// Handles `memory_write` / `memory_search` / `memory_link`. `new()`
+    /// wires a rejecting stub ([`ProcessMemoryBackend`]) until a memory backend
+    /// implementation is available. Can be replaced via `set_memory_backend()`.
+    pub memory: tokio::sync::RwLock<Arc<dyn MemoryToolAccess>>,
 }
 
 impl DelegationListener {
@@ -169,7 +180,26 @@ impl DelegationListener {
             session_info,
             tasks,
             authoring,
+            // Stub implementations: the pipeline engine and memory backend
+            // are not yet implemented, so all reports are rejected. These will
+            // be replaced with real implementations once available.
+            pipeline: tokio::sync::RwLock::new(Arc::new(ProcessPipelineEngine)),
+            memory: tokio::sync::RwLock::new(Arc::new(ProcessMemoryBackend)),
         })
+    }
+
+    /// Replace the pipeline engine with a new implementation. Used to wire up
+    /// the real engine after initialization.
+    pub async fn set_pipeline_engine(&self, engine: Arc<dyn PipelineToolAccess>) {
+        let mut p = self.pipeline.write().await;
+        *p = engine;
+    }
+
+    /// Replace the memory backend with a new implementation. Used to wire up
+    /// the real backend after initialization.
+    pub async fn set_memory_backend(&self, backend: Arc<dyn MemoryToolAccess>) {
+        let mut mem = self.memory.write().await;
+        *mem = backend;
     }
 
     /// Bind the socket, then serve it forever. Kept as the one-call entry
@@ -313,11 +343,7 @@ impl DelegationListener {
     #[cfg(unix)]
     fn staging_socket_path(socket_path: &Path) -> PathBuf {
         let salt = uuid::Uuid::new_v4().simple().to_string();
-        socket_path.with_file_name(format!(
-            ".stg-{}-{}",
-            std::process::id(),
-            &salt[..8]
-        ))
+        socket_path.with_file_name(format!(".stg-{}-{}", std::process::id(), &salt[..8]))
     }
 
     #[cfg(windows)]
@@ -444,10 +470,7 @@ impl DelegationListener {
                         write_frame(conn, &feedback_response(&[])?).await?;
                     }
                     Some(parent_conn_id) => {
-                        let pending = self
-                            .feedback
-                            .read_pending_feedback(&parent_conn_id)
-                            .await;
+                        let pending = self.feedback.read_pending_feedback(&parent_conn_id).await;
                         // Read-only: the response carries the note ids
                         // (`_commit_ids`); delivery is committed LATER, by the
                         // companion's `CommitFeedback` once it actually returns
@@ -546,6 +569,18 @@ impl DelegationListener {
             }
             BrokerMessage::CreateWorkTask(req) => {
                 authoring_response(self.process_create_work_task(req).await)?
+            }
+            BrokerMessage::PipelineVerdict(req) => {
+                task_ack_response(self.process_pipeline_verdict(req).await)?
+            }
+            BrokerMessage::MemoryWrite(req) => {
+                memory_ack_response(self.process_memory_write(req).await)?
+            }
+            BrokerMessage::MemorySearch(req) => {
+                memory_search_response(self.process_memory_search(req).await)?
+            }
+            BrokerMessage::MemoryLink(req) => {
+                memory_ack_response(self.process_memory_link(req).await)?
             }
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
@@ -798,6 +833,108 @@ impl DelegationListener {
             .await
     }
 
+    /// Validate the token and hand the verdict to the pipeline engine.
+    async fn process_pipeline_verdict(&self, req: BrokerPipelineVerdictRequest) -> TaskReportAck {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
+            return TaskReportAck::rejected("invalid token");
+        };
+        let pipeline = self.pipeline.read().await.clone();
+        pipeline
+            .record_verdict(
+                &entry.parent_connection_id,
+                &req.verdict,
+                req.notes.as_deref(),
+            )
+            .await
+    }
+
+    /// Validate the token and hand the entry to the memory backend.
+    async fn process_memory_write(&self, req: BrokerMemoryWriteRequest) -> MemoryToolAck {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
+            return MemoryToolAck::rejected("invalid token");
+        };
+        let links: Vec<(i32, String)> = req.links.into_iter().map(|l| (l.to, l.rel)).collect();
+
+        // Determine user_requested flag: check if user explicitly requested saving
+        // by matching pattern against their last message in the conversation.
+        let user_requested = req.user_requested
+            || self
+                .check_user_requested_in_context(&entry.parent_connection_id)
+                .await;
+
+        let backend = self.memory.read().await;
+        backend
+            .write(
+                &entry.parent_connection_id,
+                &req.kind,
+                &req.title,
+                &req.body,
+                &links,
+                user_requested,
+            )
+            .await
+    }
+
+    /// Whether the user asked, in their own words, for something to be kept.
+    ///
+    /// Kinds set to `on_request` are written only on an explicit ask, and the
+    /// ask has to come from the user: the agent cannot set this flag itself, so
+    /// it is derived here from the last user turn of the parent conversation.
+    async fn check_user_requested_in_context(&self, parent_connection_id: &str) -> bool {
+        let Some(conv_id) = self
+            .parent_lookup
+            .current_conversation_id(parent_connection_id)
+            .await
+        else {
+            return false;
+        };
+        let info = self.session_info.resolve(conv_id, 4).await;
+        let Some(messages) = info.messages else {
+            return false;
+        };
+        messages
+            .items
+            .iter()
+            .rev()
+            .find(|m| m.role == "user")
+            .map(|m| mentions_a_save_request(&m.text))
+            .unwrap_or(false)
+    }
+
+    /// Validate the token and search the memory backend.
+    async fn process_memory_search(
+        &self,
+        req: BrokerMemorySearchRequest,
+    ) -> Result<Vec<crate::acp::memory_tools::MemoryToolHit>, String> {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
+            return Err("invalid token".to_string());
+        };
+        let backend = self.memory.read().await;
+        backend
+            .search(
+                &entry.parent_connection_id,
+                &req.query,
+                req.limit.unwrap_or(20),
+            )
+            .await
+    }
+
+    /// Validate the token and link two entries in the memory backend.
+    async fn process_memory_link(&self, req: BrokerMemoryLinkRequest) -> MemoryToolAck {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
+            return MemoryToolAck::rejected("invalid token");
+        };
+        let backend = self.memory.read().await;
+        backend
+            .link(
+                &entry.parent_connection_id,
+                req.from_id,
+                req.to_id,
+                &req.rel,
+            )
+            .await
+    }
+
     /// Resolve the caller's [`AuthoringContext`] from its per-launch token: the
     /// conversation it is currently in (for defaulting the target project) plus
     /// the working directory recorded at injection. `None` when the token is
@@ -870,7 +1007,7 @@ impl DelegationListener {
         let task = match req.input.get("task").and_then(|v| v.as_str()) {
             Some(s) if !s.trim().is_empty() => s.to_string(),
             _ => {
-                return report_failed("invalid_working_dir", "missing or empty task");
+                return report_failed("empty_task", "missing or empty task");
             }
         };
         // The `working_dir` the LLM explicitly passed (before defaulting),
@@ -881,6 +1018,19 @@ impl DelegationListener {
             .get("working_dir")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        // A relative or nonexistent (or non-directory) `working_dir` was
+        // previously passed straight through to the spawner, which failed
+        // deep in a spawn error instead of the dedicated `invalid_working_dir`
+        // code. Reject it here, before it reaches the broker.
+        if let Some(raw) = &requested_working_dir {
+            let path = std::path::Path::new(raw);
+            if !path.is_absolute() || !path.is_dir() {
+                return report_failed(
+                    "invalid_working_dir",
+                    &format!("working_dir must be an absolute, existing directory: {raw}"),
+                );
+            }
+        }
         let working_dir = requested_working_dir
             .clone()
             .or_else(|| Some(entry.working_dir.to_string_lossy().to_string()));
@@ -974,6 +1124,28 @@ fn task_ack_response(ack: TaskReportAck) -> std::io::Result<BrokerResponse> {
             std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
         })?,
     })
+}
+
+/// Serialize a [`MemoryToolAck`] into a [`BrokerResponse`] for the
+/// `MemoryWrite` / `MemoryLink` arms.
+fn memory_ack_response(ack: MemoryToolAck) -> std::io::Result<BrokerResponse> {
+    Ok(BrokerResponse {
+        outcome: serde_json::to_value(&ack).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
+        })?,
+    })
+}
+
+/// Serialize a `memory_search` result into a `{ ok, hits?, note? }`
+/// [`BrokerResponse`] for the `MemorySearch` arm.
+fn memory_search_response(
+    result: Result<Vec<crate::acp::memory_tools::MemoryToolHit>, String>,
+) -> std::io::Result<BrokerResponse> {
+    let outcome = match result {
+        Ok(hits) => serde_json::json!({ "ok": true, "hits": hits }),
+        Err(note) => serde_json::json!({ "ok": false, "note": note }),
+    };
+    Ok(BrokerResponse { outcome })
 }
 
 /// Serialize an [`AuthoringOutcome`] into a [`BrokerResponse`] for the
@@ -1144,6 +1316,113 @@ pub fn default_socket_path(_temp_dir: &Path) -> PathBuf {
     PathBuf::from(format!(r"\\.\pipe\codeg-delegation-{}", std::process::id()))
 }
 
+
+/// Phrases that count as the user asking for something to be kept in memory.
+/// Matched case-insensitively against the last user turn.
+fn mentions_a_save_request(text: &str) -> bool {
+    const PHRASES: [&str; 7] = [
+        "запомни",
+        "сохрани в память",
+        "remember this",
+        "remember that",
+        "save to memory",
+        "note this",
+        "keep this in memory",
+    ];
+    let lowered = text.to_lowercase();
+    PHRASES.iter().any(|p| lowered.contains(p))
+}
+
+/// Default wiring: route verdicts to the pipeline engine of this process.
+///
+/// The engine is created after the listener, so it is looked up per call
+/// instead of being captured at construction. A process without an engine
+/// (server builds that never start one) rejects the call, and the `pipeline`
+/// companion group is off by default anyway.
+struct ProcessPipelineEngine;
+
+#[async_trait]
+impl PipelineToolAccess for ProcessPipelineEngine {
+    async fn record_verdict(
+        &self,
+        parent_connection_id: &str,
+        verdict: &str,
+        notes: Option<&str>,
+    ) -> TaskReportAck {
+        match crate::pipeline::engine::engine() {
+            Some(engine) => {
+                <crate::pipeline::engine::PipelineEngine as PipelineToolAccess>::record_verdict(
+                    &engine,
+                    parent_connection_id,
+                    verdict,
+                    notes,
+                )
+                .await
+            }
+            None => TaskReportAck::rejected("no pipeline engine in this process"),
+        }
+    }
+}
+
+/// Default wiring: resolve the memory backend from the current settings on
+/// every call. Same pattern as [`ProcessPipelineEngine`]; memory that is
+/// switched off resolves to nothing and the call is rejected.
+struct ProcessMemoryBackend;
+
+#[async_trait]
+impl MemoryToolAccess for ProcessMemoryBackend {
+    async fn write(
+        &self,
+        parent_connection_id: &str,
+        kind: &str,
+        title: &str,
+        body: &str,
+        links: &[(i32, String)],
+        user_requested: bool,
+    ) -> MemoryToolAck {
+        match crate::memory::process_access().await {
+            Some(access) => {
+                access
+                    .write(
+                        parent_connection_id,
+                        kind,
+                        title,
+                        body,
+                        links,
+                        user_requested,
+                    )
+                    .await
+            }
+            None => MemoryToolAck::rejected("memory is off"),
+        }
+    }
+
+    async fn search(
+        &self,
+        parent_connection_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::acp::memory_tools::MemoryToolHit>, String> {
+        match crate::memory::process_access().await {
+            Some(access) => access.search(parent_connection_id, query, limit).await,
+            None => Err("memory is off".to_string()),
+        }
+    }
+
+    async fn link(
+        &self,
+        parent_connection_id: &str,
+        from_id: i32,
+        to_id: i32,
+        rel: &str,
+    ) -> MemoryToolAck {
+        match crate::memory::process_access().await {
+            Some(access) => access.link(parent_connection_id, from_id, to_id, rel).await,
+            None => MemoryToolAck::rejected("memory is off"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1185,10 +1464,7 @@ mod tests {
     }
     #[async_trait]
     impl SessionFeedbackAccess for StubFeedback {
-        async fn read_pending_feedback(
-            &self,
-            parent_connection_id: &str,
-        ) -> Vec<PendingFeedback> {
+        async fn read_pending_feedback(&self, parent_connection_id: &str) -> Vec<PendingFeedback> {
             *self.read_conn.lock().await = Some(parent_connection_id.to_string());
             self.items.lock().await.clone()
         }
@@ -1208,9 +1484,7 @@ mod tests {
     #[derive(Default)]
     struct StubQuestion {
         pending: tokio::sync::Mutex<HashMap<String, oneshot::Sender<QuestionOutcome>>>,
-        registered: tokio::sync::Mutex<
-            Vec<(String, Vec<crate::acp::question::QuestionSpec>)>,
-        >,
+        registered: tokio::sync::Mutex<Vec<(String, Vec<crate::acp::question::QuestionSpec>)>>,
         canceled: tokio::sync::Mutex<Vec<String>>,
     }
     #[async_trait]
@@ -1556,6 +1830,82 @@ mod tests {
             .await;
         assert_eq!(report.status, TaskStatus::Failed);
         assert_eq!(report.error_code.as_deref(), Some("invalid_agent_type"));
+    }
+
+    /// An empty or missing `task` should receive its own `empty_task` error code
+    /// rather than being mislabeled `invalid_working_dir`.
+    #[tokio::test]
+    async fn empty_task_rejected_with_its_own_code() {
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let listener = make_listener(
+            make_broker(Arc::new(MockSpawner::new())).await,
+            tokens,
+            Some(1),
+        );
+        let report = listener
+            .process(make_request(json!({"agent_type": "codex", "task": "   "})).await)
+            .await;
+        assert_eq!(report.status, TaskStatus::Failed);
+        assert_eq!(report.error_code.as_deref(), Some("empty_task"));
+    }
+
+    /// A `working_dir` that is relative, doesn't exist, or names a
+    /// file rather than a directory is rejected with `invalid_working_dir`
+    /// before it reaches the spawner.
+    #[tokio::test]
+    async fn invalid_working_dir_rejected() {
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let listener = make_listener(
+            make_broker(Arc::new(MockSpawner::new())).await,
+            tokens,
+            Some(1),
+        );
+
+        // An existing FILE (this test binary itself), not a directory.
+        let existing_file = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        for bad_working_dir in [
+            "relative/path".to_string(),
+            "/definitely/does/not/exist/codeg-test".to_string(),
+            existing_file,
+        ] {
+            let report = listener
+                .process(
+                    make_request(json!({
+                        "agent_type": "codex",
+                        "task": "x",
+                        "working_dir": bad_working_dir,
+                    }))
+                    .await,
+                )
+                .await;
+            assert_eq!(
+                report.status,
+                TaskStatus::Failed,
+                "working_dir {bad_working_dir:?} should be rejected"
+            );
+            assert_eq!(report.error_code.as_deref(), Some("invalid_working_dir"));
+        }
     }
 
     /// Full async round-trip through the listener: `delegate_to_agent` returns a
@@ -2038,7 +2388,8 @@ mod tests {
         }
 
         let mock = Arc::new(MockSpawner::new());
-        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("child-conn-2"))).await;
+        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("child-conn-2")))
+            .await;
         mock.queue_resume_send(Ok(())).await;
         let broker = Arc::new(
             DelegationBroker::new(
@@ -2287,7 +2638,10 @@ mod tests {
         let commit_ids = resp.outcome["_commit_ids"].as_array().unwrap();
         assert_eq!(commit_ids, &vec!["f1", "f2"]);
         // Read was scoped to the token's parent connection id.
-        assert_eq!(feedback.read_conn.lock().await.as_deref(), Some("parent-conn"));
+        assert_eq!(
+            feedback.read_conn.lock().await.as_deref(),
+            Some("parent-conn")
+        );
         // The Feedback arm is READ-ONLY — it does NOT commit (delivery is
         // committed later, by the companion's CommitFeedback).
         assert!(feedback.committed.lock().await.is_empty());
@@ -2731,7 +3085,10 @@ mod tests {
             .await
             .expect("serve_one must return after peer close");
         result.unwrap().unwrap();
-        assert_eq!(questions.canceled.lock().await.as_slice(), &["q-1".to_string()]);
+        assert_eq!(
+            questions.canceled.lock().await.as_slice(),
+            &["q-1".to_string()]
+        );
     }
 
     /// An invalid token never registers a question and returns a `declined`
@@ -2739,7 +3096,8 @@ mod tests {
     #[tokio::test]
     async fn ask_invalid_token_declined() {
         let questions = Arc::new(StubQuestion::default());
-        let listener = make_question_listener(Arc::new(TokenRegistry::default()), questions.clone());
+        let listener =
+            make_question_listener(Arc::new(TokenRegistry::default()), questions.clone());
         let (mut client, mut server) = duplex(8 * 1024);
         let server_task = tokio::spawn(async move {
             listener.serve_one(&mut server).await.unwrap();
@@ -2819,7 +3177,9 @@ mod tests {
             fits_sun_path(&socket),
             "the real path must fit, or this tests the wrong check"
         );
-        assert!(!fits_sun_path(&DelegationListener::staging_socket_path(&socket)));
+        assert!(!fits_sun_path(&DelegationListener::staging_socket_path(
+            &socket
+        )));
 
         let err = DelegationListener::bind(&socket).await.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
@@ -2863,5 +3223,23 @@ mod tests {
             path.as_os_str().len(),
             dialed.err()
         );
+    }
+}
+
+#[cfg(test)]
+mod memory_request_tests {
+    use super::mentions_a_save_request;
+
+    #[test]
+    fn recognises_an_explicit_ask_in_either_language() {
+        assert!(mentions_a_save_request("Запомни: деплой идёт через ansible"));
+        assert!(mentions_a_save_request("please remember this for later"));
+        assert!(mentions_a_save_request("Save to memory: the runner needs 8G"));
+    }
+
+    #[test]
+    fn plain_work_talk_is_not_an_ask() {
+        assert!(!mentions_a_save_request("fix the readiness probe"));
+        assert!(!mentions_a_save_request("I forgot the port number"));
     }
 }

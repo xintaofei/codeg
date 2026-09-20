@@ -1,7 +1,8 @@
-use axum::extract::Multipart;
+use axum::extract::{Extension, Multipart};
 use axum::http::HeaderMap;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 
 use std::collections::BTreeMap;
@@ -10,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::app_error::{
     AppCommandError, UPLOAD_I18N_KEY_QUOTA_EXCEEDED, UPLOAD_I18N_KEY_TOO_LARGE,
 };
+use crate::app_state::AppState;
 use crate::commands::folders as folder_commands;
 use crate::paths::{codeg_uploads_root, simplify_verbatim_path};
 
@@ -106,22 +108,28 @@ pub struct CreateFileTreeEntryParams {
 // ---------------------------------------------------------------------------
 
 pub async fn read_file_preview(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ReadFilePreviewParams>,
 ) -> Result<Json<folder_commands::FilePreviewContent>, AppCommandError> {
+    folder_commands::ensure_registered_root(&state.db, &params.root_path).await?;
     let result = folder_commands::read_file_preview(params.root_path, params.path).await?;
     Ok(Json(result))
 }
 
 pub async fn read_file_base64(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ReadFileBase64Params>,
 ) -> Result<Json<String>, AppCommandError> {
+    folder_commands::ensure_path_in_registered_folder(&state.db, &params.path).await?;
     let result = folder_commands::read_file_base64(params.path, params.max_bytes).await?;
     Ok(Json(result))
 }
 
 pub async fn read_workspace_file_base64(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ReadWorkspaceFileBase64Params>,
 ) -> Result<Json<String>, AppCommandError> {
+    folder_commands::ensure_registered_root(&state.db, &params.root_path).await?;
     let result = folder_commands::read_workspace_file_base64(
         params.root_path,
         params.path,
@@ -132,15 +140,19 @@ pub async fn read_workspace_file_base64(
 }
 
 pub async fn read_file_for_edit(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ReadFileForEditParams>,
 ) -> Result<Json<folder_commands::FileEditContent>, AppCommandError> {
+    folder_commands::ensure_registered_root(&state.db, &params.root_path).await?;
     let result = folder_commands::read_file_for_edit(params.root_path, params.path).await?;
     Ok(Json(result))
 }
 
 pub async fn save_file_content(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<SaveFileContentParams>,
 ) -> Result<Json<folder_commands::FileSaveResult>, AppCommandError> {
+    folder_commands::ensure_registered_root(&state.db, &params.root_path).await?;
     let result = folder_commands::save_file_content(
         params.root_path,
         params.path,
@@ -152,16 +164,20 @@ pub async fn save_file_content(
 }
 
 pub async fn save_file_copy(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<SaveFileCopyParams>,
 ) -> Result<Json<folder_commands::FileSaveResult>, AppCommandError> {
+    folder_commands::ensure_registered_root(&state.db, &params.root_path).await?;
     let result =
         folder_commands::save_file_copy(params.root_path, params.path, params.content).await?;
     Ok(Json(result))
 }
 
 pub async fn rename_file_tree_entry(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<RenameFileTreeEntryParams>,
 ) -> Result<Json<String>, AppCommandError> {
+    folder_commands::ensure_registered_root(&state.db, &params.root_path).await?;
     let result =
         folder_commands::rename_file_tree_entry(params.root_path, params.path, params.new_name)
             .await?;
@@ -169,8 +185,10 @@ pub async fn rename_file_tree_entry(
 }
 
 pub async fn move_file_tree_entry(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<MoveFileTreeEntryParams>,
 ) -> Result<Json<String>, AppCommandError> {
+    folder_commands::ensure_registered_root(&state.db, &params.root_path).await?;
     let result = folder_commands::move_file_tree_entry(
         params.root_path,
         params.source_path,
@@ -181,15 +199,19 @@ pub async fn move_file_tree_entry(
 }
 
 pub async fn delete_file_tree_entry(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<DeleteFileTreeEntryParams>,
 ) -> Result<Json<()>, AppCommandError> {
+    folder_commands::ensure_registered_root(&state.db, &params.root_path).await?;
     folder_commands::delete_file_tree_entry(params.root_path, params.path).await?;
     Ok(Json(()))
 }
 
 pub async fn create_file_tree_entry(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<CreateFileTreeEntryParams>,
 ) -> Result<Json<String>, AppCommandError> {
+    folder_commands::ensure_registered_root(&state.db, &params.root_path).await?;
     let result = folder_commands::create_file_tree_entry(
         params.root_path,
         params.path,

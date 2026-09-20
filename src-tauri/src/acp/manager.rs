@@ -3916,15 +3916,34 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
                 vec![PromptInputBlock::Text { text: task }],
                 Some(folder.id),
                 None,
-                Some(link),
+                Some(link.clone()),
             )
-            .await
-            .map_err(|e| SpawnerError::Send(e.to_string()))?;
-        result.ok_or_else(|| {
-            SpawnerError::Send(
+            .await;
+
+        match result {
+            Ok(Some(cid)) => Ok(cid),
+            Ok(None) => Err(SpawnerError::Send(
                 "send_prompt_linked succeeded but no conversation_id was bound".into(),
-            )
-        })
+            )),
+            Err(e) => {
+                let err_msg = e.to_string();
+                // Attempt to retrieve conversation_id from database using the delegation call id,
+                // in case the row was created before the error occurred.
+                if let Ok(Some(conv)) = crate::db::service::conversation_service::get_by_delegation_call_id(
+                    &self.db.conn,
+                    &link.delegation_call_id,
+                )
+                .await
+                {
+                    Err(SpawnerError::SendWithConversation {
+                        message: err_msg,
+                        conversation_id: conv.id,
+                    })
+                } else {
+                    Err(SpawnerError::Send(err_msg))
+                }
+            }
+        }
     }
 
     async fn spawn_for_resume(

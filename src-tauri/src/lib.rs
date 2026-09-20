@@ -29,6 +29,7 @@ pub mod git_repo;
 pub mod intern;
 pub mod keyring_store;
 pub mod logging;
+pub mod memory;
 pub mod models;
 mod network;
 pub mod office_watch;
@@ -37,6 +38,7 @@ pub mod paths;
 pub mod pet_sessions;
 pub mod pet_state_mapper;
 pub mod pets;
+pub mod pipeline;
 #[cfg(feature = "tauri-runtime")]
 pub mod preferences;
 pub mod process;
@@ -89,7 +91,8 @@ mod tauri_app {
         experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
         folder_links, office_tools as office_tools_commands, open_in,
         folders, logging as logging_commands, mcp as mcp_commands,
-        model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
+        model_provider as model_provider_commands, notification, pet as pet_commands,
+        memory as memory_commands, pipeline as pipeline_commands, project_boot,
         question as question_commands, quick_messages as quick_messages_commands,
         remote_proxy as remote_proxy_commands,
         remote_workspace as remote_workspace_commands, science as science_commands,
@@ -1157,6 +1160,25 @@ mod tauri_app {
                     tauri::async_runtime::spawn(crate::work_task::run_task_engine(engine));
                 }
 
+                // Pipeline engine: orchestrates multi-agent workflows, recovers
+                // on boot. One per process; mirrored in `bin/codeg_server.rs`.
+                if let Some(engine) = crate::pipeline::engine::build_engine(
+                    crate::db::AppDatabase {
+                        conn: app.state::<crate::db::AppDatabase>().conn.clone(),
+                    },
+                    app.state::<ConnectionManager>().clone_ref(),
+                    crate::web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
+                    app.state::<std::sync::Arc<crate::acp::InternalEventBus>>()
+                        .inner()
+                        .clone(),
+                    effective_data_dir.clone(),
+                ) {
+                    crate::memory::set_process_db(crate::db::AppDatabase {
+                        conn: app.state::<crate::db::AppDatabase>().conn.clone(),
+                    });
+                    tauri::async_runtime::spawn(crate::pipeline::engine::run_pipeline_engine(engine));
+                }
+
                 // OS `codeg://` URLs. Register the listener after the DB is
                 // live so a warm-start click can look the conversation up.
                 // Cold-start URLs are also read here and baked into the main
@@ -1806,6 +1828,28 @@ mod tauri_app {
                 automation_commands::automation_compute_next_run,
                 automation_commands::automation_run_now,
                 automation_commands::automation_cancel_run,
+                pipeline_commands::pipeline_list,
+                pipeline_commands::pipeline_get,
+                pipeline_commands::pipeline_save,
+                pipeline_commands::pipeline_delete,
+                pipeline_commands::pipeline_presets,
+                pipeline_commands::pipeline_run,
+                pipeline_commands::pipeline_cancel,
+                pipeline_commands::pipeline_run_status,
+                pipeline_commands::pipeline_runs,
+                pipeline_commands::pipeline_request_changes,
+                pipeline_commands::pipeline_stop_manual,
+                pipeline_commands::pipeline_run_diff,
+                pipeline_commands::pipeline_run_apply,
+                memory_commands::memory_settings_get,
+                memory_commands::memory_settings_set,
+                memory_commands::memory_kind_list,
+                memory_commands::memory_kind_create,
+                memory_commands::memory_kind_update,
+                memory_commands::memory_kind_set_enabled,
+                memory_commands::memory_kind_delete,
+                memory_commands::memory_search,
+                memory_commands::memory_node_delete,
                 token_usage_commands::token_usage_report,
                 token_usage_commands::token_usage_facets,
                 token_usage_commands::token_usage_status,

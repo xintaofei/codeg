@@ -11,6 +11,7 @@ import {
   Bot,
   BookOpenText,
   Boxes,
+  Brain,
   FileSpreadsheet,
   GitBranch,
   Globe,
@@ -46,6 +47,7 @@ interface SettingsNavItem {
     | "mcp"
     | "skills"
     | "skill_packs"
+    | "memory"
     | "quick_messages"
     | "shortcuts"
     | "version_control"
@@ -81,6 +83,11 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     href: "/settings/skill-packs",
     labelKey: "skill_packs",
     icon: Boxes,
+  },
+  {
+    href: "/settings/memory",
+    labelKey: "memory",
+    icon: Brain,
   },
   {
     href: "/settings/agents",

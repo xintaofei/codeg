@@ -283,6 +283,7 @@ pub async fn canvas_create_node_core(
             folder_group_id: input.folder_group_id,
             agent_type: input.agent_type,
             conversation_id: input.conversation_id,
+            pipeline_id: None,
             title: input.title,
             content: input.content,
             path: input.path,

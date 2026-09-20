@@ -14,6 +14,7 @@ import {
   Sparkles,
   SquareTerminal,
   StickyNote,
+  Workflow,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { AgentIcon } from "@/components/agent-icon"
@@ -46,6 +47,8 @@ import {
   DETAIL_CARD_WIDTH,
   FILE_CARD_HEIGHT,
   FILE_CARD_WIDTH,
+  PIPELINE_CARD_HEIGHT,
+  PIPELINE_CARD_WIDTH,
   TERMINAL_CARD_HEIGHT,
   TERMINAL_CARD_WIDTH,
   basePathName,
@@ -91,6 +94,7 @@ export function AddNodeMenu({
   side = "bottom",
 }: AddNodeMenuProps) {
   const t = useTranslations("Canvas")
+  const tPipeline = useTranslations("Pipeline")
   const { screenToFlowPosition } = useReactFlow()
   const folders = useAppWorkspaceStore((s) => s.folders)
   const folderGroups = useAppWorkspaceStore((s) => s.folderGroups)
@@ -336,6 +340,24 @@ export function AddNodeMenu({
         <DropdownMenuItem onSelect={() => createRegion({ kind: "custom" })}>
           <Sparkles className="text-muted-foreground" />
           {t("addCustomRegion")}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onSelect={() => {
+            const { x, y } = dropPoint(
+              PIPELINE_CARD_WIDTH,
+              PIPELINE_CARD_HEIGHT
+            )
+            onCreate({
+              kind: "pipeline",
+              x,
+              y,
+              width: PIPELINE_CARD_WIDTH,
+              height: PIPELINE_CARD_HEIGHT,
+            })
+          }}
+        >
+          <Workflow className="text-muted-foreground" />
+          {tPipeline("canvasAddPipeline")}
         </DropdownMenuItem>
         <DropdownMenuItem
           onSelect={() => {

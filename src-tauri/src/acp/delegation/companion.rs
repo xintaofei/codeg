@@ -47,13 +47,16 @@ use crate::acp::chat_authoring::{
 use crate::acp::delegation::transport::{
     client_ask_round_trip, client_cancel, client_cancel_task_round_trip, client_commit_feedback,
     client_create_automation_round_trip, client_create_work_task_round_trip,
-    client_feedback_round_trip, client_resume_task_round_trip, client_round_trip,
-    client_session_round_trip, client_status_round_trip, client_task_complete_round_trip,
-    client_task_progress_round_trip, BrokerAskRequest, BrokerCancelRequest,
-    BrokerCancelTaskRequest, BrokerCommitFeedbackRequest, BrokerCreateAutomationRequest,
-    BrokerCreateWorkTaskRequest, BrokerFeedbackRequest, BrokerRequest, BrokerResponse,
-    BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
-    BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
+    client_feedback_round_trip, client_memory_link_round_trip, client_memory_search_round_trip,
+    client_memory_write_round_trip, client_pipeline_verdict_round_trip,
+    client_resume_task_round_trip, client_round_trip, client_session_round_trip,
+    client_status_round_trip, client_task_complete_round_trip, client_task_progress_round_trip,
+    BrokerAskRequest, BrokerCancelRequest, BrokerCancelTaskRequest, BrokerCommitFeedbackRequest,
+    BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerFeedbackRequest,
+    BrokerMemoryLinkRequest, BrokerMemorySearchRequest, BrokerMemoryWriteRequest,
+    BrokerPipelineVerdictRequest, BrokerRequest, BrokerResponse, BrokerResumeTaskRequest,
+    BrokerSessionRequest, BrokerStatusRequest, BrokerTaskCompleteRequest,
+    BrokerTaskProgressRequest, MemoryLinkArg,
 };
 use crate::acp::question::parse_questions;
 use crate::acp::session_info::MAX_SESSION_MESSAGES;
@@ -153,6 +156,14 @@ pub struct CompanionFeatures {
     pub automations: bool,
     /// `create_work_task` — queue a card on the work-task board from chat.
     pub taskboard: bool,
+    /// `pipeline_verdict` — injected only into spawns launched by the
+    /// pipeline engine for a Reviewer/Tests step. Off by default (see
+    /// the initial contract specification for delegation.).
+    pub pipeline: bool,
+    /// `memory_write` / `memory_search` / `memory_link` — on only when the
+    /// memory backend is configured and at least one memory kind is enabled.
+    /// Off by default.
+    pub memory: bool,
 }
 
 impl CompanionFeatures {
@@ -172,6 +183,8 @@ impl CompanionFeatures {
                 tasks: false,
                 automations: false,
                 taskboard: false,
+                pipeline: false,
+                memory: false,
             };
         };
         let mut f = Self {
@@ -182,6 +195,8 @@ impl CompanionFeatures {
             tasks: false,
             automations: false,
             taskboard: false,
+            pipeline: false,
+            memory: false,
         };
         for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             match tok {
@@ -192,6 +207,8 @@ impl CompanionFeatures {
                 "tasks" => f.tasks = true,
                 "automations" => f.automations = true,
                 "taskboard" => f.taskboard = true,
+                "pipeline" => f.pipeline = true,
+                "memory" => f.memory = true,
                 _ => {}
             }
         }
@@ -207,7 +224,11 @@ impl CompanionFeatures {
             "task_progress" | "task_complete" => self.tasks,
             "create_automation" => self.automations,
             "create_work_task" => self.taskboard,
-            "delegate_to_agent" | "get_delegation_status" | "cancel_delegation"
+            "pipeline_verdict" => self.pipeline,
+            "memory_write" | "memory_search" | "memory_link" => self.memory,
+            "delegate_to_agent"
+            | "get_delegation_status"
+            | "cancel_delegation"
             | "resume_delegation" => self.delegation,
             _ => false,
         }
@@ -471,6 +492,51 @@ fn append_custom_agents_to_delegate_enum(tools: &mut Value, custom_agents: &[Str
     for slug in custom_agents {
         if !variants.iter().any(|v| v.as_str() == Some(slug)) {
             variants.push(Value::String(slug.clone()));
+        }
+    }
+}
+
+/// A memory kind specification for dynamically building `memory_write` tool schema.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryKindSpec {
+    pub key: String,
+    #[serde(default)]
+    pub name: String,
+    pub instruction: String,
+    pub mode: String,
+}
+
+/// Dynamically update `memory_write` description and kind enum from enabled types with instructions.
+pub fn update_memory_write_schema(tools: &mut Value, kinds: &[MemoryKindSpec]) {
+    if kinds.is_empty() {
+        return;
+    }
+    let Some(arr) = tools.as_array_mut() else {
+        return;
+    };
+    let Some(tool) = arr
+        .iter_mut()
+        .find(|t| t.get("name").and_then(|v| v.as_str()) == Some("memory_write"))
+    else {
+        return;
+    };
+
+    let mut desc = String::from(
+        "Record something worth remembering across sessions: a decision, a fixed bug, a task summary, or a fact/preference about the user or project. Only kinds enabled in Memory settings are accepted:\n",
+    );
+    for kind in kinds {
+        desc.push_str(&format!(
+            "\n- {}: {} ({})",
+            kind.key, kind.instruction, kind.mode
+        ));
+    }
+    tool["description"] = Value::String(desc);
+
+    let enum_values: Vec<Value> = kinds.iter().map(|k| Value::String(k.key.clone())).collect();
+
+    if let Some(kind_prop) = tool.pointer_mut("/inputSchema/properties/kind") {
+        if let Some(obj) = kind_prop.as_object_mut() {
+            obj.insert("enum".to_string(), Value::Array(enum_values));
         }
     }
 }
@@ -768,6 +834,151 @@ async fn build_tools_call_spawn(
             let round_trip =
                 Box::pin(async move { client_create_work_task_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_authoring_result).await
+        }
+        "pipeline_verdict" => {
+            let verdict = arguments
+                .get("verdict")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .unwrap_or("");
+            if !matches!(verdict, "pass" | "changes_requested" | "inconclusive") {
+                return LineAction::Respond(err(
+                    id,
+                    -32602,
+                    "pipeline_verdict requires `verdict` of pass | changes_requested | inconclusive",
+                ));
+            }
+            let notes = arguments
+                .get("notes")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            if verdict == "changes_requested" && notes.is_none() {
+                return LineAction::Respond(err(
+                    id,
+                    -32602,
+                    "pipeline_verdict with changes_requested requires non-empty `notes`",
+                ));
+            }
+            let req = BrokerPipelineVerdictRequest {
+                token: ctx.token.clone(),
+                verdict: verdict.to_string(),
+                notes,
+            };
+            // No external_handle: a fire-and-forget report has nothing to
+            // cancel broker-side.
+            let round_trip =
+                Box::pin(async move { client_pipeline_verdict_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_task_ack).await
+        }
+        "memory_write" => {
+            let kind = arguments
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let title = arguments
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let body = arguments
+                .get("body")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let (Some(kind), Some(title), Some(body)) = (kind, title, body) else {
+                return LineAction::Respond(err(
+                    id,
+                    -32602,
+                    "memory_write requires non-empty `kind`, `title` and `body`",
+                ));
+            };
+            let links = arguments
+                .get("links")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|l| {
+                            let to = l.get("to").and_then(|v| v.as_i64())? as i32;
+                            let rel = l.get("rel").and_then(|v| v.as_str())?.to_string();
+                            Some(MemoryLinkArg { to, rel })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let req = BrokerMemoryWriteRequest {
+                token: ctx.token.clone(),
+                kind,
+                title,
+                body,
+                links,
+                user_requested: false,
+            };
+            let round_trip =
+                Box::pin(async move { client_memory_write_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_memory_ack).await
+        }
+        "memory_search" => {
+            let query = arguments
+                .get("query")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let Some(query) = query else {
+                return LineAction::Respond(err(
+                    id,
+                    -32602,
+                    "memory_search requires a non-empty `query` string",
+                ));
+            };
+            let limit = arguments
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize);
+            let req = BrokerMemorySearchRequest {
+                token: ctx.token.clone(),
+                query,
+                limit,
+            };
+            let round_trip =
+                Box::pin(async move { client_memory_search_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_memory_search_result).await
+        }
+        "memory_link" => {
+            let from_id = arguments.get("from_id").and_then(|v| v.as_i64());
+            let to_id = arguments.get("to_id").and_then(|v| v.as_i64());
+            let rel = arguments
+                .get("rel")
+                .and_then(|v| v.as_str())
+                .filter(|s| {
+                    matches!(
+                        *s,
+                        "caused_by" | "fixed_by" | "relates_to" | "part_of" | "supersedes"
+                    )
+                })
+                .map(str::to_string);
+            let (Some(from_id), Some(to_id), Some(rel)) = (from_id, to_id, rel) else {
+                return LineAction::Respond(err(
+                    id,
+                    -32602,
+                    "memory_link requires integer `from_id`, `to_id` and a valid `rel`",
+                ));
+            };
+            let req = BrokerMemoryLinkRequest {
+                token: ctx.token.clone(),
+                from_id: from_id as i32,
+                to_id: to_id as i32,
+                rel,
+            };
+            let round_trip =
+                Box::pin(async move { client_memory_link_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_memory_ack).await
         }
         other => LineAction::Respond(err(id, -32602, format!("unknown tool: {other}"))),
     }
@@ -1400,6 +1611,57 @@ pub fn render_task_ack(outcome: &Value) -> Value {
     })
 }
 
+/// Map a `memory_write` / `memory_link` round-trip outcome (a
+/// `{ ok, id?, note? }` ack) into an MCP `tools/call` result. A rejection
+/// (memory off, kind not enabled) is readable text with `isError: false` —
+/// the agent just carries on.
+pub fn render_memory_ack(outcome: &Value) -> Value {
+    let ok = outcome.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    let text = outcome
+        .get("note")
+        .and_then(|v| v.as_str())
+        .unwrap_or(if ok { "Recorded." } else { "Not recorded." })
+        .to_string();
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": false,
+        "structuredContent": outcome.clone(),
+    })
+}
+
+/// Map a `memory_search` round-trip outcome (a `{ ok, hits?, note? }` result)
+/// into an MCP `tools/call` result.
+pub fn render_memory_search_result(outcome: &Value) -> Value {
+    let ok = outcome.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    let text = if !ok {
+        outcome
+            .get("note")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Search failed.")
+            .to_string()
+    } else {
+        let hits = outcome
+            .get("hits")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if hits.is_empty() {
+            "No memory entries found.".to_string()
+        } else {
+            format!(
+                "Found {} memory entr{}.",
+                hits.len(),
+                if hits.len() == 1 { "y" } else { "ies" }
+            )
+        }
+    };
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": false,
+        "structuredContent": outcome.clone(),
+    })
+}
+
 /// Map a `create_automation` / `create_work_task` round-trip outcome (a
 /// serialized [`crate::acp::chat_authoring::AuthoringOutcome`]) into an MCP
 /// `tools/call` result.
@@ -1583,6 +1845,8 @@ mod tests {
             tasks: false,
             automations: false,
             taskboard: false,
+            pipeline: false,
+            memory: false,
         })
     }
 
@@ -2174,6 +2438,8 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: false,
+        pipeline: false,
+        memory: false,
     };
     const BOTH: CompanionFeatures = CompanionFeatures {
         delegation: true,
@@ -2183,6 +2449,8 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: false,
+        pipeline: false,
+        memory: false,
     };
     const ASK_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -2192,6 +2460,8 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: false,
+        pipeline: false,
+        memory: false,
     };
     const SESSIONS_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -2201,6 +2471,8 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: false,
+        pipeline: false,
+        memory: false,
     };
 
     fn list_tool_names(action: LineAction) -> Vec<String> {
@@ -2336,7 +2608,10 @@ mod tests {
                 "params": { "name": "resume_delegation", "arguments": arguments }
             })
             .to_string();
-            assert!(matches!(dispatch_for_test(&line).await, LineAction::Spawn(_)));
+            assert!(matches!(
+                dispatch_for_test(&line).await,
+                LineAction::Spawn(_)
+            ));
         }
     }
 
@@ -2408,6 +2683,32 @@ mod tests {
         .to_string();
         let resp = unwrap_respond(dispatch_with_features(ASK_ONLY, &line).await);
         assert_eq!(resp.error.unwrap().code, -32602);
+    }
+
+    #[tokio::test]
+    async fn pipeline_verdict_rejects_changes_requested_without_notes() {
+        let line = json!({
+            "jsonrpc": "2.0", "id": 50, "method": "tools/call",
+            "params": { "name": "pipeline_verdict", "arguments": { "verdict": "changes_requested", "notes": "" } }
+        })
+        .to_string();
+        let resp = unwrap_respond(dispatch_with_features(PIPELINE_ONLY, &line).await);
+        let e = resp.error.unwrap();
+        assert_eq!(e.code, -32602);
+        assert!(e.message.contains("non-empty"));
+    }
+
+    #[tokio::test]
+    async fn pipeline_verdict_rejects_changes_requested_with_no_notes_field() {
+        let line = json!({
+            "jsonrpc": "2.0", "id": 51, "method": "tools/call",
+            "params": { "name": "pipeline_verdict", "arguments": { "verdict": "changes_requested" } }
+        })
+        .to_string();
+        let resp = unwrap_respond(dispatch_with_features(PIPELINE_ONLY, &line).await);
+        let e = resp.error.unwrap();
+        assert_eq!(e.code, -32602);
+        assert!(e.message.contains("non-empty"));
     }
 
     #[tokio::test]
@@ -2539,6 +2840,8 @@ mod tests {
         tasks: false,
         automations: true,
         taskboard: false,
+        pipeline: false,
+        memory: false,
     };
     const TASKBOARD_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -2548,7 +2851,67 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: true,
+        pipeline: false,
+        memory: false,
     };
+    const PIPELINE_ONLY: CompanionFeatures = CompanionFeatures {
+        delegation: false,
+        feedback: false,
+        ask: false,
+        sessions: false,
+        tasks: false,
+        automations: false,
+        taskboard: false,
+        pipeline: true,
+        memory: false,
+    };
+    const MEMORY_ONLY: CompanionFeatures = CompanionFeatures {
+        delegation: false,
+        feedback: false,
+        ask: false,
+        sessions: false,
+        tasks: false,
+        automations: false,
+        taskboard: false,
+        pipeline: false,
+        memory: true,
+    };
+
+    /// Per the delegation contract specification: `tools/list` with the
+    /// `pipeline` group enabled shows only `pipeline_verdict`; off by default,
+    /// it shows nothing memory/pipeline-related.
+    #[tokio::test]
+    async fn tools_list_pipeline_group_shows_only_pipeline_verdict() {
+        let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let off = list_tool_names(dispatch_for_test(list).await);
+        assert!(!off.contains(&"pipeline_verdict".to_string()));
+
+        let names = list_tool_names(dispatch_with_features(PIPELINE_ONLY, list).await);
+        assert_eq!(names, vec!["pipeline_verdict".to_string()]);
+    }
+
+    /// `memory_write` (and its siblings) are not shown unless the `memory`
+    /// group is on — which the caller only enables when at least one memory
+    /// kind is enabled per the delegation contract. Off by default.
+    #[tokio::test]
+    async fn tools_list_memory_write_hidden_without_memory_group() {
+        let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let off = list_tool_names(dispatch_for_test(list).await);
+        assert!(!off.contains(&"memory_write".to_string()));
+        assert!(!off.contains(&"memory_search".to_string()));
+        assert!(!off.contains(&"memory_link".to_string()));
+
+        let mut on = list_tool_names(dispatch_with_features(MEMORY_ONLY, list).await);
+        on.sort();
+        assert_eq!(
+            on,
+            vec![
+                "memory_link".to_string(),
+                "memory_search".to_string(),
+                "memory_write".to_string(),
+            ]
+        );
+    }
 
     /// The two authoring groups gate independently: enabling one must not
     /// surface the other's tool.
