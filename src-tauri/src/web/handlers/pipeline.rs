@@ -40,8 +40,20 @@ pub async fn pipeline_delete(
     Ok(Json(()))
 }
 
-pub async fn pipeline_presets() -> Result<Json<Vec<PipelineInfo>>, AppCommandError> {
-    Ok(Json(core::pipeline_presets_core().await))
+pub async fn pipeline_presets(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<Vec<PipelineInfo>>, AppCommandError> {
+    Ok(Json(core::pipeline_presets_core(&state.db).await?))
+}
+
+pub async fn pipeline_save_preset(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<core::PipelineSavePresetParams>,
+) -> Result<Json<Vec<PipelineInfo>>, AppCommandError> {
+    Ok(Json(
+        core::pipeline_save_preset_core(&state.emitter, &state.db, params.key, params.graph)
+            .await?,
+    ))
 }
 
 pub async fn pipeline_run(

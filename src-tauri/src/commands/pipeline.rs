@@ -73,21 +73,79 @@ pub async fn pipeline_delete_core(
     Ok(())
 }
 
-pub async fn pipeline_presets_core() -> Vec<PipelineInfo> {
+/// The built-in chains, with the user's own edits laid over them.
+///
+/// A preset the user has touched is stored as a normal pipeline row carrying
+/// the preset's key, and that row wins. Without this overlay the duet and team
+/// buttons would always run the compiled-in chain, and editing them anywhere
+/// in the UI would be pointless.
+pub async fn pipeline_presets_core(
+    db: &AppDatabase,
+) -> Result<Vec<PipelineInfo>, AppCommandError> {
     let now = Utc::now();
-    presets::builtin_presets(None)
+    // Not `unwrap_or_default()`: a read that fails would hand back the
+    // compiled-in chains, and the next save from that screen would overwrite
+    // the override the user still has.
+    let saved = pipeline_service::list_presets(&db.conn)
+        .await
+        .map_err(map_db)?;
+    Ok(presets::builtin_presets(None)
         .into_iter()
-        .map(|(key, name, graph)| PipelineInfo {
-            id: 0,
-            name: name.to_string(),
-            preset_key: Some(key.to_string()),
-            folder_id: None,
-            graph,
-            isolation: crate::models::PipelineIsolation::WorktreePerRun,
-            created_at: now,
-            updated_at: now,
+        .map(|(key, name, graph)| {
+            if let Some(row) = saved.iter().find(|p| p.preset_key.as_deref() == Some(key)) {
+                return row.clone();
+            }
+            PipelineInfo {
+                id: 0,
+                name: name.to_string(),
+                preset_key: Some(key.to_string()),
+                folder_id: None,
+                graph,
+                isolation: crate::models::PipelineIsolation::WorktreePerRun,
+                created_at: now,
+                updated_at: now,
+            }
         })
-        .collect()
+        .collect())
+}
+
+/// Store the user's version of a built-in chain, or drop it back to the
+/// compiled-in one when `graph` is absent.
+pub async fn pipeline_save_preset_core(
+    emitter: &EventEmitter,
+    db: &AppDatabase,
+    key: String,
+    graph: Option<crate::models::PipelineGraph>,
+) -> Result<Vec<PipelineInfo>, AppCommandError> {
+    let Some((_, name, _)) = presets::builtin_presets(None)
+        .into_iter()
+        .find(|(k, _, _)| *k == key)
+    else {
+        return Err(AppCommandError::invalid_input(format!(
+            "unknown preset: {key}"
+        )));
+    };
+    match graph {
+        Some(graph) => {
+            pipeline_service::save_preset(&db.conn, &key, name, graph)
+                .await
+                .map_err(|error| match error {
+                    DbError::Validation(message) => {
+                        AppCommandError::configuration_invalid(message)
+                    }
+                    other => map_db(other),
+                })?;
+        }
+        None => pipeline_service::reset_preset(&db.conn, &key)
+            .await
+            .map_err(map_db)?,
+    }
+    emit_event(
+        emitter,
+        PIPELINE_CHANGED_EVENT,
+        serde_json::json!({ "kind": "preset", "key": key }),
+    );
+    pipeline_presets_core(db).await
 }
 
 
@@ -336,6 +394,15 @@ pub async fn pipeline_run_apply_core(run_id: i32, strategy: String) -> Result<()
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PipelineSavePresetParams {
+    pub key: String,
+    /// Absent resets the preset to the compiled-in chain.
+    #[serde(default)]
+    pub graph: Option<crate::models::PipelineGraph>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PipelineListParams {
     pub folder_id: Option<i32>,
 }
@@ -432,8 +499,21 @@ pub async fn pipeline_delete(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn pipeline_presets() -> Result<Vec<PipelineInfo>, AppCommandError> {
-    Ok(pipeline_presets_core().await)
+pub async fn pipeline_presets(
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<Vec<PipelineInfo>, AppCommandError> {
+    pipeline_presets_core(&db).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn pipeline_save_preset(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    key: String,
+    graph: Option<crate::models::PipelineGraph>,
+) -> Result<Vec<PipelineInfo>, AppCommandError> {
+    pipeline_save_preset_core(&EventEmitter::Tauri(app), &db, key, graph).await
 }
 
 #[cfg(feature = "tauri-runtime")]

@@ -234,6 +234,40 @@ pub async fn save(
     to_info(model)
 }
 
+/// Every preset the user has overridden. Ordered by key so the overlay is
+/// deterministic.
+pub async fn list_presets(conn: &DatabaseConnection) -> Result<Vec<PipelineInfo>, DbError> {
+    pipeline::Entity::find()
+        .filter(pipeline::Column::DeletedAt.is_null())
+        .filter(pipeline::Column::PresetKey.is_not_null())
+        .order_by_asc(pipeline::Column::PresetKey)
+        .all(conn)
+        .await?
+        .into_iter()
+        .map(to_info)
+        .collect()
+}
+
+/// Drop the user's override so the compiled-in chain takes over again.
+/// Silently succeeds when there was nothing stored.
+pub async fn reset_preset(conn: &DatabaseConnection, key: &str) -> Result<(), DbError> {
+    let Some(existing) = pipeline::Entity::find()
+        .filter(pipeline::Column::PresetKey.eq(key))
+        .filter(pipeline::Column::DeletedAt.is_null())
+        .one(conn)
+        .await?
+    else {
+        return Ok(());
+    };
+    // Hard delete, unlike `delete` above which soft-deletes and refuses preset
+    // rows outright. Either would satisfy the partial unique index (it is
+    // scoped to `deleted_at IS NULL`), but a reset means "forget my override"
+    // — keeping a tombstone of a chain the user threw away buys nothing and
+    // would surface in any future query that forgets the deleted_at filter.
+    pipeline::Entity::delete_by_id(existing.id).exec(conn).await?;
+    Ok(())
+}
+
 pub async fn save_preset(
     conn: &DatabaseConnection,
     key: &str,
@@ -796,6 +830,34 @@ mod tests {
             }
             other => panic!("expected Validation, got {other:?}"),
         }
+    }
+
+    /// The duet and team buttons run whatever `list_presets` overlays, so a
+    /// reset has to actually remove the row — a soft delete would keep it
+    /// under the partial unique index and block the next save.
+    #[tokio::test]
+    async fn preset_override_is_listed_then_reset_restores_the_builtin() {
+        let db = fresh_in_memory_db().await;
+        assert!(list_presets(&db.conn).await.expect("list").is_empty());
+
+        let mut graph = draft("x").graph;
+        graph.steps[0].agent_type = "antigravity".into();
+        save_preset(&db.conn, "duet", "Duet", graph)
+            .await
+            .expect("save preset");
+
+        let listed = list_presets(&db.conn).await.expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].preset_key.as_deref(), Some("duet"));
+        assert_eq!(listed[0].graph.steps[0].agent_type, "antigravity");
+
+        reset_preset(&db.conn, "duet").await.expect("reset");
+        assert!(list_presets(&db.conn).await.expect("list").is_empty());
+        // Resetting twice is not an error, and the key is free again.
+        reset_preset(&db.conn, "duet").await.expect("reset again");
+        save_preset(&db.conn, "duet", "Duet", draft("y").graph)
+            .await
+            .expect("save after reset");
     }
 
     #[tokio::test]

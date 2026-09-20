@@ -1833,6 +1833,7 @@ mod tauri_app {
                 pipeline_commands::pipeline_save,
                 pipeline_commands::pipeline_delete,
                 pipeline_commands::pipeline_presets,
+                pipeline_commands::pipeline_save_preset,
                 pipeline_commands::pipeline_run,
                 pipeline_commands::pipeline_cancel,
                 pipeline_commands::pipeline_run_status,

@@ -1461,6 +1461,10 @@ pub fn build_router(
             "/pipeline_presets",
             post(handlers::pipeline::pipeline_presets),
         )
+        .route(
+            "/pipeline_save_preset",
+            post(handlers::pipeline::pipeline_save_preset),
+        )
         .route("/pipeline_run", post(handlers::pipeline::pipeline_run))
         .route(
             "/pipeline_cancel",
