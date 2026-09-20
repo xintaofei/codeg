@@ -196,6 +196,7 @@ import type {
   PipelineChange,
   PipelineDiff,
   PipelineDraft,
+  PipelineGraph,
   PipelineRun,
   PipelineRunRequest,
 } from "./types"
@@ -3544,6 +3545,15 @@ export async function pipelineDelete(id: number): Promise<void> {
 
 export async function pipelinePresets(): Promise<Pipeline[]> {
   return getTransport().call("pipeline_presets", {})
+}
+
+/** Store the user's version of a built-in chain, or pass `null` to drop back
+ *  to the shipped one. Returns the preset list as it now stands. */
+export async function pipelineSavePreset(
+  key: string,
+  graph: PipelineGraph | null
+): Promise<Pipeline[]> {
+  return getTransport().call("pipeline_save_preset", { key, graph })
 }
 
 export async function pipelineRun(

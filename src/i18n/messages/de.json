@@ -6178,7 +6178,14 @@
     "automationPipeline": "Pipeline",
     "modelProbing": "Agent wird gefragt…",
     "moveEarlier": "Nach vorn",
-    "moveLater": "Nach hinten"
+    "moveLater": "Nach hinten",
+    "stepSettings": "Schritteinstellungen",
+    "modelAgentDefault": "Agent-Standard",
+    "modelUnavailable": "nicht verfügbar",
+    "deleteStep": "Schritt löschen",
+    "addStep": "Schritt hinzufügen",
+    "resetPreset": "Zurücksetzen",
+    "presetEdited": "bearbeitet"
   },
   "Memory": {
     "title": "Gedächtnis",

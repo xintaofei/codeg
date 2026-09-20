@@ -16,6 +16,7 @@ import {
   ListTodo,
   RotateCcw,
   ShieldCheck,
+  Plus,
   SlidersHorizontal,
   Sparkles,
   Users,
@@ -23,6 +24,12 @@ import {
   type LucideIcon,
 } from "lucide-react"
 
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 import type {
   LoopBack,
@@ -37,6 +44,7 @@ import {
   savePipelineMode,
 } from "@/lib/pipeline-mode-storage"
 import { pipelinePresets } from "@/lib/api"
+import { PipelineStepChip } from "./pipeline-step-chip"
 
 export interface PipelineModeSwitchProps {
   /** The bound folder id. Used for localStorage key scoping. */
@@ -68,6 +76,19 @@ export interface PipelineModeSwitchProps {
   className?: string
   /** Whether to render role chips and loop limit indicator. Defaults to true. */
   showChips?: boolean
+  /** Re-point a step at another agent / model. Absent leaves the chips read
+   *  only, which is what a caller that cannot persist an edit must do. */
+  onStepChange?: (
+    stepId: string,
+    patch: { agentType?: string; model?: string }
+  ) => void
+  /** Custom mode only: append a step, or put a planner at the head. */
+  onAddStep?: (role: PipelineRole) => void
+  onDeleteStep?: (stepId: string) => void
+  /** Duet / team only, and only while an override exists. */
+  onResetPreset?: () => void
+  /** True when the built-in chain has been overridden by the user. */
+  presetEdited?: boolean
 }
 
 interface ModeOption {
@@ -156,6 +177,56 @@ function getStepAgent(
   return null
 }
 
+/** The roles the "+" offers, in the order a chain normally reads. */
+const ADDABLE_ROLES: readonly PipelineRole[] = [
+  "planner",
+  "coder",
+  "reviewer",
+  "tests",
+]
+
+/**
+ * The "+" beside the chips. Picking the role here is what decides WHERE the
+ * step lands (a planner belongs at the head), which is why this is a menu and
+ * not a bare button followed by a role picker somewhere else.
+ */
+function AddStepMenu({
+  onAdd,
+  disabled,
+}: {
+  onAdd: (role: PipelineRole) => void
+  disabled?: boolean
+}): ReactNode {
+  const t = useTranslations("Pipeline")
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          aria-label={t("addStep")}
+          title={t("addStep")}
+          data-testid="pipeline-add-step"
+          className="inline-flex size-5 items-center justify-center rounded-md border border-dashed border-border/60 text-muted-foreground hover:border-border hover:bg-muted/60 hover:text-foreground disabled:opacity-50"
+        >
+          <Plus className="size-3" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-36">
+        {ADDABLE_ROLES.map((role) => {
+          const Icon = ROLE_ICONS[role]
+          return (
+            <DropdownMenuItem key={role} onSelect={() => onAdd(role)}>
+              <Icon className="size-3.5 text-muted-foreground" />
+              {t(getRoleLabelKey(role))}
+            </DropdownMenuItem>
+          )
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
 /**
  * PipelineModeSwitch renders the composer's multi-agent pipeline mode selector
  * ("Single agent" | "Duet" | "Team" | "Custom").
@@ -175,6 +246,11 @@ export function PipelineModeSwitch({
   onConfigureCustom,
   className,
   showChips = true,
+  onStepChange,
+  onAddStep,
+  onDeleteStep,
+  onResetPreset,
+  presetEdited = false,
 }: PipelineModeSwitchProps): ReactNode {
   const t = useTranslations("Pipeline")
 
@@ -343,44 +419,57 @@ export function PipelineModeSwitch({
                   <ChevronRight className="size-3 shrink-0 text-muted-foreground/40" />
                 ) : null}
 
-                <div
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border/50 bg-background/80 px-2 py-0.5 text-xs font-medium shadow-2xs"
-                  data-testid={`pipeline-step-chip-${step.role}`}
-                >
-                  <RoleIcon className="size-3 text-muted-foreground shrink-0" />
-                  <span>{roleLabel}</span>
-                  {agentName ? (
-                    <>
-                      <span className="text-muted-foreground/40">·</span>
-                      <span className="text-2xs text-muted-foreground">
-                        {agentName}
-                      </span>
-                    </>
-                  ) : null}
-                  <span className="text-muted-foreground/40">·</span>
-                  {modelName ? (
-                    <span className="font-mono text-2xs text-foreground/80">
-                      {modelName}
-                    </span>
-                  ) : (
-                    <span className="text-2xs font-normal text-amber-600 dark:text-amber-400">
-                      {t("modelUnconfirmed")}
-                    </span>
-                  )}
-                </div>
+                <PipelineStepChip
+                  step={step}
+                  RoleIcon={RoleIcon}
+                  roleLabel={roleLabel}
+                  agentName={agentName}
+                  modelName={modelName}
+                  disabled={disabled}
+                  onChange={
+                    onStepChange
+                      ? (patch) => onStepChange(step.id, patch)
+                      : undefined
+                  }
+                  onDelete={
+                    // A chain needs at least one step, and a preset's shape is
+                    // the preset — only a custom chain loses steps here.
+                    onDeleteStep && activeSteps.length > 1
+                      ? () => onDeleteStep(step.id)
+                      : undefined
+                  }
+                />
               </div>
             )
           })}
 
-          {/* Loop limit badge */}
+          {onAddStep ? (
+            <AddStepMenu onAdd={onAddStep} disabled={disabled} />
+          ) : null}
+
+          {/* Not chip-styled on purpose: the chips beside it open on click and
+              this one has nothing to open, so it must not look the same. */}
           {maxLoopIterations > 0 ? (
-            <div
-              className="inline-flex items-center gap-1 rounded-md border border-border/40 bg-muted/40 px-2 py-0.5 text-2xs font-normal text-muted-foreground"
+            <span
+              className="inline-flex items-center gap-1 px-1 text-2xs font-normal text-muted-foreground"
               data-testid="pipeline-loop-limit-chip"
             >
               <RotateCcw className="size-2.5 shrink-0 text-muted-foreground/70" />
               <span>{t("loopLimit", { n: maxLoopIterations })}</span>
-            </div>
+            </span>
+          ) : null}
+
+          {onResetPreset && presetEdited ? (
+            <button
+              type="button"
+              onClick={onResetPreset}
+              disabled={disabled}
+              data-testid="pipeline-reset-preset"
+              className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-2xs text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+            >
+              <RotateCcw className="size-2.5 shrink-0" />
+              {t("resetPreset")}
+            </button>
           ) : null}
         </div>
       ) : null}

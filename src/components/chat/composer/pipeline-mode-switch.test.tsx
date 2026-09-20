@@ -3,8 +3,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { PipelineGraph, Pipeline } from "@/lib/types"
 
+// The chips now host a live agent probe, so both of its sources have to be
+// stubbed here: leaving either real pulls the transport into jsdom.
+vi.mock("@/hooks/use-acp-agents", () => ({
+  useAcpAgents: () => ({
+    agents: [{ agent_type: "claude_code", name: "Claude Code", enabled: true }],
+    fresh: true,
+    refresh: vi.fn(),
+  }),
+}))
+
 // Mock pipelinePresets to return duet and team presets
 vi.mock("@/lib/api", () => ({
+  describeAgentOptions: vi.fn(async () => ({
+    modes: null,
+    available_commands: [],
+    config_options: [],
+  })),
   pipelinePresets: vi.fn(async () => [
     {
       id: 1,

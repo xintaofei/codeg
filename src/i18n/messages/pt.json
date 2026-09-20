@@ -6178,7 +6178,14 @@
     "automationPipeline": "Pipeline",
     "modelProbing": "Consultando o agente…",
     "moveEarlier": "Mover antes",
-    "moveLater": "Mover depois"
+    "moveLater": "Mover depois",
+    "stepSettings": "Configurações do passo",
+    "modelAgentDefault": "Padrão do agente",
+    "modelUnavailable": "indisponível",
+    "deleteStep": "Excluir passo",
+    "addStep": "Adicionar passo",
+    "resetPreset": "Redefinir",
+    "presetEdited": "editado"
   },
   "Memory": {
     "title": "Memória",

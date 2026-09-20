@@ -3,6 +3,8 @@ import type { PipelineGraph, PipelineStep } from "@/lib/types"
 import {
   addStep,
   createDefaultStep,
+  addRoleStep,
+  applyStepPatch,
   formatValidationError,
   moveStep,
   removeLoop,
@@ -383,5 +385,65 @@ describe("moveStep", () => {
       "c",
       "b",
     ])
+  })
+})
+
+describe("applyStepPatch", () => {
+  const graph = {
+    steps: [
+      createDefaultStep("coder", "coder", "Coder"),
+      createDefaultStep("reviewer", "reviewer", "Reviewer"),
+    ],
+    loops: [],
+  }
+
+  it("re-points one step at another agent and model, leaving the rest alone", () => {
+    const next = applyStepPatch(graph, "coder", {
+      agentType: "antigravity",
+      model: "gemini-3.8-flash-high",
+    })
+    expect(next.steps[0].agent_type).toBe("antigravity")
+    expect(next.steps[0].config_values.model).toBe("gemini-3.8-flash-high")
+    expect(next.steps[1]).toEqual(graph.steps[1])
+    // The source graph is untouched: the caller keeps the old one for undo.
+    expect(graph.steps[0].agent_type).not.toBe("antigravity")
+  })
+
+  it("an empty model clears the override rather than storing a blank", () => {
+    const withModel = applyStepPatch(graph, "coder", { model: "opus" })
+    const cleared = applyStepPatch(withModel, "coder", { model: "" })
+    expect("model" in cleared.steps[0].config_values).toBe(false)
+  })
+
+  it("ignores an unknown step id", () => {
+    expect(applyStepPatch(graph, "nope", { model: "x" }).steps).toEqual(
+      graph.steps
+    )
+  })
+})
+
+describe("addRoleStep", () => {
+  const graph = {
+    steps: [createDefaultStep("coder", "coder", "Coder")],
+    loops: [],
+  }
+
+  it("puts a planner at the head — it briefs the steps after it", () => {
+    const next = addRoleStep(graph, "planner")
+    expect(next.steps.map((s) => s.id)).toEqual(["planner", "coder"])
+  })
+
+  it("appends every other role", () => {
+    expect(addRoleStep(graph, "reviewer").steps.map((s) => s.id)).toEqual([
+      "coder",
+      "reviewer",
+    ])
+  })
+
+  it("does not collide with an id already in the chain", () => {
+    const twice = addRoleStep(addRoleStep(graph, "reviewer"), "reviewer")
+    const ids = twice.steps.map((s) => s.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(ids).toContain("reviewer_2")
   })
 })

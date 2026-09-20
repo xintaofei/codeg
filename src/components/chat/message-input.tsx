@@ -66,12 +66,19 @@ import type {
   SessionModeInfo,
   PipelineModeKey,
   PipelineGraph,
+  PipelineRole,
   PipelineIsolation,
   PipelineRun,
 } from "@/lib/types"
 import { useTabStore } from "@/contexts/tab-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { pipelineList, pipelinePresets, pipelineRun } from "@/lib/api"
+import {
+  pipelineList,
+  pipelinePresets,
+  pipelineRun,
+  pipelineSave,
+  pipelineSavePreset,
+} from "@/lib/api"
 import {
   ATTACH_FILE_TO_SESSION_EVENT,
   ATTACH_SESSION_TO_SESSION_EVENT,
@@ -117,6 +124,11 @@ import {
 } from "@/lib/message-input-draft"
 import { rankByTextMatch } from "@/lib/fuzzy-text-match"
 import { PipelineModeSwitch } from "@/components/chat/composer/pipeline-mode-switch"
+import {
+  addRoleStep,
+  applyStepPatch,
+  removeStep,
+} from "@/lib/pipeline-graph-edit"
 import {
   RichComposer,
   type RichComposerHandle,
@@ -355,6 +367,26 @@ function modelPickerGroups(
   return modelListGroups(option)
 }
 
+/** What the composer is currently editing: either an override of a built-in
+ *  chain, or one of the user's own pipelines. They save through different
+ *  calls, which is the only reason the two are distinguished here. */
+type ActiveChain =
+  | {
+      kind: "preset"
+      presetKey: "duet" | "team"
+      graph: PipelineGraph
+      edited: boolean
+    }
+  | {
+      kind: "custom"
+      id: number
+      name: string
+      folderId: number | null
+      isolation: PipelineIsolation
+      graph: PipelineGraph
+      edited: boolean
+    }
+
 export function MessageInput({
   onSend,
   placeholder,
@@ -429,31 +461,125 @@ export function MessageInput({
     allFolders,
   ])
   const [pipelineMode, setPipelineMode] = useState<PipelineModeKey>("single")
-  // The custom graph the send path would run. Loaded here as well so the role
-  // chips can show it: without this, picking "Custom" says nothing about which
-  // agent writes and which one reviews.
-  const [customGraph, setCustomGraph] = useState<PipelineGraph | null>(null)
+  // The chain the send path would run, loaded here as well so the role chips
+  // can show it AND edit it. Without this, picking a pipeline mode said
+  // nothing about which agent writes and which one reviews, and there was
+  // nowhere to change it outside the canvas.
+  const [activeChain, setActiveChain] = useState<ActiveChain | null>(null)
+  const [chainRevision, setChainRevision] = useState(0)
   useEffect(() => {
-    if (pipelineMode !== "custom" || effectiveFolderId == null) {
-      setCustomGraph(null)
+    if (pipelineMode === "single") {
+      setActiveChain(null)
       return
     }
     let cancelled = false
-    void pipelineList(effectiveFolderId)
-      .then((list) => {
+    void (async () => {
+      try {
+        if (pipelineMode === "duet" || pipelineMode === "team") {
+          const presets = await pipelinePresets()
+          const found = presets.find((p) => p.preset_key === pipelineMode)
+          if (cancelled || !found) return
+          setActiveChain({
+            kind: "preset",
+            presetKey: pipelineMode,
+            graph: found.graph,
+            // A built-in that has never been overridden comes back with id 0.
+            edited: found.id !== 0,
+          })
+          return
+        }
+        if (effectiveFolderId == null) return
+        const list = await pipelineList(effectiveFolderId)
         if (cancelled) return
-        // Same pick as the send path, so the chips cannot describe one
-        // pipeline while another one runs.
+        // Same pick as the send path, so the chips cannot describe one chain
+        // while another one runs.
         const custom = list.find((p) => !p.preset_key) ?? list[0]
-        setCustomGraph(custom?.graph ?? null)
-      })
-      .catch((e) => {
-        console.error("[MessageInput] failed to load custom pipelines:", e)
-      })
+        if (!custom) {
+          setActiveChain(null)
+          return
+        }
+        setActiveChain({
+          kind: "custom",
+          id: custom.id,
+          name: custom.name,
+          folderId: custom.folder_id ?? null,
+          isolation: custom.isolation ?? "worktree_per_run",
+          graph: custom.graph,
+          edited: false,
+        })
+      } catch (e) {
+        console.error("[MessageInput] failed to load the chain:", e)
+      }
+    })()
     return () => {
       cancelled = true
     }
-  }, [pipelineMode, effectiveFolderId])
+  }, [pipelineMode, effectiveFolderId, chainRevision])
+
+  /** Persist an edited chain and show it immediately — there is no Save button
+   *  here on purpose, so the chip has to reflect the new state at once. */
+  const persistChain = useCallback(
+    (next: PipelineGraph) => {
+      const chain = activeChain
+      if (!chain) return
+      setActiveChain({ ...chain, graph: next })
+      const write =
+        chain.kind === "preset"
+          ? pipelineSavePreset(chain.presetKey, next)
+          : pipelineSave(
+              {
+                name: chain.name,
+                folder_id: chain.folderId,
+                graph: next,
+                isolation: chain.isolation,
+              },
+              chain.id
+            )
+      void write
+        .then(() => setChainRevision((r) => r + 1))
+        .catch((e: unknown) => {
+          console.error("[MessageInput] failed to save the chain:", e)
+          toast.error(String(e))
+          // Re-read rather than keep a value the backend rejected.
+          setChainRevision((r) => r + 1)
+        })
+    },
+    [activeChain]
+  )
+
+  const handleStepChange = useCallback(
+    (stepId: string, patch: { agentType?: string; model?: string }) => {
+      if (!activeChain) return
+      persistChain(applyStepPatch(activeChain.graph, stepId, patch))
+    },
+    [activeChain, persistChain]
+  )
+
+  const handleAddStep = useCallback(
+    (role: PipelineRole) => {
+      if (!activeChain) return
+      persistChain(addRoleStep(activeChain.graph, role))
+    },
+    [activeChain, persistChain]
+  )
+
+  const handleDeleteStep = useCallback(
+    (stepId: string) => {
+      if (!activeChain) return
+      persistChain(removeStep(activeChain.graph, stepId))
+    },
+    [activeChain, persistChain]
+  )
+
+  const handleResetPreset = useCallback(() => {
+    if (activeChain?.kind !== "preset") return
+    void pipelineSavePreset(activeChain.presetKey, null)
+      .then(() => setChainRevision((r) => r + 1))
+      .catch((e: unknown) => {
+        console.error("[MessageInput] failed to reset the preset:", e)
+        toast.error(String(e))
+      })
+  }, [activeChain])
   // The `$` prefix autocomplete is Codex-only: Codex advertises very few
   // native slash commands, so we augment the dropdown with the agent's
   // skills read from disk. Other agents already surface their full command
@@ -939,9 +1065,23 @@ export function MessageInput({
     () => vocabulary.modes(modes ?? []),
     [modes, vocabulary]
   )
-  const availableConfigOptions = useMemo(
+  const allConfigOptions = useMemo(
     () => vocabulary.configOptions(configOptions ?? []),
     [configOptions, vocabulary]
+  )
+  // In a pipeline mode the model belongs to each STEP, so the session-wide
+  // model (and the reasoning effort that hangs off it) would be a second knob
+  // for the same thing, pointing at a session the run does not use. Everything
+  // else here is about the run as a whole — the edit-permission mode above all,
+  // which matters MORE when several agents write — so it stays.
+  const availableConfigOptions = useMemo(
+    () =>
+      pipelineMode === "single"
+        ? allConfigOptions
+        : allConfigOptions.filter(
+            (o) => !/^(model|effort|reasoning|thinking)/i.test(o.id)
+          ),
+    [allConfigOptions, pipelineMode]
   )
   const hasConfigOptions = availableConfigOptions.length > 0
   const hasModes = availableModes.length > 0
@@ -2269,7 +2409,22 @@ export function MessageInput({
                 folderId={effectiveFolderId ?? undefined}
                 mode={pipelineMode}
                 onModeChange={setPipelineMode}
-                graph={customGraph}
+                graph={activeChain?.graph ?? null}
+                onStepChange={activeChain ? handleStepChange : undefined}
+                onAddStep={
+                  pipelineMode === "custom" && activeChain
+                    ? handleAddStep
+                    : undefined
+                }
+                onDeleteStep={
+                  pipelineMode === "custom" && activeChain
+                    ? handleDeleteStep
+                    : undefined
+                }
+                onResetPreset={
+                  activeChain?.kind === "preset" ? handleResetPreset : undefined
+                }
+                presetEdited={activeChain?.edited ?? false}
                 className="px-2 pt-2"
               />
               <RichComposer

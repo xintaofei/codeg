@@ -6178,7 +6178,14 @@
     "automationPipeline": "파이프라인",
     "modelProbing": "에이전트에 확인 중…",
     "moveEarlier": "앞으로 이동",
-    "moveLater": "뒤로 이동"
+    "moveLater": "뒤로 이동",
+    "stepSettings": "단계 설정",
+    "modelAgentDefault": "에이전트 기본값",
+    "modelUnavailable": "사용 불가",
+    "deleteStep": "단계 삭제",
+    "addStep": "단계 추가",
+    "resetPreset": "초기화",
+    "presetEdited": "수정됨"
   },
   "Memory": {
     "title": "메모리",

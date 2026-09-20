@@ -577,3 +577,109 @@ pub async fn pipeline_run_diff(
 pub async fn pipeline_run_apply(run_id: i32, strategy: String) -> Result<(), AppCommandError> {
     pipeline_run_apply_core(run_id, strategy).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_helpers::fresh_in_memory_db;
+    use crate::models::{PipelineGraph, PipelineRole, PipelineStep};
+
+    fn valid_graph() -> PipelineGraph {
+        PipelineGraph {
+            steps: vec![PipelineStep {
+                id: "coder".into(),
+                role: PipelineRole::Coder,
+                label: "Coder".into(),
+                agent_type: "claude_code".into(),
+                mode_id: None,
+                config_values: std::collections::BTreeMap::new(),
+                prompt_template: "$task".into(),
+                timeout_secs: 1800,
+                read_memory: false,
+                read_only: false,
+            }],
+            loops: vec![],
+        }
+    }
+
+    /// A fresh install must still offer both chains: the overlay is additive,
+    /// and an empty override table is the normal case, not an edge one.
+    #[tokio::test]
+    async fn presets_core_returns_builtins_when_nothing_saved() {
+        let db = fresh_in_memory_db().await;
+        let presets = pipeline_presets_core(&db).await.expect("pipeline_presets_core");
+        assert_eq!(presets.len(), 2);
+        assert_eq!(presets[0].preset_key.as_deref(), Some("duet"));
+        assert_eq!(presets[1].preset_key.as_deref(), Some("team"));
+    }
+
+    /// Editing one chain must not disturb the other. They share a table, so a
+    /// filter mistake here would silently rewrite the chain next to it.
+    #[tokio::test]
+    async fn save_preset_core_overrides_specific_preset_leaving_others_intact() {
+        let db = fresh_in_memory_db().await;
+        let mut graph = valid_graph();
+        graph.steps[0].agent_type = "antigravity".into();
+
+        let presets = pipeline_save_preset_core(&EventEmitter::Noop, &db, "duet".into(), Some(graph))
+            .await
+            .expect("save preset");
+
+        assert_eq!(presets.len(), 2);
+        assert_eq!(presets[0].preset_key.as_deref(), Some("duet"));
+        assert_eq!(presets[0].graph.steps[0].agent_type, "antigravity");
+        assert_eq!(presets[1].preset_key.as_deref(), Some("team"));
+        assert_ne!(presets[1].graph.steps[0].agent_type, "antigravity");
+    }
+
+    /// Reset is the only way back to the shipped chain, and it has to be safe
+    /// to press twice — the button does not know whether an override is left.
+    #[tokio::test]
+    async fn save_preset_core_resets_to_builtin_when_graph_is_none() {
+        let db = fresh_in_memory_db().await;
+        let mut graph = valid_graph();
+        graph.steps[0].agent_type = "antigravity".into();
+
+        pipeline_save_preset_core(&EventEmitter::Noop, &db, "duet".into(), Some(graph))
+            .await
+            .expect("save preset");
+
+        let reset_presets = pipeline_save_preset_core(&EventEmitter::Noop, &db, "duet".into(), None)
+            .await
+            .expect("reset preset");
+
+        assert_eq!(reset_presets[0].preset_key.as_deref(), Some("duet"));
+        assert_ne!(reset_presets[0].graph.steps[0].agent_type, "antigravity");
+
+        pipeline_save_preset_core(&EventEmitter::Noop, &db, "duet".into(), None)
+            .await
+            .expect("reset preset again");
+    }
+
+    /// The key comes from the client. An unknown one must fail rather than
+    /// create a row no built-in will ever overlay, invisible in the UI.
+    #[tokio::test]
+    async fn save_preset_core_rejects_unknown_preset_key() {
+        let db = fresh_in_memory_db().await;
+        let graph = valid_graph();
+
+        let result = pipeline_save_preset_core(&EventEmitter::Noop, &db, "nope".into(), Some(graph)).await;
+        assert!(result.is_err());
+    }
+
+    /// A graph the engine would refuse to run must never reach storage: it
+    /// would break the chain on every later use with no way to see why.
+    #[tokio::test]
+    async fn save_preset_core_rejects_invalid_graph_and_retains_builtin() {
+        let db = fresh_in_memory_db().await;
+        let mut bad_graph = valid_graph();
+        bad_graph.steps.clear(); // Invalid graph (zero steps)
+
+        let result = pipeline_save_preset_core(&EventEmitter::Noop, &db, "duet".into(), Some(bad_graph)).await;
+        assert!(result.is_err());
+
+        let presets = pipeline_presets_core(&db).await.expect("pipeline_presets_core");
+        assert_eq!(presets[0].preset_key.as_deref(), Some("duet"));
+        assert_ne!(presets[0].graph.steps.len(), 0);
+    }
+}

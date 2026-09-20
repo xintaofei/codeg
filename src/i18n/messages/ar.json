@@ -6178,7 +6178,14 @@
     "automationPipeline": "المسار",
     "modelProbing": "جارٍ سؤال الوكيل…",
     "moveEarlier": "نقل للأمام",
-    "moveLater": "نقل للخلف"
+    "moveLater": "نقل للخلف",
+    "stepSettings": "إعدادات الخطوة",
+    "modelAgentDefault": "افتراضي الوكيل",
+    "modelUnavailable": "غير متاح",
+    "deleteStep": "حذف الخطوة",
+    "addStep": "إضافة خطوة",
+    "resetPreset": "إعادة تعيين",
+    "presetEdited": "معدَّل"
   },
   "Memory": {
     "title": "الذاكرة",

@@ -294,6 +294,47 @@ export function addStep(
   }
 }
 
+/** Re-point one step at another agent and/or model. Empty model means "let the
+ *  agent pick", which is how a step reads before anyone touches it. */
+export function applyStepPatch(
+  graph: PipelineGraph,
+  stepId: string,
+  patch: { agentType?: string; model?: string }
+): PipelineGraph {
+  return {
+    ...graph,
+    steps: graph.steps.map((s) => {
+      if (s.id !== stepId) return s
+      const config_values = { ...(s.config_values ?? {}) }
+      if (patch.model !== undefined) {
+        if (patch.model) config_values.model = patch.model
+        else delete config_values.model
+      }
+      return {
+        ...s,
+        agent_type: patch.agentType ?? s.agent_type,
+        config_values,
+      }
+    }),
+  }
+}
+
+/** Add a step for `role`. A planner goes to the HEAD — it exists to brief the
+ *  steps after it, and appending one would leave it briefing nothing. */
+export function addRoleStep(
+  graph: PipelineGraph,
+  role: PipelineRole
+): PipelineGraph {
+  const used = new Set(graph.steps.map((s) => s.id))
+  let id: string = role
+  let n = 2
+  while (used.has(id)) id = `${role}_${n++}`
+  const step = createDefaultStep(id, role, role)
+  return role === "planner"
+    ? { ...graph, steps: [step, ...graph.steps] }
+    : { ...graph, steps: [...graph.steps, step] }
+}
+
 /**
  * Moves a step one position earlier or later. Steps run in array order, so
  * this is the only way to put a planner in front of a coder that already

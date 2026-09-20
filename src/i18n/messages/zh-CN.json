@@ -6178,7 +6178,14 @@
     "automationPipeline": "流水线",
     "modelProbing": "正在询问代理…",
     "moveEarlier": "上移",
-    "moveLater": "下移"
+    "moveLater": "下移",
+    "stepSettings": "步骤设置",
+    "modelAgentDefault": "代理默认",
+    "modelUnavailable": "不可用",
+    "deleteStep": "删除步骤",
+    "addStep": "添加步骤",
+    "resetPreset": "重置",
+    "presetEdited": "已修改"
   },
   "Memory": {
     "title": "记忆",

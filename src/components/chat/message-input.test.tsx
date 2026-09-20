@@ -2177,6 +2177,66 @@ describe("MessageInput (pipeline mode)", () => {
     })
   })
 
+  it("pipeline modes hide the session model but keep the run-level settings", async () => {
+    // In a pipeline the model belongs to each step, so a session-wide model
+    // picker is a second knob for the same thing, pointing at a session the
+    // run does not use. Everything else is about the run and stays — the
+    // edit-permission mode matters MORE once several agents write.
+    const options: SessionConfigOptionInfo[] = [
+      {
+        id: "model",
+        name: "Model",
+        description: null,
+        category: null,
+        kind: {
+          type: "select",
+          current_value: "opus",
+          options: [{ value: "opus", name: "Opus 5", description: null }],
+          groups: [],
+        },
+      },
+      {
+        id: "effort",
+        name: "Effort",
+        description: null,
+        category: null,
+        kind: {
+          type: "select",
+          current_value: "medium",
+          options: [{ value: "medium", name: "Medium", description: null }],
+          groups: [],
+        },
+      },
+      AUTO_APPROVE_OPTION,
+    ]
+    renderInput({
+      onSend: vi.fn(),
+      configOptions: options,
+      folderPickerOverride: {
+        folderId: 1,
+        editable: true,
+        onSelectFolder: () => {},
+        onSelectChatMode: () => {},
+      },
+    })
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Opus 5").length).toBeGreaterThan(0)
+    })
+    expect(screen.getAllByText("Medium").length).toBeGreaterThan(0)
+
+    await userEvent.click(screen.getByTestId("mode-duet"))
+
+    await waitFor(() => {
+      expect(screen.queryByText("Opus 5")).toBeNull()
+    })
+    expect(screen.queryByText("Medium")).toBeNull()
+    // The run-level toggle survives.
+    expect(
+      screen.getAllByRole("button", { name: /Auto-approve tools/ }).length
+    ).toBeGreaterThan(0)
+  })
+
   it("duet mode: send calls pipelineRun with preset graph and isolation", async () => {
     const onSend = vi.fn()
     const { container } = renderInput({

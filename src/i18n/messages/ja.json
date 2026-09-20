@@ -6178,7 +6178,14 @@
     "automationPipeline": "パイプライン",
     "modelProbing": "エージェントに問い合わせ中…",
     "moveEarlier": "前に移動",
-    "moveLater": "後ろに移動"
+    "moveLater": "後ろに移動",
+    "stepSettings": "ステップ設定",
+    "modelAgentDefault": "エージェント既定",
+    "modelUnavailable": "利用不可",
+    "deleteStep": "ステップを削除",
+    "addStep": "ステップを追加",
+    "resetPreset": "リセット",
+    "presetEdited": "変更済み"
   },
   "Memory": {
     "title": "メモリ",
