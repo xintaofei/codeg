@@ -4,6 +4,8 @@ import { useEffect, useMemo, useReducer, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
   AlertCircle,
+  ArrowDown,
+  ArrowUp,
   Code2,
   FlaskConical,
   ListTodo,
@@ -46,6 +48,9 @@ export interface PipelineStepInspectorProps {
   onClose: () => void
   onSave: (step: PipelineStep, loop?: LoopBack | null) => void | Promise<void>
   onDeleteStep?: (stepId: string) => void
+  /** Move this step one place earlier / later in the chain. Steps run in
+   *  order, so this is how a planner gets in front of an existing coder. */
+  onMoveStep?: (stepId: string, direction: "up" | "down") => void
   className?: string
 }
 
@@ -71,6 +76,7 @@ export function PipelineStepInspector({
   onClose,
   onSave,
   onDeleteStep,
+  onMoveStep,
   className,
 }: PipelineStepInspectorProps) {
   const t = useTranslations("Pipeline")
@@ -645,7 +651,7 @@ export function PipelineStepInspector({
         </div>
 
         <DialogFooter className="flex items-center justify-between sm:justify-between gap-2 pt-2 border-t border-border/50">
-          <div>
+          <div className="flex items-center gap-1">
             {onDeleteStep && (
               <Button
                 type="button"
@@ -660,6 +666,32 @@ export function PipelineStepInspector({
                 <Trash2 className="size-3.5 mr-1" />
                 Delete
               </Button>
+            )}
+            {onMoveStep && (
+              <>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-label={t("moveEarlier")}
+                  title={t("moveEarlier")}
+                  onClick={() => onMoveStep(step.id, "up")}
+                  className="h-8 w-8 p-0"
+                >
+                  <ArrowUp className="size-3.5" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-label={t("moveLater")}
+                  title={t("moveLater")}
+                  onClick={() => onMoveStep(step.id, "down")}
+                  className="h-8 w-8 p-0"
+                >
+                  <ArrowDown className="size-3.5" />
+                </Button>
+              </>
             )}
           </div>
 

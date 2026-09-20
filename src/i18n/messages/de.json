@@ -6176,7 +6176,9 @@
     },
     "automationAction": "Pipeline ausführen",
     "automationPipeline": "Pipeline",
-    "modelProbing": "Agent wird gefragt…"
+    "modelProbing": "Agent wird gefragt…",
+    "moveEarlier": "Nach vorn",
+    "moveLater": "Nach hinten"
   },
   "Memory": {
     "title": "Gedächtnis",

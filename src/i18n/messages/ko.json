@@ -6176,7 +6176,9 @@
     },
     "automationAction": "파이프라인 실행",
     "automationPipeline": "파이프라인",
-    "modelProbing": "에이전트에 확인 중…"
+    "modelProbing": "에이전트에 확인 중…",
+    "moveEarlier": "앞으로 이동",
+    "moveLater": "뒤로 이동"
   },
   "Memory": {
     "title": "메모리",

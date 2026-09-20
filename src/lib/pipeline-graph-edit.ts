@@ -295,6 +295,40 @@ export function addStep(
 }
 
 /**
+ * Moves a step one position earlier or later. Steps run in array order, so
+ * this is the only way to put a planner in front of a coder that already
+ * exists — `addStep` can only append.
+ *
+ * A loop must always point BACK (its target earlier than its source). A move
+ * that would invert one is refused rather than silently dropping the loop:
+ * the caller shows the same validation message any other bad edit gets.
+ */
+export function moveStep(
+  graph: PipelineGraph,
+  stepId: string,
+  direction: "up" | "down"
+): PipelineGraph {
+  const from = graph.steps.findIndex((s) => s.id === stepId)
+  if (from < 0) return graph
+  const to = direction === "up" ? from - 1 : from + 1
+  if (to < 0 || to >= graph.steps.length) return graph
+
+  const steps = [...graph.steps]
+  const [moved] = steps.splice(from, 1)
+  steps.splice(to, 0, moved)
+
+  const indexOf = new Map(steps.map((s, i) => [s.id, i]))
+  for (const loop of graph.loops ?? []) {
+    const source = indexOf.get(loop.from_step)
+    const target = indexOf.get(loop.to_step)
+    if (source === undefined || target === undefined) continue
+    if (target >= source) return graph
+  }
+
+  return { ...graph, steps }
+}
+
+/**
  * Removes a step from the graph and cleans up any loops referencing it.
  */
 export function removeStep(

@@ -16,6 +16,7 @@ import { AlertCircle, Plus, Trash2 } from "lucide-react"
 import { pipelineGet, pipelineSave } from "@/lib/api"
 import {
   addStep,
+  moveStep,
   createDefaultStep,
   removeStep,
   removeLoop,
@@ -211,6 +212,17 @@ function PipelineNodeContent({
     commit(addStep(graph, newStep))
   }
 
+  const handleMoveStep = (stepId: string, direction: "up" | "down") => {
+    const moved = moveStep(graph, stepId, direction)
+    if (moved === graph) {
+      // Refused: either an end of the chain, or the move would turn a
+      // fix-round loop forwards.
+      return
+    }
+    setValidationError(null)
+    commit(moved)
+  }
+
   const handleDeleteStep = (stepId: string) => {
     commit(removeStep(graph, stepId))
     if (selectedStepId === stepId) {
@@ -308,6 +320,7 @@ function PipelineNodeContent({
           open={inspectorOpen}
           onClose={() => setInspectorOpen(false)}
           onSave={handleSaveStep}
+          onMoveStep={handleMoveStep}
           onDeleteStep={() => handleDeleteStep(selectedStep.id)}
         />
       )}

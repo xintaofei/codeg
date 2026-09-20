@@ -6176,7 +6176,9 @@
     },
     "automationAction": "パイプラインを実行",
     "automationPipeline": "パイプライン",
-    "modelProbing": "エージェントに問い合わせ中…"
+    "modelProbing": "エージェントに問い合わせ中…",
+    "moveEarlier": "前に移動",
+    "moveLater": "後ろに移動"
   },
   "Memory": {
     "title": "メモリ",

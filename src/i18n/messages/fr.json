@@ -6176,7 +6176,9 @@
     },
     "automationAction": "Exécuter le pipeline",
     "automationPipeline": "Pipeline",
-    "modelProbing": "Interrogation de l'agent…"
+    "modelProbing": "Interrogation de l'agent…",
+    "moveEarlier": "Déplacer avant",
+    "moveLater": "Déplacer après"
   },
   "Memory": {
     "title": "Mémoire",

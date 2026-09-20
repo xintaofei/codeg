@@ -70,6 +70,7 @@ function renderInspector(props: {
   onClose?: () => void
   onSave?: (step: PipelineStep, loop?: LoopBack | null) => void
   onDeleteStep?: (id: string) => void
+  onMoveStep?: (id: string, direction: "up" | "down") => void
 }) {
   const defaultProps = {
     step: makeStep(),
@@ -243,6 +244,24 @@ describe("PipelineStepInspector", () => {
 
     fireEvent.change(model, { target: { value: "haiku" } })
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
+  })
+
+  it("offers moving the step earlier or later", () => {
+    // Steps run in array order and "Add step" only appends, so without this
+    // a planner could never be placed in front of an existing coder.
+    const onMoveStep = vi.fn()
+    renderInspector({ step: makeStep({ id: "coder_1" }), onMoveStep })
+
+    fireEvent.click(screen.getByRole("button", { name: "Move earlier" }))
+    expect(onMoveStep).toHaveBeenCalledWith("coder_1", "up")
+
+    fireEvent.click(screen.getByRole("button", { name: "Move later" }))
+    expect(onMoveStep).toHaveBeenCalledWith("coder_1", "down")
+  })
+
+  it("hides the move buttons when reordering is not offered", () => {
+    renderInspector({ step: makeStep() })
+    expect(screen.queryByRole("button", { name: "Move earlier" })).toBeNull()
   })
 
   it("calls onDeleteStep when delete is confirmed", () => {

@@ -6176,7 +6176,9 @@
     },
     "automationAction": "執行流程",
     "automationPipeline": "流程",
-    "modelProbing": "正在詢問代理…"
+    "modelProbing": "正在詢問代理…",
+    "moveEarlier": "上移",
+    "moveLater": "下移"
   },
   "Memory": {
     "title": "記憶",

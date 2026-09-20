@@ -6176,7 +6176,9 @@
     },
     "automationAction": "运行流水线",
     "automationPipeline": "流水线",
-    "modelProbing": "正在询问代理…"
+    "modelProbing": "正在询问代理…",
+    "moveEarlier": "上移",
+    "moveLater": "下移"
   },
   "Memory": {
     "title": "记忆",

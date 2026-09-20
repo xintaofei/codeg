@@ -6176,7 +6176,9 @@
     },
     "automationAction": "تشغيل المسار",
     "automationPipeline": "المسار",
-    "modelProbing": "جارٍ سؤال الوكيل…"
+    "modelProbing": "جارٍ سؤال الوكيل…",
+    "moveEarlier": "نقل للأمام",
+    "moveLater": "نقل للخلف"
   },
   "Memory": {
     "title": "الذاكرة",

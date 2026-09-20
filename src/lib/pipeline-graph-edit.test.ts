@@ -4,6 +4,7 @@ import {
   addStep,
   createDefaultStep,
   formatValidationError,
+  moveStep,
   removeLoop,
   removeStep,
   setLoop,
@@ -337,5 +338,50 @@ describe("pipeline-graph-edit: validation", () => {
     expect(
       formatValidationError({ code: "duplicate_step_id", id: "coder" }, t)
     ).toBe("Duplicate step id coder")
+  })
+})
+
+describe("moveStep", () => {
+  const graph = {
+    steps: [
+      createDefaultStep("a", "coder", "A"),
+      createDefaultStep("b", "reviewer", "B"),
+      createDefaultStep("c", "tests", "C"),
+    ],
+    loops: [],
+  }
+
+  it("moves a step earlier and later", () => {
+    expect(moveStep(graph, "c", "up").steps.map((s) => s.id)).toEqual([
+      "a",
+      "c",
+      "b",
+    ])
+    expect(moveStep(graph, "a", "down").steps.map((s) => s.id)).toEqual([
+      "b",
+      "a",
+      "c",
+    ])
+  })
+
+  it("leaves the ends alone", () => {
+    expect(moveStep(graph, "a", "up")).toBe(graph)
+    expect(moveStep(graph, "c", "down")).toBe(graph)
+    expect(moveStep(graph, "nope", "up")).toBe(graph)
+  })
+
+  it("refuses a move that would make a loop point forward", () => {
+    // b loops back to a; putting b in front of a would invert it.
+    const looped = {
+      ...graph,
+      loops: [{ from_step: "b", to_step: "a", max_iterations: 3 }],
+    }
+    expect(moveStep(looped, "b", "up")).toBe(looped)
+    // Moving the unrelated tail is still fine.
+    expect(moveStep(looped, "c", "up").steps.map((s) => s.id)).toEqual([
+      "a",
+      "c",
+      "b",
+    ])
   })
 })
