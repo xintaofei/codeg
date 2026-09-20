@@ -1,222 +1,160 @@
-# Agent Pipelines
+# Agent pipelines
 
-Agent Pipelines provide structured, multi-step orchestration for AI coding agents in Codeg. Pipelines allow you to compose agents into linear execution chains with automated review and testing feedback loops, worktree isolation, line-by-line diff inspections, and optional persistent memory.
+One agent in a chat handles a targeted edit well. A larger task usually wants a
+shape: plan it, write it, review it, and send the review back to whoever wrote
+the code. Until now that meant driving every hand-off by hand.
 
-Everything in Agent Pipelines is opt-in. By default, Codeg operates in Single Agent mode with memory disabled, preserving the standard interactive workflow.
+A pipeline runs that chain for you. Nothing here is on by default: Codeg still
+opens in single-agent mode with memory off, and the chat you already know
+behaves exactly as before.
 
----
+## Picking a chain
 
-## 1. Overview and Modes
+The composer has four buttons above the message box.
 
-A pipeline consists of a linear chain of execution steps with bounded back-edges (`LoopBack`) originating from reviewer or test steps. When a reviewer or test step requests changes, the pipeline routes feedback back to the coder step for a new iteration, up to a configurable maximum round limit.
+| Mode | Chain | Fix rounds |
+| --- | --- | --- |
+| Single agent | no pipeline, the classic chat | n/a |
+| Duet | coder, then reviewer | up to 3 |
+| Team | planner, coder, reviewer, tests | up to 3 |
+| Custom | whatever you build | 1 to 10 |
 
-Codeg provides three built-in modes and support for custom graphs:
+Pick anything but Single and a row of chips appears below, one per step, each
+naming its role, its agent and its model. That row is the chain that will run.
 
-| Mode | Flow | Default Fix Rounds | Description |
-| --- | --- | --- | --- |
-| **Single** | Single agent | N/A | Classic single-agent workflow without pipeline orchestration. Default mode. |
-| **Duet** | Coder &rarr; Reviewer | Up to 3 | Coder implements changes, Reviewer verifies code. Loops back on requested changes. |
-| **Team** | Planner &rarr; Coder &rarr; Reviewer &rarr; Tests | Up to 3 | Comprehensive workflow: plan generation, implementation, review, and test execution. |
-| **Custom** | User-defined graph | Configurable (1-10) | Custom multi-step graph with customized roles, prompts, agents, models, and loops. |
+The choice is remembered per folder.
 
----
+## Editing the chain
 
-## 2. Composer Mode Selection
+Click a chip. Two lists open: the agent that runs the step, and the model it
+runs on. The models come from asking that agent what it accepts, so the list is
+whatever your installed adapter really offers rather than a table that goes
+stale. There is no save button. The chip updates and the change is stored.
 
-You can select the active pipeline mode directly inside the chat composer using the `PipelineModeSwitch` toolbar:
+Editing Duet or Team stores your version of the built-in chain; a **Reset**
+appears beside the chips and puts the shipped one back. A custom chain saves as
+itself.
 
-1. **Mode Switcher**: Choose between **Single**, **Duet**, **Team**, or **Custom**. The selection is stored per project folder in `localStorage` (`codeg.pipeline.mode.<folderId>`).
-2. **Role Chips**: When Duet, Team, or Custom is active, role chips show the configured agent and model for each step in the chain.
-3. **Model Selection**: Each role chip displays the assigned model. If an agent does not report a verified model, Codeg displays an unconfirmed model indicator.
-4. **Fix Rounds**: A counter shows the maximum number of correction rounds (e.g., "Fix rounds: up to 3").
+In Custom mode a **+** sits at the end of the row. It asks for the role first,
+because the role decides where the step lands: a planner goes to the front,
+since it exists to brief the steps after it, and everything else is appended.
+Deleting a step lives inside the same popover, and the last step cannot go.
 
----
+While a pipeline mode is active the composer hides its own model and reasoning
+pickers. The model belongs to each step now, and two controls for one thing
+point at a session the run does not use. Everything else stays, including the
+edit-permission mode, which matters more once several agents are writing.
 
-## 3. Step Definitions and Roles
+For the rest of a step (its prompt, timeout, read-only flag and loop target)
+open the pipeline card on the Infinite Conversations canvas.
 
-Each step in a pipeline graph is defined by the `PipelineStep` model:
+## What the roles do
 
-- `id`: Unique step identifier (lowercase alphanumeric, hyphens, underscores; up to 32 characters).
-- `role`: One of `planner`, `coder`, `reviewer`, `tests`, or `custom`.
-- `label`: Human-readable label displayed in UI cards and canvas nodes.
-- `agent_type`: Agent type identifier (e.g., `claude_code`, `codex`, `gemini`, or custom ACP agent).
-- `mode_id`: Optional agent sub-mode (e.g., read-only planning mode for review steps).
-- `config_values`: Key-value configuration options passed to the agent, including `"model"`.
-- `prompt_template`: Markdown template defining step instructions, supporting variables.
-- `timeout_secs`: Step execution timeout in seconds (default: 1800s / 30 minutes; range: 1 to 86,400s).
-- `read_memory`: Boolean flag indicating whether to query and inject memory before the step.
-- `read_only`: Boolean flag indicating whether the step must not modify files.
+- **planner** reads the task and the code and writes a plan. It must not edit.
+- **coder** makes the change. This is the only step expected to write files.
+- **reviewer** checks the result and reports a verdict. It must not edit.
+- **tests** runs the suite and reports a verdict. It may write, because test
+  runs leave artifacts.
+- **custom** is whatever you need.
 
-### Prompt Variables
+A step marked read-only is policed: Codeg hashes the worktree before and after
+it, and a step that changed anything has its verdict turned into `inconclusive`
+with the offending paths named. The step's prompt says so in plain words too,
+so the agent is told the rule rather than only punished for breaking it.
 
-Templates support the following substitution variables:
+Two things commonly trip that guard and are worth knowing about: a session-start
+hook that writes a file into every new directory, and a build cache the project
+does not ignore. Both show up in the note, so you can add them to `.gitignore`
+and move on.
 
-- `$task`: The user prompt or task description entered in the composer.
-- `$plan`: Summary generated by the most recent Planner step.
-- `$summary`: Summary produced by the previous step attempt.
-- `$review`: Notes and review findings from the most recent `changes_requested` verdict.
-- `$memory`: Retrieved project or global memory context.
+## Verdicts
 
-### Read-Only Reviewer Guard
+A reviewer or test step ends by calling the `pipeline_verdict` tool once:
 
-Reviewer steps have `read_only: true` enabled by default. If the selected agent supports a read-only or plan mode, Codeg activates that mode.
+- `pass`: the work is good, the chain moves on.
+- `changes_requested`: back to the coder with the notes, which are required.
+- `inconclusive`: the step could not tell, and the run stops.
 
-To guarantee that read-only steps do not alter repository state, the engine computes a SHA-256 hash of the working tree before and after the step. The hash covers:
-1. The output of `git diff HEAD` (staged and unstaged tracked changes).
-2. Sorted untracked file paths from `git ls-files --others --exclude-standard`.
+If the agent's tool calling is unreliable, a `VERDICT: PASS` line in its own
+output is parsed as a fallback. Prefer an agent that calls the tool properly;
+the fallback is a safety net, not a plan.
 
-If the pre-step and post-step hashes differ, the engine automatically overrides the step verdict to `inconclusive` with `verdict_source = "guard"` and notes `"reviewer modified files"`. This prevents unauthorized modifications from bypassing coder steps.
+After the last fix round the run stops as `stopped_max_iterations` rather than
+looping forever.
 
----
+## Isolation and landing the work
 
-## 4. Verdicts and the `pipeline_verdict` Tool
+Each run works in its own git worktree on a temporary branch, so your working
+copy is untouched while agents write. When you are satisfied, **Apply** brings
+the result over as either a squash commit or a merge commit, then removes the
+worktree and the branch.
 
-Reviewer and test steps conclude by emitting a verdict that determines whether execution advances, loops back, or pauses.
+Apply refuses to run when the project has staged changes of its own, rather
+than sweeping them into a commit you did not write.
 
-### Verdict Types
+A folder can only host one run at a time.
 
-| Verdict | Behavior |
+If Codeg is closed mid-run, the run is marked `interrupted` on the next start
+rather than being left looking alive.
+
+## Watching a run
+
+The run card in the conversation shows each step, the round count and the
+verdicts as they land.
+
+The **chat + code** panel beside it shows what changed: a file tree with A/M/D/R
+badges, the diff itself, and a place to leave notes on individual lines. From
+there you can send those notes back for another round, stop and finish by hand,
+or apply.
+
+## Running one on a schedule
+
+Automations take a **Run pipeline** action. Pick the chain, pick the folder, set
+a cron expression or leave it manual. The run is headless and behaves exactly as
+it would from the composer, worktree included.
+
+## Memory
+
+Off by default. Turn it on in Settings, Memory.
+
+Three backends: off, a local SQLite graph with full-text search and two-hop edge
+traversal, or your own MCP server.
+
+What gets remembered is your choice. Four built-in kinds ship (decisions, fixed
+bugs, task summaries, facts and preferences) and you can add your own with an
+instruction in your own words. Each kind is set to automatic, on request, or
+off, and the whole store is scoped either to the project or shared globally.
+
+`memory_write`, `memory_search` and `memory_link` are exposed to agents only
+while memory is on. Everything written passes a redactor that strips API keys,
+tokens, passwords and private keys first. Injected memory is wrapped in a
+`<memory untrusted="true">` block so an agent treats it as data.
+
+Scope is worth a thought if you keep several clients' projects in one window:
+project scope keeps each store separate, global shares one across all of them.
+
+## Step reference
+
+A step in the graph carries:
+
+| Field | Meaning |
 | --- | --- |
-| `pass` | The step succeeded. Execution proceeds to the next step, or marks the pipeline run as `succeeded` if it was the final step. |
-| `changes_requested` | Issues were found. Execution loops back to the target step (typically Coder) with reviewer notes. Iteration count increments. |
-| `inconclusive` | The agent could not reach a decision or encountered an ambiguity. The pipeline halts immediately with status `inconclusive` without looping. |
+| `id` | unique, lowercase, up to 32 chars |
+| `role` | `planner`, `coder`, `reviewer`, `tests`, `custom` |
+| `label` | what the UI shows |
+| `agent_type` | `claude_code`, `codex`, `gemini`, any installed ACP agent |
+| `mode_id` | optional agent sub-mode |
+| `config_values` | passed to the agent; `model` lives here |
+| `prompt_template` | the instructions, with the variables below |
+| `timeout_secs` | default 1800, range 1 to 86400 |
+| `read_memory` | query memory before this step |
+| `read_only` | the step must not touch files |
 
-### MCP Tool: `pipeline_verdict`
+Prompt variables: `$task` (what you typed), `$plan` (the last planner's
+summary), `$summary` (the previous step's), `$review` (notes from the last
+`changes_requested`), `$memory` (retrieved context).
 
-For agents running with MCP support, Codeg provides the `pipeline_verdict` tool:
-
-```json
-{
-  "name": "pipeline_verdict",
-  "description": "Report your verdict for the pipeline step you are running (review or tests). Call it exactly once, right before you finish. pass = the work is correct and complete; changes_requested = the coder must fix something (notes are REQUIRED and must list every problem with file and line); inconclusive = you could not judge (say why in notes). If you never call this tool the step is treated as inconclusive.",
-  "inputSchema": {
-    "type": "object",
-    "required": ["verdict"],
-    "properties": {
-      "verdict": {
-        "type": "string",
-        "enum": ["pass", "changes_requested", "inconclusive"]
-      },
-      "notes": {
-        "type": "string",
-        "description": "Findings for the coder or the reason the verdict is inconclusive."
-      }
-    }
-  }
-}
-```
-
-When `verdict` is `changes_requested`, the `notes` parameter is required and must detail the problems with file paths and line numbers.
-
-### Fallback Text Marker Parsing
-
-If an agent does not support MCP tools or fails to invoke `pipeline_verdict`, the engine scans the final lines of the agent output for a text marker:
-
-```text
-VERDICT: PASS
-VERDICT: CHANGES_REQUESTED
-VERDICT: FAIL
-VERDICT: INCONCLUSIVE
-```
-
-`FAIL` is treated as equivalent to `CHANGES_REQUESTED`. If no MCP tool call or text marker is found, the engine defaults the step to `inconclusive`.
-
----
-
-## 5. Worktree Isolation and Merging
-
-Pipeline runs support two isolation modes:
-
-1. **`worktree_per_run` (Default)**: Creates an isolated Git worktree on a dedicated temporary branch. The agent makes changes in this worktree without touching your working directory or active branch.
-2. **`shared_in_root`**: Runs directly in the project root folder.
-
-### Applying Changes
-
-When a pipeline run in worktree isolation reaches `succeeded`, a card in the chat view displays the completion status along with diff summary actions. You can inspect the changes and apply them to your active branch via `pipeline_run_apply`:
-
-- **Squash merge (`squash`)**: Collapses all iteration commits into a single clean commit.
-- **Merge commit (`no_ff`)**: Retains individual iteration commit history.
-
----
-
-## 6. Chat + Code Diff Review Panel
-
-Clicking **Open code** on any pipeline run card opens the interactive **Chat + code** diff panel (`PipelineDiffPanel`):
-
-- **File Tree**: Lists modified, added, deleted, and renamed files with insertion and deletion counts.
-- **Interactive Unified Diff**: Displays file diffs with syntax highlighting.
-- **Inline Line Notes**: Click on any diff line to add notes for the coder (e.g., `src/auth.ts:42: Missing null check on token`).
-- **Action Buttons**:
-  - **Send to coder (`sendToCoder`)**: Submits line notes and invokes `pipeline_request_changes` to start a new coder iteration.
-  - **I will fix it myself (`fixMyself`)**: Invokes `pipeline_stop_manual` to cancel the automated run while preserving the worktree for manual edits.
-  - **Apply changes (`apply`)**: Invokes `pipeline_run_apply` to merge the completed worktree into your base branch.
-
----
-
-## 7. Canvas Pipeline Node
-
-Pipelines can be designed and inspected visually on the Codeg Canvas:
-
-- **Pipeline Canvas Node**: Represents a pipeline execution graph using nested React Flow nodes, showing step sequence, role badges, verdict checkpoints, and feedback loopback edges.
-- **Step Inspector (`PipelineStepInspector`)**: Modify step label, role, agent, model, prompt template, timeout, memory reading, and loop limits.
-- **Save as Preset**: Save customized canvas pipeline graphs as reusable presets available in the composer.
-
----
-
-## 8. Automations Integration
-
-Agent pipelines integrate with Codeg Automations via the `RunPipeline` action:
-
-- Set `action: "run_pipeline"` in the automation configuration.
-- Assign a `pipeline_id` referencing a saved preset.
-- Run pipelines headlessly on cron schedules or trigger them on demand.
-
----
-
-## 9. Memory Subsystem
-
-Codeg includes an optional memory subsystem that enables agents to record and retrieve project knowledge, architectural decisions, and bug resolutions across pipeline runs.
-
-### Storage Backends
-
-Memory backend is configured in **Settings &rarr; Memory**:
-
-1. **`off` (Default)**: Memory tools and storage are disabled. No tools are provided to agents.
-2. **`local_sqlite`**: Local SQLite database (`memory.db` in the application data directory) using SQLite FTS5 for full-text BM25 search and graph edge traversal up to 2 hops.
-3. **`external_mcp`**: Proxies memory read, write, and link requests to a custom user-configured MCP server.
-
-### Memory Kinds and Recording Modes
-
-Memory records are categorized by `MemoryKind`:
-
-| Kind Key | Name | Default Mode | Description |
-| --- | --- | --- | --- |
-| `decision` | Decisions | `auto` | Architectural and product decisions, rationale, and rejected alternatives. |
-| `fixed_bug` | Fixed bugs | `auto` | Bugs resolved during execution (symptom, root cause, and fix). |
-| `task_summary` | Task summaries | `on_request` | Summary of task changes and verification evidence. |
-| `preference` | Facts and preferences | `on_request` | Persistent conventions, tooling preferences, and project rules. |
-
-Users can create custom memory kinds with dedicated model instructions.
-
-### Operating Modes
-
-- **`auto`**: Direct writes to this kind are accepted without requiring a separate user request confirmation.
-- **`on_request`**: Writes to this kind require the `user_requested: true` flag on the write request.
-- **`off`**: The kind is disabled.
-
-### Scopes
-
-- **`project`**: Scoped to the active project folder.
-- **`global`**: Accessible across all projects in Codeg.
-
-### MCP Tools for Memory
-
-When memory is active, Codeg exposes three MCP tools to agents:
-
-1. **`memory_write`**: Write a new record (`kind`, `title`, `body`, and optional relational `links` to other memory IDs).
-2. **`memory_search`**: Search the memory graph using a `query` string and optional result `limit` (1 to 50).
-3. **`memory_link`**: Connect two existing records (`from_id`, `to_id`) with a relationship type (`caused_by`, `fixed_by`, `relates_to`, `part_of`, or `supersedes`).
-
-### Secret Sanitization
-
-Before any record is persisted to memory, the `sanitize_secrets` engine runs regex-based redaction across the title, body, and metadata. Common API keys, tokens, passwords, and private key headers (OpenAI, Anthropic, GitHub tokens, AWS credentials, Slack tokens, Bearer tokens, private keys) are replaced with `[REDACTED]`.
+A graph is rejected before it runs if it is empty, has more than eight steps,
+repeats a step id, names an unknown agent, has an empty prompt, has a timeout
+out of range, or has a loop that points forward, starts anywhere but a reviewer
+or tests step, or asks for fewer than 1 or more than 10 rounds.
