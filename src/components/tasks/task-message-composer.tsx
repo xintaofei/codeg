@@ -173,6 +173,7 @@ export function TaskMessageComposer({
     editorRef,
     containerRef,
     promptCapabilities,
+    agentType,
     defaultPath: folderPath,
     logLabel: "TaskComposer",
   })
