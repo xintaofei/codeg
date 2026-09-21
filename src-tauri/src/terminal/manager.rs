@@ -9,6 +9,9 @@ use super::error::TerminalError;
 #[cfg(target_os = "windows")]
 use super::shell_flavor::ShellFamily;
 use super::types::{TerminalEvent, TerminalInfo, TerminalSnapshot};
+use crate::browser::service_url::ServiceScanner;
+use crate::browser::services::ServiceWatch;
+use crate::browser::types::ServiceSource;
 use crate::web::event_bridge::EventEmitter;
 
 /// How much recent PTY output a terminal keeps for re-attaching viewers. Sized
@@ -340,6 +343,7 @@ impl TerminalManager {
         let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>();
         let scrollback = Arc::new(Mutex::new(Scrollback::default()));
 
+        let owner_window = opts.owner_window_label.clone();
         let instance = TerminalInstance {
             write_tx,
             master: pair.master,
@@ -366,10 +370,22 @@ impl TerminalManager {
         // Named reader thread — emits per-terminal events
         let id_for_reader = terminal_id.clone();
         let terminals_ref = self.terminals.clone();
+        // The watch that notices a dev server announcing itself in this
+        // terminal's output. Built here because this is where the owning
+        // window is known; it probes and emits on threads of its own, so the
+        // reader below never waits on a socket.
+        let watch = ServiceWatch::new(emitter.clone(), owner_window, ServiceSource::Terminal);
         std::thread::Builder::new()
             .name(format!("pty-reader-{short_id}"))
             .spawn(move || {
-                read_loop(reader, id_for_reader, &emitter, &terminals_ref, &scrollback);
+                read_loop(
+                    reader,
+                    id_for_reader,
+                    &emitter,
+                    &terminals_ref,
+                    &scrollback,
+                    &watch,
+                );
             })
             .map_err(|e| TerminalError::SpawnFailed(e.to_string()))?;
 
@@ -619,9 +635,12 @@ fn read_loop(
     emitter: &EventEmitter,
     terminals: &Arc<Mutex<HashMap<String, TerminalInstance>>>,
     scrollback: &Arc<Mutex<Scrollback>>,
+    watch: &ServiceWatch,
 ) {
     let output_event = format!("terminal://output/{}", terminal_id);
     let mut buf = [0u8; 8192];
+    // Thread-confined, so the carry buffer and the rate limit need no lock.
+    let mut services = ServiceScanner::new();
 
     loop {
         match reader.read(&mut buf) {
@@ -640,6 +659,11 @@ fn read_loop(
                     .lock()
                     .map(|mut s| s.append(&data))
                     .unwrap_or_default();
+                // Before the emit, not after: this is the only place a
+                // terminal's output passes through in one piece, and a viewer
+                // that is not mounted (the mobile drawer, a canvas card on
+                // another route) never sees it at all.
+                watch.feed(&mut services, &data, &terminal_id);
                 let event = TerminalEvent {
                     terminal_id: terminal_id.clone(),
                     data,
@@ -687,6 +711,8 @@ fn thread_name_prefix(terminal_id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_os = "windows"))]
+    use super::{Arc, EventEmitter, SpawnOptions, TerminalManager};
     use super::{thread_name_prefix, Scrollback, SCROLLBACK_MAX_CHARS};
 
     #[test]
@@ -772,5 +798,70 @@ mod tests {
             .expect("spawn with sanitized name")
             .join()
             .expect("join");
+    }
+
+    /// The whole local-server path over a REAL pty: a real shell prints a real
+    /// banner, the watch reads it out of the output stream, connects to the
+    /// socket, and the frontend's event arrives naming the window that owns
+    /// the terminal.
+    ///
+    /// The pieces have unit tests of their own; what only an end-to-end run
+    /// can show is that the watch is wired into the reader at all, and that a
+    /// banner survives a real PTY (its line endings, its echo, its shell).
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn a_server_announced_in_a_terminal_reaches_the_frontend() {
+        use crate::browser::types::SERVICE_DETECTED_EVENT;
+        use crate::web::event_bridge::WebEventBroadcaster;
+        use std::time::Duration;
+
+        // Something really listening, so the probe has something to find.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        // Subscribed before the spawn: the broadcaster drops what it sends
+        // with no receivers, and a shell prints fast.
+        let mut events = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster);
+
+        let manager = TerminalManager::new();
+        manager
+            .spawn_with_id(
+                SpawnOptions {
+                    terminal_id: "svc-e2e".to_string(),
+                    working_dir: std::env::temp_dir().to_string_lossy().to_string(),
+                    owner_window_label: "main".to_string(),
+                    shell: Some("/bin/sh".to_string()),
+                    initial_command: Some(format!(
+                        "printf '  ➜  Local:   http://127.0.0.1:{port}/\\n'"
+                    )),
+                    extra_env: None,
+                    temp_files: vec![],
+                },
+                emitter,
+            )
+            .expect("spawn");
+
+        let detected = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let event = events.recv().await.expect("event bus");
+                if event.channel == SERVICE_DETECTED_EVENT {
+                    return event;
+                }
+            }
+        })
+        .await
+        .expect("the service event");
+
+        let payload = detected.payload;
+        assert_eq!(payload["origin"], format!("http://127.0.0.1:{port}"));
+        assert_eq!(payload["url"], format!("http://127.0.0.1:{port}/"));
+        assert_eq!(payload["authority"], format!("127.0.0.1:{port}"));
+        assert_eq!(payload["ownerWindow"], "main");
+        assert_eq!(payload["source"], "terminal");
+        assert_eq!(payload["terminalId"], "svc-e2e");
+
+        let _ = manager.kill("svc-e2e");
     }
 }

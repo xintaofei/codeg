@@ -225,6 +225,8 @@ async fn end_to_end_uds_happy_path() {
         Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
         Arc::new(NoTaskTools) as Arc<dyn codeg_lib::acp::work_task_tools::WorkTaskToolAccess>,
         Arc::new(NoAuthoring) as Arc<dyn codeg_lib::acp::chat_authoring::ChatAuthoringAccess>,
+        Arc::new(codeg_lib::acp::browser_tools::NoBrowserTabs)
+            as Arc<dyn codeg_lib::acp::browser_tools::BrowserToolAccess>,
     );
 
     // Freshly-named directory per test — no clashes across test bins.
@@ -342,6 +344,8 @@ async fn end_to_end_uds_batch_status() {
         Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
         Arc::new(NoTaskTools) as Arc<dyn codeg_lib::acp::work_task_tools::WorkTaskToolAccess>,
         Arc::new(NoAuthoring) as Arc<dyn codeg_lib::acp::chat_authoring::ChatAuthoringAccess>,
+        Arc::new(codeg_lib::acp::browser_tools::NoBrowserTabs)
+            as Arc<dyn codeg_lib::acp::browser_tools::BrowserToolAccess>,
     );
 
     let dir = socket_dir();
@@ -430,6 +434,8 @@ async fn end_to_end_uds_invalid_token_rejected() {
         Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
         Arc::new(NoTaskTools) as Arc<dyn codeg_lib::acp::work_task_tools::WorkTaskToolAccess>,
         Arc::new(NoAuthoring) as Arc<dyn codeg_lib::acp::chat_authoring::ChatAuthoringAccess>,
+        Arc::new(codeg_lib::acp::browser_tools::NoBrowserTabs)
+            as Arc<dyn codeg_lib::acp::browser_tools::BrowserToolAccess>,
     );
 
     let dir = socket_dir();
@@ -497,6 +503,8 @@ async fn end_to_end_uds_ask_question_round_trip() {
         Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
         Arc::new(NoTaskTools) as Arc<dyn codeg_lib::acp::work_task_tools::WorkTaskToolAccess>,
         Arc::new(NoAuthoring) as Arc<dyn codeg_lib::acp::chat_authoring::ChatAuthoringAccess>,
+        Arc::new(codeg_lib::acp::browser_tools::NoBrowserTabs)
+            as Arc<dyn codeg_lib::acp::browser_tools::BrowserToolAccess>,
     );
 
     let dir = socket_dir();
@@ -638,6 +646,8 @@ async fn end_to_end_uds_ask_revoked_after_register_declines() {
         Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
         Arc::new(NoTaskTools) as Arc<dyn codeg_lib::acp::work_task_tools::WorkTaskToolAccess>,
         Arc::new(NoAuthoring) as Arc<dyn codeg_lib::acp::chat_authoring::ChatAuthoringAccess>,
+        Arc::new(codeg_lib::acp::browser_tools::NoBrowserTabs)
+            as Arc<dyn codeg_lib::acp::browser_tools::BrowserToolAccess>,
     );
 
     let dir = socket_dir();

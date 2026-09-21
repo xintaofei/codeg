@@ -112,6 +112,7 @@ import {
   saveModePreference,
   saveConfigPreference,
 } from "@/lib/selector-prefs-storage"
+import { rememberModelLabels } from "@/lib/model-label-store"
 import { useAlertContext, type AlertAction } from "@/contexts/alert-context"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 
@@ -4431,6 +4432,14 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             }
             entry.configOptions = e.config_options
             selectorsCache.set(cfgConn.agentType, entry)
+            // This is the only place a model's DISPLAY name and its id are seen
+            // together. Transcripts record the id alone, so without capturing
+            // the pair here an agent with opaque ids (qoder's `qfmodel`) can
+            // never label its own history. The agent comes off the connection,
+            // not off whatever is selected in the UI — the settings panels'
+            // probe snapshots lag an agent switch by a debounce and would
+            // file the labels under the wrong one.
+            rememberModelLabels(cfgConn.agentType, e.config_options)
           }
           break
         }
@@ -4465,11 +4474,16 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // Cache for agent types that may not emit session_modes /
           // session_config_options at all (no selectors).
           const rdyConn = storeRef.current.connections.get(contextKey)
-          if (rdyConn && !selectorsCache.has(rdyConn.agentType)) {
-            selectorsCache.set(rdyConn.agentType, {
-              modes: rdyConn.modes,
-              configOptions: rdyConn.configOptions,
-            })
+          if (rdyConn) {
+            if (!selectorsCache.has(rdyConn.agentType)) {
+              selectorsCache.set(rdyConn.agentType, {
+                modes: rdyConn.modes,
+                configOptions: rdyConn.configOptions,
+              })
+            }
+            // Also covers the replay path, where the options were restored onto
+            // the connection without a fresh `session_config_options` event.
+            rememberModelLabels(rdyConn.agentType, rdyConn.configOptions)
           }
           break
         }

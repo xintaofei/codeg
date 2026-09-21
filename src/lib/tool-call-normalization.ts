@@ -28,6 +28,24 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   // input shape instead — see the `command_line` / `CommandLine` keys in
   // `inferFromInput`. Both paths land on the same Terminal card.
   run_command: "bash",
+  // Windows shells, under the two names that reach a client. Claude Code's CLI
+  // runs commands through a `PowerShell` tool whenever Windows has no Git Bash
+  // (SDK `SDKStartupFailureReason.shell_tool_missing` names the same pair), and
+  // pi swaps `powershell` in for `bash` on the same platform. The freeform
+  // matcher below cannot help: its `\bshell\b` needs a word boundary that
+  // "powershell" does not have.
+  //
+  // Without the alias the name only half-resolved — `getToolIcon` and
+  // `classifyToolKind` matched it, so the call drew a terminal icon and counted
+  // as a command, while every dispatch keyed on the NORMALIZED name
+  // (`isCommandTool`, `deriveToolTitle`, `StructuredToolInput`) fell through to
+  // the generic renderer and dumped the input as raw JSON with no command line
+  // and no terminal body. The live ACP path was rescued only once `rawInput`
+  // streamed and `inferFromInput` found a `command` key in it; the history path
+  // never is, because `parsers/claude.rs` and `parsers/pi.rs` both read the raw
+  // tool name back out of the transcript — so the same call rendered one way
+  // while it ran and another way on reload.
+  powershell: "bash",
   exec_command: "exec_command",
   "functions.exec_command": "exec_command",
   "functions.read": "read",

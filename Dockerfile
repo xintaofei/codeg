@@ -56,6 +56,8 @@ ENV CODEG_RUNTIME=docker
 ENV CODEG_RESTART_DELAY_MS=2000
 
 EXPOSE 3080
+# Port bridge for dev servers (CODEG_BRIDGE_PORTS; default CODEG_PORT+1..+10).
+EXPOSE 3081-3090
 VOLUME /data
 
 # Run under the built-in supervisor (PID 1) so an in-place upgrade can swap

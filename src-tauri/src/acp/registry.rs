@@ -1038,9 +1038,116 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // "a free-text note must not eat the selection" idea, arriving in
             // the same fortnight, on the one adapter where codeg is not the
             // client that sees it.
+            //
+            // 0.79.0 is two upstream changes (#1070, #1143) plus the release
+            // chore, touching three emitted files — `tools.js`,
+            // `permissions/presentation.js`, `acp-agent.js`. The set diff of
+            // QUOTED STRING LITERALS over `dist/**/*.js` that (p)–(s) leaned on
+            // adds and removes NOTHING here: `"PowerShell"` was already in the
+            // bundle (0.78.0 read it in `buildClaudePermissionPresentation`
+            // alone), so the whole wire-visible delta is control flow and the
+            // literal diff cannot see it. `@anthropic-ai/claude-agent-sdk` moves
+            // 0.3.270 → 0.3.274, i.e. CLI 2.1.270 → 2.1.274 (`manifest.json`);
+            // `engines.node` stays ">=22".
+            //
+            // (t) **A shell approval's heading is now the COMMAND, not the
+            // model's summary** (#1070, upstream #1068) — the one delta in this
+            // release that costs codeg code. Through 0.78.0
+            // `buildClaudePermissionPresentation` gave a `Bash`/`PowerShell`
+            // request `shellTitle = compactText(input.description) ?? toolName`
+            // and used it for BOTH the presentation's `toolCall.title` and its
+            // `_meta.permission.title`. 0.79.0 drops `shellTitle`: the title is
+            // `info.title` (i.e. `input.command`), and for those two tools it is
+            // no longer passed through `humanText` at all — upstream's stated
+            // reason being that "shell titles are executable input", so
+            // whitespace compaction would move quoting and comment boundaries
+            // and a length cap could hide what runs.
+            //
+            // One half of that is pure gain here. `ensureToolCallEmitted` emits
+            // the presentation's `toolCall`, and when the command actually runs
+            // `toolCallNotification` refines the SAME id from
+            // `toolInfoFromToolUse` — the command. Through 0.78.0 those two
+            // disagreed, so an approved Bash card silently renamed itself from
+            // the summary to the command the moment it started. They are now the
+            // same string.
+            //
+            // The other half is a regression codeg has to absorb, and it lands
+            // exactly where the client was most careful. `_meta.permission.title`
+            // is now byte-identical to `toolCall.title` AND to the command
+            // codeg renders in the card's own block; `parsePermissionToolCall`
+            // prefers that meta title over the title precisely BECAUSE the title
+            // used to be the command. So the heading turns into a second copy of
+            // the command block, and the model's one-line label leaves the card
+            // altogether: with no `terminal_output` capability advertised (see
+            // `build_client_capabilities`) the adapter still puts
+            // `input.description` in `toolCall.content`, but the dialog shows
+            // `contentText` only when NO structured view exists, and a command
+            // card always has one. The fix is in `permission-request.ts`, keyed
+            // on the shape rather than on a version: a meta heading equal to the
+            // command being displayed is not a heading, so it yields to
+            // `rawInput.description` — the same field 0.78.0's `shellTitle` read.
+            //
+            // (u) **PowerShell joins Bash everywhere else** (same PR). On
+            // Windows without Git Bash the CLI's shell tool IS `PowerShell` —
+            // SDK 0.3.274 spells the failure mode out in
+            // `SDKStartupFailureReason.shell_tool_missing` ("Git Bash is
+            // missing, and PowerShell is missing or turned off by
+            // CLAUDE_CODE_USE_POWERSHELL_TOOL"). Until now it fell through
+            // `toolInfoFromToolUse`'s default arm to `{title: "PowerShell",
+            // kind: "other", content: []}`, so a Windows user's every shell call
+            // arrived with no command on it. It now shares Bash's arm in all
+            // four places: `toolInfoFromToolUse` (`title` = the command, `kind:
+            // "execute"`, the description as `content`), `claudeCodeMetaFromToolUse`
+            // (`_meta.claudeCode.title` = the description), the terminal
+            // `_meta` on the opening frame, and the error-result arm that yields
+            // to the terminal channel. The terminal half is gated on the client
+            // `_meta.terminal_output` capability, which codeg does not advertise,
+            // so it stays inert and the description keeps riding `content`.
+            //
+            // codeg only half-knew the name, and the halves it knew were the
+            // cheap ones. `getToolIcon` and `classifyToolKind` both carried a
+            // `powershell` arm (added for pi, which swaps the same name in on
+            // Windows), but `normalizeToolName` did not — so every dispatch
+            // keyed on the NORMALIZED name (`isCommandTool`, `deriveToolTitle`,
+            // `StructuredToolInput`) missed it, and the card rendered a terminal
+            // icon over a raw-JSON dump with no command line and no terminal
+            // body. One alias entry in `tool-call-normalization.ts` settles live
+            // claude, `parsers::claude` history (the CLI's JSONL names the tool
+            // `PowerShell` verbatim, so this was broken there independently of
+            // any adapter version) and pi at once.
+            //
+            // (v) Two things that arrive free and need no code.
+            //
+            // `#1143` also carries "hold through placeholder task results": CLI
+            // 2.1.274+ answers background-task completions that were already
+            // QUEUED with one model call, so every queued notification still
+            // gets a result but all except the last are placeholders
+            // (`num_turns: 0`, empty text) emitted BEFORE the shared followup
+            // runs. Settling the deferred turn on one of those would release
+            // `session/prompt` with the promised text still ahead — the
+            // out-of-turn delivery class upstream fixed in #864–#866 — so the
+            // hold now waits for `num_turns > 0`. codeg advertises `asyncTasks`
+            // and runs claude background shells/workflows/monitors through it,
+            // so this is a fix codeg gets by bumping.
+            //
+            // `_meta.claudeCode.mcpServer` (SDK 0.3.274's `McpServerProvenance`,
+            // `{name, source}`) is NOT consumed. It answers "which server serves
+            // this `mcp__*` tool, and was it registered in-process by the host
+            // (`source: "sdk"`) or configured"; codeg injects codeg-mcp over
+            // stdio, which is a configured source and never reads `sdk`, and the
+            // only trust question codeg asks of an MCP tool call — is this one of
+            // the companions I minted? — it already answers from the tool name
+            // it chose itself. What DOES change without asking is its sibling:
+            // the block is now emitted when `mcpServer` is present even with no
+            // `parentToolUseId`, so `_meta.claudeCode.toolName` reaches a
+            // top-level MCP tool's PERMISSION frame for the first time. That is
+            // the signal `inferLiveToolName` resolves the codeg-mcp companion
+            // cards on, so a pending MCP approval now shows the right card
+            // instead of flipping to it once the call runs and the streamed
+            // frame (which always carried `toolName`) refines it.
             distribution: AgentDistribution::Npx {
-                version: "0.78.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.78.0",
+                version: "0.79.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.79.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -1731,8 +1838,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "CodeBuddy",
             description: "Tencent Cloud's official AI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "2.151.0",
-                package: "@tencent-ai/codebuddy-code@2.151.0",
+                version: "2.155.0",
+                package: "@tencent-ai/codebuddy-code@2.155.0",
                 cmd: "codebuddy",
                 args: &["--acp"],
                 env: &[],
@@ -1871,9 +1978,60 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `transcript`'s `groupTurns`, which the ACP replay does not use
             // (`replay.ts` projects the raw context history), so they do not
             // reach codeg.
+            //
+            // 2.0.1 is a patch release and reads like one. The mandated check
+            // passes verbatim — the converter's absent-`type` arm is
+            // byte-identical (`{transport: "stdio", command, args, env,
+            // runtime_id: "local"}`), the same three entry points
+            // (`newSession` / `loadSession` / `resumeSession`) still route
+            // through it while `session/fork` still ignores `mcpServers`, and
+            // neither `acpMcpServersToConfigs` nor the "does not declare a
+            // runtime identity" throw is anywhere in the bundle.
+            // `engines.node` is unmoved at >=22.19.0. Region-by-region, 109 of
+            // the 121 changed regions differ only by bundler renumbering; the
+            // 12 real ones are all TUI/CLI (a `kimi provider` custom-registry
+            // import refactor, the survey controller, editor keyboard, TUI
+            // session-event handler, `catalog-fetch`) plus a rename of the
+            // `install-app` subcommand region to `install-desktop`. Nothing
+            // under the ACP server path moved: the regions holding the
+            // converter, `max_context_size`, `skillRoots`, `availableCommands`
+            // and `protocol_version` are byte-identical, so no live run was
+            // needed this time.
+            //
+            // 2.0.2 is another patch and the mandated check passes verbatim
+            // again: byte-identical converter body (`{transport: "stdio",
+            // command, args, env, runtime_id: "local"}`), the same three entry
+            // points routing through it with `session/fork` still ignoring
+            // `mcpServers`, and neither `acpMcpServersToConfigs` nor the "does
+            // not declare a runtime identity" throw anywhere in the bundle.
+            // `engines.node` is unmoved at >=22.19.0. The region diff is much
+            // larger than 2.0.1's but every bit of it points away from us: 315
+            // of 339 changed regions are bundler renumbering, and 52 regions
+            // are DELETED outright — all of them `packages/kap-server/` (ws v3,
+            // projection, protocol messages, history routes). That is the
+            // `kimi web` server, booted only from `cli/sub/web` and the TUI
+            // `/web` command; codeg drives `kimi acp` over stdio and never
+            // reaches it. Every `packages/acp-server/` region is renumber-only,
+            // as are `wire/record` + `wireService`, `skillRoots`, config.toml's
+            // `max_context_size` Zod and `mcp.json`. The 24 real regions are
+            // engine-internal: a steering dedupe (`loopService` no longer
+            // dispatches `TurnSteer` when the nudge message IS the active
+            // prompt's own message — strictly one duplicate fewer, and
+            // `parsers/kimi_code.rs` reads `context.append_loop_event` records,
+            // not `turn.steer`), a resume fix that seeds the synthetic
+            // `turnEnded` by appending to a non-empty journal instead of
+            // skipping it (with `nextTurnId` now advancing monotonically),
+            // pre-shrinking history to the window budget before compaction, an
+            // additive optional `goods_version` on the managed userinfo, one
+            // dropped sentence in the built-in system prompt, and a models.dev
+            // catalog refresh (21 models added, 8 dropped, 19 limit tweaks)
+            // that leaves all 378 kimi rows untouched — `moonshotai` still
+            // reads `kimi-k3` = 1048576 and `kimi-k2.*` = 262144, so the
+            // `parsers/mod.rs::infer_context_window_max_tokens` mirror still
+            // holds. No live run, same as 2.0.1.
             distribution: AgentDistribution::Npx {
-                version: "2.0.0",
-                package: "@moonshot-ai/kimi-code@2.0.0",
+                version: "2.0.2",
+                package: "@moonshot-ai/kimi-code@2.0.2",
                 cmd: "kimi",
                 args: &["acp"],
                 env: &[],
@@ -1991,39 +2149,39 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // (downloads.cursor.com/lab/<version>/<os>/<arch>/...); custom
             // versions substitute into the same pattern.
             distribution: AgentDistribution::Binary {
-                version: "2026.09.10-fd3934a",
+                version: "2026.09.15-d2fe57e",
                 cmd: "cursor-agent",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.09.10-fd3934a/darwin/arm64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.09.15-d2fe57e/darwin/arm64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.09.10-fd3934a/darwin/x64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.09.15-d2fe57e/darwin/x64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.09.10-fd3934a/linux/arm64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.09.15-d2fe57e/linux/arm64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.09.10-fd3934a/linux/x64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.09.15-d2fe57e/linux/x64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.09.10-fd3934a/windows/arm64/agent-cli-package.zip",
+                        url: "https://downloads.cursor.com/lab/2026.09.15-d2fe57e/windows/arm64/agent-cli-package.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.09.10-fd3934a/windows/x64/agent-cli-package.zip",
+                        url: "https://downloads.cursor.com/lab/2026.09.15-d2fe57e/windows/x64/agent-cli-package.zip",
                         sha256: None,
                     },
                 ],
@@ -2223,12 +2381,37 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // name in plaintext (the sibling `<sessionId>/state.json` keeps its
             // own copy AES-GCM-encrypted under the machine key, so it is not
             // the source). `engines.node: ">=20"`.
+            //
+            // `QODER_EXPOSE_TOKEN_USAGE` turns OFF qoder's own token-count
+            // redaction, and without it every qoder session reports zero tokens
+            // everywhere codeg can see. The CLI passes each response's usage
+            // through a sanitizer that keeps the real counters only when the
+            // model came from a BYO/custom provider or that env is truthy
+            // (`1`/`true`/`yes`); otherwise it rewrites `input_tokens`,
+            // `output_tokens` and both cache counters to 0 before the usage
+            // reaches the transcript, leaving `credits` and
+            // `context_usage_ratio` as the only surviving signal. Its own
+            // process log is redacted by the same pass, so the zeros there are
+            // not evidence that the backend returned none. Verified on the
+            // 1.1.54 bundle: `-p` with the env set writes
+            // `input_tokens: 2803, output_tokens: 19` where the default run
+            // writes zeros.
+            //
+            // The name is assembled at runtime from a `QODER_`/`QODERCN_`
+            // prefix (`Sr(A) = `${vv}${A}``, `ebA = Sr("EXPOSE_TOKEN_USAGE")`),
+            // so grepping the bundle for the full literal returns nothing —
+            // grep the bare suffix instead, the same trap `parsers::qoder`
+            // documents for the config-dir vars.
+            //
+            // Registry env is only the base: `merge_agent_env` lets a per-agent
+            // `runtime_env` override it, so a user who wants the redaction back
+            // sets `QODER_EXPOSE_TOKEN_USAGE=0` in the agent's env settings.
             distribution: AgentDistribution::Npx {
-                version: "1.1.54",
-                package: "@qoder-ai/qodercli@1.1.54",
+                version: "1.1.57",
+                package: "@qoder-ai/qodercli@1.1.57",
                 cmd: "qoder",
                 args: &["--acp"],
-                env: &[],
+                env: &[("QODER_EXPOSE_TOKEN_USAGE", "1")],
                 // package.json declares `engines.node: ">=20.0.0"`.
                 node_required: Some("20.0.0"),
             },
@@ -2554,8 +2737,8 @@ mod tests {
         let meta = get_agent_meta(AgentType::Cursor);
         assert_binary_version(
             AgentType::Cursor,
-            "2026.09.10-fd3934a",
-            "/lab/2026.09.10-fd3934a/",
+            "2026.09.15-d2fe57e",
+            "/lab/2026.09.15-d2fe57e/",
         );
         match meta.distribution {
             AgentDistribution::Binary {
@@ -2632,8 +2815,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.78.0",
-            "@agentclientprotocol/claude-agent-acp@0.78.0",
+            "0.79.0",
+            "@agentclientprotocol/claude-agent-acp@0.79.0",
             Some("22.0.0"),
         );
         assert_npx_version(
@@ -2660,16 +2843,16 @@ mod tests {
         );
         assert_npx_version(
             AgentType::CodeBuddy,
-            "2.151.0",
-            "@tencent-ai/codebuddy-code@2.151.0",
+            "2.155.0",
+            "@tencent-ai/codebuddy-code@2.155.0",
             Some("22.0.0"),
         );
         // Kimi Code must never land on 0.37.0–0.38.0: every session in that
         // range dies on the codeg-mcp stdio entry (see the registry entry).
         assert_npx_version(
             AgentType::KimiCode,
-            "2.0.0",
-            "@moonshot-ai/kimi-code@2.0.0",
+            "2.0.2",
+            "@moonshot-ai/kimi-code@2.0.2",
             Some("22.19.0"),
         );
         assert_npx_version(
@@ -2693,8 +2876,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Qoder,
-            "1.1.54",
-            "@qoder-ai/qodercli@1.1.54",
+            "1.1.57",
+            "@qoder-ai/qodercli@1.1.57",
             Some("20.0.0"),
         );
         assert_binary_version(AgentType::OpenCode, "1.18.31", "/releases/download/v1.18.31/");
@@ -2725,6 +2908,24 @@ mod tests {
                 assert_eq!(args, &["acp"]);
             }
             other => panic!("expected npx distribution for Hermes, got {other:?}"),
+        }
+    }
+
+    // qoder redacts its own token counters unless this env is truthy, and a
+    // transcript full of zeros parses cleanly — the gauge just reads 0 forever
+    // with nothing to flag it. Pin the pair so dropping it fails loudly here
+    // instead of silently in the UI.
+    #[test]
+    fn qoder_launches_with_token_usage_exposed() {
+        let meta = get_agent_meta(AgentType::Qoder);
+        match meta.distribution {
+            AgentDistribution::Npx { env, .. } => {
+                assert!(
+                    env.contains(&("QODER_EXPOSE_TOKEN_USAGE", "1")),
+                    "qoder must launch with token redaction off, got {env:?}"
+                );
+            }
+            other => panic!("expected npx distribution for Qoder, got {other:?}"),
         }
     }
 

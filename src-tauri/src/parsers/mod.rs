@@ -1018,6 +1018,44 @@ pub fn merge_context_window_stats(
     }
 }
 
+/// Stamp a context-window occupancy the AGENT stated directly, overriding
+/// whatever [`merge_context_window_stats`] recomputed from used/max.
+///
+/// Most agents publish token counts and codeg derives the percentage. Qoder
+/// publishes the percentage (`usage.context_usage_ratio`) and, for its own
+/// hosted models, redacts the token counters to zero — so for those sessions
+/// the stated figure is the ONLY occupancy signal that exists, and
+/// `merge_context_window_stats` has nothing to divide. It wins even when the
+/// counters ARE present, because a recomputation would divide by a window this
+/// parser had to back-derive or guess.
+///
+/// `None` leaves `stats` untouched. A non-finite value is dropped and an
+/// out-of-range one is clamped rather than dropped: a gauge is drawn from this,
+/// and "no ring" is a worse answer than "pinned at 100%".
+pub fn with_reported_context_percent(
+    stats: Option<SessionStats>,
+    percent: Option<f64>,
+) -> Option<SessionStats> {
+    let Some(percent) = percent.filter(|p| p.is_finite()) else {
+        return stats;
+    };
+    let percent = percent.clamp(0.0, 100.0);
+    match stats {
+        Some(mut s) => {
+            s.context_window_usage_percent = Some(percent);
+            Some(s)
+        }
+        None => Some(SessionStats {
+            total_usage: None,
+            total_tokens: None,
+            total_duration_ms: 0,
+            context_window_used_tokens: None,
+            context_window_max_tokens: None,
+            context_window_usage_percent: Some(percent),
+        }),
+    }
+}
+
 /// Relocate orphaned tool_result blocks to the turn that contains their matching tool_use.
 ///
 /// After `group_into_turns` splits assistant rounds, async tool execution can cause

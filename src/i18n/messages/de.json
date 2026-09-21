@@ -677,6 +677,8 @@
       "configJson": "MCP-Konfiguration (JSON)",
       "draftTitle": "Neuer MCP",
       "draftDescription": "Geben Sie eine Server-ID und Konfiguration an, um einen lokalen MCP-Server zu erstellen.",
+      "suggestedLabel": "Mit einem bekannten Server beginnen",
+      "suggestedChromeNote": "Füllt das Formular mit Googles offiziellem chrome-devtools-mcp — die Registry führt Nachahmungen unter demselben Namen, das hier legt das echte fest. Es steuert ein SEPARATES Chrome, das codeg nicht beaufsichtigt: Du bekommst Netzwerk- und Performance-Daten, die die Werkzeuge des integrierten Browsers nicht bieten, und keine ihrer Schutzmaßnahmen – keine Freigabe pro Tab, keine Aktivitätsleiste, keine Bestätigung pro Codeausschnitt. `npx` lädt das Paket beim ersten Start von npm herunter.",
       "serverIdLabel": "Server-ID",
       "serverIdPlaceholder": "Server-ID (z. B. my-mcp)",
       "typeHint": "Unterstützte Typen: stdio, http (Aliase: streamable-http, streamableHttp), sse. env wird nur von stdio verwendet; für Remote-MCPs Auth-Tokens über headers übermitteln.",
@@ -2163,6 +2165,7 @@
           "navigation": "Navigation",
           "more": "Mehr"
         },
+        "browserTab": "Browser-Tab öffnen",
         "showPet": "Pet anzeigen"
       },
       "mcp": {
@@ -2187,19 +2190,6 @@
         "sessions": "Sitzungen",
         "activeDelegations": "Delegationen",
         "depthLimit": "Max. Tiefe",
-        "tools": "Tools",
-        "groupDelegation": "Delegation",
-        "descDelegation": "Gibt eine Aufgabe an einen anderen Agenten ab.",
-        "groupFeedback": "Live-Feedback",
-        "descFeedback": "Ergänzt Hinweise, ohne den Zug zu unterbrechen.",
-        "groupAsk": "Rückfrage stellen",
-        "descAsk": "Lässt den Agenten vor einer Entscheidung nachfragen.",
-        "groupSessions": "Sitzungsabfrage",
-        "descSessions": "Schlägt frühere Sitzungen und Ergebnisse nach.",
-        "groupAutomations": "Automatisierung erstellen",
-        "descAutomations": "Erstellt und verwaltet geplante Automationen.",
-        "groupTaskboard": "Aufgabe erstellen",
-        "descTaskboard": "Erstellt und verwaltet Arbeitsaufgaben.",
         "start": "Dienst starten",
         "starting": "Wird gestartet…",
         "actionFailed": "Fehlgeschlagen: {message}",
@@ -2248,12 +2238,20 @@
     },
     "fileWorkspace": {
       "files": "Dateien",
+      "newTab": "Neuer Tab",
+      "newBrowserTab": "Browser-Tab",
+      "openFile": "Datei öffnen…",
+      "openFileTitle": "Datei öffnen",
+      "localServices": "Lokale Server",
+      "localServiceFromAgent": "Agent",
       "closeFileTab": "Dateitab schließen",
       "close": "Schließen",
       "closeOthers": "Andere schließen",
       "closeAll": "Alle schließen",
       "preview": "Vorschau",
       "editSource": "Quelle bearbeiten",
+      "openInSystemBrowser": "Im Systembrowser öffnen",
+      "more": "Mehr",
       "maximize": "Maximieren",
       "restore": "Wiederherstellen",
       "emptyDirectory": "Leerer Ordner"
@@ -2379,7 +2377,6 @@
       "imageZoomOut": "Verkleinern",
       "imageZoomReset": "Zoom zurücksetzen",
       "htmlPreviewTitle": "HTML-Vorschau",
-      "htmlPreviewTrust": "Skripte aktivieren",
       "htmlPreviewTrustHint": "Skripte dieser Datei ausführen und Netzwerkzugriff erlauben. Nur für vertrauenswürdige Dateien aktivieren.",
       "officePreviewTitle": "Office-Dokumentvorschau",
       "officeFullRender": "Vollständige Darstellung",
@@ -4919,21 +4916,53 @@
   "AgentToolsSettings": {
     "title": "Tools in der Unterhaltung",
     "description": "Zusätzliche Tools, die codeg einem Agenten innerhalb einer Unterhaltung gibt. Sie werden beim Start des Agenten injiziert – eine Änderung gilt daher für danach gestartete Agenten.",
-    "feedbackLabel": "Live-Feedback",
-    "feedbackHint": "Sende einem Agenten Notizen und Korrekturen, während er arbeitet. Unterstützt der Agent sofortiges Einfügen, landet deine Notiz umgehend im laufenden Turn; andernfalls erhält der Agent ein Tool zum Abrufen deines Feedbacks – solche Agenten prüfen es meist nur, wenn du es im Prompt erwähnst, z. B. mit \"prüfe regelmäßig mein Live-Feedback\".",
-    "questionLabel": "Benutzer fragen",
-    "questionHint": "Erlaubt Agenten, anzuhalten und dir eine Multiple-Choice-Frage zu stellen, die über dem Eingabefeld der Unterhaltung erscheint. Der Agent wartet, bis du antwortest (oder überspringst).",
-    "sessionInfoLabel": "Sitzungsinformationen abrufen",
-    "sessionInfoHint": "Erlaubt Agenten, eine in deiner Nachricht referenzierte Sitzung (ein Sitzungs-Badge) nachzuschlagen, um Titel, Agent, Status, Arbeitsbereich, Token-Verbrauch und letzte Nachrichten zu lesen.",
-    "automationsLabel": "Automatisierungen erstellen",
-    "automationsHint": "Speichert die Unterhaltung als Automatisierung, die nach Zeitplan läuft. Standardmäßig aus – sie startet danach selbst Agenten.",
-    "workTasksLabel": "To-do-Aufgaben erstellen",
-    "workTasksHint": "Stellt aus der Unterhaltung heraus eine Karte auf das To-do-Board. Standardmäßig aus – schreibt App-Zustand.",
     "save": "Speichern",
     "saving": "Wird gespeichert…",
     "saved": "Tool-Einstellungen gespeichert",
     "saveFailed": "Tool-Einstellungen konnten nicht gespeichert werden",
     "loadFailed": "Laden fehlgeschlagen: {detail}"
+  },
+  "AgentTools": {
+    "delegation": {
+      "label": "Delegation",
+      "short": "Gibt eine Aufgabe an einen anderen Agenten ab.",
+      "hint": "Lässt einen Agenten eine in sich geschlossene Teilaufgabe an einen anderen Agenten übergeben, der sie in seiner eigenen Sitzung erledigt und zurückmeldet. Der Rest — wie tief Delegationen verschachtelt sein dürfen, welcher Agent sie ausführt — steht im Abschnitt darüber."
+    },
+    "feedback": {
+      "label": "Live-Feedback",
+      "short": "Ergänzt Hinweise, ohne den Zug zu unterbrechen.",
+      "hint": "Sende einem Agenten Notizen und Korrekturen, während er arbeitet. Unterstützt der Agent sofortiges Einfügen, landet deine Notiz umgehend im laufenden Turn; andernfalls erhält der Agent ein Tool zum Abrufen deines Feedbacks – solche Agenten prüfen es meist nur, wenn du es im Prompt erwähnst, z. B. mit \"prüfe regelmäßig mein Live-Feedback\"."
+    },
+    "ask": {
+      "label": "Benutzer fragen",
+      "short": "Lässt den Agenten vor einer Entscheidung nachfragen.",
+      "hint": "Erlaubt Agenten, anzuhalten und dir eine Multiple-Choice-Frage zu stellen, die über dem Eingabefeld der Unterhaltung erscheint. Der Agent wartet, bis du antwortest (oder überspringst)."
+    },
+    "sessions": {
+      "label": "Sitzungsinformationen abrufen",
+      "short": "Schlägt frühere Sitzungen und Ergebnisse nach.",
+      "hint": "Erlaubt Agenten, eine in deiner Nachricht referenzierte Sitzung (ein Sitzungs-Badge) nachzuschlagen, um Titel, Agent, Status, Arbeitsbereich, Token-Verbrauch und letzte Nachrichten zu lesen."
+    },
+    "browser": {
+      "label": "Integrierten Browser lesen und steuern",
+      "short": "Öffnet, liest und bedient Seiten im integrierten Browser.",
+      "hint": "Lässt einen Agenten sehen, welche Seiten im integrierten Browser offen sind, die freigegebenen lesen und auf denen, für die Sie Aktionen erlauben, klicken und tippen. Er kann außerdem selbst eine Adresse öffnen, einen Tab woanders hinschicken und Tabs schließen. Standardmäßig aus. Welche Seite er lesen darf, entscheiden weiterhin Sie in der Leiste des jeweiligen Tabs — beachten Sie jedoch: Mit einer voreingestellten Freigabestufe ist eine Seite, die der Agent selbst öffnet, in dem Moment für ihn freigegeben, in dem sie lädt. Das Ausschalten wirkt sofort, auch auf bereits laufende Agenten."
+    },
+    "browserEval": {
+      "label": "Code im integrierten Browser ausführen",
+      "short": "Führt eigenen Code auf einer freigegebenen Seite aus — ohne Nachfrage.",
+      "hint": "Erlaubt Agenten, eigenes JavaScript auf einer von dir geteilten Seite auszuführen. Standardmäßig aus und nur zusammen mit dem Schalter darüber. Einschalten heißt, dass Codeausschnitte ohne Nachfrage laufen – die Entscheidung fällt also an diesem Schalter; unter Einstellungen → Integrierter Browser kannst du dir stattdessen jeden Ausschnitt zeigen lassen."
+    },
+    "automations": {
+      "label": "Automatisierungen erstellen",
+      "short": "Erstellt und verwaltet geplante Automationen.",
+      "hint": "Speichert die Unterhaltung als Automatisierung, die nach Zeitplan läuft. Standardmäßig aus – sie startet danach selbst Agenten."
+    },
+    "taskboard": {
+      "label": "To-do-Aufgaben erstellen",
+      "short": "Erstellt und verwaltet Arbeitsaufgaben.",
+      "hint": "Stellt aus der Unterhaltung heraus eine Karte auf das To-do-Board. Standardmäßig aus – schreibt App-Zustand."
+    }
   },
   "DesktopNotificationSettings": {
     "title": "Desktop-Benachrichtigungen",
@@ -4992,6 +5021,98 @@
     "tonePop": "Pop",
     "toneAlert": "Alarm",
     "toneDescend": "Absteigend"
+  },
+  "BrowserSettings": {
+    "title": "Integrierter Browser",
+    "description": "Webseiten aus Unterhaltungen, Werkzeugergebnissen und dem Terminal können als Tabs neben deinen Dateien erscheinen, ohne die App zu verlassen.",
+    "defaultTargetTitle": "Wo Links geöffnet werden",
+    "defaultTargetHint": "Je Quelle einstellbar. ⌘/Strg+Klick auf einen Link verwendet einmalig die andere Variante.",
+    "sourceTranscript": "Unterhaltungsnachrichten",
+    "sourceToolCard": "Werkzeugergebnisse",
+    "sourceTerminal": "Terminal",
+    "sourceEditor": "Editor",
+    "sourceNotification": "Benachrichtigungen",
+    "targetBuiltin": "Integrierter Browser",
+    "targetSystem": "Systembrowser",
+    "devtoolsTitle": "Web-Inspektor",
+    "devtoolsHint": "Zeigt „Inspektor öffnen“ im Menü „Mehr“ eines Tabs und erlaubt „Element untersuchen“ auf der Seite. Standardmäßig aktiviert. Gilt für ab jetzt geöffnete Tabs.",
+    "surfaceTitle": "Tab-Darstellung",
+    "surfaceHint": "Wie Seiten eingebettet werden. Auf „Automatisch“ belassen, außer eingebettete Tabs verhalten sich auf diesem System fehlerhaft. Gilt für ab jetzt geöffnete Tabs.",
+    "surfaceAuto": "Automatisch",
+    "surfaceChild": "Im Arbeitsbereich eingebettet",
+    "surfaceWindow": "Eigenes Fenster",
+    "clearTitle": "Browserdaten",
+    "clearHint": "Cookies, Caches und Website-Speicher, die alle Browser-Tabs teilen. Beim Löschen wirst du auf Websites abgemeldet.",
+    "clearAction": "Löschen…",
+    "clearConfirmTitle": "Browserdaten löschen?",
+    "clearConfirmDescription": "Cookies, Caches und Website-Speicher des integrierten Browsers werden entfernt. Offene Tabs bleiben geöffnet, du wirst aber auf Websites abgemeldet.",
+    "clearConfirmAction": "Löschen",
+    "cancel": "Abbrechen",
+    "cleared": "Browserdaten gelöscht",
+    "clearFailed": "Browserdaten konnten nicht gelöscht werden: {message}",
+    "proxyTitle": "Netzwerk-Proxy",
+    "proxyHint": "Browser-Tabs verwenden den Proxy aus den Systemeinstellungen. Adressen auf diesem Rechner (localhost) laufen nie über den Proxy.",
+    "proxyOn": "Verwendet {url}",
+    "proxyOff": "Direkte Verbindung",
+    "proxyNextTab": "Ein geänderter Proxy gilt für ab jetzt geöffnete Tabs.",
+    "proxyRestart": "Starte codeg neu, damit Browser-Tabs den geänderten Proxy verwenden.",
+    "proxyUnsupported": "Auf dieser macOS-Version nicht verfügbar (14 oder neuer erforderlich).",
+    "proxyUnusable": "Der konfigurierte Proxy ist kein Typ, den Browser-Tabs verwenden können (nur http und socks5).",
+    "suspendTitle": "Hintergrund-Tabs entladen",
+    "suspendHint": "Gibt den Speicher von Browser-Tabs frei, die 30 Minuten im Hintergrund waren. Beim Zurückwechseln werden sie neu geladen; Scrollposition und Verlauf gehen verloren.",
+    "downloadsTitle": "Downloads",
+    "downloadsHint": "Von einer Seite geladene Dateien werden in {dir} gespeichert. Nichts wird automatisch geöffnet, und eine vorhandene Datei wird nie ersetzt.",
+    "rulesTitle": "Site-Regeln",
+    "rulesHint": "Pro Site: immer der integrierte Browser, immer der Systembrowser oder blockieren. Muster sind ein Hostname, *.example.com oder *, optional mit :Port; der spezifischste Treffer gewinnt.",
+    "serviceOpenTitle": "Lokale Server",
+    "serviceOpenHint": "Wenn ein im Terminal gestarteter Server seine Adresse ausgibt, in einem Browser-Tab öffnen. Nur Adressen auf diesem Rechner und nur, wenn dort tatsächlich etwas lauscht.",
+    "serviceOpenOff": "Nichts tun",
+    "serviceOpenNotify": "Benachrichtigen",
+    "serviceOpenOpen": "Tab öffnen",
+    "rulePatternPlaceholder": "example.com oder *.example.com",
+    "rulePatternLabel": "Site-Muster",
+    "ruleActionLabel": "Aktion",
+    "ruleActionFor": "Aktion für {pattern}",
+    "ruleAdd": "Hinzufügen",
+    "ruleRemove": "Regel entfernen",
+    "ruleActionBlock": "Blockieren",
+    "ruleManaged": "Von der Administration festgelegt",
+    "ruleInvalid": "Kein gültiges Muster",
+    "ruleDuplicate": "Für dieses Muster gibt es bereits eine Regel",
+    "rulesEmpty": "Noch keine Regeln.",
+    "agentGrantTitle": "Standard-Freigabestufe",
+    "agentGrantHint": "Auf welcher Stufe jede Website geteilt wird, die ein Tab öffnet – ohne Nachfrage. Das Steuerelement der Seite ändert oder beendet das weiterhin pro Website; „Nichts teilen“ überlässt jede Entscheidung diesem Steuerelement.",
+    "agentGrantRead": "Nur lesen",
+    "agentGrantControl": "Lesen und bedienen",
+    "agentGrantNone": "Nichts teilen",
+    "evalApprovalTitle": "Code auf einer Seite ausführen",
+    "evalApprovalHint": "Was passiert, wenn ein Agent eigenes JavaScript auf einer mit „Lesen und bedienen“ geteilten Seite ausführen will. Es läuft, ohne Nachfrage – entschieden wird das am Schalter „Code im integrierten Browser ausführen“, der aus ist, bis du ihn einschaltest, und an der Freigabestufe der Seite; jede Ausführung steht in der Agent-Aktivität dieses Tabs. „Jedes Mal fragen“ zeigt dir jeden Ausschnitt vollständig und wartet auf eine Antwort.",
+    "evalApprovalAsk": "Jedes Mal fragen",
+    "evalApprovalSilent": "Ohne Nachfrage ausführen",
+    "terminalMenuTitle": "Link-Menü im Terminal",
+    "terminalMenuHint": "Ein Klick auf einen Link im Terminal zeigt ein kleines Menü (integrierter Browser, Systembrowser, Link kopieren), statt ihn sofort zu öffnen. ⌘/Strg-Klick öffnet den Link weiterhin direkt.",
+    "htmlPreviewTitle": "Vorschau von HTML-Dateien",
+    "htmlPreviewHint": "Zeigt HTML-Dateien über den integrierten Browser in einer abgeschotteten Dokumentansicht: keine Skripte, bis du sie für eine Datei aktivierst, und nur der eigene Ordner ist erreichbar. Aus: Die Inline-Vorschau wird verwendet, wie in der Web-App.",
+    "managedDisabled": "Die Richtlinie der Administration hat den integrierten Browser abgeschaltet; Links öffnen sich im Systembrowser.",
+    "profilesTitle": "Profile",
+    "profilesHint": "Jedes Profil hat eigene Cookies, Website-Daten und Anmeldungen. Neue Tabs öffnen sich im unten gewählten Profil; über die Leiste eines Tabs lässt sich seine Seite in einem anderen öffnen.",
+    "profileDefault": "Standard",
+    "profileNewTabsTitle": "Neue Tabs öffnen sich in",
+    "profileNamePlaceholder": "Profilname, z. B. Arbeit",
+    "profileNameLabel": "Profilname",
+    "profileAdd": "Profil hinzufügen",
+    "profileNameRequired": "Gib einen Namen für das Profil ein",
+    "profileNameDuplicate": "Ein Profil mit diesem Namen gibt es bereits",
+    "profileClear": "Browserdaten von {name} löschen",
+    "profileDelete": "Profil {name} löschen",
+    "profileDeleteConfirmTitle": "Profil {name} löschen?",
+    "profileDeleteConfirmDescription": "Seine Tabs werden geschlossen und seine Cookies, Caches und Website-Daten entfernt. Das lässt sich nicht rückgängig machen.",
+    "profileDeleteConfirmAction": "Löschen",
+    "profileDeleted": "Profil gelöscht",
+    "profileDeleteFailed": "Das Profil konnte nicht gelöscht werden: {message}",
+    "clearConfirmDescriptionProfile": "Cookies, Caches und Website-Daten des Profils {name} werden entfernt. Offene Tabs bleiben offen, aber du wirst bei Websites abgemeldet.",
+    "signInUaTitle": "Kompatibilität mit der Google-Anmeldung",
+    "signInUaHint": "Google verweigert die Anmeldung aus eingebetteten Browsern. Wenn eingeschaltet, geben sich Tabs nur gegenüber Googles Anmeldeseiten (accounts.google.com) als Firefox aus; überall sonst geben sie sich als die Engine aus, in der sie laufen, nie als Firefox. Nur in eingebetteten Tabs, nicht im separaten Fenster; leitet eine Anmeldeseite auf eine andere Website weiter, trägt die erste Anfrage dort noch die Anmeldekennung."
   },
   "LogsSettings": {
     "loading": "Wird geladen…",
@@ -6087,6 +6208,251 @@
     "terminalNoDirectory": "Diese Karte hat kein Arbeitsverzeichnis",
     "confirmDeleteTerminals": "{count} laufende Terminal(s) werden geschlossen und ihre Prozesse beendet.",
     "confirmDeleteNotesAndTerminals": "{notes} von dir geschriebene Notiz(en) werden endgültig gelöscht und {terminals} laufende Terminal(s) beendet."
+  },
+  "Browser": {
+    "toolbar": {
+      "back": "Zurück",
+      "forward": "Vor",
+      "reload": "Neu laden",
+      "stop": "Stopp",
+      "openInSystem": "Im Systembrowser öffnen",
+      "more": "Mehr",
+      "copyUrl": "Link kopieren",
+      "copied": "Link kopiert",
+      "openInspector": "Inspektor öffnen",
+      "inspectorFailed": "Inspektor konnte nicht geöffnet werden",
+      "addressPlaceholder": "Adresse eingeben",
+      "invalidUrl": "Keine gültige Adresse",
+      "profile": "Profil: {name}",
+      "profileMenuLabel": "Diese Seite in einem anderen Profil öffnen",
+      "profileDefault": "Standard"
+    },
+    "status": {
+      "popupDenied": "Pop-up blockiert: {host}",
+      "popupDeniedNoGesture": "nicht durch einen Klick geöffnet",
+      "popupDeniedBlockedScheme": "Adresstyp nicht erlaubt",
+      "popupOpenAnyway": "Trotzdem öffnen",
+      "dismiss": "Schließen",
+      "errorDns": "Diese Website wurde nicht gefunden",
+      "errorTls": "Diese Verbindung ist nicht sicher",
+      "errorBlocked": "Diese Adresse ist im integrierten Browser gesperrt",
+      "errorPopupDenied": "Pop-up blockiert",
+      "errorFailed": "Diese Seite kann nicht geladen werden",
+      "errorFailedHint": "Die Verbindung zur Website kam nicht zustande. Prüfe dein Netzwerk und die Adresse; eventuell ist ein Proxy nötig.",
+      "retry": "Erneut versuchen",
+      "openInSystem": "Im Systembrowser öffnen",
+      "ownedWindow": "Diese Seite wird in einem eigenen Fenster angezeigt.",
+      "ownedWindowShow": "Fenster anzeigen",
+      "remoteBanner": "Geöffnet über {host}",
+      "navigationBlocked": "Navigation blockiert: {host}",
+      "navigationBlockedRule": "durch eine Site-Regel blockiert",
+      "navigationBlockedScheme": "diese Adressart kann hier nicht geöffnet werden",
+      "navigationBlockedOpenSystem": "Mit System-App öffnen",
+      "errorBlockedHint": "Eine Site-Regel blockiert diese Adresse. Regeln werden unter Einstellungen → Integrierter Browser verwaltet.",
+      "popupDeniedBlockedHost": "durch eine Site-Regel blockiert",
+      "channelDegraded": "In diesem Tab werden Pop-ups blockiert und die Adressleiste kann der Seite hinterherhinken",
+      "channelDegradedHint": "codeg konnte sein Seitenskript nicht einsetzen. Von dieser Seite geöffnete Pop-ups werden blockiert, die Adressleiste folgt der Navigation innerhalb der Seite nicht, und das Suchkürzel in der Seite öffnet die Suchleiste nicht. Ein erneutes Öffnen des Tabs versucht es noch einmal.",
+      "downloadsDenied": "Downloads blockiert: {host}",
+      "downloadsDeniedNoGesture": "mehrere Dateien, nicht durch einen Klick ausgelöst",
+      "agentGrantLost": "Freigabe beendet: Die Seite hat {origin} verlassen",
+      "agentGrantLostShare": "Auch {origin} freigeben",
+      "agentGrantReplaced": "Freigabe beendet: {origin} wird jetzt von einem anderen Programm bedient",
+      "agentGrantReplacedShare": "Trotzdem freigeben"
+    },
+    "tab": {
+      "untitled": "Neuer Tab"
+    },
+    "drawer": {
+      "title": "Integrierter Browser",
+      "description": "Eine aus der Unterhaltung geöffnete Webseite",
+      "openInWorkspace": "Im Arbeitsbereich öffnen",
+      "cannotOpen": "Diese Adresse kann hier nicht geöffnet werden."
+    },
+    "bridge": {
+      "frameTitle": "Vorschau des Entwicklungsservers",
+      "opening": "Verbindung über den Server wird hergestellt…",
+      "reload": "Neu laden",
+      "openExternal": "In neuem Tab öffnen",
+      "copyAddress": "Adresse kopieren",
+      "copied": "Adresse kopiert",
+      "unreachableTitle": "Der Bridge-Port ist nicht erreichbar",
+      "unreachableHint": "Der codeg-Server stellt diese Seite unter {origin} bereit, aber dein Browser erreicht sie nicht. Gib diesen Port frei (siehe CODEG_BRIDGE_PORTS) oder setze CODEG_BRIDGE_PUBLIC_HOST; wird codeg über HTTPS ausgeliefert, brauchen auch die Bridge-Ports HTTPS.",
+      "errorTitle": "Diese Seite kann hier nicht angezeigt werden"
+    },
+    "download": {
+      "started": "Wird geladen…",
+      "completed": "Gespeichert",
+      "failed": "Fehlgeschlagen",
+      "reveal": "Im Ordner zeigen",
+      "dismiss": "Ausblenden"
+    },
+    "find": {
+      "placeholder": "Auf Seite suchen",
+      "next": "Weitersuchen",
+      "previous": "Rückwärts suchen",
+      "noMatches": "Keine Treffer",
+      "close": "Schließen"
+    },
+    "toast": {
+      "firstOpen": "Im integrierten Browser geöffnet",
+      "firstOpenHint": "⌘/Strg+Klick auf einen Link öffnet ihn stattdessen im Systembrowser. Die Voreinstellung lässt sich in den Einstellungen ändern.",
+      "useSystemAlways": "Immer den Systembrowser verwenden",
+      "serviceDetected": "Auf {address} läuft ein Server",
+      "serviceDetectedHint": "Im Terminal gestartet. Unter Einstellungen → Integrierter Browser lässt sich das automatisch öffnen.",
+      "serviceOpen": "Öffnen",
+      "blockedHost": "Durch eine Site-Regel blockiert: {host}"
+    },
+    "link": {
+      "openBuiltin": "Im integrierten Browser öffnen",
+      "openSystem": "Im Systembrowser öffnen",
+      "copy": "Link kopieren"
+    },
+    "doc": {
+      "scriptsOff": "Skripte aktivieren",
+      "scriptsOn": "Skripte aktiv",
+      "scriptsHint": "Führt die Skripte dieses Dokuments aus. Sie können nur Dateien aus seinem Ordner lesen und haben keinen Netzwerkzugriff. Ändert sich danach eine dieser Dateien, werden Skripte wieder deaktiviert.",
+      "reload": "Neu laden",
+      "more": "Mehr",
+      "copyPath": "Pfad kopieren",
+      "useInline": "Inline-Vorschau verwenden",
+      "useGuest": "Vorschau im integrierten Browser verwenden",
+      "unsaved": "Ungespeicherte Änderungen werden nicht angezeigt",
+      "reset": "{file} wurde geändert, nachdem Skripte aktiviert wurden. Skripte sind wieder deaktiviert.",
+      "enableAgain": "Erneut aktivieren",
+      "dismiss": "Schließen",
+      "externalLink": "Dem Link zu {host} wurde nicht gefolgt",
+      "openLink": "Link öffnen",
+      "downloadRefused": "In einer Dokumentvorschau sind keine Downloads erlaubt",
+      "openWithSystem": "Mit System-App öffnen",
+      "schemeBlocked": "{url} kann hier nicht geöffnet werden",
+      "cannotShow": "Dieses Dokument kann nicht angezeigt werden"
+    },
+    "agent": {
+      "share": "Diese Seite für Agenten freigeben ({origin})",
+      "shareLabel": "Für Agenten freigeben",
+      "shareRead": "Nur lesen",
+      "shareControl": "Lesen und bedienen",
+      "levelDefault": "Standard",
+      "notShareable": "Diese Seite hat keine Webadresse, die für Agenten freigegeben werden könnte",
+      "shared": "Freigegeben",
+      "sharedControl": "Geteilt · darf bedienen",
+      "sharedWith": "Agenten können {origin} lesen",
+      "sharedWithControl": "Agenten können {origin} lesen und bedienen",
+      "sharedScope": "Die Freigabe endet, sobald die Seite diese Website verlässt.",
+      "sharedScopeProgram": "Sie endet auch, wenn ein anderes Programm diesen Port von {program} übernimmt.",
+      "sharedToast": "Agenten können jetzt {origin} lesen",
+      "sharedControlToast": "Agenten können {origin} jetzt lesen und bedienen",
+      "stopSharing": "Freigabe beenden",
+      "allowActions": "Aktionen auf dieser Seite erlauben",
+      "readOnly": "Nur lesen",
+      "shareFailed": "Diese Seite kann nicht für Agenten freigegeben werden",
+      "activity": {
+        "read": {
+          "done": "Seite gelesen",
+          "refused": "Abgelehnt: Diese Seite ist nicht freigegeben",
+          "failed": "Seite konnte nicht gelesen werden"
+        },
+        "click": {
+          "done": "Geklickt",
+          "refused": "Klick abgelehnt: Aktionen sind auf dieser Seite nicht erlaubt",
+          "failed": "Klick nicht möglich"
+        },
+        "hover": {
+          "done": "Darübergefahren",
+          "refused": "Hover abgelehnt: Aktionen sind auf dieser Seite nicht erlaubt",
+          "failed": "Hover nicht möglich"
+        },
+        "type": {
+          "done": "In ein Feld getippt",
+          "refused": "Eingabe abgelehnt: Aktionen sind auf dieser Seite nicht erlaubt",
+          "failed": "Eingabe nicht möglich"
+        },
+        "press": {
+          "done": "Eine Taste gedrückt",
+          "refused": "Tastendruck abgelehnt: Aktionen sind auf dieser Seite nicht erlaubt",
+          "failed": "Tastendruck nicht möglich"
+        },
+        "select": {
+          "done": "Eine Option gewählt",
+          "refused": "Auswahl abgelehnt: Aktionen sind auf dieser Seite nicht erlaubt",
+          "failed": "Auswahl nicht möglich"
+        },
+        "capture": {
+          "done": "Bildschirmfoto aufgenommen",
+          "refused": "Bildschirmfoto abgelehnt: Diese Seite ist nicht freigegeben",
+          "failed": "Bildschirmfoto nicht möglich"
+        },
+        "console": {
+          "done": "Konsole gelesen",
+          "refused": "Lesen der Konsole abgelehnt: Diese Seite ist nicht freigegeben",
+          "failed": "Konsole konnte nicht gelesen werden"
+        },
+        "eval": {
+          "done": "Code auf der Seite ausgeführt",
+          "refused": "Code-Ausführung auf dieser Seite abgelehnt",
+          "failed": "Code konnte nicht ausgeführt werden"
+        },
+        "open": {
+          "done": "Hat diese Seite geöffnet",
+          "refused": "Öffnen eines Tabs abgelehnt",
+          "failed": "Tab konnte nicht geöffnet werden"
+        },
+        "navigate": {
+          "done": "Ist zu einer anderen Adresse gegangen",
+          "refused": "Abgelehnt: Diese Seite erlaubt keine Aktionen",
+          "failed": "Adresse konnte nicht gewechselt werden"
+        },
+        "close": {
+          "done": "Hat diesen Tab geschlossen",
+          "refused": "Schließen abgelehnt: Diese Seite erlaubt keine Aktionen",
+          "failed": "Tab konnte nicht geschlossen werden"
+        }
+      },
+      "activityCount": "{count}×",
+      "activityTitle": "Was Agenten hier getan haben",
+      "activityLabel": "Agentenaktivität: {entry}",
+      "eval": {
+        "title": "Diesen Code auf {site} ausführen?",
+        "description": "Ein Agent möchte JavaScript auf dieser Seite ausführen. Er kann alles lesen und ändern, was du auf {site} kannst.",
+        "descriptionWithTitle": "Ein Agent möchte JavaScript auf „{title}“ ausführen. Er kann alles lesen und ändern, was du auf {site} kannst.",
+        "codeLabel": "Der Code, der ausgeführt wird",
+        "everyTime": "Du wirst bei jedem Ausschnitt erneut gefragt – diese Freigabe gilt nicht für den nächsten. Ob überhaupt gefragt wird, legst du unter Einstellungen → Integrierter Browser fest.",
+        "allow": "Einmal ausführen",
+        "deny": "Nicht ausführen"
+      }
+    },
+    "handoff": {
+      "send": "Diese Seite an den Chat senden",
+      "sendLabel": "An den Chat senden",
+      "noConversation": "Öffne eine Unterhaltung, an die die Seite gehen soll",
+      "pickElement": "Ein Element auswählen…",
+      "screenshot": "Einen Screenshot senden",
+      "consoleErrors": "Die Konsolenfehler senden",
+      "consoleClean": "Auf dieser Seite ist nichts schiefgegangen",
+      "picking": "Auswahl läuft…",
+      "pickingHint": "Klicke etwas auf der Seite an, oder beende mit Esc",
+      "pickingCancel": "Auswahl beenden",
+      "sent": "Zum Chat hinzugefügt",
+      "failed": "Diese Seite konnte nicht an den Chat gesendet werden",
+      "noConsoleErrors": "Diese Seite hat keine Fehler ausgegeben",
+      "chipElement": "Seitenelement",
+      "chipScreenshot": "Screenshot der Seite",
+      "chipConsole": "{count, plural, one {# Konsolenfehler} other {# Konsolenfehler}}",
+      "gone": "Diese Unterhaltung ist nicht mehr offen",
+      "consoleErrorsCount": "{count, plural, one {# Konsolenfehler senden} other {# Konsolenfehler senden}}"
+    }
+  },
+  "browser": {
+    "agent": {
+      "error": {
+        "grantRequired": "Dieser Tab wurde nicht für einen Agenten freigegeben. Gib ihn frei, damit der Agent die Seite lesen kann."
+      }
+    },
+    "inspector": {
+      "error": {
+        "switchedOff": "Dieser Tab wurde bei ausgeschaltetem Web-Inspektor geöffnet. Schalte ihn in den Browser-Einstellungen ein und öffne die Seite erneut."
+      }
+    }
   },
   "Pipeline": {
     "title": "Agenten-Pipeline",

@@ -357,6 +357,83 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl crate::acp::browser_tools::BrowserToolAccess for Stub {
+        async fn list_tabs(&self) -> crate::acp::browser_tools::BrowserTabsOutcome {
+            Default::default()
+        }
+        async fn snapshot(
+            &self,
+            tab_id: &str,
+            _max_chars: Option<usize>,
+        ) -> crate::acp::browser_tools::BrowserSnapshotOutcome {
+            crate::acp::browser_tools::BrowserSnapshotOutcome::refused(
+                tab_id,
+                crate::acp::browser_tools::ERROR_UNAVAILABLE,
+                "stub",
+            )
+        }
+
+        async fn console(
+            &self,
+            tab_id: &str,
+            _query: crate::browser::console::ConsoleQuery,
+        ) -> crate::acp::browser_tools::BrowserConsoleOutcome {
+            crate::acp::browser_tools::BrowserConsoleOutcome::refused(
+                tab_id,
+                crate::acp::browser_tools::ERROR_UNAVAILABLE,
+                "stub",
+            )
+        }
+
+        async fn eval(
+            &self,
+            tab_id: &str,
+            _request: crate::browser::eval::EvalRequest,
+        ) -> crate::acp::browser_tools::BrowserEvalOutcome {
+            crate::acp::browser_tools::BrowserEvalOutcome::refused(
+                tab_id,
+                crate::acp::browser_tools::ERROR_UNAVAILABLE,
+                "stub",
+            )
+        }
+
+        async fn tab_op(
+            &self,
+            op: crate::acp::browser_tools::BrowserTabOp,
+        ) -> crate::acp::browser_tools::BrowserTabOutcome {
+            crate::acp::browser_tools::BrowserTabOutcome::refused(
+                op.tab_id(),
+                crate::acp::browser_tools::ERROR_UNAVAILABLE,
+                "stub",
+            )
+        }
+
+        async fn capture(
+            &self,
+            tab_id: &str,
+            _request: crate::browser::capture::CaptureRequest,
+        ) -> crate::acp::browser_tools::BrowserCaptureOutcome {
+            crate::acp::browser_tools::BrowserCaptureOutcome::refused(
+                tab_id,
+                crate::acp::browser_tools::ERROR_UNAVAILABLE,
+                "stub",
+            )
+        }
+
+        async fn act(
+            &self,
+            tab_id: &str,
+            _request: crate::browser::agent::ActionRequest,
+        ) -> crate::acp::browser_tools::BrowserActOutcome {
+            crate::acp::browser_tools::BrowserActOutcome::refused(
+                tab_id,
+                crate::acp::browser_tools::ERROR_UNAVAILABLE,
+                crate::acp::browser_tools::NO_BROWSER_NOTE,
+            )
+        }
+    }
+
     /// A temp directory short enough to bind a socket inside, whatever the
     /// ambient `$TMPDIR` happens to be.
     ///
@@ -413,6 +490,7 @@ mod tests {
         let listener = DelegationListener::new(
             broker,
             Arc::new(TokenRegistry::default()),
+            Arc::new(Stub),
             Arc::new(Stub),
             Arc::new(Stub),
             Arc::new(Stub),

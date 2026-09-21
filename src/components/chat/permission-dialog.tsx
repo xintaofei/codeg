@@ -128,7 +128,9 @@ export function PermissionDialog({
                 0.63–0.72 `_meta.claudeCode.title`, else `_meta.permission.title`
                 — codex ≥1.7.0 and claude ≥0.73.0, whose permission tool calls
                 carry no `claudeCode` block at all) over the raw title (the
-                shell command, which the command block below already shows). */}
+                shell command, which the command block below already shows).
+                `parsePermissionToolCall` also drops a description that IS that
+                command, which is what claude-agent-acp ≥0.79.0 puts there. */}
             <span className="truncate">
               {parsed.description ?? parsed.title}
             </span>

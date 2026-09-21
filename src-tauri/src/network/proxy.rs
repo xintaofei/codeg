@@ -166,6 +166,30 @@ pub(crate) fn proxy_env_vars_missing_scheme() -> Vec<String> {
         .collect()
 }
 
+/// The one proxy URL a consumer that can take only one should use: the
+/// process environment as the app's own HTTP clients and agent processes see
+/// it. `HTTPS_PROXY` wins (most page traffic is TLS), then `ALL_PROXY`, then
+/// `HTTP_PROXY`; codeg's setting writes all of them with one value, so the
+/// order only matters for externally exported variables. A scheme-less value
+/// is repaired the way [`normalize_proxy_url`] does; an unparsable one is
+/// ignored. (Only the built-in browser reads it, hence desktop-only.)
+#[cfg(feature = "tauri-runtime")]
+pub fn effective_proxy_url() -> Option<String> {
+    const ORDER: [&str; 6] = [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ];
+    let vars = current_proxy_env_vars();
+    ORDER
+        .iter()
+        .find_map(|key| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone()))
+        .and_then(|raw| normalize_proxy_url(&raw).ok())
+}
+
 pub fn current_proxy_env_vars() -> Vec<(String, String)> {
     PROXY_ENV_KEYS
         .iter()

@@ -12,15 +12,24 @@ vi.mock("./use-create-task-from-message", () => ({
 
 import { TurnStats } from "./turn-stats"
 import { MessageScrollProvider } from "./message-scroll-context"
+import { ModelLabelProvider } from "./model-label-context"
+import type { ModelLabelResolver } from "@/hooks/use-model-labels"
 import enMessages from "@/i18n/messages/en.json"
 
-function renderStats(ui: ReactNode) {
-  return render(
+function renderStats(ui: ReactNode, modelLabel?: ModelLabelResolver) {
+  const tree = (
     <NextIntlClientProvider locale="en" messages={enMessages}>
       <MessageScrollProvider value={{ scrollToIndex: vi.fn() }}>
         {ui}
       </MessageScrollProvider>
     </NextIntlClientProvider>
+  )
+  return render(
+    modelLabel ? (
+      <ModelLabelProvider value={modelLabel}>{tree}</ModelLabelProvider>
+    ) : (
+      tree
+    )
   )
 }
 
@@ -137,5 +146,98 @@ describe("TurnStats fork-from-here gating", () => {
     expect(await screen.findByRole("tooltip")).toHaveTextContent(
       enMessages.Folder.chat.messageList.forkNotReady
     )
+  })
+})
+
+const modelLabel = enMessages.Folder.chat.messageList.model
+
+describe("TurnStats model label", () => {
+  // qoder's transcripts record the account-internal key (`qfmodel`) while its
+  // own picker — and therefore the composer — says `Qwen3.8-Flash`. The two
+  // surfaces used to disagree on screen.
+  it("renders the agent's display name for an opaque model id", async () => {
+    renderStats(<TurnStats copyText="hello" model="qfmodel" />, (id) =>
+      id === "qfmodel" ? "Qwen3.8-Flash" : (id ?? null)
+    )
+    await userEvent.hover(screen.getByLabelText(modelLabel))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Qwen3.8-Flash"
+    )
+  })
+
+  it("maps every model of a reply that switched mid-turn", async () => {
+    renderStats(
+      <TurnStats
+        copyText="hello"
+        model="qfmodel"
+        models={["qfmodel", "qmodel_38max"]}
+      />,
+      (id) =>
+        id === "qfmodel"
+          ? "Qwen3.8-Flash"
+          : id === "qmodel_38max"
+            ? "Qwen3.8-Max"
+            : (id ?? null)
+    )
+    await userEvent.hover(screen.getByLabelText(modelLabel))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Qwen3.8-Flash, Qwen3.8-Max"
+    )
+  })
+
+  it("shows an unmapped id verbatim", async () => {
+    // A worse label than the real name, but never a wrong one — and it is what
+    // this row showed before the mapping existed.
+    renderStats(<TurnStats copyText="hello" model="qfmodel" />, () => null)
+    await userEvent.hover(screen.getByLabelText(modelLabel))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("qfmodel")
+  })
+
+  it("falls back to the raw id with no provider above it", async () => {
+    // Read-only embeds (the sub-agent dialog) mount TurnStats outside the
+    // thread's provider; they must still render a model rather than crash.
+    renderStats(<TurnStats copyText="hello" model="claude-opus-5" />)
+    await userEvent.hover(screen.getByLabelText(modelLabel))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "claude-opus-5"
+    )
+  })
+})
+
+const tokenStatsLabel = enMessages.Folder.chat.messageList.tokenStats
+
+describe("TurnStats zeroed counters", () => {
+  const zeroUsage = {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+  }
+
+  it("hides the token tooltip rather than claiming the reply cost nothing", () => {
+    // Qoder redacts every counter to 0 for its own hosted models, so a reply
+    // that plainly consumed context arrives all-zero. The old row showed a
+    // lone "Input 0", which reads as a broken counter, not as missing data.
+    renderStats(<TurnStats copyText="hello" usage={zeroUsage} />)
+    expect(screen.queryByLabelText(tokenStatsLabel)).not.toBeInTheDocument()
+  })
+
+  it("keeps the jump affordance for a zero-counter reply", () => {
+    // Suppressing the counters must not also suppress navigation: the reply is
+    // substantial whether or not its usage survived the agent's redaction.
+    renderStats(
+      <TurnStats copyText="hello" usage={zeroUsage} previousUserIndex={3} />
+    )
+    expect(screen.getByLabelText(jumpLabel)).toBeInTheDocument()
+  })
+
+  it("shows the tooltip as soon as one counter is non-zero", () => {
+    renderStats(
+      <TurnStats
+        copyText="hello"
+        usage={{ ...zeroUsage, input_tokens: 2_803 }}
+      />
+    )
+    expect(screen.getByLabelText(tokenStatsLabel)).toBeInTheDocument()
   })
 })

@@ -567,6 +567,16 @@ export const FEEDBACK_SETTINGS_CHANGED_EVENT = "feedback-settings://changed"
 export const CHAT_AUTHORING_SETTINGS_CHANGED_EVENT =
   "chat-authoring-settings://changed"
 
+/** Global side-channel announcing a browser-tools switch move (payload is
+ *  `BrowserToolsSettings`). The same two-editor problem as
+ *  [CHAT_AUTHORING_SETTINGS_CHANGED_EVENT], and for the same reason: the
+ *  group and `browser_eval` are two keys of one record, the settings form
+ *  writes the pair, and the status-bar codeg-mcp popover — which now carries
+ *  both rows — writes one key. Mirrors the Rust
+ *  `BROWSER_TOOLS_SETTINGS_CHANGED_EVENT`. */
+export const BROWSER_TOOLS_SETTINGS_CHANGED_EVENT =
+  "browser-tools-settings://changed"
+
 /** Global side-channel announcing a delegation-settings write (payload is
  *  `DelegationSettings`). Same two-editor problem as
  *  [CHAT_AUTHORING_SETTINGS_CHANGED_EVENT]: the settings form writes all four

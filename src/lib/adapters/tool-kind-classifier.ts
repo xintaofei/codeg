@@ -156,7 +156,10 @@ export function classifyToolKind(toolName: string): ToolKindLabel {
     name === "bash" ||
     name === "exec_command" ||
     name === "shell" ||
-    // pi swaps `bash` for `powershell` on Windows; same tool, same tally.
+    // Windows swaps `bash` for `powershell` — pi always, Claude Code whenever
+    // the machine has no Git Bash. Same tool, same tally. Kept even though
+    // `normalizeToolName` now aliases the name: this classifier is fed the RAW
+    // tool name (see the tool-group builder in `ai-elements-adapter`).
     name === "powershell" ||
     name === "execute_command" ||
     name === "run_command" ||

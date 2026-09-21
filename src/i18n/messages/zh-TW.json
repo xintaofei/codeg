@@ -677,6 +677,8 @@
       "configJson": "MCP 配置(JSON)",
       "draftTitle": "新建 MCP",
       "draftDescription": "填寫 Server ID 與設定以建立本地 MCP 伺服器。",
+      "suggestedLabel": "從一個已知的伺服器開始",
+      "suggestedChromeNote": "把表單填成 Google 官方的 chrome-devtools-mcp——registry 裡有同名的仿冒套件，這裡釘死的是真的那個。它驅動的是**另一個** Chrome，codeg 管不到：你會拿到內建瀏覽器工具沒有的網路與效能資料，也拿不到它們的那套防護——沒有按分頁分享、沒有活動列、沒有逐段程式碼確認。`npx` 會在第一次執行時從 npm 下載這個套件。",
       "serverIdLabel": "Server ID",
       "serverIdPlaceholder": "Server ID（例如：my-mcp）",
       "typeHint": "支援類型：stdio、http（別名 streamable-http、streamableHttp）、sse。env 僅適用於 stdio；遠端 MCP 請透過 headers 欄位傳遞認證 token。",
@@ -2163,6 +2165,7 @@
           "navigation": "選單導覽",
           "more": "更多"
         },
+        "browserTab": "開啟瀏覽器",
         "showPet": "顯示寵物"
       },
       "mcp": {
@@ -2187,19 +2190,6 @@
         "sessions": "代理工作階段",
         "activeDelegations": "進行中的委派",
         "depthLimit": "深度上限",
-        "tools": "工具",
-        "groupDelegation": "多代理委派",
-        "descDelegation": "把任務交給另一個代理處理。",
-        "groupFeedback": "即時回饋",
-        "descFeedback": "回合進行中補充說明，不打斷執行。",
-        "groupAsk": "向使用者提問",
-        "descAsk": "讓代理拿不準時先問你。",
-        "groupSessions": "工作階段查詢",
-        "descSessions": "查詢歷史工作階段及其結果。",
-        "groupAutomations": "建立自動化",
-        "descAutomations": "建立和管理定時自動化。",
-        "groupTaskboard": "建立任務",
-        "descTaskboard": "建立和管理工作任務。",
         "start": "啟動服務",
         "starting": "正在啟動…",
         "actionFailed": "操作失敗：{message}",
@@ -2248,12 +2238,20 @@
     },
     "fileWorkspace": {
       "files": "檔案",
+      "newTab": "新增分頁",
+      "newBrowserTab": "瀏覽器分頁",
+      "openFile": "開啟檔案…",
+      "openFileTitle": "開啟檔案",
+      "localServices": "本機服務",
+      "localServiceFromAgent": "智慧代理",
       "closeFileTab": "關閉檔案分頁",
       "close": "關閉",
       "closeOthers": "關閉其它",
       "closeAll": "關閉所有",
       "preview": "預覽",
       "editSource": "編輯原始碼",
+      "openInSystemBrowser": "在系統瀏覽器中開啟",
+      "more": "更多",
       "maximize": "最大化",
       "restore": "還原",
       "emptyDirectory": "空目錄"
@@ -2379,7 +2377,6 @@
       "imageZoomOut": "縮小",
       "imageZoomReset": "重設縮放",
       "htmlPreviewTitle": "HTML 預覽",
-      "htmlPreviewTrust": "執行指令碼",
       "htmlPreviewTrustHint": "執行此檔案的指令碼並允許網路存取。僅對信任的檔案啟用。",
       "officePreviewTitle": "辦公文件預覽",
       "officeFullRender": "完整渲染",
@@ -4919,21 +4916,53 @@
   "AgentToolsSettings": {
     "title": "對話內工具",
     "description": "codeg 在對話中額外提供給智慧代理的工具。工具會在代理啟動時注入，變更只對之後啟動的代理生效。",
-    "feedbackLabel": "即時回饋",
-    "feedbackHint": "在智慧代理工作時向它傳送備註與修正。支援即時插入的代理會立刻在目前回合中看到你的備註；其他代理則透過檢查回饋的工具讀取——這類代理通常只有在提示中提到時才會檢查，例如在訊息中加上「定期檢查我的即時回饋」。",
-    "questionLabel": "向使用者提問",
-    "questionHint": "允許智能體暫停並向你提出多選問題，問題會顯示在對話輸入框上方。智能體會一直等待，直到你作答（或略過）。",
-    "sessionInfoLabel": "取得工作階段資訊",
-    "sessionInfoHint": "允許智慧代理查詢你在訊息中提及的工作階段（工作階段徽章），讀取其標題、代理、狀態、工作區、Token 用量與最近訊息。",
-    "automationsLabel": "建立自動化",
-    "automationsHint": "把對話儲存為按排程執行的自動化。預設關閉——它之後會自行啟動代理。",
-    "workTasksLabel": "建立待辦任務",
-    "workTasksHint": "從對話中往待辦看板排一張任務卡。預設關閉——它會寫入應用程式狀態。",
     "save": "儲存",
     "saving": "儲存中…",
     "saved": "工具設定已儲存",
     "saveFailed": "儲存工具設定失敗",
     "loadFailed": "載入失敗：{detail}"
+  },
+  "AgentTools": {
+    "delegation": {
+      "label": "多代理委派",
+      "short": "把任務交給另一個代理處理。",
+      "hint": "允許代理把一個自洽的子任務交給另一個代理，後者在自己的工作階段裡跑完再回報。其餘設定——最多能巢狀幾層、由哪個代理來跑——在上面那一節。"
+    },
+    "feedback": {
+      "label": "即時回饋",
+      "short": "回合進行中補充說明，不打斷執行。",
+      "hint": "在智慧代理工作時向它傳送備註與修正。支援即時插入的代理會立刻在目前回合中看到你的備註；其他代理則透過檢查回饋的工具讀取——這類代理通常只有在提示中提到時才會檢查，例如在訊息中加上「定期檢查我的即時回饋」。"
+    },
+    "ask": {
+      "label": "向使用者提問",
+      "short": "讓代理拿不準時先問你。",
+      "hint": "允許智能體暫停並向你提出多選問題，問題會顯示在對話輸入框上方。智能體會一直等待，直到你作答（或略過）。"
+    },
+    "sessions": {
+      "label": "取得工作階段資訊",
+      "short": "查詢歷史工作階段及其結果。",
+      "hint": "允許智慧代理查詢你在訊息中提及的工作階段（工作階段徽章），讀取其標題、代理、狀態、工作區、Token 用量與最近訊息。"
+    },
+    "browser": {
+      "label": "讀取和操作內建瀏覽器",
+      "short": "開啟、讀取並操作內建瀏覽器裡的頁面。",
+      "hint": "允許代理看到內建瀏覽器裡開著哪些頁面、讀取你共享的那些，並在你允許操作的頁面上點擊和輸入；它也可以自己開啟一個網址、把分頁指向別處、關閉分頁。預設關閉。讀哪一頁仍然是你在那個分頁的工具列上單獨做的決定——但請注意：只要設了預設共享層級，代理自己開啟的頁面一載入就會按那個層級共享給它。關閉這個開關立即生效，正在執行的代理也一樣。"
+    },
+    "browserEval": {
+      "label": "在內建瀏覽器中執行程式碼",
+      "short": "在你共享的頁面上執行它自己寫的程式碼，預設不詢問。",
+      "hint": "允許智慧代理在你分享的頁面上執行它自己寫的 JavaScript。預設關閉，而且需要先開啟上面那個開關。開啟它就意味著程式碼不經詢問直接執行，所以決定權就在這個開關上；如果想逐段過目，可在「設定 → 內建瀏覽器」裡改成每次都問你。"
+    },
+    "automations": {
+      "label": "建立自動化",
+      "short": "建立和管理定時自動化。",
+      "hint": "把對話儲存為按排程執行的自動化。預設關閉——它之後會自行啟動代理。"
+    },
+    "taskboard": {
+      "label": "建立待辦任務",
+      "short": "建立和管理工作任務。",
+      "hint": "從對話中往待辦看板排一張任務卡。預設關閉——它會寫入應用程式狀態。"
+    }
   },
   "DesktopNotificationSettings": {
     "title": "桌面通知",
@@ -4992,6 +5021,98 @@
     "tonePop": "輕點",
     "toneAlert": "警示",
     "toneDescend": "下行音"
+  },
+  "BrowserSettings": {
+    "title": "內建瀏覽器",
+    "description": "從對話、工具結果和終端機開啟的網頁可以作為分頁顯示在檔案旁邊，而不必離開應用程式。",
+    "defaultTargetTitle": "連結在哪裡開啟",
+    "defaultTargetHint": "依來源分別設定。按住 ⌘/Ctrl 點擊連結可暫時改用另一種方式。",
+    "sourceTranscript": "對話訊息",
+    "sourceToolCard": "工具結果",
+    "sourceTerminal": "終端機",
+    "sourceEditor": "編輯器",
+    "sourceNotification": "通知",
+    "targetBuiltin": "內建瀏覽器",
+    "targetSystem": "系統瀏覽器",
+    "devtoolsTitle": "網頁檢閱器",
+    "devtoolsHint": "在分頁的「更多」選單中提供「開啟檢查器」，並允許頁面上的「檢查元素」。預設開啟。對此後開啟的分頁生效。",
+    "surfaceTitle": "分頁承載方式",
+    "surfaceHint": "網頁以何種方式承載。除非內嵌分頁在本機運作異常，否則請保持「自動」。對之後開啟的分頁生效。",
+    "surfaceAuto": "自動",
+    "surfaceChild": "內嵌於工作區",
+    "surfaceWindow": "獨立視窗",
+    "clearTitle": "瀏覽資料",
+    "clearHint": "所有瀏覽器分頁共用的 Cookie、快取和網站儲存資料。清除後會登出各網站。",
+    "clearAction": "清除…",
+    "clearConfirmTitle": "要清除瀏覽資料嗎？",
+    "clearConfirmDescription": "將移除內建瀏覽器的 Cookie、快取和網站儲存資料。已開啟的分頁會保留，但各網站的登入狀態會失效。",
+    "clearConfirmAction": "清除",
+    "cancel": "取消",
+    "cleared": "已清除瀏覽資料",
+    "clearFailed": "無法清除瀏覽資料：{message}",
+    "proxyTitle": "網路代理",
+    "proxyHint": "瀏覽器分頁使用「系統設定」中的代理。本機位址（localhost）永遠不走代理。",
+    "proxyOn": "正在使用 {url}",
+    "proxyOff": "直接連線",
+    "proxyNextTab": "代理變更對此後開啟的分頁生效。",
+    "proxyRestart": "代理已變更，重新啟動 codeg 後瀏覽器分頁才會使用新代理。",
+    "proxyUnsupported": "目前的 macOS 版本不支援（需要 macOS 14 或更新）。",
+    "proxyUnusable": "設定的代理不是瀏覽器分頁能使用的類型（僅支援 http 與 socks5）。",
+    "suspendTitle": "卸載背景分頁",
+    "suspendHint": "釋放在背景停留 30 分鐘的瀏覽器分頁所佔的記憶體。切回時會重新載入；捲動位置與歷史記錄會遺失。",
+    "downloadsTitle": "下載",
+    "downloadsHint": "網頁下載的檔案儲存於 {dir}。不會自動開啟，也不會覆蓋既有檔案。",
+    "rulesTitle": "站點規則",
+    "rulesHint": "按站點設定：一律用內建瀏覽器、一律用系統瀏覽器，或阻止。模式可以是主機名稱、*.example.com 或 *，可選加 :連接埠；最具體的符合項生效。",
+    "serviceOpenTitle": "本機服務",
+    "serviceOpenHint": "終端機裡啟動的服務印出位址時，在瀏覽器分頁中開啟它。只接受本機位址，且必須確認那個連接埠上真的有程式在監聽。",
+    "serviceOpenOff": "什麼都不做",
+    "serviceOpenNotify": "通知我",
+    "serviceOpenOpen": "直接開啟分頁",
+    "rulePatternPlaceholder": "example.com 或 *.example.com",
+    "rulePatternLabel": "站點模式",
+    "ruleActionLabel": "動作",
+    "ruleActionFor": "{pattern} 的動作",
+    "ruleAdd": "新增",
+    "ruleRemove": "刪除規則",
+    "ruleActionBlock": "阻止",
+    "ruleManaged": "由管理員設定",
+    "ruleInvalid": "不是有效的模式",
+    "ruleDuplicate": "已有針對該模式的規則",
+    "rulesEmpty": "還沒有規則。",
+    "agentGrantTitle": "預設共享權限",
+    "agentGrantHint": "分頁每開啟一個網站，就依這個權限共享給智能體，不再詢問。頁面上的控制項仍可逐站修改或收回；選「不共享」則完全交由該控制項決定。",
+    "agentGrantRead": "讀取權限",
+    "agentGrantControl": "讀取並操作權限",
+    "agentGrantNone": "不共享",
+    "evalApprovalTitle": "在頁面上執行程式碼",
+    "evalApprovalHint": "智慧代理要在共享為「讀取並操作權限」的頁面上執行它自己寫的 JavaScript 時怎麼辦。預設直接執行，不再詢問——決定權在「在內建瀏覽器中執行程式碼」那個開關（預設關閉，要你親手開啟）和頁面的共享權限上；每一次執行都記在那個分頁的智慧代理活動裡。選「每次都問我」則會把每一段程式碼原樣擺在你面前，等你回答。",
+    "evalApprovalAsk": "每次都問我",
+    "evalApprovalSilent": "靜默執行",
+    "terminalMenuTitle": "終端機連結選單",
+    "terminalMenuHint": "點擊終端機中的連結時先顯示一個小選單（內建瀏覽器、系統瀏覽器、複製連結），而不是直接開啟。⌘/Ctrl 點擊仍會直接開啟。",
+    "htmlPreviewTitle": "HTML 檔案預覽",
+    "htmlPreviewHint": "透過內建瀏覽器以受限的文件檢視顯示 HTML 檔案：在你為某個檔案啟用之前不執行指令碼，且只能存取它自己的資料夾。關閉後使用內嵌預覽，與網頁版相同。",
+    "managedDisabled": "管理員原則已關閉內建瀏覽器；連結將在系統瀏覽器中開啟。",
+    "profilesTitle": "設定檔",
+    "profilesHint": "每個設定檔有自己的 Cookie、網站儲存與登入狀態。新分頁會在下方選定的設定檔中開啟；分頁工具列可以把目前頁面在另一個設定檔裡開啟。",
+    "profileDefault": "預設",
+    "profileNewTabsTitle": "新分頁使用",
+    "profileNamePlaceholder": "設定檔名稱，例如「工作」",
+    "profileNameLabel": "設定檔名稱",
+    "profileAdd": "新增設定檔",
+    "profileNameRequired": "請輸入設定檔名稱",
+    "profileNameDuplicate": "已有同名的設定檔",
+    "profileClear": "清除 {name} 的瀏覽資料",
+    "profileDelete": "刪除設定檔 {name}",
+    "profileDeleteConfirmTitle": "刪除設定檔 {name}？",
+    "profileDeleteConfirmDescription": "它的分頁會被關閉，Cookie、快取與網站儲存會被刪除。此操作無法復原。",
+    "profileDeleteConfirmAction": "刪除",
+    "profileDeleted": "設定檔已刪除",
+    "profileDeleteFailed": "無法刪除設定檔：{message}",
+    "clearConfirmDescriptionProfile": "將刪除設定檔 {name} 的 Cookie、快取與網站儲存。已開啟的分頁會保留，但各網站的登入狀態會失效。",
+    "signInUaTitle": "Google 登入相容",
+    "signInUaHint": "Google 拒絕在內嵌瀏覽器中登入。開啟後，分頁只對 Google 的登入頁面（accounts.google.com）呈現 Firefox 身分；其他地方一律以自身所在引擎的身分示人，不會冒充 Firefox。僅對嵌入式分頁生效，獨立視窗不適用；登入頁把你跳轉到別的網站時，到那裡的第一個請求仍帶著登入身分。"
   },
   "LogsSettings": {
     "loading": "載入中…",
@@ -6087,6 +6208,251 @@
     "terminalNoDirectory": "這張卡片沒有工作目錄",
     "confirmDeleteTerminals": "{count} 個執行中的終端機會被關閉，其中的處理程序也會一併結束。",
     "confirmDeleteNotesAndTerminals": "你寫下的 {notes} 則便條將被永久刪除，另有 {terminals} 個執行中的終端機會被結束。"
+  },
+  "Browser": {
+    "toolbar": {
+      "back": "上一頁",
+      "forward": "下一頁",
+      "reload": "重新整理",
+      "stop": "停止",
+      "openInSystem": "在系統瀏覽器中開啟",
+      "more": "更多",
+      "copyUrl": "複製連結",
+      "copied": "已複製連結",
+      "openInspector": "開啟檢查器",
+      "inspectorFailed": "無法開啟檢查器",
+      "addressPlaceholder": "輸入網址",
+      "invalidUrl": "不是有效的網址",
+      "profile": "設定檔：{name}",
+      "profileMenuLabel": "在其他設定檔中開啟此頁",
+      "profileDefault": "預設"
+    },
+    "status": {
+      "popupDenied": "已攔截彈出視窗：{host}",
+      "popupDeniedNoGesture": "並非由點擊觸發",
+      "popupDeniedBlockedScheme": "不允許的網址類型",
+      "popupOpenAnyway": "仍要開啟",
+      "dismiss": "關閉",
+      "errorDns": "找不到此網站",
+      "errorTls": "連線不安全",
+      "errorBlocked": "內建瀏覽器不允許開啟此網址",
+      "errorPopupDenied": "彈出視窗已攔截",
+      "errorFailed": "無法載入頁面",
+      "errorFailedHint": "沒有連線到該網站。請檢查網路與網址，必要時可能需要代理。",
+      "retry": "重試",
+      "openInSystem": "在系統瀏覽器中開啟",
+      "ownedWindow": "此頁面顯示在獨立視窗中。",
+      "ownedWindowShow": "顯示視窗",
+      "remoteBanner": "經由 {host} 開啟",
+      "navigationBlocked": "已阻止跳轉：{host}",
+      "navigationBlockedRule": "被站點規則阻止",
+      "navigationBlockedScheme": "此類位址不能在這裡開啟",
+      "navigationBlockedOpenSystem": "用系統應用程式開啟",
+      "errorBlockedHint": "站點規則阻止了這個位址。規則在「設定 → 內建瀏覽器」中管理。",
+      "popupDeniedBlockedHost": "被站點規則阻止",
+      "channelDegraded": "此分頁的彈出視窗會被攔截，網址列可能跟不上頁面",
+      "channelDegradedHint": "codeg 未能載入頁面指令碼。此頁面開啟的彈出視窗會被攔截，網址列不會跟隨頁內導覽，在頁面中按尋找快速鍵也不會開啟尋找列。重新開啟此分頁會再試一次。",
+      "downloadsDenied": "已攔截下載：{host}",
+      "downloadsDeniedNoGesture": "多個檔案，不是由點擊觸發",
+      "agentGrantLost": "分享已結束：頁面離開了 {origin}",
+      "agentGrantLostShare": "也分享 {origin}",
+      "agentGrantReplaced": "分享已結束：現在是另一個程式在 {origin} 上提供服務",
+      "agentGrantReplacedShare": "仍然分享"
+    },
+    "tab": {
+      "untitled": "新分頁"
+    },
+    "drawer": {
+      "title": "內建瀏覽器",
+      "description": "從對話中開啟的網頁",
+      "openInWorkspace": "在工作區中開啟",
+      "cannotOpen": "無法在此開啟此網址。"
+    },
+    "bridge": {
+      "frameTitle": "開發伺服器預覽",
+      "opening": "正在透過伺服器連線…",
+      "reload": "重新載入",
+      "openExternal": "在新分頁開啟",
+      "copyAddress": "複製網址",
+      "copied": "已複製網址",
+      "unreachableTitle": "無法連上連接埠橋接",
+      "unreachableHint": "codeg 伺服器把這個頁面放在 {origin}，但你的瀏覽器連不上它。請開放該連接埠（見 CODEG_BRIDGE_PORTS）或設定 CODEG_BRIDGE_PUBLIC_HOST；若 codeg 以 HTTPS 提供服務，橋接連接埠也需要 HTTPS。",
+      "errorTitle": "無法在這裡顯示此頁面"
+    },
+    "download": {
+      "started": "正在下載…",
+      "completed": "已儲存",
+      "failed": "下載失敗",
+      "reveal": "在資料夾中顯示",
+      "dismiss": "忽略"
+    },
+    "find": {
+      "placeholder": "在頁面中尋找",
+      "next": "下一個",
+      "previous": "上一個",
+      "noMatches": "無相符項",
+      "close": "關閉"
+    },
+    "toast": {
+      "firstOpen": "已在內建瀏覽器中開啟",
+      "firstOpenHint": "按住 ⌘/Ctrl 點擊連結可改用系統瀏覽器。預設方式可在設定中修改。",
+      "useSystemAlways": "一律使用系統瀏覽器",
+      "serviceDetected": "{address} 上有服務正在執行",
+      "serviceDetectedHint": "來自終端機。可在「設定 → 內建瀏覽器」中改成自動開啟。",
+      "serviceOpen": "開啟",
+      "blockedHost": "被站點規則阻止：{host}"
+    },
+    "link": {
+      "openBuiltin": "在內建瀏覽器中開啟",
+      "openSystem": "在系統瀏覽器中開啟",
+      "copy": "複製連結"
+    },
+    "doc": {
+      "scriptsOff": "啟用指令碼",
+      "scriptsOn": "指令碼已啟用",
+      "scriptsHint": "執行此文件的指令碼。指令碼只能讀取所在資料夾中的檔案，無法存取網路。之後這些檔案若有任何變更，指令碼會再次關閉。",
+      "reload": "重新載入",
+      "more": "更多",
+      "copyPath": "複製路徑",
+      "useInline": "使用內嵌預覽",
+      "useGuest": "使用內建瀏覽器預覽",
+      "unsaved": "未儲存的變更不會顯示",
+      "reset": "{file} 在啟用指令碼後發生了變更，指令碼已再次關閉。",
+      "enableAgain": "再次啟用",
+      "dismiss": "關閉",
+      "externalLink": "未跟隨指向 {host} 的連結",
+      "openLink": "開啟連結",
+      "downloadRefused": "文件預覽中不允許下載",
+      "openWithSystem": "用系統應用程式開啟",
+      "schemeBlocked": "{url} 無法在這裡開啟",
+      "cannotShow": "無法顯示此文件"
+    },
+    "agent": {
+      "share": "將此頁面分享給智慧代理（{origin}）",
+      "shareLabel": "分享給智慧代理",
+      "shareRead": "讀取權限",
+      "shareControl": "讀取並操作權限",
+      "levelDefault": "預設",
+      "notShareable": "此頁面沒有可分享給智慧代理的網址",
+      "shared": "已分享",
+      "sharedControl": "已共享 · 可操作",
+      "sharedWith": "智慧代理可讀取 {origin}",
+      "sharedWithControl": "智慧代理可以讀取並操作 {origin}",
+      "sharedScope": "頁面一旦離開該網站，分享即結束。",
+      "sharedScopeProgram": "如果這個連接埠從 {program} 換成了別的程式，分享同樣結束。",
+      "sharedToast": "智慧代理現在可以讀取 {origin}",
+      "sharedControlToast": "智慧代理現在可以讀取並操作 {origin}",
+      "stopSharing": "停止分享",
+      "allowActions": "允許在此頁面上操作",
+      "readOnly": "僅讀取",
+      "shareFailed": "此頁面無法分享給智慧代理",
+      "activity": {
+        "read": {
+          "done": "讀取了頁面",
+          "refused": "已拒絕：此頁面未分享",
+          "failed": "讀取頁面失敗"
+        },
+        "click": {
+          "done": "點擊了",
+          "refused": "已拒絕點擊：此頁面不允許操作",
+          "failed": "無法點擊"
+        },
+        "hover": {
+          "done": "懸停了",
+          "refused": "已拒絕懸停：此頁面不允許操作",
+          "failed": "無法懸停"
+        },
+        "type": {
+          "done": "在輸入框中輸入了",
+          "refused": "已拒絕輸入：此頁面不允許操作",
+          "failed": "無法輸入"
+        },
+        "press": {
+          "done": "按下了一個鍵",
+          "refused": "已拒絕按鍵：此頁面不允許操作",
+          "failed": "無法按鍵"
+        },
+        "select": {
+          "done": "選擇了一個選項",
+          "refused": "已拒絕選擇：此頁面不允許操作",
+          "failed": "無法選擇選項"
+        },
+        "capture": {
+          "done": "擷取了一張截圖",
+          "refused": "已拒絕截圖：此頁面未分享",
+          "failed": "截圖失敗"
+        },
+        "console": {
+          "done": "讀取了主控台",
+          "refused": "已拒絕讀取主控台：此頁面未分享",
+          "failed": "讀取主控台失敗"
+        },
+        "eval": {
+          "done": "在頁面上執行了程式碼",
+          "refused": "已拒絕在此頁面執行程式碼",
+          "failed": "程式碼沒能執行"
+        },
+        "open": {
+          "done": "開啟了這個頁面",
+          "refused": "已拒絕開啟分頁",
+          "failed": "無法開啟分頁"
+        },
+        "navigate": {
+          "done": "跳轉到了另一個網址",
+          "refused": "已拒絕跳轉：此頁面不允許操作",
+          "failed": "無法更換網址"
+        },
+        "close": {
+          "done": "關閉了這個分頁",
+          "refused": "已拒絕關閉：此頁面不允許操作",
+          "failed": "無法關閉這個分頁"
+        }
+      },
+      "activityCount": "{count} 次",
+      "activityTitle": "智能體在此頁面的操作",
+      "activityLabel": "智能體操作記錄：{entry}",
+      "eval": {
+        "title": "在 {site} 上執行這段程式碼？",
+        "description": "有智慧代理想在這個頁面上執行 JavaScript。你在 {site} 上能讀取和變更的一切，它都能。",
+        "descriptionWithTitle": "有智慧代理想在「{title}」上執行 JavaScript。你在 {site} 上能讀取和變更的一切，它都能。",
+        "codeLabel": "它要執行的程式碼",
+        "everyTime": "每一段程式碼都會再問你一次——核准這一段不等於核准下一段。問不問由「設定 → 內建瀏覽器」決定。",
+        "allow": "執行這一次",
+        "deny": "不要執行"
+      }
+    },
+    "handoff": {
+      "send": "把這個頁面傳給對話",
+      "sendLabel": "傳給對話",
+      "noConversation": "先開啟一個對話，才能把頁面傳過去",
+      "pickElement": "選擇一個元素…",
+      "screenshot": "傳送一張截圖",
+      "consoleErrors": "傳送主控台錯誤",
+      "consoleClean": "這個頁面沒有出錯",
+      "picking": "選擇中…",
+      "pickingHint": "在頁面上點一個元素，或按 Esc 結束",
+      "pickingCancel": "結束選擇",
+      "sent": "已加入對話",
+      "failed": "這個頁面傳不過去",
+      "noConsoleErrors": "這個頁面沒有印出過錯誤",
+      "chipElement": "頁面元素",
+      "chipScreenshot": "頁面截圖",
+      "chipConsole": "{count, plural, other {# 條主控台錯誤}}",
+      "gone": "那個對話已經關掉了",
+      "consoleErrorsCount": "{count, plural, other {傳送 # 條主控台錯誤}}"
+    }
+  },
+  "browser": {
+    "agent": {
+      "error": {
+        "grantRequired": "這個分頁尚未共享給智慧體。共享後智慧體才能讀取頁面。"
+      }
+    },
+    "inspector": {
+      "error": {
+        "switchedOff": "這個分頁是在網頁檢查器關閉時開啟的。請到瀏覽器設定中開啟它，然後重新開啟該頁面。"
+      }
+    }
   },
   "Pipeline": {
     "title": "智能體流程",

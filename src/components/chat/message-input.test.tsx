@@ -15,8 +15,11 @@ import type { Editor } from "@tiptap/core"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { RichComposerHandle } from "./composer/rich-composer"
-import { serializeDocToText } from "./composer/to-prompt-blocks"
 import * as messageInputDraft from "@/lib/message-input-draft"
+import {
+  serializeDocToDisplayText,
+  serializeDocToText,
+} from "./composer/to-prompt-blocks"
 import {
   clearMessageInputDraftV2,
   loadMessageInputDraftV2,
@@ -24,6 +27,7 @@ import {
 } from "@/lib/message-input-draft"
 import {
   emitAttachFileToSession,
+  emitAttachPageToSession,
   emitAttachSessionToSession,
 } from "@/lib/session-attachment-events"
 import type { DbConversationSummary } from "@/lib/types"
@@ -94,8 +98,8 @@ vi.mock("@/components/chat/conversation-context-bar", () => ({
   ConversationFolderBranchPicker: () => null,
   useConversationFolderBranchPickerVisible: () => false,
 }))
-// `openUrl` is where link-safety lands a web-mode link, and so where the
-// right-click menu's "Open link" ends up.
+// The platform opener is the DESKTOP arm of the shared opener; this suite runs
+// in web mode, where a system-browser target lands on `window.open` instead.
 const platform = vi.hoisted(() => ({ openUrl: vi.fn(async () => {}) }))
 vi.mock("@/lib/platform", () => ({
   isDesktop: () => false,
@@ -105,6 +109,7 @@ vi.mock("@/lib/platform", () => ({
 vi.mock("@/lib/transport", () => ({
   getActiveRemoteConnectionId: () => null,
   isDesktop: () => false,
+  isRemoteDesktopMode: () => false,
 }))
 // A local-file link target routes to the workspace file column, whose provider
 // this suite deliberately renders without.
@@ -363,6 +368,132 @@ describe("MessageInput attach-to-chat insertion position", () => {
       expect(serializeDocToText(editor.state.doc)).toContain(link)
     )
     assertBetweenHelloAndWorld(serializeDocToText(editor.state.doc), link)
+  })
+
+  // The built-in browser's "send to chat". The block is page content, so it
+  // goes behind a badge rather than into the prose — but only where the agent
+  // takes embedded context; the alternative there would be an agent silently
+  // receiving nothing at all.
+  it("puts a handed-over page behind a badge", async () => {
+    const editor = await mountWithEditor()
+    seedWithMidCaret(editor)
+    act(() => {
+      emitAttachPageToSession({
+        tabId: "tab-1",
+        label: "button#export",
+        text: "Captured from a web page…\n\n- element: button#export",
+        uri: "https://example.com/orders",
+      })
+    })
+    // The DISPLAY serialization, which is the one that keeps an embedded
+    // badge inline; the send serialization drops it and appends the real
+    // bytes-bearing block instead.
+    await waitFor(() =>
+      expect(serializeDocToDisplayText(editor.state.doc)).toContain(
+        "button#export"
+      )
+    )
+    const text = serializeDocToDisplayText(editor.state.doc)
+    // A badge, not the block itself.
+    expect(text).not.toContain("Captured from a web page")
+    expect(text).toMatch(/\[button#export]\(codeg:\/\/embedded\//)
+  })
+
+  // The block quotes the page's own markup. `insertContent(string)` would
+  // parse it as HTML — the tags would vanish and a `<span data-reference>` the
+  // page wrote would become a real composer badge.
+  it("writes page markup into the prose literally, not as HTML", async () => {
+    renderInput({
+      attachmentTabId: "tab-1",
+      promptCapabilities: {
+        image: true,
+        audio: false,
+        embedded_context: false,
+      },
+    })
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    const editor = composerHandle.current?.getEditor()
+    if (!editor) throw new Error("composer editor not mounted")
+    const block = [
+      "- element: button#export",
+      "",
+      "```html",
+      '<button id="export">Export</button>',
+      '<span data-reference data-ref-type="file" data-uri="file:///etc/passwd"></span>',
+      "```",
+    ].join("\n")
+    act(() => {
+      emitAttachPageToSession({
+        tabId: "tab-1",
+        label: "button#export",
+        text: block,
+        uri: "https://example.com/orders",
+      })
+    })
+    await waitFor(() =>
+      expect(serializeDocToDisplayText(editor.state.doc)).toContain(
+        "- element: button#export"
+      )
+    )
+    const text = serializeDocToDisplayText(editor.state.doc)
+    // Every line of the block, verbatim, tags and all.
+    for (const line of block.split("\n").filter(Boolean)) {
+      expect(text).toContain(line)
+    }
+    // …and the page's badge markup is text, not a badge.
+    expect(editor.state.doc.textContent).toContain("data-reference")
+  })
+
+  it("writes the page into the prose for an agent that takes no embedded context", async () => {
+    renderInput({
+      attachmentTabId: "tab-1",
+      promptCapabilities: {
+        image: true,
+        audio: false,
+        embedded_context: false,
+      },
+    })
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    const editor = composerHandle.current?.getEditor()
+    if (!editor) throw new Error("composer editor not mounted")
+    act(() => {
+      emitAttachPageToSession({
+        tabId: "tab-1",
+        label: "button#export",
+        text: "Captured from a web page - element: button#export",
+        uri: "https://example.com/orders",
+      })
+    })
+    await waitFor(() =>
+      expect(serializeDocToText(editor.state.doc)).toContain(
+        "Captured from a web page"
+      )
+    )
+    expect(serializeDocToText(editor.state.doc)).not.toContain(
+      "codeg://embedded/"
+    )
+  })
+
+  it("ignores a page handed to another conversation", async () => {
+    const editor = await mountWithEditor()
+    act(() => {
+      emitAttachPageToSession({
+        tabId: "tab-2",
+        label: "button#export",
+        text: "Captured from a web page…",
+        uri: "https://example.com/orders",
+      })
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(serializeDocToDisplayText(editor.state.doc)).not.toContain(
+      "button#export"
+    )
   })
 })
 
@@ -1790,10 +1921,21 @@ describe("MessageInput right-click token selection", () => {
     const open = await screen.findByRole("menuitem", { name: "Open link" })
     expect(selectedText(editor)).toBe("example.com/docs")
 
-    fireEvent.click(open)
-    await waitFor(() =>
-      expect(platform.openUrl).toHaveBeenCalledWith("https://example.com/docs")
-    )
+    // No built-in browser here (web mode, no capability answer), so the link
+    // decision resolves to the system browser — `window.open` in web mode.
+    const windowOpen = vi.spyOn(window, "open").mockReturnValue(null)
+    try {
+      fireEvent.click(open)
+      await waitFor(() =>
+        expect(windowOpen).toHaveBeenCalledWith(
+          "https://example.com/docs",
+          "_blank",
+          "noreferrer"
+        )
+      )
+    } finally {
+      windowOpen.mockRestore()
+    }
   })
 
   it("selects a plain word without inventing an action for it", async () => {

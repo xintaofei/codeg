@@ -27,6 +27,7 @@ pub async fn get_codeg_mcp_service_status(
             feedback: &state.feedback_config,
             question: &state.question_config,
             session_info: &state.session_info_config,
+            browser: &state.browser_tools_config,
             authoring: &state.chat_authoring_config,
         })
         .await,
@@ -55,6 +56,7 @@ pub async fn set_codeg_mcp_tool_group(
             feedback: &state.feedback_config,
             question: &state.question_config,
             session_info: &state.session_info_config,
+            browser: &state.browser_tools_config,
             authoring: &state.chat_authoring_config,
         },
         &state.emitter,

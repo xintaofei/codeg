@@ -30,6 +30,7 @@ use std::sync::Arc;
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 
+use crate::acp::browser_tools::BrowserToolsRuntimeConfig;
 use crate::acp::chat_authoring::ChatAuthoringRuntimeConfig;
 use crate::acp::delegation::broker::DelegationBroker;
 use crate::acp::delegation::listener::TokenRegistry;
@@ -69,6 +70,30 @@ pub enum CodegMcpServiceState {
 pub struct CodegMcpToolGroup {
     pub key: String,
     pub enabled: bool,
+    /// The slug this one is part of, when it is part of one: `browser_eval`
+    /// is nothing on its own, and the runtime drops it whenever `browser` is
+    /// off. Sent rather than hardcoded in the UI so the two surfaces that
+    /// render this list cannot disagree about which switch gates which.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires: Option<String>,
+}
+
+impl CodegMcpToolGroup {
+    fn group(key: &str, enabled: bool) -> Self {
+        Self {
+            key: key.to_string(),
+            enabled,
+            requires: None,
+        }
+    }
+
+    fn within(key: &str, parent: &str, enabled: bool) -> Self {
+        Self {
+            key: key.to_string(),
+            enabled,
+            requires: Some(parent.to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +137,7 @@ pub struct CodegMcpStatusSources<'a> {
     pub question: &'a QuestionRuntimeConfig,
     pub session_info: &'a SessionInfoRuntimeConfig,
     pub authoring: &'a ChatAuthoringRuntimeConfig,
+    pub browser: &'a BrowserToolsRuntimeConfig,
 }
 
 /// Build the report. Probes the socket for real (one ping round-trip), so
@@ -145,33 +171,32 @@ pub async fn codeg_mcp_service_status_core(
     // is deliberately absent: it is a per-spawn flag on task-engine launches,
     // not a setting anyone can toggle, so listing it here would invite the user
     // to look for a switch that doesn't exist.
+    let browser_cfg = sources.browser.snapshot().await;
     let tool_groups = vec![
-        CodegMcpToolGroup {
-            key: "delegation".into(),
-            enabled: delegation_cfg.enabled,
-        },
-        CodegMcpToolGroup {
-            key: "feedback".into(),
-            enabled: sources.feedback.is_enabled().await,
-        },
-        CodegMcpToolGroup {
-            key: "ask".into(),
-            enabled: sources.question.is_enabled().await,
-        },
-        CodegMcpToolGroup {
-            key: "sessions".into(),
-            enabled: sources.session_info.is_enabled().await,
-        },
-        CodegMcpToolGroup {
-            key: "automations".into(),
-            enabled: authoring_cfg.automations_enabled,
-        },
-        CodegMcpToolGroup {
-            key: "taskboard".into(),
-            enabled: authoring_cfg.work_tasks_enabled,
-        },
+        CodegMcpToolGroup::group("delegation", delegation_cfg.enabled),
+        CodegMcpToolGroup::group("feedback", sources.feedback.is_enabled().await),
+        CodegMcpToolGroup::group("ask", sources.question.is_enabled().await),
+        CodegMcpToolGroup::group("sessions", sources.session_info.is_enabled().await),
+        CodegMcpToolGroup::group("automations", authoring_cfg.automations_enabled),
+        CodegMcpToolGroup::group("taskboard", authoring_cfg.work_tasks_enabled),
+        CodegMcpToolGroup::group("browser", browser_cfg.enabled),
+        // `browser_eval` reports what the runtime would actually hand an
+        // agent, which is the pair ANDed: a stored `true` under a group that
+        // is off is not a switch anyone can act on, and showing it on would
+        // say an agent may run code when none can.
+        CodegMcpToolGroup::within(
+            "browser_eval",
+            "browser",
+            browser_cfg.enabled && browser_cfg.eval,
+        ),
     ];
-    let any_group_enabled = tool_groups.iter().any(|g| g.enabled);
+    // Only the groups proper. A dependent switch cannot be on with its group
+    // off, so counting them changes nothing today — but "is anything live"
+    // is a question about groups, and an entry that could answer it on its
+    // own would be a group.
+    let any_group_enabled = tool_groups
+        .iter()
+        .any(|g| g.requires.is_none() && g.enabled);
 
     let state = if !listening {
         CodegMcpServiceState::Stopped
@@ -210,6 +235,7 @@ pub struct CodegMcpToolGroupTargets<'a> {
     pub question: &'a QuestionRuntimeConfig,
     pub session_info: &'a SessionInfoRuntimeConfig,
     pub authoring: &'a ChatAuthoringRuntimeConfig,
+    pub browser: &'a BrowserToolsRuntimeConfig,
 }
 
 /// Flip one tool group by the same slug [`codeg_mcp_service_status_core`]
@@ -223,10 +249,11 @@ pub struct CodegMcpToolGroupTargets<'a> {
 /// Every arm writes exactly the one key it owns. The whole-struct
 /// `set_*_settings_core` writers are wrong here: `delegation` also carries
 /// `depth_limit`, `completed_cache_max_mb` and the per-agent defaults, and
-/// `automations`/`taskboard` are two switches over one record that sit one
-/// click apart in this very popover — a read-modify-write of the pair loses
-/// whichever flip lands first. `feedback`, `ask` and `sessions` each own a
-/// single-field record, so their existing writer is already narrow.
+/// `automations`/`taskboard`, like `browser`/`browser_eval`, are two switches
+/// over one record that sit one click apart in this very popover — a
+/// read-modify-write of the pair loses whichever flip lands first. `feedback`,
+/// `ask` and `sessions` each own a single-field record, so their existing
+/// writer is already narrow.
 pub async fn set_codeg_mcp_tool_group_core(
     conn: &DatabaseConnection,
     targets: CodegMcpToolGroupTargets<'_>,
@@ -235,7 +262,9 @@ pub async fn set_codeg_mcp_tool_group_core(
     enabled: bool,
 ) -> Result<(), AppCommandError> {
     use crate::commands::chat_authoring::ChatAuthoringFlag;
-    use crate::commands::{chat_authoring, delegation, feedback, question, session_info};
+    use crate::commands::{
+        browser_tools, chat_authoring, delegation, feedback, question, session_info,
+    };
 
     match key {
         "delegation" => {
@@ -265,6 +294,21 @@ pub async fn set_codeg_mcp_tool_group_core(
                 targets.session_info,
                 emitter,
                 session_info::SessionInfoSettings { enabled },
+            )
+            .await?;
+        }
+        "browser" | "browser_eval" => {
+            let flag = if key == "browser" {
+                browser_tools::BrowserToolsFlag::Group
+            } else {
+                browser_tools::BrowserToolsFlag::Eval
+            };
+            browser_tools::set_browser_tools_flag_core(
+                conn,
+                targets.browser,
+                emitter,
+                flag,
+                enabled,
             )
             .await?;
         }
@@ -320,6 +364,7 @@ pub async fn get_codeg_mcp_service_status(
     #[cfg(feature = "tauri-runtime")] question: tauri::State<'_, QuestionRuntimeConfig>,
     #[cfg(feature = "tauri-runtime")] session_info: tauri::State<'_, SessionInfoRuntimeConfig>,
     #[cfg(feature = "tauri-runtime")] authoring: tauri::State<'_, ChatAuthoringRuntimeConfig>,
+    #[cfg(feature = "tauri-runtime")] browser: tauri::State<'_, BrowserToolsRuntimeConfig>,
 ) -> Result<CodegMcpServiceStatus, AppCommandError> {
     #[cfg(feature = "tauri-runtime")]
     {
@@ -330,6 +375,7 @@ pub async fn get_codeg_mcp_service_status(
             question: question.inner(),
             session_info: session_info.inner(),
             authoring: authoring.inner(),
+            browser: browser.inner(),
         })
         .await)
     }
@@ -345,7 +391,7 @@ pub async fn start_codeg_mcp_service() -> Result<(), AppCommandError> {
     start_codeg_mcp_service_core().await
 }
 
-// Five runtime configs plus the db, the app handle and the two payload fields.
+// Six runtime configs plus the db, the app handle and the two payload fields.
 // Tauri injects managed state positionally, so these cannot be bundled the way
 // `CodegMcpToolGroupTargets` bundles them for the `_core` helper below.
 #[allow(clippy::too_many_arguments)]
@@ -358,6 +404,7 @@ pub async fn set_codeg_mcp_tool_group(
     #[cfg(feature = "tauri-runtime")] question: tauri::State<'_, QuestionRuntimeConfig>,
     #[cfg(feature = "tauri-runtime")] session_info: tauri::State<'_, SessionInfoRuntimeConfig>,
     #[cfg(feature = "tauri-runtime")] authoring: tauri::State<'_, ChatAuthoringRuntimeConfig>,
+    #[cfg(feature = "tauri-runtime")] browser: tauri::State<'_, BrowserToolsRuntimeConfig>,
     key: String,
     enabled: bool,
 ) -> Result<(), AppCommandError> {
@@ -374,6 +421,7 @@ pub async fn set_codeg_mcp_tool_group(
                 question: question.inner(),
                 session_info: session_info.inner(),
                 authoring: authoring.inner(),
+                browser: browser.inner(),
             },
             &emitter,
             &key,
@@ -416,6 +464,7 @@ mod tests {
         question: QuestionRuntimeConfig,
         session_info: SessionInfoRuntimeConfig,
         authoring: ChatAuthoringRuntimeConfig,
+        browser: BrowserToolsRuntimeConfig,
     }
 
     impl Fixture {
@@ -430,6 +479,7 @@ mod tests {
                 question: QuestionRuntimeConfig::new(),
                 session_info: SessionInfoRuntimeConfig::new(),
                 authoring: ChatAuthoringRuntimeConfig::new(),
+                browser: BrowserToolsRuntimeConfig::new(),
             }
         }
 
@@ -441,6 +491,7 @@ mod tests {
                 question: &self.question,
                 session_info: &self.session_info,
                 authoring: &self.authoring,
+                browser: &self.browser,
             }
         }
 
@@ -462,6 +513,7 @@ mod tests {
                     question: &self.question,
                     session_info: &self.session_info,
                     authoring: &self.authoring,
+                    browser: &self.browser,
                 },
                 &EventEmitter::Noop,
                 key,
@@ -531,6 +583,87 @@ mod tests {
         assert_eq!(status.depth_limit, 5);
         // `tasks` is per-spawn, never a switch — it must not appear.
         assert!(status.tool_groups.iter().all(|g| g.key != "tasks"));
+    }
+
+    /// `browser_eval` is reported as a switch of its own so both surfaces that
+    /// render this list can show it — and reported as belonging to `browser`,
+    /// so neither has to hardcode that relation. It never reads as on while
+    /// the group is off, whatever the database says.
+    #[tokio::test]
+    async fn browser_eval_is_reported_under_the_group_it_belongs_to() {
+        let f = Fixture::new();
+        let row = |status: &CodegMcpServiceStatus, key: &str| {
+            status
+                .tool_groups
+                .iter()
+                .find(|g| g.key == key)
+                .unwrap_or_else(|| panic!("missing group {key}"))
+                .clone()
+        };
+
+        f.browser
+            .set(crate::acp::browser_tools::BrowserToolsConfig {
+                enabled: true,
+                eval: true,
+            })
+            .await;
+        let status = f.status().await;
+        assert_eq!(row(&status, "browser").requires, None);
+        assert_eq!(
+            row(&status, "browser_eval").requires.as_deref(),
+            Some("browser")
+        );
+        assert!(row(&status, "browser_eval").enabled);
+
+        // The group off takes it with it — the runtime already drops it, and
+        // a popover showing it on would be promising a tool nothing can call.
+        f.browser
+            .set(crate::acp::browser_tools::BrowserToolsConfig {
+                enabled: false,
+                eval: true,
+            })
+            .await;
+        let status = f.status().await;
+        assert!(!row(&status, "browser_eval").enabled);
+        // And a dependent switch does not by itself make the service "live".
+        assert_eq!(status.state, CodegMcpServiceState::Stopped);
+        assert!(status
+            .tool_groups
+            .iter()
+            .all(|g| !(g.requires.is_none() && g.enabled)));
+    }
+
+    /// `browser` and `browser_eval` are two keys of one record, one popover
+    /// row apart. Each must move on its own: a writer that read the pair and
+    /// wrote it back would silently revert whichever flip landed first.
+    #[tokio::test]
+    async fn the_two_browser_switches_do_not_clobber_each_other() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let f = Fixture::new();
+
+        f.set_group(&db.conn, "browser", true).await.unwrap();
+        f.set_group(&db.conn, "browser_eval", true).await.unwrap();
+        let saved = crate::commands::browser_tools::load_browser_tools_settings(&db.conn).await;
+        assert!(saved.enabled);
+        assert!(saved.eval);
+
+        // Turning eval off leaves the group alone...
+        f.set_group(&db.conn, "browser_eval", false).await.unwrap();
+        let saved = crate::commands::browser_tools::load_browser_tools_settings(&db.conn).await;
+        assert!(saved.enabled, "the sibling must be untouched");
+        assert!(!saved.eval);
+
+        // ...and turning the group off does not erase the answer someone gave
+        // about eval: it stops being live (the runtime drops it), and comes
+        // back as they left it.
+        f.set_group(&db.conn, "browser_eval", true).await.unwrap();
+        f.set_group(&db.conn, "browser", false).await.unwrap();
+        let saved = crate::commands::browser_tools::load_browser_tools_settings(&db.conn).await;
+        assert!(!saved.enabled);
+        assert!(saved.eval, "the stored answer survives the group going off");
+        assert!(!f.browser.is_eval_enabled().await, "but nothing is live");
+        f.set_group(&db.conn, "browser", true).await.unwrap();
+        assert!(f.browser.is_eval_enabled().await);
     }
 
     /// The popover's per-group switches must go through the same writers the

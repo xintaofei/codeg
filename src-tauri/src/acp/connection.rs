@@ -4699,6 +4699,12 @@ pub struct DelegationInjection {
     /// read-only groups these are ALSO re-read at call time by the authoring
     /// access impl — see [`crate::acp::chat_authoring::ChatAuthoringRuntimeConfig`].
     pub authoring: crate::acp::chat_authoring::ChatAuthoringRuntimeConfig,
+    /// Hot-swappable "may agents see the built-in browser?" flag. Read here to
+    /// decide whether to advertise the `browser` group, and re-read at call
+    /// time by the access impl so switching it off stops the agent that is
+    /// already running — see
+    /// [`crate::acp::browser_tools::BrowserToolsRuntimeConfig`].
+    pub browser: crate::acp::browser_tools::BrowserToolsRuntimeConfig,
     /// Question registry handle for the teardown cascade. The `run_connection`
     /// cleanup guard calls `cancel_questions_by_parent` through this so a pending
     /// `ask_user_question` is reclaimed synchronously on disconnect, mirroring
@@ -4818,6 +4824,14 @@ struct CompanionFeatureFlags {
     /// `memory_write` / `memory_search` / `memory_link`, per-spawn alongside the
     /// pipeline group.
     memory: bool,
+    /// `browser_list_tabs` / `browser_snapshot`, gated by the browser-tools
+    /// setting AND by there being a built-in browser at all — the tabs are
+    /// native webviews this process owns, which server mode has none of.
+    browser: bool,
+    /// `browser_eval`, gated by a second setting on top of `browser`. Its own
+    /// flag so that turning it on or off does not disturb the rest of the
+    /// group, and so that the group being on never implies it.
+    browser_eval: bool,
 }
 
 /// The `--features` value for a companion launch, or `None` when no group is
@@ -4853,6 +4867,15 @@ fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<String> {
     }
     if flags.memory {
         features.push("memory");
+    }
+    if flags.browser {
+        features.push("browser");
+    }
+    // Only ever alongside `browser`: the companion requires both, and a
+    // `--features browser_eval` on its own would be a line in an agent's MCP
+    // config that reads as if it granted something.
+    if flags.browser && flags.browser_eval {
+        features.push("browser_eval");
     }
     if features.is_empty() {
         return None;
@@ -4963,6 +4986,15 @@ where
         taskboard: authoring.work_tasks_enabled,
         pipeline: pipeline_enabled,
         memory: memory_enabled,
+        // `cfg!` rather than a runtime probe: a browser tab is a native
+        // webview owned by this process, and the server binary has no such
+        // thing — what a web user sees in a "browser tab" is an iframe their
+        // own browser renders, which nothing here can read. Advertising the
+        // tools there would promise a capability that cannot exist, and the
+        // agent would find out by being told "no tabs" forever.
+        browser: cfg!(feature = "tauri-runtime") && injection.browser.is_enabled().await,
+        browser_eval: cfg!(feature = "tauri-runtime")
+            && injection.browser.is_eval_enabled().await,
     };
     // `None` (no feature enabled) short-circuits BEFORE the binary lookup, the
     // token registration and the server append: there is no companion to launch,
@@ -5192,10 +5224,20 @@ async fn run_connection(
     // Default terminals to the session working directory so an agent that calls
     // `terminal/create` without a `cwd` (e.g. CodeBuddy) runs in the folder the
     // conversation runs in rather than codeg's own process cwd.
+    // An agent that runs `pnpm dev` through `terminal/create` has started a
+    // local server the same way a person in the terminal panel has, and that
+    // output is the only place its address appears. A connection with no real
+    // window behind it (`work_task`, the delegation probe) still watches; the
+    // event it emits names that window and no workspace answers to it.
     let terminal_runtime = Arc::new(
         TerminalRuntime::with_base_env(terminal_base_env)
             .with_default_cwd(Some(cwd.clone()))
-            .with_default_shell_config(terminal_shell_config),
+            .with_default_shell_config(terminal_shell_config)
+            .with_service_watch(Some(crate::browser::services::ServiceWatch::new(
+                emitter.clone(),
+                state.read().await.owner_window_label.clone(),
+                crate::browser::types::ServiceSource::Agent,
+            ))),
     );
     let cwd_string = cwd.to_string_lossy().to_string();
     // The connection's security posture in one place, so what a live session
@@ -23648,6 +23690,7 @@ mod tests {
             ask: crate::acp::question::QuestionRuntimeConfig::new(),
             sessions: crate::acp::session_info::SessionInfoRuntimeConfig::new(),
             authoring: crate::acp::chat_authoring::ChatAuthoringRuntimeConfig::new(),
+            browser: crate::acp::browser_tools::BrowserToolsRuntimeConfig::new(),
             questions: Arc::new(TestNoQuestions)
                 as Arc<dyn crate::acp::question::SessionQuestionAccess>,
             plan_approvals: Arc::new(TestNoPlanApprovals)
@@ -23840,11 +23883,16 @@ mod tests {
             Some("automations".to_string())
         );
         assert_eq!(only(|f| f.taskboard = true), Some("taskboard".to_string()));
+        assert_eq!(only(|f| f.pipeline = true), Some("pipeline".to_string()));
+        assert_eq!(only(|f| f.memory = true), Some("memory".to_string()));
+        // The browser group too — a user who only shares browser tabs still
+        // gets a companion.
+        assert_eq!(only(|f| f.browser = true), Some("browser".to_string()));
         // All on → comma-joined, in the order the companion parses.
         assert_eq!(
             companion_features_arg(CompanionFeatureFlags {
-                pipeline: false,
-                memory: false,
+                pipeline: true,
+                memory: true,
                 delegation: true,
                 feedback: true,
                 ask: true,
@@ -23852,8 +23900,24 @@ mod tests {
                 tasks: true,
                 automations: true,
                 taskboard: true,
+                browser: true,
+                browser_eval: true,
             }),
-            Some("delegation,feedback,ask,sessions,tasks,automations,taskboard".to_string())
+            Some(
+                "delegation,feedback,ask,sessions,tasks,automations,taskboard,pipeline,memory,browser,browser_eval"
+                    .to_string()
+            )
+        );
+        // `browser_eval` never travels on its own: the companion requires both
+        // tokens, and a lone one in an agent's MCP config would read as if it
+        // granted something.
+        assert_eq!(only(|f| f.browser_eval = true), None);
+        assert_eq!(
+            only(|f| {
+                f.browser = true;
+                f.browser_eval = true;
+            }),
+            Some("browser,browser_eval".to_string())
         );
     }
 

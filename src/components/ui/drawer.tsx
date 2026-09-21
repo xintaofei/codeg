@@ -9,6 +9,7 @@ import { attachRef } from "@/lib/attach-ref"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { XIcon } from "lucide-react"
+import { acquireNativeSurfaceOcclusionFor } from "@/lib/browser/native-surface-occlusion"
 
 type DrawerContextProps = {
   hasSnapPoints: boolean
@@ -264,11 +265,15 @@ function DrawerContent({
   children,
   closeButtonClassName,
   showCloseButton = true,
+  nativeSurfaceHost = false,
   ref,
   ...props
 }: DrawerPrimitive.Popup.Props & {
   closeButtonClassName?: string
   showCloseButton?: boolean
+  /** This drawer CONTAINS a built-in browser surface (the transcript's
+   *  browser viewer): it must not take the lease that would hide it. */
+  nativeSurfaceHost?: boolean
 }) {
   const { hasSnapPoints, modal, showSwipeHandle, swipeDirection } = useDrawer()
   const swipeAxis =
@@ -287,12 +292,20 @@ function DrawerContent({
     (node: HTMLDivElement | null) => {
       setPopup(node)
       const detach = attachRef(ref, node)
+      // A native browser surface would paint over this drawer, so hold an
+      // occlusion lease while the popup's DOM exists — unless this drawer is
+      // the one hosting such a surface (the transcript's browser viewer).
+      const release = acquireNativeSurfaceOcclusionFor(
+        "drawer",
+        !nativeSurfaceHost
+      )
       return () => {
+        release()
         setPopup(null)
         detach()
       }
     },
-    [ref]
+    [ref, nativeSurfaceHost]
   )
 
   return (

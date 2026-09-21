@@ -17,6 +17,15 @@ import {
   parseLocalFileTarget,
   useStreamdownLinkSafety,
 } from "./link-safety"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
+import { useOpenUrlTarget } from "@/hooks/use-open-url-target"
+import { copyTextToClipboard } from "@/lib/utils"
+import { useTranslations } from "next-intl"
 
 const RESOURCE_KIND_ICON: Record<ResourceKind, LucideIcon> = {
   file: FileText,
@@ -67,6 +76,8 @@ export function MarkdownLink({
   ...rest
 }: MarkdownLinkProps) {
   const linkSafety = useStreamdownLinkSafety()
+  const openUrlTarget = useOpenUrlTarget()
+  const tLink = useTranslations("Browser.link")
   const [modalOpen, setModalOpen] = useState(false)
 
   const isIncomplete = href === INCOMPLETE_LINK
@@ -78,7 +89,10 @@ export function MarkdownLink({
     (event: MouseEvent<HTMLButtonElement>) => {
       if (!href || isIncomplete) return
       event.preventDefault()
-      openLinkWithSafety(href, linkSafety, () => setModalOpen(true))
+      // The gesture's modifier rides along: ⌘/Ctrl-click opens a web link
+      // "the other way" (system browser instead of the built-in one, or vice
+      // versa) — see `resolveLinkAction`.
+      openLinkWithSafety(href, linkSafety, () => setModalOpen(true), event)
     },
     [href, isIncomplete, linkSafety]
   )
@@ -181,28 +195,66 @@ export function MarkdownLink({
     )
   }
 
+  const button = (
+    <button
+      type="button"
+      data-incomplete={isIncomplete}
+      data-streamdown="link"
+      data-resource-kind={kind ?? undefined}
+      title={isIncomplete ? undefined : href}
+      onClick={handleClick}
+      className={cn(
+        "wrap-anywhere appearance-none text-left font-medium text-primary underline",
+        className
+      )}
+    >
+      {Icon ? (
+        <Icon
+          aria-hidden="true"
+          className="mr-0.5 inline size-[1em] align-[-0.15em] opacity-80"
+        />
+      ) : null}
+      {children}
+    </button>
+  )
+
+  // A web link gets an explicit-choice menu: built-in browser, system
+  // browser, copy. Explicit choices bypass the per-source preference (but not
+  // the terminal rules — a blocked host stays blocked).
   return (
     <>
-      <button
-        type="button"
-        data-incomplete={isIncomplete}
-        data-streamdown="link"
-        data-resource-kind={kind ?? undefined}
-        title={isIncomplete ? undefined : href}
-        onClick={handleClick}
-        className={cn(
-          "wrap-anywhere appearance-none text-left font-medium text-primary underline",
-          className
-        )}
-      >
-        {Icon ? (
-          <Icon
-            aria-hidden="true"
-            className="mr-0.5 inline size-[1em] align-[-0.15em] opacity-80"
-          />
-        ) : null}
-        {children}
-      </button>
+      {kind === "web" ? (
+        <ContextMenu>
+          <ContextMenuTrigger asChild>{button}</ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem
+              onSelect={() =>
+                openUrlTarget(href, {
+                  source: "transcript",
+                  forceTarget: "builtin",
+                })
+              }
+            >
+              {tLink("openBuiltin")}
+            </ContextMenuItem>
+            <ContextMenuItem
+              onSelect={() =>
+                openUrlTarget(href, {
+                  source: "transcript",
+                  forceTarget: "system",
+                })
+              }
+            >
+              {tLink("openSystem")}
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={() => void copyTextToClipboard(href)}>
+              {tLink("copy")}
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+      ) : (
+        button
+      )}
       {linkSafety.renderModal ? linkSafety.renderModal(modalProps) : null}
     </>
   )

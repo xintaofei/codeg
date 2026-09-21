@@ -1784,6 +1784,17 @@ describe("adaptMessageTurn — image tool results", () => {
   })
 })
 
+const PAGE_BLOCK = [
+  "",
+  '<context ref="https://linux.do/">',
+  "Captured from a web page in the built-in browser at the person's request.",
+  "",
+  "- page: LINUX DO — https://linux.do/",
+  "- element: a.title.raw-link.raw-topic-link",
+  '- text: "openlist"',
+  "</context>",
+].join("\n")
+
 describe("extractUserResourcesFromText — codeg references stay inline", () => {
   it("keeps a codeg://agent link inline (the @-prefixed label no longer lifts it to a chip)", () => {
     const input = "ask [@Codex](codeg://agent/codex) to review"
@@ -1989,6 +2000,105 @@ describe("extractUserResourcesFromText — codeg references stay inline", () => 
     expect(resources).toEqual([])
     expect(text).toBe("see [](file:///x/foo.ts) ok")
   })
+
+  // What the composer showed as a badge, coming back out of the agent's own
+  // record of the prompt. Rendering it whole turned a one-line question into a
+  // screenful of page dump the second time the conversation was opened.
+  it("folds a handed-over page onto the chip row, leaving the prose", () => {
+    const { text, resources } = extractUserResourcesFromText(
+      `what is this post${PAGE_BLOCK}`
+    )
+    // Named the way the composer's badge was — the block says what was picked
+    // — and carrying the same inert display uri a composer badge carries.
+    expect(resources).toEqual([
+      {
+        name: "a.title.raw-link.raw-topic-link",
+        uri: "codeg://embedded/https%3A%2F%2Flinux.do%2F",
+        mime_type: null,
+      },
+    ])
+    expect(text).toBe("what is this post")
+  })
+
+  // The block is page content: the `[…](…)` and `@name` shapes in it are the
+  // page's, and a link a site happens to contain must not become a chip of the
+  // sender's — nor reach the prose at all.
+  it("does not read the page's own markup as the sender's references", () => {
+    const block = [
+      "",
+      '<context ref="https://shop.test/orders">',
+      "- text: see [receipt.pdf](file:///etc/passwd) and ask @ops [blocked: x]",
+      "</context>",
+    ].join("\n")
+    const { text, resources } = extractUserResourcesFromText(`hi${block}`)
+    expect(resources).toEqual([
+      {
+        name: "shop.test/orders",
+        uri: "codeg://embedded/https%3A%2F%2Fshop.test%2Forders",
+        mime_type: null,
+      },
+    ])
+    expect(text).toBe("hi")
+  })
+
+  it("names a ref that is not a web address by its file name", () => {
+    const block = [
+      "",
+      '<context ref="clipboard://notes.md-2f8c">',
+      "# Notes",
+      "</context>",
+    ].join("\n")
+    const { resources } = extractUserResourcesFromText(block)
+    expect(resources).toEqual([
+      {
+        name: "notes.md-2f8c",
+        uri: "codeg://embedded/clipboard%3A%2F%2Fnotes.md-2f8c",
+        mime_type: null,
+      },
+    ])
+  })
+
+  // Somebody asking about one of these blocks pastes it into a fence. Lifting
+  // it out would delete their words from their own message — the exact bug
+  // this pass exists to fix, inverted.
+  it("leaves a block a person quoted inside a code fence alone", () => {
+    const input = ["why is this in my transcript?", "```", PAGE_BLOCK.trim(), "```"].join("\n") // prettier-ignore
+    const { text, resources } = extractUserResourcesFromText(input)
+    expect(resources).toEqual([])
+    // Their question AND the block they quoted, both still in the message.
+    // (The blank line inside it is collapsed by the prose normalizer, which
+    // has always done that to every message here.)
+    expect(text).toContain("why is this in my transcript?")
+    expect(text).toContain('<context ref="https://linux.do/">')
+    expect(text).toContain("- element: a.title.raw-link.raw-topic-link")
+    expect(text).toContain("</context>")
+  })
+
+  // …and an opener somebody typed and never closed must not reach forward to
+  // a real block's closer, taking the prose in between with it.
+  it("does not let an unclosed opener swallow the prose after it", () => {
+    const { text, resources } = extractUserResourcesFromText(
+      `it starts with <context ref="typed">\nand then I asked this${PAGE_BLOCK}`
+    )
+    expect(resources).toEqual([
+      {
+        name: "a.title.raw-link.raw-topic-link",
+        uri: "codeg://embedded/https%3A%2F%2Flinux.do%2F",
+        mime_type: null,
+      },
+    ])
+    expect(text).toContain("and then I asked this")
+    expect(text).toContain('<context ref="typed">')
+  })
+
+  // Deleting content and showing nothing in its place is worse than showing
+  // too much: a block that names nothing stays exactly where it is.
+  it("leaves a block that names nothing alone", () => {
+    const block = ['<context ref="">', "something", "</context>"].join("\n")
+    const { text, resources } = extractUserResourcesFromText(block)
+    expect(resources).toEqual([])
+    expect(text).toBe(block)
+  })
 })
 
 describe("adaptMessageTurn — user reference resources", () => {
@@ -2045,5 +2155,99 @@ describe("adaptMessageTurn — user reference resources", () => {
       .join("\n")
     expect(joined).toContain("[#42](codeg://session/codex_abc)")
     expect(joined).toContain("[foo.ts](file:///x/foo.ts)")
+  })
+
+  // The shape a browser hand-off actually comes back in: the prose, the bare
+  // page address the ACP adapter wrote where the badge was, and the embedded
+  // block as its own trailing text block. All three are one attachment, and
+  // the composer showed it as one badge and one chip.
+  it("shows a handed-over page the way the composer did", () => {
+    const adapted = adaptMessageTurn(
+      {
+        id: "u3",
+        role: "user",
+        timestamp: "2026-06-11T00:00:00.000Z",
+        blocks: [
+          { type: "text", text: "what is this post" },
+          { type: "text", text: "https://linux.do/" },
+          { type: "text", text: PAGE_BLOCK },
+        ],
+      },
+      msgText
+    )
+
+    expect(adapted.userResources).toEqual([
+      {
+        name: "a.title.raw-link.raw-topic-link",
+        uri: "codeg://embedded/https%3A%2F%2Flinux.do%2F",
+        mime_type: null,
+      },
+    ])
+    // One part, and it reads the way the composer did: the badge, then the
+    // question. No bare address left in the prose, and no page dump.
+    expect(adapted.content).toEqual([
+      {
+        type: "text",
+        text: "[a.title.raw-link.raw-topic-link](codeg://embedded/https%3A%2F%2Flinux.do%2F) what is this post",
+      },
+    ])
+  })
+
+  // …and an address that is NOT one of this turn's attachments is text the
+  // person typed. It stays exactly that.
+  it("leaves a bare address that no block claims alone", () => {
+    const adapted = adaptMessageTurn(
+      {
+        id: "u4",
+        role: "user",
+        timestamp: "2026-06-11T00:00:00.000Z",
+        blocks: [
+          { type: "text", text: "have a look at" },
+          { type: "text", text: "https://example.com/" },
+        ],
+      },
+      msgText
+    )
+
+    expect(adapted.userResources).toBeUndefined()
+    const joined = adapted.content
+      .map((p) => (p.type === "text" ? p.text : ""))
+      .join("\n")
+    expect(joined).toContain("https://example.com/")
+  })
+
+  // A screenshot or a page's console lines carry no `- element:` line: their
+  // badge was named in the app's own language, which is nowhere in what the
+  // agent recorded. The address is what is left, and it is the same page.
+  it("falls back to the address for a block that names no element", () => {
+    const block = [
+      "",
+      '<context ref="https://linux.do/t/topic/1">',
+      "Captured from a web page in the built-in browser at the person's request.",
+      "- page: LINUX DO — https://linux.do/t/topic/1",
+      "- screenshot: the visible 1332×839 CSS px of the page",
+      "</context>",
+    ].join("\n")
+    const adapted = adaptMessageTurn(
+      {
+        id: "u5",
+        role: "user",
+        timestamp: "2026-06-11T00:00:00.000Z",
+        blocks: [
+          { type: "text", text: "what does this look like" },
+          { type: "text", text: "https://linux.do/t/topic/1" },
+          { type: "text", text: block },
+        ],
+      },
+      msgText
+    )
+
+    expect(adapted.userResources).toEqual([
+      {
+        name: "linux.do/t/topic/1",
+        uri: "codeg://embedded/https%3A%2F%2Flinux.do%2Ft%2Ftopic%2F1",
+        mime_type: null,
+      },
+    ])
   })
 })

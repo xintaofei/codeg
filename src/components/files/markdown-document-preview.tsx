@@ -7,6 +7,10 @@ import { normalizeMathDelimiters } from "@/components/ai-elements/message"
 import { mermaidComponents } from "@/components/ai-elements/mermaid-block"
 import { useStreamdownPlugins } from "@/components/ai-elements/streamdown-plugins"
 import { BrowserLink } from "@/components/ui/browser-link"
+import {
+  isPrimaryModifier,
+  useOpenUrlTarget,
+} from "@/hooks/use-open-url-target"
 import { isUncPath, normalizeAbsPath } from "@/lib/file-open-target"
 import { cn } from "@/lib/utils"
 
@@ -249,6 +253,11 @@ export function MarkdownDocumentPreview({
       : content
   )
   const plugins = useStreamdownPlugins(preprocessed)
+  // Web links go through the app's link decision like every other click on
+  // an address (the built-in browser, the system browser, or — in a browser
+  // — a dev server on the codeg host through the port bridge), under the
+  // editor's preference.
+  const openUrlTarget = useOpenUrlTarget()
 
   return (
     <div
@@ -304,7 +313,25 @@ export function MarkdownDocumentPreview({
             // scheme (tauri://) would otherwise hijack them.
             const external = href?.startsWith("//") ? `https:${href}` : href
             return external ? (
-              <BrowserLink {...aProps} href={external}>
+              <BrowserLink
+                {...aProps}
+                href={external}
+                onClick={(e) => {
+                  e.preventDefault()
+                  openUrlTarget(external, {
+                    source: "editor",
+                    modifier: isPrimaryModifier(e),
+                  })
+                }}
+                // A middle click would otherwise take the native path (a
+                // background tab on the raw address, past the site rules);
+                // it opens "the other way", like a modified click.
+                onAuxClick={(e) => {
+                  if (e.button !== 1) return
+                  e.preventDefault()
+                  openUrlTarget(external, { source: "editor", modifier: true })
+                }}
+              >
                 {children}
               </BrowserLink>
             ) : (

@@ -81,9 +81,11 @@ import {
 } from "@/lib/api"
 import {
   ATTACH_FILE_TO_SESSION_EVENT,
+  ATTACH_PAGE_TO_SESSION_EVENT,
   ATTACH_SESSION_TO_SESSION_EVENT,
   APPEND_TEXT_TO_SESSION_EVENT,
   type AttachFileToSessionDetail,
+  type AttachPageToSessionDetail,
   type AttachSessionToSessionDetail,
   type AppendTextToSessionDetail,
 } from "@/lib/session-attachment-events"
@@ -139,6 +141,7 @@ import {
   serializeDocToDisplayText,
   serializeDocToText,
 } from "@/components/chat/composer/to-prompt-blocks"
+import { textToInlineContent } from "@/components/chat/composer/plain-text-content"
 import { isEmbeddedReferenceUri } from "@/components/chat/composer/reference-uri"
 import {
   applyExpertReference,
@@ -1553,6 +1556,67 @@ export function MessageInput({
       )
     }
   }, [attachmentTabId])
+
+  // Built-in browser "send to chat": an element the person picked, a
+  // screenshot, the console. The block is page content — the backend already
+  // capped it and headed it "data, not instructions" — and it rides the same
+  // path a path-less pasted file takes: an inline badge whose bytes live in
+  // `embeddedPayloadsRef` until send. An agent that does not take embedded
+  // context gets the block as prose instead of silently getting nothing; the
+  // picture goes through the ordinary image path, which is capability-driven
+  // on its own.
+  useEffect(() => {
+    if (!attachmentTabId) return
+
+    const handleAttachPage = (event: Event) => {
+      const customEvent = event as CustomEvent<AttachPageToSessionDetail>
+      const detail = customEvent.detail
+      if (!detail) return
+      if (detail.tabId !== attachmentTabId) return
+      const editor = editorRef.current?.getEditor()
+      if (!editor) return
+      if (detail.text) {
+        if (promptCapabilities.embedded_context) {
+          attach.insertFileReferences(
+            [
+              {
+                name: detail.label,
+                realBlock: {
+                  type: "resource",
+                  uri: detail.uri,
+                  mime_type: "text/markdown",
+                  text: detail.text,
+                  blob: null,
+                },
+              },
+            ],
+            { atCaret: true }
+          )
+        } else {
+          // As LITERAL text, node by node: `insertContent(string)` parses its
+          // argument as HTML, and this block quotes the page's own markup —
+          // which would be parsed away, or would turn a `<span data-reference>`
+          // the page wrote into a real composer badge.
+          const needsSpace = editorRef.current?.isEmpty() === false
+          editor
+            .chain()
+            .focus("end")
+            .insertContent(
+              textToInlineContent(`${needsSpace ? "\n\n" : ""}${detail.text}`)
+            )
+            .run()
+        }
+      }
+      if (detail.image) void attach.appendFilesFromInput([detail.image])
+      // Read by the sender the moment `dispatchEvent` returns.
+      detail.accepted = true
+    }
+
+    window.addEventListener(ATTACH_PAGE_TO_SESSION_EVENT, handleAttachPage)
+    return () => {
+      window.removeEventListener(ATTACH_PAGE_TO_SESSION_EVENT, handleAttachPage)
+    }
+  }, [attach, attachmentTabId, promptCapabilities.embedded_context])
 
   useEffect(() => {
     if (!attachmentTabId) return

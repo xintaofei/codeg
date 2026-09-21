@@ -5197,6 +5197,11 @@ export type CodegMcpServiceState =
 export interface CodegMcpToolGroup {
   key: string
   enabled: boolean
+  /** The group this one lives inside, when it lives inside one
+   * (`browser_eval` inside `browser`). Sent by the backend so the two
+   * surfaces that render this list cannot disagree about which switch gates
+   * which. Absent for a group proper. */
+  requires?: string | null
 }
 
 /** Mirror of Rust `CodegMcpServiceStatus`. */
@@ -5319,6 +5324,32 @@ export async function setSessionInfoSettings(
   settings: SessionInfoSettings
 ): Promise<SessionInfoSettings> {
   return getTransport().call("set_session_info_settings", { settings })
+}
+
+// ─── Built-in browser tools settings ───────────────────────────────────────
+
+/** Mirror of Rust `BrowserToolsSettings` (default OFF). Whether agents get
+ *  `browser_list_tabs` / `browser_snapshot` at all; which individual page they
+ *  may read is a separate, per-tab decision made from the tab's own toolbar. */
+export interface BrowserToolsSettings {
+  enabled: boolean
+  /** Whether `browser_eval` exists: an agent running its own code on a shared
+   *  page. Off by default and separate from `enabled`, because everything else
+   *  in the group is a named act a person sharing a tab can picture and this
+   *  is not one of them. Never in force with `enabled` off — the backend drops
+   *  it, so a stale `true` cannot outlive the switch above it. Even on, every
+   *  individual snippet is shown to the person and approved on its own. */
+  eval: boolean
+}
+
+export async function getBrowserToolsSettings(): Promise<BrowserToolsSettings> {
+  return getTransport().call("get_browser_tools_settings")
+}
+
+export async function setBrowserToolsSettings(
+  settings: BrowserToolsSettings
+): Promise<BrowserToolsSettings> {
+  return getTransport().call("set_browser_tools_settings", { settings })
 }
 
 // ─── Create-from-chat (chat authoring) settings ────────────────────────────

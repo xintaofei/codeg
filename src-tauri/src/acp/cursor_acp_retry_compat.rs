@@ -13,11 +13,12 @@
 //!
 //! This is NOT a regression in one release — `2026.08.11-e8db854` omits the
 //! flag too — but the fix stays pinned to versions whose bytes were actually
-//! inspected: the replacement is an exact splice into minified code whose
-//! identifiers (`I`, `S`, `P` below) are regenerated on every Cursor build, so
-//! applying it blind to an unknown bundle is how you get a `ReferenceError` at
-//! run time instead of a retry. `pinned_cursor_version_is_triaged` keeps that
-//! list honest when the registry pin moves.
+//! inspected, each with its OWN splice: the replacement is an exact splice
+//! into minified code whose identifiers are regenerated on every Cursor build,
+//! so applying one build's pattern blind to another is how you get a
+//! `ReferenceError` at run time instead of a retry.
+//! `pinned_cursor_version_is_triaged` keeps [`AFFECTED_BUILDS`] honest when the
+//! registry pin moves.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -28,37 +29,77 @@ use crate::acp::error::AcpError;
 
 const CURSOR_AGENT_ID: &str = "cursor";
 
-/// Cursor agent-cli versions whose bundle was inspected and found to omit
+/// A Cursor agent-cli build whose ACP chunk was inspected and found to omit
+/// `enableAgentRetries` from the `agentClient.run` options, paired with the
+/// splice derived against THAT build's minified identifiers.
+///
+/// The splice has to be per-build, not one global pattern: Cursor regenerates
+/// the identifiers on every release. `2026.09.15-d2fe57e` left the surrounding
+/// bytes untouched but renamed the debug-log module (`S` → `w`), the
+/// `onErrorNotRetried` module (`P` → `I`) and the `ConversationAction` local
+/// the policy reads (`I` → `y`). Feeding an older generation's pattern to it
+/// is safe — it simply does not match — but the install is then silently left
+/// unpatched, which is the failure this table exists to prevent.
+struct AffectedBuild {
+    version: &'static str,
+    /// Minified `agentClient.run` options tail, without `enableAgentRetries`.
+    vulnerable: &'static str,
+    /// The same tail with the inlined `w5(<action>.case)` policy prepended.
+    patched: &'static str,
+}
+
+/// Cursor agent-cli builds whose bundle was inspected and found to omit
 /// `enableAgentRetries` from the ACP `agentClient.run` options.
 ///
-/// `2026.09.10-fd3934a` re-inspected: still affected, and the splice below
-/// still applies verbatim. Its ACP chunk (`dist-package/7214.index.js`) has
-/// zero `enableAgentRetries` occurrences, [`VULNERABLE_RUN_OPTIONS`] matches it
-/// exactly once — so `S`/`P` are unchanged — and the run request one statement
-/// above the call is still `I = new u.ConversationAction({action: {case:
-/// "userMessageAction", …}})`, which is what makes `I.action.case` in
-/// [`PATCHED_RUN_OPTIONS`] both in scope and correct.
-const AFFECTED_VERSIONS: &[&str] = &["2026.09.02-c22c1a3", "2026.09.10-fd3934a"];
+/// `2026.09.15-d2fe57e` triaged: still affected. Its ACP chunk (which moved to
+/// `dist-package/2698.index.js`) has zero `enableAgentRetries` occurrences,
+/// [`RUN_OPTIONS_W_I`] matches it exactly once, and the run request one
+/// statement above the call is `y = new c.ConversationAction({action: {case:
+/// "userMessageAction", …}})` — which is what makes `y.action.case` in
+/// [`PATCHED_RUN_OPTIONS_W_I_Y`] both in scope and correct. The `w5` policy
+/// helper it inlines is byte-identical, one chunk over in `6508.index.js`.
+/// Splicing the chunk and running `node --check` over the result parses clean.
+///
+/// Older entries stay: an install extracted from one of those archives is
+/// still on disk and still needs its own splice.
+const AFFECTED_BUILDS: &[AffectedBuild] = &[
+    AffectedBuild {
+        version: "2026.09.02-c22c1a3",
+        vulnerable: RUN_OPTIONS_S_P,
+        patched: PATCHED_RUN_OPTIONS_S_P_I,
+    },
+    AffectedBuild {
+        version: "2026.09.10-fd3934a",
+        vulnerable: RUN_OPTIONS_S_P,
+        patched: PATCHED_RUN_OPTIONS_S_P_I,
+    },
+    AffectedBuild {
+        version: "2026.09.15-d2fe57e",
+        vulnerable: RUN_OPTIONS_W_I,
+        patched: PATCHED_RUN_OPTIONS_W_I_Y,
+    },
+];
 
 /// Cursor agent-cli versions whose bundle was inspected and found to already
 /// pass `enableAgentRetries` on the ACP path (upstream fixed it, or the code
-/// moved). Kept beside [`AFFECTED_VERSIONS`] so the triage test can tell
+/// moved). Kept beside [`AFFECTED_BUILDS`] so the triage test can tell
 /// "checked, nothing to do" apart from "nobody has looked at this pin yet".
 ///
 /// Read only by `pinned_cursor_version_is_triaged`, but it belongs next to
-/// [`AFFECTED_VERSIONS`] — that pair is the triage record a maintainer bumping
+/// [`AFFECTED_BUILDS`] — that pair is the triage record a maintainer bumping
 /// the Cursor pin has to update.
 #[allow(dead_code)]
 const UNAFFECTED_VERSIONS: &[&str] = &[];
 
 const AGENT_SESSION_MODULE: &str = "\"./src/acp/agent-session.ts\"";
 
-/// Vulnerable minified runOptions tail in affected bundles (no `enableAgentRetries`).
-const VULNERABLE_RUN_OPTIONS: &str =
+/// Vulnerable runOptions tail for the generation that binds the debug-log
+/// module to `S` and `onErrorNotRetried` to `P`.
+const RUN_OPTIONS_S_P: &str =
     ")),{onConnectionStateChange:e=>{\"reconnecting\"===e.state?(0,S.debugLog)(\"Connection state: reconnecting\"):\"connected\"===e.state&&(0,S.debugLog)(\"Connection state: connected\")},onErrorNotRetried:e=>{(0,P.Z)({configProvider:this.sharedServices.configProvider,info:e})}})";
 
-/// Patched runOptions: inline equivalent of `w5(I.action.case)`, whose body in
-/// the affected bundle is exactly
+/// Patched [`RUN_OPTIONS_S_P`]: inline equivalent of `w5(I.action.case)`, whose
+/// body in those bundles is exactly
 /// `function u(e){return"shellCommandAction"!==e&&"backgroundTaskCompletionAction"!==e&&"goalContinuationAction"!==e}`.
 ///
 /// `agent-session.ts` has a single `agentClient.run` call and it always builds
@@ -66,8 +107,20 @@ const VULNERABLE_RUN_OPTIONS: &str =
 /// written as the policy rather than a bare `true` so that a bundle which
 /// later routes another action through the same call site still gets
 /// upstream's answer instead of ours.
-const PATCHED_RUN_OPTIONS: &str =
+const PATCHED_RUN_OPTIONS_S_P_I: &str =
     ")),{enableAgentRetries:\"shellCommandAction\"!==I.action.case&&\"backgroundTaskCompletionAction\"!==I.action.case&&\"goalContinuationAction\"!==I.action.case,onConnectionStateChange:e=>{\"reconnecting\"===e.state?(0,S.debugLog)(\"Connection state: reconnecting\"):\"connected\"===e.state&&(0,S.debugLog)(\"Connection state: connected\")},onErrorNotRetried:e=>{(0,P.Z)({configProvider:this.sharedServices.configProvider,info:e})}})";
+
+/// Vulnerable runOptions tail from `2026.09.15-d2fe57e` on: same bytes as
+/// [`RUN_OPTIONS_S_P`] with the debug-log module renamed to `w` and
+/// `onErrorNotRetried` to `I`.
+const RUN_OPTIONS_W_I: &str =
+    ")),{onConnectionStateChange:e=>{\"reconnecting\"===e.state?(0,w.debugLog)(\"Connection state: reconnecting\"):\"connected\"===e.state&&(0,w.debugLog)(\"Connection state: connected\")},onErrorNotRetried:e=>{(0,I.Z)({configProvider:this.sharedServices.configProvider,info:e})}})";
+
+/// Patched [`RUN_OPTIONS_W_I`]. Same policy as [`PATCHED_RUN_OPTIONS_S_P_I`],
+/// read off `y` — the `ConversationAction` local in that generation, which the
+/// call site passes straight to `run` (`yield D(y)`).
+const PATCHED_RUN_OPTIONS_W_I_Y: &str =
+    ")),{enableAgentRetries:\"shellCommandAction\"!==y.action.case&&\"backgroundTaskCompletionAction\"!==y.action.case&&\"goalContinuationAction\"!==y.action.case,onConnectionStateChange:e=>{\"reconnecting\"===e.state?(0,w.debugLog)(\"Connection state: reconnecting\"):\"connected\"===e.state&&(0,w.debugLog)(\"Connection state: connected\")},onErrorNotRetried:e=>{(0,I.Z)({configProvider:this.sharedServices.configProvider,info:e})}})";
 
 /// Marker written by this patch or upstream fixes.
 const ENABLE_AGENT_RETRIES_MARKER: &str = "enableAgentRetries:";
@@ -105,9 +158,12 @@ impl CompatPatchStatus {
 /// that bound that cost.
 pub fn maybe_apply(platform_dir: &Path, version: &str) -> CompatPatchStatus {
     let normalized = normalize_version_label(version);
-    if !AFFECTED_VERSIONS.iter().any(|v| *v == normalized) {
+    let Some(build) = AFFECTED_BUILDS
+        .iter()
+        .find(|build| build.version == normalized)
+    else {
         return CompatPatchStatus::NotApplicable;
-    }
+    };
 
     let dist_package = platform_dir.join("dist-package");
     if !dist_package.is_dir() {
@@ -159,7 +215,7 @@ pub fn maybe_apply(platform_dir: &Path, version: &str) -> CompatPatchStatus {
         return CompatPatchStatus::AlreadyFixed;
     }
 
-    if !content.contains(VULNERABLE_RUN_OPTIONS) {
+    if !content.contains(build.vulnerable) {
         log_status(
             CompatPatchStatus::PatternMismatch,
             &normalized,
@@ -168,7 +224,7 @@ pub fn maybe_apply(platform_dir: &Path, version: &str) -> CompatPatchStatus {
         return CompatPatchStatus::PatternMismatch;
     }
 
-    let patched = content.replace(VULNERABLE_RUN_OPTIONS, PATCHED_RUN_OPTIONS);
+    let patched = content.replace(build.vulnerable, build.patched);
     if patched == content {
         log_status(
             CompatPatchStatus::PatternMismatch,
@@ -377,10 +433,15 @@ fn log_status(status: CompatPatchStatus, version: &str, bundle: Option<&Path>) {
 mod tests {
     use super::*;
 
-    fn vulnerable_fixture() -> String {
+    /// The build every test that only needs *an* affected version runs
+    /// against; the per-build splices are covered by
+    /// `every_affected_build_is_patchable` and `patch_preserves_w5_action_policy`.
+    const SAMPLE: &AffectedBuild = &AFFECTED_BUILDS[0];
+
+    fn vulnerable_fixture(build: &AffectedBuild) -> String {
         format!(
             "exports.modules={{{}(e,t,o){{placeholder {} end}}}}",
-            AGENT_SESSION_MODULE, VULNERABLE_RUN_OPTIONS
+            AGENT_SESSION_MODULE, build.vulnerable
         )
     }
 
@@ -402,32 +463,45 @@ mod tests {
     #[test]
     fn affected_version_without_bundle_is_pattern_mismatch() {
         let tmp = tempfile::tempdir().unwrap();
-        let status = maybe_apply(tmp.path(), AFFECTED_VERSIONS[0]);
+        let status = maybe_apply(tmp.path(), AFFECTED_BUILDS[0].version);
         assert_eq!(status, CompatPatchStatus::PatternMismatch);
     }
 
+    // Every triaged build carries its own splice, so "the patch works" has to
+    // be proven per build — a table entry that pairs one build's version with
+    // another's identifiers would otherwise sit there silently mismatching.
     #[test]
-    fn affected_vulnerable_bundle_is_patched_once() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_bundle(tmp.path(), &vulnerable_fixture());
-        let status = maybe_apply(tmp.path(), AFFECTED_VERSIONS[0]);
-        assert_eq!(status, CompatPatchStatus::Applied);
-        let bundle = find_agent_session_bundle(&tmp.path().join("dist-package")).unwrap();
-        let content = std::fs::read_to_string(bundle).unwrap();
-        assert!(content.contains(PATCHED_RUN_OPTIONS));
-        assert!(content.contains("enableAgentRetries:\"shellCommandAction\"!==I.action.case"));
+    fn every_affected_build_is_patchable() {
+        for build in AFFECTED_BUILDS {
+            let tmp = tempfile::tempdir().unwrap();
+            write_bundle(tmp.path(), &vulnerable_fixture(build));
+            assert_eq!(
+                maybe_apply(tmp.path(), build.version),
+                CompatPatchStatus::Applied,
+                "{} did not patch its own fixture",
+                build.version
+            );
+            let bundle = find_agent_session_bundle(&tmp.path().join("dist-package")).unwrap();
+            let content = std::fs::read_to_string(bundle).unwrap();
+            assert!(content.contains(build.patched), "{}", build.version);
+            assert!(
+                content.contains(ENABLE_AGENT_RETRIES_MARKER),
+                "{}",
+                build.version
+            );
+        }
     }
 
     #[test]
     fn second_application_is_already_fixed() {
         let tmp = tempfile::tempdir().unwrap();
-        write_bundle(tmp.path(), &vulnerable_fixture());
+        write_bundle(tmp.path(), &vulnerable_fixture(SAMPLE));
         assert_eq!(
-            maybe_apply(tmp.path(), AFFECTED_VERSIONS[0]),
+            maybe_apply(tmp.path(), AFFECTED_BUILDS[0].version),
             CompatPatchStatus::Applied
         );
         assert_eq!(
-            maybe_apply(tmp.path(), AFFECTED_VERSIONS[0]),
+            maybe_apply(tmp.path(), AFFECTED_BUILDS[0].version),
             CompatPatchStatus::AlreadyFixed
         );
     }
@@ -435,13 +509,13 @@ mod tests {
     #[test]
     fn upstream_fixed_bundle_is_already_fixed() {
         let tmp = tempfile::tempdir().unwrap();
-        let content = vulnerable_fixture().replace(
-            VULNERABLE_RUN_OPTIONS,
+        let content = vulnerable_fixture(SAMPLE).replace(
+            SAMPLE.vulnerable,
             ")),{enableAgentRetries:(0,w5.w5)(I.action.case),onConnectionStateChange:e=>{}",
         );
         write_bundle(tmp.path(), &content);
         assert_eq!(
-            maybe_apply(tmp.path(), AFFECTED_VERSIONS[0]),
+            maybe_apply(tmp.path(), AFFECTED_BUILDS[0].version),
             CompatPatchStatus::AlreadyFixed
         );
     }
@@ -454,16 +528,51 @@ mod tests {
             "exports.modules={{\"./src/acp/agent-session.ts\"(){broken",
         );
         assert_eq!(
-            maybe_apply(tmp.path(), AFFECTED_VERSIONS[0]),
+            maybe_apply(tmp.path(), AFFECTED_BUILDS[0].version),
             CompatPatchStatus::PatternMismatch
         );
     }
 
+    // Each `patched` must be its own `vulnerable` with nothing but the inlined
+    // `w5(<action>.case)` policy inserted, and that policy must read the same
+    // local three times. Transcribing a splice by hand is how a stray
+    // identifier from the previous generation — a `ReferenceError` at run time
+    // — gets in; this pins both halves against each other instead.
     #[test]
     fn patch_preserves_w5_action_policy() {
-        assert!(PATCHED_RUN_OPTIONS.contains("\"shellCommandAction\"!==I.action.case"));
-        assert!(PATCHED_RUN_OPTIONS.contains("\"backgroundTaskCompletionAction\"!==I.action.case"));
-        assert!(PATCHED_RUN_OPTIONS.contains("\"goalContinuationAction\"!==I.action.case"));
+        for build in AFFECTED_BUILDS {
+            let tail = build
+                .vulnerable
+                .strip_prefix(")),{")
+                .unwrap_or_else(|| panic!("{} tail must open the run options", build.version));
+            let policy = build
+                .patched
+                .strip_prefix(")),{enableAgentRetries:")
+                .and_then(|rest| rest.strip_suffix(tail))
+                .and_then(|policy| policy.strip_suffix(','))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} patch must be its vulnerable tail plus the retry policy",
+                        build.version
+                    )
+                });
+            // The action local is whatever the policy compares against; assert
+            // the whole expression back so a half-renamed splice cannot pass.
+            let local = policy
+                .rsplit_once("!==")
+                .and_then(|(_, tail)| tail.strip_suffix(".action.case"))
+                .unwrap_or_else(|| panic!("{} policy must read an action case", build.version));
+            assert_eq!(
+                policy,
+                format!(
+                    "\"shellCommandAction\"!=={local}.action.case\
+                     &&\"backgroundTaskCompletionAction\"!=={local}.action.case\
+                     &&\"goalContinuationAction\"!=={local}.action.case"
+                ),
+                "{} policy is not the inlined w5 body over a single local",
+                build.version
+            );
+        }
     }
 
     // Cursor's `dist-package` holds ~70 webpack chunks. A chunk that is not
@@ -473,7 +582,7 @@ mod tests {
     #[test]
     fn unreadable_sibling_chunk_does_not_abort_the_scan() {
         let tmp = tempfile::tempdir().unwrap();
-        write_bundle(tmp.path(), &vulnerable_fixture());
+        write_bundle(tmp.path(), &vulnerable_fixture(SAMPLE));
         // Sorts before the `2471.index.js` the fixture writes, so the scan
         // reaches it first on every filesystem.
         std::fs::write(
@@ -482,7 +591,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            maybe_apply(tmp.path(), AFFECTED_VERSIONS[0]),
+            maybe_apply(tmp.path(), AFFECTED_BUILDS[0].version),
             CompatPatchStatus::Applied
         );
     }
@@ -491,7 +600,7 @@ mod tests {
     fn non_cursor_agent_id_is_not_applicable() {
         let tmp = tempfile::tempdir().unwrap();
         assert_eq!(
-            maybe_apply_for_agent("opencode", tmp.path(), AFFECTED_VERSIONS[0]),
+            maybe_apply_for_agent("opencode", tmp.path(), AFFECTED_BUILDS[0].version),
             CompatPatchStatus::NotApplicable
         );
     }
@@ -503,20 +612,20 @@ mod tests {
     #[test]
     fn cache_hit_hook_resolves_each_install_once() {
         let tmp = tempfile::tempdir().unwrap();
-        write_bundle(tmp.path(), &vulnerable_fixture());
+        write_bundle(tmp.path(), &vulnerable_fixture(SAMPLE));
         assert_eq!(
-            maybe_apply_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_VERSIONS[0]),
+            maybe_apply_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_BUILDS[0].version),
             CompatPatchStatus::Applied
         );
 
         std::fs::remove_dir_all(tmp.path().join("dist-package")).unwrap();
         assert_eq!(
-            maybe_apply(tmp.path(), AFFECTED_VERSIONS[0]),
+            maybe_apply(tmp.path(), AFFECTED_BUILDS[0].version),
             CompatPatchStatus::PatternMismatch,
             "the uncached path must see the tree is gone"
         );
         assert_eq!(
-            maybe_apply_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_VERSIONS[0]),
+            maybe_apply_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_BUILDS[0].version),
             CompatPatchStatus::Applied,
             "the cache-hit hook must answer from the memo, not re-read the tree"
         );
@@ -528,22 +637,22 @@ mod tests {
     #[test]
     fn post_install_hook_ignores_the_previous_installs_outcome() {
         let tmp = tempfile::tempdir().unwrap();
-        write_bundle(tmp.path(), &vulnerable_fixture());
+        write_bundle(tmp.path(), &vulnerable_fixture(SAMPLE));
         assert_eq!(
-            maybe_apply_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_VERSIONS[0]),
+            maybe_apply_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_BUILDS[0].version),
             CompatPatchStatus::Applied
         );
 
         // Re-extraction puts an unpatched bundle back under the same path.
-        write_bundle(tmp.path(), &vulnerable_fixture());
+        write_bundle(tmp.path(), &vulnerable_fixture(SAMPLE));
         assert_eq!(
-            apply_after_install_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_VERSIONS[0]),
+            apply_after_install_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_BUILDS[0].version),
             CompatPatchStatus::Applied
         );
         let bundle = find_agent_session_bundle(&tmp.path().join("dist-package")).unwrap();
         assert!(std::fs::read_to_string(bundle)
             .unwrap()
-            .contains(PATCHED_RUN_OPTIONS));
+            .contains(SAMPLE.patched));
     }
 
     // Every transient failure lands on `PatternMismatch` too, so memoizing the
@@ -553,13 +662,13 @@ mod tests {
     fn a_transient_mismatch_does_not_settle_the_install() {
         let tmp = tempfile::tempdir().unwrap();
         assert_eq!(
-            maybe_apply_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_VERSIONS[0]),
+            maybe_apply_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_BUILDS[0].version),
             CompatPatchStatus::PatternMismatch
         );
 
-        write_bundle(tmp.path(), &vulnerable_fixture());
+        write_bundle(tmp.path(), &vulnerable_fixture(SAMPLE));
         assert_eq!(
-            maybe_apply_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_VERSIONS[0]),
+            maybe_apply_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_BUILDS[0].version),
             CompatPatchStatus::Applied,
             "a later call must still be allowed to look"
         );
@@ -573,19 +682,19 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         for _ in 0..MAX_MISMATCH_ATTEMPTS {
             assert_eq!(
-                maybe_apply_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_VERSIONS[0]),
+                maybe_apply_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_BUILDS[0].version),
                 CompatPatchStatus::PatternMismatch
             );
         }
 
-        write_bundle(tmp.path(), &vulnerable_fixture());
+        write_bundle(tmp.path(), &vulnerable_fixture(SAMPLE));
         assert_eq!(
-            maybe_apply_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_VERSIONS[0]),
+            maybe_apply_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_BUILDS[0].version),
             CompatPatchStatus::PatternMismatch,
             "the budget is spent; the cache-hit hook stops looking"
         );
         assert_eq!(
-            apply_after_install_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_VERSIONS[0]),
+            apply_after_install_for_agent(CURSOR_AGENT_ID, tmp.path(), AFFECTED_BUILDS[0].version),
             CompatPatchStatus::Applied,
             "a re-install still gets a fresh look"
         );
@@ -594,7 +703,7 @@ mod tests {
     // The patch is a byte-exact splice, so it silently stops doing anything
     // the moment the registry pin moves. Fail here instead: whoever bumps
     // Cursor has to open the new bundle and put the version in one of the two
-    // lists — `AFFECTED_VERSIONS` (re-derive the splice against the new
+    // lists — `AFFECTED_BUILDS` (re-derive the splice against the new
     // minified identifiers) or `UNAFFECTED_VERSIONS` (upstream fixed it).
     #[test]
     fn pinned_cursor_version_is_triaged() {
@@ -603,15 +712,15 @@ mod tests {
             .expect("Cursor pins a registry version");
         let pinned = normalize_version_label(pinned);
         assert!(
-            AFFECTED_VERSIONS.contains(&pinned.as_str())
+            AFFECTED_BUILDS.iter().any(|build| build.version == pinned)
                 || UNAFFECTED_VERSIONS.contains(&pinned.as_str()),
             "cursor-agent {pinned} has not been checked for the ACP \
              `enableAgentRetries` omission. Inspect the ACP chunk \
              ({AGENT_SESSION_MODULE}) in its `dist-package`: if the \
              `agentClient.run` options still lack `enableAgentRetries`, update \
-             VULNERABLE_RUN_OPTIONS / PATCHED_RUN_OPTIONS for that build's \
-             minified identifiers and add it to AFFECTED_VERSIONS; otherwise \
-             add it to UNAFFECTED_VERSIONS."
+             AFFECTED_BUILDS with a vulnerable/patched pair derived against \
+             that build's minified identifiers; otherwise add it to \
+             UNAFFECTED_VERSIONS."
         );
     }
 }

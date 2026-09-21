@@ -80,6 +80,31 @@ const DEFAULT_DRAFT_SPEC = JSON.stringify(
   2
 )
 
+/**
+ * Servers worth offering by name rather than making someone find.
+ *
+ * One, and the reason for it is not convenience: the registry carries
+ * lookalikes of `chrome-devtools-mcp` under the same name and description with
+ * a different owner, and a person adding a browser tool by hand is exactly the
+ * person who cannot tell them apart. This fills the draft with the official
+ * package. It does not install it — the spec stays in front of the user, who
+ * still chooses which agents get it — and the note beside it says what the
+ * thing is and, just as much, what it is not.
+ */
+export const SUGGESTED_SERVERS = [
+  {
+    key: "chromeDevtools",
+    id: "chrome-devtools",
+    label: "Chrome DevTools",
+    note: "local.suggestedChromeNote",
+    spec: {
+      type: "stdio",
+      command: "npx",
+      args: ["-y", "chrome-devtools-mcp@latest"],
+    },
+  },
+] as const
+
 type McpTranslator = (
   key: string,
   values?: Record<string, string | number>
@@ -1404,6 +1429,38 @@ export function McpSettings() {
                 <p className="text-xs text-muted-foreground mt-1">
                   {t("local.draftDescription")}
                 </p>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-xs text-muted-foreground">
+                  {t("local.suggestedLabel")}
+                </div>
+                {SUGGESTED_SERVERS.map((suggested) => (
+                  <div key={suggested.key} className="space-y-1.5">
+                    {/* Off once the spec has been written in: "start from" is
+                        for a form nobody has started, and a button that threw
+                        away a spec someone had typed — with no undo and no
+                        warning — would be a bad trade for saving them a
+                        paste. The id is left alone for the same reason. */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={draftSpecText.trim() !== DEFAULT_DRAFT_SPEC}
+                      onClick={() => {
+                        if (!draftServerId.trim())
+                          setDraftServerId(suggested.id)
+                        setDraftSpecText(
+                          JSON.stringify(suggested.spec, null, 2)
+                        )
+                      }}
+                    >
+                      {suggested.label}
+                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      {t(suggested.note)}
+                    </p>
+                  </div>
+                ))}
               </div>
 
               <div className="space-y-2">

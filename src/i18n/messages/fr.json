@@ -677,6 +677,8 @@
       "configJson": "Configuration MCP (JSON)",
       "draftTitle": "Nouveau MCP",
       "draftDescription": "Renseignez un Server ID et une configuration pour créer un serveur MCP local.",
+      "suggestedLabel": "Partir d’un serveur connu",
+      "suggestedChromeNote": "Remplit le formulaire avec le chrome-devtools-mcp officiel de Google — le registre contient des imitations portant le même nom, ceci fixe le vrai. Il pilote un Chrome SÉPARÉ que codeg ne surveille pas : vous obtenez des données réseau et de performance que les outils du navigateur intégré n’offrent pas, et aucune de leurs protections — pas de partage par onglet, pas de barre d’activité, pas d’approbation par extrait. `npx` télécharge le paquet depuis npm au premier lancement.",
       "serverIdLabel": "ID du serveur",
       "serverIdPlaceholder": "ID du serveur (ex. my-mcp)",
       "typeHint": "Types pris en charge : stdio, http (alias : streamable-http, streamableHttp), sse. env n'est utilisé que par stdio ; pour les MCP distants, utilisez headers pour transporter les jetons d'authentification.",
@@ -2163,6 +2165,7 @@
           "navigation": "Navigation",
           "more": "Plus"
         },
+        "browserTab": "Ouvrir un onglet de navigateur",
         "showPet": "Afficher la mascotte"
       },
       "mcp": {
@@ -2187,19 +2190,6 @@
         "sessions": "Sessions",
         "activeDelegations": "Délégations",
         "depthLimit": "Profondeur",
-        "tools": "Outils",
-        "groupDelegation": "Délégation",
-        "descDelegation": "Confie une tâche à un autre agent.",
-        "groupFeedback": "Retour en direct",
-        "descFeedback": "Ajoute des notes sans interrompre le tour.",
-        "groupAsk": "Question à l'utilisateur",
-        "descAsk": "Laisse l'agent vous consulter avant de décider.",
-        "groupSessions": "Consultation de session",
-        "descSessions": "Consulte les sessions passées et leurs résultats.",
-        "groupAutomations": "Créer une automatisation",
-        "descAutomations": "Crée et gère des automatisations planifiées.",
-        "groupTaskboard": "Créer une tâche",
-        "descTaskboard": "Crée et gère des tâches de travail.",
         "start": "Démarrer le service",
         "starting": "Démarrage…",
         "actionFailed": "Échec : {message}",
@@ -2248,12 +2238,20 @@
     },
     "fileWorkspace": {
       "files": "Fichiers",
+      "newTab": "Nouvel onglet",
+      "newBrowserTab": "Onglet de navigateur",
+      "openFile": "Ouvrir un fichier…",
+      "openFileTitle": "Ouvrir un fichier",
+      "localServices": "Serveurs locaux",
+      "localServiceFromAgent": "Agent",
       "closeFileTab": "Fermer l’onglet fichier",
       "close": "Fermer",
       "closeOthers": "Fermer les autres",
       "closeAll": "Tout fermer",
       "preview": "Aperçu",
       "editSource": "Modifier la source",
+      "openInSystemBrowser": "Ouvrir dans le navigateur système",
+      "more": "Plus",
       "maximize": "Agrandir",
       "restore": "Restaurer",
       "emptyDirectory": "Dossier vide"
@@ -2379,7 +2377,6 @@
       "imageZoomOut": "Réduire",
       "imageZoomReset": "Réinitialiser le zoom",
       "htmlPreviewTitle": "Aperçu HTML",
-      "htmlPreviewTrust": "Activer les scripts",
       "htmlPreviewTrustHint": "Exécuter les scripts de ce fichier et autoriser l'accès réseau. À activer uniquement pour les fichiers de confiance.",
       "officePreviewTitle": "Aperçu du document Office",
       "officeFullRender": "Rendu complet",
@@ -4919,21 +4916,53 @@
   "AgentToolsSettings": {
     "title": "Outils dans la conversation",
     "description": "Outils supplémentaires que codeg fournit à un agent au sein d'une conversation. Ils sont injectés au démarrage de l'agent : une modification s'applique donc aux agents démarrés ensuite.",
-    "feedbackLabel": "Retour en direct",
-    "feedbackHint": "Envoyez des notes et corrections à un agent pendant qu'il travaille. Si l'agent prend en charge l'insertion instantanée, votre note est insérée immédiatement dans le tour en cours ; sinon, l'agent reçoit un outil pour consulter vos retours — ces agents ne le consultent généralement que si vous le mentionnez dans votre prompt, par exemple ajoutez « vérifie régulièrement mon feedback en direct » à votre message.",
-    "questionLabel": "Poser une question à l'utilisateur",
-    "questionHint": "Permet aux agents de s'interrompre et de vous poser une question à choix multiples affichée au-dessus de la zone de saisie de la conversation. L'agent attend votre réponse (ou que vous ignoriez).",
-    "sessionInfoLabel": "Obtenir les infos de session",
-    "sessionInfoHint": "Permet aux agents de consulter une session que vous mentionnez dans votre message (un badge de session) pour lire son titre, son agent, son statut, son espace de travail, sa consommation de jetons et ses messages récents.",
-    "automationsLabel": "Créer des automatisations",
-    "automationsHint": "Enregistre la conversation comme une automatisation qui s'exécute selon un planning. Désactivé par défaut : elle démarre ensuite des agents d'elle-même.",
-    "workTasksLabel": "Créer des tâches à faire",
-    "workTasksHint": "Ajoute une carte au tableau des tâches depuis la conversation. Désactivé par défaut : écrit l'état de l'application.",
     "save": "Enregistrer",
     "saving": "Enregistrement…",
     "saved": "Paramètres des outils enregistrés",
     "saveFailed": "Échec de l'enregistrement des paramètres des outils",
     "loadFailed": "Échec du chargement : {detail}"
+  },
+  "AgentTools": {
+    "delegation": {
+      "label": "Délégation",
+      "short": "Confie une tâche à un autre agent.",
+      "hint": "Permet à un agent de confier une sous-tâche autonome à un autre agent, qui l'exécute dans sa propre session et rend compte. Le reste — profondeur d'imbrication, agent chargé de l'exécuter — se règle dans la section juste au-dessus."
+    },
+    "feedback": {
+      "label": "Retour en direct",
+      "short": "Ajoute des notes sans interrompre le tour.",
+      "hint": "Envoyez des notes et corrections à un agent pendant qu'il travaille. Si l'agent prend en charge l'insertion instantanée, votre note est insérée immédiatement dans le tour en cours ; sinon, l'agent reçoit un outil pour consulter vos retours — ces agents ne le consultent généralement que si vous le mentionnez dans votre prompt, par exemple ajoutez « vérifie régulièrement mon feedback en direct » à votre message."
+    },
+    "ask": {
+      "label": "Poser une question à l'utilisateur",
+      "short": "Laisse l'agent vous consulter avant de décider.",
+      "hint": "Permet aux agents de s'interrompre et de vous poser une question à choix multiples affichée au-dessus de la zone de saisie de la conversation. L'agent attend votre réponse (ou que vous ignoriez)."
+    },
+    "sessions": {
+      "label": "Obtenir les infos de session",
+      "short": "Consulte les sessions passées et leurs résultats.",
+      "hint": "Permet aux agents de consulter une session que vous mentionnez dans votre message (un badge de session) pour lire son titre, son agent, son statut, son espace de travail, sa consommation de jetons et ses messages récents."
+    },
+    "browser": {
+      "label": "Lire et piloter le navigateur intégré",
+      "short": "Ouvre, lit et manipule les pages du navigateur intégré.",
+      "hint": "Permet à un agent de voir quelles pages sont ouvertes dans le navigateur intégré, de lire celles que vous partagez, et de cliquer et saisir sur celles où vous autorisez les actions. Il peut aussi ouvrir une adresse lui-même, envoyer un onglet ailleurs et fermer des onglets. Désactivé par défaut. La page qu'il peut lire reste votre décision, dans la barre de l'onglet concerné — mais notez qu'avec un niveau de partage par défaut, une page que l'agent ouvre pour lui-même lui est partagée dès qu'elle se charge. La désactivation prend effet immédiatement, y compris sur les agents déjà en cours."
+    },
+    "browserEval": {
+      "label": "Exécuter du code dans le navigateur intégré",
+      "short": "Exécute son propre code sur une page partagée — sans rien demander.",
+      "hint": "Autorise les agents à exécuter leur propre JavaScript sur une page que vous avez partagée. Désactivé par défaut, et nécessite l’interrupteur ci-dessus. L’activer signifie que les extraits s’exécutent sans demande : la décision se prend donc ici ; Réglages → Navigateur intégré permet de vous faire montrer chaque extrait à la place."
+    },
+    "automations": {
+      "label": "Créer des automatisations",
+      "short": "Crée et gère des automatisations planifiées.",
+      "hint": "Enregistre la conversation comme une automatisation qui s'exécute selon un planning. Désactivé par défaut : elle démarre ensuite des agents d'elle-même."
+    },
+    "taskboard": {
+      "label": "Créer des tâches à faire",
+      "short": "Crée et gère des tâches de travail.",
+      "hint": "Ajoute une carte au tableau des tâches depuis la conversation. Désactivé par défaut : écrit l'état de l'application."
+    }
   },
   "DesktopNotificationSettings": {
     "title": "Notifications du bureau",
@@ -4992,6 +5021,98 @@
     "tonePop": "Pop",
     "toneAlert": "Alerte",
     "toneDescend": "Descendant"
+  },
+  "BrowserSettings": {
+    "title": "Navigateur intégré",
+    "description": "Les pages web ouvertes depuis les conversations, les résultats d’outils et le terminal peuvent s’afficher comme onglets à côté de vos fichiers, sans quitter l’application.",
+    "defaultTargetTitle": "Où s’ouvrent les liens",
+    "defaultTargetHint": "Réglable par source. ⌘/Ctrl+clic sur un lien utilise l’autre option pour cette fois seulement.",
+    "sourceTranscript": "Messages de la conversation",
+    "sourceToolCard": "Résultats d’outils",
+    "sourceTerminal": "Terminal",
+    "sourceEditor": "Éditeur",
+    "sourceNotification": "Notifications",
+    "targetBuiltin": "Navigateur intégré",
+    "targetSystem": "Navigateur du système",
+    "devtoolsTitle": "Inspecteur web",
+    "devtoolsHint": "Propose « Ouvrir l’inspecteur » dans le menu Plus d’un onglet, et autorise Inspecter l’élément sur la page. Activé par défaut. S’applique aux onglets ouverts à partir de maintenant.",
+    "surfaceTitle": "Surface des onglets",
+    "surfaceHint": "Comment les pages sont hébergées. Laissez Automatique sauf si les onglets intégrés fonctionnent mal sur ce système. S’applique aux onglets ouverts à partir de maintenant.",
+    "surfaceAuto": "Automatique",
+    "surfaceChild": "Intégrée à l’espace de travail",
+    "surfaceWindow": "Fenêtre séparée",
+    "clearTitle": "Données de navigation",
+    "clearHint": "Cookies, caches et stockage des sites partagés par tous les onglets du navigateur. Leur effacement vous déconnecte des sites.",
+    "clearAction": "Effacer…",
+    "clearConfirmTitle": "Effacer les données de navigation ?",
+    "clearConfirmDescription": "Les cookies, caches et stockage des sites du navigateur intégré seront supprimés. Les onglets ouverts le restent, mais vous serez déconnecté des sites.",
+    "clearConfirmAction": "Effacer",
+    "cancel": "Annuler",
+    "cleared": "Données de navigation effacées",
+    "clearFailed": "Impossible d’effacer les données de navigation : {message}",
+    "proxyTitle": "Proxy réseau",
+    "proxyHint": "Les onglets du navigateur utilisent le proxy des Réglages système. Les adresses de cette machine (localhost) ne passent jamais par le proxy.",
+    "proxyOn": "Utilise {url}",
+    "proxyOff": "Connexion directe",
+    "proxyNextTab": "Un changement de proxy s’applique aux onglets ouverts à partir de maintenant.",
+    "proxyRestart": "Redémarrez codeg pour que les onglets du navigateur utilisent le proxy modifié.",
+    "proxyUnsupported": "Indisponible sur cette version de macOS (14 ou ultérieure requise).",
+    "proxyUnusable": "Le proxy configuré n’est pas d’un type utilisable par les onglets du navigateur (http et socks5 uniquement).",
+    "suspendTitle": "Décharger les onglets en arrière-plan",
+    "suspendHint": "Libère la mémoire des onglets du navigateur restés 30 minutes en arrière-plan. Ils se rechargent quand vous y revenez ; la position de défilement et l’historique sont perdus.",
+    "downloadsTitle": "Téléchargements",
+    "downloadsHint": "Les fichiers téléchargés par une page sont enregistrés dans {dir}. Rien n’est ouvert automatiquement et aucun fichier existant n’est remplacé.",
+    "rulesTitle": "Règles de site",
+    "rulesHint": "Par site : toujours le navigateur intégré, toujours le navigateur système, ou bloquer. Les motifs sont un nom d'hôte, *.example.com ou *, avec un :port facultatif ; la correspondance la plus précise l'emporte.",
+    "serviceOpenTitle": "Serveurs locaux",
+    "serviceOpenHint": "Quand un serveur lancé dans un terminal affiche son adresse, l’ouvrir dans un onglet du navigateur. Uniquement les adresses de cette machine, et seulement si quelque chose y écoute.",
+    "serviceOpenOff": "Ne rien faire",
+    "serviceOpenNotify": "Me prévenir",
+    "serviceOpenOpen": "Ouvrir un onglet",
+    "rulePatternPlaceholder": "example.com ou *.example.com",
+    "rulePatternLabel": "Motif de site",
+    "ruleActionLabel": "Action",
+    "ruleActionFor": "Action pour {pattern}",
+    "ruleAdd": "Ajouter",
+    "ruleRemove": "Supprimer la règle",
+    "ruleActionBlock": "Bloquer",
+    "ruleManaged": "Définie par votre administrateur",
+    "ruleInvalid": "Motif non valide",
+    "ruleDuplicate": "Une règle existe déjà pour ce motif",
+    "rulesEmpty": "Aucune règle pour l'instant.",
+    "agentGrantTitle": "Niveau de partage par défaut",
+    "agentGrantHint": "Le niveau auquel chaque site ouvert par un onglet est partagé, sans rien demander. Le contrôle de la page le modifie ou y met fin site par site ; « Ne rien partager » laisse toutes les décisions à ce contrôle.",
+    "agentGrantRead": "Lecture seule",
+    "agentGrantControl": "Lecture et actions",
+    "agentGrantNone": "Ne rien partager",
+    "evalApprovalTitle": "Exécuter du code sur une page",
+    "evalApprovalHint": "Ce qui se passe quand un agent demande à exécuter son propre JavaScript sur une page partagée en « Lecture et actions ». Il s’exécute, sans demander : la décision se prend sur l’interrupteur « Exécuter du code dans le navigateur intégré », désactivé tant que vous ne l’activez pas, et sur le niveau de partage de la page ; chaque exécution figure dans l’activité de l’agent de cet onglet. « Me demander à chaque fois » vous montre chaque extrait en entier et attend votre réponse.",
+    "evalApprovalAsk": "Me demander à chaque fois",
+    "evalApprovalSilent": "Exécuter sans demander",
+    "terminalMenuTitle": "Menu des liens du terminal",
+    "terminalMenuHint": "Un clic sur un lien dans le terminal affiche un petit menu (navigateur intégré, navigateur système, copier le lien) au lieu de l'ouvrir immédiatement. ⌘/Ctrl-clic ouvre toujours le lien directement.",
+    "htmlPreviewTitle": "Aperçu des fichiers HTML",
+    "htmlPreviewHint": "Affiche les fichiers HTML via le navigateur intégré, dans une vue document verrouillée : aucun script tant que vous ne l'activez pas pour un fichier, et seul son propre dossier est accessible. Désactivé : l'aperçu en ligne est utilisé, comme dans l'application web.",
+    "managedDisabled": "La politique de votre administrateur a désactivé le navigateur intégré ; les liens s'ouvrent dans le navigateur système.",
+    "profilesTitle": "Profils",
+    "profilesHint": "Chaque profil conserve ses propres cookies, données de site et connexions. Les nouveaux onglets s'ouvrent dans le profil choisi ci-dessous ; la barre d'un onglet peut ouvrir sa page dans un autre.",
+    "profileDefault": "Par défaut",
+    "profileNewTabsTitle": "Les nouveaux onglets s'ouvrent dans",
+    "profileNamePlaceholder": "Nom du profil, p. ex. Travail",
+    "profileNameLabel": "Nom du profil",
+    "profileAdd": "Ajouter un profil",
+    "profileNameRequired": "Saisissez un nom pour le profil",
+    "profileNameDuplicate": "Un profil porte déjà ce nom",
+    "profileClear": "Effacer les données de navigation de {name}",
+    "profileDelete": "Supprimer le profil {name}",
+    "profileDeleteConfirmTitle": "Supprimer le profil {name} ?",
+    "profileDeleteConfirmDescription": "Ses onglets seront fermés et ses cookies, caches et données de site supprimés. Cette action est irréversible.",
+    "profileDeleteConfirmAction": "Supprimer",
+    "profileDeleted": "Profil supprimé",
+    "profileDeleteFailed": "Impossible de supprimer le profil : {message}",
+    "clearConfirmDescriptionProfile": "Les cookies, caches et données de site du profil {name} seront supprimés. Les onglets ouverts restent ouverts, mais vous serez déconnecté des sites.",
+    "signInUaTitle": "Compatibilité avec la connexion Google",
+    "signInUaHint": "Google refuse la connexion depuis les navigateurs intégrés. Si activé, les onglets se présentent comme Firefox uniquement aux pages de connexion de Google (accounts.google.com) ; partout ailleurs, ils se présentent comme le moteur dans lequel ils s'exécutent, jamais comme Firefox. Onglets intégrés uniquement, pas la fenêtre séparée ; lorsqu'une page de connexion vous redirige vers un autre site, la première requête vers celui-ci porte encore l'identité de connexion."
   },
   "LogsSettings": {
     "loading": "Chargement…",
@@ -6087,6 +6208,251 @@
     "terminalNoDirectory": "Cette carte n'a pas de répertoire de travail",
     "confirmDeleteTerminals": "{count} terminal(aux) en cours seront fermés et leurs processus arrêtés.",
     "confirmDeleteNotesAndTerminals": "{notes} note(s) que vous avez écrites seront définitivement supprimées, et {terminals} terminal(aux) en cours seront arrêtés."
+  },
+  "Browser": {
+    "toolbar": {
+      "back": "Précédent",
+      "forward": "Suivant",
+      "reload": "Recharger",
+      "stop": "Arrêter",
+      "openInSystem": "Ouvrir dans le navigateur système",
+      "more": "Plus",
+      "copyUrl": "Copier le lien",
+      "copied": "Lien copié",
+      "openInspector": "Ouvrir l’inspecteur",
+      "inspectorFailed": "Impossible d’ouvrir l’inspecteur",
+      "addressPlaceholder": "Saisir une adresse",
+      "invalidUrl": "Adresse non valide",
+      "profile": "Profil : {name}",
+      "profileMenuLabel": "Ouvrir cette page dans un autre profil",
+      "profileDefault": "Par défaut"
+    },
+    "status": {
+      "popupDenied": "Fenêtre contextuelle bloquée : {host}",
+      "popupDeniedNoGesture": "ouverte sans clic",
+      "popupDeniedBlockedScheme": "type d'adresse non autorisé",
+      "popupOpenAnyway": "Ouvrir quand même",
+      "dismiss": "Fermer",
+      "errorDns": "Ce site est introuvable",
+      "errorTls": "Cette connexion n'est pas sécurisée",
+      "errorBlocked": "Cette adresse est bloquée dans le navigateur intégré",
+      "errorPopupDenied": "Fenêtre contextuelle bloquée",
+      "errorFailed": "Impossible de charger cette page",
+      "errorFailedHint": "La connexion au site n'a pas abouti. Vérifiez votre réseau et l'adresse ; un proxy est peut-être nécessaire.",
+      "retry": "Réessayer",
+      "openInSystem": "Ouvrir dans le navigateur système",
+      "ownedWindow": "Cette page s'affiche dans sa propre fenêtre.",
+      "ownedWindowShow": "Afficher la fenêtre",
+      "remoteBanner": "Ouvert via {host}",
+      "navigationBlocked": "Navigation bloquée : {host}",
+      "navigationBlockedRule": "bloquée par une règle de site",
+      "navigationBlockedScheme": "ce type d'adresse ne peut pas s'ouvrir ici",
+      "navigationBlockedOpenSystem": "Ouvrir avec l'app système",
+      "errorBlockedHint": "Une règle de site bloque cette adresse. Les règles se gèrent dans Réglages → Navigateur intégré.",
+      "popupDeniedBlockedHost": "bloquée par une règle de site",
+      "channelDegraded": "Dans cet onglet, les fenêtres pop-up sont bloquées et la barre d'adresse peut ne pas suivre la page",
+      "channelDegradedHint": "codeg n'a pas pu installer son script de page. Les fenêtres contextuelles ouvertes par cette page sont bloquées, la barre d'adresse ne suivra pas la navigation à l'intérieur de la page, et le raccourci de recherche pressé dans la page n'ouvrira pas la barre de recherche. Rouvrir l'onglet fait une nouvelle tentative.",
+      "downloadsDenied": "Téléchargements bloqués : {host}",
+      "downloadsDeniedNoGesture": "plusieurs fichiers, non déclenchés par un clic",
+      "agentGrantLost": "Partage terminé : la page a quitté {origin}",
+      "agentGrantLostShare": "Partager aussi {origin}",
+      "agentGrantReplaced": "Partage terminé : un autre programme sert maintenant {origin}",
+      "agentGrantReplacedShare": "Partager quand même"
+    },
+    "tab": {
+      "untitled": "Nouvel onglet"
+    },
+    "drawer": {
+      "title": "Navigateur intégré",
+      "description": "Une page web ouverte depuis la conversation",
+      "openInWorkspace": "Ouvrir dans l'espace de travail",
+      "cannotOpen": "Cette adresse ne peut pas être ouverte ici."
+    },
+    "bridge": {
+      "frameTitle": "Aperçu du serveur de développement",
+      "opening": "Connexion via le serveur…",
+      "reload": "Recharger",
+      "openExternal": "Ouvrir dans un nouvel onglet",
+      "copyAddress": "Copier l'adresse",
+      "copied": "Adresse copiée",
+      "unreachableTitle": "Le port passerelle est inaccessible",
+      "unreachableHint": "Le serveur codeg expose cette page sur {origin}, mais votre navigateur ne l'atteint pas. Publiez ce port (voir CODEG_BRIDGE_PORTS) ou définissez CODEG_BRIDGE_PUBLIC_HOST ; si codeg est servi en HTTPS, les ports passerelle doivent l'être aussi.",
+      "errorTitle": "Cette page ne peut pas être affichée ici"
+    },
+    "download": {
+      "started": "Téléchargement…",
+      "completed": "Enregistré",
+      "failed": "Échec",
+      "reveal": "Afficher dans le dossier",
+      "dismiss": "Masquer"
+    },
+    "find": {
+      "placeholder": "Rechercher dans la page",
+      "next": "Suivant",
+      "previous": "Précédent",
+      "noMatches": "Aucun résultat",
+      "close": "Fermer"
+    },
+    "toast": {
+      "firstOpen": "Ouvert dans le navigateur intégré",
+      "firstOpenHint": "⌘/Ctrl+clic sur un lien pour l'ouvrir dans le navigateur système. Le choix par défaut se modifie dans les Réglages.",
+      "useSystemAlways": "Toujours utiliser le navigateur système",
+      "serviceDetected": "Un serveur tourne sur {address}",
+      "serviceDetectedHint": "Lancé dans un terminal. Réglages → Navigateur intégré permet de les ouvrir automatiquement.",
+      "serviceOpen": "Ouvrir",
+      "blockedHost": "Bloqué par une règle de site : {host}"
+    },
+    "link": {
+      "openBuiltin": "Ouvrir dans le navigateur intégré",
+      "openSystem": "Ouvrir dans le navigateur système",
+      "copy": "Copier le lien"
+    },
+    "doc": {
+      "scriptsOff": "Activer les scripts",
+      "scriptsOn": "Scripts activés",
+      "scriptsHint": "Exécute les scripts de ce document. Ils ne peuvent lire que les fichiers de son dossier et n'ont pas accès au réseau. Si l'un de ces fichiers change ensuite, les scripts sont de nouveau désactivés.",
+      "reload": "Recharger",
+      "more": "Plus",
+      "copyPath": "Copier le chemin",
+      "useInline": "Utiliser l'aperçu en ligne",
+      "useGuest": "Utiliser l'aperçu du navigateur intégré",
+      "unsaved": "Les modifications non enregistrées ne sont pas affichées",
+      "reset": "{file} a changé après l'activation des scripts. Les scripts sont de nouveau désactivés.",
+      "enableAgain": "Réactiver",
+      "dismiss": "Fermer",
+      "externalLink": "Le lien vers {host} n'a pas été suivi",
+      "openLink": "Ouvrir le lien",
+      "downloadRefused": "Les téléchargements ne sont pas autorisés dans l'aperçu d'un document",
+      "openWithSystem": "Ouvrir avec l'application système",
+      "schemeBlocked": "{url} ne peut pas être ouvert ici",
+      "cannotShow": "Ce document ne peut pas être affiché"
+    },
+    "agent": {
+      "share": "Partager cette page avec les agents ({origin})",
+      "shareLabel": "Partager avec les agents",
+      "shareRead": "Lecture seule",
+      "shareControl": "Lecture et actions",
+      "levelDefault": "Par défaut",
+      "notShareable": "Cette page n'a pas d'adresse web à partager avec les agents",
+      "shared": "Partagée",
+      "sharedControl": "Partagée · peut agir",
+      "sharedWith": "Les agents peuvent lire {origin}",
+      "sharedWithControl": "Les agents peuvent lire et agir sur {origin}",
+      "sharedScope": "Le partage prend fin dès que la page quitte ce site.",
+      "sharedScopeProgram": "Il prend aussi fin si un autre programme reprend ce port à {program}.",
+      "sharedToast": "Les agents peuvent désormais lire {origin}",
+      "sharedControlToast": "Les agents peuvent maintenant lire et agir sur {origin}",
+      "stopSharing": "Arrêter le partage",
+      "allowActions": "Autoriser les actions sur cette page",
+      "readOnly": "Lecture seule",
+      "shareFailed": "Cette page ne peut pas être partagée avec les agents",
+      "activity": {
+        "read": {
+          "done": "A lu la page",
+          "refused": "Refusé : cette page n'est pas partagée",
+          "failed": "Impossible de lire la page"
+        },
+        "click": {
+          "done": "A cliqué",
+          "refused": "Clic refusé : les actions ne sont pas autorisées sur cette page",
+          "failed": "Impossible de cliquer"
+        },
+        "hover": {
+          "done": "A survolé",
+          "refused": "Survol refusé : les actions ne sont pas autorisées sur cette page",
+          "failed": "Impossible de survoler"
+        },
+        "type": {
+          "done": "A saisi dans un champ",
+          "refused": "Saisie refusée : les actions ne sont pas autorisées sur cette page",
+          "failed": "Impossible de saisir"
+        },
+        "press": {
+          "done": "A appuyé sur une touche",
+          "refused": "Appui refusé : les actions ne sont pas autorisées sur cette page",
+          "failed": "Impossible d'appuyer sur la touche"
+        },
+        "select": {
+          "done": "A choisi une option",
+          "refused": "Sélection refusée : les actions ne sont pas autorisées sur cette page",
+          "failed": "Impossible de choisir l'option"
+        },
+        "capture": {
+          "done": "A pris une capture d'écran",
+          "refused": "Capture d'écran refusée : cette page n'est pas partagée",
+          "failed": "Impossible de prendre une capture d'écran"
+        },
+        "console": {
+          "done": "A lu la console",
+          "refused": "Lecture de la console refusée : cette page n'est pas partagée",
+          "failed": "Impossible de lire la console"
+        },
+        "eval": {
+          "done": "A exécuté du code sur la page",
+          "refused": "Exécution de code refusée sur cette page",
+          "failed": "Impossible d’exécuter le code"
+        },
+        "open": {
+          "done": "A ouvert cette page",
+          "refused": "Ouverture d'un onglet refusée",
+          "failed": "Impossible d'ouvrir un onglet"
+        },
+        "navigate": {
+          "done": "Est allé à une autre adresse",
+          "refused": "Refusé : cette page n'autorise pas les actions",
+          "failed": "Impossible de changer d'adresse"
+        },
+        "close": {
+          "done": "A fermé cet onglet",
+          "refused": "Fermeture refusée : cette page n'autorise pas les actions",
+          "failed": "Impossible de fermer cet onglet"
+        }
+      },
+      "activityCount": "{count}×",
+      "activityTitle": "Ce que les agents ont fait ici",
+      "activityLabel": "Activité des agents : {entry}",
+      "eval": {
+        "title": "Exécuter ce code sur {site} ?",
+        "description": "Un agent veut exécuter du JavaScript sur cette page. Il peut lire et modifier tout ce que vous pouvez sur {site}.",
+        "descriptionWithTitle": "Un agent veut exécuter du JavaScript sur « {title} ». Il peut lire et modifier tout ce que vous pouvez sur {site}.",
+        "codeLabel": "Le code qui sera exécuté",
+        "everyTime": "La question reviendra pour chaque extrait : approuver celui-ci n’approuve pas le suivant. C’est dans Réglages → Navigateur intégré que se décide si la question est posée.",
+        "allow": "Exécuter une fois",
+        "deny": "Ne pas exécuter"
+      }
+    },
+    "handoff": {
+      "send": "Envoyer cette page à la conversation",
+      "sendLabel": "Envoyer à la conversation",
+      "noConversation": "Ouvre une conversation à laquelle envoyer cette page",
+      "pickElement": "Choisir un élément…",
+      "screenshot": "Envoyer une capture",
+      "consoleErrors": "Envoyer les erreurs de la console",
+      "consoleClean": "Rien n'a échoué sur cette page",
+      "picking": "Sélection…",
+      "pickingHint": "Clique sur un élément de la page, ou appuie sur Échap pour arrêter",
+      "pickingCancel": "Arrêter la sélection",
+      "sent": "Ajouté à la conversation",
+      "failed": "Cette page n'a pas pu être envoyée à la conversation",
+      "noConsoleErrors": "Cette page n'a affiché aucune erreur",
+      "chipElement": "Élément de la page",
+      "chipScreenshot": "Capture de la page",
+      "chipConsole": "{count, plural, one {# erreur de console} other {# erreurs de console}}",
+      "gone": "Cette conversation n'est plus ouverte",
+      "consoleErrorsCount": "{count, plural, one {Envoyer la # erreur de console} other {Envoyer les # erreurs de console}}"
+    }
+  },
+  "browser": {
+    "agent": {
+      "error": {
+        "grantRequired": "Cet onglet n'a pas été partagé avec un agent. Partagez-le pour que l'agent puisse lire la page."
+      }
+    },
+    "inspector": {
+      "error": {
+        "switchedOff": "Cet onglet a été ouvert alors que l’inspecteur web était désactivé. Activez-le dans les réglages du navigateur, puis rouvrez la page."
+      }
+    }
   },
   "Pipeline": {
     "title": "Pipeline d'agents",

@@ -677,6 +677,8 @@
       "configJson": "Configuración MCP (JSON)",
       "draftTitle": "Nuevo MCP",
       "draftDescription": "Indica un Server ID y la configuración para crear un servidor MCP local.",
+      "suggestedLabel": "Empezar desde un servidor conocido",
+      "suggestedChromeNote": "Rellena el formulario con el chrome-devtools-mcp oficial de Google; el registro incluye imitaciones con el mismo nombre, así que esto fija el auténtico. Controla un Chrome APARTE que codeg no supervisa: obtienes datos de red y rendimiento que las herramientas del navegador integrado no ofrecen, y ninguna de sus protecciones: sin compartir por pestaña, sin barra de actividad, sin aprobación por fragmento. `npx` descarga el paquete de npm la primera vez que se ejecuta.",
       "serverIdLabel": "Server ID",
       "serverIdPlaceholder": "Server ID (p. ej. my-mcp)",
       "typeHint": "Tipos admitidos: stdio, http (alias: streamable-http, streamableHttp), sse. env solo se usa con stdio; para MCP remotos usa headers para llevar tokens de autenticación.",
@@ -2163,6 +2165,7 @@
           "navigation": "Navegación",
           "more": "Más"
         },
+        "browserTab": "Abrir pestaña del navegador",
         "showPet": "Mostrar mascota"
       },
       "mcp": {
@@ -2187,19 +2190,6 @@
         "sessions": "Sesiones",
         "activeDelegations": "Delegaciones",
         "depthLimit": "Profundidad",
-        "tools": "Herramientas",
-        "groupDelegation": "Delegación",
-        "descDelegation": "Pasa una tarea a otro agente.",
-        "groupFeedback": "Feedback en vivo",
-        "descFeedback": "Añade notas sin interrumpir el turno.",
-        "groupAsk": "Preguntar al usuario",
-        "descAsk": "Deja que el agente te consulte antes de decidir.",
-        "groupSessions": "Consulta de sesiones",
-        "descSessions": "Consulta sesiones pasadas y sus resultados.",
-        "groupAutomations": "Crear automatización",
-        "descAutomations": "Crea y gestiona automatizaciones programadas.",
-        "groupTaskboard": "Crear tarea",
-        "descTaskboard": "Crea y gestiona tareas de trabajo.",
         "start": "Iniciar servicio",
         "starting": "Iniciando…",
         "actionFailed": "Error: {message}",
@@ -2248,12 +2238,20 @@
     },
     "fileWorkspace": {
       "files": "Archivos",
+      "newTab": "Nueva pestaña",
+      "newBrowserTab": "Pestaña del navegador",
+      "openFile": "Abrir archivo…",
+      "openFileTitle": "Abrir archivo",
+      "localServices": "Servidores locales",
+      "localServiceFromAgent": "Agente",
       "closeFileTab": "Cerrar pestaña de archivo",
       "close": "Cerrar",
       "closeOthers": "Cerrar otros",
       "closeAll": "Cerrar todo",
       "preview": "Vista previa",
       "editSource": "Editar fuente",
+      "openInSystemBrowser": "Abrir en el navegador del sistema",
+      "more": "Más",
       "maximize": "Maximizar",
       "restore": "Restaurar",
       "emptyDirectory": "Carpeta vacía"
@@ -2379,7 +2377,6 @@
       "imageZoomOut": "Reducir",
       "imageZoomReset": "Restablecer zoom",
       "htmlPreviewTitle": "Vista previa HTML",
-      "htmlPreviewTrust": "Habilitar scripts",
       "htmlPreviewTrustHint": "Ejecuta los scripts de este archivo y permite el acceso a la red. Actívalo solo para archivos de confianza.",
       "officePreviewTitle": "Vista previa de documento de Office",
       "officeFullRender": "Renderizado completo",
@@ -4919,21 +4916,53 @@
   "AgentToolsSettings": {
     "title": "Herramientas en la conversación",
     "description": "Herramientas adicionales que codeg entrega a un agente dentro de una conversación. Se inyectan al iniciar el agente, así que los cambios se aplican a los agentes iniciados después.",
-    "feedbackLabel": "Comentarios en vivo",
-    "feedbackHint": "Envía notas y correcciones a un agente mientras trabaja. Si el agente admite la inserción instantánea, tu nota se inserta de inmediato en el turno en curso; de lo contrario, el agente recibe una herramienta para consultar tus comentarios — esos agentes suelen consultarla solo si lo mencionas en tu prompt, por ejemplo añade \"revisa mi feedback en vivo con regularidad\" a tu mensaje.",
-    "questionLabel": "Preguntar al usuario",
-    "questionHint": "Permite que los agentes se detengan y te hagan una pregunta de opción múltiple que aparece encima del cuadro de entrada de la conversación. El agente espera hasta que respondas (u omitas).",
-    "sessionInfoLabel": "Obtener información de sesión",
-    "sessionInfoHint": "Permite que los agentes consulten una sesión que mencionas en tu mensaje (una insignia de sesión) para leer su título, agente, estado, espacio de trabajo, uso de tokens y mensajes recientes.",
-    "automationsLabel": "Crear automatizaciones",
-    "automationsHint": "Guarda la conversación como una automatización que se ejecuta según un horario. Desactivado por defecto: luego inicia agentes por su cuenta.",
-    "workTasksLabel": "Crear tareas pendientes",
-    "workTasksHint": "Añade una tarjeta al tablero de pendientes desde la conversación. Desactivado por defecto: escribe estado de la aplicación.",
     "save": "Guardar",
     "saving": "Guardando…",
     "saved": "Ajustes de herramientas guardados",
     "saveFailed": "No se pudieron guardar los ajustes de herramientas",
     "loadFailed": "Error al cargar: {detail}"
+  },
+  "AgentTools": {
+    "delegation": {
+      "label": "Delegación",
+      "short": "Pasa una tarea a otro agente.",
+      "hint": "Permite que un agente pase una subtarea autónoma a otro agente, que la ejecuta en su propia sesión y devuelve el resultado. El resto —cuánto pueden anidarse las delegaciones, qué agente las ejecuta— está en la sección de arriba."
+    },
+    "feedback": {
+      "label": "Comentarios en vivo",
+      "short": "Añade notas sin interrumpir el turno.",
+      "hint": "Envía notas y correcciones a un agente mientras trabaja. Si el agente admite la inserción instantánea, tu nota se inserta de inmediato en el turno en curso; de lo contrario, el agente recibe una herramienta para consultar tus comentarios — esos agentes suelen consultarla solo si lo mencionas en tu prompt, por ejemplo añade \"revisa mi feedback en vivo con regularidad\" a tu mensaje."
+    },
+    "ask": {
+      "label": "Preguntar al usuario",
+      "short": "Deja que el agente te consulte antes de decidir.",
+      "hint": "Permite que los agentes se detengan y te hagan una pregunta de opción múltiple que aparece encima del cuadro de entrada de la conversación. El agente espera hasta que respondas (u omitas)."
+    },
+    "sessions": {
+      "label": "Obtener información de sesión",
+      "short": "Consulta sesiones pasadas y sus resultados.",
+      "hint": "Permite que los agentes consulten una sesión que mencionas en tu mensaje (una insignia de sesión) para leer su título, agente, estado, espacio de trabajo, uso de tokens y mensajes recientes."
+    },
+    "browser": {
+      "label": "Leer y manejar el navegador integrado",
+      "short": "Abre, lee y actúa sobre las páginas del navegador integrado.",
+      "hint": "Permite que un agente vea qué páginas hay abiertas en el navegador integrado, lea las que compartas y haga clic y escriba en aquellas donde permitas acciones. También puede abrir una dirección por su cuenta, llevar una pestaña a otro sitio y cerrar pestañas. Desactivado por omisión. Qué página puede leer sigue decidiéndolo tú en la barra de esa pestaña, pero ten en cuenta que, con un nivel de compartición predeterminado, una página que el agente abre para sí queda compartida con él en cuanto carga. Desactivarlo surte efecto de inmediato, también en los agentes ya en marcha."
+    },
+    "browserEval": {
+      "label": "Ejecutar código en el navegador integrado",
+      "short": "Ejecuta su propio código en una página que compartiste, sin preguntar.",
+      "hint": "Permite que los agentes ejecuten su propio JavaScript en una página que hayas compartido. Desactivado por defecto, y requiere el interruptor de arriba. Activarlo significa que los fragmentos se ejecutan sin preguntar, así que la decisión está en este interruptor; en Ajustes → Navegador integrado puedes hacer que te muestren cada fragmento."
+    },
+    "automations": {
+      "label": "Crear automatizaciones",
+      "short": "Crea y gestiona automatizaciones programadas.",
+      "hint": "Guarda la conversación como una automatización que se ejecuta según un horario. Desactivado por defecto: luego inicia agentes por su cuenta."
+    },
+    "taskboard": {
+      "label": "Crear tareas pendientes",
+      "short": "Crea y gestiona tareas de trabajo.",
+      "hint": "Añade una tarjeta al tablero de pendientes desde la conversación. Desactivado por defecto: escribe estado de la aplicación."
+    }
   },
   "DesktopNotificationSettings": {
     "title": "Notificaciones de escritorio",
@@ -4992,6 +5021,98 @@
     "tonePop": "Pop",
     "toneAlert": "Alerta",
     "toneDescend": "Descendente"
+  },
+  "BrowserSettings": {
+    "title": "Navegador integrado",
+    "description": "Las páginas web abiertas desde conversaciones, resultados de herramientas y la terminal pueden mostrarse como pestañas junto a tus archivos, sin salir de la aplicación.",
+    "defaultTargetTitle": "Dónde se abren los enlaces",
+    "defaultTargetHint": "Se configura por origen. Haz ⌘/Ctrl+clic en un enlace para usar la otra opción solo esta vez.",
+    "sourceTranscript": "Mensajes de la conversación",
+    "sourceToolCard": "Resultados de herramientas",
+    "sourceTerminal": "Terminal",
+    "sourceEditor": "Editor",
+    "sourceNotification": "Notificaciones",
+    "targetBuiltin": "Navegador integrado",
+    "targetSystem": "Navegador del sistema",
+    "devtoolsTitle": "Inspector web",
+    "devtoolsHint": "Ofrece «Abrir el inspector» en el menú Más de una pestaña, y permite Inspeccionar elemento en la página. Activado por defecto. Se aplica a las pestañas que abras a partir de ahora.",
+    "surfaceTitle": "Superficie de las pestañas",
+    "surfaceHint": "Cómo se alojan las páginas. Mantén Automático salvo que las pestañas incrustadas fallen en este sistema. Se aplica a las pestañas abiertas a partir de ahora.",
+    "surfaceAuto": "Automático",
+    "surfaceChild": "Incrustada en el espacio de trabajo",
+    "surfaceWindow": "Ventana independiente",
+    "clearTitle": "Datos de navegación",
+    "clearHint": "Cookies, cachés y almacenamiento de sitios compartidos por todas las pestañas del navegador. Al borrarlos se cerrará tu sesión en los sitios.",
+    "clearAction": "Borrar…",
+    "clearConfirmTitle": "¿Borrar los datos de navegación?",
+    "clearConfirmDescription": "Se eliminarán las cookies, las cachés y el almacenamiento de sitios del navegador integrado. Las pestañas abiertas seguirán abiertas, pero se cerrará tu sesión en los sitios.",
+    "clearConfirmAction": "Borrar",
+    "cancel": "Cancelar",
+    "cleared": "Datos de navegación borrados",
+    "clearFailed": "No se pudieron borrar los datos de navegación: {message}",
+    "proxyTitle": "Proxy de red",
+    "proxyHint": "Las pestañas del navegador usan el proxy de Ajustes del sistema. Las direcciones de este equipo (localhost) nunca pasan por el proxy.",
+    "proxyOn": "Usando {url}",
+    "proxyOff": "Conexión directa",
+    "proxyNextTab": "Un cambio de proxy se aplica a las pestañas que se abran a partir de ahora.",
+    "proxyRestart": "Reinicia codeg para que las pestañas del navegador usen el proxy cambiado.",
+    "proxyUnsupported": "No disponible en esta versión de macOS (se necesita 14 o posterior).",
+    "proxyUnusable": "El proxy configurado no es de un tipo que las pestañas del navegador puedan usar (solo http y socks5).",
+    "suspendTitle": "Descargar pestañas en segundo plano",
+    "suspendHint": "Libera la memoria de las pestañas del navegador que llevan 30 minutos en segundo plano. Se vuelven a cargar al regresar; se pierden la posición de desplazamiento y el historial.",
+    "downloadsTitle": "Descargas",
+    "downloadsHint": "Los archivos que descarga una página se guardan en {dir}. No se abre nada automáticamente y nunca se reemplaza un archivo existente.",
+    "rulesTitle": "Reglas de sitio",
+    "rulesHint": "Por sitio: siempre el navegador integrado, siempre el navegador del sistema, o bloquear. Los patrones son un nombre de host, *.example.com o *, con un :puerto opcional; gana la coincidencia más específica.",
+    "serviceOpenTitle": "Servidores locales",
+    "serviceOpenHint": "Cuando un servidor iniciado en un terminal imprime su dirección, ábrela en una pestaña del navegador. Solo direcciones de este equipo y solo cuando algo esté escuchando en ellas.",
+    "serviceOpenOff": "No hacer nada",
+    "serviceOpenNotify": "Avisarme",
+    "serviceOpenOpen": "Abrir una pestaña",
+    "rulePatternPlaceholder": "example.com o *.example.com",
+    "rulePatternLabel": "Patrón de sitio",
+    "ruleActionLabel": "Acción",
+    "ruleActionFor": "Acción para {pattern}",
+    "ruleAdd": "Añadir",
+    "ruleRemove": "Quitar regla",
+    "ruleActionBlock": "Bloquear",
+    "ruleManaged": "Definida por tu administrador",
+    "ruleInvalid": "No es un patrón válido",
+    "ruleDuplicate": "Ya existe una regla para este patrón",
+    "rulesEmpty": "Aún no hay reglas.",
+    "agentGrantTitle": "Nivel de uso compartido predeterminado",
+    "agentGrantHint": "Con qué nivel se comparte cada sitio que abre una pestaña, sin preguntar. El control de la propia página sigue cambiándolo o terminándolo sitio por sitio; «No compartir nada» deja todas las decisiones a ese control.",
+    "agentGrantRead": "Solo lectura",
+    "agentGrantControl": "Leer y actuar",
+    "agentGrantNone": "No compartir nada",
+    "evalApprovalTitle": "Ejecutar código en una página",
+    "evalApprovalHint": "Qué ocurre cuando un agente pide ejecutar su propio JavaScript en una página compartida como «Leer y actuar». Se ejecuta, sin preguntar: la decisión está en el interruptor «Ejecutar código en el navegador integrado», que está apagado hasta que lo enciendas, y en el nivel de uso compartido de la página; cada ejecución aparece en la actividad del agente de esa pestaña. «Preguntarme siempre» te muestra cada fragmento entero y espera tu respuesta.",
+    "evalApprovalAsk": "Preguntarme siempre",
+    "evalApprovalSilent": "Ejecutar sin preguntar",
+    "terminalMenuTitle": "Menú de enlaces del terminal",
+    "terminalMenuHint": "Al hacer clic en un enlace del terminal se muestra un pequeño menú (navegador integrado, navegador del sistema, copiar enlace) en lugar de abrirlo de inmediato. ⌘/Ctrl+clic sigue abriendo el enlace directamente.",
+    "htmlPreviewTitle": "Vista previa de archivos HTML",
+    "htmlPreviewHint": "Muestra los archivos HTML a través del navegador integrado, en una vista de documento restringida: sin scripts hasta que los actives para un archivo, y solo con acceso a su propia carpeta. Desactivado: se usa la vista previa en línea, como en la aplicación web.",
+    "managedDisabled": "La política de tu administrador ha desactivado el navegador integrado; los enlaces se abren en el navegador del sistema.",
+    "profilesTitle": "Perfiles",
+    "profilesHint": "Cada perfil guarda sus propias cookies, almacenamiento de sitios e inicios de sesión. Las pestañas nuevas se abren en el perfil elegido abajo; la barra de una pestaña puede abrir su página en otro.",
+    "profileDefault": "Predeterminado",
+    "profileNewTabsTitle": "Las pestañas nuevas se abren en",
+    "profileNamePlaceholder": "Nombre del perfil, p. ej. Trabajo",
+    "profileNameLabel": "Nombre del perfil",
+    "profileAdd": "Añadir perfil",
+    "profileNameRequired": "Escribe un nombre para el perfil",
+    "profileNameDuplicate": "Ya existe un perfil con este nombre",
+    "profileClear": "Borrar los datos de navegación de {name}",
+    "profileDelete": "Eliminar el perfil {name}",
+    "profileDeleteConfirmTitle": "¿Eliminar el perfil {name}?",
+    "profileDeleteConfirmDescription": "Se cerrarán sus pestañas y se eliminarán sus cookies, cachés y almacenamiento de sitios. Esta acción no se puede deshacer.",
+    "profileDeleteConfirmAction": "Eliminar",
+    "profileDeleted": "Perfil eliminado",
+    "profileDeleteFailed": "No se pudo eliminar el perfil: {message}",
+    "clearConfirmDescriptionProfile": "Se eliminarán las cookies, cachés y almacenamiento de sitios del perfil {name}. Las pestañas abiertas permanecen, pero se cerrará tu sesión en los sitios.",
+    "signInUaTitle": "Compatibilidad con el inicio de sesión de Google",
+    "signInUaHint": "Google rechaza iniciar sesión desde navegadores integrados. Si está activado, las pestañas se presentan como Firefox solo ante las páginas de inicio de sesión de Google (accounts.google.com); en el resto se presentan como el motor en el que se ejecutan, nunca como Firefox. Solo en pestañas integradas, no en la ventana separada; cuando una página de inicio de sesión te redirige a otro sitio, la primera solicitud allí aún lleva la identidad de inicio de sesión."
   },
   "LogsSettings": {
     "loading": "Cargando…",
@@ -6087,6 +6208,251 @@
     "terminalNoDirectory": "Esta tarjeta no tiene directorio de trabajo",
     "confirmDeleteTerminals": "Se cerrarán {count} terminal(es) en ejecución y se detendrán sus procesos.",
     "confirmDeleteNotesAndTerminals": "Se eliminarán permanentemente {notes} nota(s) que escribiste y se detendrán {terminals} terminal(es) en ejecución."
+  },
+  "Browser": {
+    "toolbar": {
+      "back": "Atrás",
+      "forward": "Adelante",
+      "reload": "Recargar",
+      "stop": "Detener",
+      "openInSystem": "Abrir en el navegador del sistema",
+      "more": "Más",
+      "copyUrl": "Copiar enlace",
+      "copied": "Enlace copiado",
+      "openInspector": "Abrir el inspector",
+      "inspectorFailed": "No se pudo abrir el inspector",
+      "addressPlaceholder": "Escribe una dirección",
+      "invalidUrl": "No es una dirección válida",
+      "profile": "Perfil: {name}",
+      "profileMenuLabel": "Abrir esta página en otro perfil",
+      "profileDefault": "Predeterminado"
+    },
+    "status": {
+      "popupDenied": "Ventana emergente bloqueada: {host}",
+      "popupDeniedNoGesture": "no se abrió con un clic",
+      "popupDeniedBlockedScheme": "tipo de dirección no permitido",
+      "popupOpenAnyway": "Abrir de todos modos",
+      "dismiss": "Cerrar",
+      "errorDns": "No se encuentra este sitio",
+      "errorTls": "Esta conexión no es segura",
+      "errorBlocked": "Esta dirección está bloqueada en el navegador integrado",
+      "errorPopupDenied": "Ventana emergente bloqueada",
+      "errorFailed": "No se puede cargar esta página",
+      "errorFailedHint": "No se pudo conectar con el sitio. Comprueba tu red y la dirección; puede que necesites un proxy.",
+      "retry": "Reintentar",
+      "openInSystem": "Abrir en el navegador del sistema",
+      "ownedWindow": "Esta página se muestra en su propia ventana.",
+      "ownedWindowShow": "Mostrar ventana",
+      "remoteBanner": "Abierto a través de {host}",
+      "navigationBlocked": "Navegación bloqueada: {host}",
+      "navigationBlockedRule": "bloqueada por una regla de sitio",
+      "navigationBlockedScheme": "este tipo de dirección no se puede abrir aquí",
+      "navigationBlockedOpenSystem": "Abrir con la app del sistema",
+      "errorBlockedHint": "Una regla de sitio bloquea esta dirección. Las reglas se gestionan en Ajustes → Navegador integrado.",
+      "popupDeniedBlockedHost": "bloqueada por una regla de sitio",
+      "channelDegraded": "En esta pestaña se bloquean las ventanas emergentes y la barra de direcciones puede quedarse atrás",
+      "channelDegradedHint": "codeg no pudo instalar su script de página. Las ventanas emergentes que abra esta página se bloquean, la barra de direcciones no seguirá la navegación dentro de la página y el atajo de búsqueda pulsado en la página no abrirá la barra de búsqueda. Volver a abrir la pestaña lo intenta de nuevo.",
+      "downloadsDenied": "Descargas bloqueadas: {host}",
+      "downloadsDeniedNoGesture": "varios archivos, no iniciados por un clic",
+      "agentGrantLost": "El acceso terminó: la página salió de {origin}",
+      "agentGrantLostShare": "Compartir también {origin}",
+      "agentGrantReplaced": "El acceso terminó: ahora otro programa sirve {origin}",
+      "agentGrantReplacedShare": "Compartir de todos modos"
+    },
+    "tab": {
+      "untitled": "Nueva pestaña"
+    },
+    "drawer": {
+      "title": "Navegador integrado",
+      "description": "Una página web abierta desde la conversación",
+      "openInWorkspace": "Abrir en el espacio de trabajo",
+      "cannotOpen": "Esta dirección no se puede abrir aquí."
+    },
+    "bridge": {
+      "frameTitle": "Vista previa del servidor de desarrollo",
+      "opening": "Conectando a través del servidor…",
+      "reload": "Recargar",
+      "openExternal": "Abrir en una pestaña nueva",
+      "copyAddress": "Copiar dirección",
+      "copied": "Dirección copiada",
+      "unreachableTitle": "No se puede acceder al puerto puente",
+      "unreachableHint": "El servidor de codeg puso esta página en {origin}, pero tu navegador no puede acceder a él. Publica ese puerto (consulta CODEG_BRIDGE_PORTS) o define CODEG_BRIDGE_PUBLIC_HOST; si codeg se sirve por HTTPS, los puertos puente también necesitan HTTPS.",
+      "errorTitle": "Esta página no se puede mostrar aquí"
+    },
+    "download": {
+      "started": "Descargando…",
+      "completed": "Guardado",
+      "failed": "Error",
+      "reveal": "Mostrar en la carpeta",
+      "dismiss": "Descartar"
+    },
+    "find": {
+      "placeholder": "Buscar en la página",
+      "next": "Siguiente",
+      "previous": "Anterior",
+      "noMatches": "Sin coincidencias",
+      "close": "Cerrar"
+    },
+    "toast": {
+      "firstOpen": "Abierto en el navegador integrado",
+      "firstOpenHint": "Haz ⌘/Ctrl+clic en un enlace para abrirlo en el navegador del sistema. Cambia el valor predeterminado en Ajustes.",
+      "useSystemAlways": "Usar siempre el navegador del sistema",
+      "serviceDetected": "Hay un servidor en {address}",
+      "serviceDetectedHint": "Iniciado en un terminal. En Ajustes → Navegador integrado puedes hacer que se abran solos.",
+      "serviceOpen": "Abrir",
+      "blockedHost": "Bloqueado por una regla de sitio: {host}"
+    },
+    "link": {
+      "openBuiltin": "Abrir en el navegador integrado",
+      "openSystem": "Abrir en el navegador del sistema",
+      "copy": "Copiar enlace"
+    },
+    "doc": {
+      "scriptsOff": "Activar scripts",
+      "scriptsOn": "Scripts activados",
+      "scriptsHint": "Ejecuta los scripts de este documento. Solo pueden leer archivos de su carpeta y no tienen acceso a la red. Si después cambia alguno de esos archivos, los scripts se desactivan de nuevo.",
+      "reload": "Recargar",
+      "more": "Más",
+      "copyPath": "Copiar ruta",
+      "useInline": "Usar vista previa en línea",
+      "useGuest": "Usar la vista previa del navegador integrado",
+      "unsaved": "Los cambios sin guardar no se muestran",
+      "reset": "{file} cambió después de activar los scripts. Los scripts están desactivados de nuevo.",
+      "enableAgain": "Activar de nuevo",
+      "dismiss": "Cerrar",
+      "externalLink": "No se siguió el enlace a {host}",
+      "openLink": "Abrir enlace",
+      "downloadRefused": "No se permiten descargas en la vista previa de un documento",
+      "openWithSystem": "Abrir con la aplicación del sistema",
+      "schemeBlocked": "{url} no se puede abrir aquí",
+      "cannotShow": "No se puede mostrar este documento"
+    },
+    "agent": {
+      "share": "Compartir esta página con los agentes ({origin})",
+      "shareLabel": "Compartir con los agentes",
+      "shareRead": "Solo lectura",
+      "shareControl": "Leer y actuar",
+      "levelDefault": "Predeterminado",
+      "notShareable": "Esta página no tiene una dirección web que compartir con los agentes",
+      "shared": "Compartida",
+      "sharedControl": "Compartida · puede actuar",
+      "sharedWith": "Los agentes pueden leer {origin}",
+      "sharedWithControl": "Los agentes pueden leer y actuar en {origin}",
+      "sharedScope": "El acceso termina en cuanto la página sale de este sitio.",
+      "sharedScopeProgram": "También termina si otro programa le quita este puerto a {program}.",
+      "sharedToast": "Los agentes ya pueden leer {origin}",
+      "sharedControlToast": "Los agentes ya pueden leer y actuar en {origin}",
+      "stopSharing": "Dejar de compartir",
+      "allowActions": "Permitir acciones en esta página",
+      "readOnly": "Solo lectura",
+      "shareFailed": "Esta página no se puede compartir con los agentes",
+      "activity": {
+        "read": {
+          "done": "Leyó la página",
+          "refused": "Rechazado: esta página no está compartida",
+          "failed": "No se pudo leer la página"
+        },
+        "click": {
+          "done": "Hizo clic",
+          "refused": "Clic rechazado: no se permiten acciones en esta página",
+          "failed": "No se pudo hacer clic"
+        },
+        "hover": {
+          "done": "Pasó el puntero",
+          "refused": "Hover rechazado: no se permiten acciones en esta página",
+          "failed": "No se pudo pasar el puntero"
+        },
+        "type": {
+          "done": "Escribió en un campo",
+          "refused": "Escritura rechazada: no se permiten acciones en esta página",
+          "failed": "No se pudo escribir"
+        },
+        "press": {
+          "done": "Pulsó una tecla",
+          "refused": "Pulsación rechazada: no se permiten acciones en esta página",
+          "failed": "No se pudo pulsar la tecla"
+        },
+        "select": {
+          "done": "Eligió una opción",
+          "refused": "Selección rechazada: no se permiten acciones en esta página",
+          "failed": "No se pudo elegir la opción"
+        },
+        "capture": {
+          "done": "Tomó una captura de pantalla",
+          "refused": "Captura rechazada: esta página no está compartida",
+          "failed": "No se pudo tomar la captura de pantalla"
+        },
+        "console": {
+          "done": "Leyó la consola",
+          "refused": "Lectura de la consola rechazada: esta página no está compartida",
+          "failed": "No se pudo leer la consola"
+        },
+        "eval": {
+          "done": "Ejecutó código en la página",
+          "refused": "Ejecución de código rechazada en esta página",
+          "failed": "No se pudo ejecutar el código"
+        },
+        "open": {
+          "done": "Abrió esta página",
+          "refused": "Se rechazó abrir una pestaña",
+          "failed": "No se pudo abrir una pestaña"
+        },
+        "navigate": {
+          "done": "Fue a otra dirección",
+          "refused": "Rechazado: esta página no permite acciones",
+          "failed": "No se pudo cambiar la dirección"
+        },
+        "close": {
+          "done": "Cerró esta pestaña",
+          "refused": "Cierre rechazado: esta página no permite acciones",
+          "failed": "No se pudo cerrar esta pestaña"
+        }
+      },
+      "activityCount": "{count}×",
+      "activityTitle": "Lo que los agentes hicieron aquí",
+      "activityLabel": "Actividad de los agentes: {entry}",
+      "eval": {
+        "title": "¿Ejecutar este código en {site}?",
+        "description": "Un agente quiere ejecutar JavaScript en esta página. Puede leer y cambiar todo lo que tú puedes en {site}.",
+        "descriptionWithTitle": "Un agente quiere ejecutar JavaScript en «{title}». Puede leer y cambiar todo lo que tú puedes en {site}.",
+        "codeLabel": "El código que se ejecutará",
+        "everyTime": "Se te preguntará de nuevo por cada fragmento: aprobar este no aprueba el siguiente. Si se te pregunta o no se decide en Ajustes → Navegador integrado.",
+        "allow": "Ejecutar una vez",
+        "deny": "No ejecutar"
+      }
+    },
+    "handoff": {
+      "send": "Enviar esta página al chat",
+      "sendLabel": "Enviar al chat",
+      "noConversation": "Abre una conversación a la que enviar esta página",
+      "pickElement": "Elegir un elemento…",
+      "screenshot": "Enviar una captura",
+      "consoleErrors": "Enviar los errores de la consola",
+      "consoleClean": "Nada ha fallado en esta página",
+      "picking": "Eligiendo…",
+      "pickingHint": "Haz clic en algo de la página, o pulsa Esc para terminar",
+      "pickingCancel": "Dejar de elegir",
+      "sent": "Añadido al chat",
+      "failed": "No se pudo enviar esta página al chat",
+      "noConsoleErrors": "Esta página no ha mostrado ningún error",
+      "chipElement": "Elemento de la página",
+      "chipScreenshot": "Captura de la página",
+      "chipConsole": "{count, plural, one {# error de consola} other {# errores de consola}}",
+      "gone": "Esa conversación ya no está abierta",
+      "consoleErrorsCount": "{count, plural, one {Enviar el # error de consola} other {Enviar los # errores de consola}}"
+    }
+  },
+  "browser": {
+    "agent": {
+      "error": {
+        "grantRequired": "Esta pestaña no se ha compartido con un agente. Compártela para que el agente pueda leer la página."
+      }
+    },
+    "inspector": {
+      "error": {
+        "switchedOff": "Esta pestaña se abrió con el inspector web desactivado. Actívalo en la configuración del navegador y vuelve a abrir la página."
+      }
+    }
   },
   "Pipeline": {
     "title": "Pipeline de agentes",

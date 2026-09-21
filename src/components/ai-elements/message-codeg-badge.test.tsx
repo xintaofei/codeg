@@ -10,6 +10,14 @@ import { describe, expect, it, vi } from "vitest"
 // These are ASSISTANT-path guards: `codeg://` reference links render as inline
 // badges via MarkdownLink + rehype-allow-codeg regardless of role. (User messages
 // no longer go through MessageResponse — see message/plain-text-with-badges.tsx.)
+vi.mock("next-intl", () => {
+  const t = (key: string) => key
+  return { useTranslations: () => t }
+})
+vi.mock("@/hooks/use-open-url-target", () => ({
+  useOpenUrlTarget: () => () => ({ kind: "system", url: "" }),
+  isPrimaryModifier: () => false,
+}))
 vi.mock("@/components/ai-elements/link-safety", () => ({
   useStreamdownLinkSafety: () => ({ enabled: false }),
 }))

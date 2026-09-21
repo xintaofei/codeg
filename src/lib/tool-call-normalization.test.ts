@@ -671,6 +671,52 @@ describe("normalizeToolName Grok terminal tool", () => {
   })
 })
 
+describe("normalizeToolName Windows shell tool", () => {
+  it("aliases PowerShell to bash in every spelling the parsers store", () => {
+    // Claude Code's CLI runs commands through a `PowerShell` tool when Windows
+    // has no Git Bash (claude-agent-acp ≥0.79.0 gives it Bash's `kind:
+    // "execute"` + command title); pi uses the lower-case name for the same
+    // thing. Both history parsers keep the raw name, so without the alias the
+    // reload path rendered a terminal icon over a raw-JSON dump — the card body
+    // dispatches on the normalized name.
+    expect(normalizeToolName("PowerShell")).toBe("bash")
+    expect(normalizeToolName("powershell")).toBe("bash")
+  })
+
+  it("does not sweep in unrelated names that merely contain 'shell'", () => {
+    expect(normalizeToolName("powershell_profile_lint")).toBe(
+      "powershell_profile_lint"
+    )
+  })
+
+  it("agrees with the live path, which classifies on the input shape", () => {
+    // claude-agent-acp ≥0.79.0 streams `rawInput` for PowerShell exactly as it
+    // does for Bash, so the live and reload paths must land on the same name.
+    expect(
+      inferLiveToolName({
+        title: "Get-ChildItem -Recurse",
+        kind: "execute",
+        rawInput: JSON.stringify({
+          command: "Get-ChildItem -Recurse",
+          description: "List files",
+        }),
+        meta: { claudeCode: { toolName: "PowerShell", title: "List files" } },
+      })
+    ).toBe("bash")
+    // …including before `rawInput` streams, when the meta name is all there is.
+    expect(
+      normalizeToolName(
+        inferLiveToolName({
+          title: "PowerShell",
+          kind: "execute",
+          rawInput: null,
+          meta: { claudeCode: { toolName: "PowerShell" } },
+        })
+      )
+    ).toBe("bash")
+  })
+})
+
 describe("Antigravity terminal tool", () => {
   it("aliases the history parser's run_command to bash", () => {
     // `parsers/antigravity.rs` stores the trajectory's own tool name.

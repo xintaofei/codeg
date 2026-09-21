@@ -5343,10 +5343,33 @@ fn strip_agents_instructions_block(input: &str) -> String {
     text.trim().to_string()
 }
 
+/// Whether `input` is the AGENTS.md context codex injects as a `role: "user"`
+/// record — in either of the two shapes it ships in.
+///
+/// Upstream (`UserInstructions` in
+/// `codex-rs/core/src/context/user_instructions.rs`) renders it as the header,
+/// then `{" for {dir}"|""}`, then `\n\n<INSTRUCTIONS>\n{text}\n`, then the
+/// closing tag. The directory is an `Option`, and a GLOBAL `~/.codex/AGENTS.md`
+/// has no directory to name — so newer codex emits the header bare, which used
+/// to slip past the old `"…instructions for "` prefix and become the
+/// conversation title (#789).
+///
+/// The `<INSTRUCTIONS>` opener is unconditional in both shapes (2554 of 2554
+/// such records in the local corpus carry it), so requiring it costs nothing
+/// and keeps a human prompt that merely OPENS with this heading from being
+/// swallowed as machinery. The record often carries `<environment_context>`
+/// as a second content item, joined onto the same text, which is why the
+/// closing tag is deliberately NOT anchored to the end.
 fn is_agents_instruction_message(input: &str) -> bool {
-    input
-        .trim_start()
-        .starts_with("# AGENTS.md instructions for ")
+    const HEADER: &str = "# AGENTS.md instructions";
+
+    let Some(suffix) = input.trim_start().strip_prefix(HEADER) else {
+        return false;
+    };
+
+    // `\r` covers the CRLF rollouts Windows codex writes.
+    (suffix.starts_with('\n') || suffix.starts_with('\r') || suffix.starts_with(" for "))
+        && suffix.contains("<INSTRUCTIONS>")
 }
 
 fn is_environment_context_message(input: &str) -> bool {
@@ -5376,6 +5399,16 @@ fn is_codex_internal_context_message(input: &str) -> bool {
 /// `exec_command` (34 occurrences) — matching English prose is admittedly
 /// brittle, but the failure mode is one stray user bubble in a rollout that
 /// would otherwise render nothing at all.
+///
+/// `<recommended_plugins>` is the newest member and was NOT in that census —
+/// codex only writes it once the `recommended_plugins` feature is on, which no
+/// local rollout had. It is upstream's `RecommendedPluginsInstructions`
+/// (`codex-rs/core/src/context/recommended_plugins_instructions.rs`), a
+/// `role: "user"` fragment rendered as the marker pair wrapped around
+/// `"\nHere is a list of plugins that are available but not installed.\n\n…"`.
+/// Because codex injects it BEFORE the first prompt it does not merely add a
+/// stray bubble: it wins the promoted-title race, which is how whole fleets of
+/// sessions ended up named `<recommended_plugins> Here is a list of plugins…`.
 const PROMOTED_USER_DENY_PREFIXES: &[&str] = &[
     "<turn_aborted>",
     "<subagent_notification",
@@ -5383,6 +5416,7 @@ const PROMOTED_USER_DENY_PREFIXES: &[&str] = &[
     "<user_instructions",
     "<permissions instructions",
     "<skills_instructions",
+    "<recommended_plugins>",
     "Warning: apply_patch was requested via exec_command",
 ];
 
@@ -6417,6 +6451,7 @@ mod tests {
     use super::BudgetedSink;
     use super::MCP_RESULT_FALLBACK_CAP;
     use super::is_encrypted_envelope;
+    use super::is_promotable_user_text;
     use super::merge_codex_context_window_stats;
     use super::native_team_wait_input;
     use super::merge_codex_total_usage_stats;
@@ -6884,6 +6919,32 @@ mod tests {
     }
 
     #[test]
+    fn skips_pathless_agents_instructions_title_candidate() {
+        let input = "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nhello\n</INSTRUCTIONS>";
+        let got = extract_codex_title_candidate(input, true);
+        assert!(got.is_none());
+
+        // Windows codex writes the same record with CRLF.
+        let crlf = "# AGENTS.md instructions\r\n\r\n<INSTRUCTIONS>\r\nhello\r\n</INSTRUCTIONS>";
+        assert!(extract_codex_title_candidate(crlf, true).is_none());
+    }
+
+    #[test]
+    fn keeps_a_human_prompt_that_merely_opens_with_the_agents_heading() {
+        // The pathless header is one newline away from an ordinary Markdown H1,
+        // so the envelope's `<INSTRUCTIONS>` body is what separates codex's
+        // injection from a person asking about it. Without that second signal
+        // this prompt is dropped from the transcript entirely — not merely
+        // passed over for the title.
+        let input = "# AGENTS.md instructions\n\n为什么我的全局 AGENTS.md 没有生效？";
+        assert_eq!(
+            extract_codex_title_candidate(input, true).as_deref(),
+            Some("# AGENTS.md instructions\n\n为什么我的全局 AGENTS.md 没有生效？")
+        );
+        assert!(is_promotable_user_text(input));
+    }
+
+    #[test]
     fn skips_environment_context_title_candidate() {
         let input = "<environment_context>\n  <cwd>/tmp/demo</cwd>\n</environment_context>";
         let got = extract_codex_title_candidate(input, true);
@@ -7198,36 +7259,97 @@ mod tests {
         ));
     }
 
+    /// One `response_item` user record carrying `texts` as its content items.
+    fn injected_user_record(ts: &str, texts: &[&str]) -> String {
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "timestamp": ts,
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": texts
+                        .iter()
+                        .map(|text| serde_json::json!({"type": "input_text", "text": text}))
+                        .collect::<Vec<_>>(),
+                }
+            })
+        )
+    }
+
     #[test]
     fn summary_title_skips_injected_messages_and_uses_real_prompt() {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time ok")
-            .as_nanos();
-        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-test-{nanos}.jsonl"));
-
         // Injected/duplicate context arrives as text-only `response_item` user
-        // messages (AGENTS.md, environment_context); the real prompt is delivered
-        // by `event_msg.user_message` — the canonical prompt channel in real codex
-        // rollouts. The summary titles from the real prompt and, like the detail
-        // parser, never from a text-only `response_item` (which detail does not
-        // render as a user turn at all).
-        let content = concat!(
-            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"test-1\",\"cwd\":\"/tmp/demo\"}}\n",
-            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"# AGENTS.md instructions for /tmp/demo\\n\\n<INSTRUCTIONS>\\nhello\\n</INSTRUCTIONS>\"}]}}\n",
-            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<environment_context>\\n  <cwd>/tmp/demo</cwd>\\n</environment_context>\"}]}}\n",
-            "{\"timestamp\":\"2026-03-01T10:00:03Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"真实用户标题\"}}\n"
-        );
-        fs::write(&path, content).expect("write test jsonl");
+        // messages; the real prompt is delivered by `event_msg.user_message` —
+        // the canonical prompt channel in real codex rollouts. Both parsers must
+        // title from the prompt and never from the injection, which is the whole
+        // point: the injection PRECEDES the prompt, so anything that survives the
+        // deny-lists outranks it in stream order and wins the title.
+        //
+        // All three injected shapes are real. The AGENTS.md header ships with or
+        // without a path — `UserInstructions { directory: Option<String> }`
+        // upstream, and a global `~/.codex/AGENTS.md` has no directory to name
+        // (#789) — and always rides in the same record as `<environment_context>`
+        // (1857 of 2033 such records in the local corpus). `<recommended_plugins>`
+        // is `RecommendedPluginsInstructions`, injected by newer codex ahead of
+        // the first prompt once the `recommended_plugins` feature is on.
+        const ENV: &str = "<environment_context>\n  <cwd>/tmp/demo</cwd>\n</environment_context>";
+        for (label, injected) in [
+            (
+                "agents-with-path",
+                vec![
+                    "# AGENTS.md instructions for /tmp/demo\n\n<INSTRUCTIONS>\nhello\n</INSTRUCTIONS>",
+                    ENV,
+                ],
+            ),
+            (
+                "agents-pathless",
+                vec![
+                    "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nhello\n</INSTRUCTIONS>",
+                    ENV,
+                ],
+            ),
+            (
+                "recommended-plugins",
+                vec![
+                    "<recommended_plugins>\nHere is a list of plugins that are available but not installed.\n\n- Figma (figma)\n</recommended_plugins>",
+                ],
+            ),
+        ] {
+            let mut content = String::from(
+                "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"test-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            );
+            content.push_str(&injected_user_record("2026-03-01T10:00:01Z", &injected));
+            content.push_str("{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"真实用户标题\"}}\n");
+            content.push_str("{\"timestamp\":\"2026-03-01T10:00:03Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"好的\"}}\n");
 
-        let parser = CodexParser::new();
-        let summary = parser
-            .parse_jsonl_summary(&path)
-            .expect("parse summary ok")
-            .expect("summary exists");
-        assert_eq!(summary.title.as_deref(), Some("真实用户标题"));
+            let summary = summary_of(&format!("injected-{label}"), &content);
+            assert_eq!(
+                summary.title.as_deref(),
+                Some("真实用户标题"),
+                "{label}: the sidebar titles from the prompt"
+            );
+            assert_eq!(
+                summary.message_count, 2,
+                "{label}: the injection is not a message"
+            );
 
-        let _ = fs::remove_file(path);
+            let detail = parse_rollout(&format!("injected-{label}-detail"), &content, "test-1");
+            assert_eq!(
+                detail.summary.title.as_deref(),
+                Some("真实用户标题"),
+                "{label}: and so does the opened conversation"
+            );
+            assert_eq!(
+                turn_texts(&detail),
+                vec![
+                    ("user", Some("真实用户标题".into())),
+                    ("assistant", Some("好的".into())),
+                ],
+                "{label}: the injection never renders as a turn"
+            );
+        }
     }
 
     #[test]
@@ -13258,6 +13380,28 @@ mod tests {
         let mut lines = String::from(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"deny-1\",\"cwd\":\"/tmp/demo\"}}\n",
         );
+        lines.push_str(
+            &serde_json::json!({
+                "timestamp": "2026-03-01T10:00:01Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nhi\n</INSTRUCTIONS>"
+                        },
+                        {
+                            "type": "input_text",
+                            "text": "<environment_context>\n  <cwd>/tmp/demo</cwd>\n</environment_context>"
+                        }
+                    ]
+                }
+            })
+            .to_string(),
+        );
+        lines.push('\n');
         for (index, text) in [
             "# AGENTS.md instructions for /tmp/demo\n\n<INSTRUCTIONS>\nhi\n</INSTRUCTIONS>",
             "<environment_context>\n  <cwd>/tmp/demo</cwd>\n</environment_context>",
@@ -13265,6 +13409,7 @@ mod tests {
             "<turn_aborted>\nThe user interrupted the previous turn on purpose.\n</turn_aborted>",
             "<subagent_notification>agent 3 finished</subagent_notification>",
             "<skill name=\"pptx\">use this</skill>",
+            "<recommended_plugins>\nHere is a list of plugins that are available but not installed.\n\n- Figma (figma)\n</recommended_plugins>",
             "Warning: apply_patch was requested via exec_command. Use the apply_patch tool instead.",
         ]
         .iter()
