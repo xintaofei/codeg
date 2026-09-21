@@ -581,7 +581,7 @@ export function deriveBadge(
       return { status: report.blockedOn ? "waiting" : "checked" }
     case "unknown":
       // Terminal "task id not known" — surface as error, not an endless spinner.
-      return { status: "err", errorCode: "unknown" }
+      return { status: "err", errorCode: report.errorCode ?? "unknown" }
     case "failed":
       return { status: "err", errorCode: report.errorCode ?? undefined }
     case "canceled":
