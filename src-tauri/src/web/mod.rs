@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod browser_bridge;
 pub mod compression;
+pub mod embedded_tailnet;
 pub mod event_bridge;
 pub mod handlers;
 pub mod port_probe;
