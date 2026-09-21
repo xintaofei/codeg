@@ -243,10 +243,11 @@ pub fn builtin_acp_agents() -> Vec<AgentType> {
         AgentType::DeepSeek,
         AgentType::Qoder,
         AgentType::Antigravity,
+        AgentType::ZCode,
     ]
 }
 
-/// Every agent codeg can currently drive: the fifteen built-ins followed by
+/// Every agent codeg can currently drive: the sixteen built-ins followed by
 /// the user's registered custom ACP agents (sorted by id).
 pub fn all_acp_agents() -> Vec<AgentType> {
     let mut agents = builtin_acp_agents();
@@ -271,6 +272,7 @@ pub fn registry_id_for(agent_type: AgentType) -> &'static str {
         AgentType::DeepSeek => "deepseek-acp",
         AgentType::Qoder => "qoder-cli",
         AgentType::Antigravity => "antigravity-acp",
+        AgentType::ZCode => "zcode-acp",
         // A custom agent's registry id IS its identity.
         AgentType::Custom(id) => id,
     }
@@ -293,6 +295,7 @@ pub fn from_registry_id(id: &str) -> Option<AgentType> {
         "deepseek-acp" => Some(AgentType::DeepSeek),
         "qoder-cli" => Some(AgentType::Qoder),
         "antigravity-acp" => Some(AgentType::Antigravity),
+        "zcode-acp" => Some(AgentType::ZCode),
         // Only ids the user has actually registered resolve. An unregistered
         // id must stay `None` so the ACP-registry picker still offers it as
         // "addable" rather than treating it as already supported.
@@ -2531,6 +2534,49 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 }),
             },
         },
+        AgentType::ZCode => AcpAgentMeta {
+            agent_type,
+            supports_mcp: true,
+            name: "ZCode",
+            description: "ZCode coding agent (ACP via the pinned zcode-codeg adapter)",
+            // `zcode-codeg-acp` is NOT a first-party ZCode server: it is the
+            // pinned community adapter (zcode-codeg-adapter)
+            // that speaks ACP on stdio while driving the ZCode app's private
+            // backend. The verified handshake advertises `loadSession`, so
+            // codeg's resume rung works; per-session model/mode selection
+            // arrives through standard `configOptions`, so the composer
+            // selectors need no per-agent code. MCP servers are forwarded on
+            // the `session/new` wire (stdio), including the codeg-mcp
+            // delegation companion.
+            //
+            // ENTRY IS AN ENV CONTRACT, NOT A FLAG. The adapter refuses to
+            // guess where the ZCode CLI lives: `ZCODE_CODEG_ENTRY` must name
+            // the app's `.cjs` entry (e.g.
+            // `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`) or
+            // the process exits `E_ENTRY` before the handshake. connection.rs
+            // probes the standard install locations at launch and the
+            // agent-settings env map can override the path (plus optional
+            // `ZCODE_CODEG_CONFIG` for the adapter's own config file). Auth is
+            // the user's existing ZCode login — the adapter neither reads nor
+            // refreshes credentials.
+            //
+            // NO NATIVE TRANSCRIPT. ZCode is the first built-in whose history
+            // is codeg's OWN ACP recording (`parsers::acp_native`), the same
+            // store custom agents use — see `transcript_dir_for` in
+            // connection.rs. Sessions that predate the built-in (the
+            // `custom:zcode-codeg` adapter registration) keep their custom
+            // identity; `zcode-codeg` remains a valid custom id on purpose.
+            //
+            // `engines.node: "^22.16.0 || ^24.0.0 || ^25.0.0"`.
+            distribution: AgentDistribution::Npx {
+                version: "0.1.4",
+                package: "zcode-codeg-adapter@0.1.4",
+                cmd: "zcode-codeg-acp",
+                args: &[],
+                env: &[],
+                node_required: Some("22.16.0"),
+            },
+        },
         // Handled by the early return above; kept so the match stays
         // exhaustive without a catch-all that could swallow a new built-in.
         AgentType::Custom(_) => unreachable!("custom agents resolve via custom_registry"),
@@ -2879,6 +2925,15 @@ mod tests {
             "1.1.57",
             "@qoder-ai/qodercli@1.1.57",
             Some("20.0.0"),
+        );
+        // The zcode-codeg adapter pin must stay EXACT: the audited ACP core
+        // is only what the pinned version ships, and version/package drift
+        // would leave the Upgrade button installing an unaudited build.
+        assert_npx_version(
+            AgentType::ZCode,
+            "0.1.4",
+            "zcode-codeg-adapter@0.1.4",
+            Some("22.16.0"),
         );
         assert_binary_version(AgentType::OpenCode, "1.18.31", "/releases/download/v1.18.31/");
         // Hermes rides the community npm bridge (upstream retired its PyPI
