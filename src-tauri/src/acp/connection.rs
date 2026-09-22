@@ -1834,6 +1834,24 @@ async fn build_agent(
                 None
             };
             apply_codex_env_policy(agent_type, &mut merged_env, codex_initial_mode.as_deref());
+            // Pin the app-server to the Codex that ships inside this codex-acp
+            // install, and put that binary's directory first on PATH. An
+            // inherited CODEX_PATH or a newer `codex-code-mode-host` later on
+            // PATH pairs a client that does not know
+            // `code_mode_host_duration_ns` with a host that sends it (#656).
+            if agent_type == AgentType::Codex {
+                let command = crate::commands::acp::resolve_npx_command(cmd).await;
+                let pair = command
+                    .as_deref()
+                    .and_then(crate::acp::codex_bundled_bin::bundled_pair_for_command);
+                let fallback = std::env::var("PATH").unwrap_or_default();
+                crate::acp::codex_bundled_bin::apply_codex_bundle_isolation(
+                    &mut merged_env,
+                    pair.as_ref(),
+                    &fallback,
+                    cfg!(windows),
+                );
+            }
             // codex-acp 1.0.0 honors APP_SERVER_LOGS as a directory for its
             // adapter-side logs. Surface it only under CODEG_ACP_DEBUG so
             // default runs are unchanged; a directory-creation failure silently
