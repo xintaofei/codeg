@@ -997,10 +997,10 @@ export interface SectionHeaderRow {
  *
  * Distinct from {@link SectionHeaderRow} (a group is user-created data, not one
  * of the four fixed sections) and from {@link FolderHeaderRow} (a group owns no
- * conversations of its own). The sticky-header machinery, keyed on
- * `kind === "folder"`, deliberately skips it: sticky stays single-level, and the
- * member folder's own header is the one worth pinning while you scroll its
- * conversations.
+ * conversations of its own). The folder sticky machinery, keyed on
+ * `kind === "folder"`, deliberately skips it: a group heading is not pinned,
+ * and the member folder's own header is the one worth pinning while you scroll
+ * its conversations. Section headers pin on their own layer.
  */
 export interface FolderGroupHeaderRow {
   kind: "folder-group"
@@ -1579,13 +1579,14 @@ export function applyReorder<T>(
   return next
 }
 
-// ── Sticky folder header (floating overlay) ─────────────────────────────────
+// ── Sticky headers (floating overlays) ──────────────────────────────────────
 // virtua renders every row as `position:absolute; top:<offset>` inside a
 // `contain:strict` container and unmounts off-screen rows, so CSS
-// `position:sticky` cannot pin a folder header. Instead a single floating
-// overlay stands in for the folder currently scrolled through. These pure
-// helpers resolve "which folder" and the iOS-style handoff offset from the
-// virtua handle's measured pixel offsets — see the wiring in
+// `position:sticky` cannot pin a header. Two floating overlays stand in for
+// the section and the folder currently scrolled through: the section pins at
+// the viewport top, and the folder pins directly under it. These pure helpers
+// resolve "which header" and the iOS-style handoff offset from the virtua
+// handle's measured pixel offsets — see the wiring in
 // `SidebarConversationList`.
 
 /**
@@ -1685,4 +1686,146 @@ export function computeStickyState(args: {
     }
   }
   return { visible, translateY }
+}
+
+/**
+ * For every flat row, the index of the section header that owns it. A section
+ * header owns itself and every following row until the next section header.
+ * Rows before the first section (there are none in the app's row model) are -1.
+ */
+export function buildOwnerSectionIndex(
+  rows: readonly SidebarRow[]
+): Int32Array {
+  const out = new Int32Array(rows.length)
+  let current = -1
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].kind === "section") current = i
+    out[i] = current
+  }
+  return out
+}
+
+/** Flat indices of every section header row, in ascending order. */
+export function sectionHeaderFlatIndices(
+  rows: readonly SidebarRow[]
+): number[] {
+  const indices: number[] = []
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].kind === "section") indices.push(i)
+  }
+  return indices
+}
+
+/**
+ * Flat index of the section header row for `section`, or -1 if absent. Used
+ * after a collapse-from-overlay toggle to scroll that header to the top.
+ */
+export function headerIndexForSection(
+  rows: readonly SidebarRow[],
+  section: SidebarSectionKey
+): number {
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]
+    if (row.kind === "section" && row.section === section) return i
+  }
+  return -1
+}
+
+/**
+ * Which section and folder headers the two overlays should represent.
+ *
+ * The section is the one that owns the viewport top. The folder is the one
+ * that owns the stick line (one section-height below the top, where the folder
+ * overlay actually sits) — so a folder header that has slid under the section
+ * overlay becomes the stuck folder before it reaches the viewport top.
+ *
+ * A folder-group heading ends the folder span and must not fall back: the
+ * group band belongs to no folder. Crossing into the NEXT section is
+ * different. While the viewport top is still in the outgoing section, the
+ * stick line hits that next section header first; the outgoing folder stays
+ * so it can ride the section handoff up to the first level instead of
+ * vanishing a header early.
+ */
+export function resolveStickyHeaderIndices(args: {
+  rows: readonly SidebarRow[]
+  ownerSectionIndex: ArrayLike<number>
+  ownerFolderIndex: ArrayLike<number>
+  topIndex: number
+  stickIndex: number
+}): { sectionIndex: number; folderIndex: number } {
+  const { rows, ownerSectionIndex, ownerFolderIndex, topIndex, stickIndex } =
+    args
+  const sectionIndex = ownerSectionIndex[topIndex] ?? -1
+  let folderIndex = ownerFolderIndex[stickIndex] ?? -1
+  if (folderIndex < 0) {
+    const stickRow = rows[stickIndex]
+    const stickSection = ownerSectionIndex[stickIndex] ?? -1
+    if (stickRow?.kind === "section" && stickSection !== sectionIndex) {
+      folderIndex = ownerFolderIndex[topIndex] ?? -1
+    }
+  }
+  return { sectionIndex, folderIndex }
+}
+
+export interface StickyLayerGeometry {
+  headerOffset: number
+  headerHeight: number
+}
+
+/**
+ * Two-level sticky geometry. All inputs are measured pixel offsets; no DOM.
+ *
+ * - Section overlay pins at Y = 0 once its own header has scrolled above the
+ *   viewport top. The next section pushes the whole stack (section, plus the
+ *   stuck folder when there is one) up together, so the folder rises into the
+ *   top slot as the section leaves.
+ * - Folder overlay pins at Y = section height when the section overlay is
+ *   showing, otherwise at Y = 0 — the same single-level rule as
+ *   {@link computeStickyState}. The next folder pushes only the folder,
+ *   sliding it up under the section. A next header already above the viewport
+ *   (`d < 0`) does not push; ownership has moved on.
+ */
+export function computeLayeredStickyState(args: {
+  scrollOffset: number
+  section: StickyLayerGeometry | null
+  folder: StickyLayerGeometry | null
+  nextSectionOffset: number | null
+  nextFolderOffset: number | null
+}): {
+  section: { visible: boolean; translateY: number }
+  folder: { visible: boolean; translateY: number }
+} {
+  const { scrollOffset, section, folder, nextSectionOffset, nextFolderOffset } =
+    args
+  const sectionVisible = section != null && scrollOffset > section.headerOffset
+  const stickLine = sectionVisible ? section.headerHeight : 0
+  const folderVisible =
+    folder != null && scrollOffset > folder.headerOffset - stickLine
+
+  let sectionTranslateY = 0
+  if (sectionVisible && nextSectionOffset != null) {
+    const stackHeight =
+      section.headerHeight + (folderVisible ? folder.headerHeight : 0)
+    const d = nextSectionOffset - scrollOffset
+    if (d >= 0 && d < stackHeight) {
+      sectionTranslateY = Math.round(d - stackHeight)
+    }
+  }
+
+  let folderTranslateY = 0
+  if (folderVisible) {
+    let y = sectionVisible ? section.headerHeight + sectionTranslateY : 0
+    if (nextFolderOffset != null) {
+      const d = nextFolderOffset - scrollOffset
+      if (d >= 0 && d < y + folder.headerHeight) {
+        y = d - folder.headerHeight
+      }
+    }
+    folderTranslateY = Math.round(y)
+  }
+
+  return {
+    section: { visible: sectionVisible, translateY: sectionTranslateY },
+    folder: { visible: folderVisible, translateY: folderTranslateY },
+  }
 }

@@ -3,16 +3,21 @@ import type { DbConversationSummary } from "@/lib/types"
 import {
   applyReorder,
   buildOwnerHeaderIndex,
+  buildOwnerSectionIndex,
   buildRows,
+  computeLayeredStickyState,
   computeStickyState,
   flatIndexOfConversation,
   folderHeaderFlatIndices,
   formatRelative,
   groupByFolderWithReuse,
   headerIndexForFolder,
+  headerIndexForSection,
   mergeChildrenById,
   nextHeaderAfter,
   pointerYToTargetIndex,
+  resolveStickyHeaderIndices,
+  sectionHeaderFlatIndices,
   RECENT_PAGE_SIZE,
   reuseSelected,
   reuseSet,
@@ -1690,6 +1695,220 @@ describe("sticky overlay helpers", () => {
           headerHeight: 32,
         }).translateY
       ).toBe(-17)
+    })
+  })
+
+  describe("buildOwnerSectionIndex", () => {
+    it("maps every row to the flat index of its owning section header", () => {
+      const withSections: SidebarRow[] = [
+        { kind: "section", section: "pinned", expanded: true, count: 1 }, // 0
+        { kind: "conversation", conversation: conv(5, 10), depth: 0 }, // 1
+        { kind: "section", section: "folders", expanded: true, count: 1 }, // 2
+        { kind: "folder", folderId: 10 }, // 3
+        { kind: "conversation", conversation: conv(1, 10), depth: 0 }, // 4
+        { kind: "section", section: "chats", expanded: true, count: 1 }, // 5
+        { kind: "conversation", conversation: conv(9, 0), depth: 0 }, // 6
+      ]
+      expect(Array.from(buildOwnerSectionIndex(withSections))).toEqual([
+        0, 0, 2, 2, 2, 5, 5,
+      ])
+    })
+
+    it("returns an empty array for no rows", () => {
+      expect(Array.from(buildOwnerSectionIndex([]))).toEqual([])
+    })
+  })
+
+  describe("sectionHeaderFlatIndices", () => {
+    it("lists section header indices and ignores folder headers", () => {
+      const withSections: SidebarRow[] = [
+        { kind: "section", section: "folders", expanded: true, count: 1 },
+        { kind: "folder", folderId: 10 },
+        { kind: "section", section: "chats", expanded: true, count: 0 },
+      ]
+      expect(sectionHeaderFlatIndices(withSections)).toEqual([0, 2])
+    })
+  })
+
+  describe("headerIndexForSection", () => {
+    it("finds a section header and returns -1 when absent", () => {
+      const withSections: SidebarRow[] = [
+        { kind: "section", section: "folders", expanded: true, count: 1 },
+        { kind: "folder", folderId: 10 },
+        { kind: "section", section: "recent", expanded: true, count: 0 },
+      ]
+      expect(headerIndexForSection(withSections, "recent")).toBe(2)
+      expect(headerIndexForSection(withSections, "pinned")).toBe(-1)
+    })
+  })
+
+  describe("resolveStickyHeaderIndices", () => {
+    // Folders, then a group (which ends the folder span), then Chat.
+    const rows: SidebarRow[] = [
+      { kind: "section", section: "folders", expanded: true, count: 2 }, // 0
+      { kind: "folder", folderId: 10 }, // 1
+      { kind: "conversation", conversation: conv(1, 10), depth: 0 }, // 2
+      { kind: "folder-group", groupId: 7, expanded: true }, // 3
+      { kind: "folder", folderId: 20 }, // 4
+      { kind: "conversation", conversation: conv(2, 20), depth: 0 }, // 5
+      { kind: "section", section: "chats", expanded: true, count: 1 }, // 6
+      { kind: "conversation", conversation: conv(9, 0), depth: 0 }, // 7
+    ]
+    const ownerSectionIndex = buildOwnerSectionIndex(rows)
+    const ownerFolderIndex = buildOwnerHeaderIndex(rows)
+
+    function resolve(topIndex: number, stickIndex: number) {
+      return resolveStickyHeaderIndices({
+        rows,
+        ownerSectionIndex,
+        ownerFolderIndex,
+        topIndex,
+        stickIndex,
+      })
+    }
+
+    it("resolves the section at the viewport top and the folder at the stick line", () => {
+      // Stick line has entered folder 20; the viewport top is still in folder 10.
+      expect(resolve(2, 4)).toEqual({ sectionIndex: 0, folderIndex: 4 })
+    })
+
+    it("does not keep a folder stuck across a group header", () => {
+      // The group heading owns no folder. Falling back would pin folder 10
+      // over the group band.
+      expect(resolve(2, 3)).toEqual({ sectionIndex: 0, folderIndex: -1 })
+    })
+
+    it("keeps the outgoing folder while the next section crosses the stick line", () => {
+      // Viewport top is still in folder 20; the stick line is on the Chat
+      // header. The folder rides the section handoff instead of vanishing.
+      expect(resolve(5, 6)).toEqual({ sectionIndex: 0, folderIndex: 4 })
+    })
+
+    it("drops the folder once the viewport top is inside the next section", () => {
+      expect(resolve(7, 7)).toEqual({ sectionIndex: 6, folderIndex: -1 })
+    })
+  })
+
+  describe("computeLayeredStickyState", () => {
+    const section = { headerOffset: 0, headerHeight: 32 }
+    const folder = { headerOffset: 32, headerHeight: 32 }
+
+    it("hides both overlays when the real headers are at the top", () => {
+      expect(
+        computeLayeredStickyState({
+          scrollOffset: 0,
+          section,
+          folder,
+          nextSectionOffset: 400,
+          nextFolderOffset: 200,
+        })
+      ).toEqual({
+        section: { visible: false, translateY: 0 },
+        folder: { visible: false, translateY: 0 },
+      })
+    })
+
+    it("parks the folder overlay directly under the stuck section", () => {
+      expect(
+        computeLayeredStickyState({
+          scrollOffset: 80,
+          section,
+          folder,
+          nextSectionOffset: 500,
+          nextFolderOffset: 400,
+        })
+      ).toEqual({
+        section: { visible: true, translateY: 0 },
+        folder: { visible: true, translateY: 32 },
+      })
+    })
+
+    it("lets the next folder push only the folder overlay", () => {
+      // Next folder viewport Y = 100 - 40 = 60. Slot bottom is 32+32=64, so
+      // the folder slides to Y = 60-32 = 28. The section stays put.
+      expect(
+        computeLayeredStickyState({
+          scrollOffset: 40,
+          section: { headerOffset: 0, headerHeight: 44 },
+          folder: { headerOffset: 44, headerHeight: 32 },
+          nextSectionOffset: 800,
+          nextFolderOffset: 100,
+        })
+      ).toEqual({
+        section: { visible: true, translateY: 0 },
+        folder: { visible: true, translateY: 28 },
+      })
+    })
+
+    it("pushes the stack up so the folder rises to the first level", () => {
+      // Next section viewport Y = 32. Stack is 64px, so the section leaves
+      // (translate -32) and the folder sits at Y = 0.
+      expect(
+        computeLayeredStickyState({
+          scrollOffset: 200,
+          section,
+          folder: { headerOffset: 40, headerHeight: 32 },
+          nextSectionOffset: 232,
+          nextFolderOffset: null,
+        })
+      ).toEqual({
+        section: { visible: true, translateY: -32 },
+        folder: { visible: true, translateY: 0 },
+      })
+    })
+
+    it("pushes a section that has no folder by its own height", () => {
+      expect(
+        computeLayeredStickyState({
+          scrollOffset: 100,
+          section,
+          folder: null,
+          nextSectionOffset: 120,
+          nextFolderOffset: null,
+        })
+      ).toEqual({
+        section: { visible: true, translateY: -12 },
+        folder: { visible: false, translateY: 0 },
+      })
+    })
+
+    it("matches the single-level folder geometry when no section is stuck", () => {
+      const scrollOffsets = [0, 40, 64, 80, 1000]
+      for (const scrollOffset of scrollOffsets) {
+        const legacy = computeStickyState({
+          scrollOffset,
+          activeHeaderOffset: 0,
+          nextHeaderOffset: 96,
+          headerHeight: 32,
+        })
+        expect(
+          computeLayeredStickyState({
+            scrollOffset,
+            section: null,
+            folder: { headerOffset: 0, headerHeight: 32 },
+            nextSectionOffset: null,
+            nextFolderOffset: 96,
+          })
+        ).toEqual({
+          section: { visible: false, translateY: 0 },
+          folder: { visible: legacy.visible, translateY: legacy.translateY },
+        })
+      }
+    })
+
+    it("does not stick a folder whose header is still below the section", () => {
+      expect(
+        computeLayeredStickyState({
+          scrollOffset: 50,
+          section,
+          folder: { headerOffset: 200, headerHeight: 32 },
+          nextSectionOffset: null,
+          nextFolderOffset: null,
+        })
+      ).toEqual({
+        section: { visible: true, translateY: 0 },
+        folder: { visible: false, translateY: 0 },
+      })
     })
   })
 })
