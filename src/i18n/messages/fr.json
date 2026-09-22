@@ -3767,6 +3767,13 @@
         "reconnectFailed": "Échec de la reconnexion de la session",
         "applied": "Nouvelle configuration appliquée"
       },
+      "hermesModel": {
+        "label": "Modèle",
+        "applied": "Modèle appliqué — session reconnectée",
+        "appliesAfterTurn": "Modèle enregistré — appliqué à la fin du tour en cours",
+        "applyFailed": "Échec de la reconnexion de la session",
+        "saveFailed": "Échec de l'enregistrement du modèle"
+      },
       "piProjectTrust": {
         "title": "Ce projet fournit des ressources pi",
         "description": "pi ne charge pas les fichiers .pi du dépôt. Examinez-les pour décider.",
