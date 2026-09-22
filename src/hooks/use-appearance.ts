@@ -41,7 +41,7 @@ export function useUiFont() {
   }
 }
 
-/** 编辑器字体（Monaco）：含字号、连字与自动换行。stack 已解析。 */
+/** 编辑器字体（Monaco，会话代码块读 --font-code）：含字号、连字与自动换行。stack 已解析。 */
 export function useEditorFont() {
   const {
     editorFont,

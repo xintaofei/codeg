@@ -18,6 +18,7 @@ import {
   isValidFontId,
   isValidFontSize,
   resolveFontStack,
+  conversationCodeFontStack,
   sanitizeFontFamily,
 } from "./font-presets"
 
@@ -138,6 +139,39 @@ describe("resolveFontStack", () => {
   it("never emits CSS-breaking characters from custom input", () => {
     const stack = resolveFontStack(CUSTOM_FONT_ID, "evil;\\ }<x>", "mono")
     expect(stack).not.toMatch(/[;{}<>\\]/)
+  })
+})
+
+function familiesOf(stack: string): string[] {
+  return stack.split(",").map((part) => part.trim().replace(/^"|"$/g, ""))
+}
+
+describe("conversationCodeFontStack", () => {
+  it("uses the editor monospace family and does not fall Han back to generic monospace", () => {
+    const stack = conversationCodeFontStack("jetbrains-mono", "")
+    const families = familiesOf(stack)
+
+    expect(families[0]).toBe("JetBrains Mono Variable")
+    expect(families).toContain("PingFang SC")
+    expect(families).toContain("Microsoft YaHei")
+    expect(families).not.toContain("monospace")
+    expect(families.at(-1)).toBe("sans-serif")
+  })
+
+  it("keeps a custom editor family first", () => {
+    const families = familiesOf(
+      conversationCodeFontStack(CUSTOM_FONT_ID, "Maple Mono Normal NF CN")
+    )
+
+    expect(families[0]).toBe("Maple Mono Normal NF CN")
+    expect(families).not.toContain("monospace")
+  })
+
+  it("leaves the editor and terminal stack on the generic monospace fallback", () => {
+    expect(resolveFontStack(DEFAULT_EDITOR_FONT_ID, "", "mono")).toBe(
+      MONO_FALLBACK
+    )
+    expect(MONO_FALLBACK.endsWith("monospace")).toBe(true)
   })
 })
 

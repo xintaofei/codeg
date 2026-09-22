@@ -14,7 +14,8 @@
   /* 默认界面字体 = Inter（与 DEFAULT_UI_FONT_ID = "inter" 一致，须等于
      font-presets.ts 的 resolveFontStack("inter", "", "sans")，否则首屏到水合会闪字），
      运行时由 AppearanceProvider 覆盖 --font-sans。会话消息区等普通文本均跟随 --font-sans；
-     --font-mono 不在此自定义，由 Tailwind 默认等宽栈兜底（与代码编辑器字体相互独立）。 */
+     --font-mono 不在此自定义，界面上的 font-mono 仍走 Tailwind 默认等宽栈。
+     会话代码块用 --font-code（编辑器等宽族 + CJK 回退），见文件后部规则。 */
   --font-sans:
     "Inter Variable", system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
@@ -1530,6 +1531,34 @@
 /* 表格不再磨砂（用户要真透出背景图）：滚动容器只保留上面的圆角 + 边框；thead/tbody 走半透明
    中性染色。历史注：曾给行组 thead/tbody 加 backdrop-filter 会让 border-collapse 合并边框整体
    不渲染（表格边框消失根因），去磨砂后无此问题。 */
+
+/* 会话代码跟随「设置 → 外观 → 字体 → 编辑器」。--font-code 由 AppearanceProvider
+   写入；未写入时的回退必须等于 conversationCodeFontStack(默认编辑器字体)。
+   未分层，压过 Tailwind preflight / font-mono 对 pre、code 的等宽声明。
+   不含 generic monospace，避免汉字落到宋体。 */
+[data-streamdown="code-block-body"],
+[data-streamdown="code-block-body"] code,
+[data-streamdown="code-block-body"] code > span::before,
+[data-streamdown="inline-code"],
+.codeg-code-font,
+.codeg-code-font::before {
+  font-family: var(
+    --font-code,
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    "Liberation Mono",
+    "Courier New",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Noto Sans CJK SC",
+    "Noto Sans SC",
+    "Microsoft YaHei",
+    sans-serif
+  );
+}
 
 /* Streamdown code line number width by total line digits */
 [data-streamdown="code-block-body"] code {
