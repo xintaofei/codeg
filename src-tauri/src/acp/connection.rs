@@ -9349,10 +9349,16 @@ async fn handle_turn_notification(
     raw_output_cache: &mut ToolCallOutputCache,
     cb_state: &mut CodeBuddyLiveState,
     probe: &mut TurnOutputProbe,
+    native_steering: bool,
 ) {
     let should_poll_now =
         track_terminal_tool_calls(agent_type, &notif.update, tracked_terminal_tool_calls);
-    probe.note_update(agent_type, &notif.update);
+    // A busy-absorb ack is not this turn's reply. Drop it before it is
+    // recorded or rendered, but remember it so the prompt-response path can
+    // tell "the agent queued/redirected this" from "the prompt vanished".
+    if !probe.note_update(agent_type, &notif.update, native_steering) {
+        return;
+    }
     // Custom agents have no store of their own to parse later.
     record_transcript_update(agent_type, &session_id.0, &notif.update);
     emit_conversation_update(
@@ -9452,6 +9458,11 @@ fn log_dropped_update(
 struct TurnOutputProbe {
     /// Real agent output: reply text, thinking, or a tool call.
     saw_agent_output: bool,
+    /// The only assistant text so far is an agent busy-absorb ack
+    /// ("Redirected the active turn…", "Queued for the next turn…"). Not
+    /// output: those lines are how an agent that did not advertise steering
+    /// answers a `session/prompt` that landed on a turn it was already running.
+    saw_busy_absorb_notice: bool,
     /// A `SessionUpdate` arrived, but a metadata-only one (plan, mode, usage,
     /// user echo, …).
     saw_metadata_update: bool,
@@ -9475,12 +9486,25 @@ impl TurnOutputProbe {
         }
     }
 
-    fn note_update(&mut self, agent_type: AgentType, update: &SessionUpdate) {
+    /// `false` when `update` is a busy-absorb notice on a session that did not
+    /// advertise native steering. Callers must not emit or transcript that
+    /// chunk — it is not the turn's reply.
+    fn note_update(
+        &mut self,
+        agent_type: AgentType,
+        update: &SessionUpdate,
+        native_steering: bool,
+    ) -> bool {
+        if !native_steering && session_update_is_busy_absorb_notice(update) {
+            self.saw_busy_absorb_notice = true;
+            return false;
+        }
         if is_agent_output_update(agent_type, update) {
             self.saw_agent_output = true;
         } else {
             self.saw_metadata_update = true;
         }
+        true
     }
 
     fn note_dropped(&mut self, site: DropSite, error: &impl std::fmt::Display) {
@@ -9713,6 +9737,128 @@ fn turn_failure_error_event(
     })
 }
 
+/// How fast a `session/prompt` that produced no real output can still be a
+/// model turn. Hermes (and any agent that answers a prompt landing on a turn
+/// it is already running) returns `end_turn` in well under 2ms. A real turn
+/// does not. 500ms is above that ack and below any model round-trip, so a
+/// slow scheduler still classifies the ack as synthetic while a genuinely
+/// empty turn keeps today's `"empty"` → cancelled diagnosis.
+const SYNTHETIC_BUSY_TURN_MAX: std::time::Duration = std::time::Duration::from_millis(500);
+/// After a fast empty `end_turn`, wait this long before deciding the prompt
+/// was lost. The absorb notice and the prompt response become ready in the
+/// same tick; `select` can read the response first and the notice is then
+/// still sitting on the session. Requeueing in that window would send the
+/// prompt again on top of the copy the agent already queued.
+const ABSORB_NOTICE_RACE: std::time::Duration = std::time::Duration::from_millis(250);
+/// Once an absorb is confirmed (or real output follows it), keep the turn
+/// open this long after the last update so the agent's actual reply — which
+/// streams on the same session, with no second `session/prompt` to own it —
+/// is matched instead of dropped as out-of-turn. Reset on every update.
+const ABSORB_FOLLOW_QUIET: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// What a non-steering agent did with a `session/prompt` that hit a turn it
+/// was already running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BusyPromptDisposition {
+    /// Nothing acknowledged the prompt. The text never reached the agent.
+    Lost,
+    /// The agent answered with its busy-absorb ack (redirected the live turn,
+    /// or queued the text for when that turn ends). The prompt was consumed.
+    Accepted,
+}
+
+/// True for the canned assistant line an agent emits when it absorbs a prompt
+/// into a turn that is already running instead of starting one.
+///
+/// Hermes (`acp_adapter/server.py` `_claim_turn_or_queue`) is the source of
+/// both strings: `"Redirected the active turn with your correction."` when
+/// `redirect()` lands, and `"Queued for the next turn. (N queued)"` when it
+/// does not. Matched narrowly so a real reply that merely mentions the words
+/// is left alone.
+fn is_busy_absorb_notice(text: &str) -> bool {
+    let text = text.trim();
+    if text == "Redirected the active turn with your correction."
+        || text.starts_with("Redirected current turn")
+    {
+        return true;
+    }
+    let Some(rest) = text.strip_prefix("Queued for the next turn") else {
+        return false;
+    };
+    let rest = rest.trim_start_matches('.').trim();
+    rest.is_empty() || (rest.starts_with('(') && rest.ends_with("queued)"))
+}
+
+fn session_update_is_busy_absorb_notice(update: &SessionUpdate) -> bool {
+    match update {
+        SessionUpdate::AgentMessageChunk(ContentChunk {
+            content: ContentBlock::Text(text),
+            ..
+        }) => is_busy_absorb_notice(&text.text),
+        _ => false,
+    }
+}
+
+/// `session/prompt` settled as `end_turn` without real output, on a session
+/// that did not advertise native steering.
+///
+/// That is the busy-absorb ack (or the same ack with its notice still unread).
+/// It must not become `end_turn` (conversation → `pending_review`) or `empty`
+/// (conversation → `cancelled`). Agents that advertise steering keep the
+/// historical settlement — their mid-turn path is `_session/steering`, not
+/// this prompt response.
+fn busy_prompt_disposition(
+    native_steering_available: bool,
+    elapsed: std::time::Duration,
+    raw_reason: &str,
+    probe: &TurnOutputProbe,
+) -> Option<BusyPromptDisposition> {
+    if native_steering_available || raw_reason != "end_turn" || probe.saw_agent_output {
+        return None;
+    }
+    if probe.saw_busy_absorb_notice {
+        return Some(BusyPromptDisposition::Accepted);
+    }
+    if elapsed <= SYNTHETIC_BUSY_TURN_MAX {
+        return Some(BusyPromptDisposition::Lost);
+    }
+    None
+}
+
+/// Settle a prompt the agent absorbed instead of running. `stop_reason` is
+/// `busy` (the prompt was lost — the client requeues it) or `deferred` (the
+/// agent kept it). Neither is `end_turn` or `empty`, so the lifecycle
+/// subscriber does not move the conversation to `pending_review` or
+/// `cancelled`, and the turn gate clears so the row stays sendable.
+///
+/// No transcript turn-end and no delegation cascade: the agent is still
+/// working, and recording this ack as the turn's end is what dropped the
+/// real reply.
+async fn emit_absorbed_prompt_turn(
+    perms: &PendingPermissions,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    agent_type: AgentType,
+    session_id: &str,
+    stop_reason: &str,
+) {
+    tracing::info!(
+        "[ACP] mid-turn prompt absorbed without native steering; \
+         settling as {stop_reason} (not end_turn/empty) session={session_id}"
+    );
+    drain_permissions_then_emit(
+        perms,
+        state,
+        emitter,
+        AcpEvent::TurnComplete {
+            session_id: session_id.to_string(),
+            stop_reason: stop_reason.into(),
+            agent_type: agent_type.to_string(),
+        },
+    )
+    .await;
+}
+
 /// Returns `Ok(None)` on normal exit (disconnect / channel closed) or
 /// `Ok(Some(ForkExitInfo))` when the loop should be restarted on a forked session.
 #[allow(clippy::too_many_arguments)]
@@ -9805,6 +9951,15 @@ async fn run_conversation_loop<'a>(
                                             drift.extend(
                                                 take_asserted_config_drift(&st, &update.config_options).await,
                                             );
+                                        }
+                                        // A busy-absorb ack that lost the race
+                                        // against its prompt response lands
+                                        // here, after the turn already settled
+                                        // as `busy`. It is not a reply.
+                                        if !st.read().await.native_steering_available
+                                            && session_update_is_busy_absorb_notice(&notif.update)
+                                        {
+                                            return Ok(());
                                         }
                                         emit_conversation_update(&st, &h, agent_type, notif.update, cwd_opt, &mut raw_output_cache, &mut cb_state).await;
                                         Ok(())
@@ -10036,6 +10191,26 @@ async fn run_conversation_loop<'a>(
                 // Read updates until turn completes.
                 // We must also listen for commands (e.g. RespondPermission)
                 // to avoid deadlocking when the agent awaits a permission response.
+                let turn_started = std::time::Instant::now();
+                // Stable for the turn. A `startedNewTurn` downgrade flips the
+                // flag later; this turn's prompt was already admitted against
+                // the value initialize synthesized.
+                let native_steering = state.read().await.native_steering_available;
+                let mut prompt_pending = true;
+                // Set when a non-steering agent absorbed this prompt into a
+                // turn it was already running. The prompt response is then
+                // the ack, not the turn — keep reading updates until the
+                // agent's real reply goes quiet (or the ack is confirmed
+                // empty and the client should requeue).
+                let mut following_absorb = false;
+                let absorb_idle = tokio::time::sleep(ABSORB_FOLLOW_QUIET);
+                tokio::pin!(absorb_idle);
+                // Disabled until an absorb starts the follow. A sleep armed at
+                // turn start would already be elapsed for a long turn, and
+                // select would settle the moment the guard flipped on.
+                absorb_idle.as_mut().reset(
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(24 * 60 * 60),
+                );
                 loop {
                     tokio::select! {
                         update = session.read_update() => {
@@ -10132,6 +10307,7 @@ async fn run_conversation_loop<'a>(
                                                     &mut raw_output_cache,
                                                     &mut cb_state,
                                                     &mut probe,
+                                                    native_steering,
                                                 )
                                                 .await;
                                                 Ok(())
@@ -10169,6 +10345,32 @@ async fn run_conversation_loop<'a>(
                                         .await;
                                     }
                                     let raw_reason_str = stop_reason_to_str(reason);
+                                    // A non-steering agent's instant end_turn
+                                    // is the busy-absorb ack, not a finished
+                                    // turn. StopReason is terminal, so settle
+                                    // it now (the prompt-response path follows
+                                    // instead — the ack is not the stop).
+                                    if let Some(disposition) = busy_prompt_disposition(
+                                        native_steering,
+                                        turn_started.elapsed(),
+                                        raw_reason_str,
+                                        &probe,
+                                    ) {
+                                        let stop = match disposition {
+                                            BusyPromptDisposition::Lost => "busy",
+                                            BusyPromptDisposition::Accepted => "deferred",
+                                        };
+                                        emit_absorbed_prompt_turn(
+                                            perms,
+                                            state,
+                                            emitter,
+                                            agent_type,
+                                            &sid.0,
+                                            stop,
+                                        )
+                                        .await;
+                                        break;
+                                    }
                                     // Pure: resolves the reason and (for an
                                     // empty turn) its diagnosis. Side effects
                                     // below stay exactly where they were — note
@@ -10246,8 +10448,19 @@ async fn run_conversation_loop<'a>(
                                 }
                                 _ => {}
                             }
+                            // The update that confirmed the absorb (or the
+                            // reply that followed it) has been noted above.
+                            // Push the quiet deadline out so a pause between
+                            // chunks is not mistaken for the end of the turn.
+                            if following_absorb
+                                && (probe.saw_agent_output || probe.saw_busy_absorb_notice)
+                            {
+                                absorb_idle.as_mut().reset(
+                                    tokio::time::Instant::now() + ABSORB_FOLLOW_QUIET,
+                                );
+                            }
                         }
-                        prompt_result = &mut prompt_response => {
+                        prompt_result = &mut prompt_response, if prompt_pending => {
                             // A rejected prompt is a TURN failure, not a dead
                             // connection: the agent answered, so it is still
                             // there, and the session it answered about is still
@@ -10418,6 +10631,39 @@ async fn run_conversation_loop<'a>(
                                 .await;
                             }
                             let raw_reason_str = stop_reason_to_str(reason);
+                            // Non-steering agent, no real output, instant
+                            // `end_turn`: this response is the busy-absorb ack
+                            // (or that ack with its notice still unread). Do
+                            // not close the conversation. A terminal AIR error
+                            // wearing `end_turn` is a failed turn, not an ack.
+                            if terminal_failure
+                                .as_ref()
+                                .is_none_or(|record| record.severity != "error")
+                            {
+                                if let Some(disposition) = busy_prompt_disposition(
+                                    native_steering,
+                                    turn_started.elapsed(),
+                                    raw_reason_str,
+                                    &probe,
+                                ) {
+                                    // Consumed. Polling the future again panics.
+                                    prompt_pending = false;
+                                    following_absorb = true;
+                                    let quiet = match disposition {
+                                        // Notice may still be the next read.
+                                        BusyPromptDisposition::Lost => ABSORB_NOTICE_RACE,
+                                        BusyPromptDisposition::Accepted => ABSORB_FOLLOW_QUIET,
+                                    };
+                                    absorb_idle.as_mut().reset(tokio::time::Instant::now() + quiet);
+                                    tracing::info!(
+                                        "[ACP] session/prompt absorbed without native steering \
+                                         ({disposition:?}); following the live turn instead of \
+                                         synthesizing end_turn session={}",
+                                        sid.0
+                                    );
+                                    continue;
+                                }
+                            }
                             // Same pure helper as the StopReason-message exit,
                             // so the two can't drift. This exit keeps its own
                             // extra side effect (`record_turn_end` below).
@@ -10487,6 +10733,73 @@ async fn run_conversation_loop<'a>(
                                 if let Some(inj) = delegation_injection {
                                     inj.broker.cancel_by_parent_turn(conn_id).await;
                                 }
+                            }
+                            break;
+                        }
+                        // The absorb ack was not the turn. Quiet means either
+                        // the real reply has finished streaming, the agent
+                        // kept the prompt but produced nothing we can show, or
+                        // the prompt never arrived and the client should
+                        // requeue it.
+                        _ = &mut absorb_idle, if following_absorb => {
+                            if probe.saw_agent_output {
+                                let raw_reason_str = "end_turn";
+                                let (reason_str, empty_report) =
+                                    finish_turn_reason(&probe, raw_reason_str, stderr_tail);
+                                if let Some(err_event) = turn_failure_error_event(
+                                    reason_str,
+                                    agent_type,
+                                    empty_report.as_ref(),
+                                ) {
+                                    emit_with_state(state, emitter, err_event).await;
+                                }
+                                if reason_str == "end_turn" {
+                                    journal_turn_span(&mut turn_timing_probe, conn_id, &sid.0).await;
+                                }
+                                record_turn_end(
+                                    agent_type,
+                                    &sid.0,
+                                    reason_str,
+                                    turn_started_at_ms,
+                                    current_session_model_id(state).await,
+                                )
+                                .await;
+                                drain_permissions_then_emit(
+                                    perms,
+                                    state,
+                                    emitter,
+                                    AcpEvent::TurnComplete {
+                                        session_id: sid.0.to_string(),
+                                        stop_reason: reason_str.into(),
+                                        agent_type: agent_type.to_string(),
+                                    },
+                                )
+                                .await;
+                                if reason_str != "end_turn" {
+                                    if let Some(inj) = delegation_injection {
+                                        inj.broker.cancel_by_parent_turn(conn_id).await;
+                                    }
+                                }
+                            } else if probe.saw_busy_absorb_notice {
+                                emit_absorbed_prompt_turn(
+                                    perms,
+                                    state,
+                                    emitter,
+                                    agent_type,
+                                    &sid.0,
+                                    "deferred",
+                                )
+                                .await;
+                            } else {
+                                emit_absorbed_prompt_turn(
+                                    perms,
+                                    state,
+                                    emitter,
+                                    agent_type,
+                                    &sid.0,
+                                    "busy",
+                                )
+                                .await;
                             }
                             break;
                         }
@@ -19505,6 +19818,7 @@ mod tests {
         probe.note_update(
             AgentType::ClaudeCode,
             &SessionUpdate::Plan(Plan::new(Vec::new())),
+            true,
         );
         assert!(!probe.saw_agent_output, "Plan is not agent output");
         assert!(probe.saw_metadata_update);
@@ -19512,6 +19826,7 @@ mod tests {
         probe.note_update(
             AgentType::ClaudeCode,
             &SessionUpdate::AgentMessageChunk(ContentChunk::new("hi".into())),
+            true,
         );
         assert!(probe.saw_agent_output);
     }
@@ -19588,6 +19903,104 @@ mod tests {
         let silent = TurnOutputProbe::new(0);
         assert_eq!(finish_turn_reason(&silent, "cancelled", &tail).0, "cancelled");
         assert_eq!(finish_turn_reason(&silent, "end_turn", &tail).0, "empty");
+    }
+
+    #[test]
+    fn busy_absorb_notice_matches_hermes_ack_lines_only() {
+        assert!(is_busy_absorb_notice(
+            "Redirected the active turn with your correction."
+        ));
+        assert!(is_busy_absorb_notice("Queued for the next turn."));
+        assert!(is_busy_absorb_notice(
+            "Queued for the next turn. (2 queued)"
+        ));
+        assert!(is_busy_absorb_notice("Redirected current turn"));
+        assert!(!is_busy_absorb_notice(""));
+        assert!(!is_busy_absorb_notice(
+            "Queued for the next turn, then I rewrote the parser."
+        ));
+        assert!(!is_busy_absorb_notice("done"));
+    }
+
+    #[test]
+    fn note_update_does_not_count_a_busy_absorb_notice_as_output() {
+        let mut probe = TurnOutputProbe::new(0);
+        let notice = SessionUpdate::AgentMessageChunk(ContentChunk::new(
+            "Redirected the active turn with your correction.".into(),
+        ));
+        assert!(
+            !probe.note_update(AgentType::Hermes, &notice, false),
+            "the ack must not be emitted as the turn's reply"
+        );
+        assert!(probe.saw_busy_absorb_notice);
+        assert!(!probe.saw_agent_output);
+
+        // Steering-capable sessions still treat the same bytes as output.
+        let mut steered = TurnOutputProbe::new(0);
+        assert!(steered.note_update(AgentType::ClaudeCode, &notice, true));
+        assert!(steered.saw_agent_output);
+        assert!(!steered.saw_busy_absorb_notice);
+    }
+
+    /// #590: steering=false + a mid-turn send must not become a synthetic
+    /// `end_turn` / `empty` completion. steering=true is unchanged.
+    #[test]
+    fn busy_prompt_disposition_skips_synthetic_completion_only_without_steering() {
+        let fast = std::time::Duration::from_millis(2);
+        let slow = std::time::Duration::from_secs(3);
+
+        let mut notice = TurnOutputProbe::new(0);
+        notice.saw_busy_absorb_notice = true;
+        assert_eq!(
+            busy_prompt_disposition(false, fast, "end_turn", &notice),
+            Some(BusyPromptDisposition::Accepted),
+            "steering=false + redirect ack is not a finished turn"
+        );
+        // Slow or not: the ack itself is conclusive. A loaded host must not
+        // fall through to `empty` → cancelled just because the ack took >500ms.
+        assert_eq!(
+            busy_prompt_disposition(false, slow, "end_turn", &notice),
+            Some(BusyPromptDisposition::Accepted)
+        );
+
+        let silent = TurnOutputProbe::new(0);
+        assert_eq!(
+            busy_prompt_disposition(false, fast, "end_turn", &silent),
+            Some(BusyPromptDisposition::Lost),
+            "sub-2ms empty end_turn with steering=false is the unread ack"
+        );
+        // A real silent turn still takes the historical empty diagnosis.
+        assert_eq!(
+            busy_prompt_disposition(false, slow, "end_turn", &silent),
+            None
+        );
+        let tail = StderrTail::new();
+        assert_eq!(finish_turn_reason(&silent, "end_turn", &tail).0, "empty");
+
+        // Real output, even if it arrives quickly, is a real turn.
+        let mut replied = TurnOutputProbe::new(0);
+        replied.saw_agent_output = true;
+        replied.saw_busy_absorb_notice = true;
+        assert_eq!(
+            busy_prompt_disposition(false, fast, "end_turn", &replied),
+            None
+        );
+
+        // Native steering keeps today's settlement, including a fast end_turn.
+        assert_eq!(
+            busy_prompt_disposition(true, fast, "end_turn", &notice),
+            None,
+            "steering=true must not be rewritten into a busy absorb"
+        );
+        assert_eq!(
+            busy_prompt_disposition(true, fast, "end_turn", &silent),
+            None
+        );
+        // And a non-end_turn reason is never an absorb, steering or not.
+        assert_eq!(
+            busy_prompt_disposition(false, fast, "cancelled", &silent),
+            None
+        );
     }
 
     /// Guards the two-exit refactor: the helper only computes, so calling it
@@ -22678,6 +23091,7 @@ mod tests {
             probe.note_update(
                 AgentType::Pi,
                 &serde_json::from_value(wire).expect("valid wire shape"),
+                true,
             );
         }
         assert!(!probe.saw_agent_output);
@@ -22687,6 +23101,7 @@ mod tests {
         probe.note_update(
             AgentType::Pi,
             &serde_json::from_value(pi_chunk("是的，插件已加载。")).expect("valid wire shape"),
+            true,
         );
         assert!(probe.saw_agent_output);
     }

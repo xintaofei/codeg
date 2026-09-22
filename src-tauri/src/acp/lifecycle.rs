@@ -269,6 +269,12 @@ pub(crate) async fn handle_event(
                 "end_turn" => Some(ConversationStatus::PendingReview),
                 "refusal" | "max_tokens" | "max_turn_requests" | "unknown" | "empty"
                 | "auth_required" | "rejected" => Some(ConversationStatus::Cancelled),
+                // A non-steering agent absorbed the prompt into a turn it was
+                // already running (`busy` = nothing acknowledged it, the
+                // client requeues; `deferred` = the agent kept it). Neither
+                // is a finished turn — writing pending_review or cancelled
+                // here is what wedged the row.
+                "busy" | "deferred" => None,
                 // `cancelled` and any future reason: don't write here.
                 _ => None,
             };
@@ -431,6 +437,15 @@ async fn forward_turn_complete_to_broker(
         tracing::info!(
             "[delegation][lifecycle] conversation {conversation_id} has \
              delegation_call_id but no parent_tool_use_id; dropping"
+        );
+        return;
+    }
+    // The prompt was absorbed, not completed. Completing the delegation
+    // here fails a child that is still running.
+    if matches!(stop_reason, "busy" | "deferred") {
+        tracing::info!(
+            "[delegation][lifecycle] conversation {conversation_id} absorbed a \
+             mid-turn prompt (stop_reason={stop_reason}); leaving the delegation pending"
         );
         return;
     }
@@ -2275,6 +2290,50 @@ mod tests {
             ConversationStatus::InProgress,
             "TurnComplete{{cancelled}} must not overwrite the row — user-cancel path owns it"
         );
+    }
+
+    #[tokio::test]
+    async fn handle_event_does_not_wedge_status_on_absorbed_prompt() {
+        // steering=false mid-turn send settles as `busy` (prompt lost) or
+        // `deferred` (agent kept it). Neither may flip the row to
+        // pending_review or cancelled — that is the #590 wedge.
+        for stop_reason in ["busy", "deferred"] {
+            let db = test_helpers::fresh_in_memory_db().await;
+            let folder_id =
+                test_helpers::seed_folder(&db, &format!("/tmp/turn-absorb-{stop_reason}")).await;
+            let conv =
+                conversation_service::create(&db.conn, folder_id, AgentType::Hermes, None, None)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                read_row_status(&db, conv.id).await,
+                ConversationStatus::InProgress
+            );
+
+            let mgr = ConnectionManager::new();
+            {
+                let mut map = mgr.connections.lock().await;
+                map.insert(
+                    "c1".to_string(),
+                    fake_connection_with_state("c1", Some(conv.id)),
+                );
+            }
+            let env = EventEnvelope {
+                seq: 1,
+                connection_id: "c1".to_string(),
+                payload: AcpEvent::TurnComplete {
+                    session_id: "ext-1".into(),
+                    stop_reason: stop_reason.into(),
+                    agent_type: "hermes".into(),
+                },
+            };
+            handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+            assert_eq!(
+                read_row_status(&db, conv.id).await,
+                ConversationStatus::InProgress,
+                "stop_reason={stop_reason} must leave the row sendable"
+            );
+        }
     }
 
     #[tokio::test]
