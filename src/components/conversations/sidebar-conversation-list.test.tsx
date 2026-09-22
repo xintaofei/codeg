@@ -656,9 +656,13 @@ describe("SidebarConversationList — sticky folder header overlay", () => {
   it("hides the overlay at the top of the list", () => {
     virtuaCtl.scrollOffset = 0
     render(tree())
-    // Only the real in-list header exists for each folder.
+    // Only the real in-list header exists for each folder and section.
     expect(headerCount(1)).toBe(1)
     expect(headerCount(2)).toBe(1)
+    expect(
+      document.querySelectorAll('[data-sidebar-section="folders"]')
+    ).toHaveLength(1)
+    expect(document.querySelector("[data-sticky-overlay]")).toBeNull()
   })
 
   it("shows a sticky overlay for the folder scrolled through", () => {
@@ -746,6 +750,183 @@ describe("SidebarConversationList — sticky folder header overlay", () => {
     } finally {
       rectSpy.mockRestore()
     }
+  })
+
+  function sectionCount(section: string): number {
+    return document.querySelectorAll(`[data-sidebar-section="${section}"]`)
+      .length
+  }
+
+  function overlay(kind: "section" | "folder"): HTMLElement | null {
+    return document.querySelector(`[data-sticky-overlay="${kind}"]`)
+  }
+
+  it("pins the Folders header above the stuck folder", () => {
+    // Past the Folders header (offset 0). The stick line sits one header below
+    // the viewport top, still inside folder 1, so both overlays show and the
+    // folder is parked under the section.
+    virtuaCtl.scrollOffset = 50
+    render(tree())
+    expect(sectionCount("folders")).toBe(2)
+    expect(sectionCount("chats")).toBe(1)
+    expect(headerCount(1)).toBe(2)
+    expect(headerCount(2)).toBe(1)
+    const folders = document.querySelectorAll(
+      '[data-sidebar-section="folders"]'
+    )
+    expect(
+      (folders[0] as HTMLElement).closest('[aria-hidden="true"]')
+    ).not.toBeNull()
+    expect(
+      (folders[1] as HTMLElement).closest('[aria-hidden="true"]')
+    ).toBeNull()
+    expect(overlay("section")?.style.transform).toBe("translateY(0px)")
+    expect(overlay("folder")?.style.transform).toBe("translateY(32px)")
+  })
+
+  it("lets the next folder push only the folder overlay", () => {
+    // Stick line is still in folder 1; folder 2's header is inside the push
+    // window, so the folder overlay slides up and the section stays at 0.
+    virtuaCtl.scrollOffset = 80
+    render(tree())
+    expect(headerCount(1)).toBe(2)
+    expect(headerCount(2)).toBe(1)
+    expect(overlay("section")?.style.transform).toBe("translateY(0px)")
+    expect(overlay("folder")?.style.transform).toBe("translateY(16px)")
+  })
+
+  it("switches the stuck folder to the one at the stick line", () => {
+    // Viewport top is still in folder 1, but the stick line has entered
+    // folder 2, so folder 2 is the overlay — not a second copy of folder 1.
+    virtuaCtl.scrollOffset = 100
+    render(tree())
+    expect(headerCount(1)).toBe(1)
+    expect(headerCount(2)).toBe(2)
+    expect(overlay("folder")?.style.transform).toBe("translateY(32px)")
+  })
+
+  it("raises the folder to the first level as the next section arrives", () => {
+    // Chat's header is one section-height below the top. The stack translates
+    // together: Folders leaves and folder 2 sits at Y = 0.
+    virtuaCtl.scrollOffset = 224
+    render(tree())
+    expect(sectionCount("folders")).toBe(2)
+    expect(headerCount(2)).toBe(2)
+    expect(overlay("section")?.style.transform).toBe("translateY(-32px)")
+    expect(overlay("folder")?.style.transform).toBe("translateY(0px)")
+  })
+
+  it("pins Chat once that section is the one scrolled through", () => {
+    virtuaCtl.scrollOffset = 270
+    render(tree())
+    expect(sectionCount("chats")).toBe(2)
+    expect(sectionCount("folders")).toBe(1)
+    expect(headerCount(1)).toBe(1)
+    expect(headerCount(2)).toBe(1)
+    expect(overlay("folder")).toBeNull()
+    expect(overlay("section")?.style.transform).toBe("translateY(0px)")
+    expect(overlay("section")?.textContent).toContain("Chat")
+  })
+
+  it("collapses a section from its sticky header and scrolls that header to the top", () => {
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      cb(0)
+      return 0
+    })
+    try {
+      virtuaCtl.scrollOffset = 50
+      render(tree())
+      const folders = document.querySelectorAll(
+        '[data-sidebar-section="folders"]'
+      )
+      const overlayHeader = Array.from(folders).find(
+        (el) => (el as HTMLElement).closest('[aria-hidden="true"]') == null
+      )
+      expect(overlayHeader).toBeTruthy()
+      act(() => {
+        fireEvent.click(overlayHeader!.querySelector("button")!)
+      })
+      expect(document.body.textContent).not.toContain("conv-11")
+      expect(virtuaCtl.scrollToIndex).toHaveBeenCalledWith(
+        0,
+        expect.objectContaining({ align: "start" })
+      )
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("hides both overlays while a folder drag is in progress", () => {
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({
+        top: 0,
+        bottom: 600,
+        left: 0,
+        right: 200,
+        width: 200,
+        height: 600,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      } as DOMRect)
+    try {
+      virtuaCtl.scrollOffset = 50
+      render(tree())
+      expect(overlay("section")).not.toBeNull()
+      expect(overlay("folder")).not.toBeNull()
+      const grip = (
+        document.querySelector('[data-folder-id="2"]') as HTMLElement
+      ).parentElement as HTMLElement
+      act(() => firePointer(grip, "pointerdown", { clientY: 100 }))
+      act(() => firePointer(window, "pointermove", { clientY: 120 }))
+      expect(overlay("section")).toBeNull()
+      expect(overlay("folder")).toBeNull()
+      act(() => firePointer(window, "pointercancel", { clientY: 120 }))
+    } finally {
+      rectSpy.mockRestore()
+    }
+  })
+
+  function renderWithRecent() {
+    useAppWorkspaceStore.setState({
+      conversations: [
+        conv(11, 1),
+        conv(12, 1),
+        conv(21, 2),
+        conv(22, 2),
+        conv(23, 2),
+        conv(31, 1, { kind: "chat" }),
+      ],
+    })
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <SidebarConversationList showCompleted showRecent sortMode="created" />
+      </NextIntlClientProvider>
+    )
+  }
+
+  it("pushes the Chat header up as Recent arrives", () => {
+    // Chat header at flat index 8 (offset 256); Recent at index 10 (offset 320).
+    // d = 20 and Chat has no folder in the stack, so the overlay slides to -12.
+    virtuaCtl.scrollOffset = 300
+    renderWithRecent()
+    expect(sectionCount("chats")).toBe(2)
+    expect(sectionCount("recent")).toBe(1)
+    expect(sectionCount("folders")).toBe(1)
+    expect(overlay("section")?.textContent).toContain("Chat")
+    expect(overlay("section")?.style.transform).toBe("translateY(-12px)")
+    expect(overlay("folder")).toBeNull()
+  })
+
+  it("pins Recent once that section is the one scrolled through", () => {
+    virtuaCtl.scrollOffset = 360
+    renderWithRecent()
+    expect(sectionCount("recent")).toBe(2)
+    expect(sectionCount("chats")).toBe(1)
+    expect(overlay("section")?.textContent).toContain("Recent")
+    expect(overlay("section")?.style.transform).toBe("translateY(0px)")
+    expect(overlay("folder")).toBeNull()
   })
 })
 
