@@ -2,11 +2,18 @@ import { act, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { AppearanceProvider } from "./appearance-provider"
-import { useCustomStyle } from "@/hooks/use-appearance"
+import { useCustomStyle, useEditorFont } from "@/hooks/use-appearance"
 import {
   STORAGE_KEY_CUSTOM_THEME,
+  STORAGE_KEY_EDITOR_FONT,
+  STORAGE_KEY_EDITOR_FONT_CUSTOM,
+  STORAGE_KEY_EDITOR_FONT_STACK,
   STORAGE_KEY_ZOOM_LEVEL,
 } from "@/lib/appearance-script"
+import {
+  DEFAULT_EDITOR_FONT_ID,
+  conversationCodeFontStack,
+} from "@/lib/font-presets"
 
 function Probe() {
   const { setCustomThemeToken } = useCustomStyle()
@@ -49,6 +56,58 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers()
   document.documentElement.removeAttribute("style")
+})
+
+function EditorFontProbe() {
+  const { setEditorFont } = useEditorFont()
+  return (
+    <button type="button" onClick={() => setEditorFont("jetbrains-mono")}>
+      set-editor-font
+    </button>
+  )
+}
+
+describe("conversation code font", () => {
+  it("publishes the editor monospace stack as --font-code", () => {
+    render(
+      <AppearanceProvider>
+        <EditorFontProbe />
+      </AppearanceProvider>
+    )
+
+    expect(document.documentElement.style.getPropertyValue("--font-code")).toBe(
+      conversationCodeFontStack(DEFAULT_EDITOR_FONT_ID, "")
+    )
+
+    fireEvent.click(screen.getByText("set-editor-font"))
+
+    const stack = conversationCodeFontStack("jetbrains-mono", "")
+    expect(document.documentElement.style.getPropertyValue("--font-code")).toBe(
+      stack
+    )
+    expect(localStorage.getItem(STORAGE_KEY_EDITOR_FONT)).toBe("jetbrains-mono")
+    expect(localStorage.getItem(STORAGE_KEY_EDITOR_FONT_STACK)).toBe(stack)
+  })
+
+  it("follows an editor font change made in another window", () => {
+    render(
+      <AppearanceProvider>
+        <EditorFontProbe />
+      </AppearanceProvider>
+    )
+
+    localStorage.setItem(STORAGE_KEY_EDITOR_FONT, "fira-code")
+    localStorage.setItem(STORAGE_KEY_EDITOR_FONT_CUSTOM, "")
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", { key: STORAGE_KEY_EDITOR_FONT })
+      )
+    })
+
+    expect(document.documentElement.style.getPropertyValue("--font-code")).toBe(
+      conversationCodeFontStack("fira-code", "")
+    )
+  })
 })
 
 describe("debounced persistence", () => {

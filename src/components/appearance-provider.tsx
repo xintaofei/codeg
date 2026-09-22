@@ -19,6 +19,7 @@ import {
 } from "@/lib/theme-presets"
 import {
   resolveFontStack,
+  conversationCodeFontStack,
   isValidFontId,
   isValidFontSize,
   DEFAULT_UI_FONT_ID,
@@ -37,6 +38,7 @@ import {
   STORAGE_KEY_UI_FONT_STACK,
   STORAGE_KEY_EDITOR_FONT,
   STORAGE_KEY_EDITOR_FONT_CUSTOM,
+  STORAGE_KEY_EDITOR_FONT_STACK,
   STORAGE_KEY_EDITOR_FONT_SIZE,
   STORAGE_KEY_EDITOR_LIGATURES,
   STORAGE_KEY_EDITOR_WORD_WRAP,
@@ -120,7 +122,7 @@ type AppearanceContextValue = {
   /** 界面字体（普通组件，驱动 --font-sans） */
   uiFont: FontSelection
   setUiFont: (id: string, custom?: string) => void
-  /** 编辑器字体（仅作用于代码编辑器 Monaco 的 fontFamily） */
+  /** 编辑器字体（Monaco 的 fontFamily，并驱动会话代码的 --font-code） */
   editorFont: FontSelection
   setEditorFont: (id: string, custom?: string) => void
   /** 终端字体（驱动 xterm fontFamily） */
@@ -334,7 +336,8 @@ function useDebouncedPersist(key: string, value: string, delayMs: number) {
  *
  * 与 next-themes 完全正交：next-themes 负责 <html class="dark/light">，
  * 这里负责 <html data-theme="...">、<html style="font-size: ...">
- * 以及界面字体变量 --font-sans（编辑器/终端字体只走各自的 Monaco/xterm 选项）。
+ * 以及界面字体变量 --font-sans、会话代码变量 --font-code
+ * （终端字体只走 xterm 选项）。
  *
  * 注意：next-themes 的 attribute 配置必须保持 "class"。如果改为 "data-theme"
  * 会与本 Provider 冲突，导致主题色无法生效。
@@ -530,10 +533,13 @@ export function AppearanceProvider({
 
   const setEditorFont = useCallback((id: string, custom = "") => {
     setEditorFontState({ id, custom })
-    // 编辑器字体只作用于代码编辑器（Monaco），不写任何全局 CSS 变量，
-    // 不影响界面与会话消息区（它们跟随 --font-sans）。
+    // Monaco 自己读 provider 状态。会话代码块读 --font-code，不改 --font-sans
+    // 和界面上其它 font-mono。
+    const stack = conversationCodeFontStack(id, custom)
+    document.documentElement.style.setProperty("--font-code", stack)
     persist(STORAGE_KEY_EDITOR_FONT, id)
     persist(STORAGE_KEY_EDITOR_FONT_CUSTOM, custom)
+    persist(STORAGE_KEY_EDITOR_FONT_STACK, stack)
   }, [])
 
   const setTerminalFont = useCallback((id: string, custom = "") => {
@@ -741,15 +747,20 @@ export function AppearanceProvider({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 仅界面字体需要在 mount 时重新解析并应用 --font-sans，吸收跨版本字体目录变更
-  // （inline 脚本写入的是旧版本已解析栈，可能与新目录不一致）。仅在确有漂移时才写，
-  // 避免每次加载都触发 localStorage 写入与跨标签页 storage 事件。
-  // 编辑器/终端字体只走各自的 Monaco/xterm 选项，不在此落 CSS 变量。
+  // mount 时重新解析并应用 --font-sans / --font-code，吸收跨版本字体目录变更
+  // （inline 脚本写入的是旧版本已解析栈，可能与新目录不一致）。仅在确有漂移时才写
+  // localStorage，避免每次加载都触发跨标签页 storage 事件。
+  // 终端字体只走 xterm 选项，不在此落 CSS 变量。
   useEffect(() => {
     const sans = resolveFontStack(uiFont.id, uiFont.custom, "sans")
     if (readStored(STORAGE_KEY_UI_FONT_STACK) !== sans) {
       document.documentElement.style.setProperty("--font-sans", sans)
       persist(STORAGE_KEY_UI_FONT_STACK, sans)
+    }
+    const code = conversationCodeFontStack(editorFont.id, editorFont.custom)
+    document.documentElement.style.setProperty("--font-code", code)
+    if (readStored(STORAGE_KEY_EDITOR_FONT_STACK) !== code) {
+      persist(STORAGE_KEY_EDITOR_FONT_STACK, code)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -887,6 +898,7 @@ export function AppearanceProvider({
       STORAGE_KEY_UI_FONT_STACK,
       STORAGE_KEY_EDITOR_FONT,
       STORAGE_KEY_EDITOR_FONT_CUSTOM,
+      STORAGE_KEY_EDITOR_FONT_STACK,
       STORAGE_KEY_EDITOR_FONT_SIZE,
       STORAGE_KEY_EDITOR_LIGATURES,
       STORAGE_KEY_EDITOR_WORD_WRAP,
@@ -923,10 +935,15 @@ export function AppearanceProvider({
       setEditorLigaturesState(readBool(STORAGE_KEY_EDITOR_LIGATURES, false))
       setEditorWordWrapState(readBool(STORAGE_KEY_EDITOR_WORD_WRAP, false))
       setTerminalLigaturesState(readBool(STORAGE_KEY_TERMINAL_LIGATURES, false))
-      // 仅界面字体落到 --font-sans；编辑器/终端字体由各自组件读取 provider 状态后应用。
+      // 界面字体落到 --font-sans；编辑器字体落到 --font-code（会话代码块）。
+      // 终端字体由 xterm 读取 provider 状态后应用。
       document.documentElement.style.setProperty(
         "--font-sans",
         resolveFontStack(ui.id, ui.custom, "sans")
+      )
+      document.documentElement.style.setProperty(
+        "--font-code",
+        conversationCodeFontStack(ed.id, ed.custom)
       )
     }
 
