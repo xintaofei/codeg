@@ -447,7 +447,7 @@ pub fn build_outcome(questions: &[QuestionSpec], answer: &QuestionAnswer) -> Que
 /// question text. Synthesize one from the leading characters, bounded to
 /// [`MAX_HEADER_CHARS`]. Always returns a non-empty, in-bounds string so
 /// [`validate_specs`] accepts it.
-fn synthesize_header(question: &str) -> String {
+pub(crate) fn synthesize_header(question: &str) -> String {
     let header: String = question.trim().chars().take(MAX_HEADER_CHARS).collect();
     let header = header.trim();
     if header.is_empty() {

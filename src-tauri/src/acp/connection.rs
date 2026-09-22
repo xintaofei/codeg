@@ -28,13 +28,17 @@ use sacp::schema::{
 use sacp::util::MatchDispatch;
 use sacp::{
     on_receive_notification, on_receive_request, Agent, Client, ConnectionTo, Dispatch,
-    JsonRpcRequest, Responder, SessionMessage, UntypedMessage,
+    HandleDispatchFrom, Handled, JsonRpcRequest, Responder, Role, SessionMessage, UntypedMessage,
 };
 use sacp_tokio::AcpAgent;
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::acp::agent_mentions::append_agent_routes;
 use crate::acp::background_watch;
+use crate::acp::cursor_ext::{
+    CursorAskQuestionRequest, CursorCreatePlanRequest, CursorGenerateImageRequest,
+    CursorTaskRequest, CursorUpdateTodosRequest,
+};
 use crate::acp::error::AcpError;
 use crate::acp::file_system_runtime::{
     FileSystemRuntime, FileSystemRuntimeError, FsAccessPolicy, FS_POLICY_ENV,
@@ -1242,6 +1246,33 @@ const INIT_TIMEOUT_SENTINEL: &str = "__codeg_init_timeout__";
 /// switch. Same trick as [`INIT_TIMEOUT_SENTINEL`] — the inner future is typed
 /// to `sacp::Error`, which has nowhere to carry a codeg error kind.
 const MCP_SUSPECT_SENTINEL: &str = "__codeg_mcp_suspect__";
+
+/// Sentinel appended to a `session/new` failure the agent answered with ACP's
+/// `authRequired`, so the outer `.map_err(...)` can raise
+/// `AcpError::AgentAuthRequired`. Same trick as [`INIT_TIMEOUT_SENTINEL`]: the
+/// typed error code does not survive the `sacp::Error` the inner future is
+/// typed to, and this is the one classification that has to be made while it
+/// is still there — the wire text alone is the agent's own wording, which for
+/// cursor-agent names a command that does not exist.
+const AUTH_REQUIRED_SENTINEL: &str = "__codeg_auth_required__";
+
+/// Classify a `session/new` failure while its typed code is still readable.
+///
+/// `authRequired` is checked first and returns on its own: it is a diagnosis
+/// (the agent says, in so many words, that it has no usable credential), where
+/// the MCP tag below is only a hint, and running both would leave a message
+/// carrying two markers and the weaker reading.
+fn tag_new_session_failure(
+    err: sacp::Error,
+    agent_type: AgentType,
+    mcp_servers: &[McpServer],
+) -> sacp::Error {
+    if matches!(err.code, sacp::schema::ErrorCode::AuthRequired) {
+        tracing::warn!("[ACP][{agent_type}] session/new refused with authRequired: {err}");
+        return sacp::util::internal_error(format!("{err}{AUTH_REQUIRED_SENTINEL}"));
+    }
+    tag_mcp_suspect(err, agent_type, mcp_servers)
+}
 
 /// Mark a `session/new` failure as possibly caused by the MCP servers codeg put
 /// on the wire.
@@ -5320,6 +5351,9 @@ async fn run_connection(
     Client
         .builder()
         .name("codeg")
+        // First in the chain on purpose: it has to claim a null-`sessionId`
+        // notification before sacp can park it for retry. See the type docs.
+        .with_handler(DropNullSessionIdNotifications)
         .on_receive_request(
             {
                 let emitter_inner = emitter_clone.clone();
@@ -5574,6 +5608,69 @@ async fn run_connection(
                     .await;
                     Ok(())
                 }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let access = native_ask_access.clone();
+                let conn_id = grok_ask_conn_id.clone();
+                let card_state = Arc::clone(&grok_ask_state);
+                let card_emitter = grok_ask_emitter.clone();
+                async move |req: CursorAskQuestionRequest,
+                            responder: Responder<serde_json::Value>,
+                            _cx: ConnectionTo<Agent>| {
+                    handle_cursor_ask_question(
+                        &access,
+                        &conn_id,
+                        &card_state,
+                        &card_emitter,
+                        req,
+                        responder,
+                    )
+                    .await;
+                    Ok(())
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let access = grok_plan_access.clone();
+                let conn_id = grok_plan_conn_id.clone();
+                async move |req: CursorCreatePlanRequest,
+                            responder: Responder<serde_json::Value>,
+                            _cx: ConnectionTo<Agent>| {
+                    handle_cursor_create_plan(&access, &conn_id, req, responder).await;
+                    Ok(())
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: CursorUpdateTodosRequest,
+                        responder: Responder<serde_json::Value>,
+                        _cx: ConnectionTo<Agent>| {
+                handle_cursor_update_todos(req, responder);
+                Ok(())
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: CursorTaskRequest,
+                        responder: Responder<serde_json::Value>,
+                        _cx: ConnectionTo<Agent>| {
+                handle_cursor_task(req, responder);
+                Ok(())
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: CursorGenerateImageRequest,
+                        responder: Responder<serde_json::Value>,
+                        _cx: ConnectionTo<Agent>| {
+                handle_cursor_generate_image(req, responder);
+                Ok(())
             },
             on_receive_request!(),
         )
@@ -6299,7 +6396,7 @@ async fn run_connection(
                             build_new_session_request(agent_type, &cwd, mcp_servers.clone()),
                         )
                         .await
-                        .map_err(|e| tag_mcp_suspect(e, agent_type, &mcp_servers))?;
+                        .map_err(|e| tag_new_session_failure(e, agent_type, &mcp_servers))?;
                         let fallback_sid = new_resp.session_id.0.to_string();
                         let initial_config_options = new_resp.config_options.clone();
                         let grok_meta = if agent_type == AgentType::Grok {
@@ -6399,7 +6496,7 @@ async fn run_connection(
                     build_new_session_request(agent_type, &cwd, mcp_servers.clone()),
                 )
                 .await
-                .map_err(|e| tag_mcp_suspect(e, agent_type, &mcp_servers))?;
+                .map_err(|e| tag_new_session_failure(e, agent_type, &mcp_servers))?;
                 let sid = new_resp.session_id.0.to_string();
                 let initial_config_options = new_resp.config_options.clone();
                 let grok_meta = if agent_type == AgentType::Grok {
@@ -6481,6 +6578,8 @@ async fn run_connection(
             let raw = e.to_string();
             if raw.contains(INIT_TIMEOUT_SENTINEL) {
                 AcpError::InitializeTimeout
+            } else if raw.contains(AUTH_REQUIRED_SENTINEL) {
+                AcpError::agent_auth_required(raw.replace(AUTH_REQUIRED_SENTINEL, ""))
             } else if raw.contains(MCP_SUSPECT_SENTINEL) {
                 // Strip the marker so the user sees the agent's own words, then
                 // let the frontend append the `supports_mcp` suggestion.
@@ -6981,6 +7080,185 @@ async fn handle_grok_exit_plan_mode(
 /// never puts a completed tool_call on the stream, so — like the grok bridge —
 /// the question path synthesizes the answered result card itself once the user
 /// submits (keyed by the elicitation's tool_call_id).
+/// Bridge Cursor's blocking `cursor/ask_question` into the shared ask card.
+/// Same path as [`handle_grok_ask_user_question`]: register, wait off the
+/// dispatch loop, reply in Cursor's option-id envelope. Early returns use
+/// `skipped` so the agent continues instead of hanging on `-32601`.
+async fn handle_cursor_ask_question(
+    access: &Option<(
+        Arc<dyn crate::acp::question::SessionQuestionAccess>,
+        crate::acp::question::QuestionRuntimeConfig,
+    )>,
+    connection_id: &str,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    req: CursorAskQuestionRequest,
+    responder: Responder<serde_json::Value>,
+) {
+    tracing::info!(
+        "[cursor ask] received cursor/ask_question: keys={:?}",
+        crate::acp::cursor_ext::param_keys(&req.0)
+    );
+    // Every early return is `skipped` WITH a reason: cursor's own `skipped`
+    // doubles as "the user dismissed the card", and an agent that can't tell
+    // that apart from "this host never showed it" will proceed as if the user
+    // had a say. The reason text is structural — never any of the payload.
+    let Some((questions, ask_cfg)) = access else {
+        let _ = responder.respond(crate::acp::cursor_ext::cursor_ask_skip_response_with_reason(
+            "the host's question bridge is unavailable; the user was not asked",
+        ));
+        return;
+    };
+    if !ask_cfg.is_enabled().await {
+        let _ = responder.respond(crate::acp::cursor_ext::cursor_ask_skip_response_with_reason(
+            "the host's interactive question card is disabled; the user was not asked",
+        ));
+        return;
+    }
+    let parsed = match crate::acp::cursor_ext::parse_cursor_ask_questions(&req.0) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            tracing::warn!("[cursor ask] rejecting malformed ext request: {e}");
+            let _ = responder.respond(crate::acp::cursor_ext::cursor_ask_skip_response_with_reason(
+                &format!("the host could not render this ask: {e}"),
+            ));
+            return;
+        }
+    };
+    let tool_call_id = req
+        .0
+        .get("toolCallId")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let specs: Vec<_> = parsed.iter().map(|q| q.spec.clone()).collect();
+    let card_specs = specs.clone();
+    let Some(registered) = questions.register_question(connection_id, specs).await else {
+        let _ = responder.respond(crate::acp::cursor_ext::cursor_ask_skip_response_with_reason(
+            "the host could not open a question card (one is already pending, or the session is gone)",
+        ));
+        return;
+    };
+    let state = Arc::clone(state);
+    let emitter = emitter.clone();
+    tokio::spawn(async move {
+        match registered.answer_rx.await {
+            Ok(outcome) => {
+                if let Some(tool_call_id) = tool_call_id {
+                    emit_with_state(
+                        &state,
+                        &emitter,
+                        AcpEvent::ToolCall {
+                            tool_call_id,
+                            title: "ask_user_question".to_string(),
+                            kind: "other".to_string(),
+                            status: "completed".to_string(),
+                            content: None,
+                            raw_input: Some(
+                                crate::acp::question::grok_result_card_input(&card_specs)
+                                    .to_string(),
+                            ),
+                            raw_output: Some(
+                                crate::acp::question::grok_result_card_output(&outcome).to_string(),
+                            ),
+                            locations: None,
+                            meta: None,
+                            images: None,
+                        },
+                    )
+                    .await;
+                }
+                let _ = responder.respond(crate::acp::cursor_ext::build_cursor_ask_response(
+                    &parsed, &outcome,
+                ));
+            }
+            Err(_) => {
+                let _ = responder.respond(crate::acp::cursor_ext::cursor_ask_skip_response());
+            }
+        }
+    });
+}
+
+/// Bridge Cursor's blocking `cursor/create_plan` into the shared plan-approval
+/// card. Disconnect / malformed → `cancelled`, never a silent `accepted`.
+async fn handle_cursor_create_plan(
+    access: &Option<Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>>,
+    connection_id: &str,
+    req: CursorCreatePlanRequest,
+    responder: Responder<serde_json::Value>,
+) {
+    tracing::info!(
+        "[cursor plan] received cursor/create_plan: keys={:?}",
+        crate::acp::cursor_ext::param_keys(&req.0)
+    );
+    let Some(access) = access else {
+        let _ = responder.respond(crate::acp::cursor_ext::cursor_create_plan_disconnect_response());
+        return;
+    };
+    let (plan_markdown, tool_call_id) = match crate::acp::cursor_ext::parse_cursor_create_plan(&req.0)
+    {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            tracing::warn!("[cursor plan] rejecting malformed ext request: {e}");
+            let _ = responder.respond(crate::acp::cursor_ext::cursor_create_plan_disconnect_response());
+            return;
+        }
+    };
+    let Some(registered) = access
+        .register_plan_approval(connection_id, tool_call_id, plan_markdown)
+        .await
+    else {
+        let _ = responder.respond(crate::acp::cursor_ext::cursor_create_plan_disconnect_response());
+        return;
+    };
+    tokio::spawn(async move {
+        match registered.answer_rx.await {
+            Ok(answer) => {
+                let _ = responder.respond(
+                    crate::acp::cursor_ext::build_cursor_create_plan_response(&answer),
+                );
+            }
+            Err(_) => {
+                let _ = responder
+                    .respond(crate::acp::cursor_ext::cursor_create_plan_disconnect_response());
+            }
+        }
+    });
+}
+
+fn handle_cursor_update_todos(
+    req: CursorUpdateTodosRequest,
+    responder: Responder<serde_json::Value>,
+) {
+    tracing::debug!(
+        "[cursor todos] cursor/update_todos keys={:?}",
+        crate::acp::cursor_ext::param_keys(&req.0)
+    );
+    let _ = responder.respond(crate::acp::cursor_ext::build_cursor_update_todos_response(
+        &req.0,
+    ));
+}
+
+fn handle_cursor_task(req: CursorTaskRequest, responder: Responder<serde_json::Value>) {
+    tracing::debug!(
+        "[cursor task] cursor/task keys={:?}",
+        crate::acp::cursor_ext::param_keys(&req.0)
+    );
+    let _ = responder.respond(crate::acp::cursor_ext::build_cursor_task_response(&req.0));
+}
+
+fn handle_cursor_generate_image(
+    req: CursorGenerateImageRequest,
+    responder: Responder<serde_json::Value>,
+) {
+    tracing::debug!(
+        "[cursor image] cursor/generate_image keys={:?}",
+        crate::acp::cursor_ext::param_keys(&req.0)
+    );
+    let _ = responder.respond(crate::acp::cursor_ext::build_cursor_generate_image_response(
+        &req.0,
+    ));
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_elicitation_request(
     access: &Option<(
@@ -8503,7 +8781,12 @@ fn normalize_grok_image_blocks(blocks: Vec<PromptInputBlock>) -> Vec<PromptInput
         .collect()
 }
 
-fn map_prompt_blocks(blocks: Vec<PromptInputBlock>) -> Vec<ContentBlock> {
+/// `pub(crate)` for one reader beyond this module: the ACP-native history
+/// parser's parity test, which needs the EXACT wire bytes `record_prompt`
+/// writes in order to assert its projection equals the live one
+/// ([`crate::acp::types::user_blocks_from_prompt`]). Rebuilding those bytes by
+/// hand in the test would let the two drift without failing anything.
+pub(crate) fn map_prompt_blocks(blocks: Vec<PromptInputBlock>) -> Vec<ContentBlock> {
     blocks
         .into_iter()
         .map(|block| match block {
@@ -13580,6 +13863,75 @@ fn grok_ext_notification_is_alert(dispatch: &Dispatch, agent_type: AgentType) ->
     }
 }
 
+/// Claims — and drops — an agent notification whose `sessionId` is present but
+/// `null`, before sacp's session router can choke on it.
+///
+/// sacp routes an inbound message to the session it names, and decides a
+/// message is session-bound by FIELD PRESENCE alone (`Dispatch::has_session_id`
+/// → `params.get("sessionId").is_some()`). A `"sessionId": null` therefore
+/// looks session-bound, gets parked in the retry queue, and is replayed into
+/// `ActiveSessionHandler` the moment `attach_session` registers it — where
+/// `Dispatch::get_session_id` deserializes it into a `SessionId` and fails with
+/// `invalid type: null, expected a string`. A handler `Err` brings the whole
+/// connection down, so the user sees `ACP protocol error: Invalid params:
+/// "invalid type: null, expected a string"` instead of a session (issue #794).
+///
+/// grok 1.0.40 is what made this reachable: it narrates `session/new` progress
+/// on `_x.ai/session/setup`, and its first five phases (`auth`,
+/// `resolve_workspace`, `folder_trust`, `plugin_registry`, `mcp_merge`) run
+/// BEFORE the session id exists, so they carry `null`. 1.0.34 (the previous
+/// pin) sent no such notification at all. The guard is deliberately NOT gated
+/// on grok: no ACP notification legitimately carries a null session id, and
+/// every agent's connection dies the same way if one does.
+///
+/// This has to sit in the BUILDER chain, not among the session handlers: the
+/// static chain is the only thing that runs before a message can be parked for
+/// retry, and a parked message is replayed straight into the newly added
+/// dynamic handler without passing through this chain again.
+///
+/// Notifications only. A null session id means "not about a session yet", and
+/// nothing codeg renders rides on these. A REQUEST shaped this way would be the
+/// same protocol violation, but dropping one would leave the agent blocked on a
+/// reply that never comes — so it keeps the existing unhandled-request path.
+struct DropNullSessionIdNotifications;
+
+impl<Counterpart: Role> HandleDispatchFrom<Counterpart> for DropNullSessionIdNotifications {
+    async fn handle_dispatch_from(
+        &mut self,
+        message: Dispatch,
+        _connection: ConnectionTo<Counterpart>,
+    ) -> Result<Handled<Dispatch>, sacp::Error> {
+        if let Dispatch::Notification(notification) = &message {
+            if has_null_session_id(notification) {
+                tracing::debug!(
+                    method = %notification.method(),
+                    "[ACP] dropping notification with a null sessionId"
+                );
+                return Ok(Handled::Yes);
+            }
+        }
+        Ok(Handled::No {
+            message,
+            retry: false,
+        })
+    }
+
+    fn describe_chain(&self) -> impl std::fmt::Debug {
+        "DropNullSessionIdNotifications"
+    }
+}
+
+/// True when `params.sessionId` exists and is JSON `null` — the one shape
+/// [`DropNullSessionIdNotifications`] exists for. A MISSING `sessionId` is a
+/// perfectly ordinary connection-level notification (`_auth/status_update`,
+/// grok's `_x.ai/settings/update`) and must keep flowing.
+fn has_null_session_id(notification: &UntypedMessage) -> bool {
+    notification
+        .params()
+        .get("sessionId")
+        .is_some_and(serde_json::Value::is_null)
+}
+
 /// `_auth/status_update` — the agent reporting which identity IT is logged in
 /// with. Introduced by codex-acp 1.9.0; claude-agent-acp 0.75.0 adopted the
 /// same method with its own vocabulary.
@@ -17945,6 +18297,68 @@ mod tests {
         assert!(map_claude_sdk_ext_notification(&missing_fields).is_none());
     }
 
+    /// The five `_x.ai/session/setup` frames grok 1.0.40 emits BEFORE the
+    /// session id exists, captured verbatim off `grok agent stdio` during
+    /// `session/new`. Each carries `"sessionId": null`, which is what killed the
+    /// connection in #794 — sacp treats the present-but-null field as
+    /// session-bound and then fails to parse it into a `SessionId`.
+    #[test]
+    fn null_session_id_is_recognized_on_grok_setup_frames() {
+        for phase in [
+            "auth",
+            "resolve_workspace",
+            "folder_trust",
+            "plugin_registry",
+            "mcp_merge",
+        ] {
+            let raw = UntypedMessage::new(
+                "_x.ai/session/setup",
+                serde_json::json!({
+                    "method": "session/new",
+                    "phase": phase,
+                    "sessionId": serde_json::Value::Null
+                }),
+            )
+            .unwrap();
+            assert!(
+                has_null_session_id(&raw),
+                "phase {phase} should be recognized as a null sessionId"
+            );
+        }
+    }
+
+    /// The two shapes that must keep flowing: the LATER `_x.ai/session/setup`
+    /// phases, which carry a real session id and belong to the session channel,
+    /// and connection-level pushes that have no `sessionId` field at all
+    /// (`_auth/status_update`, grok's `_x.ai/settings/update`).
+    #[test]
+    fn null_session_id_leaves_real_and_absent_session_ids_alone() {
+        let with_id = UntypedMessage::new(
+            "_x.ai/session/setup",
+            serde_json::json!({
+                "method": "session/new",
+                "phase": "persistence_init",
+                "sessionId": "01a0c4fa-c78f-7bf1-9cc3-5c9f4e3e919a"
+            }),
+        )
+        .unwrap();
+        assert!(!has_null_session_id(&with_id));
+
+        let no_id = UntypedMessage::new(
+            "_auth/status_update",
+            serde_json::json!({"authStatus": {"kind": "authenticated"}}),
+        )
+        .unwrap();
+        assert!(!has_null_session_id(&no_id));
+
+        let settings = UntypedMessage::new(
+            "_x.ai/settings/update",
+            serde_json::json!({"sharing_enabled": false, "session_picker_grouped": null}),
+        )
+        .unwrap();
+        assert!(!has_null_session_id(&settings));
+    }
+
     /// The exact `_x.ai/session_notification` envelope captured from grok 0.2.111
     /// running `/compact` — `auto_compact_completed` under `params.update`, with
     /// the token delta and an `_meta.eventId`.
@@ -19782,6 +20196,57 @@ mod tests {
             !shown.contains(MCP_SUSPECT_SENTINEL),
             "the sentinel must never reach the user: {shown}"
         );
+    }
+
+    // The reported cursor-agent failure: `session/new` answered -32000 with
+    // `Please run 'agent login' first` — advice the user cannot take, since
+    // `agent` is not a command and codeg's managed `cursor-agent` is not on
+    // PATH. The typed code is the only place that reading is available, so it
+    // has to be classified here and not from the wire text.
+    #[test]
+    fn auth_required_beats_the_mcp_hint_and_carries_its_own_code() {
+        // The shape cursor-agent really answers with (wire capture from the
+        // report): code -32000, with its advice in `data`.
+        let refusal = sacp::Error::auth_required().data(serde_json::json!({
+            "message": "Authentication required. Please run 'agent login' first, \
+                        then call authenticate() with methodId 'cursor_login'."
+        }));
+        // A custom agent WITH servers attached is exactly the case the MCP hint
+        // fires on; the credential diagnosis has to win it.
+        let tagged = tag_new_session_failure(
+            refusal,
+            AgentType::Custom("my-agent"),
+            &[stdio_server("codeg")],
+        )
+        .to_string();
+        assert!(tagged.contains(AUTH_REQUIRED_SENTINEL));
+        assert!(
+            !tagged.contains(MCP_SUSPECT_SENTINEL),
+            "the weaker MCP reading must not ride along: {tagged}"
+        );
+
+        // Mirrors the `.map_err` in `run_connection`, which a unit test cannot
+        // call directly.
+        let err = AcpError::agent_auth_required(tagged.replace(AUTH_REQUIRED_SENTINEL, ""));
+        assert_eq!(err.code(), Some("agent_auth_required"));
+        assert!(
+            !err.to_string().contains(AUTH_REQUIRED_SENTINEL),
+            "the sentinel must never reach the user: {err}"
+        );
+    }
+
+    // Every other refusal keeps the behaviour it had: the auth branch must not
+    // swallow unrelated `session/new` failures.
+    #[test]
+    fn a_non_auth_refusal_still_takes_the_mcp_path() {
+        let tagged = tag_new_session_failure(
+            sacp::util::internal_error("session/new failed: unknown field `mcpServers`"),
+            AgentType::Custom("my-agent"),
+            &[stdio_server("codeg")],
+        )
+        .to_string();
+        assert!(tagged.contains(MCP_SUSPECT_SENTINEL));
+        assert!(!tagged.contains(AUTH_REQUIRED_SENTINEL));
     }
 
     #[test]

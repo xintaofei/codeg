@@ -357,7 +357,17 @@ export function NativeSurfaceHost({
           }
           return
         }
-        setBrowserTabState(next)
+        // Seed, never overwrite. This answer was decided before the page had
+        // begun to load, so it is the OLDEST state this tab will ever have —
+        // and on WKWebView the answer to an `invoke` and the eval that
+        // delivers an event are not ordered against each other (the same race
+        // `TauriTransport.subscribe` works around), so a `browser://state`
+        // for a page that has already committed can arrive first. Writing
+        // this over it would put the tab back to `loading` with nothing left
+        // to correct it: an empty tab's `about:blank` commits in
+        // microseconds and then emits nothing ever again, which is exactly
+        // the tab that used to spin for the rest of the session.
+        if (!getBrowserTabState(storeKey)) setBrowserTabState(next)
         sync()
       })
       .catch((error: unknown) => {

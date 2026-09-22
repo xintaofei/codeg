@@ -4373,6 +4373,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // and reaches the sidebar via `conversation://changed`. Do not flush
           // the streaming queue: this can arrive mid-turn.
           break
+        case "transcript_rolled_over":
+          // Backend re-points conversation.external_id after Claude `/clear`.
+          // Sidebar converges via `conversation://changed`; do not reconnect.
+          break
         case "conversation_linked":
           // Backend just bound (or reaffirmed) the connection's DB conversation
           // row. Phase 3a frontend pre-creates rows for new-tab sends so this
@@ -4669,6 +4673,19 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 return t("backendErrors.mcpRejectedByAgent", {
                   agent: agentLabel,
                   message: e.message,
+                })
+              // The agent refused to OPEN a session for want of a credential.
+              // Deliberately drops the agent's own wording: cursor-agent's
+              // says to run `agent login`, which is not a command that exists
+              // (the binary is `cursor-agent`, and codeg's managed copy is not
+              // on PATH) — so echoing it sends the user somewhere they cannot
+              // go. The agent's settings panel is where the real command, and
+              // the API-key alternative, live. The raw refusal is not lost —
+              // it is still `e.message` — so an agent whose text turns out to
+              // be worth showing can be surfaced here without a backend change.
+              case "agent_auth_required":
+                return t("backendErrors.agentAuthRequired", {
+                  agent: agentLabel,
                 })
               case "sdk_not_installed":
                 return t("blocked.sdkMissing", { agent: agentLabel })

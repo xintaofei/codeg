@@ -10,7 +10,9 @@ use super::agent;
 use super::blank_page;
 use super::events;
 use super::registry::BrowserRegistry;
-use super::types::{BrowserErrorInfo, BrowserErrorKind, NavigationBlockReason};
+use super::types::{
+    BrowserErrorInfo, BrowserErrorKind, BrowserTabState, NavigationBlockReason, TabKind,
+};
 
 /// Where a platform delegate's navigation events go: the hooks below, for one
 /// tab. Every surface that has a shim builds its sink here, so the four events
@@ -35,6 +37,82 @@ pub fn navigation_sink(app: &AppHandle, tab_id: &str) -> super::shim::Navigation
         NavigationEvent::Interrupted => navigation_interrupted(&app, &tab_id),
         NavigationEvent::Failed(failure) => navigation_failed(&app, &tab_id, failure),
     })
+}
+
+/// Where a platform's "the page asked for this window to be closed" callback
+/// goes: [`page_requested_close`] for one tab. Built by every surface that has
+/// a shim, so `window.close()` means the same thing on each engine.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub fn page_close_sink(app: &AppHandle, tab_id: &str) -> super::shim::PageCloseSink {
+    let app = app.clone();
+    let tab_id = tab_id.to_string();
+    std::sync::Arc::new(move || page_requested_close(&app, &tab_id))
+}
+
+/// Whether a tab may close itself on the page's say-so: an adopted popup, and
+/// nothing else.
+///
+/// The engines already apply the browser rule — only a window a script opened
+/// may be closed by script — but each in its own words, and a document guest
+/// is not a window the person can get back. `opener_tab_id` is the host's own
+/// record of the one case that qualifies: a webview built for a page-initiated
+/// `window.open` (see `surface_child::new_window_handler`).
+///
+/// Saying no here does not put a surface back: on Windows and Linux wry has
+/// already destroyed it by the time this is asked (see the shims), so a
+/// refused tab keeps its place in the strip with a dead view. That is what
+/// those two engines have always done; it is not this gate's to undo.
+pub fn page_may_close_itself(state: &BrowserTabState) -> bool {
+    state.kind == TabKind::Page && state.opener_tab_id.is_some()
+}
+
+/// The page called `window.close()`. For a popup this is the last step of a
+/// sign-in flow: the site opened a window, the provider wrote its receipt into
+/// it, and the page it left behind closes itself. No TAB went with it before
+/// this: macOS never heard the request (wry implements no `webViewDidClose:`),
+/// and the two engines wry does hear it on answer by destroying the surface
+/// and telling nobody. Either way the empty "Sign In" tab stayed open until
+/// the person noticed it.
+///
+/// The close runs off the engine's callback — it drops the very webview whose
+/// delegate is calling, which must not happen while the engine is inside it,
+/// and `close_core` reaches the main thread and waits, which from the main
+/// thread is a deadlock. So the decision is taken again inside the task, and
+/// carries the incarnation it was taken about all the way to the removal: an
+/// id on its own names whatever is under it at the moment it is used, which
+/// need not be the tab whose page asked.
+pub fn page_requested_close(app: &AppHandle, tab_id: &str) {
+    let app = app.clone();
+    let tab_id = tab_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        let Some(registry) = app.try_state::<BrowserRegistry>() else {
+            return;
+        };
+        // The incarnation, not just the id: an id names whatever is under it
+        // at the moment it is used, and by the time this runs the tab that
+        // asked may be gone and another one — another popup, with an opener
+        // of its own — under its name. `generation` is never reused, so
+        // carrying it to the removal is what makes the tab that asked and the
+        // tab that goes the same tab.
+        let Some((generation, state)) =
+            registry.read(&tab_id, |tab| (tab.generation, tab.state.clone()))
+        else {
+            return;
+        };
+        if !page_may_close_itself(&state) {
+            tracing::debug!(
+                "[browser] tab {tab_id}: window.close() ignored (not a page's own window)"
+            );
+            return;
+        }
+        tracing::info!("[browser] tab {tab_id}: closed by the page");
+        let close = crate::commands::browser::close_core_if(&app, &registry, &tab_id, None, |tab| {
+            tab.generation == generation
+        });
+        if let Err(err) = close {
+            tracing::warn!("[browser] tab {tab_id}: close requested by the page failed: {err}");
+        }
+    });
 }
 
 pub fn origin_of(url: &Url) -> Option<String> {
@@ -316,6 +394,52 @@ fn settle_without_page(state: &mut crate::browser::types::BrowserTabState) {
     state.requested_url = state.url.clone();
 }
 
+/// What the load watcher does when the engine has stopped loading and the tab
+/// still believes it has a navigation in flight.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoadConclusion {
+    /// A document is on screen: stop the spinner and leave it there.
+    Settle,
+    /// Nothing ever arrived — the tab is empty. The error page names this
+    /// address.
+    Failed(String),
+}
+
+/// Decide it. The engine reports a real failure through the navigation hooks
+/// (every platform installs them), and the tab is not loading by the time the
+/// watcher looks; so a load that ends here with no failure reported is one
+/// that was ABANDONED — superseded, cancelled by the page, answered with
+/// nothing to display.
+///
+/// A browser leaves the document alone for those, and so does this: an error
+/// page over a page the person is reading would be wrong on its own, and it
+/// also takes the native surface off the screen (`BrowserTabView` hides it
+/// under the DOM error page), which stops the very script that was about to
+/// navigate again — a challenge page mid-check never finishes, and the address
+/// the user asked for never arrives at all.
+///
+/// An empty tab is the other half: nothing is showing, nothing is coming, and
+/// the address that never arrived is worth saying out loud.
+///
+/// What this gives up is the fallback error on a surface whose navigation
+/// hooks did NOT install (`attach_engine_hooks` says so in a warning): there,
+/// a load that fails on its way away from a page nobody hears about, and the
+/// tab settles back on the page it is showing rather than reporting it. That
+/// is the right way round — this watcher cannot tell a failure from an
+/// abandonment, and only one of the two is worth taking a page off the screen
+/// for.
+pub fn conclude_load(has_document: bool, state: &BrowserTabState) -> LoadConclusion {
+    if has_document && !state.url.is_empty() {
+        return LoadConclusion::Settle;
+    }
+    let url = if state.requested_url.is_empty() {
+        state.url.clone()
+    } else {
+        state.requested_url.clone()
+    };
+    LoadConclusion::Failed(url)
+}
+
 /// The load in flight was ended by policy (WebKit's "frame load interrupted
 /// by policy change"): the host refused the address a redirect led to, or
 /// the response became a download. Either way no page is coming for it and
@@ -345,12 +469,13 @@ pub fn navigation_interrupted(app: &AppHandle, tab_id: &str) {
 const LOAD_POLL: Duration = Duration::from_millis(500);
 const LOAD_FINISH_GRACE: Duration = Duration::from_millis(300);
 
-/// wry reports navigation start and finish but never failure, so a DNS,
-/// connection or TLS error would leave `loading: true` forever. Poll the
-/// engine's own flag until it clears; if our state is still loading a moment
-/// later, the load ended without the requested page — surface it as an error
-/// (a failed reload of the page already showing just stops the spinner). A
-/// newer navigation (higher `load_seq`) retires the watcher.
+/// wry reports navigation start and finish but never failure, so a load that
+/// ends without a page would leave `loading: true` forever. Poll the engine's
+/// own flag until it clears; if our state is still loading a moment later, the
+/// load in flight is over and nobody said so — `conclude_load` decides what
+/// that means for the tab. A newer navigation (higher `load_seq`) retires the
+/// watcher, and so does a failure the navigation hooks reported (it clears
+/// `loading` itself).
 fn watch_load(app: AppHandle, tab_id: String, seq: u64) {
     tauri::async_runtime::spawn(async move {
         loop {
@@ -392,26 +517,20 @@ fn watch_load(app: AppHandle, tab_id: String, seq: u64) {
                     return tab.state.clone();
                 }
                 let state = &mut tab.state;
-                state.loading = false;
-                // The load ended without the requested page: either nothing
-                // ever committed, or an older document is still showing while
-                // the address the user asked for never arrived (a reload that
-                // failed keeps its page and just stops the spinner). The error
-                // page names the requested address; its wording is the status
-                // layer's, in the user's language.
-                let requested_arrived = has_document
-                    && (state.requested_url.is_empty() || state.requested_url == state.url);
-                if !requested_arrived {
-                    let url = if state.requested_url.is_empty() {
-                        state.url.clone()
-                    } else {
-                        state.requested_url.clone()
-                    };
-                    state.error = Some(BrowserErrorInfo {
-                        kind: BrowserErrorKind::Failed,
-                        message: String::new(),
-                        url: Some(url),
-                    });
+                // The load in flight is over, whatever became of it. What
+                // that means for the tab is `conclude_load`'s to say; its
+                // wording, where there is any, is the status layer's, in the
+                // user's language.
+                match conclude_load(has_document, state) {
+                    LoadConclusion::Settle => settle_without_page(state),
+                    LoadConclusion::Failed(url) => {
+                        state.loading = false;
+                        state.error = Some(BrowserErrorInfo {
+                            kind: BrowserErrorKind::Failed,
+                            message: String::new(),
+                            url: Some(url),
+                        });
+                    }
                 }
                 state.clone()
             });
@@ -540,6 +659,57 @@ mod tests {
         assert_eq!(s.requested_url, "");
     }
 
+    /// The load in flight ended and nothing was reported for it. A tab with a
+    /// page on screen keeps it: the navigation was abandoned (superseded,
+    /// cancelled by the page, answered with nothing to show), which is not a
+    /// failure — and an error page here would take the surface off the screen
+    /// and stop the script that was about to navigate again.
+    #[test]
+    fn a_page_on_screen_survives_a_navigation_that_ended_without_one() {
+        let showing = state("https://linux.do/", "https://linux.do/challenge");
+        assert_eq!(conclude_load(true, &showing), LoadConclusion::Settle);
+        // A failed reload of the page showing: same answer, and it was the
+        // same answer before — the spinner stops, the page stays.
+        let reloaded = state("https://linux.do/", "https://linux.do/");
+        assert_eq!(conclude_load(true, &reloaded), LoadConclusion::Settle);
+    }
+
+    /// Nothing ever arrived: the error page names the address that was asked
+    /// for, and falls back to the tab's own when there is none.
+    #[test]
+    fn an_empty_tab_reports_the_address_that_never_arrived() {
+        let empty = state("", "https://example.com/");
+        assert_eq!(
+            conclude_load(false, &empty),
+            LoadConclusion::Failed("https://example.com/".into())
+        );
+        // The engine holds no document either way; `url` is all there is.
+        let stale = state("https://example.com/", "");
+        assert_eq!(
+            conclude_load(false, &stale),
+            LoadConclusion::Failed("https://example.com/".into())
+        );
+    }
+
+    /// Only an adopted popup — a window a page opened — may close itself.
+    #[test]
+    fn a_page_may_only_close_the_window_it_opened() {
+        let popup = BrowserTabState {
+            opener_tab_id: Some("opener".into()),
+            ..state("https://accounts.google.com/", "")
+        };
+        assert!(page_may_close_itself(&popup));
+        // A tab the person opened is theirs to close.
+        assert!(!page_may_close_itself(&state("https://example.com/", "")));
+        // A document guest is a file preview, not a window.
+        let guest = BrowserTabState {
+            kind: TabKind::Document,
+            opener_tab_id: Some("opener".into()),
+            ..state("codeg-doc://x/index.html", "")
+        };
+        assert!(!page_may_close_itself(&guest));
+    }
+
     /// An empty document committed in place of the page that was started is
     /// a refused load; a page that heads for `about:blank` itself is not.
     #[test]
@@ -566,7 +736,11 @@ mod tests {
         assert_eq!(classify_load_error("NSURLErrorDomain", -1009), Some(Failed));
         assert_eq!(classify_load_error("NSURLErrorDomain", -1199), Some(Failed));
         assert_eq!(classify_load_error("NSURLErrorDomain", -1207), Some(Failed));
-        // Superseded / stopped: not an error of the page.
+        // Superseded / stopped / the page navigated again: not an error of
+        // the page — and still the end of the load in flight, which is why
+        // every one of these is reported as `NavigationEvent::Interrupted`
+        // (see `shim::macos::report_failure`) rather than left for the load
+        // watcher to notice.
         assert_eq!(classify_load_error("NSURLErrorDomain", -999), None);
         // Cancelled by our own policy handler, or became a download.
         assert_eq!(classify_load_error("WebKitErrorDomain", 102), None);

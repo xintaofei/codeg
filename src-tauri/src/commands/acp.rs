@@ -9415,6 +9415,43 @@ async fn run_cursor_probe(
     Ok(stdout)
 }
 
+/// The exact phrase `cursor-agent status` prints when it HAS a stored login but
+/// could not use it: `gatherStatusInfo` calls `getMe` with the access token and
+/// falls into this branch when that call throws, while still reporting
+/// `isAuthenticated: true` (it decides that from token presence alone, never
+/// from the token's `exp`).
+///
+/// Matched as a literal because it is one: the CLI emits these strings in
+/// English regardless of locale, and they are what carries the difference
+/// between "signed in" and "signed in with a credential that no longer works".
+const CURSOR_STATUS_UNVERIFIED_MARKER: &str = "unable to fetch user details";
+
+/// Whether the login `cursor-agent status` reports actually worked against
+/// Cursor's backend — see [`crate::acp::types::CursorAuthStatus::credential_verified`]
+/// for why the two are not the same question.
+///
+/// Deliberately conservative: only the CLI's own "I could not reach the
+/// backend with this token" branch counts as unverified. Every other shape —
+/// user details present, details missing for some other reason, a field we do
+/// not recognize — is left as verified, so an unfamiliar status output cannot
+/// invent a login problem the user does not have.
+fn cursor_credential_verified(status: &serde_json::Value) -> Option<bool> {
+    let authenticated = status
+        .get("isAuthenticated")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if !authenticated {
+        // Nothing to verify: the panel already renders this as "not signed in".
+        return None;
+    }
+    let message = status
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    Some(!message.contains(CURSOR_STATUS_UNVERIFIED_MARKER))
+}
+
 pub(crate) async fn acp_cursor_auth_status_core(
     db: &AppDatabase,
     api_key: Option<String>,
@@ -9429,6 +9466,7 @@ pub(crate) async fn acp_cursor_auth_status_core(
             membership: None,
             error: None,
             binary_path: None,
+            credential_verified: None,
         };
     }
     let extra_env = cursor_probe_env(db, api_key.as_deref()).await;
@@ -9467,6 +9505,7 @@ pub(crate) async fn acp_cursor_auth_status_core(
                         membership: get_str(&["membershipType", "membership", "plan"]),
                         error: None,
                         binary_path: binary_path.clone(),
+                        credential_verified: cursor_credential_verified(&v),
                     }
                 }
                 Err(e) => crate::acp::types::CursorAuthStatus {
@@ -9477,6 +9516,7 @@ pub(crate) async fn acp_cursor_auth_status_core(
                     membership: None,
                     error: Some(format!("unexpected status output: {e}")),
                     binary_path: binary_path.clone(),
+                    credential_verified: None,
                 },
             }
         }
@@ -9488,6 +9528,7 @@ pub(crate) async fn acp_cursor_auth_status_core(
             membership: None,
             error: Some(err),
             binary_path,
+            credential_verified: None,
         },
     }
 }
@@ -16528,6 +16569,56 @@ wire_api = "chat"
 
         // A parenthetical that isn't the default marker stays in the label.
         assert_eq!(models[3].label, "Fable 5 1M Thinking (NO ZDR)");
+    }
+
+    // `cursor-agent status` reports a login from token PRESENCE alone, so it
+    // keeps saying "authenticated" long after the access token has aged out —
+    // while `cursor-agent acp` refuses every `session/new` for exactly that
+    // token. The one thing in the status output that tells them apart is the
+    // `getMe` branch, and the panel's card is read off it.
+    #[test]
+    fn cursor_credential_verified_separates_a_stored_login_from_a_working_one() {
+        // Real shape when the token still works.
+        let working = serde_json::json!({
+            "status": "authenticated",
+            "isAuthenticated": true,
+            "hasAccessToken": true,
+            "hasRefreshToken": true,
+            "userInfo": { "email": "itpkcn@gmail.com" }
+        });
+        assert_eq!(cursor_credential_verified(&working), Some(true));
+
+        // Real shape when it does not: `isAuthenticated` is STILL true.
+        let expired = serde_json::json!({
+            "status": "authenticated",
+            "isAuthenticated": true,
+            "hasAccessToken": true,
+            "hasRefreshToken": true,
+            "message": "Logged in (unable to fetch user details)"
+        });
+        assert_eq!(cursor_credential_verified(&expired), Some(false));
+
+        // The CLI's other "no email" branch means `getMe` SUCCEEDED; it must
+        // not be read as a broken credential.
+        let no_details = serde_json::json!({
+            "status": "authenticated",
+            "isAuthenticated": true,
+            "message": "Logged in (user details not available)"
+        });
+        assert_eq!(cursor_credential_verified(&no_details), Some(true));
+
+        // Nothing to verify — the card already says "not signed in".
+        for absent in [
+            serde_json::json!({ "status": "unauthenticated", "isAuthenticated": false }),
+            serde_json::json!({
+                "status": "partially-authenticated",
+                "isAuthenticated": false,
+                "message": "Partially authenticated (missing refresh token)"
+            }),
+            serde_json::json!({}),
+        ] {
+            assert_eq!(cursor_credential_verified(&absent), None);
+        }
     }
 
     #[test]

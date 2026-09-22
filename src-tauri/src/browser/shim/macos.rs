@@ -22,8 +22,9 @@ use objc2_foundation::{
 use objc2_web_kit::{
     WKContentWorld, WKFindConfiguration, WKFindResult, WKNavigation, WKNavigationAction,
     WKNavigationActionPolicy, WKNavigationDelegate, WKScriptMessage, WKScriptMessageHandler,
-    WKSnapshotConfiguration, WKUserContentController, WKUserScript, WKUserScriptInjectionTime,
-    WKWebView, WKWebViewConfiguration, WKWebsiteDataRecord, WKWebsiteDataStore,
+    WKSnapshotConfiguration, WKUIDelegate, WKUserContentController, WKUserScript,
+    WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration, WKWebsiteDataRecord,
+    WKWebsiteDataStore,
 };
 use tauri_runtime_wry::wry::{self, WebViewExtMacOS};
 
@@ -731,7 +732,8 @@ define_class!(
                 tracing::debug!("[browser] ignoring the failure of a superseded navigation");
                 return;
             }
-            self.report_failure(error, true);
+            let settles = self.names_current(navigation);
+            self.report_failure(error, true, settles);
         }
 
         #[unsafe(method(webView:didFailNavigation:withError:))]
@@ -739,7 +741,9 @@ define_class!(
             if self.is_stale(navigation) {
                 return;
             }
-            self.report_failure(error, false);
+            // Not provisional: a page committed and then failed. Nothing
+            // below settles on this path, so attribution buys nothing.
+            self.report_failure(error, false, false);
         }
     }
 );
@@ -767,7 +771,18 @@ impl CodegNavigationDelegate {
         navigation.is_some_and(|n| n as *const WKNavigation as usize != self.ivars().current.get())
     }
 
-    fn report_failure(&self, error: &NSError, provisional: bool) {
+    /// Whether the callback NAMES the navigation that started last — the one
+    /// the tab believes is in flight. Stronger than `!is_stale`, which lets a
+    /// nil `WKNavigation` through so that a real failure is still reported:
+    /// nil names nothing, and a callback that names nothing cannot be used to
+    /// SETTLE a navigation. Settling the wrong one takes a live load's address
+    /// off the toolbar and retires its watcher, and the load it was really
+    /// about is then the only thing left to notice.
+    fn names_current(&self, navigation: Option<&WKNavigation>) -> bool {
+        navigation.is_some_and(|n| n as *const WKNavigation as usize == self.ivars().current.get())
+    }
+
+    fn report_failure(&self, error: &NSError, provisional: bool, settles: bool) {
         let domain = error.domain().to_string();
         let code = i64::try_from(error.code()).unwrap_or(i64::MAX);
         let kind = classify_load_error(&domain, code);
@@ -776,11 +791,34 @@ impl CodegNavigationDelegate {
             error.localizedDescription()
         );
         let Some(kind) = kind else {
-            // WebKitErrorFrameLoadInterruptedByPolicyChange on the load in
-            // flight: our own navigation handler cancelled it (a refused
-            // redirect target) or it turned into a download.
-            if provisional && domain == "WebKitErrorDomain" && code == 102 {
+            // Not a failure of the page, and the load in flight is over all
+            // the same: our own navigation handler cancelled it (a refused
+            // redirect target), it turned into a download
+            // (WebKitErrorFrameLoadInterruptedByPolicyChange), or it was
+            // cancelled outright (`NSURLErrorCancelled`) — a page that
+            // navigated itself again mid-flight, a load the user stopped.
+            //
+            // Said out loud rather than left to the load watcher: nothing
+            // else will report this navigation, and a tab left believing one
+            // is in flight both spins for ever and, once the watcher gives
+            // up on it, puts an error page over a document that is fine.
+            //
+            // Only for a callback that names the load in flight, though
+            // (`settles`). This event SETTLES: it takes the tab's
+            // `provisional_url` and bumps `load_seq`, which retires the
+            // watcher. A superseded navigation never reaches here
+            // (`is_stale`), but one WITHOUT a `WKNavigation` would, and it
+            // would settle whatever happens to be in flight instead of
+            // itself. Letting the watcher conclude that load a moment later
+            // is the cheaper mistake: it settles a tab that has a page and
+            // errors one that has none, which is where this would land
+            // anyway.
+            if provisional && settles {
                 (self.ivars().sink)(NavigationEvent::Interrupted);
+            } else if provisional {
+                tracing::debug!(
+                    "[browser] a load ended without naming itself; left to the load watcher"
+                );
             }
             return;
         };
@@ -864,6 +902,96 @@ pub fn install_navigation_delegate(webview: &wry::WebView, sink: NavigationSink)
 pub fn forget_navigation_delegate(webview: &wry::WebView) {
     let key = webview_pointer(webview);
     NAV_DELEGATES.with(|map| map.borrow_mut().remove(&key));
+    UI_DELEGATES.with(|map| map.borrow_mut().remove(&key));
+}
+
+// ---------------------------------------------------------------------------
+// UI delegate: `window.close()`
+// ---------------------------------------------------------------------------
+//
+// The same wrapper trick, for the other delegate. wry's `WKUIDelegate` is
+// what answers the engine's request for a new window (that is how a popup
+// becomes a tab) and it implements no `webViewDidClose:` at all, so a page
+// closing its own window — the last step of every popup sign-in flow — used
+// to reach nobody and left an empty tab behind.
+//
+// WebKit only calls it for a window a script opened, which is exactly the
+// adopted popup; the host checks that again on its side (`page_may_close_itself`).
+
+pub use super::PageCloseSink;
+
+thread_local! {
+    /// Wrappers by `WKWebView` pointer, kept alive here (`UIDelegate` is a
+    /// weak property). Dropped with the navigation wrapper above.
+    static UI_DELEGATES: RefCell<HashMap<usize, Retained<CodegUIDelegate>>> =
+        RefCell::new(HashMap::new());
+}
+
+pub struct UIDelegateIvars {
+    inner: Retained<ProtocolObject<dyn WKUIDelegate>>,
+    sink: PageCloseSink,
+}
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = UIDelegateIvars]
+    pub struct CodegUIDelegate;
+
+    unsafe impl NSObjectProtocol for CodegUIDelegate {}
+
+    impl CodegUIDelegate {
+        #[unsafe(method(respondsToSelector:))]
+        fn responds_to_selector(&self, selector: Sel) -> bool {
+            self.class().responds_to(selector) || self.ivars().inner.respondsToSelector(selector)
+        }
+
+        #[unsafe(method(forwardingTargetForSelector:))]
+        fn forwarding_target_for_selector(&self, _selector: Sel) -> *mut AnyObject {
+            Retained::as_ptr(&self.ivars().inner) as *mut AnyObject
+        }
+    }
+
+    unsafe impl WKUIDelegate for CodegUIDelegate {
+        #[unsafe(method(webViewDidClose:))]
+        fn web_view_did_close(&self, _webview: &WKWebView) {
+            (self.ivars().sink)();
+        }
+    }
+);
+
+impl CodegUIDelegate {
+    fn new(
+        inner: Retained<ProtocolObject<dyn WKUIDelegate>>,
+        sink: PageCloseSink,
+        mtm: MainThreadMarker,
+    ) -> Retained<Self> {
+        let this = mtm.alloc::<Self>().set_ivars(UIDelegateIvars { inner, sink });
+        // SAFETY: plain NSObject init.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// Wrap the webview's UI delegate so `window.close()` reaches the host.
+/// Idempotent per webview; not fatal when it cannot be done (the tab works,
+/// only a page that closes itself is not heard).
+pub fn install_page_close_hook(webview: &wry::WebView, sink: PageCloseSink) -> Result<(), String> {
+    let mtm = mtm()?;
+    let wk = webview.webview();
+    let key = Retained::as_ptr(&wk) as usize;
+    let installed = UI_DELEGATES.with(|map| map.borrow().contains_key(&key));
+    if installed {
+        return Ok(());
+    }
+    // SAFETY: main thread, live webview.
+    let inner = unsafe { wk.UIDelegate() }
+        .ok_or_else(|| "the webview has no UI delegate to wrap".to_string())?;
+    let delegate = CodegUIDelegate::new(inner, sink, mtm);
+    // SAFETY: main thread; the wrapper is retained in `UI_DELEGATES` above,
+    // which is what keeps the weak `UIDelegate` valid.
+    unsafe { wk.setUIDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
+    UI_DELEGATES.with(|map| map.borrow_mut().insert(key, delegate));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

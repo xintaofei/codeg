@@ -54,6 +54,7 @@ import {
   WORKSPACE_DOWNLOAD_CANCELLED,
 } from "@/lib/api"
 import { isDesktop, isRemoteDesktopMode } from "@/lib/transport"
+import { FileTreeCopySubContent } from "@/components/layout/file-tree-copy-menu"
 import { emitAttachFileToSession } from "@/lib/session-attachment-events"
 import {
   resolveFileTreeDropZone,
@@ -114,7 +115,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { joinFsPath } from "@/lib/path-utils"
 import { toErrorMessage } from "@/lib/app-error"
-import { cn, copyTextFromMenu } from "@/lib/utils"
+import { cn } from "@/lib/utils"
 
 function parentDir(filePath: string): string {
   const slashIndex = filePath.lastIndexOf("/")
@@ -133,20 +134,6 @@ function parentDir(filePath: string): string {
 
 function baseName(path: string): string {
   return path.split(/[/\\]/).pop() || path
-}
-
-async function copyPathToClipboard(
-  absolutePath: string,
-  messages: { success: string; failure: string }
-) {
-  // copyTextFromMenu defers the write until this context menu has closed, so
-  // the execCommand clipboard fallback works in non-secure web contexts.
-  const ok = await copyTextFromMenu(absolutePath)
-  if (ok) {
-    toast.success(messages.success)
-  } else {
-    toast.error(messages.failure)
-  }
 }
 
 const FILE_TREE_ROOT_PATH = "__workspace_root__"
@@ -862,16 +849,16 @@ function RenderNode({
               onOpenCode={() => void handleOpenInCode()}
             />
           </ContextMenuSub>
-          <ContextMenuItem
-            onSelect={() =>
-              void copyPathToClipboard(absolutePath, {
-                success: t("toasts.pathCopied"),
-                failure: t("toasts.copyPathFailed"),
-              })
-            }
-          >
-            {t("copyPath")}
-          </ContextMenuItem>
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>{t("copy")}</ContextMenuSubTrigger>
+            <FileTreeCopySubContent
+              name={node.name}
+              relativePath={node.path}
+              absolutePath={absolutePath}
+              kind="file"
+              remote={webMode}
+            />
+          </ContextMenuSub>
           {webMode && (
             <>
               <ContextMenuItem
@@ -1112,16 +1099,16 @@ function RenderNode({
             onOpenCode={() => void handleOpenInCode()}
           />
         </ContextMenuSub>
-        <ContextMenuItem
-          onSelect={() =>
-            void copyPathToClipboard(absolutePath, {
-              success: t("toasts.pathCopied"),
-              failure: t("toasts.copyPathFailed"),
-            })
-          }
-        >
-          {t("copyPath")}
-        </ContextMenuItem>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger>{t("copy")}</ContextMenuSubTrigger>
+          <FileTreeCopySubContent
+            name={node.name}
+            relativePath={node.path}
+            absolutePath={absolutePath}
+            kind="dir"
+            remote={webMode}
+          />
+        </ContextMenuSub>
         {webMode && (
           <>
             <ContextMenuItem onSelect={() => onRequestUpload(node.path)}>
@@ -3080,16 +3067,21 @@ export function FileTreeTab() {
                           }}
                         />
                       </ContextMenuSub>
-                      <ContextMenuItem
-                        onSelect={() =>
-                          void copyPathToClipboard(folder.path, {
-                            success: t("toasts.pathCopied"),
-                            failure: t("toasts.copyPathFailed"),
-                          })
-                        }
-                      >
-                        {t("copyPath")}
-                      </ContextMenuItem>
+                      <ContextMenuSub>
+                        <ContextMenuSubTrigger>
+                          {t("copy")}
+                        </ContextMenuSubTrigger>
+                        <FileTreeCopySubContent
+                          name={rootNodeName}
+                          // The root's path relative to itself. "." is the
+                          // only spelling that stays pasteable (`git add .`);
+                          // the literal answer, "", would copy nothing at all.
+                          relativePath="."
+                          absolutePath={folder.path}
+                          kind="dir"
+                          remote={webMode}
+                        />
+                      </ContextMenuSub>
                       {webMode && (
                         <>
                           <ContextMenuItem

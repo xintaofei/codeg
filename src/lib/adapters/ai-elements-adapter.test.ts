@@ -2251,3 +2251,45 @@ describe("adaptMessageTurn — user reference resources", () => {
     ])
   })
 })
+
+describe("createMessageTurnAdapter — per-turn cache invalidation", () => {
+  const labels = {
+    attachedResources: "Attached resources",
+    toolCallFailed: "Tool failed",
+  }
+  const reply = {
+    id: "live-7-abc",
+    role: "assistant" as const,
+    timestamp: "2026-06-02T00:00:00.000Z",
+    blocks: [{ type: "text" as const, text: "done" }],
+    usage: {
+      input_tokens: 10,
+      output_tokens: 5,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    },
+    completed_at: "2026-06-02T00:00:03.000Z",
+  }
+
+  it("reuses the adapted message when nothing about the turn changed", () => {
+    const adapter = createMessageTurnAdapter()
+    const [first] = adapter.adapt([reply], labels)
+    const [second] = adapter.adapt([{ ...reply }], labels)
+    expect(second).toBe(first)
+  })
+
+  it("re-adapts when a later sync places source_turn_id on an already-patched turn", () => {
+    // The post-turn reparse can name a reply in a ROUND AFTER the one that
+    // pinned its stats, leaving `source_turn_id` as the only changed field.
+    // Reusing the adapted message there keeps the merged-run cache (which
+    // freezes its members' sourceTurns) on the pre-patch turn object, so the
+    // reply's "fork from here" stays greyed out as unnamed.
+    const adapter = createMessageTurnAdapter()
+    const [first] = adapter.adapt([reply], labels)
+    const [second] = adapter.adapt(
+      [{ ...reply, source_turn_id: "turn-9" }],
+      labels
+    )
+    expect(second).not.toBe(first)
+  })
+})

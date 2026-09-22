@@ -2545,6 +2545,13 @@ export type AcpEvent =
       title: string
     }
   | {
+      // Claude `/clear` rolled the on-disk transcript to a new uuid. The
+      // backend re-points conversation.external_id; the frontend does not
+      // apply this event itself.
+      type: "transcript_rolled_over"
+      transcript_id: string
+    }
+  | {
       type: "conversation_status_changed"
       conversation_id: number
       status: ConversationStatus
@@ -3435,6 +3442,14 @@ export interface CursorAuthStatus {
    * builds a copy-pasteable `"<binary_path>" login` command from it (the
    * managed binary isn't on PATH). Null when not installed. */
   binary_path?: string | null
+  /** Whether the stored login actually worked against Cursor's backend, as
+   * opposed to merely existing on disk. `is_authenticated` only means "both
+   * tokens are present" — the CLI never checks the access token's expiry there,
+   * while the ACP path does and has no refresh-token grant to recover with. So
+   * `false` here is the state where the card would otherwise show a green
+   * "signed in" next to sessions that all fail with `Authentication required`.
+   * Null when there is no login to verify. */
+  credential_verified?: boolean | null
 }
 
 /** One `cursor-agent models` entry: `<id> - <label> [(default)]`. The picker

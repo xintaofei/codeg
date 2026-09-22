@@ -2097,26 +2097,36 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `models` that the composer's selectors and context ring read, and
             // prompting straight after it works. It also skips `session/load`'s
             // history replay, which codeg only drained to discard. The 1.0.1–
-            // 1.0.34 patches add nothing further here: re-probed live against
-            // the 1.0.34 binary, `initialize` still answers
+            // 1.0.40 patches add nothing further here: re-probed live against
+            // the 1.0.40 binary, `initialize` still answers
             // `sessionCapabilities: {list, resume, close}` plus the same
             // `promptCapabilities.embeddedContext` (and `mcpCapabilities`
             // http+sse, `loadSession: true`), so the resume rung stands. All
             // six `@xai-official/grok-<os>-<arch>` optional deps are published
-            // at 1.0.34 — they are OPTIONAL, so a platform that lags would fail
+            // at 1.0.40 — they are OPTIONAL, so a platform that lags would fail
             // only for that platform's users, at run time, in the trampoline.
             // The pin tracks `dist-tags.latest`, NOT the highest version
-            // number: 1.0.35 exists on the registry but is tagged `alpha`, so
-            // it is staged, not released.
+            // number; at 1.0.40 `latest` and `alpha` point at the same version,
+            // so nothing is staged ahead of it.
+            //
+            // 1.0.40 DID add one thing that reaches codeg, and it needed a fix
+            // on our side: it narrates `session/new` progress on the
+            // `_x.ai/session/setup` notification, whose first five phases carry
+            // `"sessionId": null` because they run before the id exists. sacp
+            // routes on field PRESENCE and then fails to parse the null, which
+            // tore the connection down with `Invalid params: "invalid type:
+            // null, expected a string"` (#794). `DropNullSessionIdNotifications`
+            // in connection.rs claims those frames before the router sees them,
+            // so this bump is safe only together with that guard.
             distribution: AgentDistribution::Npx {
-                version: "1.0.34",
-                package: "@xai-official/grok@1.0.34",
+                version: "1.0.40",
+                package: "@xai-official/grok@1.0.40",
                 cmd: "grok",
                 // Only the ACP subcommand lives here. Grok's ROOT-level launch
                 // flags (`--no-auto-update` always, `--permission-mode <value>`
                 // only for a non-default permission mode) MUST precede this
                 // subcommand — `grok agent stdio` itself rejects them (re-verified
-                // against 1.0.34: it still only accepts --debug/--debug-file/
+                // against 1.0.40: it still only accepts --debug/--debug-file/
                 // --leader-socket) — so `build_agent` inserts them ahead of these
                 // args rather than appending after. Since 1.0.3 `grok --help` no
                 // longer LISTS `--no-auto-update`, but it is still accepted:
@@ -2127,7 +2137,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 // auto/dontAsk/bypassPermissions/plan).
                 args: &["agent", "stdio"],
                 env: &[],
-                // `@xai-official/grok@1.0.34` declares `engines.node: ">=20"`;
+                // `@xai-official/grok@1.0.40` declares `engines.node: ">=20"`;
                 // surface that in preflight so Node 18 isn't silently accepted.
                 node_required: Some("20.0.0"),
             },
@@ -2864,8 +2874,8 @@ mod tests {
         assert_npx_version(AgentType::Pi, "0.0.33", "pi-acp@0.0.33", Some("22.0.0"));
         assert_npx_version(
             AgentType::Grok,
-            "1.0.34",
-            "@xai-official/grok@1.0.34",
+            "1.0.40",
+            "@xai-official/grok@1.0.40",
             Some("20.0.0"),
         );
         assert_npx_version(

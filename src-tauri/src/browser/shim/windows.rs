@@ -60,7 +60,7 @@ use webview2_com::{
     DevToolsProtocolEventReceivedEventHandler, FindStartCompletedHandler, FrameChildFrameCreatedEventHandler,
     FrameCreatedEventHandler, FrameNavigationStartingEventHandler, NavigationCompletedEventHandler,
     NavigationStartingEventHandler, PermissionRequestedEventHandler,
-    WebResourceRequestedEventHandler,
+    WebResourceRequestedEventHandler, WindowCloseRequestedEventHandler,
 };
 use windows::core::{Interface, BOOL, HSTRING, PWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -80,7 +80,7 @@ use super::super::hooks::LoadFailure;
 use super::super::profile;
 use super::super::surface::{PointerFailure, PointerGesture};
 use super::super::types::BrowserErrorKind;
-pub use super::{NavigationEvent, NavigationSink};
+pub use super::{NavigationEvent, NavigationSink, PageCloseSink};
 
 /// Name of the isolated world the helper and the binding live in. Must match
 /// nothing a page can name: CDP worlds are addressed by this string alone.
@@ -177,6 +177,8 @@ struct SurfaceState {
     channel_installed: Cell<bool>,
     sink: RefCell<Option<MessageSink>>,
     navigation: RefCell<Option<NavigationSink>>,
+    /// Where `window.close()` goes; `None` until the hook is installed.
+    page_close: RefCell<Option<PageCloseSink>>,
     /// Kept alive for the life of the surface: dropping a receiver ends the
     /// subscription that feeds the channel.
     receivers: RefCell<Vec<ICoreWebView2DevToolsProtocolEventReceiver>>,
@@ -1425,6 +1427,52 @@ pub fn install_navigation_hooks(
 pub fn forget_navigation_delegate(webview: &wry::WebView) {
     let key = webview_pointer(webview);
     STATES.with(|states| states.borrow_mut().remove(&key));
+}
+
+/// Hook `window.close()`. WebView2 raises `WindowCloseRequested` when the
+/// content asks for its window to be closed, and wry is already subscribed
+/// (`webview2::attach_handlers`): it answers by destroying its own container
+/// HWND and tells nobody, so the surface went and the tab stayed — the popup
+/// that closes itself at the end of a sign-in flow was left in the strip with
+/// a dead view in it. This second handler is the one that reaches the host.
+/// It runs after wry's and touches neither the HWND nor the webview — a
+/// thread-local read and a hand-off — which is what makes that order safe.
+/// Idempotent per webview.
+pub fn install_page_close_hook(webview: &wry::WebView, sink: PageCloseSink) -> Result<(), String> {
+    let webview2 = core(webview);
+    let key = webview2.as_raw() as usize;
+    let state = state_of(key);
+    if state.page_close.borrow().is_some() {
+        return Ok(());
+    }
+    let mut token = 0i64;
+    // SAFETY: main thread, live webview; the handler is owned by it.
+    unsafe {
+        webview2.add_WindowCloseRequested(
+            &WindowCloseRequestedEventHandler::create(Box::new(move |_, _| {
+                report_page_close(key);
+                Ok(())
+            })),
+            &mut token,
+        )
+    }
+    .map_err(|e| format!("cannot watch window.close(): {e}"))?;
+    // Only once there is something to answer it. The sink IS the "already
+    // installed" mark above, so storing it first would leave a failed
+    // registration looking installed for ever. Nothing can arrive in
+    // between: the event comes off the message loop and this is the main
+    // thread, still in the call that subscribed.
+    *state.page_close.borrow_mut() = Some(sink);
+    Ok(())
+}
+
+/// Told out of the map rather than from a captured handle, like [`report`]:
+/// nothing here may keep a webview's state alive past its tab.
+fn report_page_close(key: usize) {
+    let sink = state(key).and_then(|s| s.page_close.borrow().clone());
+    if let Some(sink) = sink {
+        sink();
+    }
 }
 
 fn watch_frame(frame: &ICoreWebView2Frame, decide: FrameNavigationSink) {

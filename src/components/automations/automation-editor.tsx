@@ -13,7 +13,7 @@ import {
 import { useReferenceSearch } from "@/components/chat/composer/use-reference-search"
 import { useComposerMentionLabels } from "@/components/chat/composer/use-composer-mention-labels"
 import { docToPromptBlocks } from "@/components/chat/composer/to-prompt-blocks"
-import { isComposerChromeClick } from "@/components/chat/composer/composer-commands"
+import { useComposerChromeFocus } from "@/components/chat/composer/use-composer-chrome-focus"
 import {
   AgentConfigSection,
   effectiveSelections,
@@ -149,6 +149,7 @@ export function AutomationEditor({
   }, [folderId])
 
   const editorRef = useRef<RichComposerHandle>(null)
+  const chromeFocus = useComposerChromeFocus(editorRef)
   // The composer's outer box, so the `@` panel spans it like the `/` menu does.
   const composerBoxRef = useRef<HTMLDivElement>(null)
   // True once the user explicitly picks an agent. A system fallback (saved agent
@@ -399,16 +400,13 @@ export function AutomationEditor({
           config bottom bar, matching the new-conversation input. */}
       <div
         ref={composerBoxRef}
-        // Clicking the box's blank chrome (padding, the dead space below a short
-        // prompt, the config-bar gaps) focuses the editor at the click point —
-        // same affordance as the chat composer. Interactive controls, badges and
-        // the editor surface exclude themselves via NON_CHROME_SELECTOR;
-        // `codeg-composer-chrome` paints the text I-beam over the dead space.
-        onMouseDown={(e) => {
-          if (!isComposerChromeClick(e.target)) return
-          e.preventDefault()
-          editorRef.current?.focusAtCoords(e.clientX, e.clientY)
-        }}
+        // Clicking or tapping the box's blank chrome (padding, the dead space
+        // below a short prompt, the config-bar gaps) focuses the editor at that
+        // point — same affordance as the chat composer. Interactive controls,
+        // badges and the editor surface exclude themselves via
+        // NON_CHROME_SELECTOR; `codeg-composer-chrome` paints the text I-beam
+        // over the dead space.
+        {...chromeFocus}
         className="codeg-composer-chrome relative rounded-xl border border-input bg-background transition-colors focus-within:border-ring focus-within:ring-[3px] focus-within:ring-inset focus-within:ring-ring/50"
       >
         <ComposerInvocationsPopup inv={invocations} />

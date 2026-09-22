@@ -39,7 +39,16 @@ mod navigation {
     }
 
     pub type NavigationSink = Arc<dyn Fn(NavigationEvent) + Send + Sync>;
+
+    /// Where "the page asked for this window to be closed" goes — every engine
+    /// reports `window.close()` in its own way, and what wry does with it is
+    /// never to pass it on: macOS does not subscribe at all, Windows and Linux
+    /// destroy the surface in place and leave the tab behind. One
+    /// argument-less call, because the only thing to say is that it happened;
+    /// whether the tab may act on it is the host's decision
+    /// (`hooks::page_may_close_itself`).
+    pub type PageCloseSink = Arc<dyn Fn() + Send + Sync>;
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-pub use navigation::{NavigationEvent, NavigationSink};
+pub use navigation::{NavigationEvent, NavigationSink, PageCloseSink};

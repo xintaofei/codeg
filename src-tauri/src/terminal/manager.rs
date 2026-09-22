@@ -76,6 +76,35 @@ pub struct TerminalManager {
     terminals: Arc<Mutex<HashMap<String, TerminalInstance>>>,
 }
 
+/// Lock the terminal table, ignoring the poison flag.
+///
+/// Every reader and writer of this map goes through here, so the policy is one
+/// decision rather than a per-call-site one.
+///
+/// The flag guards nothing here. A `HashMap<String, TerminalInstance>` cannot be
+/// observed half-updated: a panic between two of its mutations leaves entries
+/// that are each individually whole, and the callers below all re-read the map
+/// rather than caching a view of it. What the flag WOULD do is convert an
+/// unrelated earlier panic — one tokio swallowed, in a task that touched a
+/// terminal — into a permanent failure of every later terminal operation.
+///
+/// Two of those operations make that fatal rather than merely broken.
+/// [`TerminalManager::kill_by_owner_window`] runs inside Tauri's
+/// `on_window_event` and [`TerminalManager::kill_all`] inside
+/// `RunEvent::ExitRequested`: both on the main thread, inside the platform
+/// event loop, where a panic unwinds across an `extern "system"` boundary and
+/// Rust turns that into an immediate `abort` (Windows reports it as
+/// `0xc0000409`). So a poisoned mutex would take the whole process down at the
+/// next window close. The reader thread's own removal is the mirror case — it
+/// would leak the entry and its temp files for the rest of the process.
+///
+/// Matches the form already used in `office_watch` and `background_watch`.
+fn lock_terminals(
+    terminals: &Mutex<HashMap<String, TerminalInstance>>,
+) -> std::sync::MutexGuard<'_, HashMap<String, TerminalInstance>> {
+    terminals.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 pub(crate) fn resolve_shell() -> String {
     #[cfg(target_os = "windows")]
     {
@@ -280,7 +309,7 @@ impl TerminalManager {
     ) -> Result<String, TerminalError> {
         // Reject duplicate IDs to prevent orphaning an existing PTY process.
         {
-            let terminals = self.terminals.lock().unwrap();
+            let terminals = lock_terminals(&self.terminals);
             if terminals.contains_key(&opts.terminal_id) {
                 return Err(TerminalError::SpawnFailed(format!(
                     "terminal id '{}' already exists",
@@ -354,10 +383,7 @@ impl TerminalManager {
             temp_files: opts.temp_files,
         };
 
-        self.terminals
-            .lock()
-            .unwrap()
-            .insert(terminal_id.clone(), instance);
+        lock_terminals(&self.terminals).insert(terminal_id.clone(), instance);
 
         // Named writer thread
         std::thread::Builder::new()
@@ -393,7 +419,7 @@ impl TerminalManager {
     }
 
     pub fn write(&self, terminal_id: &str, data: &[u8]) -> Result<(), TerminalError> {
-        let terminals = self.terminals.lock().unwrap();
+        let terminals = lock_terminals(&self.terminals);
         let instance = terminals
             .get(terminal_id)
             .ok_or_else(|| TerminalError::NotFound(terminal_id.to_string()))?;
@@ -405,7 +431,7 @@ impl TerminalManager {
     }
 
     pub fn resize(&self, terminal_id: &str, cols: u16, rows: u16) -> Result<(), TerminalError> {
-        let terminals = self.terminals.lock().unwrap();
+        let terminals = lock_terminals(&self.terminals);
         let instance = terminals
             .get(terminal_id)
             .ok_or_else(|| TerminalError::NotFound(terminal_id.to_string()))?;
@@ -431,7 +457,7 @@ impl TerminalManager {
     /// so a large scrollback is never copied while output is blocked.
     pub fn snapshot(&self, terminal_id: &str) -> TerminalSnapshot {
         let buffer = {
-            let terminals = self.terminals.lock().unwrap();
+            let terminals = lock_terminals(&self.terminals);
             match terminals.get(terminal_id) {
                 Some(instance) => instance.scrollback.clone(),
                 None => {
@@ -455,10 +481,7 @@ impl TerminalManager {
     }
 
     pub fn kill(&self, terminal_id: &str) -> Result<(), TerminalError> {
-        let mut instance = self
-            .terminals
-            .lock()
-            .unwrap()
+        let mut instance = lock_terminals(&self.terminals)
             .remove(terminal_id)
             .ok_or_else(|| TerminalError::NotFound(terminal_id.to_string()))?;
         terminate_terminal(&mut instance);
@@ -506,7 +529,7 @@ impl TerminalManager {
     }
 
     pub fn list_with_exit_check(&self, emitter: Option<&EventEmitter>) -> Vec<TerminalInfo> {
-        let mut terminals = self.terminals.lock().unwrap();
+        let mut terminals = lock_terminals(&self.terminals);
         let exited_terminal_ids = Self::reap_exited(&mut terminals);
 
         let infos = terminals
@@ -538,7 +561,7 @@ impl TerminalManager {
         owner_window_label: &str,
         emitter: Option<&EventEmitter>,
     ) -> usize {
-        let mut terminals = self.terminals.lock().unwrap();
+        let mut terminals = lock_terminals(&self.terminals);
         let exited_terminal_ids = Self::reap_exited(&mut terminals);
 
         let live = terminals
@@ -559,7 +582,7 @@ impl TerminalManager {
 
     pub fn kill_by_owner_window(&self, owner_window_label: &str) -> usize {
         let mut instances = {
-            let mut terminals = self.terminals.lock().unwrap();
+            let mut terminals = lock_terminals(&self.terminals);
             let ids: Vec<String> = terminals
                 .iter()
                 .filter_map(|(id, instance)| {
@@ -587,9 +610,11 @@ impl TerminalManager {
         killed
     }
 
+    /// Poison-tolerant for the reason given on [`Self::kill_by_owner_window`]:
+    /// the quit path runs inside `RunEvent::ExitRequested` on the main thread.
     pub fn kill_all(&self) -> usize {
         let mut instances: Vec<TerminalInstance> = {
-            let mut terminals = self.terminals.lock().unwrap();
+            let mut terminals = lock_terminals(&self.terminals);
             terminals.drain().map(|(_, inst)| inst).collect()
         };
         let killed = instances.len();
@@ -675,8 +700,11 @@ fn read_loop(
         }
     }
 
-    // Terminal exited — remove from map and clean up temp files
-    if let Some(mut instance) = terminals.lock().unwrap().remove(&terminal_id) {
+    // Terminal exited — remove from map and clean up temp files. Poison-tolerant
+    // like the scrollback lock above: this runs on the long-lived `pty-reader-*`
+    // thread, and refusing the removal would leak the entry and its temp files
+    // for the rest of the process.
+    if let Some(mut instance) = lock_terminals(terminals).remove(&terminal_id) {
         cleanup_temp_files(&mut instance.temp_files);
     }
 

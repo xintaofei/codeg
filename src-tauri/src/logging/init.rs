@@ -154,6 +154,23 @@ fn is_credential_dump_target(target: &str) -> bool {
     target == "tungstenite::handshake::client"
 }
 
+/// Targets whose record is already in the rolling file by the time the
+/// subscriber sees the event, so the file layer must not write it again.
+///
+/// One entry: [`crate::logging::panic_hook`] appends its record to that exact
+/// file synchronously, because the write has to survive a process that is
+/// seconds from aborting (the file sink is a `non_blocking` writer whose flush
+/// is a no-op). Most panics do NOT end the process — tokio catches them in
+/// spawned tasks — so without this every survivable panic appeared twice in the
+/// log, in the same JSON shape, and anything counting them counted double.
+///
+/// Scoped to the file layer alone, unlike [`is_credential_dump_target`]: stderr,
+/// the ring buffer and the Logs viewer's live tail have no synchronous copy and
+/// still need the event.
+fn file_sink_has_own_copy(target: &str) -> bool {
+    target == crate::logging::panic_hook::PANIC_TARGET
+}
+
 /// How much a level lets through, ascending. Distinct from [`LogLevel::rank`],
 /// which is a *severity* rank for filtering records (and puts `Off` at 0
 /// alongside the most severe end); comparing verbosity needs `Off` to be the
@@ -474,6 +491,10 @@ fn init_file_writer(dir: &Path, prefix: &str) -> Option<(NonBlocking, WorkerGuar
         day,
         already_written,
     );
+    // Tell the panic hook which file to append its record to. Recorded only now
+    // that the appender exists, so the name it reconstructs is the file being
+    // written and the directory is known to have been created above.
+    crate::logging::panic_hook::set_log_file(dir, prefix, LOG_FILE_SUFFIX);
     Some(tracing_appender::non_blocking(budgeted))
 }
 
@@ -519,7 +540,20 @@ fn build_subscriber(
                 .with(filter_fn(|meta| !is_credential_dump_target(meta.target())))
                 .with(fmt::layer().with_writer(std::io::stderr))
                 .with(BufferEmitLayer)
-                .with(fmt::layer().json().with_writer(non_blocking))
+                // A PER-LAYER filter, so it applies to the file sink alone.
+                // `panic_hook` has already appended its record to this exact
+                // file, synchronously, because the write has to survive a
+                // process that is seconds from aborting. Letting the event
+                // through here too would write the same panic twice, in the
+                // same shape, to the same file. Every other sink still gets
+                // it: stderr, the ring buffer and the Logs viewer's live tail
+                // have no synchronous copy.
+                .with(
+                    fmt::layer()
+                        .json()
+                        .with_writer(non_blocking)
+                        .with_filter(filter_fn(|meta| !file_sink_has_own_copy(meta.target()))),
+                )
                 .init();
             Some(guard)
         }
@@ -535,6 +569,13 @@ fn build_subscriber(
             None
         }
     };
+
+    // Last here, because the hook logs through the subscriber that was just
+    // installed. Early everywhere else: every binary builds its subscriber
+    // through this one function, so this single call covers the desktop app,
+    // the server, `codeg-mcp`, the supervisor and the credential helper, and it
+    // runs before any of them does real work.
+    crate::logging::panic_hook::install();
 
     (reload_handle, guard)
 }
@@ -812,6 +853,29 @@ mod tests {
         }
     }
 
+    /// The panic record reaches the rolling file by its own synchronous write,
+    /// so the file layer must skip it — otherwise every survivable panic (most
+    /// of them: tokio catches panics in spawned tasks) is in the log twice.
+    /// Scoped to that one target, and to that one sink.
+    #[test]
+    fn the_file_sink_skips_only_the_record_the_panic_hook_already_wrote() {
+        assert!(file_sink_has_own_copy(
+            crate::logging::panic_hook::PANIC_TARGET
+        ));
+        for other in [
+            "codeg_lib::acp::connection",
+            "codeg_lib::panic_hook",
+            "codeg_lib::panicky",
+            "codeg_lib",
+            "panic",
+        ] {
+            assert!(
+                !file_sink_has_own_copy(other),
+                "{other} has no synchronous copy and must still reach the file"
+            );
+        }
+    }
+
     /// The predicate above is only half the claim; this exercises the wiring,
     /// with the same two global filters the real subscriber is built from and
     /// the most permissive directive anyone could write for the dump.
@@ -859,6 +923,75 @@ mod tests {
         assert!(
             seen.iter().any(|t| t == "codeg_lib::acp"),
             "unrelated targets must still arrive: {seen:?}"
+        );
+    }
+
+    /// The panic filter is PER-LAYER, which is the whole point: the file sink
+    /// must lose the record it already holds while every other sink keeps it.
+    /// A global filter here would have silenced the panic on stderr and in the
+    /// Logs viewer too — which is the opposite of what this module is for.
+    ///
+    /// Built with the same layer stack `build_subscriber`'s file arm uses, so
+    /// this exercises the wiring and not just the predicate.
+    #[test]
+    fn the_file_layer_alone_loses_the_record_the_hook_already_wrote() {
+        use std::sync::{Arc, Mutex};
+
+        struct CaptureTargets(&'static str, Arc<Mutex<Vec<(String, String)>>>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureTargets {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                self.1
+                    .lock()
+                    .unwrap()
+                    .push((self.0.to_string(), event.metadata().target().to_string()));
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        // The reloadable filter, not a bare `EnvFilter`: the real stack's first
+        // layer is a `reload::Layer`, and a per-layer filter beneath one is the
+        // combination this test exists to pin.
+        let (reloadable, _handle) =
+            reload::Layer::new(EnvFilter::builder().parse_lossy("trace"));
+        let subscriber = Registry::default()
+            .with(reloadable)
+            .with(filter_fn(|meta| !is_credential_dump_target(meta.target())))
+            // Stands in for the stderr fmt layer and the buffer layer.
+            .with(CaptureTargets("other", seen.clone()))
+            // Stands in for the JSON file layer, with its per-layer filter.
+            .with(
+                CaptureTargets("file", seen.clone())
+                    .with_filter(filter_fn(|meta| !file_sink_has_own_copy(meta.target()))),
+            );
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::error!(target: crate::logging::panic_hook::PANIC_TARGET, "panic in thread …");
+            tracing::info!(target: "codeg_lib::acp", "ordinary event");
+        });
+
+        let seen = seen.lock().unwrap();
+        let panic_target = crate::logging::panic_hook::PANIC_TARGET;
+        assert!(
+            !seen
+                .iter()
+                .any(|(sink, target)| sink == "file" && target == panic_target),
+            "the file sink must not write the record a second time: {seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .any(|(sink, target)| sink == "other" && target == panic_target),
+            "every other sink must still carry the panic: {seen:?}"
+        );
+        assert_eq!(
+            seen.iter()
+                .filter(|(_, target)| target == "codeg_lib::acp")
+                .count(),
+            2,
+            "an ordinary event still reaches both sinks: {seen:?}"
         );
     }
 

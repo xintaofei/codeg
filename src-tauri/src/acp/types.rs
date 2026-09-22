@@ -397,6 +397,12 @@ pub enum AcpEvent {
     /// itself is not rendered. Omitted when the update carries no title so
     /// goal-only `session_info_update`s stay off the lifecycle path.
     NativeSessionTitle { title: String },
+    /// Claude Code `/clear` rolled the on-disk transcript to a new uuid while
+    /// the public ACP session id stayed the same. The watcher adopted the new
+    /// file; the lifecycle worker re-points `conversation.external_id` so
+    /// reopen reads post-clear turns. Does NOT change `SessionState.external_id`
+    /// (that id is still the live ACP session).
+    TranscriptRolledOver { transcript_id: String },
     /// Backend has transitioned the conversation row's `status` column.
     /// Emitted by `send_prompt_linked` (`InProgress`) and the lifecycle
     /// subscriber on `TurnComplete` (`PendingReview`). The frontend mirrors
@@ -780,7 +786,7 @@ pub enum ConfigStaleKind {
 /// and stored in the live snapshot. Intentionally narrower than
 /// [`PromptInputBlock`]: only what a viewer needs to render the user turn.
 /// Non-image `Resource` / `ResourceLink` prompt blocks are folded into `Text`
-/// markdown links by [`user_blocks_from_prompt`]; an image-mime embedded
+/// markdown links by [`project_user_prompt_block`]; an image-mime embedded
 /// `Resource` (how an `image:false` / `embedded_context:true` agent carries a
 /// pasted image — and still how a format the agent cannot decode travels) is
 /// promoted to `Image` so the viewer renders a thumbnail, not a link.
@@ -793,47 +799,319 @@ pub enum UserMessageBlock {
     Image { data: String, mime_type: String },
 }
 
-/// Project the wire `PromptInputBlock`s the sender submitted into the lean
-/// [`UserMessageBlock`]s broadcast to viewers: text and images pass through; an
-/// image-mime embedded resource is promoted to an `Image`; other
-/// resources/resource-links collapse to a `[label](uri)` markdown line so a
+/// One prompt block as it appears in a rendered user turn.
+///
+/// THE single projection rule, shared by every surface that shows a user's
+/// prompt back to somebody:
+///
+/// * the live broadcast, [`user_blocks_from_prompt`] → [`UserMessageBlock`];
+/// * the ACP-native history parser, `parsers::acp_native`, reading codeg's own
+///   transcript back off disk;
+/// * the grok history parser, `parsers::grok`, reading grok's `updates.jsonl`.
+///
+/// They render the same conversation at different times, so the rule has to
+/// live in exactly one place — a viewer watching live and a reader after a
+/// refresh must see the same message. Only the carrier differs: the broadcast
+/// cannot hold an image's `uri` ([`UserMessageBlock::Image`] has no such
+/// field), the history parsers keep it because the frontend derives an image's
+/// display filename from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserTurnBlock {
+    Text {
+        text: String,
+    },
+    Image {
+        data: String,
+        mime_type: String,
+        uri: Option<String>,
+    },
+}
+
+/// Apply that rule to one submitted block: text and images pass through; an
+/// image-mime embedded resource is promoted to an `Image`; every other
+/// resource / resource-link collapses to a `[label](uri)` markdown line so a
 /// viewer still sees what was attached without shipping blob bytes twice.
 ///
 /// Both image carriages therefore render identically, which is what keeps the
 /// user turn stable no matter which one the prompt ends up taking.
+///
+/// Borrows, and clones only the fields the projection KEEPS — a non-image
+/// embedded resource becomes its uri, so its (potentially megabyte-sized)
+/// body is never copied just to be thrown away.
+pub fn project_user_prompt_block(block: &PromptInputBlock) -> UserTurnBlock {
+    match block {
+        PromptInputBlock::Text { text } => UserTurnBlock::Text { text: text.clone() },
+        PromptInputBlock::Image {
+            data,
+            mime_type,
+            uri,
+        } => UserTurnBlock::Image {
+            data: data.clone(),
+            mime_type: mime_type.clone(),
+            uri: uri.clone(),
+        },
+        // An image-mime embedded resource carries a pasted image for agents
+        // that reject native image blocks (an `image:false` +
+        // `embedded_context:true` agent), and for a format the agent cannot
+        // decode. Promote it to `Image` so viewers render the thumbnail;
+        // non-image resources still collapse to a link.
+        PromptInputBlock::Resource {
+            uri,
+            mime_type,
+            blob,
+            ..
+        } => match (mime_type, blob) {
+            (Some(mt), Some(b)) if mt.starts_with("image/") => UserTurnBlock::Image {
+                data: b.clone(),
+                mime_type: mt.clone(),
+                // A pasted image has no path; `""` would read as a filename of
+                // nothing rather than as "unnamed".
+                uri: (!uri.is_empty()).then(|| uri.clone()),
+            },
+            _ => UserTurnBlock::Text {
+                text: attachment_marker(uri, uri),
+            },
+        },
+        PromptInputBlock::ResourceLink { uri, name, .. } => UserTurnBlock::Text {
+            text: attachment_marker(name, uri),
+        },
+    }
+}
+
+/// The human name of an attachment, for places that need to NAME it rather
+/// than render it — a conversation whose first message is one dropped-in file
+/// is titled after that file.
+///
+/// The uri's last path segment, percent-decoded. Falls back to the whole uri
+/// when there is no segment to take (a bare scheme), and to the empty string
+/// only for an empty uri — a pasted image travels with no path at all and
+/// simply has no name to give.
+pub fn attachment_display_name(uri: &str) -> String {
+    let trimmed = uri
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(uri)
+        .trim_end_matches('/');
+    let segment = trimmed.rsplit(['/', '\\']).next().unwrap_or("");
+    let candidate = if segment.is_empty() { trimmed } else { segment };
+    if candidate.is_empty() {
+        return uri.to_string();
+    }
+    percent_decode(candidate)
+}
+
+/// Decode `%XX` escapes, leaving any malformed escape exactly as written — a
+/// name is for reading, so a half-encoded one must not lose characters.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+/// Name a prompt after the files it carries, for a message that has no prose
+/// to be named after. `None` when it carries nothing nameable.
+///
+/// This is a SEED only — a last resort for a row that would otherwise read
+/// "Untitled" forever. It must never travel the authoritative
+/// `refresh_auto_title` path, where it would overwrite a title the agent
+/// itself published (see `acp::lifecycle`'s `NativeSessionTitle` arm).
+pub fn attachment_names_from_prompt(blocks: &[PromptInputBlock]) -> Option<String> {
+    let names: Vec<String> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            PromptInputBlock::ResourceLink { name, .. } => Some(name.clone()),
+            PromptInputBlock::Resource { uri, .. } => Some(attachment_display_name(uri)),
+            PromptInputBlock::Image { uri, .. } => {
+                uri.as_deref().map(attachment_display_name)
+            }
+            PromptInputBlock::Text { .. } => None,
+        })
+        .filter(|name| !name.trim().is_empty())
+        .collect();
+    (!names.is_empty()).then(|| names.join(", "))
+}
+
+/// Render an attachment as the inline Markdown link the transcript renders back
+/// into a file badge / attachment chip.
+///
+/// Escaped exactly like the composer's own `referenceToMarkdown`, whose inverse
+/// (`src/lib/reference-link.ts`) is what the frontend parses these with: the
+/// label is backslash-escaped, and a destination carrying whitespace, brackets
+/// or backslashes is wrapped in `<…>`. Without that a perfectly ordinary
+/// attachment — `file:///a/b (1).ts`, or a Windows `file:///C:\dir\x` — closed
+/// the link early and rendered as raw `[…](…)` source text.
+fn attachment_marker(label: &str, uri: &str) -> String {
+    format!(
+        "[{}]({})",
+        escape_markdown_text(label),
+        escape_link_destination(uri)
+    )
+}
+
+/// Backslash-escape every inline-significant ASCII punctuation char, so a label
+/// cannot inject Markdown structure (a nested link, emphasis, a code span…).
+/// Mirrors `collapseNewlines` + `escapeMarkdownText` in
+/// `src/components/chat/composer/reference-text.ts`: a newline run collapses to
+/// one space first, because a marker has to stay a single inline token. GFM
+/// does not autolink inside link text, so escaping alone is enough here.
+fn escape_markdown_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        // `\s*[\r\n]+\s*` → " ": only a run that CONTAINS a line break
+        // collapses, so ordinary spaces in a file name survive.
+        if ch.is_whitespace() {
+            let mut run = String::from(ch);
+            while chars.peek().is_some_and(|c| c.is_whitespace()) {
+                run.push(chars.next().expect("peeked"));
+            }
+            if run.contains(['\r', '\n']) {
+                out.push(' ');
+            } else {
+                out.push_str(&run);
+            }
+            continue;
+        }
+        if matches!(
+            ch,
+            '\\' | '`' | '*' | '_' | '~' | '[' | ']' | '(' | ')' | '<' | '>'
+        ) {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Mirrors `escapeLinkDestination` in the same file: newlines are stripped, and
+/// a destination containing whitespace, parentheses, angle brackets or a
+/// backslash is wrapped in `<…>` with `\`, `<` and `>` escaped inside. Clean
+/// URLs stay bare, so the overwhelmingly common case is byte-identical to what
+/// this emitted before.
+fn escape_link_destination(uri: &str) -> String {
+    let cleaned: String = uri.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+    if !cleaned
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '(' | ')' | '<' | '>' | '\\'))
+    {
+        return cleaned;
+    }
+    let mut out = String::with_capacity(cleaned.len() + 2);
+    out.push('<');
+    for ch in cleaned.chars() {
+        if matches!(ch, '\\' | '<' | '>') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out.push('>');
+    out
+}
+
+/// Read ONE recorded ACP content block back into the [`PromptInputBlock`] it
+/// was sent as, so a history parser can hand it to
+/// [`project_user_prompt_block`] instead of re-deriving the rule.
+///
+/// The inverse of `connection::map_prompt_blocks`, and deliberately lenient —
+/// it reads bytes written by older builds of codeg and by other agents' stores:
+///
+/// * `mimeType` **and** legacy snake_case `mime_type`;
+/// * an embedded resource's uri/mime/body nested under `resource` (where ACP
+///   puts them) rather than at the top level.
+///
+/// Returns `None` for a block that has nothing to show — empty prose, an image
+/// with no bytes, a resource with neither bytes nor a uri, a malformed record,
+/// or a kind with no visual form (audio). A user turn is assembled from what
+/// this returns, so a `None` is a block that is genuinely not renderable, not
+/// one that is merely unrecognized.
+pub fn prompt_block_from_wire(item: &serde_json::Value) -> Option<PromptInputBlock> {
+    let string = |v: &serde_json::Value, key: &str| {
+        v.get(key)
+            .and_then(|x| x.as_str())
+            .map(str::to_string)
+            .filter(|s| !s.is_empty())
+    };
+    // NOT filtered for emptiness: `mime_type` is a plain `Option<String>` here
+    // and the typed reader on the replay side keeps a `""` as `Some("")`, so
+    // dropping it would make the two readers disagree on the same content.
+    let mime = |v: &serde_json::Value| {
+        v.get("mimeType")
+            .or_else(|| v.get("mime_type"))
+            .and_then(|m| m.as_str())
+            .map(str::to_string)
+    };
+    match item.get("type").and_then(|t| t.as_str()) {
+        Some("image") => Some(PromptInputBlock::Image {
+            data: string(item, "data")?,
+            // ACP requires `mimeType`; a record MISSING it is old enough that
+            // png was the only thing codeg ever pasted. A record that carries
+            // an empty one keeps it, which is what the typed reader sees.
+            mime_type: mime(item).unwrap_or_else(|| "image/png".to_string()),
+            uri: string(item, "uri"),
+        }),
+        Some("resource") => {
+            let resource = item.get("resource")?;
+            let uri = string(resource, "uri");
+            let mime_type = mime(resource);
+            let blob = string(resource, "blob");
+            let is_image = mime_type.as_deref().is_some_and(|m| m.starts_with("image/"));
+            // Nothing to show: no uri to name it by, and no bytes to draw it
+            // from. (Kept identical to `acp_native::prompt_block_from_content`,
+            // the typed reader for the same content off the replay channel.)
+            if uri.is_none() && !(is_image && blob.is_some()) {
+                return None;
+            }
+            Some(PromptInputBlock::Resource {
+                uri: uri.unwrap_or_default(),
+                mime_type,
+                text: string(resource, "text"),
+                blob,
+            })
+        }
+        Some("resource_link") => {
+            let uri = string(item, "uri")?;
+            Some(PromptInputBlock::ResourceLink {
+                name: string(item, "name").unwrap_or_else(|| uri.clone()),
+                uri,
+                mime_type: mime(item),
+                description: string(item, "description"),
+            })
+        }
+        // `text`, and any kind this build does not know: a future block that
+        // still carries a top-level `text` shows as that text, which is the ACP
+        // guidance for unknown content.
+        _ => Some(PromptInputBlock::Text {
+            text: string(item, "text")?,
+        }),
+    }
+}
+
+/// Project the wire `PromptInputBlock`s the sender submitted into the lean
+/// [`UserMessageBlock`]s broadcast to viewers.
+///
+/// A thin adapter over [`project_user_prompt_block`] — it only drops the image
+/// `uri`, which this carrier has nowhere to put (see [`UserTurnBlock`]).
 pub fn user_blocks_from_prompt(blocks: &[PromptInputBlock]) -> Vec<UserMessageBlock> {
     blocks
         .iter()
-        .map(|b| match b {
-            PromptInputBlock::Text { text } => UserMessageBlock::Text { text: text.clone() },
-            PromptInputBlock::Image {
+        .map(|b| match project_user_prompt_block(b) {
+            UserTurnBlock::Text { text } => UserMessageBlock::Text { text },
+            UserTurnBlock::Image {
                 data, mime_type, ..
-            } => UserMessageBlock::Image {
-                data: data.clone(),
-                mime_type: mime_type.clone(),
-            },
-            // An image-mime embedded resource carries a pasted image for agents
-            // that reject native image blocks (an `image:false` +
-            // `embedded_context:true` agent), and for a format the agent cannot
-            // decode. Promote it to `Image` so viewers render the thumbnail;
-            // non-image resources still collapse to a link.
-            PromptInputBlock::Resource {
-                uri,
-                mime_type,
-                blob,
-                ..
-            } => match (mime_type, blob) {
-                (Some(mt), Some(b)) if mt.starts_with("image/") => UserMessageBlock::Image {
-                    data: b.clone(),
-                    mime_type: mt.clone(),
-                },
-                _ => UserMessageBlock::Text {
-                    text: format!("[{uri}]({uri})"),
-                },
-            },
-            PromptInputBlock::ResourceLink { uri, name, .. } => UserMessageBlock::Text {
-                text: format!("[{name}]({uri})"),
-            },
+            } => UserMessageBlock::Image { data, mime_type },
         })
         .collect()
 }
@@ -1382,6 +1660,27 @@ pub struct CursorAuthStatus {
     /// codeg's cache and is NOT on the user's PATH, so a bare `cursor-agent
     /// login` fails. `None` when no binary is installed.
     pub binary_path: Option<String>,
+    /// Whether the stored login credential actually WORKED against Cursor's
+    /// backend, as opposed to merely being on disk.
+    ///
+    /// `is_authenticated` alone is not that: `cursor-agent status` sets it from
+    /// nothing but the presence of an access token and a refresh token, and
+    /// never looks at the access token's expiry. The ACP path does
+    /// (`onboarding.h4`, which rejects a token whose `exp` is under five
+    /// minutes away) — and since the agent CLI has NO refresh-token grant at
+    /// all (its only refresh path re-logs-in with an API key), a browser login
+    /// that has aged out stays "authenticated" in `status` forever while every
+    /// `session/new` is refused with `Authentication required`. That mismatch
+    /// is what a panel reading only `is_authenticated` shows as a green
+    /// "signed in" next to a session that cannot start.
+    ///
+    /// Read off the same probe: `status` calls `getMe` with the stored token
+    /// and says `Logged in (unable to fetch user details)` when that call
+    /// failed. So `Some(false)` means the credential did not work *now* —
+    /// usually expired, possibly an unreachable backend, which is why the panel
+    /// words it as "could not be verified" rather than "expired". `None` when
+    /// there is no login to verify (or the probe never produced a status).
+    pub credential_verified: Option<bool>,
 }
 
 /// One entry from `cursor-agent models`, whose lines are `<id> - <label>
@@ -1685,5 +1984,139 @@ mod envelope_tests {
                 },
             ]
         );
+    }
+
+    /// A file name is not a safe Markdown fragment. Unescaped, a space or a
+    /// `)` closed the link early and the whole marker showed up as raw source
+    /// text; a crafted one could have opened a second link. The escaping is
+    /// the exact inverse of `src/lib/reference-link.ts`, which is what parses
+    /// these back out on the way to the screen.
+    #[test]
+    fn attachment_markers_escape_their_label_and_destination() {
+        let blocks = vec![
+            // A space and parentheses in the path — an everyday download.
+            PromptInputBlock::ResourceLink {
+                uri: "file:///a/b (1).ts".into(),
+                name: "b (1).ts".into(),
+                mime_type: None,
+                description: None,
+            },
+            // A Windows path: the trailing backslash would escape the `)`.
+            PromptInputBlock::ResourceLink {
+                uri: "file:///C:\\dir\\".into(),
+                name: "dir".into(),
+                mime_type: None,
+                description: None,
+            },
+            // A name that tries to inject a second link.
+            PromptInputBlock::ResourceLink {
+                uri: "file:///a/x.ts".into(),
+                name: "](http://evil) [pwn".into(),
+                mime_type: None,
+                description: None,
+            },
+            // The label of a bare resource IS its uri, so it is escaped too.
+            PromptInputBlock::Resource {
+                uri: "clipboard://a (b).txt".into(),
+                mime_type: Some("text/plain".into()),
+                text: Some("x".into()),
+                blob: None,
+            },
+        ];
+        assert_eq!(
+            user_blocks_from_prompt(&blocks),
+            vec![
+                UserMessageBlock::Text {
+                    text: "[b \\(1\\).ts](<file:///a/b (1).ts>)".into(),
+                },
+                UserMessageBlock::Text {
+                    text: "[dir](<file:///C:\\\\dir\\\\>)".into(),
+                },
+                UserMessageBlock::Text {
+                    text: "[\\]\\(http://evil\\) \\[pwn](file:///a/x.ts)".into(),
+                },
+                UserMessageBlock::Text {
+                    text: "[clipboard://a \\(b\\).txt](<clipboard://a (b).txt>)".into(),
+                },
+            ]
+        );
+    }
+
+    /// The history parsers rebuild a `PromptInputBlock` from the ACP bytes on
+    /// disk so they can reuse [`project_user_prompt_block`] rather than
+    /// re-deriving it. That only holds if reading back what
+    /// `connection::map_prompt_blocks` wrote returns the same block.
+    #[test]
+    fn wire_blocks_read_back_as_the_prompt_blocks_they_were_sent_as() {
+        let sent = vec![
+            PromptInputBlock::Text {
+                text: "hi".into(),
+            },
+            PromptInputBlock::Image {
+                data: "QUJD".into(),
+                mime_type: "image/jpeg".into(),
+                uri: Some("file:///a/photo.jpg".into()),
+            },
+            PromptInputBlock::Resource {
+                uri: "clipboard://notes.txt".into(),
+                mime_type: Some("text/plain".into()),
+                text: Some("note".into()),
+                blob: None,
+            },
+            PromptInputBlock::Resource {
+                uri: "clipboard://img.png".into(),
+                mime_type: Some("image/png".into()),
+                text: None,
+                blob: Some("QUJD".into()),
+            },
+            PromptInputBlock::ResourceLink {
+                uri: "file:///a/app.ts".into(),
+                name: "app.ts".into(),
+                mime_type: Some("text/x-typescript".into()),
+                description: None,
+            },
+        ];
+        let wire = serde_json::to_value(crate::acp::connection::map_prompt_blocks(sent.clone()))
+            .expect("wire blocks serialize");
+        let read: Vec<PromptInputBlock> = wire
+            .as_array()
+            .expect("an array of blocks")
+            .iter()
+            .map(|b| prompt_block_from_wire(b).expect("every block above is renderable"))
+            .collect();
+        assert_eq!(read, sent);
+    }
+
+    /// Legacy and hostile records a transcript can hold. A block with nothing
+    /// to show is dropped rather than rendered as an empty bubble.
+    #[test]
+    fn wire_reader_tolerates_legacy_fields_and_drops_unrenderable_blocks() {
+        let legacy = serde_json::json!({
+            "type": "image", "data": "QUJD", "mime_type": "image/jpeg"
+        });
+        assert_eq!(
+            prompt_block_from_wire(&legacy),
+            Some(PromptInputBlock::Image {
+                data: "QUJD".into(),
+                mime_type: "image/jpeg".into(),
+                uri: None,
+            })
+        );
+        for unrenderable in [
+            serde_json::json!({"type": "text", "text": ""}),
+            serde_json::json!({"type": "image", "data": ""}),
+            serde_json::json!({"type": "resource"}),
+            serde_json::json!({"type": "resource", "resource": {"blob": "QUJD"}}),
+            serde_json::json!({"type": "resource_link", "name": "no uri"}),
+            serde_json::json!({"type": "audio", "data": "QUJD", "mimeType": "audio/wav"}),
+        ] {
+            assert_eq!(prompt_block_from_wire(&unrenderable), None, "{unrenderable}");
+        }
+        // An image resource is renderable on its bytes alone, uri or not.
+        assert!(prompt_block_from_wire(&serde_json::json!({
+            "type": "resource",
+            "resource": {"blob": "QUJD", "mimeType": "image/png"}
+        }))
+        .is_some());
     }
 }

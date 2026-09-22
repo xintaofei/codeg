@@ -123,14 +123,11 @@ fn message_sink(app: &AppHandle) -> MessageSink {
 }
 
 /// Main thread only. Hook the engine's navigation reporting so failures and
-/// provisional starts reach the registry. Not fatal when it cannot be done:
-/// the load watcher still notices a failed load, only later and untyped.
-fn attach_navigation_delegate(
-    app: &AppHandle,
-    tab_id: &str,
-    kind: &ChildKind,
-    webview: &wry::WebView,
-) {
+/// provisional starts reach the registry, and its `window.close()` so a page
+/// that closes its own window is heard. Neither is fatal when it cannot be
+/// done: the load watcher still notices a failed load, only later and untyped,
+/// and a popup that closes itself simply stays until the person closes it.
+fn attach_engine_hooks(app: &AppHandle, tab_id: &str, kind: &ChildKind, webview: &wry::WebView) {
     #[cfg(target_os = "macos")]
     let installed = {
         let _ = kind;
@@ -146,6 +143,14 @@ fn attach_navigation_delegate(
     if let Err(err) = installed {
         tracing::warn!(
             "[browser] tab {tab_id}: navigation hooks not installed ({err}); failures are detected by polling"
+        );
+    }
+    // Installed on every child, guest included: whether a tab may act on the
+    // request is `hooks::page_may_close_itself`'s to say, and it says no to
+    // everything but an adopted popup.
+    if let Err(err) = shim::install_page_close_hook(webview, hooks::page_close_sink(app, tab_id)) {
+        tracing::warn!(
+            "[browser] tab {tab_id}: window.close() not hooked ({err}); a page closing its own window is ignored"
         );
     }
 }
@@ -979,7 +984,7 @@ pub fn create(
     run_on_main(&app.clone(), move || -> Result<(), String> {
         let kind = ChildKind::Page;
         let webview = build_child(&app, &owner, &id, &label, bounds, !background, devtools, None, &kind, &profile)?;
-        attach_navigation_delegate(&app, &id, &kind, &webview);
+        attach_engine_hooks(&app, &id, &kind, &webview);
         SURFACES.with(|s| s.borrow_mut().insert(id, webview));
         Ok(())
     })?
@@ -1015,7 +1020,7 @@ pub fn create_document(
         // A guest's store is its own (non-persistent); the profile only names
         // the WebView2 environment it would share on Windows.
         let webview = build_child(&app, &owner, &id, &label, bounds, !background, devtools, None, &kind, profile::DEFAULT_PROFILE_ID)?;
-        attach_navigation_delegate(&app, &id, &kind, &webview);
+        attach_engine_hooks(&app, &id, &kind, &webview);
         SURFACES.with(|s| s.borrow_mut().insert(id, webview));
         Ok(())
     })?
@@ -1121,7 +1126,7 @@ fn new_window_handler(
             );
             #[cfg(target_os = "windows")]
             let platform = tauri_runtime_wry::wry::WebViewExtWindows::webview(&webview);
-            attach_navigation_delegate(&app, &tab_id, &kind, &webview);
+            attach_engine_hooks(&app, &tab_id, &kind, &webview);
             SURFACES.with(|s| s.borrow_mut().insert(tab_id.clone(), webview));
             let handle = ChildHandle {
                 tab_id: tab_id.clone(),

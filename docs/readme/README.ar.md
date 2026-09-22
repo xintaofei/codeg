@@ -40,24 +40,10 @@ Codeg (Code Generation) هو مساحة عمل برمجية متعددة الو�
   </tr>
   <tr>
     <td align="center" width="220">
-      <a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE" target="_blank"><img src="../images/sui-xiang.jpg" alt="随想AI中转站" width="200" /></a><br/>
-      <strong><a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE">随想AI中转站</a></strong>
-    </td>
-    <td>شكراً لـ 随想AI中转站 على رعاية هذا المشروع! 随想AI中转站 هي مزوّد موثوق وفعّال لخدمات ترحيل واجهات API، وتوفّر خدمات الترحيل لنماذج Claude وCodex وGemini وغيرها. تحصل الحسابات الجديدة بعد <a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE">التسجيل</a> على رصيد تجريبي بقيمة 0.5 يوان مقابل تسجيل الحضور اليومي؛ وتُضاف عمليات الشحن بنسبة 1:1، دون اشتراك وبالدفع حسب الاستخدام. خطوط متعددة متكرّرة، وتعافٍ من الكوارث عبر المناطق، وتبديل تلقائي عند الأعطال — لتبقى اتصالات SSE طويلة الأمد دون انقطاع.</td>
-  </tr>
-  <tr>
-    <td align="center" width="220">
       <a href="https://hezu.ink/sign-up?aff=0wVz" target="_blank"><img src="../images/hezu-ink.jpg" alt="合租巴士" width="200" /></a><br/>
       <strong><a href="https://hezu.ink/sign-up?aff=0wVz">合租巴士</a></strong>
     </td>
     <td>شكراً لـ 合租巴士 على رعاية هذا المشروع! 合租巴士 هي منصة موثوقة وفعّالة لخدمات ترحيل الذكاء الاصطناعي، توفّر ترحيلاً عالي الاستقرار للنماذج الرئيسية مثل Codex وClaude Code. نسبة الشحن شفافة (1:1)، مع دعم لمعدّل Codex يبدأ من 0.08 فقط. <a href="https://hezu.ink/sign-up?aff=0wVz">انضم إلى المجموعة عبر الموقع الرسمي للحصول على رصيد تجريبي بقيمة 5 دولارات</a>.</td>
-  </tr>
-  <tr>
-    <td align="center" width="220">
-      <a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta" target="_blank"><img src="../images/onehop.jpg" alt="OneHop" width="120" /></a><br/>
-      <strong><a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta">OneHop</a></strong>
-    </td>
-    <td>شكراً لـ OneHop على رعاية هذا المشروع! يمنح OneHop مستخدمي Codeg مفتاح API واحداً متوافقاً مع OpenAI للوصول إلى مئات النماذج الرائدة، بما في ذلك GPT وClaude وGemini وDeepSeek وKimi وQwen. بدّل بين النماذج دون إدارة حسابات مزوّدين متعددة أو تعديل التعليمات البرمجية مراراً وتكراراً، وادفع فقط مقابل ما تستخدمه. <a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta">سجّل عبر Codeg</a> للحصول على رصيد بقيمة 1 دولار، ثم انضم إلى مجتمع OneHop وشارك في نشاط الترحيب للحصول على 5 دولارات إضافية — بما يصل إلى 6 دولارات من الرصيد التجريبي إجمالاً.</td>
   </tr>
   <tr>
     <td align="center" width="220">
@@ -83,6 +69,13 @@ Codeg (Code Generation) هو مساحة عمل برمجية متعددة الو�
       منصة النماذج الكبيرة AstraFlow من UCloud تتيح استدعاء أكثر من 200 نموذج بنقرة واحدة: تتضمّن نماذج مفتوحة المصدر رائدة عالمياً مثل Kimi K3 وDeepSeek V4/V3 وQwen 3 وGLM5.2 وhappyhorse، دون الحاجة إلى تدريب خاص بك، وجاهزة للاستخدام مباشرة.<br/>
       سجّل عبر الرابط أعلاه باستخدام <strong>البريد الإلكتروني</strong>، وأكمل التحقق من الهوية، ثم <a href="https://f.howxm.com/xs/u/HVFW5X8EIYV1">احصل على 50 يواناً من رصيد الحوسبة</a>.
     </td>
+  </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG" target="_blank"><img src="../images/fluxion-ai.png" alt="Fluxion AI" width="160" /></a><br/>
+      <strong><a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG">Fluxion AI</a></strong>
+    </td>
+    <td>شكراً لـ Fluxion AI على رعاية هذا المشروع! توفّر Fluxion AI وصولاً سريعاً وموثوقاً ومنخفض التكلفة عبر واجهة API موحّدة واحدة إلى GPT وClaude وGemini وغيرها من نماذج الذكاء الاصطناعي الرائدة. يمكن للمستخدمين الجدد الحصول على رصيد API بقيمة 3 دولارات عبر <a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG">رابطنا المخصّص</a>.</td>
   </tr>
 </table>
 

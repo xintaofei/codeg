@@ -627,3 +627,47 @@ describe("RichComposer prompt-history Arrow routing", () => {
     expect(onHistoryKeyDown).not.toHaveBeenCalled()
   })
 })
+
+/**
+ * Guards the sizing contract the mobile-web composer regressed on (#746).
+ *
+ * jsdom has no layout engine, so these assert the declared box model rather
+ * than measured pixels — the real geometry is covered by the manual pass
+ * described in the PR. What they do catch is the exact edit that broke it:
+ * swapping a content flex basis back to a zero one, which lets an engine that
+ * distributes no free space in a min-height-only flex column collapse the
+ * editable area to 0px.
+ */
+describe("RichComposer editable-area sizing (#746)", () => {
+  it("grows the editable area off a content basis, never a zero basis", async () => {
+    const { container } = await mount()
+    const scroll = container.querySelector(".codeg-composer-scroll")
+    expect(scroll).not.toBeNull()
+
+    const classes = scroll!.className.split(/\s+/)
+    // `flex-1` is `flex: 1 1 0%`. With nothing to grow into, that zero basis is
+    // the collapsed, untappable composer from #746.
+    expect(classes).not.toContain("flex-1")
+    expect(classes).toContain("grow")
+    // Still free to shrink and scroll when the composer hits its max height.
+    expect(classes).toContain("min-h-0")
+    expect(classes).toContain("overflow-y-auto")
+  })
+
+  it("lets the contenteditable fill the editable area so taps land on it", async () => {
+    const { container } = await mount()
+    const scroll = container.querySelector(".codeg-composer-scroll")
+    const editable = container.querySelector('[contenteditable="true"]')
+    expect(editable).not.toBeNull()
+
+    // The scroll area is the column the editable node grows inside of.
+    const scrollClasses = scroll!.className.split(/\s+/)
+    expect(scrollClasses).toContain("flex")
+    expect(scrollClasses).toContain("flex-col")
+    // …and the editable node is the child that takes the leftover, so the
+    // blank space under a short draft is still the contenteditable and a tap
+    // there focuses it natively (touch has no chrome-mousedown fallback).
+    expect(editable!.className.split(/\s+/)).toContain("grow")
+    expect(scroll!.contains(editable)).toBe(true)
+  })
+})

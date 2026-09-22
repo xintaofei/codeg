@@ -66,7 +66,7 @@ use webkit2gtk::{
 
 use super::super::hooks::LoadFailure;
 use super::super::types::BrowserErrorKind;
-pub use super::{NavigationEvent, NavigationSink};
+pub use super::{NavigationEvent, NavigationSink, PageCloseSink};
 
 /// Name of the script world the helper and its message handler live in.
 pub const WORLD_NAME: &str = "codeg";
@@ -97,6 +97,8 @@ struct SurfaceState {
     find_waiting: RefCell<Option<FindAnswer>>,
     find_connected: Cell<bool>,
     navigation: RefCell<Option<NavigationSink>>,
+    /// Where `window.close()` goes; `None` until the hook is installed.
+    page_close: RefCell<Option<PageCloseSink>>,
 }
 
 thread_local! {
@@ -514,6 +516,35 @@ fn report(key: usize, event: NavigationEvent) {
     let sink = state(key).and_then(|s| s.navigation.borrow().clone());
     if let Some(sink) = sink {
         sink(event);
+    }
+}
+
+/// Hook `window.close()`. WebKitGTK emits `close` on the webview when the page
+/// asks for its window to go, and wry is already connected
+/// (`webkitgtk::attach_handlers`): it answers by destroying the view and tells
+/// nobody, which leaves the window and its tab behind — the popup that closes
+/// itself at the end of a sign-in flow was left in the strip with a dead view
+/// in it. This handler is the one that reaches the host. It is connected after
+/// wry's and so runs after it, on an instance the emission still holds a
+/// reference to. Idempotent per webview.
+pub fn install_page_close_hook(webview: &WebView, sink: PageCloseSink) -> Result<(), String> {
+    let key = webview_pointer(webview);
+    let state = state_of(key);
+    if state.page_close.borrow().is_some() {
+        return Ok(());
+    }
+    *state.page_close.borrow_mut() = Some(sink);
+    webview.connect_close(move |_| report_page_close(key));
+    Ok(())
+}
+
+/// Told out of the map rather than from a captured handle, like [`report`]:
+/// a signal handler lives as long as the webview, and nothing here may keep
+/// that webview alive past its tab.
+fn report_page_close(key: usize) {
+    let sink = state(key).and_then(|s| s.page_close.borrow().clone());
+    if let Some(sink) = sink {
+        sink();
     }
 }
 

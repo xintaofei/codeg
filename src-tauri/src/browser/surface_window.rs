@@ -306,6 +306,7 @@ mod platform {
         let held = label.clone();
         let tab = tab_id.to_string();
         let sink = hooks::navigation_sink(app, tab_id);
+        let closing = hooks::page_close_sink(app, tab_id);
         let (tx, rx) = mpsc::channel();
         let asked = window.with_webview(move |platform| {
             let webview = platform.inner();
@@ -313,6 +314,12 @@ mod platform {
                 tracing::warn!(
                     "[browser] window {held}: navigation hooks not installed ({err}); \
                      failures are detected by polling"
+                );
+            }
+            if let Err(err) = shim::install_page_close_hook(&webview, closing) {
+                tracing::warn!(
+                    "[browser] window {held}: window.close() not hooked ({err}); \
+                     a page closing its own window is ignored"
                 );
             }
             // An entry already under this label is a window that went without

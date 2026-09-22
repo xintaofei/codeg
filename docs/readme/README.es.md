@@ -40,24 +40,10 @@ Reúne las sesiones de todas las CLI de agentes compatibles en un único espacio
   </tr>
   <tr>
     <td align="center" width="220">
-      <a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE" target="_blank"><img src="../images/sui-xiang.jpg" alt="随想AI中转站" width="200" /></a><br/>
-      <strong><a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE">随想AI中转站</a></strong>
-    </td>
-    <td>¡Gracias a 随想AI中转站 por patrocinar este proyecto! 随想AI中转站 es un proveedor de retransmisión de API fiable y eficiente, que ofrece servicios de retransmisión para Claude, Codex, Gemini y más. Las cuentas nuevas reciben 0,5 ¥ de crédito de prueba con cada registro de asistencia diario tras <a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE">registrarse</a>; las recargas se acreditan 1:1, sin suscripción y con pago por uso. La redundancia multilínea, la recuperación ante desastres entre regiones y la conmutación por error automática mantienen sin interrupciones las conexiones SSE de larga duración.</td>
-  </tr>
-  <tr>
-    <td align="center" width="220">
       <a href="https://hezu.ink/sign-up?aff=0wVz" target="_blank"><img src="../images/hezu-ink.jpg" alt="合租巴士" width="200" /></a><br/>
       <strong><a href="https://hezu.ink/sign-up?aff=0wVz">合租巴士</a></strong>
     </td>
     <td>¡Gracias a 合租巴士 por patrocinar este proyecto! 合租巴士 es una plataforma de retransmisión de IA fiable y eficiente que ofrece una retransmisión de alta estabilidad para los principales modelos como Codex y Claude Code. La proporción de recarga es transparente (1:1), con subvenciones de tarifa de Codex desde tan solo 0,08. <a href="https://hezu.ink/sign-up?aff=0wVz">Únete al grupo desde el sitio web oficial para obtener 5 USD de crédito de prueba</a>.</td>
-  </tr>
-  <tr>
-    <td align="center" width="220">
-      <a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta" target="_blank"><img src="../images/onehop.jpg" alt="OneHop" width="120" /></a><br/>
-      <strong><a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta">OneHop</a></strong>
-    </td>
-    <td>¡Gracias a OneHop por patrocinar este proyecto! OneHop ofrece a los usuarios de Codeg una única clave de API compatible con OpenAI para cientos de modelos líderes, incluidos GPT, Claude, Gemini, DeepSeek, Kimi y Qwen. Cambia de modelo sin gestionar varias cuentas de proveedores ni modificar tu código una y otra vez, y paga solo por lo que uses. <a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta">Regístrate a través de Codeg</a> para recibir 1 USD de crédito y, además, únete a la comunidad de OneHop y participa en la actividad de bienvenida para obtener 5 USD adicionales, hasta un total de 6 USD en crédito de prueba.</td>
   </tr>
   <tr>
     <td align="center" width="220">
@@ -83,6 +69,13 @@ Reúne las sesiones de todas las CLI de agentes compatibles en un único espacio
       AstraFlow, la plataforma de grandes modelos de UCloud, permite invocar más de 200 modelos con un solo clic: incorpora modelos de código abierto punteros como Kimi K3, DeepSeek V4/V3, Qwen 3, GLM5.2 y happyhorse, sin necesidad de entrenarlos tú mismo y listos para usar.<br/>
       Regístrate con tu <strong>correo electrónico</strong> a través del enlace anterior y, tras completar la verificación de identidad, <a href="https://f.howxm.com/xs/u/HVFW5X8EIYV1">recibe 50 ¥ en créditos de cómputo</a>.
     </td>
+  </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG" target="_blank"><img src="../images/fluxion-ai.png" alt="Fluxion AI" width="160" /></a><br/>
+      <strong><a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG">Fluxion AI</a></strong>
+    </td>
+    <td>¡Gracias a Fluxion AI por patrocinar este proyecto! Fluxion AI ofrece un acceso por API rápido, fiable y rentable a GPT, Claude, Gemini y otros modelos de IA líderes mediante una única API unificada. Los nuevos usuarios pueden recibir 3 USD en créditos de API a través de <a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG">nuestro enlace exclusivo</a>.</td>
   </tr>
 </table>
 

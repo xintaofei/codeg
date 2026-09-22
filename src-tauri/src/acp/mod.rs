@@ -9,6 +9,7 @@ pub mod codex_goal;
 pub mod codex_model_catalog;
 pub mod connection;
 pub mod cursor_acp_retry_compat;
+pub mod cursor_ext;
 pub mod custom_registry;
 pub mod delegation;
 pub mod error;

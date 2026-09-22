@@ -116,6 +116,7 @@ beforeEach(() => {
 
 vi.mock("@/lib/api", () => ({
   getHomeDirectory: vi.fn(),
+  listDirectoryWithFiles: vi.fn(),
   readFileForEdit: vi.fn(),
   readFileBase64: vi.fn(),
   readFilePreview: vi.fn(),
@@ -260,6 +261,7 @@ function WorkspaceProbe() {
     activeFileTabId,
     filesMaximized,
     openSessionFileDiff,
+    openFilePreview,
     closeFileTab,
     closeAllFileTabs,
     toggleFilesMaximized,
@@ -268,6 +270,9 @@ function WorkspaceProbe() {
 
   return (
     <div>
+      <button type="button" onClick={() => void openFilePreview("report.docx")}>
+        Open office by hand
+      </button>
       <output data-testid="mode">{mode}</output>
       <output data-testid="file-tab-count">{fileTabs.length}</output>
       <output data-testid="active-pane">{activePane}</output>
@@ -2009,6 +2014,19 @@ describe("WorkspaceProvider office auto-preview", () => {
     workspaceStoreMock.reset()
     // Preference defaults ON; drop any "false" a prior test left behind.
     localStorage.removeItem("workspace:office-auto-preview")
+    // Reset first: call history is what the "one listing per parent" tests
+    // assert on, and an unconsumed `…Once` from a prior test would otherwise
+    // answer the next one's first lookup.
+    vi.mocked(api.listDirectoryWithFiles).mockReset()
+    vi.mocked(api.listDirectoryWithFiles).mockImplementation(async (root) =>
+      ["report.pptx", "deck.pptx", "report.docx"].map((name) => ({
+        name,
+        path: `${root}/${name}`,
+        isDir: false,
+        hasChildren: false,
+        size: 100,
+      }))
+    )
   })
 
   it("auto-opens an office file's preview when the watcher reports it, with no aux panel involved", async () => {
@@ -2124,6 +2142,157 @@ describe("WorkspaceProvider office auto-preview", () => {
     })
 
     expect(screen.getByTestId("file-tab-count")).toHaveTextContent("1")
+  })
+
+  it("does not open a removed document from a changed_paths envelope", async () => {
+    vi.mocked(api.listDirectoryWithFiles).mockResolvedValue([])
+    renderWorkspace()
+
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope(["report.docx"])
+    })
+
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("0")
+    expect(screen.getByTestId("active-pane")).toHaveTextContent("conversation")
+  })
+
+  it("does not open documents from a removed parent directory", async () => {
+    vi.mocked(api.listDirectoryWithFiles).mockRejectedValue(
+      new Error("Path is not a directory")
+    )
+    renderWorkspace()
+
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope(["scratch/report.docx"])
+    })
+
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("0")
+  })
+
+  it("keeps a dismissed preview closed after switching folders and back", async () => {
+    renderWorkspace()
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope(["report.docx"])
+    })
+    act(() => screen.getByRole("button", { name: "Close active" }).click())
+    act(() => foldersMock.setActiveFolderId(2))
+    act(() => foldersMock.setActiveFolderId(1))
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope(["report.docx"])
+    })
+
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("0")
+  })
+
+  it("can open a document recreated after an earlier removal event", async () => {
+    vi.mocked(api.listDirectoryWithFiles).mockResolvedValueOnce([])
+    renderWorkspace()
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope(["report.docx"])
+    })
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("0")
+
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope(["report.docx"])
+    })
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("1")
+  })
+
+  it("does not mistake a directory with an Office suffix for a document", async () => {
+    vi.mocked(api.listDirectoryWithFiles).mockResolvedValue([
+      {
+        name: "report.docx",
+        path: "/repo/report.docx",
+        isDir: true,
+        hasChildren: true,
+        size: null,
+      },
+    ])
+    renderWorkspace()
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope(["report.docx"])
+    })
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("0")
+  })
+
+  it("discards a pending preview when its workspace is no longer active", async () => {
+    let finish!: (
+      entries: Awaited<ReturnType<typeof api.listDirectoryWithFiles>>
+    ) => void
+    vi.mocked(api.listDirectoryWithFiles).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve
+      })
+    )
+    renderWorkspace()
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope(["report.docx"])
+    })
+    act(() => foldersMock.setActiveFolderId(2))
+    await act(async () => {
+      finish([
+        {
+          name: "report.docx",
+          path: "/repo/report.docx",
+          isDir: false,
+          hasChildren: false,
+          size: 100,
+        },
+      ])
+    })
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("0")
+  })
+
+  it("lists a parent once per burst and never re-lists a decided path", async () => {
+    // The existence probe sits on the watcher's hot path, and the backing
+    // command stats every sibling and ships the whole listing to the renderer
+    // (over HTTP in server/remote mode). Both bounds below are what keep that
+    // affordable: one lookup per parent per envelope, and none at all once a
+    // path has been decided.
+    renderWorkspace()
+
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope([
+        "report.docx",
+        "deck.pptx",
+        "report.pptx",
+      ])
+    })
+
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("3")
+    expect(api.listDirectoryWithFiles).toHaveBeenCalledTimes(1)
+    expect(api.listDirectoryWithFiles).toHaveBeenCalledWith("/repo")
+
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope(["report.docx", "deck.pptx"])
+    })
+
+    expect(api.listDirectoryWithFiles).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not resurface a document the user opened by hand and closed", async () => {
+    renderWorkspace()
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Open office by hand" }).click()
+    })
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("1")
+
+    // The agent writes while the hand-opened tab is up: nothing to open, and
+    // no existence probe either — the open tab already answers the question.
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope(["report.docx"])
+    })
+    expect(api.listDirectoryWithFiles).not.toHaveBeenCalled()
+
+    act(() => screen.getByRole("button", { name: "Close active" }).click())
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("0")
+
+    // A document the user has already seen and dismissed stays dismissed.
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope(["report.docx"])
+    })
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("0")
   })
 
   it("does not auto-open when the preference is disabled", async () => {

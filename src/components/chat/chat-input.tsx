@@ -248,7 +248,11 @@ export const ChatInput = memo(function ChatInput({
               ? t("agentResponding", { agent: agentName ?? "Agent" })
               : t("sendMessage")
         }
-        className={cn(tall ? "min-h-30" : "min-h-24", "max-h-60")}
+        // The floor goes through `tall`, not through a `min-h-*` here: the box
+        // and its editable area carry two halves of the same number, and only
+        // MessageInput knows the action row that divides them.
+        tall={tall}
+        className="max-h-60"
       />
     </div>
   )

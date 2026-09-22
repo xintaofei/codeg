@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -966,6 +966,214 @@ pub(crate) fn find_session_file_in(base_dir: &Path, session_id: &str) -> Option<
     None
 }
 
+/// After `/clear`, Claude Code rolls over to a NEW `{uuid}.jsonl` while the
+/// ACP session id stays the same. The successor sits next to `current_file`,
+/// its early records contain `<command-name>/clear</command-name>`, and it
+/// starts at about the timestamp the old file stops. Returns `(new_id, path)`.
+pub(crate) fn find_clear_rollover_successor(
+    current_file: &Path,
+    current_session_id: &str,
+) -> Option<(String, PathBuf)> {
+    let dir = current_file.parent()?;
+    let current_last = last_record_timestamp(current_file)?;
+    // Earliest a successor may have been written. A file whose LAST write
+    // predates it cannot hold a `/clear` record at/after `current_last`, so
+    // the stat alone rules it out — worth doing, because a busy project dir
+    // holds hundreds of transcripts and the alternative is opening and
+    // JSON-parsing the head of every one of them.
+    let earliest_write = std::time::SystemTime::from(
+        current_last - chrono::Duration::seconds(CLEAR_ROLLOVER_BACK_TOLERANCE_SECS),
+    );
+    let mut best: Option<(DateTime<Utc>, String, PathBuf)> = None;
+    for entry in fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        if path == current_file {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if stem == current_session_id || !is_safe_subagent_id(stem) {
+            continue;
+        }
+        let too_old = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .is_some_and(|m| m < earliest_write);
+        if too_old {
+            continue;
+        }
+        let Some(started) = clear_rollover_started_at(&path) else {
+            continue;
+        };
+        // The successor's `/clear` record lands within MILLISECONDS of the
+        // predecessor's last record (measured: 4ms), and neither file's
+        // timestamps are strictly monotonic — the CLI stamps the caveat
+        // record after the command record but with an earlier value. A hard
+        // `started < current_last` reject would therefore drop the real
+        // successor on a coin flip, permanently: the same two files are
+        // re-compared on every later tick with the same answer.
+        if (current_last - started).num_seconds() > CLEAR_ROLLOVER_BACK_TOLERANCE_SECS {
+            continue;
+        }
+        if (started - current_last).num_seconds() > CLEAR_ROLLOVER_MAX_GAP_SECS {
+            continue;
+        }
+        let take = match &best {
+            None => true,
+            Some((best_ts, _, _)) => started >= *best_ts,
+        };
+        if take {
+            best = Some((started, stem.to_string(), path));
+        }
+    }
+    best.map(|(_, id, path)| (id, path))
+}
+
+/// Follow `/clear` rollovers until the latest transcript. Caps the chain so a
+/// corrupt directory cannot loop. Identity when there is no successor.
+pub(crate) fn follow_clear_rollover_chain(
+    current_file: &Path,
+    current_session_id: &str,
+) -> (String, PathBuf) {
+    let mut id = current_session_id.to_string();
+    let mut path = current_file.to_path_buf();
+    for _ in 0..CLEAR_ROLLOVER_CHAIN_LIMIT {
+        match find_clear_rollover_successor(&path, &id) {
+            Some((next_id, next_path)) => {
+                id = next_id;
+                path = next_path;
+            }
+            None => break,
+        }
+    }
+    (id, path)
+}
+
+/// How many leading JSONL lines to inspect for a `/clear` command tag.
+const CLEAR_ROLLOVER_PEEK_LINES: usize = 40;
+/// `/clear` writes the successor immediately. Measured against a live
+/// claude-agent-acp 0.77.0 session (CLI 2.1.270): 4ms from the predecessor's
+/// last record to the successor's `/clear` record, and 5ms with 70s of idle
+/// in front of the clear — the predecessor's last record is the
+/// `queue-operation` pair for the `/clear` prompt itself, so the two files
+/// stay adjacent no matter how long the session sat quiet first.
+///
+/// The window is therefore slack, not measurement: it is what a stalled disk
+/// or a frozen machine may take, and every second of it is also a second in
+/// which an UNRELATED session in the same project directory could clear and
+/// be mistaken for this one's successor. Five minutes covers the former
+/// without opening the latter to the hour the first draft allowed.
+pub(crate) const CLEAR_ROLLOVER_MAX_GAP_SECS: i64 = 300;
+/// How far BEFORE the predecessor's last record a successor's `/clear` record
+/// may be stamped. Non-zero because the two files are written by one process
+/// in one burst and the CLI's timestamps are not monotonic across them.
+const CLEAR_ROLLOVER_BACK_TOLERANCE_SECS: i64 = 5;
+const CLEAR_ROLLOVER_CHAIN_LIMIT: usize = 32;
+
+fn record_timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
+    value
+        .get("timestamp")
+        .and_then(|t| t.as_str())
+        .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+}
+
+fn user_message_text(value: &serde_json::Value) -> Option<String> {
+    if value.get("type").and_then(|t| t.as_str()) != Some("user") {
+        return None;
+    }
+    let content = value.get("message")?.get("content")?;
+    if let Some(s) = content.as_str() {
+        return Some(s.to_string());
+    }
+    let arr = content.as_array()?;
+    let texts: Vec<&str> = arr
+        .iter()
+        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+        .collect();
+    if texts.is_empty() {
+        None
+    } else {
+        Some(texts.join("\n"))
+    }
+}
+
+fn record_is_clear_command(value: &serde_json::Value) -> bool {
+    let Some(text) = user_message_text(value) else {
+        return false;
+    };
+    if let Some(display) = slash_command_display(&text) {
+        return display == "/clear" || display.starts_with("/clear ");
+    }
+    text.contains("<command-name>/clear</command-name>")
+}
+
+/// Timestamp of the `/clear` record at the head of a rollover file, if any.
+fn clear_rollover_started_at(path: &Path) -> Option<DateTime<Utc>> {
+    let file = fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    for (i, line) in reader.lines().enumerate() {
+        if i >= CLEAR_ROLLOVER_PEEK_LINES {
+            break;
+        }
+        let Ok(line) = line else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if record_is_clear_command(&value) {
+            return record_timestamp(&value);
+        }
+    }
+    None
+}
+
+/// Last JSONL record timestamp, read from a trailing window so a large
+/// transcript is not fully scanned on every watcher tick.
+fn last_record_timestamp(path: &Path) -> Option<DateTime<Utc>> {
+    let mut file = fs::File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    let len = meta.len();
+    let start = len.saturating_sub(64 * 1024);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    // Bytes, not `read_to_string`: the window starts at a fixed offset, which
+    // lands mid-codepoint on any transcript whose tail holds non-ASCII text.
+    // `read_to_string` fails outright there (`InvalidData`), which would take
+    // the whole detector out on exactly the transcripts most likely to need
+    // it. The first partial line is dropped below anyway.
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let buf = String::from_utf8_lossy(&bytes);
+    let text = if start > 0 {
+        buf.split_once('\n').map(|(_, rest)| rest).unwrap_or(&buf)
+    } else {
+        buf.as_ref()
+    };
+    let mut last = None;
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(ts) = record_timestamp(&value) {
+            last = Some(ts);
+        }
+    }
+    // A tail window that holds no timestamped record at all (one record larger
+    // than the window; a metadata-only tail — `ai-title`/`mode`/`atis-latch`
+    // carry no timestamp) must not disable the search: fall back to the file's
+    // own mtime, which is the same quantity to within a write.
+    last.or_else(|| meta.modified().ok().map(DateTime::<Utc>::from))
+}
+
 impl ClaudeParser {
 
     fn parse_jsonl_summary(
@@ -1202,7 +1410,11 @@ impl AgentParser for ClaudeParser {
 
             let file_path = project_dir.join(format!("{}.jsonl", conversation_id));
             if file_path.exists() {
-                return self.parse_conversation_detail(&file_path, conversation_id);
+                // `/clear` leaves the old file in place and writes a sibling
+                // uuid. Follow that chain so reopen shows post-clear turns.
+                let (resolved_id, resolved_path) =
+                    follow_clear_rollover_chain(&file_path, conversation_id);
+                return self.parse_conversation_detail(&resolved_path, &resolved_id);
             }
         }
 
@@ -3561,6 +3773,169 @@ mod tests {
         assert!(find_session_file_in(dir.path(), "missing").is_none());
         assert!(find_session_file_in(dir.path(), "../abc-123").is_none());
         assert!(find_session_file_in(dir.path(), "").is_none());
+    }
+
+    fn write_clear_jsonl(path: &Path, lines: &[&str]) {
+        std::fs::write(
+            path,
+            lines
+                .iter()
+                .map(|l| format!("{l}\n"))
+                .collect::<String>(),
+        )
+        .unwrap();
+    }
+
+    fn clear_user_record(session: &str, uuid: &str, ts: &str, text: &str) -> String {
+        serde_json::json!({
+            "type": "user",
+            "timestamp": ts,
+            "uuid": uuid,
+            "sessionId": session,
+            "cwd": "/tmp/demo",
+            "message": { "role": "user", "content": [{"type": "text", "text": text}] }
+        })
+        .to_string()
+    }
+
+    fn clear_assistant_record(session: &str, uuid: &str, ts: &str, text: &str) -> String {
+        serde_json::json!({
+            "type": "assistant",
+            "timestamp": ts,
+            "uuid": uuid,
+            "sessionId": session,
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": text}]
+            }
+        })
+        .to_string()
+    }
+
+    fn clear_command_record(session: &str, ts: &str) -> String {
+        serde_json::json!({
+            "type": "user",
+            "timestamp": ts,
+            "uuid": "u-clear",
+            "sessionId": session,
+            "cwd": "/tmp/demo",
+            "message": {
+                "role": "user",
+                "content": "<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>"
+            }
+        })
+        .to_string()
+    }
+
+    /// `/clear` writes a sibling `{new-uuid}.jsonl` whose first records carry
+    /// the command tags, starting when the old file stops. Detection must
+    /// return that successor — not an unrelated later session in the same
+    /// project dir, and not a file that merely exists.
+    #[test]
+    fn find_clear_rollover_successor_picks_the_new_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("-tmp-demo");
+        std::fs::create_dir_all(&proj).unwrap();
+        let old = proj.join("old-sess.jsonl");
+        let new = proj.join("new-sess.jsonl");
+        write_clear_jsonl(
+            &old,
+            &[
+                &clear_user_record("old-sess", "u1", "2026-09-01T10:00:00Z", "hello before"),
+                &clear_assistant_record("old-sess", "a1", "2026-09-01T10:00:05Z", "hi"),
+            ],
+        );
+        write_clear_jsonl(
+            &new,
+            &[
+                &clear_command_record("new-sess", "2026-09-01T10:00:06Z"),
+                &clear_user_record("new-sess", "u2", "2026-09-01T10:01:00Z", "hello after"),
+            ],
+        );
+
+        let found = find_clear_rollover_successor(&old, "old-sess")
+            .expect("successor of a /clear rollover");
+        assert_eq!(found.0, "new-sess");
+        assert_eq!(found.1, new);
+    }
+
+    #[test]
+    fn find_clear_rollover_successor_ignores_unrelated_and_stale_siblings() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("-tmp-demo");
+        std::fs::create_dir_all(&proj).unwrap();
+        let old = proj.join("old-sess.jsonl");
+        write_clear_jsonl(
+            &old,
+            &[
+                &clear_user_record("old-sess", "u1", "2026-09-01T10:00:00Z", "hello before"),
+                &clear_assistant_record("old-sess", "a1", "2026-09-01T10:00:05Z", "hi"),
+            ],
+        );
+        // Same project, no /clear — another live session.
+        write_clear_jsonl(
+            &proj.join("other-sess.jsonl"),
+            &[&clear_user_record(
+                "other-sess",
+                "u-o",
+                "2026-09-01T10:00:10Z",
+                "unrelated",
+            )],
+        );
+        // /clear hours later: not this conversation's rollover.
+        write_clear_jsonl(
+            &proj.join("late-sess.jsonl"),
+            &[
+                &clear_command_record("late-sess", "2026-09-01T13:00:00Z"),
+                &clear_user_record("late-sess", "u-l", "2026-09-01T13:00:05Z", "later"),
+            ],
+        );
+
+        assert!(
+            find_clear_rollover_successor(&old, "old-sess").is_none(),
+            "must not steal an unrelated or far-future /clear file"
+        );
+    }
+
+    /// Reopen looks up the OLD session id (still on conversation.external_id).
+    /// The reader must follow the rollover so post-clear turns are what
+    /// reload shows; pre-clear content stays on the abandoned file.
+    #[test]
+    fn get_conversation_follows_clear_rollover_to_the_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("-tmp-demo");
+        std::fs::create_dir_all(&proj).unwrap();
+        write_clear_jsonl(
+            &proj.join("old-sess.jsonl"),
+            &[
+                &clear_user_record("old-sess", "u1", "2026-09-01T10:00:00Z", "hello before"),
+                &clear_assistant_record("old-sess", "a1", "2026-09-01T10:00:05Z", "hi before"),
+            ],
+        );
+        write_clear_jsonl(
+            &proj.join("new-sess.jsonl"),
+            &[
+                &clear_command_record("new-sess", "2026-09-01T10:00:06Z"),
+                &clear_user_record("new-sess", "u2", "2026-09-01T10:01:00Z", "hello after"),
+                &clear_assistant_record("new-sess", "a2", "2026-09-01T10:01:05Z", "hi after"),
+            ],
+        );
+
+        let parser = ClaudeParser::with_base_dir(dir.path().to_path_buf());
+        let detail = parser.get_conversation("old-sess").unwrap();
+        assert_eq!(
+            detail.summary.id, "new-sess",
+            "detail id must be the post-clear transcript uuid"
+        );
+        let blob = serde_json::to_string(&detail.turns).unwrap();
+        assert!(
+            blob.contains("hello after") && blob.contains("hi after"),
+            "post-clear turns must be visible on reopen: {blob}"
+        );
+        assert!(
+            !blob.contains("hello before") && !blob.contains("hi before"),
+            "pre-clear turns belong to the abandoned file, not this conversation"
+        );
     }
 
     #[test]

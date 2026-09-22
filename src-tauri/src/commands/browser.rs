@@ -770,7 +770,22 @@ pub fn close_core(
     tab_id: &str,
     request_id: Option<&str>,
 ) -> Result<(), AppCommandError> {
-    if let Some(tab) = registry.remove(tab_id) {
+    close_core_if(app, registry, tab_id, request_id, |_| true)
+}
+
+/// Close only the incarnation `matches` recognises. A tab id is reused, so a
+/// caller that decided on a snapshot and then crossed a thread boundary to act
+/// on it — the page asking for its own window to go is the one that does —
+/// must say which tab it looked at, or it can take one it never saw.
+/// `close_core` is the form for a caller holding the registry still.
+pub fn close_core_if(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    tab_id: &str,
+    request_id: Option<&str>,
+    matches: impl FnOnce(&BrowserTab) -> bool,
+) -> Result<(), AppCommandError> {
+    if let Some(tab) = registry.remove_if(tab_id, matches) {
         let _ = tab.surface.close();
         if let Some(guests) = app.try_state::<DocGuests>() {
             guests.unbind(tab_id);

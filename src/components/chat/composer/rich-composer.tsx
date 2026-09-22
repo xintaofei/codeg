@@ -382,7 +382,12 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
       autofocus: autoFocus ? "end" : false,
       editorProps: {
         attributes: {
-          class: "codeg-composer-content",
+          // `grow`: the editable node fills the scroll area (a flex column, see
+          // EditorContent below) so the blank space under a short draft is
+          // still the contenteditable and a tap there focuses it natively. Its
+          // automatic minimum size keeps it from being squeezed under its own
+          // text once the composer is at max height and scrolling.
+          class: "codeg-composer-content grow",
           role: "textbox",
           "aria-multiline": "true",
           ...(ariaLabel ? { "aria-label": ariaLabel } : {}),
@@ -682,9 +687,27 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
         style={style}
         data-disabled={disabled || undefined}
       >
+        {/* `grow` (a CONTENT flex basis), never `flex-1` (a ZERO basis). The
+            box this sits in is a flex column whose height usually comes only
+            from a `min-height`, and an engine that treats such a column as
+            main-size-indefinite hands its `flex-grow` children no free space
+            at all. Off a zero basis that leaves the editable area at 0px: the
+            action row rides up to the top of the box, the rest of it is
+            untappable dead space, and the placeholder is clipped away — the
+            mobile-web report in #746. Off a content basis the editor is always
+            at least as tall as the text it holds, whatever the engine does,
+            while `min-h-0` still lets it shrink and scroll at the box's
+            max height.
+
+            The column here plus `grow` on the editable node itself (see the
+            `codeg-composer-content` class) also makes the contenteditable
+            cover the whole editable area, so a tap on the blank space under a
+            short draft lands on the editor natively instead of going through
+            the chrome's mousedown fallback — which touch has no reliable
+            equivalent for. */}
         <EditorContent
           editor={editor}
-          className="codeg-composer-scroll min-h-0 flex-1 overflow-y-auto px-3 py-2 text-base md:text-sm"
+          className="codeg-composer-scroll flex min-h-0 grow flex-col overflow-y-auto px-3 py-2 text-base md:text-sm"
         />
         {referenceSearch && mentionState && (
           <SuggestionPopup

@@ -1381,14 +1381,20 @@ pub async fn get_folder_conversation_core(
         tokio::task::spawn_blocking(move || -> Result<_, AppCommandError> {
             let parser = build_agent_parser(at);
             match parser.get_conversation(&eid) {
-                Ok(d) => Ok((
-                    d.turns,
-                    d.session_stats,
-                    None,
-                    d.summary.title,
-                    d.summary.model,
-                    d.transcript_watermark,
-                )),
+                Ok(d) => {
+                    // Claude `/clear` (and similar on-disk id changes) make
+                    // the parser resolve a different uuid than we asked for.
+                    // Persist that so reopen/reconnect follow the live file.
+                    let resolved = (d.summary.id != eid).then(|| d.summary.id.clone());
+                    Ok((
+                        d.turns,
+                        d.session_stats,
+                        resolved,
+                        d.summary.title,
+                        d.summary.model,
+                        d.transcript_watermark,
+                    ))
+                }
                 Err(crate::parsers::ParseError::ConversationNotFound(_)) => {
                     // The external_id may no longer match any local file —
                     // e.g. an ACP session UUID (OpenClaw, Cline) or a stale
@@ -1449,26 +1455,57 @@ pub async fn get_folder_conversation_core(
         (vec![], None, None, None, None, None)
     };
 
-    // If we resolved a different external_id (e.g. ACP UUID → parser branch ID),
-    // update the database so future lookups are direct.
+    // If we resolved a different external_id (e.g. ACP UUID → parser branch ID,
+    // or a Claude `/clear` transcript rollover), update the database so future
+    // lookups are direct. Also patch the summary this call returns so the
+    // caller reconnects with the id that actually has the turns.
     //
-    // This is an ALIAS normalization — both ids denote the same session — so it
-    // uses the narrow CAS rather than `bind_external_id`, whose history-split
-    // would manufacture a phantom conversation for the old spelling. The
-    // expected-old value is the exact id this parse ran against, so a
-    // `SessionStarted` that rebound the row while we were parsing leaves this
-    // write matching nothing instead of clobbering the newer binding.
-    if let Some(new_ext_id) = resolved_ext_id {
-        let _ = conversation_service::renormalize_external_id_alias(
-            conn,
-            conversation_id,
-            summary.external_id.as_deref(),
-            new_ext_id,
-        )
-        .await;
-    }
-
+    // Gemini/Cline is an ALIAS normalization — both ids denote the same
+    // session — so it uses the narrow CAS rather than `bind_external_id`,
+    // whose history-split would manufacture a phantom conversation for the
+    // old spelling. Claude `/clear` is a real new transcript file of the
+    // SAME conversation; passing the outgoing id as `continues` advances
+    // in place instead of splitting a sidebar clone.
     let mut summary = summary;
+    if let Some(new_ext_id) = resolved_ext_id {
+        if matches!(summary.agent_type, AgentType::ClaudeCode) {
+            let continues: Vec<String> = summary.external_id.iter().cloned().collect();
+            // Refused when another row already holds the successor — the
+            // rollover's own file can have been imported as its own
+            // conversation. The summary must then keep the id this row
+            // actually owns: handing the caller an id it does not hold is
+            // what sends the next prompt into the HOLDER's transcript while
+            // every event names this row (see `bind_external_id`).
+            match conversation_service::bind_external_id(
+                conn,
+                conversation_id,
+                &new_ext_id,
+                &continues,
+            )
+            .await
+            {
+                Ok(_) => summary.external_id = Some(new_ext_id),
+                Err(e) => {
+                    tracing::warn!(
+                        conversation_id,
+                        to_session = %new_ext_id,
+                        error = %e,
+                        "[conversations] could not follow the transcript rollover; \
+                         keeping the id this row holds"
+                    );
+                }
+            }
+        } else {
+            let _ = conversation_service::renormalize_external_id_alias(
+                conn,
+                conversation_id,
+                summary.external_id.as_deref(),
+                new_ext_id.clone(),
+            )
+            .await;
+            summary.external_id = Some(new_ext_id);
+        }
+    }
     summary.message_count = turns.len() as u32;
     // The transcript is the richer source for the session's model. Codex is
     // the concrete case: an ACP-driven row is created before any
@@ -1565,6 +1602,21 @@ fn sig_from_turn_blocks(blocks: &[ContentBlock]) -> Option<Vec<UserContentSig>> 
     Some(sig)
 }
 
+/// How many USER turns [`apply_in_flight_message_id`]'s walk will compare
+/// before giving up.
+///
+/// A cost bound, not a correctness one — the ambiguity check inside the walk is
+/// what keeps it from stamping an earlier round's prompt. `sig_from_turn_blocks`
+/// copies each candidate's text and image bytes, and the walk runs on every
+/// detail fetch, so a transcript whose timestamps are all parse instants (see
+/// the walk) must not turn that into a scan of every prompt ever sent.
+///
+/// Counts USER turns only, deliberately. Counting turns would count the length
+/// of the reply, which is unrelated to the hazard and routinely in the
+/// hundreds: a real window holds the prompt and whatever the user sent
+/// mid-turn, so 32 is never reached by a turn with usable timestamps.
+const MAX_IN_FLIGHT_WALK_USER_TURNS: usize = 32;
+
 /// Stamp the persisted in-flight user turn with the broadcast `message_id`.
 ///
 /// A cross-client viewer renders the in-flight prompt from two sources that use
@@ -1574,12 +1626,23 @@ fn sig_from_turn_blocks(blocks: &[ContentBlock]) -> Option<Vec<UserContentSig>> 
 /// frontend's id-dedup collapse the two into one instead of showing the prompt
 /// twice.
 ///
-/// The in-flight prompt is located tail-bounded:
-///   - the trailing user turn (Claude/Codex write the assistant turn only on
-///     completion, so mid-stream the transcript ends exactly at the prompt); or
-///   - the user turn immediately before a *single* trailing assistant turn
-///     (OpenCode and Gemini persist a partial assistant turn mid-stream, so the
-///     transcript tail is `[.., user X, partial assistant Y]`).
+/// The in-flight prompt is located by walking back from the transcript tail
+/// over the turns this turn produced — those persisted at/after `started_at`,
+/// comparing at most [`MAX_IN_FLIGHT_WALK_USER_TURNS`] user turns of them — and
+/// keeping the EARLIEST user turn whose content matches. The tail itself is the
+/// prompt only for Claude/Codex, which write the assistant turn on completion;
+/// OpenCode and Gemini persist a partial reply mid-stream (which a parser may
+/// split), and a message the user sends mid-turn is written after the prompt as
+/// a user turn of its own. Earliest, because the agent writes the prompt before
+/// anything it produces in reply, so a mid-turn message repeating the prompt's
+/// own words cannot take the stamp from it.
+///
+/// That "earliest" only orders the round's own turns, which presumes the walk
+/// stopped at the round's start. It does when the gate below fires. When it
+/// never fires — every turn in hand is at/after `started_at`, which a parser
+/// stamping parse instants makes routine — the walk saw the whole transcript
+/// and earliest means nothing, so a second matching copy leaves it unable to
+/// say which round it is in: it then stamps nothing rather than guess.
 ///
 /// A recency check then disambiguates: the in-flight prompt was persisted by the
 /// agent CLI at/after `started_at` (the agent — a local subprocess sharing this
@@ -1623,14 +1686,39 @@ fn apply_in_flight_message_id(
         return None;
     }
     let started_at = started_at?;
-    let target_idx = match turns[n - 1].role {
-        TurnRole::User => n - 1,
-        TurnRole::Assistant if n >= 2 && matches!(turns[n - 2].role, TurnRole::User) => n - 2,
-        _ => return None,
-    };
-    // Recency gate. `started_at` is recorded when the backend broadcasts the
-    // `UserMessage` event, which happens *before* the agent request is issued
-    // (see `connection.rs`), so the agent — a local subprocess on this machine's
+    let want = sig_from_user_message_blocks(&pending.blocks);
+
+    // Walk back over the turns THIS turn produced and keep the EARLIEST user
+    // turn whose content is the pending prompt's.
+    //
+    // A walk, not the tail. The prompt is the last turn only while the agent
+    // has written nothing else, and what trails it is not bounded to one
+    // assistant turn:
+    //
+    //   * a message the user sends MID-TURN (`/steering`) is written into the
+    //     transcript as a USER turn after the prompt, so the tail becomes that
+    //     message, whose content is not the prompt's;
+    //   * OpenCode and Gemini persist the reply as it goes, and a parser that
+    //     splits it leaves two or more assistant turns behind the prompt.
+    //
+    // Anchoring on the last one or two turns lost the stamp in the middle of
+    // exactly those turns, and every consumer reads a missing stamp as "this
+    // detail is settled, the turn is over": `computeTimelinePrefix` stops
+    // hiding the persisted half of the reply the live stream is re-showing (so
+    // the first half renders twice), the runtime store's `detailIsInFlight`
+    // lets a mid-turn refetch clear `liveMessage` / `localTurns` /
+    // `optimisticTurns`, and `collectInFlightPersistedToolCalls` stops marking
+    // the round's unfinished tool calls, which then paint as completed.
+    //
+    // EARLIEST, not last: the agent writes the prompt before anything it
+    // produces in reply, so within one turn the first copy of those words is
+    // the prompt itself. That is what keeps a mid-turn message repeating the
+    // prompt's own text ("continue" twice) from taking the stamp off it.
+    //
+    // Recency gate, which is both what makes the walk safe and what bounds it.
+    // `started_at` is recorded when the backend broadcasts the `UserMessage`
+    // event, which happens *before* the agent request is issued (see
+    // `connection.rs`), so the agent — a local subprocess on this machine's
     // clock — necessarily persists the in-flight prompt at a wall-clock instant
     // at or after `started_at`. A *prior* identical prompt was persisted during
     // an earlier turn and is therefore strictly older. We allow no backward
@@ -1639,29 +1727,85 @@ fn apply_in_flight_message_id(
     // second), and stamping it would HIDE the genuinely new prompt via the
     // frontend's keep-first user dedup. Erring the other way only ever yields a
     // recoverable visible duplicate, so the strict bound is the safe one.
-    if turns[target_idx].timestamp < started_at {
-        return None;
-    }
-    let want = sig_from_user_message_blocks(&pending.blocks);
-    if sig_from_turn_blocks(&turns[target_idx].blocks) == Some(want) {
-        // Never create a duplicate id. The broadcast id is normally disjoint from
-        // parser `turn-N` ids (and `is_reserved_turn_id` in the manager rejects a
-        // client id of that shape), but defend the invariant here too: if the id
-        // already exists on another turn, stamping would make two turns share an
-        // id and the frontend's id-keyed dedup could hide one. Leave the turn
-        // under its parser id — a recoverable visible duplicate, never a hidden
-        // prompt — and report nothing.
-        let collides = turns
-            .iter()
-            .enumerate()
-            .any(|(i, t)| i != target_idx && t.id == pending.message_id);
-        if collides {
+    //
+    // Turns are in transcript order, so the first one older than the start ends
+    // the search — the walk never reads past the running turn, and an
+    // out-of-order timestamp can only cut it short, which stamps nothing.
+    //
+    // …unless the timestamps are not the agent's at all. Two shipping parsers
+    // fall back to the PARSE INSTANT when a record carries no usable time:
+    // `cline.rs` seeds `last_ts` from `Utc::now()` when the manifest has no
+    // `started_at` and hands it to every message with `ts` missing or 0, and
+    // `antigravity.rs` writes `ts.unwrap_or_else(Utc::now)` per step. A parse
+    // instant is by construction at/after `started_at`, so there the gate never
+    // fires, the "window" is the whole transcript, and "earliest match" could
+    // reach an identical prompt from an earlier round — stamping THAT makes
+    // `visiblePersistedTurns` hide every assistant turn after it.
+    //
+    // `gate_fired` is what distinguishes the two. It is false in exactly two
+    // shapes: the transcript holds nothing older than this turn (a first turn —
+    // there is no earlier round to confuse anything with), or the timestamps are
+    // parse instants (there may be). Both are covered by asking whether the
+    // decision was AMBIGUOUS: one matching user turn in the whole transcript is
+    // the prompt whatever the clocks say, because the text is then unique to it.
+    // Two or more, with nothing proving where this turn began, is a guess — and
+    // guessing wrong here hides turns, so it refuses instead.
+    //
+    // NOT a cap on turns walked. The obvious bound — stop after N turns — counts
+    // the LENGTH OF THE REPLY, which is the one quantity that has nothing to do
+    // with the hazard: every mid-turn-persisting parser emits one assistant turn
+    // per assistant record (`claude.rs`, `opencode.rs`, `gemini.rs` all keep
+    // turns small for virtualization), so a measured Claude round runs to a
+    // median of 44 and a p90 of 317. Any N small enough to bound the hazard
+    // voids the stamp part-way through most ordinary rounds, mid-turn, which is
+    // the exact failure this walk exists to remove.
+    let mut target_idx: Option<usize> = None;
+    let mut matched = 0usize;
+    let mut user_turns_seen = 0usize;
+    let mut gate_fired = false;
+    for i in (0..n).rev() {
+        if turns[i].timestamp < started_at {
+            gate_fired = true;
+            break;
+        }
+        if !matches!(turns[i].role, TurnRole::User) {
+            continue;
+        }
+        // A cost bound, not a correctness one — `sig_from_turn_blocks` copies
+        // each turn's text and image bytes, and this runs on every detail
+        // fetch. Only reachable when the gate never fires (a real window holds
+        // the prompt plus the handful of messages sent mid-turn), and refusing
+        // there is the same safe direction as the ambiguity check below.
+        user_turns_seen += 1;
+        if user_turns_seen > MAX_IN_FLIGHT_WALK_USER_TURNS {
             return None;
         }
-        turns[target_idx].id = pending.message_id.clone();
-        return Some(pending.message_id.clone());
+        if sig_from_turn_blocks(&turns[i].blocks).as_ref() == Some(&want) {
+            matched += 1;
+            target_idx = Some(i);
+        }
     }
-    None
+    if !gate_fired && matched > 1 {
+        return None;
+    }
+    let target_idx = target_idx?;
+
+    // Never create a duplicate id. The broadcast id is normally disjoint from
+    // parser `turn-N` ids (and `is_reserved_turn_id` in the manager rejects a
+    // client id of that shape), but defend the invariant here too: if the id
+    // already exists on another turn, stamping would make two turns share an
+    // id and the frontend's id-keyed dedup could hide one. Leave the turn
+    // under its parser id — a recoverable visible duplicate, never a hidden
+    // prompt — and report nothing.
+    let collides = turns
+        .iter()
+        .enumerate()
+        .any(|(i, t)| i != target_idx && t.id == pending.message_id);
+    if collides {
+        return None;
+    }
+    turns[target_idx].id = pending.message_id.clone();
+    Some(pending.message_id.clone())
 }
 
 /// Resolve the raw `tailTurns` / `fromIndex` request fields into a window
@@ -2880,32 +3024,195 @@ mod tests {
     }
 
     #[test]
-    fn does_not_reach_back_past_the_last_two_turns() {
+    fn does_not_reach_back_into_an_earlier_round() {
         // The matching prompt sits buried before another full user/assistant
-        // round; only the trailing user turn or the user-before-trailing-
-        // assistant are eligible, so it is never stamped.
+        // round. The walk is bounded by the recency gate, not by a turn count:
+        // it stops at the first turn older than this turn's start, which is the
+        // completed reply above — so the identical prompt behind it is out of
+        // reach however short the transcript is.
         let mut turns = vec![
             user_text_turn("turn-0", "hello", at(-30)),
             assistant_text_turn("turn-1", "a", at(-29), true),
             user_text_turn("turn-2", "ok", at(1)),
             assistant_text_turn("turn-3", "b", at(2), false),
         ];
-        apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        let stamped =
+            apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        assert_eq!(stamped, None, "nothing in the running turn matches");
         assert_eq!(turns[0].id, "turn-0");
         assert_eq!(turns[2].id, "turn-2", "non-matching tail user turn untouched");
     }
 
     #[test]
-    fn does_not_stamp_with_two_trailing_assistant_turns() {
-        // Bounded to a single trailing assistant: a deeper assistant tail means
-        // we can't be sure the user prompt is the in-flight one, so bail.
+    fn stamps_nothing_when_the_clocks_cannot_say_which_continue_this_is() {
+        // `cline.rs` and `antigravity.rs` fall back to the PARSE INSTANT when a
+        // record carries no usable time, and a parse instant is by construction
+        // at or after `started_at` — so for those the recency gate never fires
+        // and NOTHING here says where this turn began. Two rounds of "continue"
+        // are then indistinguishable from one round the user steered with the
+        // same word, and stamping the older one would make
+        // `visiblePersistedTurns` hide every assistant turn after it.
+        let parsed_at = at(1);
+        let mut turns = vec![
+            user_text_turn("turn-0", "continue", parsed_at),
+            assistant_text_turn("turn-1", "done", parsed_at, true),
+            user_text_turn("turn-2", "continue", parsed_at),
+        ];
+        let stamped = apply_in_flight_message_id(
+            &mut turns,
+            &pending_text("msg-live", "continue"),
+            Some(turn_started()),
+        );
+        assert_eq!(stamped, None, "ambiguous and unprovable → stamp nothing");
+        assert_eq!(turns[0].id, "turn-0", "untouched");
+        assert_eq!(turns[2].id, "turn-2", "untouched");
+    }
+
+    #[test]
+    fn stamps_an_unambiguous_match_even_with_no_proof_of_where_the_turn_began() {
+        // Same parse-instant transcript, but the prompt's text occurs once. A
+        // single candidate in the WHOLE transcript cannot be an earlier round's
+        // prompt confused with this one — the text is unique to it — so the
+        // clocks have nothing left to disambiguate and the stamp is safe.
+        //
+        // This is also the ordinary first turn of a conversation, where there is
+        // simply nothing older than `started_at` for the gate to find.
+        let parsed_at = at(1);
+        let mut turns = vec![
+            user_text_turn("turn-0", "run the tests", parsed_at),
+            assistant_text_turn("turn-1", "first half", parsed_at, false),
+            user_text_turn("turn-2", "also lint", parsed_at),
+        ];
+        let stamped = apply_in_flight_message_id(
+            &mut turns,
+            &pending_text("msg-live", "run the tests"),
+            Some(turn_started()),
+        );
+        assert_eq!(stamped.as_deref(), Some("msg-live"));
+        assert_eq!(turns[0].id, "msg-live");
+    }
+
+    #[test]
+    fn a_long_reply_never_costs_the_stamp() {
+        // The bound counts USER turns, not turns. Every mid-turn-persisting
+        // parser emits one assistant turn per assistant record, so a real
+        // Claude round runs to a median of 44 of them and a p90 of 317 — a
+        // bound on turns walked would void the stamp part-way through most
+        // ordinary rounds, mid-turn, which is the failure this walk removes.
+        let mut turns = vec![
+            user_text_turn("old", "earlier", at(-30)),
+            assistant_text_turn("old-a", "done", at(-29), true),
+            user_text_turn("turn-0", "hello", at(1)),
+        ];
+        for i in 0..400 {
+            turns.push(assistant_text_turn(
+                &format!("a-{i}"),
+                "step",
+                at(2),
+                false,
+            ));
+        }
+        let stamped =
+            apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        assert_eq!(stamped.as_deref(), Some("msg-live"));
+        assert_eq!(turns[2].id, "msg-live");
+    }
+
+    #[test]
+    fn stops_comparing_prompts_once_the_walk_is_plainly_not_in_one_turn() {
+        // The cost bound. Only reachable when the gate never fires, since a real
+        // window holds the prompt plus whatever was sent mid-turn; here every
+        // turn is a user turn with a parse instant, so the walk would otherwise
+        // rebuild a content signature for every prompt ever sent, on every
+        // detail fetch. Refusing is the same safe direction as ambiguity.
+        let parsed_at = at(1);
+        let mut turns = vec![user_text_turn("wanted", "hello", parsed_at)];
+        for i in 0..MAX_IN_FLIGHT_WALK_USER_TURNS {
+            turns.push(user_text_turn(&format!("u-{i}"), "filler", parsed_at));
+        }
+        let stamped =
+            apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        assert_eq!(stamped, None, "past the cost bound, stamp nothing");
+        assert_eq!(turns[0].id, "wanted", "untouched");
+
+        // One fewer and the same transcript is inside the bound, so it is the
+        // bound that refused above and not some other gate.
+        turns.pop();
+        let stamped =
+            apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        assert_eq!(stamped.as_deref(), Some("msg-live"));
+    }
+
+    #[test]
+    fn stamps_the_prompt_behind_a_reply_the_parser_split() {
+        // Previously refused: the rule was "the tail, or the user before a
+        // SINGLE trailing assistant", so a deeper assistant tail bailed.
+        //
+        // That bound predates the recency gate and is redundant beside it. A
+        // user turn at or after this turn's start was persisted DURING it, and
+        // its content is the pending prompt's — there is nothing else it could
+        // be, whatever the agent has written since. Refusing here instead cost
+        // the stamp for the whole of every OpenCode/Gemini turn whose partial
+        // reply the parser split in two, which is exactly the shape the
+        // frontend's partial suppression exists for.
         let mut turns = vec![
             user_text_turn("turn-0", "hello", at(1)),
             assistant_text_turn("turn-1", "a", at(2), false),
             assistant_text_turn("turn-2", "b", at(3), false),
         ];
-        apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
-        assert_eq!(turns[0].id, "turn-0", "left untouched");
+        let stamped =
+            apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        assert_eq!(stamped.as_deref(), Some("msg-live"));
+        assert_eq!(turns[0].id, "msg-live");
+    }
+
+    #[test]
+    fn stamps_the_prompt_behind_a_message_sent_mid_turn() {
+        // The steering shape. The agent writes a message the user sent DURING
+        // the turn into its own transcript, so the tail is that message and its
+        // content is not the prompt's. The old tail rule reported nothing here,
+        // in the middle of the turn, and every consumer reads that as "settled".
+        let mut turns = vec![
+            user_text_turn("turn-0", "hello", at(1)),
+            assistant_text_turn("turn-1", "first half", at(2), false),
+            user_text_turn("turn-2", "also check the tests", at(3)),
+        ];
+        let stamped =
+            apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        assert_eq!(stamped.as_deref(), Some("msg-live"));
+        assert_eq!(turns[0].id, "msg-live", "the prompt keeps the stamp");
+        assert_eq!(turns[2].id, "turn-2", "the mid-turn message is untouched");
+    }
+
+    #[test]
+    fn stamps_the_prompt_not_a_mid_turn_message_repeating_its_words() {
+        // "continue" is the most repeatable thing a person steers with, and the
+        // prompt itself may have been the same word. Both copies match by
+        // content and both are inside the turn, so recency cannot separate
+        // them — ORDER does: the agent writes the prompt before anything it
+        // produces, so the earliest copy in the turn is the prompt. Stamping
+        // the later one would move the anchor past the reply's first half and
+        // leave it beside the live copy of itself.
+        //
+        // An earlier round sits in front, which is what lets the recency gate
+        // fire and prove where this turn begins; without that proof the two
+        // copies are ambiguous and the walk refuses instead (see below).
+        let mut turns = vec![
+            user_text_turn("old", "hello", at(-30)),
+            assistant_text_turn("old-a", "hi", at(-29), true),
+            user_text_turn("turn-0", "continue", at(1)),
+            assistant_text_turn("turn-1", "working", at(2), false),
+            user_text_turn("turn-2", "continue", at(3)),
+        ];
+        let stamped = apply_in_flight_message_id(
+            &mut turns,
+            &pending_text("msg-live", "continue"),
+            Some(turn_started()),
+        );
+        assert_eq!(stamped.as_deref(), Some("msg-live"));
+        assert_eq!(turns[2].id, "msg-live", "the earliest copy is the prompt");
+        assert_eq!(turns[4].id, "turn-2", "the mid-turn repeat is untouched");
+        assert_eq!(turns[0].id, "old", "the earlier round is untouched");
     }
 
     #[test]

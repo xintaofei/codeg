@@ -485,8 +485,11 @@ type AssistantTurnItem = Extract<ThreadRenderItem, { kind: "turn" }>
  * Cache entry for one merged assistant run, keyed on the run's FIRST member
  * group. Valid only while every member's group reference and item key still
  * match: group identity flows through the per-turn adapter + group caches, so
- * member-group equality implies unchanged content AND sourceTurns, while the
- * keys embed phase/id/index so ordering or phase drift invalidates too. A run
+ * member-group equality implies unchanged content AND sourceTurns — the merged
+ * item FREEZES its members' `sourceTurns`, so any turn field the adapter's
+ * cache ignores would be stale here forever (`source_turn_id`, which the fork
+ * affordance reads, is in that tuple for exactly this reason). The keys embed
+ * phase/id/index so ordering or phase drift invalidates too. A run
  * containing the streaming turn misses every batch by construction (the
  * streaming turn re-adapts per batch) — that residual rebuild is the point;
  * purely historical runs hit and keep their group/parts/sourceTurns

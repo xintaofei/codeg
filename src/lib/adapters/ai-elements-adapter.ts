@@ -2579,6 +2579,7 @@ interface TurnCacheEntry {
   duration_ms: number | null | undefined
   model: string | null | undefined
   completed_at: string | null | undefined
+  source_turn_id: string | null | undefined
   adapted: AdaptedMessage
 }
 
@@ -2612,8 +2613,14 @@ export interface MessageTurnAdapter {
  * `syncTurnMetadata` after a stream finishes (initial blocks land first,
  * token totals arrive on a later DB roundtrip), so excluding them would
  * freeze the turn at its pre-patch state and the post-stream stats row
- * would never appear. Turns no longer present are GC'd at the end of
- * every adapt() call so the cache size tracks the conversation.
+ * would never appear. `source_turn_id` rides along for the same reason even
+ * though nothing here renders it: a LATER sync can place the parser's name on
+ * a turn whose stats an earlier one already pinned, and downstream caches take
+ * "same adapted message" to mean "same turn object" — `mergedRunCache` reuses a
+ * merged run's frozen `sourceTurns` on that basis, which would leave the reply's
+ * "fork from here" greyed out as unnamed for the rest of the session. Turns no
+ * longer present are GC'd at the end of every adapt() call so the cache size
+ * tracks the conversation.
  */
 export function createMessageTurnAdapter(): MessageTurnAdapter {
   const cache = new Map<string, TurnCacheEntry>()
@@ -2644,7 +2651,8 @@ export function createMessageTurnAdapter(): MessageTurnAdapter {
             cached.usage === turn.usage &&
             cached.duration_ms === turn.duration_ms &&
             cached.model === turn.model &&
-            cached.completed_at === turn.completed_at
+            cached.completed_at === turn.completed_at &&
+            cached.source_turn_id === turn.source_turn_id
           ) {
             out[i] = cached.adapted
             continue
@@ -2679,6 +2687,7 @@ export function createMessageTurnAdapter(): MessageTurnAdapter {
             duration_ms: turn.duration_ms,
             model: turn.model,
             completed_at: turn.completed_at,
+            source_turn_id: turn.source_turn_id,
             adapted,
           })
         } else {

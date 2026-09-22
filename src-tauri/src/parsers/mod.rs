@@ -677,6 +677,38 @@ pub fn title_from_user_text(text: &str) -> String {
     truncate_str(&fold_reference_links(text), 100)
 }
 
+/// Widen one projected prompt block into a rendered turn's block type.
+///
+/// The projection itself is [`crate::acp::types::project_user_prompt_block`] —
+/// the SINGLE rule shared with the live broadcast. This only carries the result
+/// across into `models::message`, keeping the image `uri` that the live wire
+/// type has nowhere to put but the frontend uses for an image's display name.
+pub fn user_turn_block(block: &crate::acp::types::PromptInputBlock) -> ContentBlock {
+    match crate::acp::types::project_user_prompt_block(block) {
+        crate::acp::types::UserTurnBlock::Text { text } => ContentBlock::Text { text },
+        crate::acp::types::UserTurnBlock::Image {
+            data,
+            mime_type,
+            uri,
+        } => ContentBlock::Image {
+            data,
+            mime_type,
+            uri,
+        },
+    }
+}
+
+/// Read one recorded ACP content block off disk and project it the way the
+/// live path projects the same prompt. `None` when the block has nothing to
+/// render — see [`crate::acp::types::prompt_block_from_wire`].
+///
+/// Every history parser that reconstructs a user turn from raw ACP content
+/// goes through here, so "how an attachment appears in a user message" is
+/// decided once rather than per agent.
+pub fn user_turn_block_from_wire(item: &serde_json::Value) -> Option<ContentBlock> {
+    crate::acp::types::prompt_block_from_wire(item).map(|b| user_turn_block(&b))
+}
+
 /// Fill in `duration_ms` for assistant turns whose agent reports no timing of
 /// its own, by *tiling* the conversation timeline: a reply took as long as the
 /// span between the end of the previous activity and its own completion.

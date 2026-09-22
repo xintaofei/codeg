@@ -45,6 +45,7 @@ import {
   getBrowserTabState,
   requestBrowserBoundsResync,
   resetBrowserTabStoreForTests,
+  setBrowserTabState,
 } from "@/lib/browser/browser-tab-store"
 import {
   acquireNativeSurfaceOcclusion,
@@ -285,6 +286,44 @@ describe("BrowserSurfaceHost", () => {
       height: 600,
     })
     expect(api.browserSetVisible).toHaveBeenLastCalledWith("host2", true, false)
+  })
+
+  // The answer to `browser_open_tab` is decided before the page starts
+  // loading, and on WKWebView it is not ordered against the event evals that
+  // carry `browser://state` — so the state of a page that has already
+  // committed can arrive first. Written over it, the tab would be loading
+  // with nothing left to correct it: an empty tab's `about:blank` commits at
+  // once and emits nothing afterwards, so it spun for the rest of the
+  // session.
+  it("does not put the create's answer over a state that arrived first", async () => {
+    let answer: (state: BrowserTabState) => void = () => {}
+    api.browserOpenTab.mockImplementation(
+      () => new Promise<BrowserTabState>((resolve) => (answer = resolve))
+    )
+    render(<BrowserSurfaceHost tab={emptyTab("host10")} />)
+    await flush()
+    // The blank page committed and the event beat the answer home.
+    act(() => setBrowserTabState(emptyState("host10")))
+    expect(getBrowserTabState("browser:host10")?.loading).toBe(false)
+
+    act(() => answer(state("host10")))
+    await flush()
+    expect(getBrowserTabState("browser:host10")?.loading).toBe(false)
+    expect(getBrowserTabState("browser:host10")?.url).toBe("about:blank")
+  })
+
+  // And with nothing else to go on it IS the state: a tab whose events are
+  // all still to come has only this one.
+  it("seeds the store from the create's answer when nothing arrived first", async () => {
+    api.browserOpenTab.mockImplementation(() =>
+      Promise.resolve(state("host11"))
+    )
+    render(<BrowserSurfaceHost tab={tab("host11")} />)
+    await flush()
+    // The whole answer, not a field or two of it: seeding has to put the
+    // state the command decided into the store, and a partial assertion
+    // would pass just as happily on a truncated one.
+    expect(getBrowserTabState("browser:host11")).toEqual(state("host11"))
   })
 
   // Bounds are pushed only when they change, which is right while this host

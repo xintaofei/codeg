@@ -40,24 +40,10 @@ Codeg（Code Generation）はマルチエージェント・コーディングワ
   </tr>
   <tr>
     <td align="center" width="220">
-      <a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE" target="_blank"><img src="../images/sui-xiang.jpg" alt="随想AI中转站" width="200" /></a><br/>
-      <strong><a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE">随想AI中转站</a></strong>
-    </td>
-    <td>本プロジェクトをスポンサードしてくださった随想AI中转站に感謝します！随想AI中转站は、Claude、Codex、Gemini などの中継サービスを提供する、信頼性が高く効率的な API 中継サービスプロバイダーです。新規アカウントは<a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE">登録</a>後、毎日のチェックインで 0.5 元のテストクレジットがもらえます。チャージは 1:1 で反映され、サブスクリプション不要の従量課金制です。複数回線の冗長化、リージョン間ディザスタリカバリ、自動フェイルオーバーにより、長時間の SSE 接続も途切れません。</td>
-  </tr>
-  <tr>
-    <td align="center" width="220">
       <a href="https://hezu.ink/sign-up?aff=0wVz" target="_blank"><img src="../images/hezu-ink.jpg" alt="合租巴士" width="200" /></a><br/>
       <strong><a href="https://hezu.ink/sign-up?aff=0wVz">合租巴士</a></strong>
     </td>
     <td>本プロジェクトをスポンサードしてくださった合租巴士に感謝します！合租巴士は、Codex や Claude Code などの主流モデルに高い安定性の中継機能を提供する、信頼性が高く効率的な AI 中継サービスプラットフォームです。チャージ比率は透明（1:1）で、Codex のレート補助は 0.08 から利用可能です。<a href="https://hezu.ink/sign-up?aff=0wVz">公式サイトからグループに参加すると $5 分の体験クレジットがもらえます</a>。</td>
-  </tr>
-  <tr>
-    <td align="center" width="220">
-      <a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta" target="_blank"><img src="../images/onehop.jpg" alt="OneHop" width="120" /></a><br/>
-      <strong><a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta">OneHop</a></strong>
-    </td>
-    <td>本プロジェクトをスポンサードしてくださった OneHop に感謝します！OneHop を使えば、Codeg ユーザーは OpenAI 互換の API キー 1 つで、GPT、Claude、Gemini、DeepSeek、Kimi、Qwen など数百もの主要モデルを利用できます。複数のプロバイダーアカウントを管理したり、コードを何度も書き換えたりすることなくモデルを切り替えられ、使った分だけの従量課金です。<a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta">Codeg 経由でサインアップ</a>すると $1 分のクレジットが付与され、さらに OneHop コミュニティに参加してウェルカムアクティビティに参加すると追加で $5 分——合計で最大 $6 分のテストクレジットを獲得できます。</td>
   </tr>
   <tr>
     <td align="center" width="220">
@@ -83,6 +69,13 @@ Codeg（Code Generation）はマルチエージェント・コーディングワ
       UCloud の星図 AstraFlow 大規模モデルプラットフォームは、200 以上のモデルをワンクリックで呼び出せます。Kimi K3、DeepSeek V4/V3、Qwen 3、GLM5.2、happyhorse など世界トップクラスのオープンソース大規模モデルを内蔵しており、自前の学習は不要、すぐに使い始められます。<br/>
       上のリンクから<strong>メールアドレス</strong>で登録し、実名認証を完了すると<a href="https://f.howxm.com/xs/u/HVFW5X8EIYV1">50 元分の計算リソースクレジットを受け取れます</a>。
     </td>
+  </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG" target="_blank"><img src="../images/fluxion-ai.png" alt="Fluxion AI" width="160" /></a><br/>
+      <strong><a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG">Fluxion AI</a></strong>
+    </td>
+    <td>本プロジェクトをスポンサードしてくださった Fluxion AI に感謝します！Fluxion AI は、統一されたひとつの API を通じて、GPT、Claude、Gemini をはじめとする主要な AI モデルへの高速・安定・低コストなアクセスを提供します。新規ユーザーは<a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG">専用リンク</a>から登録すると $3 分の API クレジットを受け取れます。</td>
   </tr>
 </table>
 

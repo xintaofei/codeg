@@ -40,24 +40,10 @@ Codeg（Code Generation）是一个多智能体编码工作台：把所有 AI �
   </tr>
   <tr>
     <td align="center" width="220">
-      <a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE" target="_blank"><img src="../images/sui-xiang.jpg" alt="随想AI中转站" width="200" /></a><br/>
-      <strong><a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE">随想AI中转站</a></strong>
-    </td>
-    <td>感谢随想AI中转站对本项目的赞助！随想AI中转站是一家可靠高效的 API 中继服务提供商，提供 Claude、Codex、Gemini 等的中继服务。新账户<a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE">注册</a>后每日签到就送 0.5 元测试额度，充值额度 1:1，无需订阅，按量付费。多线路冗余、跨区域容灾、自动故障切换，长链路 SSE 不中断。</td>
-  </tr>
-  <tr>
-    <td align="center" width="220">
       <a href="https://hezu.ink/sign-up?aff=0wVz" target="_blank"><img src="../images/hezu-ink.jpg" alt="合租巴士" width="200" /></a><br/>
       <strong><a href="https://hezu.ink/sign-up?aff=0wVz">合租巴士</a></strong>
     </td>
     <td>感谢合租巴士对本项目的赞助！合租巴士是一家可靠高效的 AI 中转服务平台，主要提供 Codex、Claude Code 等主流模型的高稳定中转能力，充值比例透明（1:1），Codex 倍率补贴低至 0.08。<a href="https://hezu.ink/sign-up?aff=0wVz">官网进群送 5 刀体验金</a>。</td>
-  </tr>
-  <tr>
-    <td align="center" width="220">
-      <a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta" target="_blank"><img src="../images/onehop.jpg" alt="OneHop" width="120" /></a><br/>
-      <strong><a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta">OneHop</a></strong>
-    </td>
-    <td>感谢 OneHop 对本项目的赞助！OneHop 让 Codeg 用户仅用一个 OpenAI 兼容的 API 密钥即可调用数百款领先模型，包括 GPT、Claude、Gemini、DeepSeek、Kimi 和 Qwen。无需管理多个供应商账号或反复修改代码即可切换模型，且按用量付费。<a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta">通过 Codeg 注册</a>即可获得 1 美元额度，再加入 OneHop 社区并参与欢迎活动可额外获得 5 美元——最高共计 6 美元测试额度。</td>
   </tr>
   <tr>
     <td align="center" width="220">
@@ -83,6 +69,13 @@ Codeg（Code Generation）是一个多智能体编码工作台：把所有 AI �
       优刻得星图astraflow大模型，支持200+模型一键调用：内置 Kimi K3、DeepSeek V4/V3、Qwen 3、GLM5.2、happyhorse等全球领先开源大模型，无需自训，开箱即用。<br/>
       通过上面链接<strong>邮箱</strong>注册并实名后<a href="https://f.howxm.com/xs/u/HVFW5X8EIYV1">领取50元算力金</a>。
     </td>
+  </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG" target="_blank"><img src="../images/fluxion-ai.png" alt="Fluxion AI" width="160" /></a><br/>
+      <strong><a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG">Fluxion AI</a></strong>
+    </td>
+    <td>感谢 Fluxion AI 对本项目的赞助！Fluxion AI 通过一个统一的 API，提供快速、可靠、高性价比的 GPT、Claude、Gemini 等领先 AI 模型接入。新用户通过<a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG">我们的专属链接</a>注册可获得 3 美元 API 额度。</td>
   </tr>
 </table>
 
