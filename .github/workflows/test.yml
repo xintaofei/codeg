@@ -40,7 +40,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Lint
-        run: pnpm eslint .
+        run: pnpm lint .
 
       - name: Browser agent bundle matches its source
         # `src-tauri/src/browser/js/agent.bundle.js` is committed so that a
