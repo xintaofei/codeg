@@ -96,6 +96,26 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
     }
   )
 
+  it("keeps a reference link on the definition it resolves to", async () => {
+    // CommonMark takes the first `[doc]:`; the relative duplicate flattens to
+    // the same `/docs/a.md` through harden, and must not repoint the link.
+    const { container } = render(
+      <MessageResponse>
+        {"see [a][doc]\n\n[doc]: /docs/a.md\n[doc]: docs/a.md"}
+      </MessageResponse>
+    )
+    await waitFor(() => {
+      expect(fileBadgeButton(container)).toBeTruthy()
+    })
+
+    fireEvent.click(fileBadgeButton(container))
+    await waitFor(() => {
+      expect(mocks.openFilePreview).toHaveBeenCalledWith("/docs/a.md", {
+        line: undefined,
+      })
+    })
+  })
+
   it("leaves a scheme-less web address alone rather than guess it is a file", async () => {
     const { container } = render(
       <MessageResponse>{"see [the repo](github.com/foo/bar)"}</MessageResponse>

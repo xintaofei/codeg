@@ -147,6 +147,39 @@ describe("remarkRewriteFileUriLinks", () => {
     ).toBe("./index.html")
   })
 
+  it("marks a reference only from the definition it resolves to (the first)", () => {
+    const referenceMark = (...urls: string[]) => {
+      const tree: Node = {
+        type: "root",
+        children: [
+          {
+            type: "paragraph",
+            children: [
+              {
+                type: "linkReference",
+                identifier: "doc",
+                children: [{ type: "text" }],
+              },
+            ],
+          },
+          ...urls.map((url) => ({
+            type: "definition",
+            identifier: "doc",
+            url,
+          })),
+        ],
+      }
+      remarkRewriteFileUriLinks()(tree)
+      return tree.children![0].children![0].data?.hProperties?.[
+        RELATIVE_FILE_HREF_PROPERTY
+      ]
+    }
+    // `/docs/a.md` is what the link opens; the duplicate's `./docs/a.md`
+    // flattens to the same harden output and must not be carried onto it.
+    expect(referenceMark("/docs/a.md", "docs/a.md")).toBeUndefined()
+    expect(referenceMark("index.html", "other.md")).toBe("./index.html")
+  })
+
   it("emits a UNC file:// URI as a backslash UNC path (unambiguously local)", () => {
     // //server/share would be indistinguishable from a protocol-relative
     // web url downstream; the backslash form tags it as a local file.

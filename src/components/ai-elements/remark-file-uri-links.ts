@@ -175,7 +175,12 @@ export function remarkRewriteFileUriLinks() {
     })
 
     // Relative definitions, by identifier: the `<a>` of a `[text][id]` link is
-    // built from its linkReference node, so that node carries the mark.
+    // built from its linkReference node, so that node carries the mark. Only
+    // the FIRST definition of an identifier counts — it is the one CommonMark
+    // (and mdast-util-to-hast) resolves the link to, so a later duplicate must
+    // not put its path on the link: `[doc]: /a.md` then `[doc]: a.md` would
+    // otherwise turn the absolute `/a.md` into `./a.md`.
+    const seenDefinitionIds = new Set<string>()
     const relativeDefinitions = new Map<string, string>()
 
     walk(tree, (node) => {
@@ -199,6 +204,8 @@ export function remarkRewriteFileUriLinks() {
             ? node.identifier.toLowerCase()
             : ""
         if (imageRefIds.has(id)) return
+        const effective = !seenDefinitionIds.has(id)
+        seenDefinitionIds.add(id)
         const rewritten = rewriteLocalFileUrl(node.url)
         if (rewritten != null) {
           node.url = rewritten
@@ -207,7 +214,7 @@ export function remarkRewriteFileUriLinks() {
         const relative = explicitRelativeFileHref(node.url)
         if (relative != null) {
           node.url = relative
-          relativeDefinitions.set(id, relative)
+          if (effective) relativeDefinitions.set(id, relative)
         }
       }
     })
