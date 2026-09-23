@@ -74,12 +74,20 @@ describe("remarkRewriteFileUriLinks", () => {
     expect(rewrite("src/main.rs")).toBe("./src/main.rs")
     expect(rewrite("notes.md")).toBe("./notes.md")
     expect(rewrite("index.html#L3")).toBe("./index.html#L3")
+    // `sh` is a TLD too, but here it is a script far more often than a host.
+    expect(rewrite("deploy.sh")).toBe("./deploy.sh")
+    expect(rewrite(".github/workflows/ci.yml")).toBe(
+      "./.github/workflows/ci.yml"
+    )
   })
 
   it("leaves domain-shaped and non-path targets alone", () => {
     expect(rewrite("www.example.com")).toBe("www.example.com")
     expect(rewrite("example.com")).toBe("example.com")
     expect(rewrite("foo.io")).toBe("foo.io")
+    // A domain in the host position is a web address even with a path after it.
+    expect(rewrite("github.com/foo/bar")).toBe("github.com/foo/bar")
+    expect(rewrite("example.com/docs/a.md")).toBe("example.com/docs/a.md")
     expect(rewrite("README")).toBe("README")
     expect(rewrite("#section")).toBe("#section")
     expect(rewrite("mailto:a@b.c")).toBe("mailto:a@b.c")
@@ -91,6 +99,8 @@ describe("remarkRewriteFileUriLinks", () => {
       ["./index.html", "./index.html"],
       ["../site/index.html", "../site/index.html"],
       ["index.html", "./index.html"],
+      // An explicit `./` is a path even with a space in it (`<./my notes.md>`).
+      ["./my notes.md", "./my notes.md"],
     ]) {
       const tree = linkTree(url)
       remarkRewriteFileUriLinks()(tree)

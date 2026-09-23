@@ -50,6 +50,14 @@ describe("rehypeRestoreRelativeFileLinks", () => {
         [RELATIVE_FILE_HREF_PROPERTY]: "./index.html",
       })
     ).toEqual({ href: "/other.html" })
+    // A web link never matches: harden keeps its origin, the carried path
+    // flattens to a bare pathname.
+    expect(
+      restore({
+        href: "https://example.com/index.html",
+        [RELATIVE_FILE_HREF_PROPERTY]: "./index.html",
+      })
+    ).toEqual({ href: "https://example.com/index.html" })
   })
 
   it("never restores a value that is not explicitly relative", () => {

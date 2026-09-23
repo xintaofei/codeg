@@ -88,9 +88,12 @@ function rewriteLocalFileUrl(url: string): string | null {
 // a UNC/protocol-relative `//`/`\\` start, or a `www.` host is not a relative
 // local path.
 const NOT_BARE_RELATIVE = /^(?:[a-zA-Z][a-zA-Z\d+\-.]*:|[/#\\~]|www\.)/i
-// A bare single segment whose "extension" is one of these is a domain
-// (`example.com`), not a file: `index.html` and `example.com` are the same
-// shape, and only the suffix tells them apart. Such a link stays as it is.
+// A bare path whose first segment ends in one of these is a scheme-less web
+// address (`example.com`, `github.com/a/b`), not a file: `index.html` and
+// `example.com` are the same shape, and only the suffix tells them apart. Such
+// a link stays as it is. `sh` is left out on purpose: in a coding transcript
+// `deploy.sh` is a script far more often than a `*.sh` host linked without its
+// scheme.
 const DOMAIN_LIKE_SUFFIXES = new Set([
   "com",
   "net",
@@ -102,7 +105,6 @@ const DOMAIN_LIKE_SUFFIXES = new Set([
   "co",
   "cn",
   "me",
-  "sh",
   "xyz",
   "info",
   "edu",
@@ -117,22 +119,23 @@ const DOMAIN_LIKE_SUFFIXES = new Set([
 
 /**
  * The explicitly-relative form (`./…` / `../…`) of a relative local link, or
- * `null` when `url` is not one. A bare path (`index.html`, `src/main.rs`)
+ * `null` when `url` is not one. An explicit `./` / `../` always counts, spaces
+ * included (`[x](<./my notes.md>)`). A bare path (`index.html`, `src/main.rs`)
  * counts only when it is shaped like a file: a slash somewhere, or an
- * extension on its last segment that isn't a domain suffix.
+ * extension on its last segment — and its first segment doesn't end in a
+ * domain suffix.
  */
 export function explicitRelativeFileHref(url: string): string | null {
   const trimmed = url.trim()
-  if (!trimmed || /\s/.test(trimmed)) return null
+  if (!trimmed) return null
   if (trimmed.startsWith("./") || trimmed.startsWith("../")) return trimmed
-  if (NOT_BARE_RELATIVE.test(trimmed)) return null
+  if (/\s/.test(trimmed) || NOT_BARE_RELATIVE.test(trimmed)) return null
+  const firstSegment = trimmed.split(/[/?#]/, 1)[0]
+  const hostSuffix = firstSegment.match(/\.([A-Za-z0-9]+)$/)?.[1]?.toLowerCase()
+  if (hostSuffix && DOMAIN_LIKE_SUFFIXES.has(hostSuffix)) return null
   const hasSlash = trimmed.includes("/")
-  const ext = trimmed
-    .match(/\.([A-Za-z0-9]{1,8})(?:[#?]|$)/)?.[1]
-    ?.toLowerCase()
-  if (!hasSlash && !ext) return null
-  if (!hasSlash && ext && DOMAIN_LIKE_SUFFIXES.has(ext)) return null
-  return `./${trimmed}`
+  const hasExtension = /\.[A-Za-z0-9]{1,8}(?:[#?]|$)/.test(trimmed)
+  return hasSlash || hasExtension ? `./${trimmed}` : null
 }
 
 /** Carry the explicit relative href past harden on the element this node becomes. */

@@ -47,9 +47,13 @@ function hardenedForm(href: string): string | null {
  *
  * Runs after harden. The original is taken back only when it is still an
  * explicitly relative path (`./…` / `../…`) AND harden's output is exactly
- * what harden makes of it — so the attribute can neither introduce a scheme
- * nor redirect a link to somewhere its href never pointed. The attribute is
- * always removed, restored or not.
+ * what harden makes of it — so the attribute can never bring in a scheme or a
+ * host. It does not prove the pair came from our remark step: raw HTML can
+ * write the attribute too (sanitize has to let it through), and
+ * `<a href="/x" data-codeg-relative-href="../x">` does come out as `../x`.
+ * That buys nothing — it is still a local path, the same one a markdown
+ * `[t](../x)` link can write outright. The attribute is always removed,
+ * restored or not.
  */
 export function rehypeRestoreRelativeFileLinks() {
   return (tree: HastElementLike) => {

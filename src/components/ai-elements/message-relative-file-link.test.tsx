@@ -1,13 +1,15 @@
 import { fireEvent, render, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-// End-to-end guard for the "Windows local file link renders as [blocked]" bug
-// (issue #362). Exercises the REAL Streamdown pipeline (no streamdown mock) so
-// the assertions cover actual rehype `sanitize` + `harden` behavior — the layer
-// that read `E:` in `E:/…` as a URL protocol, stripped the href, and let harden
-// replace the link with "<name> [blocked]". Only the leaf dependencies of the
-// real link-safety hook are stubbed, so the click path (badge → link-safety →
-// `openFilePreview`) is genuinely exercised too.
+// End-to-end guard for relative local file links. rehype-harden resolves a
+// schemeless href against a placeholder origin and keeps only its pathname, so
+// `./index.html` used to open `/index.html` at the filesystem root, and a bare
+// `index.html` did not parse at all and became "<name> [blocked]". Exercises
+// the REAL Streamdown pipeline (no streamdown mock), so the assertions cover
+// actual rehype `sanitize` + `harden` behavior and the restore step after it.
+// Only the leaf dependencies of the real link-safety hook are stubbed, so the
+// click path (badge → link-safety → `openFilePreview`) is genuinely exercised
+// too.
 const mocks = vi.hoisted(() => ({
   openFilePreview: vi.fn(),
   openUrl: vi.fn(),
@@ -70,6 +72,8 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
     ["./index.html", "index.html"],
     ["index.html", "index.html"],
     ["../site/index.html", "../site/index.html"],
+    ["deploy.sh", "deploy.sh"],
+    ["<./my notes.md>", "my notes.md"],
   ])(
     "opens %s relative to the folder, not at the filesystem root",
     async (href, opened) => {
@@ -92,7 +96,19 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
     }
   )
 
-  it("does not let raw HTML use the carrier to change a link's target", async () => {
+  it("leaves a scheme-less web address alone rather than guess it is a file", async () => {
+    const { container } = render(
+      <MessageResponse>{"see [the repo](github.com/foo/bar)"}</MessageResponse>
+    )
+    await waitFor(() => {
+      expect(container.textContent).toContain("the repo")
+    })
+    expect(
+      container.querySelector("button[data-resource-kind='file']")
+    ).toBeNull()
+  })
+
+  it("does not let raw HTML use the carrier to bring in a scheme", async () => {
     const { container } = render(
       <MessageResponse>
         {
