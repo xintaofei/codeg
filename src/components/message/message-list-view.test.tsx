@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   advanceReplyFold,
+  compactionOnlyPart,
   dedupeCompactionItems,
   extractDelegationSources,
   isForkPointUnnamed,
@@ -773,5 +774,49 @@ describe("dedupeCompactionItems", () => {
   it("returns the input array when nothing is dropped", () => {
     const items = [assistantItem("a"), divider("c1", full)]
     expect(dedupeCompactionItems(items)).toBe(items)
+  })
+})
+
+describe("compactionOnlyPart", () => {
+  function compactionGroup(
+    state: "input-available" | "output-available"
+  ): ResolvedMessageGroup {
+    return {
+      id: "live-1",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-call",
+          toolCallId: "cmp_1",
+          toolName: "Context compaction",
+          input: null,
+          state,
+          output: "We kept the parser notes.",
+          meta: {
+            contextCompaction: { version: 1 },
+            "codeg.compactionSummary": true,
+          },
+        },
+      ],
+      resources: [],
+      images: [],
+    }
+  }
+
+  // A `/compact` still running is a compaction-only live turn, hoisted like a
+  // finished one — so the hoisted item has to keep the lifecycle, or it reads
+  // "compacted" (and its summary renders settled) while it is still going.
+  it("carries the call's state and claimed summary onto the hoisted item", () => {
+    expect(compactionOnlyPart(compactionGroup("input-available"))).toEqual({
+      meta: {
+        contextCompaction: { version: 1 },
+        "codeg.compactionSummary": true,
+      },
+      summary: "We kept the parser notes.",
+      state: "input-available",
+    })
+    expect(compactionOnlyPart(compactionGroup("output-available"))?.state).toBe(
+      "output-available"
+    )
   })
 })

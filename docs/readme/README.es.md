@@ -77,6 +77,13 @@ Reúne las sesiones de todas las CLI de agentes compatibles en un único espacio
     </td>
     <td>¡Gracias a Fluxion AI por patrocinar este proyecto! Fluxion AI ofrece un acceso por API rápido, fiable y rentable a GPT, Claude, Gemini y otros modelos de IA líderes mediante una única API unificada. Los nuevos usuarios pueden recibir 3 USD en créditos de API a través de <a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG">nuestro enlace exclusivo</a>.</td>
   </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://beeapi.ai/signup?aff=HIAB5JCVRNNA" target="_blank"><img src="../images/beeapi.jpg" alt="BeeAPI" width="200" /></a><br/>
+      <strong><a href="https://beeapi.ai/signup?aff=HIAB5JCVRNNA">BeeAPI</a></strong>
+    </td>
+    <td>¡Gracias a <a href="https://beeapi.ai/signup?aff=HIAB5JCVRNNA">BeeAPI</a> por patrocinar este proyecto! BeeAPI es una plataforma profesional de retransmisión y agregación de API de IA multimodelo que reúne a múltiples proveedores y una amplia variedad de modelos de IA populares. Admite la comparación de precios entre proveedores, el enrutamiento inteligente por grupos y un acceso y facturación unificados mediante API, lo que te permite usar servicios de IA de forma más flexible, estable y económica.</td>
+  </tr>
 </table>
 
 > ¿Quieres convertirte en patrocinador de Codeg? [Contáctanos por correo electrónico.](mailto:itpkcn@gmail.com)

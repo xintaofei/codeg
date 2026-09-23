@@ -10,7 +10,9 @@
  *
  * They used to be four sections, each with its own heading, description, card
  * and Save bar: four times the chrome for five switches, which is what made
- * `/settings/general` read as far longer than it configures.
+ * `/settings/general` read as far longer than it configures. It now sits on
+ * `/settings/collaboration` under the delegation panel it shares a companion
+ * process with.
  *
  * The names, one-liners and icons come from `lib/agent-tool-groups`, shared
  * with the status-bar codeg-mcp popover — the two lists are the same switches

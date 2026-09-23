@@ -642,15 +642,19 @@ async fn async_main() -> ExitCode {
     eprintln!("[SERVER] Token: {}", token);
     // Port bridge for dev servers on this host (web-mode built-in browser):
     // bound where our own socket is, on the ports after ours unless
-    // CODEG_BRIDGE_PORTS says otherwise.
+    // CODEG_BRIDGE_PORTS says otherwise — or nothing of its own at all when
+    // CODEG_BRIDGE_HOST_PATTERN names the targets by hostname on this port.
     let bridge =
         codeg_lib::web::browser_bridge::BridgeConfig::from_env(&advertised_host, actual_port);
     match &bridge {
         Some(config) => tracing::info!(
-            "[SERVER] Port bridge for dev servers: ports {} (CODEG_BRIDGE_PORTS)",
-            codeg_lib::web::describe_ports(&config.ports)
+            "[SERVER] Port bridge for dev servers: {}",
+            codeg_lib::web::describe_bridge(config)
         ),
-        None => tracing::info!("[SERVER] Port bridge for dev servers: off (CODEG_BRIDGE_PORTS)"),
+        None => tracing::info!(
+            "[SERVER] Port bridge for dev servers: {}",
+            codeg_lib::web::BRIDGE_OFF
+        ),
     }
     codeg_lib::web::browser_bridge::configure(bridge);
 

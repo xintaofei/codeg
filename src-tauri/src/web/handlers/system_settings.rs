@@ -61,8 +61,12 @@ pub async fn get_system_terminal_settings(
 }
 
 pub async fn get_available_terminal_shells(
+    Extension(state): Extension<Arc<AppState>>,
 ) -> Result<Json<AvailableTerminalShells>, AppCommandError> {
-    Ok(Json(settings_commands::build_available_terminal_shells()))
+    let settings = settings_commands::load_system_terminal_settings(&state.db.conn).await?;
+    Ok(Json(settings_commands::build_available_terminal_shells(
+        settings.default_shell.as_deref(),
+    )))
 }
 
 #[derive(Deserialize)]

@@ -52,6 +52,8 @@
       "science": "Ciencia",
       "office_tools": "Herramientas de oficina",
       "skill_packs": "Paquetes de habilidades",
+      "collaboration": "Colaboración",
+      "browser": "Navegador",
       "quick_messages": "Mensajes rápidos",
       "logs": "Registros de ejecución",
       "memory": "Memoria"
@@ -1711,9 +1713,9 @@
   "GeneralSettings": {
     "loading": "Cargando...",
     "sectionTitle": "General",
-    "sectionDescription": "Preferencias centralizadas para el terminal predeterminado, la aceleración de renderizado, las notificaciones y la delegación entre agentes.",
+    "sectionDescription": "Preferencias centralizadas para el terminal predeterminado, la aceleración de renderizado, el comportamiento al cerrar la ventana, las notificaciones y los sonidos.",
     "terminalTitle": "Terminal predeterminada",
-    "terminalDescription": "Elige el shell que se usa al abrir nuevas pestañas de terminal desde la barra de terminal o el árbol de archivos. Los agentes también lo usan cuando piden a codeg que ejecute una línea de comandos completa.",
+    "terminalDescription": "Elige el shell que codeg usa para las nuevas pestañas de terminal y para las líneas de comandos completas que un agente le pide ejecutar. Los agentes con shell propio (Codex, Claude Code) ejecutan los comandos dentro de su propio proceso, así que este ajuste no les llega.",
     "terminalSystemDefault": "Predeterminado del sistema",
     "terminalPowerShell7": "PowerShell 7 (pwsh)",
     "terminalWindowsPowerShell": "Windows PowerShell",
@@ -1736,6 +1738,10 @@
     "restartNow": "Reiniciar ahora",
     "restartFailed": "No se pudo reiniciar: {message}",
     "loadFailed": "Error al cargar: {message}"
+  },
+  "CollaborationSettings": {
+    "sectionTitle": "Colaboración",
+    "sectionDescription": "Cómo colaboran los agentes entre sí y a qué herramientas propias de codeg pueden acceder dentro de una conversación."
   },
   "LoginPage": {
     "documentTitle": "Iniciar sesión - codeg",
@@ -3507,6 +3513,7 @@
             "child_max_turn_requests": "subagente: límite de solicitudes",
             "child_empty": "subagente sin salida",
             "child_auth_required": "subagente requiere sesión",
+            "child_rejected": "subagente rechazó la solicitud",
             "child_unknown": "subagente: error",
             "unknown": "tarea desconocida"
           }
@@ -3831,6 +3838,7 @@
         "compacted": "Contexto compactado",
         "compactedTokens": "Contexto compactado · {before} → {after} tokens",
         "failed": "Error al compactar el contexto",
+        "summary": "Resumen",
         "triggerManual": "Activada manualmente",
         "triggerAutomatic": "Activada automáticamente"
       },
@@ -5037,6 +5045,7 @@
   "BrowserSettings": {
     "title": "Navegador integrado",
     "description": "Las páginas web abiertas desde conversaciones, resultados de herramientas y la terminal pueden mostrarse como pestañas junto a tus archivos, sin salir de la aplicación.",
+    "descriptionWeb": "En una sesión de navegador, las páginas se abren en el navegador que ya estás usando. La excepción es un servidor que se ejecuta en el host de codeg: se reenvía a una pestaña aquí. Estos son los ajustes que siguen decidiendo algo.",
     "defaultTargetTitle": "Dónde se abren los enlaces",
     "defaultTargetHint": "Se configura por origen. Haz ⌘/Ctrl+clic en un enlace para usar la otra opción solo esta vez.",
     "sourceTranscript": "Mensajes de la conversación",
@@ -5076,6 +5085,7 @@
     "downloadsHint": "Los archivos que descarga una página se guardan en {dir}. No se abre nada automáticamente y nunca se reemplaza un archivo existente.",
     "rulesTitle": "Reglas de sitio",
     "rulesHint": "Por sitio: siempre el navegador integrado, siempre el navegador del sistema, o bloquear. Los patrones son un nombre de host, *.example.com o *, con un :puerto opcional; gana la coincidencia más específica.",
+    "rulesHintWeb": "Por sitio: bloquear. En una sesión de navegador no se puede elegir dónde se abre un enlace. Los patrones son un nombre de host, *.example.com o *, con un :puerto opcional; gana la coincidencia más específica.",
     "serviceOpenTitle": "Servidores locales",
     "serviceOpenHint": "Cuando un servidor iniciado en un terminal imprime su dirección, ábrela en una pestaña del navegador. Solo direcciones de este equipo y solo cuando algo esté escuchando en ellas.",
     "serviceOpenOff": "No hacer nada",
@@ -6289,6 +6299,7 @@
       "copied": "Dirección copiada",
       "unreachableTitle": "No se puede acceder al puerto puente",
       "unreachableHint": "El servidor de codeg puso esta página en {origin}, pero tu navegador no puede acceder a él. Publica ese puerto (consulta CODEG_BRIDGE_PORTS) o define CODEG_BRIDGE_PUBLIC_HOST; si codeg se sirve por HTTPS, los puertos puente también necesitan HTTPS.",
+      "unreachableHostHint": "El servidor de codeg puso esta página en {origin}, pero tu navegador no puede acceder a ella. Ese nombre de host tiene que resolverse al servidor de codeg y atravesar el proxy que haya delante: un registro DNS comodín y un vhost comodín (consulta CODEG_BRIDGE_HOST_PATTERN).",
       "errorTitle": "Esta página no se puede mostrar aquí"
     },
     "download": {

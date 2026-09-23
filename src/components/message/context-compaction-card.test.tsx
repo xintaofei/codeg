@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { describe, expect, it } from "vitest"
 
@@ -9,10 +9,15 @@ import type { ToolCallState } from "@/lib/adapters/ai-elements-adapter"
 function renderCard(props: {
   state?: ToolCallState
   meta?: Record<string, unknown> | null
+  summary?: string | null
 }) {
   return render(
     <NextIntlClientProvider locale="en" messages={enMessages}>
-      <ContextCompactionCard state={props.state} meta={props.meta} />
+      <ContextCompactionCard
+        state={props.state}
+        meta={props.meta}
+        summary={props.summary}
+      />
     </NextIntlClientProvider>
   )
 }
@@ -116,5 +121,73 @@ describe("ContextCompactionCard", () => {
       meta: { contextCompaction: { version: 1 } },
     })
     expect(screen.getByText("Compacting context…")).toBeInTheDocument()
+  })
+
+  it("stays a plain one-line divider when there is no summary", () => {
+    renderCard({
+      state: "output-available",
+      meta: { contextCompaction: { version: 1 } },
+      summary: "   ",
+    })
+    expect(
+      screen.queryByRole("button", { name: /Summary/ })
+    ).not.toBeInTheDocument()
+  })
+
+  it("opens and closes the retained summary beneath the divider", () => {
+    renderCard({
+      state: "output-available",
+      meta: { contextCompaction: { version: 1 } },
+      summary: "We refactored **the parser**.",
+    })
+    const toggle = screen.getByRole("button", { name: /Summary/ })
+    // Collapsed by default: the boundary stays one line.
+    expect(toggle).toHaveAttribute("aria-expanded", "false")
+    expect(
+      screen.queryByTestId("context-compaction-summary")
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute("aria-expanded", "true")
+    const body = screen.getByTestId("context-compaction-summary")
+    expect(toggle).toHaveAttribute("aria-controls", body.id)
+    // Rendered as markdown, not as the raw source.
+    expect(body).toHaveTextContent("We refactored the parser.")
+    expect(body.querySelector('[data-streamdown="strong"]')).toHaveTextContent(
+      "the parser"
+    )
+
+    fireEvent.click(toggle)
+    expect(
+      screen.queryByTestId("context-compaction-summary")
+    ).not.toBeInTheDocument()
+  })
+
+  // An unterminated `**` is the tell: streaming mode completes it into bold,
+  // static mode prints the asterisks.
+  it("renders a summary that is still arriving in streaming mode", () => {
+    renderCard({
+      state: "input-available",
+      meta: { contextCompaction: { version: 1 } },
+      summary: "We kept **the pars",
+    })
+    expect(screen.getByText("Compacting context…")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: /Summary/ }))
+    const body = screen.getByTestId("context-compaction-summary")
+    expect(body.querySelector('[data-streamdown="strong"]')).toHaveTextContent(
+      "the pars"
+    )
+  })
+
+  it("renders a settled summary as static markdown", () => {
+    renderCard({
+      state: "output-available",
+      meta: { contextCompaction: { version: 1 } },
+      summary: "We kept **the pars",
+    })
+    fireEvent.click(screen.getByRole("button", { name: /Summary/ }))
+    const body = screen.getByTestId("context-compaction-summary")
+    expect(body.querySelector('[data-streamdown="strong"]')).toBeNull()
+    expect(body).toHaveTextContent("We kept **the pars")
   })
 })

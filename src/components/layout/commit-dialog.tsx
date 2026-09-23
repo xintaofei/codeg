@@ -817,11 +817,10 @@ export function CommitWorkspace({
       return (
         <ContextMenu key={`tracked:${node.path}`}>
           <ContextMenuTrigger>
-            <FileTreeFile
-              name={node.name}
-              path={node.path}
-              className="gap-1 px-1.5 py-1"
-            >
+            {/* No padding override: the row keeps the primitive's own px-2 so
+                the checkbox lands in the column a sibling folder spends on its
+                chevron, and both rows end flush on the right. */}
+            <FileTreeFile name={node.name} path={node.path}>
               <button
                 type="button"
                 onClick={(e) => {
@@ -922,11 +921,10 @@ export function CommitWorkspace({
       return (
         <ContextMenu key={`untracked:${node.path}`}>
           <ContextMenuTrigger>
-            <FileTreeFile
-              name={node.name}
-              path={node.path}
-              className="gap-1 px-1.5 py-1"
-            >
+            {/* No padding override: the row keeps the primitive's own px-2 so
+                the checkbox lands in the column a sibling folder spends on its
+                chevron, and both rows end flush on the right. */}
+            <FileTreeFile name={node.name} path={node.path}>
               <button
                 type="button"
                 onClick={(e) => {

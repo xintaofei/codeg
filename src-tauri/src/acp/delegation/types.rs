@@ -159,6 +159,15 @@ pub enum DelegationError {
     /// works.
     #[error("subagent's agent needs you to sign in again")]
     ChildAuthRequired,
+    /// Child's agent rejected the prompt outright (synthesized as `rejected` by
+    /// the connection loop — every turn-scoped rejection that is not
+    /// `authRequired`: an unsupported slash command, a provider-side error the
+    /// adapter wrapped as -32603, …). Distinct from [`Self::ChildUnknown`] for
+    /// the same reason [`Self::ChildAuthRequired`] is: the parent LLM reads this
+    /// message, and "unrecognized stop reason" would be wrong. The child's
+    /// session survives it, so re-delegating works.
+    #[error("subagent's agent rejected the prompt")]
+    ChildRejected,
     #[error("subagent ended with unrecognized stop reason: {0}")]
     ChildUnknown(String),
     #[error("canceled: {reason}")]
@@ -300,6 +309,7 @@ impl DelegationOutcome {
             DelegationError::ChildMaxTurnRequests => "child_max_turn_requests",
             DelegationError::ChildEmpty => "child_empty",
             DelegationError::ChildAuthRequired => "child_auth_required",
+            DelegationError::ChildRejected => "child_rejected",
             DelegationError::ChildUnknown(_) => "child_unknown",
             DelegationError::Canceled { .. } => "canceled",
             DelegationError::ParentSessionGone => "canceled",
@@ -334,6 +344,7 @@ mod tests {
             ),
             (DelegationError::ChildEmpty, "child_empty"),
             (DelegationError::ChildAuthRequired, "child_auth_required"),
+            (DelegationError::ChildRejected, "child_rejected"),
             (
                 DelegationError::ChildUnknown("whatever".into()),
                 "child_unknown",

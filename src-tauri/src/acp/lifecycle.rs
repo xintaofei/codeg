@@ -249,16 +249,18 @@ pub(crate) async fn handle_event(
             //
             // The target status depends on the stop reason: `end_turn` is the
             // only success case and goes to `PendingReview`. `refusal`,
-            // `max_tokens`, `max_turn_requests`, `unknown`, `empty`, and
-            // `auth_required` indicate the turn failed (often a backend/gateway
-            // error masquerading as `Refusal` per the ACP spec gap, or — common
-            // with OpenCode — a silent EndTurn that produced no output), so
-            // we flip to `Cancelled` and pair the transition with an
+            // `max_tokens`, `max_turn_requests`, `unknown`, `empty`,
+            // `auth_required` and `rejected` indicate the turn failed (often a
+            // backend/gateway error masquerading as `Refusal` per the ACP spec
+            // gap, or — common with OpenCode — a silent EndTurn that produced no
+            // output), so we flip to `Cancelled` and pair the transition with an
             // `AcpEvent::Error` toast emitted upstream by `connection.rs`.
-            // `auth_required` is the one whose CONNECTION survives (the agent
-            // refused the prompt with ACP's -32000 and wants the user to sign
-            // in), but the turn is just as dead as the others — leaving the row
-            // out of this arm would strand it at InProgress for good.
+            // `auth_required` and `rejected` are the ones whose CONNECTION
+            // survives (the agent rejected the prompt — with ACP's -32000 when
+            // it wants the user to sign in, with anything else when it simply
+            // would not run this one), but their turn is just as dead as the
+            // others — leaving those rows out of this arm would strand them at
+            // InProgress for good.
             // `cancelled` is already written by `manager.cancel()` (eager
             // CAS InProgress → Cancelled at the user-cancel entry point), so
             // we leave it alone here. `completed` transitions remain
@@ -266,7 +268,7 @@ pub(crate) async fn handle_event(
             let target_status = match stop_reason.as_str() {
                 "end_turn" => Some(ConversationStatus::PendingReview),
                 "refusal" | "max_tokens" | "max_turn_requests" | "unknown" | "empty"
-                | "auth_required" => Some(ConversationStatus::Cancelled),
+                | "auth_required" | "rejected" => Some(ConversationStatus::Cancelled),
                 // `cancelled` and any future reason: don't write here.
                 _ => None,
             };
@@ -465,6 +467,9 @@ async fn forward_turn_complete_to_broker(
         "empty" => DelegationOutcome::from_err(DelegationError::ChildEmpty, Some(conversation_id)),
         "auth_required" => {
             DelegationOutcome::from_err(DelegationError::ChildAuthRequired, Some(conversation_id))
+        }
+        "rejected" => {
+            DelegationOutcome::from_err(DelegationError::ChildRejected, Some(conversation_id))
         }
         other => DelegationOutcome::from_err(
             DelegationError::ChildUnknown(other.to_string()),

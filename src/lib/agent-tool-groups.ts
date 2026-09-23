@@ -15,7 +15,7 @@ import {
  *
  * Two surfaces render this list: the codeg-mcp popover in the bottom-right of
  * the workspace (`components/layout/status-bar-mcp.tsx`) and the "tools an
- * agent may use" panel in General settings
+ * agent may use" panel in Collaboration settings
  * (`components/settings/agent-tools-settings.tsx`). They used to hold a table
  * each, in two message namespaces, and had drifted into calling three of the
  * same switches by different names — which reads as three switches that are

@@ -10,7 +10,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/instant-collapsible"
 import { cn } from "@/lib/utils"
-import { BrainIcon, ChevronDownIcon } from "lucide-react"
+import { BrainIcon, ChevronRightIcon } from "lucide-react"
 import {
   createContext,
   memo,
@@ -19,7 +19,6 @@ import {
   useEffect,
   useMemo,
   useRef,
-  useState,
 } from "react"
 import { Streamdown, defaultRemarkPlugins } from "streamdown"
 
@@ -59,7 +58,6 @@ export type ReasoningProps = ComponentProps<typeof Collapsible> & {
   expandable?: boolean
 }
 
-const AUTO_CLOSE_DELAY = 1000
 const MS_IN_S = 1000
 
 export const Reasoning = memo(
@@ -67,21 +65,21 @@ export const Reasoning = memo(
     className,
     isStreaming = false,
     open,
-    defaultOpen,
+    defaultOpen = false,
     onOpenChange,
     duration: durationProp,
     expandable = true,
     children,
     ...props
   }: ReasoningProps) => {
-    const resolvedDefaultOpen = expandable
-      ? (defaultOpen ?? isStreaming)
-      : false
-    // Track if defaultOpen was explicitly set to false (to prevent auto-open)
-    const isExplicitlyClosed = defaultOpen === false || !expandable
-
+    // Thinking stays folded until the reader asks for it. Upstream opened the
+    // panel the moment a delta arrived and closed it a second after the block
+    // ended: that shoves the reply down the viewport mid-turn, and the close
+    // then pulls the text out from under anyone still reading it. Only an
+    // explicit `defaultOpen`/`open` opens this now, and once opened it stays
+    // open until the reader folds it back.
     const [isOpen, setIsOpen] = useControllableState<boolean>({
-      defaultProp: resolvedDefaultOpen,
+      defaultProp: expandable && defaultOpen,
       onChange: onOpenChange,
       prop: expandable ? open : false,
     })
@@ -90,14 +88,11 @@ export const Reasoning = memo(
       prop: durationProp,
     })
 
-    const hasEverStreamedRef = useRef(isStreaming)
-    const [hasAutoClosed, setHasAutoClosed] = useState(false)
     const startTimeRef = useRef<number | null>(null)
 
     // Track when streaming starts and compute duration
     useEffect(() => {
       if (isStreaming) {
-        hasEverStreamedRef.current = true
         if (startTimeRef.current === null) {
           startTimeRef.current = Date.now()
         }
@@ -106,30 +101,6 @@ export const Reasoning = memo(
         startTimeRef.current = null
       }
     }, [isStreaming, setDuration])
-
-    // Auto-open when streaming starts (unless explicitly closed)
-    useEffect(() => {
-      if (isStreaming && !isOpen && !isExplicitlyClosed) {
-        setIsOpen(true)
-      }
-    }, [isStreaming, isOpen, setIsOpen, isExplicitlyClosed])
-
-    // Auto-close when streaming ends (once only, and only if it ever streamed)
-    useEffect(() => {
-      if (
-        hasEverStreamedRef.current &&
-        !isStreaming &&
-        isOpen &&
-        !hasAutoClosed
-      ) {
-        const timer = setTimeout(() => {
-          setIsOpen(false)
-          setHasAutoClosed(true)
-        }, AUTO_CLOSE_DELAY)
-
-        return () => clearTimeout(timer)
-      }
-    }, [isStreaming, isOpen, setIsOpen, hasAutoClosed])
 
     const handleOpenChange = useCallback(
       (newOpen: boolean) => {
@@ -209,10 +180,10 @@ export const ReasoningTrigger = memo(
             <BrainIcon className="size-4" />
             {thinkingMessageBuilder(isStreaming, duration)}
             {expandable && (
-              <ChevronDownIcon
+              <ChevronRightIcon
                 className={cn(
                   "size-4 transition-transform",
-                  isOpen ? "rotate-180" : "rotate-0"
+                  isOpen ? "rotate-90" : "rotate-0"
                 )}
               />
             )}
@@ -241,14 +212,14 @@ const reasoningComponents = { ...markdownLinkComponents, ...mermaidComponents }
 
 export const ReasoningContent = memo(
   ({ className, children, ...props }: ReasoningContentProps) => {
-    // Reasoning is a LIVE surface — `Reasoning` auto-opens this panel the
-    // moment streaming starts, so it re-renders on every delta of a block that
-    // routinely runs into the thousands of tokens. `mode="static"` re-parses
-    // the whole text each time (streaming splits it into blocks and re-parses
-    // only the tail), which measured ~2.9x slower over a 120-delta stream and
-    // gets worse the longer the block runs. So track the turn, exactly like the
-    // reply prose does: remend while the text is still growing, static — and
-    // therefore free of remend's leftover `*` / `_` — once it has settled.
+    // Reasoning is a LIVE surface — a reader who opens this panel mid-turn
+    // keeps it mounted across every delta of a block that routinely runs into
+    // the thousands of tokens. `mode="static"` re-parses the whole text each
+    // time (streaming splits it into blocks and re-parses only the tail),
+    // which measured ~2.9x slower over a 120-delta stream and gets worse the
+    // longer the block runs. So track the turn, exactly like the reply prose
+    // does: remend while the text is still growing, static — and therefore
+    // free of remend's leftover `*` / `_` — once it has settled.
     const { isStreaming } = useReasoning()
     const normalized = useMemo(
       () => normalizeMathDelimiters(children),

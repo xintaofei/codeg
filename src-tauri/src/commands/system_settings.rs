@@ -111,13 +111,27 @@ pub(crate) async fn load_system_language_settings(
     })
 }
 
-/// Whether `value` resolves to an executable on the current host. Used to
-/// drive the "not installed" badge in the picker; never used to *block* a
-/// selection — users may legitimately preconfigure a shell before installing it.
-fn shell_exists(value: &str) -> bool {
+/// Where `value` lands on this host, if anywhere: the path itself when it
+/// already names an existing file, or the PATH lookup for a bare command name.
+/// `None` means nothing by that name is runnable here.
+///
+/// One probe feeding two answers that must not disagree — the "not installed"
+/// badge in the picker, and the path the settings page reports as what will
+/// run. Never used to *block* a selection: users may legitimately preconfigure
+/// a shell before installing it.
+///
+/// **This is a probe, not the spawn itself**, and the two can disagree on
+/// Windows. A PATH lookup here searches the PATH of codeg's own process, while
+/// the built-in terminal spawns through `portable-pty`, whose `CommandBuilder`
+/// rebuilds PATH from the registry (HKLM + HKCU `Environment`) and so sees a
+/// PATH edited — or a shell installed — after codeg started. Both answer "which
+/// `pwsh.exe`", and they differ only when those two PATHs name different
+/// directories; what codeg passes to either spawner is the stored string
+/// itself, which no resolution here can change.
+fn resolve_shell_path(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return false;
+        return None;
     }
 
     let path = std::path::Path::new(trimmed);
@@ -127,10 +141,61 @@ fn shell_exists(value: &str) -> bool {
         || path.components().count() > 1;
 
     if looks_like_path {
-        return path.is_file();
+        if path.is_file() {
+            // Reported as typed rather than canonicalized: `canonicalize` hands
+            // back a `\\?\C:\…` UNC path on Windows, which is neither what the
+            // user wrote nor what they want to read back.
+            return Some(trimmed.to_string());
+        }
+        // `…\PowerShell\7\pwsh` IS runnable on Windows: `CreateProcessW`
+        // appends `.exe` to an extension-less path, and portable-pty's own
+        // PATHEXT pass finds it too. Probing the literal string alone would
+        // badge a working configuration as missing — and then report a path
+        // the user cannot find on disk as the one in use.
+        #[cfg(windows)]
+        {
+            if path.extension().is_none() {
+                let with_exe = path.with_extension("exe");
+                if with_exe.is_file() {
+                    return Some(with_exe.display().to_string());
+                }
+            }
+        }
+        return None;
     }
 
-    which::which(trimmed).is_ok()
+    which::which(trimmed)
+        .ok()
+        .map(|resolved| resolved.display().to_string())
+}
+
+/// Whether `value` resolves to an executable on the current host.
+fn shell_exists(value: &str) -> bool {
+    resolve_shell_path(value).is_some()
+}
+
+/// What a terminal tab opened *right now* would launch, given the stored
+/// selection.
+///
+/// `None` — the "system default" row — is the platform fallback chain
+/// ([`resolve_shell`]). Anything else is the user's own choice, resolved to a
+/// concrete path when the host can find it (see [`resolve_shell_path`] for what
+/// that probe can and cannot promise) and echoed verbatim when it cannot: a
+/// shell that isn't installed is still what codeg would try to spawn, and
+/// saying so beats reporting a shell the user did not pick — the picker badges
+/// it "not installed" alongside.
+///
+/// Named for the terminal tab deliberately. The ACP `terminal/create` fallback
+/// reads the SAME stored selection, but its own "no preference" default is not
+/// this one: it is `/bin/sh` on Unix and `COMSPEC` on Windows, never `$SHELL`
+/// (`acp::terminal_runtime::default_platform_shell`, kept for compatibility
+/// with launches that predate this setting). So the "system default" row is the
+/// one case where this line can name a shell an agent's command would not use.
+pub(crate) fn resolve_effective_shell(default_shell: Option<&str>) -> String {
+    match default_shell.map(str::trim).filter(|value| !value.is_empty()) {
+        None => resolve_shell(),
+        Some(selected) => resolve_shell_path(selected).unwrap_or_else(|| selected.to_string()),
+    }
 }
 
 /// Trim and drop empty-only. We deliberately do **not** filter by host
@@ -157,7 +222,13 @@ pub(crate) fn normalize_terminal_settings(
 /// The frontend renders these verbatim, looking each `label_key` up under its
 /// `GeneralSettings` namespace — so adding a new shell here requires zero
 /// frontend code changes (only a new translation key).
-pub(crate) fn build_available_terminal_shells() -> AvailableTerminalShells {
+///
+/// `default_shell` is the currently stored selection, and only feeds
+/// `resolved_shell`: the picker shows the same rows whatever is selected, but
+/// the line under it has to say what the selection actually resolves to.
+pub(crate) fn build_available_terminal_shells(
+    default_shell: Option<&str>,
+) -> AvailableTerminalShells {
     let mut options: Vec<TerminalShellOption> = Vec::new();
 
     options.push(TerminalShellOption {
@@ -197,7 +268,7 @@ pub(crate) fn build_available_terminal_shells() -> AvailableTerminalShells {
 
     AvailableTerminalShells {
         options,
-        resolved_shell: resolve_shell(),
+        resolved_shell: resolve_effective_shell(default_shell),
     }
 }
 
@@ -654,8 +725,13 @@ pub async fn get_system_terminal_settings(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn get_available_terminal_shells() -> Result<AvailableTerminalShells, AppCommandError> {
-    Ok(build_available_terminal_shells())
+pub async fn get_available_terminal_shells(
+    db: State<'_, AppDatabase>,
+) -> Result<AvailableTerminalShells, AppCommandError> {
+    let settings = load_system_terminal_settings(&db.conn).await?;
+    Ok(build_available_terminal_shells(
+        settings.default_shell.as_deref(),
+    ))
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -1281,6 +1357,86 @@ mod tests {
         // `_restore` puts the process global back on the way out — it is
         // shared by every test in this binary, and a bare store at the end
         // would be skipped by any assertion above it that fails.
+    }
+
+    /// The line under the picker ("Currently using: …") reads this field, so it
+    /// has to answer for the SELECTION, not for the host. Reporting
+    /// `resolve_shell()` unconditionally is what made every row in the dropdown
+    /// — pwsh, powershell, a custom path — read back as the same
+    /// `COMSPEC`/`SHELL` value, which is precisely the state where a user
+    /// concludes the setting does nothing.
+    #[test]
+    fn the_reported_shell_follows_the_selection() {
+        // The system row is the one case that IS the host fallback.
+        assert_eq!(resolve_effective_shell(None), resolve_shell());
+        assert_eq!(resolve_effective_shell(Some("   ")), resolve_shell());
+
+        // A picked shell answers for itself. The one shell guaranteed present
+        // on each platform stands in for the whole option list; `which` may
+        // hand back an absolute path, so this asserts the tail rather than
+        // pinning a machine-specific prefix.
+        let (installed, uninstalled) = if cfg!(target_os = "windows") {
+            ("cmd.exe", "definitely-not-a-shell.exe")
+        } else {
+            ("sh", "definitely-not-a-shell")
+        };
+        let reported = resolve_effective_shell(Some(installed));
+        assert!(
+            reported.ends_with(installed),
+            "{reported} should resolve {installed}"
+        );
+        assert!(
+            std::path::Path::new(&reported).is_absolute(),
+            "{reported} should be resolved to a path the user can recognize"
+        );
+
+        // Not installed is still what codeg would try to spawn — echoing it
+        // back is what lets the user see their own typo. Trimmed, because that
+        // is what `normalize_terminal_settings` stored.
+        assert_eq!(
+            resolve_effective_shell(Some(&format!("  {uninstalled}  "))),
+            uninstalled
+        );
+    }
+
+    /// `CreateProcessW` appends `.exe` to an extension-less path, so
+    /// `…\PowerShell\7\pwsh` launches — and a probe that only stats the literal
+    /// string would badge that working configuration "not installed" and then
+    /// report a non-existent file as the shell in use.
+    #[cfg(windows)]
+    #[test]
+    fn an_extension_less_windows_path_resolves_the_way_it_launches() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let exe = dir.path().join("pwsh.exe");
+        std::fs::write(&exe, b"").expect("write fake shell");
+
+        let without_ext = dir.path().join("pwsh");
+        assert!(!without_ext.is_file(), "the bare name must not exist");
+
+        let reported = resolve_effective_shell(Some(&without_ext.display().to_string()));
+        assert_eq!(reported, exe.display().to_string());
+        assert!(shell_exists(&without_ext.display().to_string()));
+
+        // A path that resolves neither way is still unresolvable — the
+        // completion must not invent a file.
+        let missing = dir.path().join("nope");
+        assert!(!shell_exists(&missing.display().to_string()));
+    }
+
+    /// The picker and the line under it are built from one probe, so a shell
+    /// the host cannot find must never be badged "installed" while its path is
+    /// reported as resolved (or the reverse).
+    #[test]
+    fn the_option_badges_agree_with_the_reported_shell() {
+        for option in build_available_terminal_shells(None).options {
+            let Some(value) = option.value.as_deref() else {
+                // `system` and `custom` carry no value of their own; both are
+                // always offered.
+                assert!(option.exists);
+                continue;
+            };
+            assert_eq!(option.exists, resolve_shell_path(value).is_some());
+        }
     }
 
     /// A row stored before the field existed must load as "off" rather than

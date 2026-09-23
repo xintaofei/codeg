@@ -23,7 +23,7 @@ import { copyTextToClipboard, randomUUID } from "@/lib/utils"
 // under the same tab strip.
 import { ICON_BTN } from "./browser-toolbar-buttons"
 
-/** The frame keeps its origin (its own bridge port, shared with nothing) and
+/** The frame keeps its origin (this target's own, shared with nothing) and
  *  never navigates the workbench. */
 export const BRIDGE_FRAME_SANDBOX =
   "allow-scripts allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads"
@@ -48,8 +48,8 @@ function messageOf(error: unknown): string {
  * new address) takes a fresh grant under a hold id of its own and releases
  * exactly that hold when it is over — after the open has settled, so an
  * unmount during the round trip cannot leave a hold behind or take a later
- * attempt's away. The bridge port is probed from this browser before the
- * frame shows, so an unreachable port is explained instead of left blank.
+ * attempt's away. The bridge origin is probed from this browser before the
+ * frame shows, so one it cannot reach is explained instead of left blank.
  * "Open in a new tab" stays available throughout: whatever the frame cannot
  * show, a top-level tab on the same bridge origin can.
  */
@@ -184,7 +184,15 @@ export function BrowserBridgeView({ tab }: { tab: BrowserWorkspaceTab }) {
         {phase.kind === "unreachable" ? (
           <Notice
             title={t("unreachableTitle")}
-            body={t("unreachableHint", { origin: phase.origin })}
+            // Two ways of reaching the bridge, two things to check: a port
+            // the deployment has to publish, or a hostname its DNS and its
+            // proxy have to carry.
+            body={t(
+              phase.grant.bridgeHost
+                ? "unreachableHostHint"
+                : "unreachableHint",
+              { origin: phase.origin }
+            )}
             action={{
               label: t("openExternal"),
               onClick: () => openExternalTab(phase.src),

@@ -34,7 +34,68 @@ import type {
   ContentBlock,
   MessageTurn,
   SessionFailureRecord,
+  SessionNotice,
 } from "@/lib/types"
+
+/**
+ * Id prefix for a record synthesized from a {@link SessionNotice}.
+ *
+ * Advertising `session.notices` makes both adapters route their ADVISORY-class
+ * records here instead of the AIR lane (claude's model fallback publishes only
+ * `if (!supportsNotices && supportsAirSessionFailures)`; codex states the same
+ * precedence). Mirroring them back into this table is what keeps the banner's
+ * behaviour unchanged — but a notice carries no id, so one has to be minted,
+ * and it MUST be unable to collide with an adapter-published id. The prefix is
+ * the guarantee: AIR ids come from the adapter's own vocabulary and none of
+ * them can start with a string naming this client's own synthesis.
+ *
+ * ⚠️ That guarantee is checked against the TWO adapters
+ * `client_session_capabilities` advertises to, not proved in general — nothing
+ * in the AIR extension reserves a prefix. Re-check it if a third agent is ever
+ * advertised `session.notices`.
+ */
+export const NOTICE_RECORD_ID_PREFIX = "codeg-notice:"
+
+/**
+ * Project a notice onto this table's contract, or `null` when it does not
+ * belong here.
+ *
+ * `info` is toast-only: it is the level both adapters use for things that are
+ * not a problem (a model reroute, "context compacted", "task stopped by user"),
+ * and a persistent banner row is not what those deserve. `warning` and `error`
+ * are what the AIR advisory lane used to carry, so they keep its surface.
+ *
+ * The id is derived from the CONTENT rather than minted fresh per event, so a
+ * repeated advisory revises one row instead of stacking identical ones — the
+ * table is keyed by id and the banner renders one entry per record. That is a
+ * deliberate departure from the wire, where "repeated notices remain
+ * independent events": as toasts they stay independent (each raises its own),
+ * but as banner rows the honest rendering of "this is still true" is one row.
+ *
+ * Revision is taken from the row it replaces, so the monotonic merge accepts
+ * it. Without this the second occurrence of an advisory would be rejected as a
+ * stale replay and the banner would keep showing the first one's text forever.
+ */
+export function sessionFailureFromNotice(
+  current: SessionFailureRecord[],
+  notice: SessionNotice
+): SessionFailureRecord | null {
+  if (notice.severity !== "warning" && notice.severity !== "error") return null
+  const id = `${NOTICE_RECORD_ID_PREFIX}${notice.severity}:${notice.title}`
+  const previous = current.find((record) => record.id === id)
+  return {
+    id,
+    revision: (previous?.revision ?? 0) + 1,
+    // Notices carry no AIR category and always carry a title, so the category
+    // is only ever the banner's title FALLBACK — which this can never need.
+    // `unknown` is the honest value; it folds onto the same rendering any
+    // unrecognized category does.
+    category: "unknown",
+    severity: notice.severity,
+    title: notice.title,
+    ...(notice.description ? { details: notice.description } : {}),
+  }
+}
 
 /** Merge one incoming upsert; returns the SAME array reference when rejected. */
 export function upsertSessionFailure(

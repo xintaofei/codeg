@@ -34,6 +34,13 @@
 //! `TypeError: Cannot read properties of undefined (reading 'case')` before
 //! the request ever left the process.
 //!
+//! `2026.09.18-9a7762b` rules out reading that as a two-way darwin/linux split:
+//! its **windows/x64** archive takes the action local from one side and the
+//! object-assign local from the other (`y=new …ConversationAction(…),k=Object
+//! .assign(…`), where darwin is `y`/`M` and linux is `b`/`k`. The minifier
+//! numbers each archive independently, so the only safe assumption is that
+//! EVERY local is per-archive — which is what deriving them buys.
+//!
 //! So nothing about the splice is transcribed by hand any more:
 //!
 //!   * the anchor ([`RUN_OPTIONS_ANCHOR`]) is matched structurally, with the
@@ -74,6 +81,7 @@ const TRIAGED_AFFECTED_VERSIONS: &[&str] = &[
     "2026.09.02-c22c1a3",
     "2026.09.10-fd3934a",
     "2026.09.15-d2fe57e",
+    "2026.09.18-9a7762b",
 ];
 
 /// Cursor agent-cli versions whose bundle was inspected and found to already
@@ -130,7 +138,7 @@ const LEGACY_CODEG_POLICY: &str = concat!(
 const ENABLE_AGENT_RETRIES_MARKER: &str = "enableAgentRetries:";
 
 /// How far back from the run options the `ConversationAction` declarator may
-/// sit and still be believed to be the same statement list. It is 352 bytes in
+/// sit and still be believed to be the same statement list. It is 356 bytes in
 /// every archive of every triaged build; the bound is loose enough to survive a
 /// field being added between them and tight enough that a match from an
 /// unrelated method cannot qualify.
@@ -679,7 +687,8 @@ mod tests {
     const SAMPLE_VERSION: &str = TRIAGED_AFFECTED_VERSIONS[0];
 
     /// The run-options statement exactly as `2026.09.15-d2fe57e` ships it on
-    /// **darwin/arm64**, from `dist-package/2698.index.js`.
+    /// **darwin/arm64**, from `dist-package/2698.index.js`. Byte-identical in
+    /// `2026.09.18-9a7762b` (`dist-package/1006.index.js`).
     const REAL_DARWIN_RUN_OPTIONS: &str = concat!(
         r#"y=new c.ConversationAction({action:{case:"userMessageAction",value:d}}),"#,
         r#"M=Object.assign(Object.assign({conversationId:this.agentStore.getId(),"#,
@@ -697,11 +706,30 @@ mod tests {
     /// (`dist-package/1699.index.js`). Byte-identical to the darwin one except
     /// that `y` and `b` are swapped — `y` is the model request here, and the
     /// `ConversationAction` is `b`. This pair is the whole reason the splice is
-    /// derived; see the module docs.
+    /// derived; see the module docs. Byte-identical in `2026.09.18-9a7762b`
+    /// (same chunk number).
     const REAL_LINUX_RUN_OPTIONS: &str = concat!(
         r#"b=new c.ConversationAction({action:{case:"userMessageAction",value:d}}),"#,
         r#"k=Object.assign(Object.assign({conversationId:this.agentStore.getId(),"#,
         r#"headers:(0,T.o)(this.agentStore),requestedModel:y.requestedModel},"#,
+        r#"(0,S.U)({modelManager:this.sharedServices.modelManager,"#,
+        r#"configProvider:this.sharedServices.configProvider,"#,
+        r#"parentMaxMode:null==g?void 0:g.maxMode})),"#,
+        r#"{onConnectionStateChange:e=>{"reconnecting"===e.state?"#,
+        r#"(0,w.debugLog)("Connection state: reconnecting"):"connected"===e.state&&"#,
+        r#"(0,w.debugLog)("Connection state: connected")},onErrorNotRetried:e=>{"#,
+        r#"(0,I.Z)({configProvider:this.sharedServices.configProvider,info:e})}})"#,
+    );
+
+    /// `2026.09.18-9a7762b`'s **windows/x64** archive
+    /// (`dist-package/5072.index.js`), which is neither of the above: it takes
+    /// the action local from darwin (`y`) and the object-assign local from
+    /// linux (`k`). Proof that the two locals vary independently, so "the
+    /// darwin one" and "the linux one" are not two variants to choose between.
+    const REAL_WINDOWS_RUN_OPTIONS: &str = concat!(
+        r#"y=new c.ConversationAction({action:{case:"userMessageAction",value:d}}),"#,
+        r#"k=Object.assign(Object.assign({conversationId:this.agentStore.getId(),"#,
+        r#"headers:(0,T.o)(this.agentStore),requestedModel:b.requestedModel},"#,
         r#"(0,S.U)({modelManager:this.sharedServices.modelManager,"#,
         r#"configProvider:this.sharedServices.configProvider,"#,
         r#"parentMaxMode:null==g?void 0:g.maxMode})),"#,
@@ -766,6 +794,7 @@ mod tests {
         for (label, run_options, expected_local) in [
             ("darwin", REAL_DARWIN_RUN_OPTIONS, "y"),
             ("linux", REAL_LINUX_RUN_OPTIONS, "b"),
+            ("windows", REAL_WINDOWS_RUN_OPTIONS, "y"),
             ("old-generation", OLD_GENERATION_RUN_OPTIONS, "I"),
         ] {
             let tmp = tempfile::tempdir().unwrap();

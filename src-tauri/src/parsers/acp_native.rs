@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, TimeZone, Utc};
-use sacp::schema::{SessionUpdate, ToolCallContent};
+use agent_client_protocol::schema::v1::{SessionUpdate, ToolCallContent};
 use serde::Deserialize as _;
 
 use crate::acp::connection::{
@@ -221,8 +221,8 @@ fn prompt_blocks(payload: &serde_json::Value) -> Vec<ContentBlock> {
 /// chunk arrives already deserialized, so it is converted straight across
 /// rather than being serialized back to JSON only to be re-read. Consumes the
 /// block, so an embedded image's base64 moves instead of being copied twice.
-fn prompt_block_from_content(content: sacp::schema::ContentBlock) -> Option<PromptInputBlock> {
-    use sacp::schema::{ContentBlock as Wire, EmbeddedResourceResource as Res};
+fn prompt_block_from_content(content: agent_client_protocol::schema::v1::ContentBlock) -> Option<PromptInputBlock> {
+    use agent_client_protocol::schema::v1::{ContentBlock as Wire, EmbeddedResourceResource as Res};
     let non_empty = |s: String| (!s.is_empty()).then_some(s);
     match content {
         Wire::Text(t) => Some(PromptInputBlock::Text {
@@ -603,7 +603,7 @@ fn apply_update(
             let p = open_turn!();
             p.last_at_ms = at_ms;
             match &chunk.content {
-                sacp::schema::ContentBlock::Image(image) => {
+                agent_client_protocol::schema::v1::ContentBlock::Image(image) => {
                     p.has_content = true;
                     p.blocks.push(ContentBlock::Image {
                         data: image.data.clone(),
@@ -676,12 +676,12 @@ fn apply_update(
 
 /// Text of an ACP content block. Non-text blocks that still carry a textual
 /// projection (resource links, embedded text resources) degrade to it.
-fn content_block_text(block: &sacp::schema::ContentBlock) -> String {
+fn content_block_text(block: &agent_client_protocol::schema::v1::ContentBlock) -> String {
     match block {
-        sacp::schema::ContentBlock::Text(t) => t.text.clone(),
-        sacp::schema::ContentBlock::ResourceLink(link) => link.uri.clone(),
-        sacp::schema::ContentBlock::Resource(res) => match &res.resource {
-            sacp::schema::EmbeddedResourceResource::TextResourceContents(t) => t.text.clone(),
+        agent_client_protocol::schema::v1::ContentBlock::Text(t) => t.text.clone(),
+        agent_client_protocol::schema::v1::ContentBlock::ResourceLink(link) => link.uri.clone(),
+        agent_client_protocol::schema::v1::ContentBlock::Resource(res) => match &res.resource {
+            agent_client_protocol::schema::v1::EmbeddedResourceResource::TextResourceContents(t) => t.text.clone(),
             _ => String::new(),
         },
         _ => String::new(),
@@ -796,7 +796,7 @@ fn upsert_tool_call(
 /// ACP plans are cumulative snapshots: each `plan` update replaces the previous
 /// one. Model that as a single synthetic `TodoWrite` tool call whose input the
 /// frontend already renders as a plan card.
-fn upsert_plan(pending: &mut PendingTurn, plan: &sacp::schema::Plan) {
+fn upsert_plan(pending: &mut PendingTurn, plan: &agent_client_protocol::schema::v1::Plan) {
     let todos: Vec<serde_json::Value> = plan
         .entries
         .iter()
@@ -987,7 +987,7 @@ mod tests {
     #[test]
     fn the_typed_and_raw_readers_agree_on_the_same_content() {
         for item in attachment_prompt().as_array().expect("an array") {
-            let typed = sacp::schema::ContentBlock::deserialize(item)
+            let typed = agent_client_protocol::schema::v1::ContentBlock::deserialize(item)
                 .expect("every block in the fixture is valid ACP");
             assert_eq!(
                 prompt_block_from_content(typed),
@@ -1003,7 +1003,7 @@ mod tests {
             serde_json::json!({"type":"audio", "data":"QUJD", "mimeType":"audio/wav"}),
         ] {
             assert_eq!(prompt_block_from_wire(&junk), None, "{junk}");
-            if let Ok(typed) = sacp::schema::ContentBlock::deserialize(&junk) {
+            if let Ok(typed) = agent_client_protocol::schema::v1::ContentBlock::deserialize(&junk) {
                 assert_eq!(prompt_block_from_content(typed), None, "{junk}");
             }
         }

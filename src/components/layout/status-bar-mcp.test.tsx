@@ -239,7 +239,7 @@ describe("StatusBarMcp", () => {
     await openPopover()
 
     fireEvent.click(screen.getByRole("button", { name: /Open full settings/ }))
-    expect(openSettingsWindow).toHaveBeenCalledWith("general")
+    expect(openSettingsWindow).toHaveBeenCalledWith("collaboration")
   })
 
   /** The headline promise of the feature: a dead socket is repairable in place. */

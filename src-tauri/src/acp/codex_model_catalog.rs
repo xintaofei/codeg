@@ -68,7 +68,7 @@ struct EnumSpec {
 
 // Authoritative value sets + nullability, extracted from the codex binary itself
 // by feeding it candidate catalogs and reading the full `unknown variant …,
-// expected …` / `invalid type: null, expected …` errors (re-probed on 0.154.0,
+// expected …` / `invalid type: null, expected …` errors (re-probed on 0.155.1,
 // unchanged since 0.147 — treat these as version-specific and re-probe when
 // codex moves).
 fn enum_spec_for(key: &str) -> Option<EnumSpec> {
@@ -104,6 +104,13 @@ fn enum_spec_for(key: &str) -> Option<EnumSpec> {
 /// `supports_experimental_context = "yes"` earns `invalid type: string "yes",
 /// expected a boolean` and takes the WHOLE catalog down with it — probed
 /// against the 0.154.0 binary, same as the rest of this list.
+///
+/// `node_repl_auto_review_required` / `node_repl_disabled` ship as booleans on
+/// every entry and are just as strict: a string earns the same `expected a
+/// boolean` rejection, and so does a `null` — probed against the 0.155.1
+/// binary, which also re-confirmed every other entry here. The editor offers
+/// no control for either, so only an imported or hand-edited override can
+/// carry one, which is exactly the input this list exists to catch.
 const BOOL_FIELDS: &[&str] = &[
     "use_responses_lite",
     "supported_in_api",
@@ -116,6 +123,8 @@ const BOOL_FIELDS: &[&str] = &[
     "include_apps_usage_instructions",
     "include_plugin_usage_instructions",
     "include_skills_usage_instructions",
+    "node_repl_auto_review_required",
+    "node_repl_disabled",
 ];
 
 /// Whether a custom `overrides` entry is safe to write. A single value codex
@@ -631,8 +640,8 @@ mod tests {
         let models = snap();
         assert_eq!(
             models.len(),
-            11,
-            "snapshot should carry codex 0.154.0's catalog"
+            9,
+            "snapshot should carry codex 0.155.1's catalog"
         );
         assert!(models.iter().any(|m| slug_of(m) == Some("gpt-6-astra")));
         assert!(models.iter().any(|m| slug_of(m) == Some("gpt-5.6-sol")));
@@ -692,8 +701,8 @@ mod tests {
             default: None,
         };
         let cat = expand_to_catalog(&config, &snap());
-        // All 11 officials auto-included + 1 custom = 12.
-        assert_eq!(slugs(&cat).len(), 12);
+        // All 9 officials auto-included + 1 custom = 10.
+        assert_eq!(slugs(&cat).len(), 10);
         // Custom is first (top of picker) and forced list + api.
         let c = find(&cat, "gw/opus").expect("custom present");
         assert_eq!(c.get("visibility").unwrap(), "list");
@@ -715,10 +724,10 @@ mod tests {
 
     #[test]
     fn expand_excludes_removed_officials_and_empty_is_off() {
-        let config = excluding(&["gpt-5.2"]);
+        let config = excluding(&["gpt-5.5"]);
         let cat = expand_to_catalog(&config, &snap());
         let s = slugs(&cat);
-        assert!(!s.iter().any(|x| x == "gpt-5.2"));
+        assert!(!s.iter().any(|x| x == "gpt-5.5"));
         assert!(s.iter().any(|x| x == "gpt-5.6-sol"));
         // Empty config = feature off.
         assert!(is_effectively_empty(&CodexModelConfig::default(), &snap()));
@@ -731,18 +740,19 @@ mod tests {
     #[test]
     fn expand_keeps_hidden_officials_even_when_excluded() {
         let s = snap();
-        // gpt-5.4 / gpt-5.4-mini are hidden in 0.147; codex-auto-review always is.
-        for slug in ["gpt-5.4", "gpt-5.4-mini", "codex-auto-review"] {
+        // gpt-5.4 and the two daybreak builds ship hidden; codex-auto-review
+        // always is.
+        for slug in ["gpt-5.4", "gpt-daybreak-blue-latest", "codex-auto-review"] {
             let hidden = s
                 .iter()
                 .find(|m| slug_of(m) == Some(slug))
                 .expect("in snapshot");
             assert_eq!(hidden.get("visibility").unwrap(), "hide", "{slug}");
         }
-        let cat = expand_to_catalog(&excluding(&["gpt-5.4", "gpt-5.4-mini"]), &s);
+        let cat = expand_to_catalog(&excluding(&["gpt-5.4", "gpt-daybreak-blue-latest"]), &s);
         let out = slugs(&cat);
         assert!(out.iter().any(|x| x == "gpt-5.4"));
-        assert!(out.iter().any(|x| x == "gpt-5.4-mini"));
+        assert!(out.iter().any(|x| x == "gpt-daybreak-blue-latest"));
         assert_eq!(out.len(), s.len(), "nothing dropped");
     }
 
@@ -751,13 +761,21 @@ mod tests {
         let s = snap();
         // Only stale removals of now-hidden officials → hand control back.
         assert!(is_effectively_empty(
-            &excluding(&["gpt-5.4", "gpt-5.4-mini"]),
+            &excluding(&["gpt-5.4", "gpt-daybreak-blue-latest"]),
             &s
         ));
         // A removal that still applies keeps the takeover.
-        assert!(!is_effectively_empty(&excluding(&["gpt-5.2"]), &s));
+        assert!(!is_effectively_empty(&excluding(&["gpt-5.5"]), &s));
         // Mixed: the live one wins.
-        assert!(!is_effectively_empty(&excluding(&["gpt-5.4", "gpt-5.2"]), &s));
+        assert!(!is_effectively_empty(&excluding(&["gpt-5.4", "gpt-5.5"]), &s));
+        // codex 0.155.1 DELETED gpt-5.2 and gpt-5.4-mini outright rather than
+        // hiding them, which is the other way a stored exclusion goes stale. A
+        // slug that is not in the catalog at all cannot be listable either, so
+        // it reads as a ghost by the same rule and control goes back to codex.
+        assert!(is_effectively_empty(
+            &excluding(&["gpt-5.2", "gpt-5.4-mini"]),
+            &s
+        ));
         // A custom always counts.
         let with_custom = CodexModelConfig {
             customs: vec![CodexCustomEntry {
@@ -911,6 +929,8 @@ mod tests {
                         "supports_reasoning_summary_parameter".into(),
                         Value::Bool(false),
                     ),
+                    ("node_repl_disabled".into(), Value::String("true".into())),
+                    ("node_repl_auto_review_required".into(), Value::Null),
                 ]),
             }],
             ..Default::default()
@@ -919,6 +939,12 @@ mod tests {
         let x = find(&cat, "gw/b").expect("present");
         assert_eq!(x.get("use_responses_lite").unwrap(), &Value::Bool(true));
         assert_eq!(x.get("supports_search_tool").unwrap(), &Value::Bool(true));
+        // The node_repl pair keeps gpt-5.6-sol's own `false`s.
+        assert_eq!(x.get("node_repl_disabled").unwrap(), &Value::Bool(false));
+        assert_eq!(
+            x.get("node_repl_auto_review_required").unwrap(),
+            &Value::Bool(false)
+        );
         // A real boolean still lands.
         assert_eq!(
             x.get("supports_reasoning_summary_parameter").unwrap(),

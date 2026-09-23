@@ -1,9 +1,10 @@
 // Client of the web-mode port bridge: when the workbench runs in a browser,
 // a dev server on the codeg host (`http://localhost:3000` as an agent printed
-// it) is shown through a bridge listener the server binds next to its own
-// port. The workbench asks the API for a grant, then loads the listener's
-// entry URL in an iframe; the entry sets the listener's cookie and redirects
-// to the page. No React, no DOM beyond `fetch` for the reachability probe.
+// it) is shown through a bridge origin of its own — a listener the server
+// binds next to its own port, or a hostname it answers for on that same port.
+// The workbench asks the API for a grant, then loads the bridge's entry URL
+// in an iframe; the entry sets the cookie and redirects to the page. No
+// React, no DOM beyond `fetch` for the reachability probe.
 
 import { getTransport, isDesktop } from "@/lib/transport"
 
@@ -11,15 +12,23 @@ import { isLoopbackHost } from "./browser-url"
 
 export interface BridgeStatus {
   enabled: boolean
-  /** Ports a listener may take (`0` = any free port). */
+  /** Ports a listener may take (`0` = any free port); empty when targets are
+   *  named by hostname. */
   ports: number[]
   /** Hostname to use for the bridge instead of the page's own. */
   publicHost: string | null
+  /** How a target is named when the server addresses them by hostname on its
+   *  own port (`{port}.codeg.example.com`, `auto`). */
+  hostPattern: string | null
 }
 
 export interface BridgeGrant {
   targetPort: number
-  bridgePort: number
+  /** Port of the listener that answers for this target; `null` when it is
+   *  named by hostname and the browser keeps the port it already uses. */
+  bridgePort: number | null
+  /** Hostname that names this target, when the server addresses by host. */
+  bridgeHost: string | null
   /** Path on the bridge origin that sets the cookie and redirects. */
   entryPath: string
   publicHost: string | null
@@ -27,7 +36,12 @@ export interface BridgeGrant {
   path: string
 }
 
-const OFF: BridgeStatus = { enabled: false, ports: [], publicHost: null }
+const OFF: BridgeStatus = {
+  enabled: false,
+  ports: [],
+  publicHost: null,
+  hostPattern: null,
+}
 
 /** Pauses between attempts when the status call fails (the server is
  *  starting, a flaky connection): three tries in all, then the next caller
@@ -110,19 +124,27 @@ export interface PageLocation {
   /** `https:` / `http:` — the bridge follows the page's scheme. */
   protocol: string
   hostname: string
+  /** `location.port`: empty for the scheme's default port. */
+  port: string
 }
 
 /**
- * Origin of the grant's listener as this browser should reach it: the
- * server's public host when it named one, else the host the workbench was
- * loaded from — the same host, a different port, which keeps the bridge's
- * cookie same-site with the workbench.
+ * Origin of the grant's listener as this browser should reach it.
+ *
+ * Addressed by port: the server's public host when it named one, else the
+ * host the workbench was loaded from — the same host, a different port,
+ * which keeps the bridge's cookie same-site with the workbench. Addressed by
+ * hostname: the name the server gave this target, on the port the browser is
+ * already talking to, which is the same listener.
  */
 export function bridgeOrigin(grant: BridgeGrant, page: PageLocation): string {
-  const host = grant.publicHost ?? page.hostname
+  const host = grant.bridgeHost ?? grant.publicHost ?? page.hostname
   const authority =
     host.includes(":") && !host.startsWith("[") ? `[${host}]` : host
-  return `${page.protocol}//${authority}:${grant.bridgePort}`
+  const port = grant.bridgePort ?? page.port
+  return port
+    ? `${page.protocol}//${authority}:${port}`
+    : `${page.protocol}//${authority}`
 }
 
 /**

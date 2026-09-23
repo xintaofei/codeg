@@ -52,6 +52,8 @@
       "science": "科學研究",
       "office_tools": "辦公工具",
       "skill_packs": "技能包",
+      "collaboration": "協作",
+      "browser": "瀏覽器",
       "quick_messages": "快捷訊息",
       "logs": "執行日誌",
       "memory": "記憶"
@@ -1711,9 +1713,9 @@
   "GeneralSettings": {
     "loading": "載入中...",
     "sectionTitle": "一般",
-    "sectionDescription": "集中管理預設終端機、渲染加速、通知與提示音以及多智能體協同等通用偏好。",
+    "sectionDescription": "集中管理預設終端機、渲染加速、關閉行為、通知與提示音等通用偏好。",
     "terminalTitle": "預設終端",
-    "terminalDescription": "選擇從終端列或檔案樹開啟新終端分頁時使用的 Shell。智慧代理請求 codeg 代為執行整條命令列時也會使用它。",
+    "terminalDescription": "選擇 codeg 開啟新終端分頁、以及代智慧代理執行整條命令列時使用的 Shell。自帶 Shell 的智慧代理（如 Codex、Claude Code）會在自己的行程內執行命令，不受此設定影響。",
     "terminalSystemDefault": "系統預設",
     "terminalPowerShell7": "PowerShell 7 (pwsh)",
     "terminalWindowsPowerShell": "Windows PowerShell",
@@ -1736,6 +1738,10 @@
     "restartNow": "立即重新啟動",
     "restartFailed": "重新啟動失敗：{message}",
     "loadFailed": "載入失敗：{message}"
+  },
+  "CollaborationSettings": {
+    "sectionTitle": "協作",
+    "sectionDescription": "智能體之間如何協同，以及它們能在對話中動用 codeg 的哪些工具。"
   },
   "LoginPage": {
     "documentTitle": "登入 - codeg",
@@ -3507,6 +3513,7 @@
             "child_max_turn_requests": "子代理超出請求上限",
             "child_empty": "子代理無回應",
             "child_auth_required": "子智慧體需登入",
+            "child_rejected": "子代理拒絕該請求",
             "child_unknown": "子代理未知錯誤",
             "unknown": "未知任務"
           }
@@ -3831,6 +3838,7 @@
         "compacted": "上下文已壓縮",
         "compactedTokens": "上下文已壓縮 · {before} → {after} tokens",
         "failed": "上下文壓縮失敗",
+        "summary": "摘要",
         "triggerManual": "手動觸發",
         "triggerAutomatic": "自動觸發"
       },
@@ -5037,6 +5045,7 @@
   "BrowserSettings": {
     "title": "內建瀏覽器",
     "description": "從對話、工具結果和終端機開啟的網頁可以作為分頁顯示在檔案旁邊，而不必離開應用程式。",
+    "descriptionWeb": "在瀏覽器會話裡，網頁都在你正在使用的瀏覽器中開啟；例外是跑在 codeg 主機上的伺服器，它會被轉發成這裡的一個分頁。以下是仍然生效的設定。",
     "defaultTargetTitle": "連結在哪裡開啟",
     "defaultTargetHint": "依來源分別設定。按住 ⌘/Ctrl 點擊連結可暫時改用另一種方式。",
     "sourceTranscript": "對話訊息",
@@ -5076,6 +5085,7 @@
     "downloadsHint": "網頁下載的檔案儲存於 {dir}。不會自動開啟，也不會覆蓋既有檔案。",
     "rulesTitle": "站點規則",
     "rulesHint": "按站點設定：一律用內建瀏覽器、一律用系統瀏覽器，或阻止。模式可以是主機名稱、*.example.com 或 *，可選加 :連接埠；最具體的符合項生效。",
+    "rulesHintWeb": "按站點設定：阻止。在瀏覽器會話裡，網頁在哪裡開啟沒有可選項。模式可以是主機名稱、*.example.com 或 *，可選加 :連接埠；最具體的符合項生效。",
     "serviceOpenTitle": "本機服務",
     "serviceOpenHint": "終端機裡啟動的服務印出位址時，在瀏覽器分頁中開啟它。只接受本機位址，且必須確認那個連接埠上真的有程式在監聽。",
     "serviceOpenOff": "什麼都不做",
@@ -6289,6 +6299,7 @@
       "copied": "已複製網址",
       "unreachableTitle": "無法連上連接埠橋接",
       "unreachableHint": "codeg 伺服器把這個頁面放在 {origin}，但你的瀏覽器連不上它。請開放該連接埠（見 CODEG_BRIDGE_PORTS）或設定 CODEG_BRIDGE_PUBLIC_HOST；若 codeg 以 HTTPS 提供服務，橋接連接埠也需要 HTTPS。",
+      "unreachableHostHint": "codeg 伺服器把這個頁面放在了 {origin}，但你的瀏覽器連不到。這個主機名稱必須解析到 codeg 伺服器，並且能穿過前方的反向代理——也就是一筆萬用字元 DNS 記錄加一個萬用字元虛擬主機（見 CODEG_BRIDGE_HOST_PATTERN）。",
       "errorTitle": "無法在這裡顯示此頁面"
     },
     "download": {

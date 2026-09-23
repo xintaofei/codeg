@@ -77,6 +77,13 @@ Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다
     </td>
     <td>본 프로젝트를 후원해 주신 Fluxion AI에 감사드립니다! Fluxion AI는 하나의 통합 API를 통해 GPT, Claude, Gemini를 비롯한 주요 AI 모델에 빠르고 안정적이며 비용 효율적으로 접근할 수 있게 해 줍니다. 신규 사용자는 <a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG">전용 링크</a>를 통해 $3의 API 크레딧을 받을 수 있습니다.</td>
   </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://beeapi.ai/signup?aff=HIAB5JCVRNNA" target="_blank"><img src="../images/beeapi.jpg" alt="BeeAPI" width="200" /></a><br/>
+      <strong><a href="https://beeapi.ai/signup?aff=HIAB5JCVRNNA">BeeAPI</a></strong>
+    </td>
+    <td>본 프로젝트를 후원해 주신 <a href="https://beeapi.ai/signup?aff=HIAB5JCVRNNA">BeeAPI</a>에 감사드립니다! BeeAPI는 전문적인 멀티 모델 AI API 중계·통합 플랫폼으로, 여러 공급업체와 다양한 주요 AI 모델을 한데 모았습니다. 업체 간 가격 비교, 그룹별 스마트 라우팅, 통합 API 연동 및 과금을 지원하여 더 유연하고 안정적이며 저렴하게 AI 서비스를 호출할 수 있습니다.</td>
+  </tr>
 </table>
 
 > Codeg의 스폰서가 되고 싶으신가요? [이메일로 문의해 주세요.](mailto:itpkcn@gmail.com)

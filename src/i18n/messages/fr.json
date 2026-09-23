@@ -52,6 +52,8 @@
       "science": "Science",
       "office_tools": "Outils bureautiques",
       "skill_packs": "Packs de compétences",
+      "collaboration": "Collaboration",
+      "browser": "Navigateur",
       "quick_messages": "Messages rapides",
       "logs": "Journaux d'exécution",
       "memory": "Mémoire"
@@ -1711,9 +1713,9 @@
   "GeneralSettings": {
     "loading": "Chargement...",
     "sectionTitle": "Général",
-    "sectionDescription": "Préférences centralisées pour le terminal par défaut, l’accélération du rendu, les notifications et la délégation multi-agents.",
+    "sectionDescription": "Préférences centralisées pour le terminal par défaut, l’accélération du rendu, le comportement à la fermeture de la fenêtre, les notifications et les sons.",
     "terminalTitle": "Terminal par défaut",
-    "terminalDescription": "Choisissez le shell utilisé à l'ouverture de nouveaux onglets de terminal depuis la barre de terminal ou l'arborescence des fichiers. Les agents l'utilisent aussi lorsqu'ils demandent à codeg d'exécuter une ligne de commande complète.",
+    "terminalDescription": "Choisissez le shell que codeg lance pour les nouveaux onglets de terminal et pour les lignes de commande complètes qu’un agent lui demande d’exécuter. Les agents dotés de leur propre shell (Codex, Claude Code) exécutent les commandes dans leur propre processus : ce réglage ne les atteint pas.",
     "terminalSystemDefault": "Par défaut système",
     "terminalPowerShell7": "PowerShell 7 (pwsh)",
     "terminalWindowsPowerShell": "Windows PowerShell",
@@ -1736,6 +1738,10 @@
     "restartNow": "Redémarrer maintenant",
     "restartFailed": "Échec du redémarrage : {message}",
     "loadFailed": "Échec du chargement : {message}"
+  },
+  "CollaborationSettings": {
+    "sectionTitle": "Collaboration",
+    "sectionDescription": "Comment les agents collaborent entre eux et quels outils propres à codeg ils peuvent utiliser au sein d’une conversation."
   },
   "LoginPage": {
     "documentTitle": "Connexion - codeg",
@@ -3507,6 +3513,7 @@
             "child_max_turn_requests": "sous-agent : limite de requêtes",
             "child_empty": "sous-agent sans sortie",
             "child_auth_required": "sous-agent : connexion requise",
+            "child_rejected": "sous-agent : requête rejetée",
             "child_unknown": "sous-agent : erreur",
             "unknown": "tâche inconnue"
           }
@@ -3831,6 +3838,7 @@
         "compacted": "Contexte compacté",
         "compactedTokens": "Contexte compacté · {before} → {after} tokens",
         "failed": "Échec de la compaction du contexte",
+        "summary": "Résumé",
         "triggerManual": "Déclenchée manuellement",
         "triggerAutomatic": "Déclenchée automatiquement"
       },
@@ -5037,6 +5045,7 @@
   "BrowserSettings": {
     "title": "Navigateur intégré",
     "description": "Les pages web ouvertes depuis les conversations, les résultats d’outils et le terminal peuvent s’afficher comme onglets à côté de vos fichiers, sans quitter l’application.",
+    "descriptionWeb": "Dans une session navigateur, les pages s’ouvrent dans le navigateur que vous utilisez déjà. L’exception : un serveur qui tourne sur l’hôte codeg, relayé ici dans un onglet. Voici les réglages qui décident encore quelque chose.",
     "defaultTargetTitle": "Où s’ouvrent les liens",
     "defaultTargetHint": "Réglable par source. ⌘/Ctrl+clic sur un lien utilise l’autre option pour cette fois seulement.",
     "sourceTranscript": "Messages de la conversation",
@@ -5076,6 +5085,7 @@
     "downloadsHint": "Les fichiers téléchargés par une page sont enregistrés dans {dir}. Rien n’est ouvert automatiquement et aucun fichier existant n’est remplacé.",
     "rulesTitle": "Règles de site",
     "rulesHint": "Par site : toujours le navigateur intégré, toujours le navigateur système, ou bloquer. Les motifs sont un nom d'hôte, *.example.com ou *, avec un :port facultatif ; la correspondance la plus précise l'emporte.",
+    "rulesHintWeb": "Par site : bloquer. Dans une session navigateur, l'endroit où s'ouvre un lien n'est pas un choix. Les motifs sont un nom d'hôte, *.example.com ou *, avec un :port facultatif ; la correspondance la plus précise l'emporte.",
     "serviceOpenTitle": "Serveurs locaux",
     "serviceOpenHint": "Quand un serveur lancé dans un terminal affiche son adresse, l’ouvrir dans un onglet du navigateur. Uniquement les adresses de cette machine, et seulement si quelque chose y écoute.",
     "serviceOpenOff": "Ne rien faire",
@@ -6289,6 +6299,7 @@
       "copied": "Adresse copiée",
       "unreachableTitle": "Le port passerelle est inaccessible",
       "unreachableHint": "Le serveur codeg expose cette page sur {origin}, mais votre navigateur ne l'atteint pas. Publiez ce port (voir CODEG_BRIDGE_PORTS) ou définissez CODEG_BRIDGE_PUBLIC_HOST ; si codeg est servi en HTTPS, les ports passerelle doivent l'être aussi.",
+      "unreachableHostHint": "Le serveur codeg a placé cette page sur {origin}, mais votre navigateur ne peut pas l'atteindre. Ce nom d'hôte doit pointer vers le serveur codeg et traverser le proxy placé devant : un enregistrement DNS générique et un vhost générique (voir CODEG_BRIDGE_HOST_PATTERN).",
       "errorTitle": "Cette page ne peut pas être affichée ici"
     },
     "download": {

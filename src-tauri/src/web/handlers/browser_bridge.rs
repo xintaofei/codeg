@@ -2,6 +2,7 @@
 //! here (with codeg's token) for a grant, then loads the bridge listener's
 //! entry URL in an iframe. See `web::browser_bridge` for the listener side.
 
+use axum::http::HeaderMap;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
@@ -38,13 +39,20 @@ pub async fn browser_bridge_status() -> Json<BridgeStatus> {
 }
 
 pub async fn browser_bridge_open(
+    headers: HeaderMap,
     Json(params): Json<BridgeOpenParams>,
 ) -> Result<Json<BridgeOpenResult>, AppCommandError> {
     let (port, path) = bridgeable_target(&params.url)?;
-    let grant = browser_bridge::open(port, &params.tab_id)
+    // The hostname this very request was addressed to is the workbench's own,
+    // which is what a bridge hostname is built on (`CODEG_BRIDGE_HOST_PATTERN`
+    // = `auto`); a bridge addressed by port ignores it.
+    let workbench_host = browser_bridge::workbench_hostname(&headers);
+    let grant = browser_bridge::open(port, &params.tab_id, workbench_host.as_deref())
         .await
         .map_err(|err| match err {
-            BridgeError::Disabled => AppCommandError::configuration_missing(err.to_string()),
+            BridgeError::Disabled | BridgeError::NoHostname(_) => {
+                AppCommandError::configuration_missing(err.to_string())
+            }
             BridgeError::Reserved(_) => AppCommandError::invalid_input(err.to_string()),
             BridgeError::NoPort(_) => {
                 AppCommandError::new(AppErrorCode::IoError, "no bridge port is free")

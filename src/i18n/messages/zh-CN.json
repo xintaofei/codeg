@@ -52,6 +52,8 @@
       "science": "科学研究",
       "office_tools": "办公工具",
       "skill_packs": "技能包",
+      "collaboration": "协作",
+      "browser": "浏览器",
       "quick_messages": "快捷消息",
       "logs": "运行日志",
       "memory": "记忆"
@@ -1711,9 +1713,9 @@
   "GeneralSettings": {
     "loading": "加载中...",
     "sectionTitle": "常规",
-    "sectionDescription": "集中管理默认终端、渲染加速、通知与提示音以及多智能体协同等通用偏好。",
+    "sectionDescription": "集中管理默认终端、渲染加速、关闭行为、通知与提示音等通用偏好。",
     "terminalTitle": "默认终端",
-    "terminalDescription": "选择从终端栏或文件树打开新终端标签页时使用的 Shell。智能体请求 codeg 代为执行整条命令行时也会使用它。",
+    "terminalDescription": "选择 codeg 打开新终端标签页、以及代智能体执行整条命令行时使用的 Shell。自带 Shell 的智能体（如 Codex、Claude Code）在自己进程内执行命令，不受此设置影响。",
     "terminalSystemDefault": "系统默认",
     "terminalPowerShell7": "PowerShell 7 (pwsh)",
     "terminalWindowsPowerShell": "Windows PowerShell",
@@ -1736,6 +1738,10 @@
     "restartNow": "立即重启",
     "restartFailed": "重启失败：{message}",
     "loadFailed": "加载失败：{message}"
+  },
+  "CollaborationSettings": {
+    "sectionTitle": "协作",
+    "sectionDescription": "智能体之间如何协同，以及它们能在会话中动用 codeg 的哪些工具。"
   },
   "LoginPage": {
     "documentTitle": "登录 - codeg",
@@ -3507,6 +3513,7 @@
             "child_max_turn_requests": "子代理超出请求上限",
             "child_empty": "子代理无响应",
             "child_auth_required": "子智能体需登录",
+            "child_rejected": "子代理拒绝该请求",
             "child_unknown": "子代理未知错误",
             "unknown": "未知任务"
           }
@@ -3831,6 +3838,7 @@
         "compacted": "上下文已压缩",
         "compactedTokens": "上下文已压缩 · {before} → {after} tokens",
         "failed": "上下文压缩失败",
+        "summary": "摘要",
         "triggerManual": "手动触发",
         "triggerAutomatic": "自动触发"
       },
@@ -5037,6 +5045,7 @@
   "BrowserSettings": {
     "title": "内置浏览器",
     "description": "从会话、工具结果和终端打开的网页可以作为标签页显示在文件旁边，而不必离开应用。",
+    "descriptionWeb": "在浏览器会话里，网页都在你正在用的浏览器中打开；例外是跑在 codeg 主机上的服务器，它会被转发成这里的一个标签页。以下是仍然生效的设置。",
     "defaultTargetTitle": "链接在哪里打开",
     "defaultTargetHint": "按来源分别设置。按住 ⌘/Ctrl 点击链接可临时使用另一种方式。",
     "sourceTranscript": "会话消息",
@@ -5076,6 +5085,7 @@
     "downloadsHint": "网页下载的文件保存在 {dir}。不会自动打开，也不会覆盖已有文件。",
     "rulesTitle": "站点规则",
     "rulesHint": "按站点设定：始终用内置浏览器、始终用系统浏览器，或阻止。模式可以是主机名、*.example.com 或 *，可选加 :端口；最具体的匹配生效。",
+    "rulesHintWeb": "按站点设定：阻止。在浏览器会话里，网页在哪里打开没有可选项。模式可以是主机名、*.example.com 或 *，可选加 :端口；最具体的匹配生效。",
     "serviceOpenTitle": "本机服务",
     "serviceOpenHint": "终端里启动的服务打印出地址时，在浏览器标签页中打开它。只认本机地址，且必须确认那个端口上真的有程序在监听。",
     "serviceOpenOff": "什么都不做",
@@ -6289,6 +6299,7 @@
       "copied": "已复制地址",
       "unreachableTitle": "无法访问端口桥",
       "unreachableHint": "codeg 服务器把这个页面放在 {origin}，但你的浏览器访问不到它。请开放该端口（见 CODEG_BRIDGE_PORTS）或设置 CODEG_BRIDGE_PUBLIC_HOST；如果 codeg 通过 HTTPS 提供服务，端口桥也需要 HTTPS。",
+      "unreachableHostHint": "codeg 服务端把这个页面放在了 {origin}，但你的浏览器访问不到。这个主机名需要解析到 codeg 服务端，并且能穿过前面的反向代理——也就是一条泛域名 DNS 记录加一个泛域名虚拟主机（见 CODEG_BRIDGE_HOST_PATTERN）。",
       "errorTitle": "无法在这里显示此页面"
     },
     "download": {

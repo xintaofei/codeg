@@ -13,6 +13,7 @@ fn configure() {
         bind_host: "127.0.0.1".to_string(),
         ports: vec![0],
         public_host: None,
+        host_pattern: None,
         reserved: vec![1],
     }));
 }
@@ -35,23 +36,29 @@ fn client() -> reqwest::Client {
         .unwrap()
 }
 
+/// The port this grant's listener answers on. These tests configure the
+/// bridge to bind one, so a grant without a port would be a bug.
+fn port_of(grant: &BridgeGrant) -> u16 {
+    grant.bridge_port.expect("a bridge addressed by port")
+}
+
 fn cookie_for(grant: &BridgeGrant) -> String {
     let cap = grant
         .entry_path
         .strip_prefix(browser_bridge::ENTER_PREFIX)
         .unwrap();
-    format!("codeg-bridge-{}={cap}", grant.bridge_port)
+    format!("codeg-bridge-{}={cap}", port_of(grant))
 }
 
 fn base(grant: &BridgeGrant) -> String {
-    format!("http://127.0.0.1:{}", grant.bridge_port)
+    format!("http://127.0.0.1:{}", port_of(grant))
 }
 
 #[tokio::test]
 async fn listeners_close_when_released_and_idle() {
     configure();
     let upstream = spawn_upstream().await;
-    let grant = browser_bridge::open(upstream, "tab-idle").await.unwrap();
+    let grant = browser_bridge::open(upstream, "tab-idle", None).await.unwrap();
     let before = browser_bridge::listener_count();
     let now = Instant::now();
 
@@ -77,8 +84,8 @@ async fn listeners_close_when_released_and_idle() {
     // just closed, which Windows refuses only after ~2 s (macOS in
     // milliseconds), and the margin the sweep below leaves is one second.
     let now = Instant::now();
-    let held = browser_bridge::open(upstream, "tab-held").await.unwrap();
-    assert_ne!(held.bridge_port, 0);
+    let held = browser_bridge::open(upstream, "tab-held", None).await.unwrap();
+    assert_ne!(port_of(&held), 0);
     assert_eq!(browser_bridge::sweep(now + Duration::from_secs(60 * 60)), 0);
     assert_eq!(
         browser_bridge::sweep(now + Duration::from_secs(2 * 60 * 60 + 1)),

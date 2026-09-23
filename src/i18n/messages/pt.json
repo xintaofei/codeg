@@ -52,6 +52,8 @@
       "science": "Ciência",
       "office_tools": "Ferramentas de escritório",
       "skill_packs": "Pacotes de habilidades",
+      "collaboration": "Colaboração",
+      "browser": "Navegador",
       "quick_messages": "Mensagens rápidas",
       "logs": "Registros de execução",
       "memory": "Memória"
@@ -1711,9 +1713,9 @@
   "GeneralSettings": {
     "loading": "Carregando...",
     "sectionTitle": "Geral",
-    "sectionDescription": "Preferências centralizadas para o terminal padrão, aceleração de renderização, notificações e delegação multi-agente.",
+    "sectionDescription": "Preferências centralizadas para o terminal padrão, aceleração de renderização, comportamento ao fechar a janela, notificações e sons.",
     "terminalTitle": "Terminal padrão",
-    "terminalDescription": "Escolha o shell usado ao abrir novas abas de terminal pela barra de terminal ou pela árvore de arquivos. Os agentes também o usam quando pedem ao codeg para executar uma linha de comando inteira.",
+    "terminalDescription": "Escolha o shell que o codeg inicia para novas abas de terminal e para linhas de comando inteiras que um agente pede para executar. Agentes com shell próprio (Codex, Claude Code) executam os comandos dentro do próprio processo, então esta configuração não os alcança.",
     "terminalSystemDefault": "Padrão do sistema",
     "terminalPowerShell7": "PowerShell 7 (pwsh)",
     "terminalWindowsPowerShell": "Windows PowerShell",
@@ -1736,6 +1738,10 @@
     "restartNow": "Reiniciar agora",
     "restartFailed": "Falha ao reiniciar: {message}",
     "loadFailed": "Falha ao carregar: {message}"
+  },
+  "CollaborationSettings": {
+    "sectionTitle": "Colaboração",
+    "sectionDescription": "Como os agentes colaboram entre si e quais ferramentas do próprio codeg eles podem acessar dentro de uma conversa."
   },
   "LoginPage": {
     "documentTitle": "Entrar - codeg",
@@ -3507,6 +3513,7 @@
             "child_max_turn_requests": "subagente: limite de solicitações",
             "child_empty": "subagente sem saída",
             "child_auth_required": "subagente exige login",
+            "child_rejected": "subagente rejeitou o pedido",
             "child_unknown": "subagente: erro",
             "unknown": "tarefa desconhecida"
           }
@@ -3831,6 +3838,7 @@
         "compacted": "Contexto compactado",
         "compactedTokens": "Contexto compactado · {before} → {after} tokens",
         "failed": "Falha ao compactar o contexto",
+        "summary": "Resumo",
         "triggerManual": "Acionada manualmente",
         "triggerAutomatic": "Acionada automaticamente"
       },
@@ -5037,6 +5045,7 @@
   "BrowserSettings": {
     "title": "Navegador integrado",
     "description": "Páginas web abertas a partir de conversas, resultados de ferramentas e do terminal podem aparecer como abas ao lado dos seus arquivos, sem sair do aplicativo.",
+    "descriptionWeb": "Em uma sessão de navegador, as páginas abrem no navegador que você já está usando. A exceção é um servidor em execução no host do codeg: ele é encaminhado para uma aba aqui. Estas são as configurações que ainda decidem algo.",
     "defaultTargetTitle": "Onde os links abrem",
     "defaultTargetHint": "Definido por origem. Use ⌘/Ctrl+clique em um link para usar a outra opção só desta vez.",
     "sourceTranscript": "Mensagens da conversa",
@@ -5076,6 +5085,7 @@
     "downloadsHint": "Os arquivos baixados por uma página são salvos em {dir}. Nada é aberto automaticamente e um arquivo existente nunca é substituído.",
     "rulesTitle": "Regras de site",
     "rulesHint": "Por site: sempre o navegador integrado, sempre o navegador do sistema ou bloquear. Os padrões são um nome de host, *.example.com ou *, com :porta opcional; a correspondência mais específica vence.",
+    "rulesHintWeb": "Por site: bloquear. Onde um link abre não é uma escolha em uma sessão de navegador. Os padrões são um nome de host, *.example.com ou *, com :porta opcional; a correspondência mais específica vence.",
     "serviceOpenTitle": "Servidores locais",
     "serviceOpenHint": "Quando um servidor iniciado num terminal imprime o endereço, abri-lo numa aba do navegador. Apenas endereços desta máquina e só quando algo estiver a escutar neles.",
     "serviceOpenOff": "Não fazer nada",
@@ -6289,6 +6299,7 @@
       "copied": "Endereço copiado",
       "unreachableTitle": "A porta da ponte não está acessível",
       "unreachableHint": "O servidor do codeg colocou esta página em {origin}, mas seu navegador não consegue alcançá-la. Publique essa porta (veja CODEG_BRIDGE_PORTS) ou defina CODEG_BRIDGE_PUBLIC_HOST; se o codeg é servido por HTTPS, as portas da ponte também precisam de HTTPS.",
+      "unreachableHostHint": "O servidor do codeg colocou esta página em {origin}, mas o seu navegador não consegue acessá-la. Esse nome de host precisa resolver para o servidor do codeg e atravessar o proxy que estiver à frente: um registro DNS curinga e um vhost curinga (veja CODEG_BRIDGE_HOST_PATTERN).",
       "errorTitle": "Esta página não pode ser exibida aqui"
     },
     "download": {

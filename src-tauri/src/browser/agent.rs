@@ -1425,7 +1425,7 @@ mod tests {
             target: None,
             action: ActionKind::Press { key: "Enter".into() },
         };
-        assert!(act_call(&keyless).contains(".act(\"g\", null, {\"key\":\"Enter\",\"kind\":\"press\"}))"));
+        assert!(act_call(&keyless).contains(".act(\"g\", null, {\"kind\":\"press\",\"key\":\"Enter\"}))"));
 
         let locate = locate_call("g", "e1");
         assert!(locate.contains(".locate(\"g\", \"e1\"))"));

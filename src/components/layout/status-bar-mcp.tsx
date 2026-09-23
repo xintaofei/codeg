@@ -350,9 +350,10 @@ export function StatusBarMcp() {
           variant="outline"
           className="w-full"
           onClick={() => {
-            // The General page is where these same switches live in full, with
-            // the depth limit and the per-agent defaults beside them.
-            openSettingsWindow("general").catch((err) => {
+            // The Collaboration page is where these same switches live in
+            // full, with the depth limit and the per-agent defaults beside
+            // them.
+            openSettingsWindow("collaboration").catch((err) => {
               console.error("[StatusBarMcp] failed to open settings:", err)
             })
           }}

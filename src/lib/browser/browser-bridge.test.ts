@@ -26,9 +26,17 @@ import {
 const grant: BridgeGrant = {
   targetPort: 3000,
   bridgePort: 3081,
+  bridgeHost: null,
   entryPath: "/__codeg_bridge/enter/cap123",
   publicHost: null,
   path: "/docs?x=1",
+}
+
+/** The same target named by hostname: no port of the server's own. */
+const hostGrant: BridgeGrant = {
+  ...grant,
+  bridgePort: null,
+  bridgeHost: "3000.codeg.example",
 }
 
 beforeEach(() => {
@@ -43,7 +51,12 @@ afterEach(() => {
 
 describe("bridgeStatus", () => {
   it("asks the server once and keeps a synchronous snapshot", async () => {
-    call.mockResolvedValue({ enabled: true, ports: [3081], publicHost: null })
+    call.mockResolvedValue({
+      enabled: true,
+      ports: [3081],
+      publicHost: null,
+      hostPattern: null,
+    })
     expect(bridgeStatusSnapshot()).toBeNull()
     const first = bridgeStatus()
     const second = bridgeStatus()
@@ -51,6 +64,7 @@ describe("bridgeStatus", () => {
       enabled: true,
       ports: [3081],
       publicHost: null,
+      hostPattern: null,
     })
     await second
     expect(call).toHaveBeenCalledTimes(1)
@@ -64,6 +78,7 @@ describe("bridgeStatus", () => {
       enabled: false,
       ports: [],
       publicHost: null,
+      hostPattern: null,
     })
     expect(call).not.toHaveBeenCalled()
     expect(bridgeStatusSnapshot()?.enabled).toBe(false)
@@ -75,7 +90,12 @@ describe("bridgeStatus", () => {
       call
         .mockRejectedValueOnce(new Error("down"))
         .mockRejectedValueOnce(new Error("down"))
-        .mockResolvedValueOnce({ enabled: true, ports: [0], publicHost: "h" })
+        .mockResolvedValueOnce({
+          enabled: true,
+          ports: [0],
+          publicHost: "h",
+          hostPattern: null,
+        })
       const pending = bridgeStatus()
       await vi.advanceTimersByTimeAsync(STATUS_RETRY_DELAYS_MS[0])
       await vi.advanceTimersByTimeAsync(STATUS_RETRY_DELAYS_MS[1])
@@ -93,7 +113,12 @@ describe("bridgeStatus", () => {
       expect((await failing).enabled).toBe(false)
       expect(bridgeStatusSnapshot()).toBeNull()
       call.mockReset()
-      call.mockResolvedValue({ enabled: true, ports: [0], publicHost: null })
+      call.mockResolvedValue({
+        enabled: true,
+        ports: [0],
+        publicHost: null,
+        hostPattern: null,
+      })
       expect((await bridgeStatus()).enabled).toBe(true)
     } finally {
       vi.useRealTimers()
@@ -144,7 +169,7 @@ describe("isBridgeableUrl", () => {
 
 describe("bridge URLs", () => {
   it("use the page's host and scheme with the bridge port", () => {
-    const page = { protocol: "http:", hostname: "192.168.1.5" }
+    const page = { protocol: "http:", hostname: "192.168.1.5", port: "3080" }
     expect(bridgeOrigin(grant, page)).toBe("http://192.168.1.5:3081")
     expect(bridgeEntryUrl(grant, page)).toBe(
       "http://192.168.1.5:3081/__codeg_bridge/enter/cap123?to=%2Fdocs%3Fx%3D1"
@@ -155,20 +180,46 @@ describe("bridge URLs", () => {
     expect(
       bridgeOrigin(
         { ...grant, publicHost: "bridge.example" },
-        { protocol: "https:", hostname: "codeg.example" }
+        { protocol: "https:", hostname: "codeg.example", port: "" }
       )
     ).toBe("https://bridge.example:3081")
-    expect(bridgeOrigin(grant, { protocol: "http:", hostname: "::1" })).toBe(
-      "http://[::1]:3081"
-    )
+    expect(
+      bridgeOrigin(grant, { protocol: "http:", hostname: "::1", port: "3080" })
+    ).toBe("http://[::1]:3081")
     // `location.hostname` keeps the brackets already.
-    expect(bridgeOrigin(grant, { protocol: "http:", hostname: "[::1]" })).toBe(
-      "http://[::1]:3081"
+    expect(
+      bridgeOrigin(grant, {
+        protocol: "http:",
+        hostname: "[::1]",
+        port: "3080",
+      })
+    ).toBe("http://[::1]:3081")
+  })
+
+  it("use the server's hostname for this target on the page's own port", () => {
+    // Named by hostname the bridge answers on codeg's own listener, so the
+    // browser keeps the port it is already talking to — including none at
+    // all, which is what a deployment behind 443 looks like.
+    const page = { protocol: "https:", hostname: "codeg.example", port: "" }
+    expect(bridgeOrigin(hostGrant, page)).toBe("https://3000.codeg.example")
+    expect(bridgeEntryUrl(hostGrant, page)).toBe(
+      "https://3000.codeg.example/__codeg_bridge/enter/cap123?to=%2Fdocs%3Fx%3D1"
     )
+    expect(bridgeOrigin(hostGrant, { ...page, port: "8443" })).toBe(
+      "https://3000.codeg.example:8443"
+    )
+    // The hostname the server worked out wins over the public host it would
+    // have used for a bridge port, and over the page's own host.
+    expect(
+      bridgeOrigin(
+        { ...hostGrant, publicHost: "bridge.example" },
+        { protocol: "http:", hostname: "elsewhere.example", port: "3080" }
+      )
+    ).toBe("http://3000.codeg.example:3080")
   })
 
   it("send an empty path to the root and keep the address's fragment", () => {
-    const page = { protocol: "http:", hostname: "h" }
+    const page = { protocol: "http:", hostname: "h", port: "3080" }
     expect(bridgeEntryUrl({ ...grant, path: "" }, page)).toBe(
       "http://h:3081/__codeg_bridge/enter/cap123?to=%2F"
     )

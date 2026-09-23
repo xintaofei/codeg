@@ -1,6 +1,6 @@
 [package]
 name = "codeg"
-version = "0.31.1"
+version = "0.32.0"
 description = "Agent Code Generation App"
 authors = ["feitao"]
 edition = "2021"
@@ -110,8 +110,13 @@ dirs = "6"
 if-addrs = "0.13"
 walkdir = "2"
 ignore = "0.4"
-sacp = "11.0.0"
-sacp-tokio = "11.0.0"
+# The official ACP runtime (the `sacp` crate was upstreamed into it and renamed).
+# Stable protocol v1 only: `unstable_protocol_v2` is deliberately left off, so
+# the builder's protocol-compat layer is a pass-through and `initialize` goes
+# out exactly as codeg writes it. The unstable features are the surfaces codeg
+# consumes: `session/fork`, the Session Notices / Session Compaction RFDs, and
+# the end-of-turn `usage` on `PromptResponse`.
+agent-client-protocol = { version = "2.2.0", features = ["unstable_session_fork", "unstable_session_notices", "unstable_session_compaction", "unstable_end_turn_token_usage"] }
 tokio = { version = "1", features = ["process", "io-util", "sync", "macros", "rt", "net", "rt-multi-thread"] }
 uuid = { version = "1", features = ["v4"] }
 # Version-5 UUIDs (browser profile data-store identifiers) by hand: uuid's
@@ -157,7 +162,6 @@ toml_edit = "0.19"
 serde_yaml = "0.9"
 notify = "6"
 base64 = "0.22"
-agent-client-protocol-schema = { version = "0.11", features = ["unstable_session_usage", "unstable_session_fork", "unstable_session_resume", "unstable_elicitation", "unstable_boolean_config"] }
 kill_tree = { version = "0.2", features = ["tokio"] }
 which = "7"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"], optional = true }
@@ -172,7 +176,7 @@ percent-encoding = "2"
 http-body = "1"
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 futures-util = "0.3"
-tokio-util = { version = "0.7", features = ["io", "rt"] }
+tokio-util = { version = "0.7", features = ["io", "rt", "compat"] }
 prost = "0.13"
 rand = "0.8"
 qrcode = "0.14"
@@ -254,5 +258,3 @@ tokio = { version = "1", features = ["test-util", "macros", "rt", "sync", "time"
 insta = { version = "1", features = ["json", "redactions"] }
 axum-test = { version = "17", features = ["ws"] }
 
-[patch.crates-io]
-sacp-tokio = { path = "vendor/sacp-tokio" }

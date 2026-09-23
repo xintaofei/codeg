@@ -86,8 +86,14 @@ pub struct TerminalShellOption {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AvailableTerminalShells {
     pub options: Vec<TerminalShellOption>,
-    /// What `resolve_shell()` would currently fall back to. Surfaced read-only
-    /// in the UI so users can see what "system default" actually maps to.
+    /// What a terminal tab opened right now would launch, given the stored
+    /// selection: the platform fallback when the selection is "system default",
+    /// and otherwise the chosen shell resolved to a concrete path. Surfaced
+    /// read-only in the UI, which is the only place a user can see that
+    /// "Windows PowerShell" means `…\v1.0\powershell.exe` — or that a custom
+    /// path resolved to nothing. Best-effort by nature; see
+    /// [`crate::commands::system_settings::resolve_effective_shell`] for which
+    /// promises it does and does not make.
     pub resolved_shell: String,
 }
 

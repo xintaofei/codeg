@@ -77,6 +77,13 @@ Codeg (Code Generation) هو مساحة عمل برمجية متعددة الو�
     </td>
     <td>شكراً لـ Fluxion AI على رعاية هذا المشروع! توفّر Fluxion AI وصولاً سريعاً وموثوقاً ومنخفض التكلفة عبر واجهة API موحّدة واحدة إلى GPT وClaude وGemini وغيرها من نماذج الذكاء الاصطناعي الرائدة. يمكن للمستخدمين الجدد الحصول على رصيد API بقيمة 3 دولارات عبر <a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG">رابطنا المخصّص</a>.</td>
   </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://beeapi.ai/signup?aff=HIAB5JCVRNNA" target="_blank"><img src="../images/beeapi.jpg" alt="BeeAPI" width="200" /></a><br/>
+      <strong><a href="https://beeapi.ai/signup?aff=HIAB5JCVRNNA">BeeAPI</a></strong>
+    </td>
+    <td>شكراً لـ <a href="https://beeapi.ai/signup?aff=HIAB5JCVRNNA">BeeAPI</a> على رعاية هذا المشروع! BeeAPI هي منصة احترافية لتمرير وتجميع واجهات API لنماذج ذكاء اصطناعي متعددة، تجمع العديد من المزوّدين ومجموعة واسعة من نماذج الذكاء الاصطناعي الرائدة. وهي تدعم مقارنة الأسعار بين المزوّدين، والتوجيه الذكي عبر مجموعات متعددة، والوصول الموحّد عبر API مع فوترة موحّدة، مما يساعدك على استخدام خدمات الذكاء الاصطناعي بمرونة واستقرار وتكلفة أقل.</td>
+  </tr>
 </table>
 
 > هل ترغب في أن تصبح راعياً لـ Codeg؟ [راسلنا عبر البريد الإلكتروني.](mailto:itpkcn@gmail.com)

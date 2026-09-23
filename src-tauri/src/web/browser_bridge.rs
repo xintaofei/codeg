@@ -52,6 +52,40 @@
 //! while a workbench tab holds it, closes a minute after the last hold is
 //! released, and closes after two hours without a request even when held (a
 //! browser tab closed without notice); reopening the page mints a new grant.
+//!
+//! ## Addressing a target by hostname instead of by port
+//!
+//! One origin per target port does not have to mean one *port* per target.
+//! `CODEG_BRIDGE_HOST_PATTERN` names the targets by hostname instead —
+//! `3000.codeg.example.com` for port 3000 — and then the bridge binds nothing
+//! of its own: those requests arrive on codeg's own listener, are recognised
+//! by their `Host` before anything else looks at them, and are answered here
+//! and nowhere else in codeg. A deployment publishes one port, and a reverse
+//! proxy needs one wildcard vhost, instead of a range that has to be guessed
+//! ahead of time. It is what GitHub Codespaces does
+//! (`{codespace}-{port}.app.github.dev`) and what code-server's own docs
+//! recommend over its sub-path proxy.
+//!
+//! Everything above still holds, and one part of it gets stronger: cookies
+//! ignore ports but not hostnames, so a capability set on
+//! `3000.codeg.example.com` is never sent to `3001.codeg.example.com` at all,
+//! where between two bridge ports it was sent and then refused. The hostname
+//! must be same-site with the workbench for the browser to send the cookie
+//! into the frame at all, which a subdomain of the workbench's own host is by
+//! construction — hence `auto`, and hence a template that should stay under
+//! the same registrable domain.
+//!
+//! Sharing codeg's listener means codeg has to be sure which requests are
+//! its own, and a hostname is not the bridge's because it looks like one:
+//! `auto` describes `<port>.<anything>`, a shape that covers a workbench on
+//! a numeric-leading hostname. So a request is a target's only when it names
+//! a hostname codeg actually handed out for it (`Listener::hosts`), read
+//! from every authority the request carries — a page can add a forwarded
+//! header to a request of its own but cannot drop its `Host`. And a name
+//! handed out stays the bridge's for the life of the process
+//! (`Bridge::minted`), long after its target idles away: the browser's
+//! memory of that origin — a service worker the page left behind — outlives
+//! the target, and codeg's own pages must never be served through it.
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -64,6 +98,7 @@ use axum::extract::ws::{CloseFrame, Message as DownMessage, WebSocket, WebSocket
 use axum::extract::{FromRequestParts, Path as AxumPath, RawQuery, Request, State};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use axum::Router;
@@ -98,34 +133,187 @@ pub struct BridgeConfig {
     /// Address the listeners bind to: the same one codeg's API listener uses.
     pub bind_host: String,
     /// Ports a listener may take, in order of preference; `0` means any free
-    /// port (each listener its own).
+    /// port (each listener its own). Empty when targets are addressed by
+    /// hostname and nothing of our own is bound.
     pub ports: Vec<u16>,
     /// Hostname the browser should use for the bridge when it differs from
     /// the one the workbench was loaded from (a reverse proxy in front).
     pub public_host: Option<String>,
+    /// Name the targets by hostname on codeg's own listener instead of giving
+    /// each one a port of its own.
+    pub host_pattern: Option<HostPattern>,
     /// Ports the bridge refuses to forward to: codeg's own listener.
     pub reserved: Vec<u16>,
 }
 
 impl BridgeConfig {
-    /// Read `CODEG_BRIDGE_PORTS` / `CODEG_BRIDGE_PUBLIC_HOST`. `None` when the
-    /// bridge is switched off (`CODEG_BRIDGE_PORTS=off`).
+    /// Read `CODEG_BRIDGE_PORTS` / `CODEG_BRIDGE_HOST_PATTERN` /
+    /// `CODEG_BRIDGE_PUBLIC_HOST`. `None` when the bridge is switched off
+    /// (`CODEG_BRIDGE_PORTS=off`).
     pub fn from_env(bind_host: &str, codeg_port: u16) -> Option<Self> {
-        let ports = match std::env::var("CODEG_BRIDGE_PORTS") {
-            Ok(raw) => parse_ports(&raw, codeg_port)?,
-            Err(_) => default_ports(codeg_port),
+        let ports = std::env::var("CODEG_BRIDGE_PORTS").ok();
+        let pattern = std::env::var("CODEG_BRIDGE_HOST_PATTERN").ok();
+        let public_host = std::env::var("CODEG_BRIDGE_PUBLIC_HOST").ok();
+        Self::from_values(
+            bind_host,
+            codeg_port,
+            ports.as_deref(),
+            pattern.as_deref(),
+            public_host.as_deref(),
+        )
+    }
+
+    /// The same, from values already read, so the rules can be tested without
+    /// touching the process environment. `None` switches the bridge off: the
+    /// operator asked for that (`CODEG_BRIDGE_PORTS=off`), or wrote something
+    /// unreadable — a typo must not silently bind ten ports, and must not
+    /// silently answer for hostnames, either.
+    pub fn from_values(
+        bind_host: &str,
+        codeg_port: u16,
+        ports_raw: Option<&str>,
+        host_pattern_raw: Option<&str>,
+        public_host_raw: Option<&str>,
+    ) -> Option<Self> {
+        let host_pattern = match host_pattern_raw.map(str::trim).filter(|p| !p.is_empty()) {
+            Some(raw) => Some(HostPattern::parse(raw)?),
+            None => None,
         };
-        let public_host = std::env::var("CODEG_BRIDGE_PUBLIC_HOST")
-            .ok()
+        let ports = match ports_raw {
+            Some(raw) => parse_ports(raw, codeg_port)?,
+            None => default_ports(codeg_port),
+        };
+        let public_host = public_host_raw
             .map(|h| h.trim().to_string())
             .filter(|h| !h.is_empty());
         Some(Self {
             bind_host: bind_host.to_string(),
-            ports,
+            // A hostname-addressed bridge binds nothing, so it claims no pool
+            // either — including the default one nobody asked for.
+            ports: if host_pattern.is_some() { Vec::new() } else { ports },
             public_host,
+            host_pattern,
             reserved: vec![codeg_port],
         })
     }
+}
+
+/// How the browser addresses one target port when the bridge answers on
+/// codeg's own listener instead of binding a port per target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostPattern {
+    /// `auto`: the port is one label in front of the host the workbench
+    /// itself was reached at — `3000.codeg.example.com` for a workbench on
+    /// `codeg.example.com`, `3000.localhost` for one on `localhost`.
+    Subdomain,
+    /// A template naming `{port}`: `{port}.preview.example.com`,
+    /// `p{port}-codeg.example.com`.
+    Template { prefix: String, suffix: String },
+}
+
+impl HostPattern {
+    /// `auto`, or a template naming `{port}` once and reading back as a
+    /// hostname. `None` for anything else, including a bare `{port}`: that
+    /// would make every numeric hostname the bridge's.
+    pub fn parse(raw: &str) -> Option<Self> {
+        let raw = raw.trim().to_ascii_lowercase();
+        if raw == "auto" {
+            return Some(Self::Subdomain);
+        }
+        let (prefix, suffix) = raw.split_once("{port}")?;
+        if suffix.contains("{port}") || (prefix.is_empty() && suffix.is_empty()) {
+            return None;
+        }
+        // A digit next to the port would still read back as one port per
+        // hostname, but not as the one a reader of the hostname sees:
+        // `{port}0.example.com` makes `3000.example.com` port 300.
+        if prefix.ends_with(|c: char| c.is_ascii_digit())
+            || suffix.starts_with(|c: char| c.is_ascii_digit())
+        {
+            return None;
+        }
+        let pattern = Self::Template {
+            prefix: prefix.to_string(),
+            suffix: suffix.to_string(),
+        };
+        // It has to be a hostname and nothing else — no port, no path, no
+        // credentials — and it has to read back as the port it was written
+        // for, or the two directions would not agree.
+        let sample = format!("{prefix}3000{suffix}");
+        if !is_hostname(&sample) || pattern.target_of(&sample) != Some(3000) {
+            return None;
+        }
+        Some(pattern)
+    }
+
+    /// The hostname that names `port` for a workbench reached at `base` (a
+    /// hostname, no port); a template ignores `base`. `None` when `auto` has
+    /// nothing to hang the port in front of — an address, or no name at all.
+    pub fn render(&self, port: u16, base: &str) -> Option<String> {
+        match self {
+            Self::Subdomain => {
+                let base = base.trim().trim_matches('.').to_ascii_lowercase();
+                if !is_hostname(&base) || base.parse::<std::net::IpAddr>().is_ok() {
+                    return None;
+                }
+                Some(format!("{port}.{base}"))
+            }
+            Self::Template { prefix, suffix } => Some(format!("{prefix}{port}{suffix}")),
+        }
+    }
+
+    /// The target port `host` names, or `None` when the hostname is not the
+    /// bridge's. `host` is a hostname with no port.
+    pub fn target_of(&self, host: &str) -> Option<u16> {
+        let host = host.trim().to_ascii_lowercase();
+        let digits = match self {
+            Self::Subdomain => {
+                let (label, rest) = host.split_once('.')?;
+                if !is_hostname(rest) {
+                    return None;
+                }
+                label
+            }
+            Self::Template { prefix, suffix } => host
+                .strip_prefix(prefix.as_str())?
+                .strip_suffix(suffix.as_str())?,
+        };
+        parse_target_port(digits)
+    }
+
+    /// How it was written, for the status and the startup log.
+    pub fn to_text(&self) -> String {
+        match self {
+            Self::Subdomain => "auto".to_string(),
+            Self::Template { prefix, suffix } => format!("{prefix}{{port}}{suffix}"),
+        }
+    }
+}
+
+/// The digits of a bridge hostname as a port: decimal, no sign, no leading
+/// zero, never `0`. One spelling per port, so a target cannot be reached
+/// from two hostnames — which would be two origins holding one target.
+fn parse_target_port(digits: &str) -> Option<u16> {
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if digits.len() > 1 && digits.starts_with('0') {
+        return None;
+    }
+    digits.parse::<u16>().ok().filter(|port| *port != 0)
+}
+
+/// A plain DNS name: dot-separated labels of letters, digits and hyphens.
+fn is_hostname(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
 }
 
 /// The ten ports after codeg's own, stopping at the end of the port space.
@@ -181,9 +369,12 @@ pub fn parse_ports(raw: &str, codeg_port: u16) -> Option<Vec<u16>> {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeStatus {
     pub enabled: bool,
-    /// Ports a listener may take (`0` = any free port).
+    /// Ports a listener may take (`0` = any free port); empty when targets
+    /// are addressed by hostname.
     pub ports: Vec<u16>,
     pub public_host: Option<String>,
+    /// How a target is named when the bridge answers by hostname.
+    pub host_pattern: Option<String>,
 }
 
 /// A tab's ticket into one listener.
@@ -191,7 +382,11 @@ pub struct BridgeStatus {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeGrant {
     pub target_port: u16,
-    pub bridge_port: u16,
+    /// Port of the listener that answers for this target; `None` when it is
+    /// addressed by hostname and the browser keeps the port it already uses.
+    pub bridge_port: Option<u16>,
+    /// Hostname that names this target, when the bridge answers by hostname.
+    pub bridge_host: Option<String>,
     /// Path on the bridge origin that sets the cookie and redirects to the
     /// page (`?to=/path` chooses where).
     pub entry_path: String,
@@ -206,11 +401,23 @@ pub enum BridgeError {
     Reserved(u16),
     #[error("no bridge port is free: {0}")]
     NoPort(String),
+    #[error(
+        "a hostname-addressed bridge needs the workbench reached by name, not by address ({0})"
+    )]
+    NoHostname(String),
 }
 
 struct Listener {
     target_port: u16,
-    bridge_port: u16,
+    /// Port of this listener's own socket; `None` when the target is
+    /// addressed by hostname and its requests arrive on codeg's listener.
+    bridge_port: Option<u16>,
+    /// Bridge hostnames handed out for this target — one per host the
+    /// workbench has been reached at. A request on codeg's listener is this
+    /// target's only if it was addressed to a name in here: the pattern
+    /// alone describes a *shape* (`auto` would claim `3000.anything`), and a
+    /// shape is not a promise that codeg ever handed the name out.
+    hosts: Mutex<HashSet<String>>,
     /// Believe `X-Forwarded-Host` / `X-Forwarded-Proto`: only when the
     /// operator declared a proxy in front (`CODEG_BRIDGE_PUBLIC_HOST`); a
     /// page can ask its browser to send those headers, `Host` it cannot.
@@ -233,7 +440,12 @@ impl Listener {
         *lock(&self.last_seen) = Instant::now();
     }
 
-    fn grant(&self, tab_id: &str, public_host: Option<String>) -> BridgeGrant {
+    fn grant(
+        &self,
+        tab_id: &str,
+        public_host: Option<String>,
+        bridge_host: Option<String>,
+    ) -> BridgeGrant {
         let cap = uuid::Uuid::new_v4().simple().to_string();
         lock(&self.caps).push(cap.clone());
         lock(&self.holds).insert(tab_id.to_string());
@@ -241,13 +453,28 @@ impl Listener {
         BridgeGrant {
             target_port: self.target_port,
             bridge_port: self.bridge_port,
+            bridge_host,
             entry_path: format!("{ENTER_PREFIX}{cap}"),
             public_host,
         }
     }
 
+    /// One name per listener: the bridge port it answers on, or — addressed
+    /// by hostname — the target port, which is what its hostname says. That
+    /// cookie is host-only, so it never reaches another target at all.
     fn cookie_name(&self) -> String {
-        format!("{COOKIE_PREFIX}{}", self.bridge_port)
+        format!(
+            "{COOKIE_PREFIX}{}",
+            self.bridge_port.unwrap_or(self.target_port)
+        )
+    }
+
+    /// How the listener reads in a log line.
+    fn describe(&self) -> String {
+        match self.bridge_port {
+            Some(port) => format!("port {port}"),
+            None => format!("the hostname for port {}", self.target_port),
+        }
     }
 
     /// Stop accepting; connections still open get `CLOSE_GRACE`, then are cut.
@@ -293,15 +520,39 @@ struct Bridge {
     generation: AtomicU64,
     /// Live listeners by target port.
     listeners: Mutex<HashMap<u16, Arc<Listener>>>,
+    /// Bridge hostnames this process has handed out. Nothing takes a name
+    /// out of here — not the target idling away, not switching the bridge
+    /// off, not pointing it somewhere else. An origin outlives the target
+    /// it was handed out for: a page that ran there may have left a service
+    /// worker behind, and codeg's own pages served under that name would be
+    /// served through it. So the name is refused instead, for as long as
+    /// this process runs.
+    ///
+    /// It grows by one per target port per hostname the workbench is
+    /// reached at, and only an authenticated `browser_bridge_open` adds
+    /// one: the whole port space on one hostname is a few megabytes, and
+    /// asking for it means holding codeg's token.
+    minted: Mutex<HashSet<String>>,
 }
 
 static BRIDGE: LazyLock<Bridge> = LazyLock::new(|| Bridge {
     config: Mutex::new(None),
     generation: AtomicU64::new(0),
     listeners: Mutex::new(HashMap::new()),
+    minted: Mutex::new(HashSet::new()),
 });
 
 static SWEEPER: OnceLock<()> = OnceLock::new();
+
+/// Whether any request on codeg's own listener could be the bridge's. Read
+/// on every request codeg serves, so it stays out of the config mutex.
+static HOST_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether this process has ever handed out a bridge hostname. Never goes
+/// back to false: those names stay refused after the bridge is switched off
+/// or pointed somewhere else, which is the whole point of `BRIDGE.minted`.
+static NAMES_HANDED_OUT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Set (or, with `None`, switch off) the bridge. Switching off closes every
 /// listener; changing the configuration keeps the listeners already bound.
@@ -310,11 +561,18 @@ pub fn configure(config: Option<BridgeConfig>) {
     {
         let mut current = lock(&BRIDGE.config);
         *current = config;
+        HOST_MODE.store(
+            current.as_ref().is_some_and(|c| c.host_pattern.is_some()),
+            Ordering::Release,
+        );
         BRIDGE.generation.fetch_add(1, Ordering::AcqRel);
     }
     if off {
         shutdown_all();
     }
+    // `BRIDGE.minted` is deliberately untouched: a name this process handed
+    // out stays refused whatever the bridge is reconfigured to, because the
+    // browser's memory of that origin does not get reconfigured with it.
 }
 
 pub fn status() -> BridgeStatus {
@@ -323,11 +581,13 @@ pub fn status() -> BridgeStatus {
             enabled: true,
             ports: config.ports.clone(),
             public_host: config.public_host.clone(),
+            host_pattern: config.host_pattern.as_ref().map(HostPattern::to_text),
         },
         None => BridgeStatus {
             enabled: false,
             ports: Vec::new(),
             public_host: None,
+            host_pattern: None,
         },
     }
 }
@@ -337,9 +597,14 @@ pub fn listener_count() -> usize {
     lock(&BRIDGE.listeners).len()
 }
 
-/// Let `tab_id` reach `127.0.0.1:{target_port}` through a bridge listener,
-/// binding one when the port has none yet.
-pub async fn open(target_port: u16, tab_id: &str) -> Result<BridgeGrant, BridgeError> {
+/// Let `tab_id` reach `127.0.0.1:{target_port}` through the bridge, binding a
+/// listener when the port has none yet. `workbench_host` is the hostname the
+/// asking workbench was reached at, which `auto` hangs the port in front of.
+pub async fn open(
+    target_port: u16,
+    tab_id: &str,
+    workbench_host: Option<&str>,
+) -> Result<BridgeGrant, BridgeError> {
     let (config, generation) = {
         let config = lock(&BRIDGE.config);
         let generation = BRIDGE.generation.load(Ordering::Acquire);
@@ -348,11 +613,15 @@ pub async fn open(target_port: u16, tab_id: &str) -> Result<BridgeGrant, BridgeE
     if config.reserved.contains(&target_port) {
         return Err(BridgeError::Reserved(target_port));
     }
+    if let Some(pattern) = &config.host_pattern {
+        return open_by_host(&config, pattern, target_port, tab_id, workbench_host, generation);
+    }
     if let Some(existing) = lock(&BRIDGE.listeners).get(&target_port).cloned() {
-        return Ok(existing.grant(tab_id, config.public_host.clone()));
+        return Ok(existing.grant(tab_id, config.public_host.clone(), None));
     }
 
-    let used: HashSet<u16> = lock(&BRIDGE.listeners).values().map(|l| l.bridge_port).collect();
+    let used: HashSet<u16> =
+        lock(&BRIDGE.listeners).values().filter_map(|l| l.bridge_port).collect();
     let mut last_error = String::from("no ports configured");
     for &port in &config.ports {
         if port != 0 && used.contains(&port) {
@@ -368,7 +637,8 @@ pub async fn open(target_port: u16, tab_id: &str) -> Result<BridgeGrant, BridgeE
         let bridge_port = socket.local_addr().map(|a| a.port()).unwrap_or(port);
         let listener = Arc::new(Listener {
             target_port,
-            bridge_port,
+            bridge_port: Some(bridge_port),
+            hosts: Mutex::new(HashSet::new()),
             trust_forwarded: config.public_host.is_some(),
             caps: Mutex::new(Vec::new()),
             holds: Mutex::new(HashSet::new()),
@@ -408,9 +678,73 @@ pub async fn open(target_port: u16, tab_id: &str) -> Result<BridgeGrant, BridgeE
         } else {
             listener.close();
         }
-        return Ok(winner.grant(tab_id, config.public_host.clone()));
+        return Ok(winner.grant(tab_id, config.public_host.clone(), None));
     }
     Err(BridgeError::NoPort(last_error))
+}
+
+/// The same, for a bridge addressed by hostname: nothing to bind, so the
+/// entry is only the capability holder the sweeper ages out. The hostname is
+/// worked out here — the workbench's own is what `auto` builds on, and a
+/// reverse proxy that replaced it is declared by `CODEG_BRIDGE_PUBLIC_HOST`.
+fn open_by_host(
+    config: &BridgeConfig,
+    pattern: &HostPattern,
+    target_port: u16,
+    tab_id: &str,
+    workbench_host: Option<&str>,
+    generation: u64,
+) -> Result<BridgeGrant, BridgeError> {
+    let base = config
+        .public_host
+        .as_deref()
+        .or(workbench_host)
+        .unwrap_or_default();
+    let host = pattern
+        .render(target_port, base)
+        .ok_or_else(|| BridgeError::NoHostname(base.to_string()))?;
+    let (listener, fresh) = {
+        // The bridge may have been switched off while this request was in
+        // flight: an entry is published only under the configuration it was
+        // opened for.
+        let config_now = lock(&BRIDGE.config);
+        if config_now.is_none() || BRIDGE.generation.load(Ordering::Acquire) != generation {
+            return Err(BridgeError::Disabled);
+        }
+        let mut listeners = lock(&BRIDGE.listeners);
+        match listeners.get(&target_port) {
+            Some(existing) => (existing.clone(), false),
+            None => {
+                let listener = Arc::new(Listener {
+                    target_port,
+                    bridge_port: None,
+                    hosts: Mutex::new(HashSet::new()),
+                    trust_forwarded: config.public_host.is_some(),
+                    caps: Mutex::new(Vec::new()),
+                    holds: Mutex::new(HashSet::new()),
+                    last_seen: Mutex::new(Instant::now()),
+                    shutdown: Mutex::new(None),
+                    task: Mutex::new(None),
+                });
+                listeners.insert(target_port, listener.clone());
+                (listener, true)
+            }
+        }
+    };
+    if fresh {
+        SWEEPER.get_or_init(|| {
+            tokio::spawn(sweep_task());
+        });
+        tracing::info!("[bridge] {host} now forwards to 127.0.0.1:{target_port}");
+    }
+    // Remembered before the grant is handed out, so the first request under
+    // this name already finds it. One target can carry several names: a
+    // workbench reached at two hostnames renders one for each. The second
+    // record outlives the target, so the name never becomes codeg's again.
+    lock(&listener.hosts).insert(host.clone());
+    lock(&BRIDGE.minted).insert(host.clone());
+    NAMES_HANDED_OUT.store(true, Ordering::Release);
+    Ok(listener.grant(tab_id, config.public_host.clone(), Some(host)))
 }
 
 /// `tab_id` no longer needs any listener.
@@ -437,8 +771,8 @@ pub fn sweep(now: Instant) -> usize {
     };
     for listener in &stale {
         tracing::info!(
-            "[bridge] port {} closed (127.0.0.1:{} idle)",
-            listener.bridge_port,
+            "[bridge] {} closed (127.0.0.1:{} idle)",
+            listener.describe(),
             listener.target_port
         );
         listener.close();
@@ -493,6 +827,170 @@ fn serve(socket: tokio::net::TcpListener, listener: Arc<Listener>) {
     *lock(&listener.task) = Some(task);
 }
 
+// ─── Routing on codeg's own listener ───────────────────────────────────
+
+/// Answer here, and nowhere else in codeg, when the request was addressed to
+/// a bridge hostname. The outermost layer of codeg's router: a bridged
+/// request gets the same treatment a listener of its own would give it —
+/// no CORS layer, no compression, no body limit, no static fallback — and
+/// codeg's own pages and API are never reached under that hostname.
+///
+/// Off unless `CODEG_BRIDGE_HOST_PATTERN` is set, and then a hostname the
+/// pattern does not describe passes straight through to codeg.
+pub async fn route_by_host(request: Request, next: Next) -> Response {
+    // Names this process handed out are still refused after the bridge is
+    // switched off or pointed somewhere else, so being off is not on its
+    // own a reason to stop looking.
+    if !HOST_MODE.load(Ordering::Acquire) && !NAMES_HANDED_OUT.load(Ordering::Acquire) {
+        return next.run(request).await;
+    }
+    let live = {
+        let config = lock(&BRIDGE.config);
+        config
+            .as_ref()
+            .and_then(|c| c.host_pattern.clone().map(|p| (p, c.public_host.is_some())))
+    };
+    // Forwarding headers are the operator's proxy talking, and only a live
+    // configuration says there is one.
+    let names = addressed_hostnames(&request, live.as_ref().is_some_and(|(_, t)| *t));
+    if live.is_some() {
+        // A name codeg handed out for a live target is that target's,
+        // whichever of the request's authorities carried it.
+        for name in &names {
+            let listener = lock(&BRIDGE.listeners)
+                .values()
+                .find(|l| lock(&l.hosts).contains(name))
+                .cloned();
+            if let Some(listener) = listener {
+                return serve_one(listener, request).await;
+            }
+        }
+    }
+    {
+        let minted = lock(&BRIDGE.minted);
+        if unclaimed_is_the_bridges(live.as_ref().map(|(p, _)| p), &names, &minted) {
+            return forbidden_page();
+        }
+    }
+    next.run(request).await
+}
+
+/// Whether a request naming no *live* target is still the bridge's to
+/// refuse. Two ways it can be.
+///
+/// A name this process once handed out stays the bridge's for good — the
+/// target idling away, the bridge being switched off, the bridge being
+/// pointed somewhere else, none of it reaches the browser's memory of that
+/// origin. A page that ran there may have left a service worker behind, and
+/// codeg's own pages served under that name would be served through it.
+/// `pattern` is `None` for exactly those cases, and this is all that is
+/// left to check.
+///
+/// A dedicated wildcard is the bridge's whether or not a name under it was
+/// ever handed out: with `{port}.preview.example.com` the operator gave the
+/// bridge every name there, so codeg has no business answering. `auto` gets
+/// no such benefit of the doubt — it describes `<port>.<anything>`, a shape
+/// that covers names codeg was never asked to take, a workbench on a
+/// numeric-leading hostname among them.
+fn unclaimed_is_the_bridges(
+    pattern: Option<&HostPattern>,
+    names: &[String],
+    minted: &HashSet<String>,
+) -> bool {
+    names.iter().any(|name| {
+        minted.contains(name)
+            || pattern.is_some_and(|pattern| {
+                matches!(pattern, HostPattern::Template { .. })
+                    && pattern.target_of(name).is_some()
+            })
+    })
+}
+
+/// Every hostname this request carries: what the browser addressed (`Host`,
+/// or HTTP/2's `:authority` where there is no `Host` header) and, behind a
+/// declared proxy, each `X-Forwarded-Host` value — a proxy may append to
+/// that header rather than replace it.
+///
+/// All of them, not the first that exists: a page can add a forwarded header
+/// to a request of its own but cannot drop its `Host`, so naming the
+/// workbench in one cannot carry a request out of the bridge and onto
+/// codeg's pages under the bridge's own origin.
+fn addressed_hostnames(request: &Request, trust_forwarded: bool) -> Vec<String> {
+    let headers = request.headers();
+    let mut raw: Vec<String> = Vec::new();
+    if let Some(host) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) {
+        raw.push(host.to_string());
+    } else if let Some(authority) = request.uri().authority() {
+        raw.push(authority.as_str().to_string());
+    }
+    if trust_forwarded {
+        for value in headers.get_all("x-forwarded-host") {
+            if let Ok(value) = value.to_str() {
+                raw.extend(value.split(',').map(str::to_string));
+            }
+        }
+    }
+    let mut names: Vec<String> = Vec::new();
+    for value in raw {
+        if let Some(name) = hostname_of(&value) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+/// The three answers a bridge listener gives, dispatched by path for a
+/// request that arrived on codeg's listener instead of one of our own.
+async fn serve_one(listener: Arc<Listener>, request: Request) -> Response {
+    // HEAD as well as GET: axum answers a `get(...)` route for both, and a
+    // listener of its own is an axum router.
+    let is_get = matches!(
+        *request.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD
+    );
+    let path = request.uri().path().to_string();
+    if is_get && path == PING_PATH {
+        return ping().await;
+    }
+    // A capability is one path segment, as the listener's own route says.
+    if let Some(cap) = path.strip_prefix(ENTER_PREFIX).filter(|c| !c.contains('/')) {
+        if is_get {
+            let (parts, _) = request.into_parts();
+            return enter_response(&listener, cap, parts.uri.query(), &parts.headers);
+        }
+    }
+    // Anything else under the bridge's own prefix is refused by `forward`.
+    forward_request(listener, request).await
+}
+
+/// The hostname of a `host[:port]`, lower-cased. `None` for an address
+/// literal: a bridge hostname is a name, and `3000.` in front of an IPv4
+/// address or inside brackets is not one.
+fn hostname_of(authority: &str) -> Option<String> {
+    let authority = authority.trim();
+    if authority.starts_with('[') {
+        return None;
+    }
+    let host = authority.split(':').next()?.trim().to_ascii_lowercase();
+    if host.is_empty() || host.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+    Some(host)
+}
+
+/// The hostname the workbench itself was reached at, which `auto` hangs the
+/// target port in front of.
+pub fn workbench_hostname(headers: &HeaderMap) -> Option<String> {
+    let trust_forwarded = lock(&BRIDGE.config)
+        .as_ref()
+        .is_some_and(|c| c.public_host.is_some());
+    addressed_authority(headers, trust_forwarded)
+        .as_deref()
+        .and_then(hostname_of)
+}
+
 // ─── Listener routes ───────────────────────────────────────────────────
 
 async fn ping() -> Response {
@@ -512,16 +1010,24 @@ async fn enter(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    if !listener.has_cap(&cap) {
+    enter_response(&listener, &cap, query.as_deref(), &headers)
+}
+
+fn enter_response(
+    listener: &Listener,
+    cap: &str,
+    query: Option<&str>,
+    headers: &HeaderMap,
+) -> Response {
+    if !listener.has_cap(cap) {
         return forbidden_page();
     }
     listener.touch();
     let to = query
-        .as_deref()
         .and_then(|q| query_param(q, "to"))
         .filter(|to| is_local_path(to))
         .unwrap_or_else(|| "/".to_string());
-    let secure = if forwarded_https(&headers) { "; Secure" } else { "" };
+    let secure = if forwarded_https(headers) { "; Secure" } else { "" };
     let cookie = format!(
         "{}={cap}; Path=/; HttpOnly; SameSite=Lax{secure}",
         listener.cookie_name()
@@ -558,6 +1064,10 @@ fn bounce_page(to: &str) -> String {
 }
 
 async fn forward(State(listener): State<Arc<Listener>>, request: Request) -> Response {
+    forward_request(listener, request).await
+}
+
+async fn forward_request(listener: Arc<Listener>, request: Request) -> Response {
     let (mut parts, body) = request.into_parts();
     if parts.uri.path().starts_with("/__codeg_bridge/") {
         return StatusCode::NOT_FOUND.into_response();
@@ -906,9 +1416,9 @@ fn same_origin_initiator(headers: &HeaderMap, trust_forwarded: bool) -> bool {
     false
 }
 
-/// `host:port` the browser addressed: `Host`, or — behind a declared proxy —
-/// `X-Forwarded-Host` (first value), with the default port made explicit.
-fn request_authority(headers: &HeaderMap, trust_forwarded: bool) -> Option<String> {
+/// `host[:port]` the browser addressed, as written: `Host`, or — behind a
+/// declared proxy — `X-Forwarded-Host` (first value).
+fn addressed_authority(headers: &HeaderMap, trust_forwarded: bool) -> Option<String> {
     let forwarded = if trust_forwarded {
         headers
             .get("x-forwarded-host")
@@ -919,10 +1429,15 @@ fn request_authority(headers: &HeaderMap, trust_forwarded: bool) -> Option<Strin
     } else {
         None
     };
-    let host = match forwarded {
-        Some(host) => host.to_string(),
-        None => headers.get(header::HOST)?.to_str().ok()?.trim().to_string(),
-    };
+    match forwarded {
+        Some(host) => Some(host.to_string()),
+        None => Some(headers.get(header::HOST)?.to_str().ok()?.trim().to_string()),
+    }
+}
+
+/// The same, with the default port made explicit.
+fn request_authority(headers: &HeaderMap, trust_forwarded: bool) -> Option<String> {
+    let host = addressed_authority(headers, trust_forwarded)?;
     let scheme = if trust_forwarded && forwarded_https(headers) { "https" } else { "http" };
     url_authority(&format!("{scheme}://{host}"))
 }
@@ -1235,7 +1750,8 @@ mod tests {
     fn status_and_wire_names() {
         let json = serde_json::to_value(BridgeGrant {
             target_port: 3000,
-            bridge_port: 3081,
+            bridge_port: Some(3081),
+            bridge_host: None,
             entry_path: "/__codeg_bridge/enter/abc".into(),
             public_host: None,
         })
@@ -1243,6 +1759,257 @@ mod tests {
         assert_eq!(json["bridgePort"], 3081);
         assert_eq!(json["entryPath"], "/__codeg_bridge/enter/abc");
         assert!(json["publicHost"].is_null());
+        assert!(json["bridgeHost"].is_null());
+
+        // Addressed by hostname: no port of ours, so the browser keeps the
+        // one it is already talking to.
+        let json = serde_json::to_value(BridgeGrant {
+            target_port: 3000,
+            bridge_port: None,
+            bridge_host: Some("3000.codeg.example".into()),
+            entry_path: "/__codeg_bridge/enter/abc".into(),
+            public_host: None,
+        })
+        .unwrap();
+        assert!(json["bridgePort"].is_null());
+        assert_eq!(json["bridgeHost"], "3000.codeg.example");
+
+        let json = serde_json::to_value(BridgeStatus {
+            enabled: true,
+            ports: Vec::new(),
+            public_host: None,
+            host_pattern: Some("{port}.codeg.example".into()),
+        })
+        .unwrap();
+        assert_eq!(json["hostPattern"], "{port}.codeg.example");
+    }
+
+    #[test]
+    fn host_patterns_parse_or_are_refused() {
+        assert_eq!(HostPattern::parse("auto"), Some(HostPattern::Subdomain));
+        assert_eq!(HostPattern::parse("  AUTO "), Some(HostPattern::Subdomain));
+        assert_eq!(
+            HostPattern::parse("{port}.preview.example.com"),
+            Some(HostPattern::Template {
+                prefix: String::new(),
+                suffix: ".preview.example.com".into()
+            })
+        );
+        assert_eq!(
+            HostPattern::parse("P{port}-codeg.example.com"),
+            Some(HostPattern::Template {
+                prefix: "p".into(),
+                suffix: "-codeg.example.com".into()
+            })
+        );
+        for raw in [
+            // Says nothing about where the port goes.
+            "preview.example.com",
+            "",
+            "off",
+            // Twice is not one answer.
+            "{port}.{port}.example.com",
+            // Every numeric hostname would be the bridge's.
+            "{port}",
+            // Not a hostname: a port, a path, a scheme, a wildcard.
+            "{port}.example.com:8080",
+            "{port}.example.com/preview",
+            "https://{port}.example.com",
+            "*.{port}.example.com",
+            "{port}..example.com",
+            "-{port}.example.com",
+            // A digit next to the port: `3000.example.com` would be port 300.
+            "{port}0.example.com",
+            "p9{port}.example.com",
+        ] {
+            assert_eq!(HostPattern::parse(raw), None, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn a_hostname_names_one_target_port() {
+        let auto = HostPattern::Subdomain;
+        let template = HostPattern::parse("p{port}-codeg.example.com").unwrap();
+
+        assert_eq!(auto.render(3000, "codeg.example.com").as_deref(), Some("3000.codeg.example.com"));
+        assert_eq!(auto.render(3000, "LOCALHOST").as_deref(), Some("3000.localhost"));
+        assert_eq!(auto.target_of("3000.codeg.example.com"), Some(3000));
+        assert_eq!(auto.target_of("3000.LOCALHOST"), Some(3000));
+        assert_eq!(template.render(5173, "ignored").as_deref(), Some("p5173-codeg.example.com"));
+        assert_eq!(template.target_of("p5173-codeg.example.com"), Some(5173));
+
+        // `auto` has nothing to build on: an address is not a name, and a
+        // workbench reached without a `Host` has none at all.
+        assert_eq!(auto.render(3000, "192.168.1.5"), None);
+        assert_eq!(auto.render(3000, "127.0.0.1"), None);
+        assert_eq!(auto.render(3000, "::1"), None);
+        assert_eq!(auto.render(3000, ""), None);
+        assert_eq!(auto.render(3000, "not a host"), None);
+
+        // The workbench's own hostname is not one of the bridge's.
+        assert_eq!(auto.target_of("codeg.example.com"), None);
+        assert_eq!(auto.target_of("localhost"), None);
+        assert_eq!(template.target_of("codeg.example.com"), None);
+        assert_eq!(template.target_of("p-codeg.example.com"), None);
+        // Neither is a near miss, in either direction.
+        assert_eq!(template.target_of("p5173-codeg.example.com.evil.test"), None);
+        assert_eq!(template.target_of("evil.p5173-codeg.example.com"), None);
+        assert_eq!(auto.target_of("3000"), None);
+        assert_eq!(auto.target_of("3000."), None);
+        assert_eq!(auto.target_of("a3000.example.com"), None);
+        assert_eq!(auto.target_of("3000.a b"), None);
+        // One spelling per port: no leading zeros, no port 0, nothing past
+        // the end of the port space.
+        assert_eq!(auto.target_of("03000.example.com"), None);
+        assert_eq!(auto.target_of("0.example.com"), None);
+        assert_eq!(auto.target_of("65536.example.com"), None);
+        assert_eq!(auto.target_of("65535.example.com"), Some(65535));
+    }
+
+    #[test]
+    fn a_hostname_is_read_out_of_the_authority() {
+        assert_eq!(hostname_of("3000.codeg.example:8080").as_deref(), Some("3000.codeg.example"));
+        assert_eq!(hostname_of(" 3000.Codeg.Example ").as_deref(), Some("3000.codeg.example"));
+        // Addresses are not names — `3000.` in front of one names nothing.
+        assert_eq!(hostname_of("[::1]:3080"), None);
+        assert_eq!(hostname_of("127.0.0.1:3080"), None);
+        assert_eq!(hostname_of("192.168.1.5"), None);
+        assert_eq!(hostname_of(""), None);
+        assert_eq!(hostname_of(":3080"), None);
+    }
+
+    #[test]
+    fn the_two_ways_of_addressing_are_configured_apart() {
+        let config = |ports: Option<&str>, pattern: Option<&str>| {
+            BridgeConfig::from_values("127.0.0.1", 3080, ports, pattern, None)
+        };
+        // No pattern: the pool, as before.
+        let ports = config(None, None).unwrap();
+        assert_eq!(ports.ports, (3081..=3090).collect::<Vec<_>>());
+        assert_eq!(ports.host_pattern, None);
+        // A pattern: nothing of our own is bound, so no pool is claimed —
+        // not even the default one nobody asked for.
+        let hosts = config(None, Some("auto")).unwrap();
+        assert!(hosts.ports.is_empty());
+        assert_eq!(hosts.host_pattern, Some(HostPattern::Subdomain));
+        assert!(config(Some("3081-3090"), Some("auto")).unwrap().ports.is_empty());
+        // An empty pattern is no pattern.
+        assert_eq!(config(None, Some("   ")).unwrap().host_pattern, None);
+        // Either switch turns the bridge off, and an unreadable value in
+        // either does too: a typo must not fall back to a default.
+        assert!(config(Some("off"), Some("auto")).is_none());
+        assert!(config(None, Some("preview.example.com")).is_none());
+        assert!(config(Some("nonsense"), None).is_none());
+    }
+
+    #[test]
+    fn every_authority_a_request_carries_is_read() {
+        let request = |pairs: &[(&str, &'static str)], uri: &str| {
+            let mut builder = Request::builder().uri(uri);
+            for (name, value) in pairs {
+                builder = builder.header(*name, *value);
+            }
+            builder.body(Body::empty()).unwrap()
+        };
+        let direct = |pairs: &[(&str, &'static str)]| {
+            addressed_hostnames(&request(pairs, "/x"), false)
+        };
+        let proxied = |pairs: &[(&str, &'static str)]| {
+            addressed_hostnames(&request(pairs, "/x"), true)
+        };
+
+        assert_eq!(direct(&[("host", "3000.Codeg.Test:8080")]), ["3000.codeg.test"]);
+        // A forwarding header a page added to its own request does not
+        // replace the `Host` it cannot drop — both are read, so naming the
+        // workbench in one cannot carry the request off the bridge.
+        assert_eq!(
+            proxied(&[("host", "3000.codeg.test"), ("x-forwarded-host", "codeg.test")]),
+            ["3000.codeg.test", "codeg.test"]
+        );
+        // A proxy that appends rather than replaces, and one that sends the
+        // header twice: every value counts.
+        assert_eq!(
+            proxied(&[("host", "codeg:3080"), ("x-forwarded-host", "evil.test, 3000.codeg.test")]),
+            ["codeg", "evil.test", "3000.codeg.test"]
+        );
+        // Without a declared proxy in front, forwarding headers are nobody's
+        // word for anything.
+        assert_eq!(
+            direct(&[("host", "3000.codeg.test"), ("x-forwarded-host", "codeg.test")]),
+            ["3000.codeg.test"]
+        );
+        // HTTP/2 carries the authority in the request line, with no `Host`
+        // header at all.
+        assert_eq!(
+            addressed_hostnames(&request(&[], "http://3000.codeg.test:8080/x"), false),
+            ["3000.codeg.test"]
+        );
+        // `Host` wins over the URI's authority where both are there, as it
+        // does for every other reader of this request.
+        assert_eq!(
+            addressed_hostnames(
+                &request(&[("host", "3000.codeg.test")], "http://9.codeg.test/x"),
+                false
+            ),
+            ["3000.codeg.test"]
+        );
+        // Addresses name no bridge target, and nothing at all is nothing.
+        assert!(direct(&[("host", "127.0.0.1:3080")]).is_empty());
+        assert!(direct(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_name_no_target_holds_stays_the_bridges_once_handed_out() {
+        let auto = HostPattern::Subdomain;
+        let template = HostPattern::parse("{port}.preview.example.com").unwrap();
+        let names = |raw: &[&str]| raw.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let none = HashSet::new();
+        let handed_out = HashSet::from(["3000.codeg.test".to_string()]);
+
+        // A wildcard the operator handed over: the bridge answers for every
+        // name under it, open target or not, handed out or not.
+        assert!(unclaimed_is_the_bridges(Some(&template), &names(&["3000.preview.example.com"]), &none));
+        assert!(unclaimed_is_the_bridges(
+            Some(&template),
+            &names(&["codeg.example.com", "3000.preview.example.com"]),
+            &none
+        ));
+        assert!(!unclaimed_is_the_bridges(Some(&template), &names(&["codeg.example.com"]), &none));
+        assert!(!unclaimed_is_the_bridges(Some(&template), &names(&["preview.example.com"]), &none));
+        // `auto` claims nothing it did not hand out: the shape alone would
+        // take a workbench on `3000.codeg.test` away from codeg.
+        assert!(!unclaimed_is_the_bridges(Some(&auto), &names(&["3000.codeg.test"]), &none));
+        assert!(!unclaimed_is_the_bridges(Some(&auto), &names(&[]), &none));
+        // But once it has handed a name out, the name is the bridge's for
+        // as long as this process runs — the target can idle away, the
+        // origin the page ran on does not.
+        assert!(unclaimed_is_the_bridges(Some(&auto), &names(&["3000.codeg.test"]), &handed_out));
+        assert!(!unclaimed_is_the_bridges(Some(&auto), &names(&["3001.codeg.test"]), &handed_out));
+        // And it stays the bridge's with no configuration at all behind it:
+        // switching the bridge off, or pointing it somewhere else, does not
+        // reach the browser's memory of that origin.
+        assert!(unclaimed_is_the_bridges(None, &names(&["3000.codeg.test"]), &handed_out));
+        assert!(!unclaimed_is_the_bridges(None, &names(&["3001.codeg.test"]), &handed_out));
+        assert!(!unclaimed_is_the_bridges(None, &names(&["3000.preview.example.com"]), &none));
+    }
+
+    #[test]
+    fn a_listeners_cookie_is_named_after_the_way_it_is_reached() {
+        let listener = |bridge_port: Option<u16>| Listener {
+            target_port: 3000,
+            bridge_port,
+            hosts: Mutex::new(HashSet::new()),
+            trust_forwarded: false,
+            caps: Mutex::new(Vec::new()),
+            holds: Mutex::new(HashSet::new()),
+            last_seen: Mutex::new(Instant::now()),
+            shutdown: Mutex::new(None),
+            task: Mutex::new(None),
+        };
+        assert_eq!(listener(Some(3081)).cookie_name(), "codeg-bridge-3081");
+        // Addressed by hostname there is no bridge port; the target port is
+        // what the hostname says, and the cookie is host-only anyway.
+        assert_eq!(listener(None).cookie_name(), "codeg-bridge-3000");
     }
 
     #[test]

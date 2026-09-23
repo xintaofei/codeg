@@ -52,6 +52,8 @@
       "science": "과학 연구",
       "office_tools": "오피스 도구",
       "skill_packs": "스킬 팩",
+      "collaboration": "협업",
+      "browser": "브라우저",
       "quick_messages": "빠른 메시지",
       "logs": "실행 로그",
       "memory": "메모리"
@@ -1711,9 +1713,9 @@
   "GeneralSettings": {
     "loading": "로딩 중...",
     "sectionTitle": "일반",
-    "sectionDescription": "기본 터미널, 렌더링 가속, 알림과 알림음, 다중 에이전트 위임 등 공용 환경설정을 한곳에서 관리합니다.",
+    "sectionDescription": "기본 터미널, 렌더링 가속, 창을 닫을 때의 동작, 알림과 알림음 등 공용 환경설정을 한곳에서 관리합니다.",
     "terminalTitle": "기본 터미널",
-    "terminalDescription": "터미널 바나 파일 트리에서 새 터미널 탭을 열 때 사용할 셸을 선택합니다. 에이전트가 codeg에 전체 명령줄 실행을 요청할 때도 사용됩니다.",
+    "terminalDescription": "codeg가 새 터미널 탭을 열 때와 에이전트를 대신해 전체 명령줄을 실행할 때 사용할 셸을 선택합니다. 자체 셸을 갖춘 에이전트(Codex, Claude Code)는 자기 프로세스 안에서 명령을 실행하므로 이 설정이 닿지 않습니다.",
     "terminalSystemDefault": "시스템 기본값",
     "terminalPowerShell7": "PowerShell 7 (pwsh)",
     "terminalWindowsPowerShell": "Windows PowerShell",
@@ -1736,6 +1738,10 @@
     "restartNow": "지금 다시 시작",
     "restartFailed": "다시 시작 실패: {message}",
     "loadFailed": "불러오기 실패: {message}"
+  },
+  "CollaborationSettings": {
+    "sectionTitle": "협업",
+    "sectionDescription": "에이전트끼리 어떻게 협업하는지와, 대화 안에서 사용할 수 있는 codeg 자체 도구의 범위를 설정합니다."
   },
   "LoginPage": {
     "documentTitle": "로그인 - codeg",
@@ -3507,6 +3513,7 @@
             "child_max_turn_requests": "서브에이전트: 요청 한도",
             "child_empty": "서브에이전트 응답 없음",
             "child_auth_required": "서브에이전트 로그인 필요",
+            "child_rejected": "서브에이전트 요청 거부",
             "child_unknown": "서브에이전트: 오류",
             "unknown": "알 수 없는 작업"
           }
@@ -3831,6 +3838,7 @@
         "compacted": "컨텍스트 압축 완료",
         "compactedTokens": "컨텍스트 압축 완료 · {before} → {after} 토큰",
         "failed": "컨텍스트 압축 실패",
+        "summary": "요약",
         "triggerManual": "수동 실행",
         "triggerAutomatic": "자동 실행"
       },
@@ -5037,6 +5045,7 @@
   "BrowserSettings": {
     "title": "내장 브라우저",
     "description": "대화, 도구 결과, 터미널에서 연 웹 페이지를 앱을 벗어나지 않고 파일 옆의 탭으로 표시할 수 있습니다.",
+    "descriptionWeb": "브라우저 세션에서는 웹 페이지가 이미 사용 중인 브라우저에서 열립니다. 예외는 codeg 호스트에서 실행 중인 서버로, 여기 탭으로 전달됩니다. 아래는 그때도 적용되는 설정입니다.",
     "defaultTargetTitle": "링크를 여는 위치",
     "defaultTargetHint": "출처별로 설정합니다. ⌘/Ctrl을 누른 채 링크를 클릭하면 이번 한 번만 다른 쪽으로 엽니다.",
     "sourceTranscript": "대화 메시지",
@@ -5076,6 +5085,7 @@
     "downloadsHint": "페이지에서 내려받은 파일은 {dir}에 저장됩니다. 자동으로 열지 않으며 기존 파일을 덮어쓰지 않습니다.",
     "rulesTitle": "사이트 규칙",
     "rulesHint": "사이트별 설정: 항상 내장 브라우저, 항상 시스템 브라우저, 또는 차단. 패턴은 호스트 이름, *.example.com 또는 *이며 :포트를 붙일 수 있습니다. 가장 구체적인 일치가 적용됩니다.",
+    "rulesHintWeb": "사이트별 설정: 차단. 브라우저 세션에서는 링크가 어디에서 열릴지 선택할 수 없습니다. 패턴은 호스트 이름, *.example.com 또는 *이며 :포트를 붙일 수 있습니다. 가장 구체적인 일치가 적용됩니다.",
     "serviceOpenTitle": "로컬 서버",
     "serviceOpenHint": "터미널에서 시작한 서버가 주소를 출력하면 브라우저 탭에서 엽니다. 이 컴퓨터의 주소만, 그리고 실제로 수신 중일 때만 해당합니다.",
     "serviceOpenOff": "아무것도 하지 않기",
@@ -6289,6 +6299,7 @@
       "copied": "주소를 복사했습니다",
       "unreachableTitle": "브리지 포트에 연결할 수 없습니다",
       "unreachableHint": "codeg 서버가 이 페이지를 {origin}에 올렸지만 브라우저에서 접근할 수 없습니다. 해당 포트를 공개하거나(CODEG_BRIDGE_PORTS 참고) CODEG_BRIDGE_PUBLIC_HOST를 설정하세요. codeg를 HTTPS로 제공한다면 브리지 포트에도 HTTPS가 필요합니다.",
+      "unreachableHostHint": "codeg 서버가 이 페이지를 {origin}에 두었지만 브라우저에서 접근할 수 없습니다. 해당 호스트 이름이 codeg 서버로 확인되고 앞단 프록시를 통과해야 합니다. 와일드카드 DNS 레코드와 와일드카드 vhost가 필요합니다(CODEG_BRIDGE_HOST_PATTERN 참조).",
       "errorTitle": "이 페이지는 여기에 표시할 수 없습니다"
     },
     "download": {

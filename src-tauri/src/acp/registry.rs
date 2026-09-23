@@ -920,33 +920,49 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // the four invalidate a reason recorded elsewhere, which is why they
             // are written down rather than skipped.
             //
-            // (p) `compaction_update` (#1134), the release headline and the one
-            // item that is OUT OF REACH at this schema pin rather than merely
-            // declined. `clientSupportsCompactionUpdates` gates on
+            // (p) `compaction_update` (#1134), the release headline.
+            // `clientSupportsCompactionUpdates` gates on
             // `clientCapabilities.session.compaction` being an object — a real
             // typed field, NOT an `_meta` key, so unlike every other opt-in on
-            // this list it cannot be smuggled through `ClientCapabilities.meta`.
-            // codeg's pinned `agent-client-protocol-schema` 0.11.7 has no
-            // `session` field on `ClientCapabilities` at all, and no
-            // `CompactionUpdate` / `CompactionSummaryChunk` on `SessionUpdate`;
-            // both arrived later behind `unstable_session_compaction` (they are
-            // in 1.7.0). Opting in would therefore mean hand-serializing a
-            // capability the typed struct cannot express AND a raw pre-dispatch
-            // reader for two notification variants — and then it repeats the
-            // `nativeSubagentSessions` trade exactly: with the capability on,
+            // this list it cannot be smuggled through `ClientCapabilities.meta`:
+            // the `agent-client-protocol-schema` 0.11.7 codeg pinned at the
+            // time had no `session` field on `ClientCapabilities` at all, and no
+            // `CompactionUpdate` / `CompactionSummaryChunk` on `SessionUpdate`
+            // (both arrived in schema 1.9 behind `unstable_session_compaction`).
+            //
+            // ⚠️ THIS ENTRY USED TO CALL THAT "out of reach at this schema pin".
+            // It is not, and the correction is worth stating because the same
+            // wrong inference was drawn twice more below. The pin limits what
+            // the TYPED STRUCTS can say, not what codeg can put on the wire:
+            // `session/new` and `session/load` already go out as
+            // `UntypedMessage`s, and `air_async_task_delta` already reads three
+            // variants this very `SessionUpdate` cannot deserialize. Opting in
+            // cost exactly those two established moves — an untyped
+            // `initialize` that grafted the capability on, and a raw
+            // pre-dispatch reader (`session_compaction_event`). The move to the
+            // official `agent-client-protocol` 2.2 runtime (schema 1.9.1) has
+            // since made the capability a typed `ClientSessionCapabilities`
+            // member, set in `build_client_capabilities`; the reader stays raw
+            // by choice (see its doc).
+            //
+            // The `nativeSubagentSessions` trade does NOT repeat here, which is
+            // what makes this one worth taking. True: with the capability on,
             // `ContextCompactionLifecycle` returns before its `tool_call`
             // branch, so the `_meta.contextCompaction` call that
-            // `<ContextCompactionCard>` renders from simply stops being sent,
-            // and codeg would have to rebuild the card on the raw channel to
-            // stand still. What it buys is real — the retained summary text, as
-            // `summary` plus streaming `compaction_summary_chunk`s, which the
-            // legacy presentation never carries (`recordSummary` early-returns
-            // unless the presentation is `compaction_update`) — but the gap it
-            // closes is already covered on the history side: `parsers::claude`
-            // routes the persisted continuation message
-            // (`CONTEXT_CONTINUATION_PREFIX`) to a System role, and the live
-            // `user_message_chunk` that carries it is not rendered at all. Worth
-            // revisiting when the sacp/schema migration lands, not before.
+            // `<ContextCompactionCard>` renders from stops being sent. But
+            // unlike a subagent capsule, that call carries no information the
+            // new frames lack — `compaction_update` repeats the same `_meta`
+            // block — so the reader translates it straight back into the legacy
+            // shape and the card, the timeline's `"compaction"` render kind and
+            // all four history parsers keep working untouched. What it buys on
+            // top: the retained summary text (`summary` plus streaming
+            // `compaction_summary_chunk`s, which the legacy presentation never
+            // carries — `recordSummary` early-returns unless the presentation
+            // is `compaction_update`), and real `failed`/`cancelled` states.
+            // The summary rides the synthetic call's `raw_output` under a
+            // `codeg.compactionSummary` claim and opens behind the divider's
+            // "Summary" toggle; history dividers stay summary-less because the
+            // transcript already shows it as the continuation turn beneath.
             //
             // (q) The file-change report went native (#1138), and with it the
             // COST half of the "agentFileChangeReport stays out" record in
@@ -1145,9 +1161,105 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // cards on, so a pending MCP approval now shows the right card
             // instead of flipping to it once the call runs and the streamed
             // frame (which always carried `toolName`) refines it.
+            //
+            // 0.80.0 + 0.81.0 are four upstream changes (#1150, #1147, #1154,
+            // #1155) plus an SDK bump, and `@agentclientprotocol/sdk` moves
+            // 1.4.0 → 1.5.0 on both adapters in lockstep. The bundled
+            // `@anthropic-ai/claude-agent-sdk` goes 0.3.274 → 0.3.280, i.e. CLI
+            // 2.1.274 → **2.1.280** (`manifest.json`); `engines.node` stays
+            // ">=22". Three of the four need nothing here; the fourth is the
+            // only item in this whole bump that costs codeg code, and it costs
+            // it in the HISTORY parser rather than on the wire.
+            //
+            // (w) **The subagent hand-back frame** (CLI-side, arrives with the
+            // SDK bump — `CLAUDE_CODE_HANDBACK_PROVENANCE`, default on, CLI
+            // 2.1.277+). The CLI now prefixes a subagent's report inside the raw
+            // `Agent`/`Task` tool_result with a ~470-char model-directed
+            // provenance paragraph and indents every line of the report two
+            // spaces. 0.81.0's `tools.ts` unwraps it (`unwrapHandbackFrame`)
+            // before the report reaches a client, so the LIVE path is clean by
+            // bumping — but codeg also renders `Agent`/`Task` results from the
+            // CLI's own JSONL (`parsers::claude::extract_tool_result_text` takes
+            // the tool_result text; `toolUseResult` is only mined for
+            // `structuredPatch` and agent stats), and there the frame is still
+            // sitting on the record. Without a matching unwrap every subagent
+            // card in history opens with the paragraph and shows the report
+            // indented underneath. `parsers::claude` now carries the same
+            // verbatim-anchored unwrap, with the header copied byte-for-byte out
+            // of the 2.1.280 binary rather than transcribed from the adapter.
+            // Note this is NOT gated on the adapter: a user whose standalone
+            // Claude Code CLI reaches 2.1.277 writes the frame into every
+            // transcript codeg imports, adapter or no adapter.
+            //
+            // (x) `terminal_output_delta` (#1150, the twin of codex-acp 1.13.0's
+            // #528). A client may now advertise `_meta.terminal_output_delta`
+            // instead of `_meta.terminal_output`; the adapter treats EITHER as
+            // "this client takes terminal output" and renames the key it emits.
+            // codeg advertises neither to claude, deliberately — see
+            // `build_client_capabilities`, and (u) above for what the `content`
+            // channel is still carrying because of it. Inert.
+            //
+            // (y) Compaction lifecycles now close on interrupt (#1154). A
+            // cancelled or errored turn calls `ContextCompactionLifecycle
+            // ::interrupt()`, which settles the entity and refuses the late,
+            // uncorrelated hooks the abandoned work keeps emitting until a new
+            // turn's dispatch calls `resume()`. codeg renders compaction from
+            // the legacy `_meta.contextCompaction` tool call (the
+            // the `compaction_update` presentation too, see (p)),
+            // and that call is exactly what used to be left `in_progress`
+            // forever when a `/compact` was interrupted. A free fix.
+            //
+            // (z) **A resumed session's first result no longer charges the whole
+            // pre-resume history to one turn** (#1147, SDK 0.3.277+). The CLI
+            // continues `result.modelUsage`'s running total from the totals the
+            // transcript saved, so the first reading after a resume has no
+            // predecessor to subtract from; `modelUsageIncrement` used to treat
+            // that as "the running total restarted" and take the reading itself
+            // as the increment. `lastModelUsageReading` is now `undefined` on a
+            // resumed session and the first result's rows come from its own
+            // per-turn `usage` instead. This lands straight in codeg's
+            // `_meta.quota.model_usage` consumer — the per-model rows on the
+            // first turn after a resume were inflated by the entire prior
+            // session. Nothing to do beyond the bump.
+            //
+            // (aa) Session Notices (#1155), the release headline, and taken —
+            // by the same two moves as `compaction_update` in (p), which see
+            // for why the "out of reach at this schema pin" reading this entry
+            // originally carried was wrong. `clientSupportsNotices` gates on
+            // `clientCapabilities.session.notices` being an object, so
+            // `build_client_capabilities` advertises it (grafted onto an untyped
+            // `initialize` until schema 1.9.1 made it a typed member) and
+            // `session_notice` reads the variant ahead of the typed pipeline.
+            // Probed live over stdio against 0.81.0:
+            // the handshake is accepted and the `initialize` RESPONSE is
+            // byte-identical to the same run with the block withheld.
+            //
+            // Advertising is not a pure win, and both halves of the trade are
+            // paid for rather than absorbed:
+            //
+            // * It takes over the AIR lane. The model-fallback advisory is
+            //   `if (!supportsNotices && supportsAirSessionFailures(...))`, so
+            //   turning notices on stops feeding codeg's existing
+            //   `SessionFailure` banner; codex-acp says the same in its
+            //   readme-dev ("notices take precedence over AIR advisory
+            //   records"). PAID: `sessionFailureFromNotice` mirrors
+            //   `warning`/`error` notices back into that table, so the banner
+            //   keeps its rows. Only ADVISORY-class records move — the real
+            //   failures that carry `retry`/`login` actions never went through
+            //   this lane (the extension doc: a `warning` "may still succeed
+            //   and normally has no actions"), so no button is lost.
+            // * It DROPS `informational` frames at `level === "info"` outright
+            //   (`if (message.level === "info") break;`). Those are plain
+            //   transcript text today. ACCEPTED: upstream's reason is that
+            //   they only show in Claude Code's own transcript mode, and
+            //   `warning`, `notice` and `suggestion` all still arrive.
+            //   Everything else that becomes a notice — model fallback,
+            //   Auto-mode fallback, Fast mode turned off, hook block reasons,
+            //   "Task stopped by user" — is currently a `**bold label:** …`
+            //   agent message, which is the presentation worth replacing.
             distribution: AgentDistribution::Npx {
-                version: "0.79.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.79.0",
+                version: "0.81.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.81.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -1633,9 +1745,105 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `features.cwd_relative_turn_diffs = false` in the merged config so
             // turn-diff paths are git-root relative — codeg writes no such key
             // (repo grep: zero hits) and reads no turn diff.
+            //
+            // 1.13.0 is six upstream changes (#515, #523, #525, #528, #531,
+            // #532) and ships the SAME two capabilities claude-agent-acp 0.81.0
+            // did, in the same week and behind the same two typed client
+            // capabilities — `@agentclientprotocol/sdk` moves 1.4.0 → 1.5.0 on
+            // both. `engines` is still absent, so the 20.0.0 floor stays.
+            //
+            // (f) Session Notices (#532) and ACP session compaction (#515) are
+            // both TAKEN, by the same two moves the claude entry's (aa) and (p)
+            // describe — `clientCapabilities.session.notices` / `.compaction`
+            // are typed fields the pinned struct cannot say, so they are
+            // grafted onto an untyped `initialize` and read back before the
+            // typed pipeline. Probed live over stdio against 1.13.0 alongside
+            // claude: handshake accepted, `initialize` response byte-identical
+            // to the withheld run.
+            //
+            // What codex adds to the claude-side note is the LIST of what
+            // moves: with notices on, config warnings, deprecation notices,
+            // plain warnings, model rerouting and the legacy `thread/compacted`
+            // advisory all leave the channels codeg reads today for `notice`
+            // updates. Two of those are a straight UPGRADE rather than a
+            // trade, because their current channel is not a surface at all:
+            // `modelRerouted` is a THOUGHT chunk today (it pollutes reasoning
+            // with "Model rerouted from X to Y"), and a deprecation notice
+            // reaches a client only through AIR. The rest land in the banner
+            // mirror, same as claude's.
+            //
+            // Compaction is where codex gains most. Its legacy call carries
+            // none of the reserved fields (the card's full label was only ever
+            // reachable on claude), it cannot express a failed or interrupted
+            // compaction at all, and `thread/compacted` "cannot distinguish
+            // multiple compactions within one turn" (upstream's own words).
+            // `compaction_update` fixes all three and adds history-position
+            // replay — and `session_compaction_event` translates it back into
+            // the legacy `_meta.contextCompaction` shape, so none of that costs
+            // the card a line.
+            //
+            // (g) **codeg now reads codex's terminal output channel** (#528 is
+            // what made this legible, but the channel itself is older). codex
+            // has always had pi's #519 shape and codeg never noticed, because
+            // codex ALSO repeats the output as `rawOutput` at the end:
+            // `createTerminalCommandEvent` names a terminal by the item's own id
+            // (codeg never created it — every poll misses and ages out at
+            // `TERMINAL_POLL_MISSING_LIMIT`), and the real output streams as
+            // `_meta.terminal_output_delta` deltas that codeg dropped on the
+            // floor. So a codex shell card sat on the `[Terminal: …]`
+            // placeholder for the whole command and then filled in at once.
+            // `hosted_terminal_*` in `connection.rs` now covers codex alongside
+            // pi: the placeholder block is stripped, the call is kept out of the
+            // terminal poller, the deltas bridge onto `raw_output`, and the
+            // duplicate cumulative `rawOutput` is dropped for those calls.
+            //
+            // The client capability #528 adds IS advertised (codex only; see
+            // `build_client_capabilities`). `resolveTerminalOutputMode` already
+            // returns `terminal_output_delta` by DEFAULT, so the streaming above
+            // needed nothing on the wire; what the flag buys is that
+            // `completeCommandExecutionEvent` stops repeating the whole
+            // aggregated output as `rawOutput`, which codeg used to parse only to
+            // discard. It was first held back for the `search`/`listFiles`
+            // cards, on the premise that they render from the
+            // `{formatted_output, exit_code}` envelope — but that premise was
+            // already half gone: codex forwards `outputDelta` for EVERY command,
+            // so any command action that prints something reaches its card
+            // through the same bridge, as plain text, and the envelope only ever
+            // spoke for a command that printed nothing. With the flag, that one
+            // completes as a bare status with no exit code anywhere
+            // (`terminal_exit` is for shell commands only), and the single
+            // reader that needed one — grep's "No matches", rg's exit 1 — now
+            // reads the live `failed`-with-no-output shape instead
+            // (`isCodexGrepNoMatchResult`).
+            //
+            // (h) `@openai/codex` ^0.154.0 → **^0.155.1** (caret on a 0.x minor
+            // pins it inside 0.155.x, so this does not drift to 0.156.0). Two
+            // models are RETIRED — `gpt-5.2` and `gpt-5.4-mini` — taking the
+            // catalog from 11 slugs to 9; the bundled offline snapshot is
+            // regenerated from the 0.155.1 binary. This is the removal case
+            // `types.ts` calls a *ghost* (a stored per-conversation override
+            // naming a slug the catalog no longer lists), which is handled
+            // there and needs nothing here. No new fields on `ModelInfo`; the
+            // re-probe against the 0.155.1 binary did turn up two strict
+            // booleans `BOOL_FIELDS` had never covered
+            // (`node_repl_auto_review_required` / `node_repl_disabled`, both
+            // already in 0.154), which it now does.
+            //
+            // (i) Three fixes that arrive free. A root turn that fails or is
+            // interrupted now closes ALL child sessions rather than only the one
+            // whose thread id matched (`closingChildSessions`), and `wait()`
+            // returns `"timed_out"` so the caller finalizes pending child
+            // updates before closing them — both of which used to leave codeg's
+            // collab capsules hanging. `/compact` now reports a real turn
+            // (`onTurnStarted` + a returned `turn/completed`) instead of
+            // resolving with nothing. `thread/attachment/updated` and the
+            // `ThreadAttachment*` app-server v2 types are new upstream surface
+            // the adapter itself maps to nothing (`return null`), and
+            // `FeedbackUploadResponse.promptHash` belongs to a feedback upload
+            // codeg does not drive.
             distribution: AgentDistribution::Npx {
-                version: "1.12.0",
-                package: "@agentclientprotocol/codex-acp@1.12.0",
+                version: "1.13.0",
+                package: "@agentclientprotocol/codex-acp@1.13.0",
                 cmd: "codex-acp",
                 args: &[],
                 env: &[],
@@ -1740,39 +1948,39 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "OpenCode",
             description: "The open source coding agent",
             distribution: AgentDistribution::Binary {
-                version: "1.18.31",
+                version: "1.18.32",
                 cmd: "opencode",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.31/opencode-darwin-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.32/opencode-darwin-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.31/opencode-darwin-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.32/opencode-darwin-x64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.31/opencode-linux-arm64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.32/opencode-linux-arm64.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.31/opencode-linux-x64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.32/opencode-linux-x64.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.31/opencode-windows-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.32/opencode-windows-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.31/opencode-windows-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.32/opencode-windows-x64.zip",
                         sha256: None,
                     },
                 ],
@@ -1791,39 +1999,39 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // Docker / Nix are the supported channels. The npm `hermes-agent`
             // package is a COMMUNITY bridge (wyrtensi/hermes-agent-npm, not
             // Nous Research), pinned here at an exact, audited version: its
-            // postinstall clones the OFFICIAL repo at tag v2026.9.14 verifying
-            // the full commit SHA (345cd2b0…), bootstraps an isolated Python
-            // 3.11 venv with a checksum-pinned uv, and `uv sync --locked
+            // postinstall clones the OFFICIAL repo at tag v2026.9.21 verifying
+            // the full commit SHA (d337b736…), bootstraps an isolated Python
+            // 3.11 venv with a checksum-pinned uv, and `uv sync --frozen
             // --extra all` (⊇ the acp+mcp extras) from upstream's lockfile —
             // all inside the npm package directory; config/credentials stay in
             // `~/.hermes`. Its `hermes` bin execs the venv's real upstream
             // console script, so `hermes acp` is the same adapter the official
             // install runs. Keep the pin EXACT on version bumps and re-audit
             // the wrapper diff — the exact pin is what bounds the third-party
-            // trust surface. 0.21.3 audited, and unlike 0.20.4→0.20.5→0.20.6→
-            // 0.21.0→0.21.1 this one is NOT byte-identical: two files move.
-            // `scripts/postinstall.js` is NOT one of them — it is identical by
-            // sha256 to the fully-read 0.20.4 wrapper, so `fetchAndVerifyPinnedTag`
-            // still hard-compares `rev-parse <tag>^{commit}` against the 40-hex
-            // pin, as do `bin/` and the rest of `lib/` (incl.
-            // `runtime-checkout.js`). What changed is `lib/uv-installer.js`,
-            // and only its DATA: uv 0.12.2 → 0.12.13 with a fresh 18-entry
-            // sha256 table. The install mechanism is untouched — same
-            // checksum-pinned fetch, same 128MB/256MB archive and extraction
-            // caps — and the new digests are the real upstream ones, spot-checked
-            // against astral-sh/uv's published `<asset>.sha256` for the darwin-arm64,
-            // linux-x64-gnu and windows-x64 assets. `package.json` moves only the
-            // version and the upstream pin. That new pin resolves as advertised:
-            // the annotated tag v2026.9.14 dereferences to exactly 345cd2b0…,
-            // tagged by Teknium.
+            // trust surface. 0.21.4 audited: the whole of `lib/` (incl.
+            // `uv-installer.js` and its uv 0.12.13 digest table) and `bin/` are
+            // byte-identical to the audited 0.21.3, and `package.json` moves
+            // only the version and the upstream pin. The one code change is in
+            // `scripts/postinstall.js`, and it is a single argument:
+            // `uv sync --locked` → `--frozen`. Both install strictly from
+            // upstream's `uv.lock` with its per-artifact hashes and neither
+            // re-resolves; `--frozen` drops only the assertion that the lock is
+            // in sync with `pyproject.toml`, a check whose strictness varies by
+            // uv version. Since the checkout is pinned to an exact commit, that
+            // lockfile is fixed content — so the installed dependency set stays
+            // exactly as pinned, and `fetchAndVerifyPinnedTag` still hard-compares
+            // `rev-parse <tag>^{commit}` against the 40-hex pin before the
+            // `checkout --detach`. That new pin resolves as advertised: the
+            // annotated tag v2026.9.21 dereferences to exactly d337b736…, tagged
+            // by Teknium on 2026-09-21.
             //
             // Launch preference: `resolve_npx_command("hermes")` checks PATH
             // first, so an official-installer `hermes` (which self-updates)
             // naturally outranks the npm-managed copy; the npm global install
             // is the managed/one-click channel codeg's Install button drives.
             distribution: AgentDistribution::Npx {
-                version: "0.21.3",
-                package: "hermes-agent@0.21.3",
+                version: "0.21.4",
+                package: "hermes-agent@0.21.4",
                 cmd: "hermes",
                 args: &["acp"],
                 env: &[],
@@ -1838,8 +2046,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "CodeBuddy",
             description: "Tencent Cloud's official AI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "2.155.0",
-                package: "@tencent-ai/codebuddy-code@2.155.0",
+                version: "2.156.0",
+                package: "@tencent-ai/codebuddy-code@2.156.0",
                 cmd: "codebuddy",
                 args: &["--acp"],
                 env: &[],
@@ -2084,7 +2292,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `--registry=https://registry.npmjs.org` (bypasses lagging mirrors)
             // for every npx agent — so no per-agent launch env is needed here.
             // (It couldn't live here anyway: the launch env is serialized as
-            // leading `KEY=value` argv and sacp's `parse_env_var` only accepts
+            // leading `KEY=value` argv and the spawn layer's `parse_env_var` only accepts
             // `[A-Za-z0-9_]` env names, which npm's `@scope:registry` key is not.)
             //
             // 1.0.0 changed ONE thing that reaches codeg without any code change
@@ -2159,39 +2367,39 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // (downloads.cursor.com/lab/<version>/<os>/<arch>/...); custom
             // versions substitute into the same pattern.
             distribution: AgentDistribution::Binary {
-                version: "2026.09.15-d2fe57e",
+                version: "2026.09.18-9a7762b",
                 cmd: "cursor-agent",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.09.15-d2fe57e/darwin/arm64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.09.18-9a7762b/darwin/arm64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.09.15-d2fe57e/darwin/x64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.09.18-9a7762b/darwin/x64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.09.15-d2fe57e/linux/arm64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.09.18-9a7762b/linux/arm64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.09.15-d2fe57e/linux/x64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.09.18-9a7762b/linux/x64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.09.15-d2fe57e/windows/arm64/agent-cli-package.zip",
+                        url: "https://downloads.cursor.com/lab/2026.09.18-9a7762b/windows/arm64/agent-cli-package.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.09.15-d2fe57e/windows/x64/agent-cli-package.zip",
+                        url: "https://downloads.cursor.com/lab/2026.09.18-9a7762b/windows/x64/agent-cli-package.zip",
                         sha256: None,
                     },
                 ],
@@ -2268,14 +2476,20 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             //   `resource_not_found` copy — a stale workspace id stops looking
             //   like an agent crash.
             //
-            // The fifth, context compaction, is the one codeg cannot take on
-            // the wire: `compaction_update` / `compaction_summary_chunk` are
-            // gated behind a `clientCapabilities.session.compaction` that the
-            // pinned `agent-client-protocol-schema` (0.11) can neither
-            // advertise nor deserialize, so the agent correctly stays silent.
-            // Compaction still HAPPENS (auto at the window limit, or `/compact`)
-            // and still lands in the log, so `parsers::deepseek` renders it
-            // from there — see its `compaction/*` arm.
+            // The fifth, context compaction, stays off for DEEPSEEK
+            // specifically — and the reason is no longer "the pinned schema
+            // can neither advertise nor deserialize it", which is what this
+            // entry used to say (see the claude entry's (p) for the correction:
+            // `build_client_capabilities` advertises the capability and
+            // `session_compaction_event` reads the variants back). It stays off
+            // because `build_client_capabilities` only advertises it to the two
+            // agents that BUILT these — the same "advertise nothing an agent
+            // hasn't implemented" rule every other opt-in follows. Nothing here
+            // reports deepseek-acp implementing the RFD; if a release does, it
+            // joins that match arm and needs no other change.
+            // Meanwhile compaction still HAPPENS (auto at the window limit, or
+            // `/compact`) and still lands in the log, so `parsers::deepseek`
+            // renders it from there — see its `compaction/*` arm.
             //
             // What `parsers::deepseek` did have to learn is the log's two new
             // shapes: `image` content blocks (bytes live in the content-
@@ -2417,8 +2631,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `runtime_env` override it, so a user who wants the redaction back
             // sets `QODER_EXPOSE_TOKEN_USAGE=0` in the agent's env settings.
             distribution: AgentDistribution::Npx {
-                version: "1.1.57",
-                package: "@qoder-ai/qodercli@1.1.57",
+                version: "1.1.60",
+                package: "@qoder-ai/qodercli@1.1.60",
                 cmd: "qoder",
                 args: &["--acp"],
                 env: &[("QODER_EXPOSE_TOKEN_USAGE", "1")],
@@ -2747,8 +2961,8 @@ mod tests {
         let meta = get_agent_meta(AgentType::Cursor);
         assert_binary_version(
             AgentType::Cursor,
-            "2026.09.15-d2fe57e",
-            "/lab/2026.09.15-d2fe57e/",
+            "2026.09.18-9a7762b",
+            "/lab/2026.09.18-9a7762b/",
         );
         match meta.distribution {
             AgentDistribution::Binary {
@@ -2825,8 +3039,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.79.0",
-            "@agentclientprotocol/claude-agent-acp@0.79.0",
+            "0.81.0",
+            "@agentclientprotocol/claude-agent-acp@0.81.0",
             Some("22.0.0"),
         );
         assert_npx_version(
@@ -2853,8 +3067,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::CodeBuddy,
-            "2.155.0",
-            "@tencent-ai/codebuddy-code@2.155.0",
+            "2.156.0",
+            "@tencent-ai/codebuddy-code@2.156.0",
             Some("22.0.0"),
         );
         // Kimi Code must never land on 0.37.0–0.38.0: every session in that
@@ -2867,8 +3081,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Codex,
-            "1.12.0",
-            "@agentclientprotocol/codex-acp@1.12.0",
+            "1.13.0",
+            "@agentclientprotocol/codex-acp@1.13.0",
             Some("20.0.0"),
         );
         assert_npx_version(AgentType::Pi, "0.0.33", "pi-acp@0.0.33", Some("22.0.0"));
@@ -2886,19 +3100,19 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Qoder,
-            "1.1.57",
-            "@qoder-ai/qodercli@1.1.57",
+            "1.1.60",
+            "@qoder-ai/qodercli@1.1.60",
             Some("20.0.0"),
         );
-        assert_binary_version(AgentType::OpenCode, "1.18.31", "/releases/download/v1.18.31/");
+        assert_binary_version(AgentType::OpenCode, "1.18.32", "/releases/download/v1.18.32/");
         // Hermes rides the community npm bridge (upstream retired its PyPI
         // channel at 0.19.0; see the registry entry). The npm package version
         // tracks the upstream version 1:1, and the pin must stay EXACT — the
         // audited wrapper code is only what the pinned version ships.
         assert_npx_version(
             AgentType::Hermes,
-            "0.21.3",
-            "hermes-agent@0.21.3",
+            "0.21.4",
+            "hermes-agent@0.21.4",
             Some("20.0.0"),
         );
     }

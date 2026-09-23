@@ -77,6 +77,13 @@ Codeg（Code Generation）是一個多智慧體編碼工作台：把所有 AI �
     </td>
     <td>感謝 Fluxion AI 對本專案的贊助！Fluxion AI 透過一個統一的 API，提供快速、可靠、高性價比的 GPT、Claude、Gemini 等領先 AI 模型接入。新使用者透過<a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG">我們的專屬連結</a>註冊可獲得 3 美元 API 額度。</td>
   </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://beeapi.ai/signup?aff=HIAB5JCVRNNA" target="_blank"><img src="../images/beeapi.jpg" alt="BeeAPI" width="200" /></a><br/>
+      <strong><a href="https://beeapi.ai/signup?aff=HIAB5JCVRNNA">BeeAPI</a></strong>
+    </td>
+    <td>感謝 <a href="https://beeapi.ai/signup?aff=HIAB5JCVRNNA">BeeAPI</a> 對本專案的贊助！BeeAPI 是專業的多模型 AI API 中轉與聚合平台，匯集多家服務商及多種主流 AI 模型，支援多商家比價、多分組智慧路由、統一 API 接入與計費，協助使用者更靈活、穩定、低成本地呼叫 AI 服務。</td>
+  </tr>
 </table>
 
 > 想成為 Codeg 贊助商？[歡迎透過郵件與我們聯絡。](mailto:itpkcn@gmail.com)

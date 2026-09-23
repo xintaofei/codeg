@@ -11083,14 +11083,14 @@ mod tests {
                     "mcp-semantic-initial",
                     "mcp__codeg_mcp__delegate_to_agent",
                     Some(
-                        r#"{"agent_type":"codex","task":"semantic initial","working_dir":"/tmp/mcp-worker"}"#,
+                        r#"{"agent_type":"codex","working_dir":"/tmp/mcp-worker","task":"semantic initial"}"#,
                     ),
                 ),
                 (
                     "mcp-semantic-continuation",
                     "mcp__codeg_mcp__delegate_to_agent",
                     Some(
-                        r#"{"agent_type":"codex","continue_from_task_id":"task-semantic-initial","task":"semantic followup","working_dir":"/tmp/mcp-worker"}"#,
+                        r#"{"agent_type":"codex","working_dir":"/tmp/mcp-worker","task":"semantic followup","continue_from_task_id":"task-semantic-initial"}"#,
                     ),
                 ),
             ],

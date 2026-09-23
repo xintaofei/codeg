@@ -48,6 +48,7 @@ import { BrowserTabView } from "./browser-tab-view"
 const grant: BridgeGrant = {
   targetPort: 3000,
   bridgePort: 3081,
+  bridgeHost: null,
   entryPath: "/__codeg_bridge/enter/cap-one",
   publicHost: null,
   path: "/docs?x=1",
@@ -162,6 +163,25 @@ describe("BrowserBridgeView", () => {
     expect(api.openExternalTab).toHaveBeenCalledWith(
       bridgeEntryUrl(grant, window.location)
     )
+  })
+
+  it("names DNS, not a published port, when the target has a hostname", async () => {
+    // Nothing to publish there — the bridge answers on the port the
+    // workbench already uses — so the port advice would send the reader
+    // after the wrong thing.
+    const hostGrant: BridgeGrant = {
+      ...grant,
+      bridgePort: null,
+      bridgeHost: "3000.codeg.example",
+    }
+    api.bridgeOpen.mockResolvedValue(hostGrant)
+    api.probeBridge.mockResolvedValue(false)
+    renderView(<BrowserBridgeView tab={tab()} />)
+    await screen.findByText("The bridge port can't be reached")
+    const notice = screen.getByRole("status")
+    expect(notice).toHaveTextContent("3000.codeg.example")
+    expect(notice).toHaveTextContent("CODEG_BRIDGE_HOST_PATTERN")
+    expect(notice).not.toHaveTextContent("CODEG_BRIDGE_PORTS")
   })
 
   it("shows the server's refusal", async () => {

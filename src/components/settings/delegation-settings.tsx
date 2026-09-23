@@ -14,10 +14,10 @@
  * forwarded from the parent agent CLI; there is no broker-side timeout to
  * configure here.
  *
- * Mounted under `/settings/general` next to the terminal and rendering
- * sections, because delegation is a global feature — not per-agent — and
- * doesn't belong inside the 7,800-line `acp-agent-settings.tsx` that
- * powers `/settings/agents`.
+ * Mounted under `/settings/collaboration` above the in-conversation tools,
+ * because delegation is a global feature — not per-agent — and doesn't belong
+ * inside the 7,800-line `acp-agent-settings.tsx` that powers
+ * `/settings/agents`.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react"

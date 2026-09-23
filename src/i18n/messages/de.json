@@ -52,6 +52,8 @@
       "science": "Wissenschaft",
       "office_tools": "Office-Tools",
       "skill_packs": "Skill-Pakete",
+      "collaboration": "Zusammenarbeit",
+      "browser": "Browser",
       "quick_messages": "Schnellnachrichten",
       "logs": "Laufzeitprotokolle",
       "memory": "Speicher"
@@ -1711,9 +1713,9 @@
   "GeneralSettings": {
     "loading": "Wird geladen...",
     "sectionTitle": "Allgemein",
-    "sectionDescription": "Zentrale Einstellungen für das Standardterminal, die Rendering-Beschleunigung, Benachrichtigungen und die Multi-Agent-Delegation.",
+    "sectionDescription": "Zentrale Einstellungen für das Standardterminal, die Rendering-Beschleunigung, das Verhalten beim Schließen des Fensters sowie Benachrichtigungen und Töne.",
     "terminalTitle": "Standardterminal",
-    "terminalDescription": "Wählen Sie die Shell, die beim Öffnen neuer Terminal-Tabs über die Terminalleiste oder den Dateibaum verwendet wird. Agenten nutzen sie ebenfalls, wenn sie codeg um die Ausführung einer vollständigen Befehlszeile bitten.",
+    "terminalDescription": "Wählen Sie die Shell, die codeg für neue Terminal-Tabs startet und für vollständige Befehlszeilen, deren Ausführung ein Agent bei codeg anfragt. Agenten mit einer eigenen Shell (Codex, Claude Code) führen Befehle im eigenen Prozess aus — dorthin reicht diese Einstellung nicht.",
     "terminalSystemDefault": "Systemstandard",
     "terminalPowerShell7": "PowerShell 7 (pwsh)",
     "terminalWindowsPowerShell": "Windows PowerShell",
@@ -1736,6 +1738,10 @@
     "restartNow": "Jetzt neu starten",
     "restartFailed": "Neustart fehlgeschlagen: {message}",
     "loadFailed": "Laden fehlgeschlagen: {message}"
+  },
+  "CollaborationSettings": {
+    "sectionTitle": "Zusammenarbeit",
+    "sectionDescription": "Wie Agenten zusammenarbeiten und auf welche codeg-eigenen Werkzeuge sie innerhalb einer Unterhaltung zugreifen dürfen."
   },
   "LoginPage": {
     "documentTitle": "Anmelden - codeg",
@@ -3507,6 +3513,7 @@
             "child_max_turn_requests": "Subagent: Anfragelimit",
             "child_empty": "Subagent ohne Ausgabe",
             "child_auth_required": "Subagent braucht Anmeldung",
+            "child_rejected": "Subagent lehnte Anfrage ab",
             "child_unknown": "Subagent: Fehler",
             "unknown": "unbekannte Aufgabe"
           }
@@ -3831,6 +3838,7 @@
         "compacted": "Kontext komprimiert",
         "compactedTokens": "Kontext komprimiert · {before} → {after} Tokens",
         "failed": "Kontextkomprimierung fehlgeschlagen",
+        "summary": "Zusammenfassung",
         "triggerManual": "Manuell ausgelöst",
         "triggerAutomatic": "Automatisch ausgelöst"
       },
@@ -5037,6 +5045,7 @@
   "BrowserSettings": {
     "title": "Integrierter Browser",
     "description": "Webseiten aus Unterhaltungen, Werkzeugergebnissen und dem Terminal können als Tabs neben deinen Dateien erscheinen, ohne die App zu verlassen.",
+    "descriptionWeb": "In einer Browsersitzung öffnen sich Webseiten in dem Browser, den du bereits benutzt. Die Ausnahme ist ein Server, der auf dem codeg-Host läuft: er wird hierher in einen Tab weitergeleitet. Dies sind die Einstellungen, die dort noch etwas entscheiden.",
     "defaultTargetTitle": "Wo Links geöffnet werden",
     "defaultTargetHint": "Je Quelle einstellbar. ⌘/Strg+Klick auf einen Link verwendet einmalig die andere Variante.",
     "sourceTranscript": "Unterhaltungsnachrichten",
@@ -5076,6 +5085,7 @@
     "downloadsHint": "Von einer Seite geladene Dateien werden in {dir} gespeichert. Nichts wird automatisch geöffnet, und eine vorhandene Datei wird nie ersetzt.",
     "rulesTitle": "Site-Regeln",
     "rulesHint": "Pro Site: immer der integrierte Browser, immer der Systembrowser oder blockieren. Muster sind ein Hostname, *.example.com oder *, optional mit :Port; der spezifischste Treffer gewinnt.",
+    "rulesHintWeb": "Pro Site: blockieren. Wo ein Link sich öffnet, ist in einer Browsersitzung keine Wahl. Muster sind ein Hostname, *.example.com oder *, optional mit :Port; der spezifischste Treffer gewinnt.",
     "serviceOpenTitle": "Lokale Server",
     "serviceOpenHint": "Wenn ein im Terminal gestarteter Server seine Adresse ausgibt, in einem Browser-Tab öffnen. Nur Adressen auf diesem Rechner und nur, wenn dort tatsächlich etwas lauscht.",
     "serviceOpenOff": "Nichts tun",
@@ -6289,6 +6299,7 @@
       "copied": "Adresse kopiert",
       "unreachableTitle": "Der Bridge-Port ist nicht erreichbar",
       "unreachableHint": "Der codeg-Server stellt diese Seite unter {origin} bereit, aber dein Browser erreicht sie nicht. Gib diesen Port frei (siehe CODEG_BRIDGE_PORTS) oder setze CODEG_BRIDGE_PUBLIC_HOST; wird codeg über HTTPS ausgeliefert, brauchen auch die Bridge-Ports HTTPS.",
+      "unreachableHostHint": "Der codeg-Server hat diese Seite unter {origin} bereitgestellt, aber dein Browser erreicht sie nicht. Dieser Hostname muss auf den codeg-Server auflösen und den davorliegenden Proxy passieren – ein Wildcard-DNS-Eintrag und ein Wildcard-vhost (siehe CODEG_BRIDGE_HOST_PATTERN).",
       "errorTitle": "Diese Seite kann hier nicht angezeigt werden"
     },
     "download": {

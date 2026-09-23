@@ -52,6 +52,8 @@
       "science": "Science",
       "office_tools": "Office Tools",
       "skill_packs": "Skill Packs",
+      "collaboration": "Collaboration",
+      "browser": "Browser",
       "quick_messages": "Quick Messages",
       "logs": "Runtime Logs",
       "memory": "Memory"
@@ -1711,9 +1713,9 @@
   "GeneralSettings": {
     "loading": "Loading...",
     "sectionTitle": "General",
-    "sectionDescription": "Centralized preferences for the default terminal, rendering acceleration, notifications, and multi-agent delegation.",
+    "sectionDescription": "Centralized preferences for the default terminal, rendering acceleration, window close behavior, notifications and sounds.",
     "terminalTitle": "Default Terminal",
-    "terminalDescription": "Choose the shell used when opening new terminal tabs from the terminal bar or file tree. Agents also use it when they ask codeg to run a whole command line for them.",
+    "terminalDescription": "Choose the shell codeg launches for new terminal tabs and for whole command lines an agent asks codeg to run. Agents with a shell of their own (Codex, Claude Code) run commands inside their own process, where this setting cannot reach them.",
     "terminalSystemDefault": "System default",
     "terminalPowerShell7": "PowerShell 7 (pwsh)",
     "terminalWindowsPowerShell": "Windows PowerShell",
@@ -1736,6 +1738,10 @@
     "restartNow": "Restart now",
     "restartFailed": "Failed to restart: {message}",
     "loadFailed": "Load failed: {message}"
+  },
+  "CollaborationSettings": {
+    "sectionTitle": "Collaboration",
+    "sectionDescription": "How agents work with each other, and which of codeg's own tools they can reach from inside a conversation."
   },
   "LoginPage": {
     "documentTitle": "Login - codeg",
@@ -3507,6 +3513,7 @@
             "child_max_turn_requests": "subagent request limit",
             "child_empty": "subagent no output",
             "child_auth_required": "subagent needs sign-in",
+            "child_rejected": "subagent rejected",
             "child_unknown": "subagent unknown error",
             "unknown": "unknown task"
           }
@@ -3831,6 +3838,7 @@
         "compacted": "Context compacted",
         "compactedTokens": "Context compacted · {before} → {after} tokens",
         "failed": "Context compaction failed",
+        "summary": "Summary",
         "triggerManual": "Manually triggered",
         "triggerAutomatic": "Automatically triggered"
       },
@@ -5037,6 +5045,7 @@
   "BrowserSettings": {
     "title": "Built-in browser",
     "description": "Web pages opened from conversations, tool results and the terminal can appear as tabs next to your files instead of leaving the app.",
+    "descriptionWeb": "In a browser session pages open in the browser you are already in. The exception is a server running on the codeg host, which is forwarded into a tab here. These are the settings that still decide something.",
     "defaultTargetTitle": "Where links open",
     "defaultTargetHint": "Set per source. ⌘/Ctrl-click a link to use the other one just this once.",
     "sourceTranscript": "Conversation messages",
@@ -5076,6 +5085,7 @@
     "downloadsHint": "Files a page downloads are saved to {dir}. Nothing is opened automatically, and an existing file is never replaced.",
     "rulesTitle": "Site rules",
     "rulesHint": "Per site: always the built-in browser, always the system browser, or block. Patterns are a hostname, *.example.com or *, with an optional :port; the most specific match wins.",
+    "rulesHintWeb": "Per site: block. Where a link opens is not a choice in a browser session. Patterns are a hostname, *.example.com or *, with an optional :port; the most specific match wins.",
     "serviceOpenTitle": "Local servers",
     "serviceOpenHint": "When a server started in a terminal prints its address, open it in a browser tab. Addresses on this machine only, and only once something is listening on them.",
     "serviceOpenOff": "Do nothing",
@@ -6289,6 +6299,7 @@
       "copied": "Address copied",
       "unreachableTitle": "The bridge port can't be reached",
       "unreachableHint": "codeg's server put this page on {origin}, but your browser can't reach it. Publish that port (see CODEG_BRIDGE_PORTS) or set CODEG_BRIDGE_PUBLIC_HOST; if codeg is served over HTTPS, the bridge ports need HTTPS too.",
+      "unreachableHostHint": "codeg's server put this page on {origin}, but your browser can't reach it. That hostname has to resolve to the codeg server and reach it through whatever proxy is in front — a wildcard DNS record and a wildcard vhost (see CODEG_BRIDGE_HOST_PATTERN).",
       "errorTitle": "This page can't be shown here"
     },
     "download": {

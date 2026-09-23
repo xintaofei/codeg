@@ -633,17 +633,37 @@ pub(crate) async fn do_start_web_server_with_state(
 /// Bridge listeners follow the web service: the address its socket is
 /// actually bound to (so a `localhost` that resolves to two families lands
 /// on the same one), the ports after its own unless `CODEG_BRIDGE_PORTS`
-/// says otherwise.
+/// says otherwise — or no port of its own at all when
+/// `CODEG_BRIDGE_HOST_PATTERN` names the targets by hostname.
 fn configure_browser_bridge(bind_host: &str, port: u16) {
     let config = browser_bridge::BridgeConfig::from_env(bind_host, port);
     match &config {
         Some(config) => tracing::info!(
-            "[WEB] Port bridge for dev servers: ports {}",
-            describe_ports(&config.ports)
+            "[WEB] Port bridge for dev servers: {}",
+            describe_bridge(config)
         ),
-        None => tracing::info!("[WEB] Port bridge for dev servers: off (CODEG_BRIDGE_PORTS)"),
+        None => tracing::info!("[WEB] Port bridge for dev servers: {}", BRIDGE_OFF),
     }
     browser_bridge::configure(config);
+}
+
+/// What the startup log says when no bridge is configured. Both switches can
+/// be the reason: either turns it off, and an unreadable value in either does
+/// too rather than fall back to a default the operator did not write.
+pub const BRIDGE_OFF: &str = "off (CODEG_BRIDGE_PORTS / CODEG_BRIDGE_HOST_PATTERN)";
+
+/// How the bridge puts a dev server in front of the browser, for the log.
+pub fn describe_bridge(config: &browser_bridge::BridgeConfig) -> String {
+    match &config.host_pattern {
+        Some(pattern) => format!(
+            "hostnames {} on this port (CODEG_BRIDGE_HOST_PATTERN)",
+            pattern.to_text()
+        ),
+        None => format!(
+            "ports {} (CODEG_BRIDGE_PORTS)",
+            describe_ports(&config.ports)
+        ),
+    }
 }
 
 /// `3081-3090` for a contiguous pool, the list otherwise, `any free port` for `0`.

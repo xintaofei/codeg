@@ -10,10 +10,16 @@ import {
   mergeSessionFailures,
   mostRecentRecoveredWarning,
   resolvedSessionFailures,
+  NOTICE_RECORD_ID_PREFIX,
+  sessionFailureFromNotice,
   settleSessionFailures,
   upsertSessionFailure,
 } from "./session-failures"
-import type { MessageTurn, SessionFailureRecord } from "@/lib/types"
+import type {
+  MessageTurn,
+  SessionFailureRecord,
+  SessionNotice,
+} from "@/lib/types"
 
 function record(
   id: string,
@@ -357,5 +363,85 @@ describe("selectors", () => {
     expect(
       knownSessionFailureActions(record("x", 1, { actions: undefined }))
     ).toEqual([])
+  })
+})
+
+describe("sessionFailureFromNotice", () => {
+  const notice = (
+    severity: string,
+    title = "Model fallback",
+    description?: string
+  ): SessionNotice => ({
+    severity,
+    title,
+    ...(description ? { description } : {}),
+  })
+
+  it("mirrors only the levels the AIR advisory lane used to carry", () => {
+    // `warning`/`error` are what the banner showed before notices outranked
+    // that lane, so they keep the surface.
+    expect(sessionFailureFromNotice([], notice("warning"))).not.toBeNull()
+    expect(sessionFailureFromNotice([], notice("error"))).not.toBeNull()
+    // `info` is toast-only: a model reroute or "context compacted" does not
+    // deserve a persistent row, and an unknown level is not one we can grade.
+    expect(sessionFailureFromNotice([], notice("info"))).toBeNull()
+    expect(sessionFailureFromNotice([], notice("_vendor"))).toBeNull()
+  })
+
+  it("mints an id that cannot collide with an adapter-published one", () => {
+    const made = sessionFailureFromNotice([], notice("warning"))!
+    expect(made.id.startsWith(NOTICE_RECORD_ID_PREFIX)).toBe(true)
+    // Different advisories are different rows; the same advisory is one row.
+    const other = sessionFailureFromNotice(
+      [],
+      notice("warning", "Fast mode off")
+    )!
+    expect(other.id).not.toBe(made.id)
+    // Severity participates: the same text escalating is a different row, so
+    // an error cannot be rejected as a stale replay of the warning.
+    expect(sessionFailureFromNotice([], notice("error"))!.id).not.toBe(made.id)
+  })
+
+  it("carries the description as details and never a blank one", () => {
+    expect(
+      sessionFailureFromNotice([], notice("warning", "t", "why"))!.details
+    ).toBe("why")
+    expect(
+      sessionFailureFromNotice([], notice("warning"))!.details
+    ).toBeUndefined()
+  })
+
+  it("keeps revising ONE row as an advisory repeats", () => {
+    // The bug this guards: a fixed revision makes the second occurrence look
+    // like a stale replay, `upsertSessionFailure` rejects it, and the banner
+    // shows the first one's text forever.
+    let table: SessionFailureRecord[] = []
+    for (const detail of ["first", "second", "third"]) {
+      const made = sessionFailureFromNotice(
+        table,
+        notice("warning", "Model fallback", detail)
+      )!
+      table = upsertSessionFailure(table, made)
+    }
+    expect(table).toHaveLength(1)
+    expect(table[0].revision).toBe(3)
+    expect(table[0].details).toBe("third")
+  })
+
+  it("coexists with real AIR records through settle and dismiss", () => {
+    const air = record("air-1", 1)
+    const mirrored = sessionFailureFromNotice([air], notice("warning"))!
+    let table = upsertSessionFailure([air], mirrored)
+    expect(table).toHaveLength(2)
+
+    // A synthetic row is an ordinary severity-"warning" record, so it settles
+    // at a clean turn boundary exactly like the advisory it replaced did.
+    table = settleSessionFailures(table, "warnings")
+    expect(table.every((r) => r.resolved)).toBe(true)
+
+    // And it dismisses by id like any other, without touching its neighbour.
+    const dismissed = dismissSessionFailures(table, [mirrored.id])
+    expect(dismissed.find((r) => r.id === mirrored.id)?.dismissed).toBe(true)
+    expect(dismissed.find((r) => r.id === "air-1")?.dismissed).toBeFalsy()
   })
 })

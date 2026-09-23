@@ -13,6 +13,7 @@ import {
   type AdaptedContentPart,
   type AdaptedToolCallPart,
 } from "./ai-elements-adapter"
+import { CODEX_SEARCH_ACTION_META_KEY } from "@/lib/codex-command-action"
 
 function poll(toolName: string, taskId?: string): AdaptedToolCallPart {
   return {
@@ -1493,12 +1494,17 @@ describe("adaptMessageTurn — Codex grep no-match results", () => {
     isError = true,
     pairing = "id",
     isStreaming = false,
+    status,
+    meta,
   }: {
     toolName?: string
-    output?: string
+    output?: string | null
     isError?: boolean
     pairing?: "id" | "position"
     isStreaming?: boolean
+    /** Live ACP status; persisted rows carry none. */
+    status?: string
+    meta?: Record<string, unknown>
   } = {}): AdaptedToolCallPart {
     const toolUseId = pairing === "id" ? "search-1" : null
     const adapted = adaptMessageTurn(
@@ -1512,6 +1518,8 @@ describe("adaptMessageTurn — Codex grep no-match results", () => {
             tool_use_id: toolUseId,
             tool_name: toolName,
             input_preview: JSON.stringify({ pattern: "definitely absent" }),
+            ...(status ? { status } : {}),
+            ...(meta ? { meta } : {}),
           },
           {
             type: "tool_result",
@@ -1591,6 +1599,60 @@ describe("adaptMessageTurn — Codex grep no-match results", () => {
     expect(part.state).toBe("output-error")
     expect(part.errorText).toBe(output || undefined)
   })
+
+  // With `_meta.terminal_output_delta` advertised, codex-acp sends no
+  // `rawOutput` on a completion, so a search that printed nothing is a bare
+  // live `failed` — there is no exit code left to read. The backend marks
+  // codex's own search calls, and only those qualify.
+  const codexSearch = { [CODEX_SEARCH_ACTION_META_KEY]: true }
+
+  it.each([
+    ["id", null],
+    ["position", null],
+    ["id", " \n"],
+  ] as const)(
+    "normalizes a live failed codex search with no output (%s pairing, output %j)",
+    (pairing, output) => {
+      const part = adaptSearchResult({
+        pairing,
+        output,
+        status: "failed",
+        meta: codexSearch,
+      })
+
+      expect(part.state).toBe("output-available")
+      expect(part.errorText).toBeUndefined()
+      // An empty body is what the search card renders as "No matches".
+      expect(part.output).toBe(output ?? "")
+    }
+  )
+
+  it.each([
+    [
+      "a live failure that printed a diagnostic",
+      "Search for 'definitely absent'",
+      "rg: regex parse error",
+      "failed",
+      codexSearch,
+    ],
+    ["a live glob failure", "List files", null, "failed", codexSearch],
+    [
+      "a persisted row",
+      "Search for 'definitely absent'",
+      null,
+      undefined,
+      codexSearch,
+    ],
+    // Another adapter's interrupted grep looks exactly like this.
+    ["an unmarked live grep", "Grep", null, "failed", undefined],
+  ] as const)(
+    "keeps %s on the error path",
+    (_label, toolName, output, status, meta) => {
+      const part = adaptSearchResult({ toolName, output, status, meta })
+
+      expect(part.state).toBe("output-error")
+    }
+  )
 })
 
 describe("adaptMessageTurn — image tool results", () => {

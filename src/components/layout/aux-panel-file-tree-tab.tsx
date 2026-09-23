@@ -2617,11 +2617,12 @@ export function FileTreeTab() {
 
       const selected = directoryGitSelectedPaths.has(node.path)
       return (
+        // No padding override: the row keeps the primitive's own px-2 so the
+        // checkbox lands in the column a sibling folder spends on its chevron.
         <FileTreeFile
           key={node.path}
           path={node.path}
           name={node.name}
-          className="gap-1 px-1.5 py-1"
           title={node.path}
         >
           <button

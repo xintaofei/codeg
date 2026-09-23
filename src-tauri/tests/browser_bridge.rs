@@ -22,6 +22,7 @@ fn configure_once() {
             bind_host: "127.0.0.1".to_string(),
             ports: vec![0],
             public_host: None,
+            host_pattern: None,
             reserved: vec![RESERVED_PORT],
         }));
     });
@@ -131,21 +132,27 @@ fn cap_of(grant: &BridgeGrant) -> &str {
         .expect("entry path carries the capability")
 }
 
+/// The port this grant's listener answers on. Every test here configures
+/// the bridge to bind one, so a grant without a port would be a bug.
+fn port_of(grant: &BridgeGrant) -> u16 {
+    grant.bridge_port.expect("a bridge addressed by port")
+}
+
 fn cookie_for(grant: &BridgeGrant) -> String {
-    format!("codeg-bridge-{}={}", grant.bridge_port, cap_of(grant))
+    format!("codeg-bridge-{}={}", port_of(grant), cap_of(grant))
 }
 
 fn base(grant: &BridgeGrant) -> String {
-    format!("http://127.0.0.1:{}", grant.bridge_port)
+    format!("http://127.0.0.1:{}", port_of(grant))
 }
 
 #[tokio::test]
 async fn entry_sets_the_cookie_and_redirects_to_the_page() {
     configure_once();
     let upstream = spawn_upstream().await;
-    let grant = browser_bridge::open(upstream, "tab-entry").await.unwrap();
+    let grant = browser_bridge::open(upstream, "tab-entry", None).await.unwrap();
     assert_eq!(grant.target_port, upstream);
-    assert_ne!(grant.bridge_port, 0);
+    assert_ne!(port_of(&grant), 0);
 
     let response = client()
         .get(format!(
@@ -239,7 +246,7 @@ async fn entry_sets_the_cookie_and_redirects_to_the_page() {
 async fn requests_need_this_listeners_cookie() {
     configure_once();
     let upstream = spawn_upstream().await;
-    let grant = browser_bridge::open(upstream, "tab-cookie").await.unwrap();
+    let grant = browser_bridge::open(upstream, "tab-cookie", None).await.unwrap();
     let url = format!("{}/hello", base(&grant));
 
     // No cookie, a wrong value, another listener's name: all refused before
@@ -248,7 +255,7 @@ async fn requests_need_this_listeners_cookie() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     let response = client()
         .get(&url)
-        .header(header::COOKIE, format!("codeg-bridge-{}=wrong", grant.bridge_port))
+        .header(header::COOKIE, format!("codeg-bridge-{}=wrong", port_of(&grant)))
         .send()
         .await
         .unwrap();
@@ -257,7 +264,7 @@ async fn requests_need_this_listeners_cookie() {
         .get(&url)
         .header(
             header::COOKIE,
-            format!("codeg-bridge-{}={}", grant.bridge_port + 1, cap_of(&grant)),
+            format!("codeg-bridge-{}={}", port_of(&grant) + 1, cap_of(&grant)),
         )
         .send()
         .await
@@ -277,7 +284,7 @@ async fn requests_need_this_listeners_cookie() {
         // public hostname may differ from the bind address).
         .header(
             header::ORIGIN,
-            format!("http://codeg.example:{}", grant.bridge_port),
+            format!("http://codeg.example:{}", port_of(&grant)),
         )
         .header(header::REFERER, format!("{}/from/here?tab=2", base(&grant)))
         .header(header::ACCEPT_ENCODING, "gzip, br")
@@ -313,7 +320,7 @@ async fn requests_need_this_listeners_cookie() {
 async fn only_the_pages_own_requests_pass() {
     configure_once();
     let upstream = spawn_upstream().await;
-    let grant = browser_bridge::open(upstream, "tab-initiator").await.unwrap();
+    let grant = browser_bridge::open(upstream, "tab-initiator", None).await.unwrap();
     let url = format!("{}/hello", base(&grant));
     let send = |site: Option<&'static str>, origin: Option<String>| {
         let mut request = client().get(&url).header(header::COOKIE, cookie_for(&grant));
@@ -340,15 +347,15 @@ async fn only_the_pages_own_requests_pass() {
     // Without Fetch Metadata (plain http) the Origin must name the
     // authority the request went to — this listener's.
     assert_eq!(
-        send(None, Some(format!("http://127.0.0.1:{}", grant.bridge_port))).await.unwrap().status(),
+        send(None, Some(format!("http://127.0.0.1:{}", port_of(&grant)))).await.unwrap().status(),
         StatusCode::OK
     );
     assert_eq!(
-        send(None, Some(format!("http://127.0.0.1:{}", grant.bridge_port + 1))).await.unwrap().status(),
+        send(None, Some(format!("http://127.0.0.1:{}", port_of(&grant) + 1))).await.unwrap().status(),
         StatusCode::FORBIDDEN
     );
     assert_eq!(
-        send(None, Some(format!("http://codeg.example:{}", grant.bridge_port))).await.unwrap().status(),
+        send(None, Some(format!("http://codeg.example:{}", port_of(&grant)))).await.unwrap().status(),
         StatusCode::FORBIDDEN
     );
     // Else the Referer; nothing at all is refused (a page cannot forge a
@@ -365,7 +372,7 @@ async fn only_the_pages_own_requests_pass() {
         StatusCode::OK
     );
     assert_eq!(
-        with_referer(format!("http://127.0.0.1:{}/", grant.bridge_port + 1)).await.unwrap().status(),
+        with_referer(format!("http://127.0.0.1:{}/", port_of(&grant) + 1)).await.unwrap().status(),
         StatusCode::FORBIDDEN
     );
     assert_eq!(send(None, None).await.unwrap().status(), StatusCode::FORBIDDEN);
@@ -375,7 +382,7 @@ async fn only_the_pages_own_requests_pass() {
 async fn redirects_and_bodies_pass_through() {
     configure_once();
     let upstream = spawn_upstream().await;
-    let grant = browser_bridge::open(upstream, "tab-redirect").await.unwrap();
+    let grant = browser_bridge::open(upstream, "tab-redirect", None).await.unwrap();
 
     let response = client()
         .get(format!("{}/redirect", base(&grant)))
@@ -435,9 +442,9 @@ async fn redirects_and_bodies_pass_through() {
 async fn websockets_are_bridged_with_their_subprotocol() {
     configure_once();
     let upstream = spawn_upstream().await;
-    let grant = browser_bridge::open(upstream, "tab-ws").await.unwrap();
+    let grant = browser_bridge::open(upstream, "tab-ws", None).await.unwrap();
 
-    let mut request = format!("ws://127.0.0.1:{}/ws", grant.bridge_port)
+    let mut request = format!("ws://127.0.0.1:{}/ws", port_of(&grant))
         .into_client_request()
         .unwrap();
     request
@@ -472,7 +479,7 @@ async fn websockets_are_bridged_with_their_subprotocol() {
     // Without the cookie the upgrade is refused; so is one from another
     // proxied page (an Origin on another port, or same-site Fetch Metadata).
     let refused = |mutate: Box<dyn Fn(&mut tokio_tungstenite::tungstenite::handshake::client::Request)>| {
-        let mut request = format!("ws://127.0.0.1:{}/ws", grant.bridge_port)
+        let mut request = format!("ws://127.0.0.1:{}/ws", port_of(&grant))
             .into_client_request()
             .unwrap();
         mutate(&mut request);
@@ -490,7 +497,7 @@ async fn websockets_are_bridged_with_their_subprotocol() {
     };
     refused(Box::new(|_| {})).await;
     let cookie = cookie_for(&grant);
-    let other_port = grant.bridge_port + 1;
+    let other_port = port_of(&grant) + 1;
     refused(Box::new(move |request| {
         request.headers_mut().insert(header::COOKIE, cookie.parse().unwrap());
         request.headers_mut().insert(
@@ -512,13 +519,13 @@ async fn tabs_share_a_listener_per_target_port() {
     configure_once();
     let upstream = spawn_upstream().await;
     let other_upstream = spawn_upstream().await;
-    let first = browser_bridge::open(upstream, "tab-a").await.unwrap();
-    let second = browser_bridge::open(upstream, "tab-b").await.unwrap();
-    let other = browser_bridge::open(other_upstream, "tab-c").await.unwrap();
+    let first = browser_bridge::open(upstream, "tab-a", None).await.unwrap();
+    let second = browser_bridge::open(upstream, "tab-b", None).await.unwrap();
+    let other = browser_bridge::open(other_upstream, "tab-c", None).await.unwrap();
 
-    assert_eq!(first.bridge_port, second.bridge_port);
+    assert_eq!(port_of(&first), port_of(&second));
     assert_ne!(cap_of(&first), cap_of(&second));
-    assert_ne!(other.bridge_port, first.bridge_port);
+    assert_ne!(port_of(&other), port_of(&first));
 
     // Both capabilities open the shared listener; neither opens the other.
     for grant in [&first, &second] {
@@ -535,7 +542,7 @@ async fn tabs_share_a_listener_per_target_port() {
         .get(format!("{}/hello", base(&other)))
         .header(
             header::COOKIE,
-            format!("codeg-bridge-{}={}", other.bridge_port, cap_of(&first)),
+            format!("codeg-bridge-{}={}", port_of(&other), cap_of(&first)),
         )
         .send()
         .await
@@ -546,7 +553,7 @@ async fn tabs_share_a_listener_per_target_port() {
 #[tokio::test]
 async fn codegs_own_port_is_refused() {
     configure_once();
-    let err = browser_bridge::open(RESERVED_PORT, "tab-reserved")
+    let err = browser_bridge::open(RESERVED_PORT, "tab-reserved", None)
         .await
         .unwrap_err();
     assert!(matches!(err, BridgeError::Reserved(p) if p == RESERVED_PORT));

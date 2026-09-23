@@ -2285,6 +2285,26 @@ impl TaskEngine {
                         return match stop_reason.as_str() {
                             "cancelled" | "canceled" => CompactOutcome::new("canceled", None),
                             "end_turn" | "" => CompactOutcome::new("ok", None),
+                            // The agent REFUSED to run the compaction prompt —
+                            // nothing was compacted, so this is not an "ok" with
+                            // a footnote. It reaches this arm at all only because
+                            // a prompt rejection stopped tearing the connection
+                            // down (it used to arrive as the terminal `Error`
+                            // below, and settled as `failed`); mapping it
+                            // anywhere else would silently promote a failed
+                            // compaction to a successful one.
+                            "rejected" => CompactOutcome::new(
+                                "failed",
+                                Some("the agent rejected the compaction prompt".into()),
+                            ),
+                            // The agent REFUSED to run the compaction prompt —
+                            // nothing was compacted, so this is not an "ok" with
+                            // a footnote. It reaches this arm at all only because
+                            // a prompt rejection stopped tearing the connection
+                            // down (it used to arrive as the terminal `Error`
+                            // below, and settled as `failed`); mapping it
+                            // anywhere else would silently promote a failed
+                            // compaction to a successful one.
                             other => CompactOutcome::new("ok", Some(other.to_string())),
                         };
                     }
@@ -12639,6 +12659,28 @@ mod tests {
         assert_eq!(events[1]["command"], "/compact");
         // The slot the canceller reaches through must not outlive the turn.
         assert!(f.engine.compacting.lock().await.is_empty());
+    }
+
+    /// A compaction the agent REFUSED is a failure, not an "ok" with a
+    /// footnote. `rejected` reaches the `TurnComplete` arm at all only because
+    /// a prompt rejection stopped tearing the connection down (issue #797); it
+    /// used to arrive as the terminal `Error` the waiter settles as `failed`,
+    /// and the catch-all below it would otherwise have promoted a compaction
+    /// that never ran to a successful one.
+    #[tokio::test]
+    async fn a_rejected_compaction_prompt_is_recorded_as_a_failure() {
+        let mut f = compact_fixture(Some((90_000, 100_000))).await;
+
+        let sent = run_compaction(&mut f, compact_settings(80, None), "rejected").await;
+
+        assert_eq!(sent.as_deref(), Some("/compact"));
+        let events = compact_events(&f.engine, f.task_id).await;
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[1]["status"], "failed");
+        assert_eq!(
+            events[1]["detail"], "the agent rejected the compaction prompt",
+            "{events:?}"
+        );
     }
 
     /// Below the threshold nothing is sent and nothing is written — the

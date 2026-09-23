@@ -2443,7 +2443,7 @@ mod tests {
         assert_eq!(got[0].tool_name, "update_plan");
         assert_eq!(
             got[0].input_preview,
-            r#"{"plan":[{"status":"pending","step":"a"}]}"#
+            r#"{"plan":[{"step":"a","status":"pending"}]}"#
         );
         assert_eq!(got[1].tool_name, "mcp__codeg_mcp__get_delegation_status");
         assert_eq!(
