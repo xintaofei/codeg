@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { RELATIVE_FILE_HREF_PROPERTY } from "./rehype-relative-file-links"
 import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
 
 // Minimal mdast node shapes for the transform.
@@ -7,6 +8,7 @@ type Node = {
   url?: string
   identifier?: string
   children?: Node[]
+  data?: { hProperties?: Record<string, unknown> }
 }
 
 function linkTree(url: string): Node {
@@ -66,11 +68,73 @@ describe("remarkRewriteFileUriLinks", () => {
     )
   })
 
-  it("leaves a bare relative path untouched (not a drive path)", () => {
-    // `C:` needs a following slash to be a drive path; `src/main.rs` and a
-    // schemeless relative path stay as-is (not openable — existing behavior).
-    expect(rewrite("src/main.rs")).toBe("src/main.rs")
-    expect(rewrite("notes.md")).toBe("notes.md")
+  it("makes a bare relative file path explicitly relative", () => {
+    // `C:` needs a following slash to be a drive path, so these are relative
+    // paths — which harden cannot parse without a `./` in front.
+    expect(rewrite("src/main.rs")).toBe("./src/main.rs")
+    expect(rewrite("notes.md")).toBe("./notes.md")
+    expect(rewrite("index.html#L3")).toBe("./index.html#L3")
+  })
+
+  it("leaves domain-shaped and non-path targets alone", () => {
+    expect(rewrite("www.example.com")).toBe("www.example.com")
+    expect(rewrite("example.com")).toBe("example.com")
+    expect(rewrite("foo.io")).toBe("foo.io")
+    expect(rewrite("README")).toBe("README")
+    expect(rewrite("#section")).toBe("#section")
+    expect(rewrite("mailto:a@b.c")).toBe("mailto:a@b.c")
+    expect(rewrite("/abs/path.md")).toBe("/abs/path.md")
+  })
+
+  it("marks a relative link with its explicit href for the rehype restore", () => {
+    for (const [url, href] of [
+      ["./index.html", "./index.html"],
+      ["../site/index.html", "../site/index.html"],
+      ["index.html", "./index.html"],
+    ]) {
+      const tree = linkTree(url)
+      remarkRewriteFileUriLinks()(tree)
+      const link = tree.children![0].children![0]
+      expect(link.data?.hProperties?.[RELATIVE_FILE_HREF_PROPERTY]).toBe(href)
+    }
+  })
+
+  it("does not mark absolute, file:// or web links", () => {
+    for (const url of [
+      "/abs/path.md",
+      "file:///Users/a/b.ts",
+      "https://example.com/x",
+    ]) {
+      const tree = linkTree(url)
+      remarkRewriteFileUriLinks()(tree)
+      expect(tree.children![0].children![0].data).toBeUndefined()
+    }
+  })
+
+  it("marks a reference-style link through its relative definition", () => {
+    const tree: Node = {
+      type: "root",
+      children: [
+        {
+          type: "paragraph",
+          children: [
+            {
+              type: "linkReference",
+              identifier: "page",
+              children: [{ type: "text" }],
+            },
+          ],
+        },
+        { type: "definition", identifier: "page", url: "index.html" },
+      ],
+    }
+    remarkRewriteFileUriLinks()(tree)
+    expect(tree.children![1].url).toBe("./index.html")
+    expect(
+      tree.children![0].children![0].data?.hProperties?.[
+        RELATIVE_FILE_HREF_PROPERTY
+      ]
+    ).toBe("./index.html")
   })
 
   it("emits a UNC file:// URI as a backslash UNC path (unambiguously local)", () => {

@@ -33,6 +33,7 @@ import { maskLiteralSpans } from "./markdown-mask"
 import { mermaidComponents } from "./mermaid-block"
 import { rehypePluginsAllowingCodeg } from "./rehype-allow-codeg"
 import { remarkTrimCjkAutolinkTail } from "./remark-cjk-autolink-tail"
+import { withRelativeFileLinks } from "./rehype-relative-file-links"
 import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
 import { remarkRestoreWindowsPaths } from "./remark-windows-paths"
 import { remarkLocalImages } from "./remark-local-images"
@@ -477,7 +478,12 @@ const remarkPlugins = [
 // Streamdown's default rehype pipeline strips `codeg://` reference hrefs in
 // sanitization (rendering them as "[blocked]"); re-derive it so they survive to
 // MarkdownLink → ReferenceBadge. See rehype-allow-codeg for the full rationale.
-const rehypePlugins = rehypePluginsAllowingCodeg(defaultRehypePlugins)
+// …and relative local links (`./index.html`) keep their href through harden,
+// which would otherwise flatten them to a root path. See
+// rehype-relative-file-links.
+const rehypePlugins = rehypePluginsAllowingCodeg(
+  withRelativeFileLinks(defaultRehypePlugins)
+)
 
 /**
  * How finished Markdown renders. Streamdown defaults to `mode="streaming"` +

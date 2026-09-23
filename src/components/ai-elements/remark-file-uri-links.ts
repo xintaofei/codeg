@@ -1,3 +1,5 @@
+import { RELATIVE_FILE_HREF_PROPERTY } from "./rehype-relative-file-links"
+
 // Local-file markdown links are otherwise rendered as `… [blocked]`. Two
 // distinct sanitize/harden rules cause this, both sidestepped here in the mdast
 // layer (before remark-rehype) while keeping the link clickable through the
@@ -11,6 +13,15 @@
 //      blocks the now-hrefless `<a>`. Rewritten to `/C:/…` so `C:` is no longer
 //      in protocol position (see {@link windowsDrivePathToSafe}).
 //
+// Relative local links (`./index.html`, `../a/b.md`, and bare `index.html`)
+// hit a third rule, in rehype-harden itself: a schemeless url is parsed
+// against a placeholder origin and only its `pathname` is kept, so
+// `./index.html` leaves as `/index.html` — a path at the filesystem ROOT — and a
+// bare `index.html` does not parse at all and is `[blocked]`. harden rewrites
+// only `href` (and `target`/`rel`), so the original is carried past it in a
+// data attribute and put back afterwards by `rehypeRestoreRelativeFileLinks`
+// (see ./rehype-relative-file-links).
+//
 // Image destinations are handled by remarkLocalImages, which preserves their
 // original path until the workspace-confined image reader can resolve it.
 
@@ -19,6 +30,7 @@ type MdastNodeLike = {
   url?: unknown
   identifier?: unknown
   children?: unknown
+  data?: { hProperties?: Record<string, unknown> }
 }
 
 function fileUriToLocalPath(uri: string): string | null {
@@ -72,6 +84,68 @@ function rewriteLocalFileUrl(url: string): string | null {
   return fileUriToLocalPath(url) ?? windowsDrivePathToSafe(url)
 }
 
+// Anything with a scheme, a fragment-only `#anchor`, an absolute or home path,
+// a UNC/protocol-relative `//`/`\\` start, or a `www.` host is not a relative
+// local path.
+const NOT_BARE_RELATIVE = /^(?:[a-zA-Z][a-zA-Z\d+\-.]*:|[/#\\~]|www\.)/i
+// A bare single segment whose "extension" is one of these is a domain
+// (`example.com`), not a file: `index.html` and `example.com` are the same
+// shape, and only the suffix tells them apart. Such a link stays as it is.
+const DOMAIN_LIKE_SUFFIXES = new Set([
+  "com",
+  "net",
+  "org",
+  "io",
+  "dev",
+  "ai",
+  "app",
+  "co",
+  "cn",
+  "me",
+  "sh",
+  "xyz",
+  "info",
+  "edu",
+  "gov",
+  "uk",
+  "de",
+  "jp",
+  "kr",
+  "tw",
+  "hk",
+])
+
+/**
+ * The explicitly-relative form (`./…` / `../…`) of a relative local link, or
+ * `null` when `url` is not one. A bare path (`index.html`, `src/main.rs`)
+ * counts only when it is shaped like a file: a slash somewhere, or an
+ * extension on its last segment that isn't a domain suffix.
+ */
+export function explicitRelativeFileHref(url: string): string | null {
+  const trimmed = url.trim()
+  if (!trimmed || /\s/.test(trimmed)) return null
+  if (trimmed.startsWith("./") || trimmed.startsWith("../")) return trimmed
+  if (NOT_BARE_RELATIVE.test(trimmed)) return null
+  const hasSlash = trimmed.includes("/")
+  const ext = trimmed
+    .match(/\.([A-Za-z0-9]{1,8})(?:[#?]|$)/)?.[1]
+    ?.toLowerCase()
+  if (!hasSlash && !ext) return null
+  if (!hasSlash && ext && DOMAIN_LIKE_SUFFIXES.has(ext)) return null
+  return `./${trimmed}`
+}
+
+/** Carry the explicit relative href past harden on the element this node becomes. */
+function markRelative(node: MdastNodeLike, href: string): void {
+  node.data = {
+    ...node.data,
+    hProperties: {
+      ...node.data?.hProperties,
+      [RELATIVE_FILE_HREF_PROPERTY]: href,
+    },
+  }
+}
+
 function walk(node: MdastNodeLike, fn: (n: MdastNodeLike) => void): void {
   fn(node)
   const { children } = node
@@ -97,11 +171,23 @@ export function remarkRewriteFileUriLinks() {
       }
     })
 
+    // Relative definitions, by identifier: the `<a>` of a `[text][id]` link is
+    // built from its linkReference node, so that node carries the mark.
+    const relativeDefinitions = new Map<string, string>()
+
     walk(tree, (node) => {
       if (typeof node.url !== "string") return
       if (node.type === "link") {
         const rewritten = rewriteLocalFileUrl(node.url)
-        if (rewritten != null) node.url = rewritten
+        if (rewritten != null) {
+          node.url = rewritten
+          return
+        }
+        const relative = explicitRelativeFileHref(node.url)
+        if (relative != null) {
+          node.url = relative
+          markRelative(node, relative)
+        }
         return
       }
       if (node.type === "definition") {
@@ -111,8 +197,25 @@ export function remarkRewriteFileUriLinks() {
             : ""
         if (imageRefIds.has(id)) return
         const rewritten = rewriteLocalFileUrl(node.url)
-        if (rewritten != null) node.url = rewritten
+        if (rewritten != null) {
+          node.url = rewritten
+          return
+        }
+        const relative = explicitRelativeFileHref(node.url)
+        if (relative != null) {
+          node.url = relative
+          relativeDefinitions.set(id, relative)
+        }
       }
+    })
+
+    if (relativeDefinitions.size === 0) return
+    walk(tree, (node) => {
+      if (node.type !== "linkReference") return
+      const id =
+        typeof node.identifier === "string" ? node.identifier.toLowerCase() : ""
+      const relative = relativeDefinitions.get(id)
+      if (relative != null) markRelative(node, relative)
     })
   }
 }
