@@ -2186,25 +2186,39 @@ function buildToolResultMap(
 }
 
 /**
- * Codex reports a ripgrep search with no matches as a failed ACP tool result:
- * exit 1 with an otherwise empty command envelope. Treat only that exact shape
- * as a successful presentation state. The ContentBlock and its raw envelope
- * stay untouched, and every other nonzero result remains an error.
+ * Codex reports a ripgrep search with no matches as a failed ACP tool result.
+ * Treat only its two no-match shapes as a successful presentation state; the
+ * ContentBlock stays untouched, and every other failure remains an error.
  *
- * Shares `isCodexGrepNoMatchEnvelope` with the search body in
- * `content-parts-renderer`, which recognises the same envelope to render "No
- * matches" instead of a raw JSON dump. Two predicates for one fact would let
- * the card's status and its body disagree.
+ * 1. The command envelope: exit 1 with otherwise empty output. Shares
+ *    `isCodexGrepNoMatchEnvelope` with the search body in
+ *    `content-parts-renderer`, which recognises the same envelope to render
+ *    "No matches" instead of a raw JSON dump. Two predicates for one fact
+ *    would let the card's status and its body disagree.
+ * 2. A live `failed` with NO output at all. codeg advertises
+ *    `_meta.terminal_output_delta` to codex, and with it codex-acp stops
+ *    sending `rawOutput` on every command completion — so a search that
+ *    printed nothing arrives as a bare status, with no exit code left to
+ *    check. Output is the discriminator that remains: rg/grep print a
+ *    diagnostic on a real failure (exit 2), and that text streams in like any
+ *    other output. Scoped to a LIVE status because only the ACP wire has this
+ *    shape; a persisted row carries no status and keeps its own rendering.
+ *    The caller renders the absent body as `""`, i.e. "No matches".
  */
 function isCodexGrepNoMatchResult(
-  toolName: string,
+  toolUse: ContentBlock & { type: "tool_use" },
   result: ContentBlock & { type: "tool_result" }
 ): boolean {
-  if (!result.is_error || typeof result.output_preview !== "string")
-    return false
-  if (normalizeToolName(toolName) !== "grep") return false
+  if (!result.is_error) return false
+  if (normalizeToolName(toolUse.tool_name) !== "grep") return false
 
-  return isCodexGrepNoMatchEnvelope(result.output_preview)
+  if (typeof result.output_preview === "string") {
+    if (isCodexGrepNoMatchEnvelope(result.output_preview)) return true
+  }
+  return (
+    toolUse.status === "failed" &&
+    (result.output_preview ?? "").trim().length === 0
+  )
 }
 
 /**
@@ -2368,10 +2382,7 @@ export function adaptMessageTurn(
           adaptedContent.push(...imageParts)
           continue
         }
-        const isNoMatch = isCodexGrepNoMatchResult(
-          block.tool_name,
-          matchedResult
-        )
+        const isNoMatch = isCodexGrepNoMatchResult(block, matchedResult)
         adaptedContent.push({
           type: "tool-call",
           toolCallId,
@@ -2382,7 +2393,9 @@ export function adaptMessageTurn(
             : matchedResult.is_error && !isNoMatch
               ? "output-error"
               : "output-available",
-          output: matchedResult.output_preview,
+          output: isNoMatch
+            ? (matchedResult.output_preview ?? "")
+            : matchedResult.output_preview,
           errorText:
             matchedResult.is_error && !isNoMatch
               ? matchedResult.output_preview || undefined
@@ -2413,10 +2426,7 @@ export function adaptMessageTurn(
             adaptedContent.push(...imageParts)
             continue
           }
-          const isNoMatch = isCodexGrepNoMatchResult(
-            block.tool_name,
-            positionalResult
-          )
+          const isNoMatch = isCodexGrepNoMatchResult(block, positionalResult)
           adaptedContent.push({
             type: "tool-call",
             toolCallId,
@@ -2426,7 +2436,9 @@ export function adaptMessageTurn(
               positionalResult.is_error && !isNoMatch
                 ? "output-error"
                 : "output-available",
-            output: positionalResult.output_preview,
+            output: isNoMatch
+              ? (positionalResult.output_preview ?? "")
+              : positionalResult.output_preview,
             errorText:
               positionalResult.is_error && !isNoMatch
                 ? positionalResult.output_preview || undefined

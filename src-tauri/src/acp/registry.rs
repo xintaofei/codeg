@@ -1794,20 +1794,24 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // terminal poller, the deltas bridge onto `raw_output`, and the
             // duplicate cumulative `rawOutput` is dropped for those calls.
             //
-            // The client capability #528 adds is NOT advertised, and that is a
-            // decision rather than an omission. `resolveTerminalOutputMode`
-            // already returns `terminal_output_delta` by DEFAULT, so the
-            // streaming above needs nothing on the wire. Advertising
-            // `_meta.terminal_output_delta` would buy exactly one thing —
-            // `createCommandExecutionCompleteUpdate` stops emitting the
-            // duplicate `rawOutput`, which codeg now discards client-side
-            // anyway — and would cost the `search`/`listFiles` cards: the same
-            // flag moves NON-terminal command output onto the delta channel too
-            // (`!commandHadOutput && aggregatedOutput && (commandHadTerminal ||
-            // deltaSupported)`), and those render from the
-            // `{formatted_output, exit_code}` envelope that would stop being
-            // sent (`codex-search-tool-card`). Revisit if those cards ever move
-            // off `rawOutput`.
+            // The client capability #528 adds IS advertised (codex only; see
+            // `build_client_capabilities`). `resolveTerminalOutputMode` already
+            // returns `terminal_output_delta` by DEFAULT, so the streaming above
+            // needed nothing on the wire; what the flag buys is that
+            // `completeCommandExecutionEvent` stops repeating the whole
+            // aggregated output as `rawOutput`, which codeg used to parse only to
+            // discard. It was first held back for the `search`/`listFiles`
+            // cards, on the premise that they render from the
+            // `{formatted_output, exit_code}` envelope — but that premise was
+            // already half gone: codex forwards `outputDelta` for EVERY command,
+            // so any command action that prints something reaches its card
+            // through the same bridge, as plain text, and the envelope only ever
+            // spoke for a command that printed nothing. With the flag, that one
+            // completes as a bare status with no exit code anywhere
+            // (`terminal_exit` is for shell commands only), and the single
+            // reader that needed one — grep's "No matches", rg's exit 1 — now
+            // reads the live `failed`-with-no-output shape instead
+            // (`isCodexGrepNoMatchResult`).
             //
             // (h) `@openai/codex` ^0.154.0 → **^0.155.1** (caret on a 0.x minor
             // pins it inside 0.155.x, so this does not drift to 0.156.0). Two

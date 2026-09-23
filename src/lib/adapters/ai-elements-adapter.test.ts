@@ -1493,12 +1493,15 @@ describe("adaptMessageTurn — Codex grep no-match results", () => {
     isError = true,
     pairing = "id",
     isStreaming = false,
+    status,
   }: {
     toolName?: string
-    output?: string
+    output?: string | null
     isError?: boolean
     pairing?: "id" | "position"
     isStreaming?: boolean
+    /** Live ACP status; persisted rows carry none. */
+    status?: string
   } = {}): AdaptedToolCallPart {
     const toolUseId = pairing === "id" ? "search-1" : null
     const adapted = adaptMessageTurn(
@@ -1512,6 +1515,7 @@ describe("adaptMessageTurn — Codex grep no-match results", () => {
             tool_use_id: toolUseId,
             tool_name: toolName,
             input_preview: JSON.stringify({ pattern: "definitely absent" }),
+            ...(status ? { status } : {}),
           },
           {
             type: "tool_result",
@@ -1591,6 +1595,43 @@ describe("adaptMessageTurn — Codex grep no-match results", () => {
     expect(part.state).toBe("output-error")
     expect(part.errorText).toBe(output || undefined)
   })
+
+  // With `_meta.terminal_output_delta` advertised, codex-acp sends no
+  // `rawOutput` on a completion, so a search that printed nothing is a bare
+  // live `failed` — there is no exit code left to read.
+  it.each([
+    ["id", null],
+    ["position", null],
+    ["id", " \n"],
+  ] as const)(
+    "normalizes a live failed search with no output (%s pairing, output %j)",
+    (pairing, output) => {
+      const part = adaptSearchResult({ pairing, output, status: "failed" })
+
+      expect(part.state).toBe("output-available")
+      expect(part.errorText).toBeUndefined()
+      // An empty body is what the search card renders as "No matches".
+      expect(part.output).toBe(output ?? "")
+    }
+  )
+
+  it.each([
+    [
+      "a live failure that printed a diagnostic",
+      "Search for 'definitely absent'",
+      "rg: regex parse error",
+      "failed",
+    ],
+    ["a live glob failure", "List files", null, "failed"],
+    ["a persisted row", "Search for 'definitely absent'", null, undefined],
+  ] as const)(
+    "keeps %s on the error path",
+    (_label, toolName, output, status) => {
+      const part = adaptSearchResult({ toolName, output, status })
+
+      expect(part.state).toBe("output-error")
+    }
+  )
 })
 
 describe("adaptMessageTurn — image tool results", () => {

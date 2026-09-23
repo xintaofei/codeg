@@ -4431,6 +4431,36 @@ fn build_client_capabilities(
             }),
         );
     }
+    // codex-acp 1.13.0 (#528): with `terminal_output_delta` advertised, a
+    // command's completion frame stops repeating its whole aggregated output
+    // as `rawOutput`. codeg already takes that output from the deltas it
+    // streams (the `hosted_terminal_*` bridge, for EVERY command — codex
+    // forwards `outputDelta` for search/listFiles/read too), so the repeat was
+    // parsed only to be thrown away. The key it streams under does not change:
+    // `resolveTerminalOutputMode` lands on `terminal_output_delta` either way.
+    //
+    // What it costs, and why that is paid: the same flag drops the
+    // `{formatted_output, exit_code}` envelope from the NON-terminal commands
+    // as well, and nothing replaces their exit code (`terminal_exit` is only
+    // sent for real shell commands). A command that printed something is
+    // unaffected — its text already arrived through the bridge. One that
+    // printed nothing now completes as a bare status, and the only reader
+    // that cared is grep's "No matches": rg exits 1 when nothing matched, so
+    // that arrives as a silent `failed`. `isCodexGrepNoMatchResult` (frontend
+    // adapter) reads that shape — live `failed`, grep, no output at all — as
+    // "no matches", since a real rg failure prints a diagnostic that streams
+    // in like any other output.
+    //
+    // claude-agent-acp 0.81.0 honours the same key (#1150), but there it is the
+    // gate for claude's whole terminal `_meta` presentation, which moves shell
+    // output off `content` onto a channel codeg does not bridge for claude
+    // (see `hosted_terminal_output_key`) — so it stays codex-only.
+    if agent_type == AgentType::Codex {
+        meta.insert(
+            "terminal_output_delta".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
     // Cursor ACP gates Composer 2.5's `fast` parameter behind this client
     // capability. Without it the agent advertises only the default variant
     // (Fast); with it the model picker splits into separate `model` and
@@ -12320,8 +12350,9 @@ fn hosted_terminal_meta_marks_shell(
 /// convention and reuses `terminal_output`, while codex-acp picks between
 /// `terminal_output` and `terminal_output_delta` in `resolveTerminalOutputMode`
 /// and lands on the delta key unless the client asks for the other one —
-/// which codeg does not (see `build_client_capabilities`). Both carry the same
-/// `{terminal_id, data}` payload with incremental `data`, so only the key
+/// which codeg does not: it advertises the delta key itself, for the duplicate
+/// `rawOutput` that drops (see `build_client_capabilities`). Both carry the
+/// same `{terminal_id, data}` payload with incremental `data`, so only the key
 /// differs.
 fn hosted_terminal_output_key(agent_type: AgentType) -> Option<&'static str> {
     match agent_type {
@@ -15160,15 +15191,17 @@ async fn emit_conversation_update(
             // MAX_SINGLE_EMIT_BYTES.
             let raw_output_text = if hosted_shell {
                 // The `_meta` bridge below owns this call's output channel
-                // entirely. codex repeats the WHOLE aggregated output as
-                // `rawOutput` on the completion frame of a call it has already
-                // streamed incrementally over `_meta`, so taking it here would
-                // re-send everything the card already has. (pi sends no
-                // `rawOutput` at all for a `_meta`-hosted call, so this is a
-                // no-op there.) Skipped rather than left to be overwritten by
-                // the bridge: `raw_output_cache.consume` MUTATES the cache, and
-                // seeding it with a snapshot the card never received would make
-                // the next diff measure against output that was never sent.
+                // entirely. A codex that does not honour the advertised
+                // `terminal_output_delta` (anything before 1.13.0) repeats the
+                // WHOLE aggregated output as `rawOutput` on the completion frame
+                // of a call it has already streamed incrementally over `_meta`,
+                // so taking it here would re-send everything the card already
+                // has. (pi sends no `rawOutput` at all for a `_meta`-hosted
+                // call, so this is a no-op there.) Skipped rather than left to
+                // be overwritten by the bridge: `raw_output_cache.consume`
+                // MUTATES the cache, and seeding it with a snapshot the card
+                // never received would make the next diff measure against output
+                // that was never sent.
                 None
             } else if matches!(agent_type, AgentType::Grok) {
                 // Grok's structured rawOutput would shadow `content` and render
@@ -16713,6 +16746,38 @@ mod tests {
                 .get("_meta")
                 .and_then(|m| m.get("jetbrains"))
                 .is_none());
+        }
+    }
+
+    /// codex gets `terminal_output_delta` (its completion frames stop repeating
+    /// the output the bridge already streamed); claude must NOT — there the
+    /// same key moves shell output onto a `_meta` channel codeg does not
+    /// bridge. Neither may get the other spelling: it would move codex's shell
+    /// output onto `terminal_output`, a key its bridge does not read.
+    #[test]
+    fn client_capabilities_advertise_terminal_output_delta_to_codex_only() {
+        let meta_of = |agent| {
+            serde_json::to_value(build_client_capabilities(agent, HostToolsPolicy::Default))
+                .unwrap()
+                .get("_meta")
+                .cloned()
+                .unwrap_or_default()
+        };
+        let codex = meta_of(AgentType::Codex);
+        assert_eq!(
+            codex.get("terminal_output_delta").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert!(codex.get("terminal_output").is_none());
+        for agent in [
+            AgentType::ClaudeCode,
+            AgentType::Pi,
+            AgentType::Gemini,
+            AgentType::Grok,
+        ] {
+            let meta = meta_of(agent);
+            assert!(meta.get("terminal_output_delta").is_none(), "{agent:?}");
+            assert!(meta.get("terminal_output").is_none(), "{agent:?}");
         }
     }
 
@@ -22660,9 +22725,11 @@ mod tests {
     }
 
     /// The narrow gate matters: codex ALSO reports `search` / `listFiles` as
-    /// command executions, and those carry no `terminal_info` and render from
-    /// the `{formatted_output, exit_code}` envelope (`codex-search-tool-card`).
-    /// The bridge must leave that channel completely alone.
+    /// command executions, and those carry no `terminal_info`. When one that
+    /// streamed nothing completes with the `{formatted_output, exit_code}`
+    /// envelope (any codex that ignores the advertised `terminal_output_delta`)
+    /// the envelope is all there is — grep's "No matches" reads exit 1 off it —
+    /// so the bridge must leave that channel completely alone.
     #[tokio::test]
     async fn codex_non_terminal_commands_keep_their_raw_output_envelope() {
         let mut cache = ToolCallOutputCache::default();
@@ -22684,6 +22751,89 @@ mod tests {
             Some(r#"{"exit_code":0,"formatted_output":"src/a.rs"}"#),
             "a command with no self-hosted terminal keeps the envelope the card parses"
         );
+        assert!(cb.hosted_terminal_calls.is_empty());
+    }
+
+    /// codex streams `item/commandExecution/outputDelta` for EVERY command it
+    /// runs, search / listFiles / read included (`createCommandOutputDeltaEvent`
+    /// has no action filter). So a search that printed something reaches codeg as
+    /// plain-text deltas while it runs — no `terminal_info` needed — and the card
+    /// fills in live. Once a delta has spoken, the completion's aggregated
+    /// `rawOutput` is the same text again, and must not be appended a second
+    /// time.
+    #[tokio::test]
+    async fn codex_search_output_streams_and_is_not_repeated_on_completion() {
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let _ = pi_emit(
+            AgentType::Codex,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "search_1",
+                "title": "Search for 'foo' in src",
+                "kind": "search",
+                "status": "in_progress",
+            }),
+        )
+        .await;
+        let (_, _, streamed, append) = pi_emit(
+            AgentType::Codex,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "search_1",
+                "_meta": {"terminal_output_delta": {"terminal_id": "search_1", "data": "src/a.rs:1:foo\n"}},
+            }),
+        )
+        .await;
+        assert_eq!(streamed.as_deref(), Some("src/a.rs:1:foo\n"));
+        assert_eq!(append, Some(false));
+
+        let (_, _, raw_output, _) = pi_emit(
+            AgentType::Codex,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "search_1",
+                "status": "completed",
+                "rawOutput": {"formatted_output": "src/a.rs:1:foo\n", "exit_code": 0},
+            }),
+        )
+        .await;
+        assert!(
+            raw_output.is_none(),
+            "the aggregated output repeats what the delta delivered: {raw_output:?}"
+        );
+        assert!(cb.hosted_terminal_calls.is_empty(), "a final status releases the entry");
+    }
+
+    /// With `_meta.terminal_output_delta` advertised, codex stops sending
+    /// `rawOutput` on ANY command completion. A command that streamed nothing
+    /// gets its whole output as one delta on the completion frame instead
+    /// (`!commandHadOutput && aggregatedOutput && deltaSupported`) — so a quick
+    /// search still lands, on the same bridge.
+    #[tokio::test]
+    async fn codex_search_output_bundled_into_the_completion_frame_still_lands() {
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let (_, _, raw_output, append) = pi_emit(
+            AgentType::Codex,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "search_2",
+                "status": "completed",
+                "_meta": {"terminal_output_delta": {"terminal_id": "search_2", "data": "src/b.rs:9:bar\n"}},
+            }),
+        )
+        .await;
+        assert_eq!(raw_output.as_deref(), Some("src/b.rs:9:bar\n"));
+        assert_eq!(append, Some(false));
         assert!(cb.hosted_terminal_calls.is_empty());
     }
 
