@@ -122,6 +122,19 @@ describe("resolveFileReferenceTarget", () => {
     })
   })
 
+  it("resolves dot segments the way the opener does before placing the file", () => {
+    // `../site/a.md` opens `/site/a.md`: outside the folder, so no relative
+    // form (and no download) even though `/repo/../site/a.md` starts with it.
+    expect(resolveFileReferenceTarget("../site/a.md", "/repo")).toEqual({
+      absolute: "/site/a.md",
+      relative: null,
+    })
+    expect(resolveFileReferenceTarget("./src/../a.md", "/repo")).toEqual({
+      absolute: "/repo/a.md",
+      relative: "a.md",
+    })
+  })
+
   it("keeps a ~ path in tilde form (home only resolves through the backend)", () => {
     expect(resolveFileReferenceTarget("~/notes/todo.md", "/repo")).toEqual({
       absolute: "~/notes/todo.md",
