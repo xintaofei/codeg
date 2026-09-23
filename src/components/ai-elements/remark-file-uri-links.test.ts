@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest"
-import { RELATIVE_FILE_HREF_PROPERTY } from "./rehype-relative-file-links"
 import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
 
 // Minimal mdast node shapes for the transform.
@@ -8,7 +7,6 @@ type Node = {
   url?: string
   identifier?: string
   children?: Node[]
-  data?: { hProperties?: Record<string, unknown> }
 }
 
 function linkTree(url: string): Node {
@@ -68,60 +66,39 @@ describe("remarkRewriteFileUriLinks", () => {
     )
   })
 
-  it("makes a bare relative file path explicitly relative", () => {
-    // `C:` needs a following slash to be a drive path, so these are relative
-    // paths — which harden cannot parse without a `./` in front.
-    expect(rewrite("src/main.rs")).toBe("./src/main.rs")
-    expect(rewrite("notes.md")).toBe("./notes.md")
-    expect(rewrite("index.html#L3")).toBe("./index.html#L3")
-    // `sh` is a TLD too, but here it is a script far more often than a host.
-    expect(rewrite("deploy.sh")).toBe("./deploy.sh")
-    expect(rewrite(".github/workflows/ci.yml")).toBe(
-      "./.github/workflows/ci.yml"
-    )
+  it("leaves a bare relative path to the rehype step (not a drive path)", () => {
+    // `C:` needs a following slash to be a drive path. A relative path gets
+    // past sanitize as it is; the `./` it needs is added after sanitize, in
+    // rehype-relative-file-links, where raw HTML anchors are covered too.
+    expect(rewrite("src/main.rs")).toBe("src/main.rs")
+    expect(rewrite("notes.md")).toBe("notes.md")
+    expect(rewrite("./index.html")).toBe("./index.html")
   })
 
-  it("leaves domain-shaped and non-path targets alone", () => {
-    expect(rewrite("www.example.com")).toBe("www.example.com")
-    expect(rewrite("example.com")).toBe("example.com")
-    expect(rewrite("foo.io")).toBe("foo.io")
-    // A domain in the host position is a web address even with a path after it.
-    expect(rewrite("github.com/foo/bar")).toBe("github.com/foo/bar")
-    expect(rewrite("example.com/docs/a.md")).toBe("example.com/docs/a.md")
-    expect(rewrite("README")).toBe("README")
-    expect(rewrite("#section")).toBe("#section")
-    expect(rewrite("mailto:a@b.c")).toBe("mailto:a@b.c")
-    expect(rewrite("/abs/path.md")).toBe("/abs/path.md")
+  it("puts a root file position behind a slash so sanitize keeps it", () => {
+    // `a.ts:12` reads as a URL with the scheme `a.ts:`; `./a.ts:12` does not.
+    expect(rewrite("a.ts:12")).toBe("./a.ts:12")
+    expect(rewrite("index.html:3:7")).toBe("./index.html:3:7")
+    expect(rewrite(".env:2")).toBe("./.env:2")
+    expect(rewrite("Makefile:40")).toBe("./Makefile:40")
+    // With a directory the colon already sits behind a slash.
+    expect(rewrite("src/a.ts:12")).toBe("src/a.ts:12")
   })
 
-  it("marks a relative link with its explicit href for the rehype restore", () => {
-    for (const [url, href] of [
-      ["./index.html", "./index.html"],
-      ["../site/index.html", "../site/index.html"],
-      ["index.html", "./index.html"],
-      // An explicit `./` is a path even with a space in it (`<./my notes.md>`).
-      ["./my notes.md", "./my notes.md"],
-    ]) {
-      const tree = linkTree(url)
-      remarkRewriteFileUriLinks()(tree)
-      const link = tree.children![0].children![0]
-      expect(link.data?.hProperties?.[RELATIVE_FILE_HREF_PROPERTY]).toBe(href)
-    }
-  })
-
-  it("does not mark absolute, file:// or web links", () => {
+  it("leaves a host with a port, and other schemes, as they are", () => {
     for (const url of [
-      "/abs/path.md",
-      "file:///Users/a/b.ts",
-      "https://example.com/x",
+      "localhost:3000",
+      "example.com:8080",
+      "10.0.0.1:80",
+      "tel:12345",
+      "mailto:a@b.c",
+      "a.ts:L12",
     ]) {
-      const tree = linkTree(url)
-      remarkRewriteFileUriLinks()(tree)
-      expect(tree.children![0].children![0].data).toBeUndefined()
+      expect(rewrite(url)).toBe(url)
     }
   })
 
-  it("marks a reference-style link through its relative definition", () => {
+  it("rewrites a reference definition the same way", () => {
     const tree: Node = {
       type: "root",
       children: [
@@ -130,54 +107,16 @@ describe("remarkRewriteFileUriLinks", () => {
           children: [
             {
               type: "linkReference",
-              identifier: "page",
+              identifier: "pos",
               children: [{ type: "text" }],
             },
           ],
         },
-        { type: "definition", identifier: "page", url: "index.html" },
+        { type: "definition", identifier: "pos", url: "a.ts:12" },
       ],
     }
     remarkRewriteFileUriLinks()(tree)
-    expect(tree.children![1].url).toBe("./index.html")
-    expect(
-      tree.children![0].children![0].data?.hProperties?.[
-        RELATIVE_FILE_HREF_PROPERTY
-      ]
-    ).toBe("./index.html")
-  })
-
-  it("marks a reference only from the definition it resolves to (the first)", () => {
-    const referenceMark = (...urls: string[]) => {
-      const tree: Node = {
-        type: "root",
-        children: [
-          {
-            type: "paragraph",
-            children: [
-              {
-                type: "linkReference",
-                identifier: "doc",
-                children: [{ type: "text" }],
-              },
-            ],
-          },
-          ...urls.map((url) => ({
-            type: "definition",
-            identifier: "doc",
-            url,
-          })),
-        ],
-      }
-      remarkRewriteFileUriLinks()(tree)
-      return tree.children![0].children![0].data?.hProperties?.[
-        RELATIVE_FILE_HREF_PROPERTY
-      ]
-    }
-    // `/docs/a.md` is what the link opens; the duplicate's `./docs/a.md`
-    // flattens to the same harden output and must not be carried onto it.
-    expect(referenceMark("/docs/a.md", "docs/a.md")).toBeUndefined()
-    expect(referenceMark("index.html", "other.md")).toBe("./index.html")
+    expect(tree.children![1].url).toBe("./a.ts:12")
   })
 
   it("emits a UNC file:// URI as a backslash UNC path (unambiguously local)", () => {

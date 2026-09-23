@@ -478,9 +478,9 @@ const remarkPlugins = [
 // Streamdown's default rehype pipeline strips `codeg://` reference hrefs in
 // sanitization (rendering them as "[blocked]"); re-derive it so they survive to
 // MarkdownLink → ReferenceBadge. See rehype-allow-codeg for the full rationale.
-// …and relative local links (`./index.html`) keep their href through harden,
-// which would otherwise flatten them to a root path. See
-// rehype-relative-file-links.
+// …and relative local links (`./a.md`, `src/a.md`, `~/a.md`) keep their href
+// through harden, which would otherwise flatten them to a root path or block
+// them. See rehype-relative-file-links.
 const rehypePlugins = rehypePluginsAllowingCodeg(
   withRelativeFileLinks(defaultRehypePlugins)
 )

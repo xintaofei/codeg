@@ -213,8 +213,9 @@ const remarkPlugins = [
   remarkTrimCjkAutolinkTail,
 ]
 
-// remarkRewriteFileUriLinks marks relative local links for this pipeline's
-// restore step; without it `./index.html` would leave harden as `/index.html`.
+// Relative local links keep their href through harden, as in MessageResponse:
+// without this `./a.md` would leave harden as `/a.md` and a bare `a.md` would
+// be blocked. See rehype-relative-file-links.
 const rehypePlugins = Object.values(withRelativeFileLinks(defaultRehypePlugins))
 
 const reasoningComponents = { ...markdownLinkComponents, ...mermaidComponents }

@@ -4,12 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 // End-to-end guard for relative local file links. rehype-harden resolves a
 // schemeless href against a placeholder origin and keeps only its pathname, so
 // `./index.html` used to open `/index.html` at the filesystem root, and a bare
-// `index.html` did not parse at all and became "<name> [blocked]". Exercises
-// the REAL Streamdown pipeline (no streamdown mock), so the assertions cover
-// actual rehype `sanitize` + `harden` behavior and the restore step after it.
-// Only the leaf dependencies of the real link-safety hook are stubbed, so the
-// click path (badge → link-safety → `openFilePreview`) is genuinely exercised
-// too.
+// `index.html` — or `~/a.md`, or `a.ts:12`, whose `a.ts:` sanitize took for a
+// scheme — became "<name> [blocked]". Exercises the REAL Streamdown pipeline
+// (no streamdown mock), so the assertions cover actual rehype `sanitize` +
+// `harden` behavior and the record / restore steps around harden. Only the leaf
+// dependencies of the real link-safety hook are stubbed, so the click path
+// (badge → link-safety → `openFilePreview`) is genuinely exercised too.
 const mocks = vi.hoisted(() => ({
   openFilePreview: vi.fn(),
   openUrl: vi.fn(),
@@ -70,14 +70,20 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
   })
 
   it.each([
-    ["./index.html", "index.html"],
-    ["index.html", "index.html"],
-    ["../site/index.html", "../site/index.html"],
-    ["deploy.sh", "deploy.sh"],
-    ["<./my notes.md>", "my notes.md"],
+    ["./index.html", "index.html", undefined],
+    ["index.html", "index.html", undefined],
+    ["../site/index.html", "../site/index.html", undefined],
+    ["deploy.sh", "deploy.sh", undefined],
+    ["<./my notes.md>", "my notes.md", undefined],
+    ["<my notes.md>", "my notes.md", undefined],
+    [".gitignore", ".gitignore", undefined],
+    ["Dockerfile", "Dockerfile", undefined],
+    ["~/notes/a.md", "~/notes/a.md", undefined],
+    ["a.ts:12", "a.ts", 12],
+    ["src/a.ts#L3", "src/a.ts", 3],
   ])(
     "opens %s relative to the folder, not at the filesystem root",
-    async (href, opened) => {
+    async (href, opened, line) => {
       const { container } = render(
         <MessageResponse>{`已创建 [index.html](${href})`}</MessageResponse>
       )
@@ -89,17 +95,86 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
 
       fireEvent.click(fileBadgeButton(container))
       await waitFor(() => {
-        expect(mocks.openFilePreview).toHaveBeenCalledWith(opened, {
-          line: undefined,
-        })
+        expect(mocks.openFilePreview).toHaveBeenCalledWith(opened, { line })
       })
       expect(mocks.toastError).not.toHaveBeenCalled()
     }
   )
 
+  it.each([
+    ["static", false],
+    ["streaming", true],
+  ] as const)(
+    "resolves file links inside headings (%s)",
+    async (mode, parseIncompleteMarkdown) => {
+      const { container } = render(
+        <MessageResponse
+          mode={mode}
+          parseIncompleteMarkdown={parseIncompleteMarkdown}
+        >
+          {"## [index.html](index.html)\n\n### [a.ts:12](a.ts:12)\n\nbody"}
+        </MessageResponse>
+      )
+      await waitFor(() => {
+        expect(
+          container.querySelectorAll("button[data-resource-kind='file']")
+        ).toHaveLength(2)
+      })
+      expect(container.textContent).not.toContain("[blocked]")
+      const [page, position] = container.querySelectorAll<HTMLButtonElement>(
+        "h2 button[data-resource-kind='file'], h3 button[data-resource-kind='file']"
+      )
+
+      fireEvent.click(page)
+      await waitFor(() => {
+        expect(mocks.openFilePreview).toHaveBeenCalledWith("index.html", {
+          line: undefined,
+        })
+      })
+      fireEvent.click(position)
+      await waitFor(() => {
+        expect(mocks.openFilePreview).toHaveBeenCalledWith("a.ts", {
+          line: 12,
+        })
+      })
+    }
+  )
+
+  it("resolves a relative raw HTML anchor too", async () => {
+    const { container } = render(
+      <MessageResponse>{'see <a href="src/a.ts">a.ts</a>'}</MessageResponse>
+    )
+    await waitFor(() => {
+      expect(fileBadgeButton(container)).toBeTruthy()
+    })
+
+    fireEvent.click(fileBadgeButton(container))
+    await waitFor(() => {
+      expect(mocks.openFilePreview).toHaveBeenCalledWith("src/a.ts", {
+        line: undefined,
+      })
+    })
+  })
+
+  it("resolves a reference link through its relative definition", async () => {
+    const { container } = render(
+      <MessageResponse>{"see [a][page]\n\n[page]: index.html"}</MessageResponse>
+    )
+    await waitFor(() => {
+      expect(fileBadgeButton(container)).toBeTruthy()
+    })
+
+    fireEvent.click(fileBadgeButton(container))
+    await waitFor(() => {
+      expect(mocks.openFilePreview).toHaveBeenCalledWith("index.html", {
+        line: undefined,
+      })
+    })
+  })
+
   it("keeps a reference link on the definition it resolves to", async () => {
-    // CommonMark takes the first `[doc]:`; the relative duplicate flattens to
-    // the same `/docs/a.md` through harden, and must not repoint the link.
+    // CommonMark takes the first `[doc]:`, so the link is `/docs/a.md`; the
+    // relative duplicate below it must not reach the link in any form.
     const { container } = render(
       <MessageResponse>
         {"see [a][doc]\n\n[doc]: /docs/a.md\n[doc]: docs/a.md"}
@@ -129,36 +204,25 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
     ).toBeNull()
   })
 
-  it("does not let raw HTML use the carrier to bring in a scheme", async () => {
+  it("does not let a raw HTML attribute choose where a link opens", async () => {
+    // What a link opens comes from its own href as sanitize left it; nothing
+    // written beside it in the message is read back.
     const { container } = render(
       <MessageResponse>
-        {
-          '<a href="./a.md" data-codeg-relative-href="javascript:alert(1)">x</a>'
-        }
-      </MessageResponse>
-    )
-    await waitFor(() => {
-      expect(container.textContent).toContain("x")
-    })
-    expect(container.innerHTML).not.toContain("javascript:")
-    expect(container.innerHTML).not.toContain("data-codeg-relative-href")
-  })
-
-  it("does not let raw HTML use the carrier to swap in a web address", async () => {
-    // `https://evil.test/a.md` flattens to the same `/a.md` harden makes of
-    // `./a.md`, so only the explicitly-relative requirement stops it.
-    const { container } = render(
-      <MessageResponse>
-        {
-          '<a href="./a.md" data-codeg-relative-href="https://evil.test/a.md">x</a>'
-        }
+        {'<a href="/abs/a.md" data-codeg-relative-href="../x">x</a>'}
       </MessageResponse>
     )
     await waitFor(() => {
       expect(fileBadgeButton(container)).toBeTruthy()
     })
-    expect(container.innerHTML).not.toContain("evil.test")
-    expect(container.querySelector("[data-resource-kind='web']")).toBeNull()
+    expect(container.innerHTML).not.toContain("data-codeg-relative-href")
+
+    fireEvent.click(fileBadgeButton(container))
+    await waitFor(() => {
+      expect(mocks.openFilePreview).toHaveBeenCalledWith("/abs/a.md", {
+        line: undefined,
+      })
+    })
   })
 
   it("restores relative links in the reasoning panel too", async () => {
