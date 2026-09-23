@@ -133,6 +133,11 @@ describe("resolveFileReferenceTarget", () => {
       absolute: "/repo/a.md",
       relative: "a.md",
     })
+    // …and places it against the folder resolved the same way.
+    expect(resolveFileReferenceTarget("./a.md", "/repo/../site")).toEqual({
+      absolute: "/site/a.md",
+      relative: "a.md",
+    })
   })
 
   it("keeps a ~ path in tilde form (home only resolves through the backend)", () => {

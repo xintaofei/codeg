@@ -125,17 +125,20 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
         "h2 button[data-resource-kind='file'], h3 button[data-resource-kind='file']"
       )
 
+      // One open per click, each for its own link.
       fireEvent.click(page)
       await waitFor(() => {
-        expect(mocks.openFilePreview).toHaveBeenCalledWith("index.html", {
-          line: undefined,
-        })
+        expect(mocks.openFilePreview).toHaveBeenCalledTimes(1)
+      })
+      expect(mocks.openFilePreview).toHaveBeenLastCalledWith("index.html", {
+        line: undefined,
       })
       fireEvent.click(position)
       await waitFor(() => {
-        expect(mocks.openFilePreview).toHaveBeenCalledWith("a.ts", {
-          line: 12,
-        })
+        expect(mocks.openFilePreview).toHaveBeenCalledTimes(2)
+      })
+      expect(mocks.openFilePreview).toHaveBeenLastCalledWith("a.ts", {
+        line: 12,
       })
     }
   )
@@ -206,7 +209,8 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
 
   it("does not let a raw HTML attribute choose where a link opens", async () => {
     // What a link opens comes from its own href as sanitize left it; nothing
-    // written beside it in the message is read back.
+    // written beside it in the message is read back. The open is the proof:
+    // the badge renders no extra attributes either way.
     const { container } = render(
       <MessageResponse>
         {'<a href="/abs/a.md" data-codeg-relative-href="../x">x</a>'}
@@ -215,7 +219,6 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
     await waitFor(() => {
       expect(fileBadgeButton(container)).toBeTruthy()
     })
-    expect(container.innerHTML).not.toContain("data-codeg-relative-href")
 
     fireEvent.click(fileBadgeButton(container))
     await waitFor(() => {

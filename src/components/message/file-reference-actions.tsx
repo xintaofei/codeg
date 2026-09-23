@@ -78,8 +78,9 @@ export function resolveFileReferenceTarget(
 
   // `toFolderRelativePath` returns the absolute path unchanged when the file
   // lives outside the folder — that's "no relative form", not a relative path.
+  // The folder is compared in the same resolved form as the file.
   const relative = folderPath
-    ? toFolderRelativePath(absolute, folderPath)
+    ? toFolderRelativePath(absolute, normalizeAbsPath(folderPath))
     : null
   return {
     absolute,
