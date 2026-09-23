@@ -1145,9 +1145,96 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // cards on, so a pending MCP approval now shows the right card
             // instead of flipping to it once the call runs and the streamed
             // frame (which always carried `toolName`) refines it.
+            //
+            // 0.80.0 + 0.81.0 are four upstream changes (#1150, #1147, #1154,
+            // #1155) plus an SDK bump, and `@agentclientprotocol/sdk` moves
+            // 1.4.0 → 1.5.0 on both adapters in lockstep. The bundled
+            // `@anthropic-ai/claude-agent-sdk` goes 0.3.274 → 0.3.280, i.e. CLI
+            // 2.1.274 → **2.1.280** (`manifest.json`); `engines.node` stays
+            // ">=22". Three of the four need nothing here; the fourth is the
+            // only item in this whole bump that costs codeg code, and it costs
+            // it in the HISTORY parser rather than on the wire.
+            //
+            // (w) **The subagent hand-back frame** (CLI-side, arrives with the
+            // SDK bump — `CLAUDE_CODE_HANDBACK_PROVENANCE`, default on, CLI
+            // 2.1.277+). The CLI now prefixes a subagent's report inside the raw
+            // `Agent`/`Task` tool_result with a ~470-char model-directed
+            // provenance paragraph and indents every line of the report two
+            // spaces. 0.81.0's `tools.ts` unwraps it (`unwrapHandbackFrame`)
+            // before the report reaches a client, so the LIVE path is clean by
+            // bumping — but codeg also renders `Agent`/`Task` results from the
+            // CLI's own JSONL (`parsers::claude::extract_tool_result_text` takes
+            // the tool_result text; `toolUseResult` is only mined for
+            // `structuredPatch` and agent stats), and there the frame is still
+            // sitting on the record. Without a matching unwrap every subagent
+            // card in history opens with the paragraph and shows the report
+            // indented underneath. `parsers::claude` now carries the same
+            // verbatim-anchored unwrap, with the header copied byte-for-byte out
+            // of the 2.1.280 binary rather than transcribed from the adapter.
+            // Note this is NOT gated on the adapter: a user whose standalone
+            // Claude Code CLI reaches 2.1.277 writes the frame into every
+            // transcript codeg imports, adapter or no adapter.
+            //
+            // (x) `terminal_output_delta` (#1150, the twin of codex-acp 1.13.0's
+            // #528). A client may now advertise `_meta.terminal_output_delta`
+            // instead of `_meta.terminal_output`; the adapter treats EITHER as
+            // "this client takes terminal output" and renames the key it emits.
+            // codeg advertises neither to claude, deliberately — see
+            // `build_client_capabilities`, and (u) above for what the `content`
+            // channel is still carrying because of it. Inert.
+            //
+            // (y) Compaction lifecycles now close on interrupt (#1154). A
+            // cancelled or errored turn calls `ContextCompactionLifecycle
+            // ::interrupt()`, which settles the entity and refuses the late,
+            // uncorrelated hooks the abandoned work keeps emitting until a new
+            // turn's dispatch calls `resume()`. codeg renders compaction from
+            // the legacy `_meta.contextCompaction` tool call (the
+            // `compaction_update` presentation is still out of reach, see (p)),
+            // and that call is exactly what used to be left `in_progress`
+            // forever when a `/compact` was interrupted. A free fix.
+            //
+            // (z) **A resumed session's first result no longer charges the whole
+            // pre-resume history to one turn** (#1147, SDK 0.3.277+). The CLI
+            // continues `result.modelUsage`'s running total from the totals the
+            // transcript saved, so the first reading after a resume has no
+            // predecessor to subtract from; `modelUsageIncrement` used to treat
+            // that as "the running total restarted" and take the reading itself
+            // as the increment. `lastModelUsageReading` is now `undefined` on a
+            // resumed session and the first result's rows come from its own
+            // per-turn `usage` instead. This lands straight in codeg's
+            // `_meta.quota.model_usage` consumer — the per-model rows on the
+            // first turn after a resume were inflated by the entire prior
+            // session. Nothing to do beyond the bump.
+            //
+            // (aa) Session Notices (#1155) is the release headline and, like
+            // `compaction_update` in (p), is OUT OF REACH at this schema pin
+            // rather than declined: `clientSupportsNotices` gates on
+            // `clientCapabilities.session.notices` being an object — a typed
+            // field, not an `_meta` key — and codeg's pinned
+            // `agent-client-protocol-schema` 0.11.7 has no `session` field on
+            // `ClientCapabilities` and no `Notice` variant on `SessionUpdate`.
+            // Both exist upstream now (schema 1.9.1, `unstable_session_notices`;
+            // runtime `agent-client-protocol` 2.2.0), so this is one more thing
+            // the sacp migration buys rather than a standing gap. Worth writing
+            // down BEFORE that migration, because advertising it is not a pure
+            // win and the trade has to be made deliberately:
+            //
+            // * It takes over the AIR lane. The model-fallback advisory is
+            //   `if (!supportsNotices && supportsAirSessionFailures(...))`, so
+            //   turning notices on silently stops feeding codeg's existing
+            //   `SessionFailure` banner. codex-acp says the same in its
+            //   readme-dev ("notices take precedence over AIR advisory
+            //   records"). The notice consumer has to ship in the same change.
+            // * It DROPS `informational` frames at `level === "info"` outright
+            //   (`if (message.level === "info") break;`). Those are plain
+            //   transcript text today. Everything else that becomes a notice —
+            //   model fallback, Auto-mode fallback, Fast mode turned off, hook
+            //   block reasons, "Task stopped by user" — is currently a
+            //   `**bold label:** …` agent message, which is the presentation
+            //   worth replacing.
             distribution: AgentDistribution::Npx {
-                version: "0.79.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.79.0",
+                version: "0.81.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.81.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -1633,9 +1720,79 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `features.cwd_relative_turn_diffs = false` in the merged config so
             // turn-diff paths are git-root relative — codeg writes no such key
             // (repo grep: zero hits) and reads no turn diff.
+            //
+            // 1.13.0 is six upstream changes (#515, #523, #525, #528, #531,
+            // #532) and ships the SAME two capabilities claude-agent-acp 0.81.0
+            // did, in the same week and behind the same two typed client
+            // capabilities — `@agentclientprotocol/sdk` moves 1.4.0 → 1.5.0 on
+            // both. `engines` is still absent, so the 20.0.0 floor stays.
+            //
+            // (f) Session Notices (#532) and ACP session compaction (#515) are
+            // both out of reach at the pinned schema for exactly the reason the
+            // claude entry's (aa) and (p) give — `clientCapabilities.session
+            // .notices` / `.compaction` are typed fields, not `_meta` keys. What
+            // codex adds to the claude-side note is the LIST: with notices on,
+            // config warnings, deprecation notices, plain warnings, model
+            // rerouting and the legacy `thread/compacted` advisory all leave the
+            // channels codeg reads today (assistant/thought text, or the AIR
+            // `sessionFailure` record) for `notice` updates. Same conclusion,
+            // same reason to do it together with the migration.
+            //
+            // (g) **codeg now reads codex's terminal output channel** (#528 is
+            // what made this legible, but the channel itself is older). codex
+            // has always had pi's #519 shape and codeg never noticed, because
+            // codex ALSO repeats the output as `rawOutput` at the end:
+            // `createTerminalCommandEvent` names a terminal by the item's own id
+            // (codeg never created it — every poll misses and ages out at
+            // `TERMINAL_POLL_MISSING_LIMIT`), and the real output streams as
+            // `_meta.terminal_output_delta` deltas that codeg dropped on the
+            // floor. So a codex shell card sat on the `[Terminal: …]`
+            // placeholder for the whole command and then filled in at once.
+            // `hosted_terminal_*` in `connection.rs` now covers codex alongside
+            // pi: the placeholder block is stripped, the call is kept out of the
+            // terminal poller, the deltas bridge onto `raw_output`, and the
+            // duplicate cumulative `rawOutput` is dropped for those calls.
+            //
+            // The client capability #528 adds is NOT advertised, and that is a
+            // decision rather than an omission. `resolveTerminalOutputMode`
+            // already returns `terminal_output_delta` by DEFAULT, so the
+            // streaming above needs nothing on the wire. Advertising
+            // `_meta.terminal_output_delta` would buy exactly one thing —
+            // `createCommandExecutionCompleteUpdate` stops emitting the
+            // duplicate `rawOutput`, which codeg now discards client-side
+            // anyway — and would cost the `search`/`listFiles` cards: the same
+            // flag moves NON-terminal command output onto the delta channel too
+            // (`!commandHadOutput && aggregatedOutput && (commandHadTerminal ||
+            // deltaSupported)`), and those render from the
+            // `{formatted_output, exit_code}` envelope that would stop being
+            // sent (`codex-search-tool-card`). Revisit if those cards ever move
+            // off `rawOutput`.
+            //
+            // (h) `@openai/codex` ^0.154.0 → **^0.155.1** (caret on a 0.x minor
+            // pins it inside 0.155.x, so this does not drift to 0.156.0). Two
+            // models are RETIRED — `gpt-5.2` and `gpt-5.4-mini` — taking the
+            // catalog from 11 slugs to 9; the bundled offline snapshot is
+            // regenerated from the 0.155.1 binary. This is the removal case
+            // `types.ts` calls a *ghost* (a stored per-conversation override
+            // naming a slug the catalog no longer lists), which is handled
+            // there and needs nothing here. No new fields on `ModelInfo`, so
+            // `BOOL_FIELDS` is unchanged.
+            //
+            // (i) Three fixes that arrive free. A root turn that fails or is
+            // interrupted now closes ALL child sessions rather than only the one
+            // whose thread id matched (`closingChildSessions`), and `wait()`
+            // returns `"timed_out"` so the caller finalizes pending child
+            // updates before closing them — both of which used to leave codeg's
+            // collab capsules hanging. `/compact` now reports a real turn
+            // (`onTurnStarted` + a returned `turn/completed`) instead of
+            // resolving with nothing. `thread/attachment/updated` and the
+            // `ThreadAttachment*` app-server v2 types are new upstream surface
+            // the adapter itself maps to nothing (`return null`), and
+            // `FeedbackUploadResponse.promptHash` belongs to a feedback upload
+            // codeg does not drive.
             distribution: AgentDistribution::Npx {
-                version: "1.12.0",
-                package: "@agentclientprotocol/codex-acp@1.12.0",
+                version: "1.13.0",
+                package: "@agentclientprotocol/codex-acp@1.13.0",
                 cmd: "codex-acp",
                 args: &[],
                 env: &[],
@@ -2825,8 +2982,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.79.0",
-            "@agentclientprotocol/claude-agent-acp@0.79.0",
+            "0.81.0",
+            "@agentclientprotocol/claude-agent-acp@0.81.0",
             Some("22.0.0"),
         );
         assert_npx_version(
@@ -2867,8 +3024,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Codex,
-            "1.12.0",
-            "@agentclientprotocol/codex-acp@1.12.0",
+            "1.13.0",
+            "@agentclientprotocol/codex-acp@1.13.0",
             Some("20.0.0"),
         );
         assert_npx_version(AgentType::Pi, "0.0.33", "pi-acp@0.0.33", Some("22.0.0"));

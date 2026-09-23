@@ -8357,16 +8357,17 @@ fn extract_terminal_ids(content: &[ToolCallContent]) -> Vec<String> {
 /// Register the terminals a tool call names so `poll_tracked_terminal_tool_calls`
 /// can stream their output, returning whether the poller should run now.
 ///
-/// A terminal pi hosts itself is excluded: pi names it by its own tool-call id
-/// (see `pi_terminal_meta_marks_bash`), so it can never resolve against
-/// `TerminalRuntime`. Tracking one bought a map entry plus ten 200 ms polls per
-/// bash call that could only ever miss — the misses are swallowed as
-/// `InvalidParams` in `poll_terminal_tool_call_output`, so the entry just aged
-/// out silently at `TERMINAL_POLL_MISSING_LIMIT`. pi's output arrives on its
-/// `_meta` channel instead and is bridged in `emit_conversation_update`.
+/// A terminal the AGENT hosts itself is excluded: pi and codex-acp both name it
+/// by their own tool-call id (see `hosted_terminal_meta_marks_shell`), so it can
+/// never resolve against `TerminalRuntime`. Tracking one buys a map entry plus
+/// ten 200 ms polls per shell call that could only ever miss — the misses are
+/// swallowed as `InvalidParams` in `poll_terminal_tool_call_output`, so the
+/// entry just ages out silently at `TERMINAL_POLL_MISSING_LIMIT`. Their output
+/// arrives on a `_meta` channel instead and is bridged in
+/// `emit_conversation_update`.
 ///
-/// Keyed off pi's own marker rather than off `AgentType::Pi` wholesale, so a
-/// future pi-acp that DOES delegate `terminal/*` is polled normally.
+/// Keyed off the adapters' own marker rather than off the agent type wholesale,
+/// so a future release that DOES delegate `terminal/*` is polled normally.
 fn track_terminal_tool_calls(
     agent_type: AgentType,
     update: &SessionUpdate,
@@ -8377,7 +8378,7 @@ fn track_terminal_tool_calls(
         SessionUpdate::ToolCallUpdate(tcu) => tcu.meta.as_ref(),
         _ => None,
     };
-    if pi_terminal_meta_marks_bash(agent_type, meta) {
+    if hosted_terminal_meta_marks_shell(agent_type, meta) {
         return false;
     }
     match update {
@@ -10014,7 +10015,7 @@ async fn run_conversation_loop<'a>(
                 // `session/load` replay path is unaffected: it runs on the
                 // out-of-turn pump and its calls settle on the update that
                 // immediately follows, before any turn starts.
-                cb_state.pi_terminal_calls.clear();
+                cb_state.hosted_terminal_calls.clear();
                 // Grok's context ring needs the active model's window paired
                 // with the cumulative token count riding each update. Resolve it
                 // once here (the model can't change mid-turn) so the per-update
@@ -11119,16 +11120,17 @@ pub(crate) fn synthesize_edit_input_from_diffs(content: &[ToolCallContent]) -> O
 /// Drop every `Terminal` block from a tool call's `content`, keeping the rest
 /// in order.
 ///
-/// Used on the pi path only (see `pi_terminal_meta_marks_bash`). A
+/// Used on the self-hosted-terminal path only (see
+/// `hosted_terminal_meta_marks_shell`). A
 /// `ToolCallContent::Terminal` serializes to the bare `[Terminal: <id>]`
 /// placeholder, which is meaningful ONLY while codeg's own `TerminalRuntime`
 /// owns that terminal and `poll_tracked_terminal_tool_calls` streams the real
 /// output over it (`raw_output_chunks` then wins over `content` in the
-/// frontend store). pi's terminal is agent-hosted, so nothing ever supersedes
-/// the placeholder from the terminal channel — it would be the ONLY thing on
-/// screen for the whole runtime of the command. The pi bridge supplies the
-/// output instead; strip the dead placeholder so a slow command shows an empty
-/// running card rather than an opaque id.
+/// frontend store). These agents' terminals are agent-hosted, so nothing ever
+/// supersedes the placeholder from the terminal channel — it would be the ONLY
+/// thing on screen for the whole runtime of the command. The `_meta` bridge
+/// supplies the output instead; strip the dead placeholder so a slow command
+/// shows an empty running card rather than an opaque id.
 fn strip_terminal_blocks(content: &[ToolCallContent]) -> Vec<ToolCallContent> {
     content
         .iter()
@@ -11355,7 +11357,7 @@ fn grok_live_tool_output(
 /// the block array alone does not, so dropping those would lose a real result.
 ///
 /// (pi ≥0.0.33 routes `bash` through `_meta.terminal_*` and sends no `rawOutput`
-/// for it at all — see `pi_bash_terminal_chunk`. This is the path every OTHER pi
+/// for it at all — see `hosted_terminal_chunk`. This is the path every OTHER pi
 /// tool takes, and the one `bash` itself takes on earlier pi-acp builds.)
 fn pi_live_tool_output(
     content: &Option<String>,
@@ -12089,19 +12091,18 @@ fn codebuddy_meta_marks_subagent(
         .is_some_and(|s| !s.is_empty())
 }
 
-/// pi-acp reports a `bash` tool call as an ACP `Terminal` content block whose
-/// `terminalId` is its OWN tool-call id, then streams the command's output over
-/// a bespoke `_meta` channel instead of the ACP terminal channel.
+/// Two adapters report a shell tool call as an ACP `Terminal` content block
+/// whose `terminalId` is its OWN tool-call id, then stream the command's output
+/// over a bespoke `_meta` channel instead of the ACP terminal channel. Neither
+/// ever calls `terminal/create`, so the id they name can never resolve against
+/// `TerminalRuntime` — which only ever mints `term_<uuid>` ids. Codeg renders
+/// the resulting placeholder and then polls a terminal that does not exist, so
+/// the card stays at `[Terminal: <id>]` with no command output, ever (#519).
 ///
-/// pi-acp's README says it outright: "No ACP filesystem delegation (`fs/*`) and
-/// no ACP terminal delegation (`terminal/*`). pi reads/writes and executes
-/// locally." It never calls `terminal/create`, so the id it names
-/// (`call_Q0KKW…`) can never resolve against `TerminalRuntime` — which only ever
-/// mints `term_<uuid>` ids. Codeg used to render the resulting placeholder and
-/// then poll a terminal that does not exist, so the card stayed at
-/// `[Terminal: call_…]` with no command output, ever (#519).
-///
-/// The wire, per pi-acp 0.0.33 (`emitBashToolCall` / `emitBashOutputUpdate`):
+/// **pi-acp** says it outright in its README: "No ACP filesystem delegation
+/// (`fs/*`) and no ACP terminal delegation (`terminal/*`). pi reads/writes and
+/// executes locally." Its wire, per 0.0.33 (`emitBashToolCall` /
+/// `emitBashOutputUpdate`):
 /// - `tool_call`: `title` = the command, `kind: execute`, the `Terminal` block,
 ///   `_meta.terminal_info = {terminal_id, cwd}`, and NO `rawInput`.
 /// - `tool_call_update` ×N: `_meta.terminal_output = {terminal_id, data}` where
@@ -12109,28 +12110,67 @@ fn codebuddy_meta_marks_subagent(
 ///   {terminal_id, exit_code, signal}` on the final frame. No `content`, no
 ///   `rawOutput` — this `_meta` is the only channel carrying the output.
 ///
-/// These readers bridge that channel into the same `raw_output` stream the
-/// host-terminal poller produces, so a pi bash card reads exactly like every
-/// other agent's.
+/// **codex-acp** has the SAME shape and codeg never noticed, because unlike pi
+/// it also repeats the whole output as `rawOutput` at the end, so the card
+/// filled in — just not until the command had finished. `createTerminalCommandEvent`
+/// builds `content: [{type: "terminal", terminalId: item.id}]` +
+/// `_meta.terminal_info` for every command `commandExecutionUsesTerminalOutput`
+/// accepts (one with no single recognized `commandAction` — i.e. a real shell
+/// command rather than a `search`/`listFiles` it renders as its own card), and
+/// `createCommandOutputDeltaEvent` streams the output as
+/// `_meta.terminal_output_delta = {terminal_id, data}` deltas throughout. That
+/// key is what `resolveTerminalOutputMode` returns **by default**, with no
+/// client capability involved, so this has been on the wire all along. The
+/// completion frame then carries `rawOutput = {formatted_output: <the whole
+/// aggregated output>, exit_code}` plus `_meta.terminal_exit`. Unlike pi,
+/// codex DOES send `rawInput = {command, cwd}` on the opening frame, so the
+/// card classifies on its own and only the output channel needs bridging.
 ///
-/// GATED ON `AgentType::Pi` ON PURPOSE: pi-acp's keys are unnamespaced
+/// These readers bridge that channel into the same `raw_output` stream the
+/// host-terminal poller produces, so both agents' shell cards read exactly like
+/// every other agent's — and stream while the command runs instead of appearing
+/// all at once when it ends.
+///
+/// GATED ON AN AGENT SET ON PURPOSE: both adapters' keys are unnamespaced
 /// (`terminal_output`, not `pi/terminalOutput`), so an ungated reader would be a
-/// collision waiting to happen. Known limitation: `AgentType::Pi` resolves from
-/// the built-in registry id `pi-acp`, so a user who registers pi-acp under a
+/// collision waiting to happen. Known limitation: the agent types resolve from
+/// the built-in registry ids, so a user who registers either adapter under a
 /// CUSTOM agent id gets `AgentType::Custom` and keeps the old behaviour. That is
 /// the right trade — an unnamespaced-meta bridge must not apply to arbitrary
 /// agents.
-fn pi_terminal_meta_marks_bash(
+///
+/// Deliberately keyed off the adapter's own `terminal_info` marker rather than
+/// the agent type wholesale, so a future release that DOES delegate `terminal/*`
+/// goes back to being polled normally.
+fn hosted_terminal_meta_marks_shell(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> bool {
-    if agent_type != AgentType::Pi {
+    if hosted_terminal_output_key(agent_type).is_none() {
         return false;
     }
     meta.is_some_and(|meta| meta.get("terminal_info").is_some_and(|v| v.is_object()))
 }
 
-/// The incremental output chunk from `_meta.terminal_output.data`, if any.
+/// The `_meta` key an adapter streams its self-hosted terminal output under,
+/// for the agents whose unnamespaced keys codeg is willing to read.
+///
+/// The two spell it differently for a reason: pi predates the ACP delta
+/// convention and reuses `terminal_output`, while codex-acp picks between
+/// `terminal_output` and `terminal_output_delta` in `resolveTerminalOutputMode`
+/// and lands on the delta key unless the client asks for the other one —
+/// which codeg does not (see `build_client_capabilities`). Both carry the same
+/// `{terminal_id, data}` payload with incremental `data`, so only the key
+/// differs.
+fn hosted_terminal_output_key(agent_type: AgentType) -> Option<&'static str> {
+    match agent_type {
+        AgentType::Pi => Some("terminal_output"),
+        AgentType::Codex => Some("terminal_output_delta"),
+        _ => None,
+    }
+}
+
+/// The incremental output chunk from the agent's output key, if any.
 ///
 /// pi computes this delta itself as `next.startsWith(prev) ? next.slice(prev.len)
 /// : next`, so in the degenerate case where its cumulative text stops being a
@@ -12139,16 +12179,15 @@ fn pi_terminal_meta_marks_bash(
 /// cannot detect that without holding the full snapshot, which
 /// `ToolCallOutputCache` deliberately does not do (8 KB tail only). Appending is
 /// the correct reading of the wire contract; the duplication is an upstream
-/// residual.
-fn pi_terminal_output_delta(
+/// residual. codex has no such degenerate case: its deltas come straight from
+/// the exec stream (`item/commandExecution/outputDelta`).
+fn hosted_terminal_output_delta(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Option<String> {
-    if agent_type != AgentType::Pi {
-        return None;
-    }
+    let key = hosted_terminal_output_key(agent_type)?;
     meta?
-        .get("terminal_output")?
+        .get(key)?
         .get("data")?
         .as_str()
         .filter(|data| !data.is_empty())
@@ -12164,14 +12203,13 @@ fn pi_terminal_output_delta(
 /// is `rename_all = "camelCase"`, and unknown fields are ignored — so it
 /// deserializes CLEANLY into an all-`None` status and silently prints
 /// "[terminal exited: finished]", dropping the exit code the report explicitly
-/// asks for.
-fn pi_terminal_exit_line(
+/// asks for. codex-acp writes the same snake_case shape (`{exit_code, signal,
+/// terminal_id}`), so the identical reasoning applies to it.
+fn hosted_terminal_exit_line(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Option<String> {
-    if agent_type != AgentType::Pi {
-        return None;
-    }
+    hosted_terminal_output_key(agent_type)?;
     let exit = meta?.get("terminal_exit")?.as_object()?;
     let code = exit.get("exit_code").and_then(serde_json::Value::as_i64);
     let signal = exit
@@ -12198,10 +12236,10 @@ fn pi_terminal_exit_line(
     Some(format!("[terminal exited: {formatted}]"))
 }
 
-/// Bridge pi's `_meta` terminal channel onto the `raw_output` stream, returning
-/// the `(payload, append)` pair to emit — or `None` when this frame carries no
-/// terminal data (which is every frame of every other agent, since both readers
-/// are gated on `AgentType::Pi`).
+/// Bridge the agent's `_meta` terminal channel onto the `raw_output` stream,
+/// returning the `(payload, append)` pair to emit — or `None` when this frame
+/// carries no terminal data (which is every frame of every agent outside
+/// `hosted_terminal_output_key`).
 ///
 /// `append` is false for a call's FIRST chunk, so it REPLACES whatever the
 /// opening frame left on the card, and true for every chunk after — the same
@@ -12216,14 +12254,14 @@ fn pi_terminal_exit_line(
 /// The entry is created here rather than required up front, so a client that
 /// attached mid-turn (and so never saw the opening `terminal_info` frame) still
 /// gets the output instead of silently dropping it.
-fn pi_bash_terminal_chunk(
+fn hosted_terminal_chunk(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
     tool_call_id: &str,
     tracked: &mut HashMap<String, bool>,
 ) -> Option<(String, bool)> {
-    let mut chunk = pi_terminal_output_delta(agent_type, meta).unwrap_or_default();
-    if let Some(exit_line) = pi_terminal_exit_line(agent_type, meta) {
+    let mut chunk = hosted_terminal_output_delta(agent_type, meta).unwrap_or_default();
+    if let Some(exit_line) = hosted_terminal_exit_line(agent_type, meta) {
         if !chunk.is_empty() && !chunk.ends_with('\n') {
             chunk.push('\n');
         }
@@ -13218,20 +13256,21 @@ struct CodeBuddyLiveState {
     /// even when the token count hasn't moved yet — otherwise the ring would
     /// keep dividing by the previous model's window.
     grok_last_usage: Option<(u64, u64)>,
-    /// pi bash tool calls whose terminal pi hosts itself → whether any output
-    /// has already been emitted for that call.
+    /// Shell tool calls whose terminal the AGENT hosts itself (pi bash,
+    /// codex command execution) → whether any output has already been emitted
+    /// for that call.
     ///
     /// Registered from the opening frame's `_meta.terminal_info`
-    /// (see `pi_terminal_meta_marks_bash`), because the frames that actually
+    /// (see `hosted_terminal_meta_marks_shell`), because the frames that actually
     /// CARRY the output name only the tool-call id — `terminal_info` never
     /// repeats. The flag is what makes the first bridged chunk a replacement and
     /// every later one an append, the same rule
     /// `TrackedTerminalToolCall::has_emitted_output` applies on the host-terminal
     /// path. Entries are dropped at a final status, alongside
     /// `ToolCallOutputCache::remove_if_final`, and the whole map is cleared at
-    /// turn start — a bash call whose turn was canceled never sees a final
+    /// turn start — a shell call whose turn was canceled never sees a final
     /// status, and its lifecycle cannot span turns anyway.
-    pi_terminal_calls: HashMap<String, bool>,
+    hosted_terminal_calls: HashMap<String, bool>,
 }
 
 /// One announced-but-unpaired Grok `spawn_subagent` call. `description` /
@@ -14440,21 +14479,22 @@ async fn emit_conversation_update(
             } else {
                 None
             };
-            // pi hosts its own terminal and names it by this very tool-call id, so
-            // its `Terminal` block is a placeholder nothing can ever supersede from
-            // the terminal channel — strip it and let the `_meta` bridge below
-            // supply the output. Remember the call: the frames that carry the
-            // output name only the id (see `pi_terminal_meta_marks_bash`).
-            let pi_bash = pi_terminal_meta_marks_bash(agent_type, tc.meta.as_ref());
-            if pi_bash {
+            // pi and codex both host their own terminal and name it by this very
+            // tool-call id, so the `Terminal` block is a placeholder nothing can
+            // ever supersede from the terminal channel — strip it and let the
+            // `_meta` bridge below supply the output. Remember the call: the
+            // frames that carry the output name only the id (see
+            // `hosted_terminal_meta_marks_shell`).
+            let hosted_shell = hosted_terminal_meta_marks_shell(agent_type, tc.meta.as_ref());
+            if hosted_shell {
                 cb_state
-                    .pi_terminal_calls
+                    .hosted_terminal_calls
                     .entry(tool_call_id.clone())
                     .or_insert(false);
             }
-            let pi_stripped_content = pi_bash.then(|| strip_terminal_blocks(&tc.content));
+            let hosted_stripped_content = hosted_shell.then(|| strip_terminal_blocks(&tc.content));
             let content_blocks: &[ToolCallContent] =
-                pi_stripped_content.as_deref().unwrap_or(&tc.content);
+                hosted_stripped_content.as_deref().unwrap_or(&tc.content);
             let own_raw_input = match &grok_use_tool {
                 Some((_, inner)) => {
                     json_value_to_text(&Some(inner.clone())).filter(|t| !t.trim().is_empty())
@@ -14469,8 +14509,15 @@ async fn emit_conversation_update(
             // pi sends no `rawInput` for bash at all — its command lives in the
             // title. Synthesize the canonical `{"command"}` shape so the call
             // classifies as `bash` instead of a generic tool named after the
-            // command (see `pi_bash_input_from_title`).
-            let pi_bash_input = if own_raw_input.is_none() && pi_bash {
+            // command (see `pi_bash_input_from_title`). Stays gated on pi even
+            // though `hosted_shell` now also covers codex: codex DOES send
+            // `rawInput = {command, cwd}` on the opening frame, so this could
+            // only ever fire there on a frame that lost it, where the title
+            // would be a worse reconstruction than the reducer's prior input.
+            let pi_bash_input = if own_raw_input.is_none()
+                && hosted_shell
+                && matches!(agent_type, AgentType::Pi)
+            {
                 pi_bash_input_from_title(Some(tc.title.as_str()))
             } else {
                 None
@@ -14681,18 +14728,18 @@ async fn emit_conversation_update(
             // Symmetric with the ToolCall arm. `terminal_info` only ever rides the
             // OPENING frame, so the id set is what identifies these updates; the
             // meta check is a cheap guard for a wire that ever reorders them.
-            let pi_bash = cb_state.pi_terminal_calls.contains_key(&tool_call_id)
-                || pi_terminal_meta_marks_bash(agent_type, tcu.meta.as_ref());
-            if pi_bash {
+            let hosted_shell = cb_state.hosted_terminal_calls.contains_key(&tool_call_id)
+                || hosted_terminal_meta_marks_shell(agent_type, tcu.meta.as_ref());
+            if hosted_shell {
                 cb_state
-                    .pi_terminal_calls
+                    .hosted_terminal_calls
                     .entry(tool_call_id.clone())
                     .or_insert(false);
             }
-            let pi_stripped_content = pi_bash
+            let hosted_stripped_content = hosted_shell
                 .then(|| tcu.fields.content.as_deref().map(strip_terminal_blocks))
                 .flatten();
-            let content_blocks: Option<&[ToolCallContent]> = pi_stripped_content
+            let content_blocks: Option<&[ToolCallContent]> = hosted_stripped_content
                 .as_deref()
                 .or(tcu.fields.content.as_deref());
             let own_raw_input = match &grok_use_tool {
@@ -14712,7 +14759,11 @@ async fn emit_conversation_update(
             // frame (its first frame's arguments are still partial JSON, so the
             // title is the bare "bash"). Re-synthesize whenever a titled frame
             // shows up; the reducer keeps the prior input on the title-less ones.
-            let pi_bash_input = if own_raw_input.is_none() && pi_bash {
+            // Gated on pi for the same reason as the ToolCall arm.
+            let pi_bash_input = if own_raw_input.is_none()
+                && hosted_shell
+                && matches!(agent_type, AgentType::Pi)
+            {
                 pi_bash_input_from_title(tcu.fields.title.as_deref())
             } else {
                 None
@@ -14765,7 +14816,19 @@ async fn emit_conversation_update(
             // with `raw_output_append=true`, collapsing the O(N²) transfer
             // problem to O(N) while capping any single emitted chunk to
             // MAX_SINGLE_EMIT_BYTES.
-            let raw_output_text = if matches!(agent_type, AgentType::Grok) {
+            let raw_output_text = if hosted_shell {
+                // The `_meta` bridge below owns this call's output channel
+                // entirely. codex repeats the WHOLE aggregated output as
+                // `rawOutput` on the completion frame of a call it has already
+                // streamed incrementally over `_meta`, so taking it here would
+                // re-send everything the card already has. (pi sends no
+                // `rawOutput` at all for a `_meta`-hosted call, so this is a
+                // no-op there.) Skipped rather than left to be overwritten by
+                // the bridge: `raw_output_cache.consume` MUTATES the cache, and
+                // seeding it with a snapshot the card never received would make
+                // the next diff measure against output that was never sent.
+                None
+            } else if matches!(agent_type, AgentType::Grok) {
                 // Grok's structured rawOutput would shadow `content` and render
                 // empty; take the parity path (see grok_live_tool_output).
                 grok_live_tool_output(&content, &tcu.fields.raw_output)
@@ -14790,22 +14853,22 @@ async fn emit_conversation_update(
                 },
                 None => (None, None),
             };
-            // pi's bash output rides `_meta` and nothing else (no `content`, no
-            // `rawOutput`), so bridge it onto the same `raw_output` stream the
-            // host-terminal poller feeds — that channel is what supersedes the
-            // placeholder in the frontend store's output precedence. This
-            // deliberately BYPASSES `raw_output_cache`: the cache diffs cumulative
-            // snapshots, while pi already sends deltas, which is exactly why
-            // `emit_terminal_output_update` bypasses it too. pi never sends
-            // `rawOutput` for a `_meta`-hosted call, so the branch above resolved
-            // to `(None, None)` and nothing is being overwritten. (Older pi-acp
-            // has no `_meta` channel at all: there `bash` streams like any other
-            // tool and `pi_live_tool_output` above is what carries its output.)
-            let (raw_output, raw_output_append) = match pi_bash_terminal_chunk(
+            // A self-hosted shell call's output rides `_meta`, so bridge it onto
+            // the same `raw_output` stream the host-terminal poller feeds — that
+            // channel is what supersedes the placeholder in the frontend store's
+            // output precedence. This deliberately BYPASSES `raw_output_cache`:
+            // the cache diffs cumulative snapshots, while both adapters already
+            // send deltas, which is exactly why `emit_terminal_output_update`
+            // bypasses it too. The branch above resolved to `(None, None)` for
+            // these calls, so nothing is being overwritten. (Older pi-acp has no
+            // `_meta` channel at all: there `bash` streams like any other tool,
+            // no `terminal_info` is ever seen, and `pi_live_tool_output` above
+            // is what carries its output.)
+            let (raw_output, raw_output_append) = match hosted_terminal_chunk(
                 agent_type,
                 tcu.meta.as_ref(),
                 &tool_call_id,
-                &mut cb_state.pi_terminal_calls,
+                &mut cb_state.hosted_terminal_calls,
             ) {
                 Some((payload, append)) => (Some(payload), Some(append)),
                 None => (raw_output, raw_output_append),
@@ -14831,7 +14894,7 @@ async fn emit_conversation_update(
                 status.as_deref(),
                 Some("completed" | "failed" | "cancelled" | "error")
             ) {
-                cb_state.pi_terminal_calls.remove(&tool_call_id);
+                cb_state.hosted_terminal_calls.remove(&tool_call_id);
             }
             // Symmetric with the ToolCall arm: an update may carry the terminal
             // status (and, on grok, usually re-carries the `x.ai/tool` meta).
@@ -21547,7 +21610,7 @@ mod tests {
             "the command is synthesized so the call classifies as bash"
         );
         assert!(
-            cb.pi_terminal_calls.contains_key("call_Q0KKW"),
+            cb.hosted_terminal_calls.contains_key("call_Q0KKW"),
             "the call is registered for the later output frames, which carry only its id"
         );
     }
@@ -21658,7 +21721,7 @@ mod tests {
         );
         assert_eq!(append, Some(false));
         assert!(
-            !cb.pi_terminal_calls.contains_key("call_1"),
+            !cb.hosted_terminal_calls.contains_key("call_1"),
             "a final status releases the entry"
         );
     }
@@ -21785,7 +21848,188 @@ mod tests {
             raw_output.is_none(),
             "another agent's identically-named meta must not stream: {raw_output:?}"
         );
-        assert!(cb.pi_terminal_calls.is_empty());
+        assert!(cb.hosted_terminal_calls.is_empty());
+    }
+
+    /// codex's opening frame for a shell command, per
+    /// `createTerminalCommandEvent`: the terminal is named by the item's own id
+    /// and — unlike pi — `rawInput` survives, so nothing has to be synthesized.
+    fn codex_open_command(tool_call_id: &str, command: &str) -> serde_json::Value {
+        serde_json::json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": tool_call_id,
+            "title": command,
+            "kind": "execute",
+            "status": "in_progress",
+            "content": [{"type": "terminal", "terminalId": tool_call_id}],
+            "rawInput": {"command": command, "cwd": "/w"},
+            "_meta": {"terminal_info": {"terminal_id": tool_call_id, "cwd": "/w"}},
+        })
+    }
+
+    /// codex has pi's #519 shape too: it names a terminal codeg never created,
+    /// so the `[Terminal: …]` placeholder can never be superseded from the
+    /// terminal channel. Its own `rawInput` must survive untouched.
+    #[tokio::test]
+    async fn codex_command_open_strips_placeholder_and_keeps_its_raw_input() {
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let (content, raw_input, _, _) = pi_emit(
+            AgentType::Codex,
+            &mut cache,
+            &mut cb,
+            codex_open_command("exec_1", "npm test"),
+        )
+        .await;
+
+        assert!(
+            content.is_none(),
+            "the dead [Terminal: …] placeholder must not reach the card: {content:?}"
+        );
+        assert_eq!(
+            raw_input.as_deref(),
+            Some(r#"{"command":"npm test","cwd":"/w"}"#),
+            "codex sends its own rawInput; nothing is synthesized over it"
+        );
+        assert!(cb.hosted_terminal_calls.contains_key("exec_1"));
+    }
+
+    /// The win: codex streams the command's output live over
+    /// `_meta.terminal_output_delta` (its DEFAULT mode, no capability involved),
+    /// and codeg used to drop every one of those frames — the card sat on the
+    /// placeholder until the command ended.
+    #[tokio::test]
+    async fn codex_terminal_output_delta_streams_as_raw_output() {
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let _ = pi_emit(
+            AgentType::Codex,
+            &mut cache,
+            &mut cb,
+            codex_open_command("exec_1", "npm test"),
+        )
+        .await;
+
+        let delta = |data: &str| {
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "exec_1",
+                "_meta": {"terminal_output_delta": {"terminal_id": "exec_1", "data": data}},
+            })
+        };
+
+        let (_, _, first, first_append) =
+            pi_emit(AgentType::Codex, &mut cache, &mut cb, delta("PASS a\n")).await;
+        assert_eq!(first.as_deref(), Some("PASS a\n"));
+        assert_eq!(
+            first_append,
+            Some(false),
+            "the first chunk replaces whatever the opening frame left on the card"
+        );
+
+        let (_, _, second, second_append) =
+            pi_emit(AgentType::Codex, &mut cache, &mut cb, delta("PASS b\n")).await;
+        assert_eq!(second.as_deref(), Some("PASS b\n"));
+        assert_eq!(second_append, Some(true), "later chunks append");
+    }
+
+    /// codex's completion frame repeats the WHOLE aggregated output as
+    /// `rawOutput` next to `_meta.terminal_exit`. Taking it would re-send
+    /// everything the deltas already delivered, so for a self-hosted call the
+    /// `_meta` channel is the only one that may speak.
+    #[tokio::test]
+    async fn codex_completion_raw_output_does_not_repeat_the_streamed_output() {
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let _ = pi_emit(
+            AgentType::Codex,
+            &mut cache,
+            &mut cb,
+            codex_open_command("exec_1", "npm test"),
+        )
+        .await;
+        let _ = pi_emit(
+            AgentType::Codex,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "exec_1",
+                "_meta": {"terminal_output_delta": {"terminal_id": "exec_1", "data": "PASS a\n"}},
+            }),
+        )
+        .await;
+
+        let (_, _, raw_output, append) = pi_emit(
+            AgentType::Codex,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "exec_1",
+                "status": "completed",
+                "rawOutput": {"formatted_output": "PASS a\n", "exit_code": 0},
+                "_meta": {
+                    "terminal_exit": {"terminal_id": "exec_1", "exit_code": 0, "signal": null},
+                },
+            }),
+        )
+        .await;
+        assert_eq!(
+            raw_output.as_deref(),
+            Some("[terminal exited: exit code: 0]"),
+            "only the exit line is new; the aggregated output is a duplicate"
+        );
+        assert_eq!(append, Some(true));
+        assert!(
+            !cb.hosted_terminal_calls.contains_key("exec_1"),
+            "a final status releases the entry"
+        );
+    }
+
+    /// The narrow gate matters: codex ALSO reports `search` / `listFiles` as
+    /// command executions, and those carry no `terminal_info` and render from
+    /// the `{formatted_output, exit_code}` envelope (`codex-search-tool-card`).
+    /// The bridge must leave that channel completely alone.
+    #[tokio::test]
+    async fn codex_non_terminal_commands_keep_their_raw_output_envelope() {
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let (_, _, raw_output, _) = pi_emit(
+            AgentType::Codex,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "search_1",
+                "status": "completed",
+                "rawOutput": {"formatted_output": "src/a.rs", "exit_code": 0},
+            }),
+        )
+        .await;
+        assert_eq!(
+            raw_output.as_deref(),
+            Some(r#"{"exit_code":0,"formatted_output":"src/a.rs"}"#),
+            "a command with no self-hosted terminal keeps the envelope the card parses"
+        );
+        assert!(cb.hosted_terminal_calls.is_empty());
+    }
+
+    /// Same reasoning as the pi case: codex's terminal ids are its own tool-call
+    /// ids, so registering them buys `TERMINAL_POLL_MISSING_LIMIT` guaranteed
+    /// misses per command.
+    #[test]
+    fn codex_virtual_terminals_are_not_registered_for_host_polling() {
+        let update: SessionUpdate =
+            serde_json::from_value(codex_open_command("exec_1", "npm test"))
+                .expect("valid tool_call wire shape");
+        let mut tracked = HashMap::new();
+        assert!(!track_terminal_tool_calls(
+            AgentType::Codex,
+            &update,
+            &mut tracked
+        ));
+        assert!(tracked.is_empty(), "codex's terminals are not host-owned");
     }
 
     /// A pi `bash` that does NOT ride the `_meta` channel (every pi-acp build
@@ -22509,7 +22753,7 @@ mod tests {
             // Same known limitation the rest of the pi bridge carries: pi-acp
             // registered under a CUSTOM id is not `AgentType::Pi`, so it keeps
             // the old behavior rather than an unnamespaced marker applying to
-            // arbitrary agents (see `pi_terminal_meta_marks_bash`).
+            // arbitrary agents (see `hosted_terminal_meta_marks_shell`).
             AgentType::Custom("my-pi"),
         ] {
             for text in [
