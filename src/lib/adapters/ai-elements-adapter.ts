@@ -14,7 +14,10 @@ import {
   isDelegationStatusToolName,
 } from "@/lib/adapters/tool-kind-classifier"
 import { normalizeToolName } from "@/lib/tool-call-normalization"
-import { isCodexGrepNoMatchEnvelope } from "@/lib/codex-command-action"
+import {
+  CODEX_SEARCH_ACTION_META_KEY,
+  isCodexGrepNoMatchEnvelope,
+} from "@/lib/codex-command-action"
 import { isBackgroundTaskToolCall } from "@/lib/background-task"
 import { isContextCompactionMeta } from "@/lib/context-compaction"
 import { isUnsettledToolCall } from "@/lib/tool-call-lifecycle"
@@ -2195,14 +2198,16 @@ function buildToolResultMap(
  *    `content-parts-renderer`, which recognises the same envelope to render
  *    "No matches" instead of a raw JSON dump. Two predicates for one fact
  *    would let the card's status and its body disagree.
- * 2. A live `failed` with NO output at all. codeg advertises
+ * 2. A live `failed` with NO output at all, on a call the backend marked as
+ *    codex's own search (`CODEX_SEARCH_ACTION_META_KEY`). codeg advertises
  *    `_meta.terminal_output_delta` to codex, and with it codex-acp stops
  *    sending `rawOutput` on every command completion — so a search that
  *    printed nothing arrives as a bare status, with no exit code left to
  *    check. Output is the discriminator that remains: rg/grep print a
  *    diagnostic on a real failure (exit 2), and that text streams in like any
- *    other output. Scoped to a LIVE status because only the ACP wire has this
- *    shape; a persisted row carries no status and keeps its own rendering.
+ *    other output. The marker is what keeps this to codex: an interrupted
+ *    grep from another adapter can look exactly the same. A persisted row
+ *    carries neither the marker nor a status and keeps its own rendering.
  *    The caller renders the absent body as `""`, i.e. "No matches".
  */
 function isCodexGrepNoMatchResult(
@@ -2217,6 +2222,7 @@ function isCodexGrepNoMatchResult(
   }
   return (
     toolUse.status === "failed" &&
+    toolUse.meta?.[CODEX_SEARCH_ACTION_META_KEY] === true &&
     (result.output_preview ?? "").trim().length === 0
   )
 }

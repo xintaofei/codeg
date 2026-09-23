@@ -11681,6 +11681,45 @@ fn stamp_opencode_tool_name(
     Some(meta)
 }
 
+/// `_meta` key marking a tool call as one of codex's `search` command actions
+/// (see [`stamp_codex_search_action`]). Frontend twin:
+/// `CODEX_SEARCH_ACTION_META_KEY` in `src/lib/codex-command-action.ts`.
+const CODEX_SEARCH_ACTION_META_KEY: &str = "codeg.codexSearchAction";
+
+/// Stamp codex's `search` command actions on their opening frame, so the
+/// frontend can tell them from every other agent's grep.
+///
+/// It needs to because codeg advertises `_meta.terminal_output_delta`, and with
+/// that capability codex-acp completes a command that printed nothing as a
+/// bare `failed` status — no `rawOutput` envelope, so no exit code (see
+/// `build_client_capabilities`). For a search that is almost always rg's exit
+/// 1, "no matches", and `isCodexGrepNoMatchResult` presents it that way — but a
+/// bare `failed` with no output is also what an interrupted grep from another
+/// adapter can look like, so the rule must know the call is codex's. Only the
+/// backend knows the agent at frame level, hence the marker.
+///
+/// Keyed on the opening frame's `kind: "search"` with no `terminal_info`, which
+/// is exactly `createCommandActionEvent`'s search arm (listFiles and read go out
+/// as `kind: "read"`). Later frames carry no `_meta` for such a call unless it
+/// streamed output, and the reducer keeps the opening `_meta` until one does —
+/// by which point the call has output and the rule no longer applies anyway.
+fn stamp_codex_search_action(
+    agent_type: AgentType,
+    kind: &ToolKind,
+    hosted_shell: bool,
+    meta: Option<serde_json::Map<String, serde_json::Value>>,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    if agent_type != AgentType::Codex || hosted_shell || !matches!(kind, ToolKind::Search) {
+        return meta;
+    }
+    let mut meta = meta.unwrap_or_default();
+    meta.insert(
+        CODEX_SEARCH_ACTION_META_KEY.to_string(),
+        serde_json::Value::Bool(true),
+    );
+    Some(meta)
+}
+
 /// Resolve the live `raw_output` string for an OpenCode tool call.
 ///
 /// OpenCode's ACP adapter reports a finished tool on BOTH channels: the clean
@@ -14971,8 +15010,9 @@ async fn emit_conversation_update(
                 &tc.raw_input,
                 &tc.title,
                 tc.meta,
-            )
-            .map(serde_json::Value::Object);
+            );
+            let meta = stamp_codex_search_action(agent_type, &tc.kind, hosted_shell, meta)
+                .map(serde_json::Value::Object);
             raw_output_cache.remove_if_final(&tool_call_id, Some(status.as_str()));
             // Track Grok's spawn_subagent lifecycle for the subagent-notification
             // pairing (progress meta + finished settle). No-op for other agents.
@@ -22809,6 +22849,43 @@ mod tests {
             "the aggregated output repeats what the delta delivered: {raw_output:?}"
         );
         assert!(cb.hosted_terminal_calls.is_empty(), "a final status releases the entry");
+    }
+
+    /// Only codex's own `search` command actions carry the marker the
+    /// frontend's no-output "no matches" rule requires: another agent's search,
+    /// codex's `read`/`listFiles` actions (`kind: "read"`) and a self-hosted
+    /// shell must all stay unmarked, and whatever `_meta` the frame carried is
+    /// kept.
+    #[test]
+    fn only_codex_search_actions_are_stamped() {
+        let marked = |meta: &Option<serde_json::Map<String, serde_json::Value>>| {
+            meta.as_ref()
+                .and_then(|m| m.get(CODEX_SEARCH_ACTION_META_KEY))
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+        };
+        assert!(marked(&stamp_codex_search_action(
+            AgentType::Codex,
+            &ToolKind::Search,
+            false,
+            None
+        )));
+        let existing = serde_json::json!({"other": 1}).as_object().cloned();
+        let kept = stamp_codex_search_action(AgentType::Codex, &ToolKind::Search, false, existing);
+        assert!(marked(&kept));
+        assert_eq!(kept.as_ref().and_then(|m| m.get("other")), Some(&serde_json::json!(1)));
+
+        for (agent, kind, hosted) in [
+            (AgentType::ClaudeCode, ToolKind::Search, false),
+            (AgentType::Gemini, ToolKind::Search, false),
+            (AgentType::Codex, ToolKind::Read, false),
+            (AgentType::Codex, ToolKind::Search, true),
+        ] {
+            assert!(
+                !marked(&stamp_codex_search_action(agent, &kind, hosted, None)),
+                "{agent:?} {kind:?} hosted={hosted}"
+            );
+        }
     }
 
     /// With `_meta.terminal_output_delta` advertised, codex stops sending
