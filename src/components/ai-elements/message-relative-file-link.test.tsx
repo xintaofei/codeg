@@ -45,6 +45,7 @@ vi.mock("@/contexts/workspace-context", () => ({
 }))
 
 import { MessageResponse } from "./message"
+import { Reasoning, ReasoningContent } from "./reasoning"
 
 function fileBadgeButton(container: HTMLElement): HTMLButtonElement {
   const button = container.querySelector<HTMLButtonElement>(
@@ -141,5 +142,41 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
     })
     expect(container.innerHTML).not.toContain("javascript:")
     expect(container.innerHTML).not.toContain("data-codeg-relative-href")
+  })
+
+  it("does not let raw HTML use the carrier to swap in a web address", async () => {
+    // `https://evil.test/a.md` flattens to the same `/a.md` harden makes of
+    // `./a.md`, so only the explicitly-relative requirement stops it.
+    const { container } = render(
+      <MessageResponse>
+        {
+          '<a href="./a.md" data-codeg-relative-href="https://evil.test/a.md">x</a>'
+        }
+      </MessageResponse>
+    )
+    await waitFor(() => {
+      expect(fileBadgeButton(container)).toBeTruthy()
+    })
+    expect(container.innerHTML).not.toContain("evil.test")
+    expect(container.querySelector("[data-resource-kind='web']")).toBeNull()
+  })
+
+  it("restores relative links in the reasoning panel too", async () => {
+    const { container } = render(
+      <Reasoning isStreaming={false} defaultOpen>
+        <ReasoningContent>{"已创建 [index.html](index.html)"}</ReasoningContent>
+      </Reasoning>
+    )
+    await waitFor(() => {
+      expect(fileBadgeButton(container)).toBeTruthy()
+    })
+    expect(container.textContent).not.toContain("[blocked]")
+
+    fireEvent.click(fileBadgeButton(container))
+    await waitFor(() => {
+      expect(mocks.openFilePreview).toHaveBeenCalledWith("index.html", {
+        line: undefined,
+      })
+    })
   })
 })

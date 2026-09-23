@@ -66,6 +66,13 @@ describe("rehypeRestoreRelativeFileLinks", () => {
         restore({ href: "/abs", [RELATIVE_FILE_HREF_PROPERTY]: stored })
       ).toEqual({ href: "/abs" })
     }
+    // These DO flatten to the very href harden produced, so only the `./` /
+    // `../` requirement keeps a web address from replacing it.
+    for (const stored of ["https://evil.test/abs", "//evil.test/abs"]) {
+      expect(
+        restore({ href: "/abs", [RELATIVE_FILE_HREF_PROPERTY]: stored })
+      ).toEqual({ href: "/abs" })
+    }
   })
 
   it("leaves links without the carrier untouched", () => {
