@@ -108,7 +108,11 @@ export function systemFileManagerLabelKey():
 function FileReferenceActionsMenu({ target }: { target: string }) {
   const t = useTranslations("Folder.chat.fileActions")
   const { activeFolder } = useActiveFolder()
+  // Resolved the way the opener resolves it, so the relative path below and
+  // the download that uses it name the file a click opens.
   const folderPath = activeFolder?.path
+    ? normalizeAbsPath(activeFolder.path)
+    : undefined
   const paths = useMemo(
     () => resolveFileReferenceTarget(target, folderPath),
     [target, folderPath]

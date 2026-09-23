@@ -97,6 +97,7 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
       await waitFor(() => {
         expect(mocks.openFilePreview).toHaveBeenCalledWith(opened, { line })
       })
+      expect(mocks.openFilePreview).toHaveBeenCalledTimes(1)
       expect(mocks.toastError).not.toHaveBeenCalled()
     }
   )
@@ -124,6 +125,7 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
       const [page, position] = container.querySelectorAll<HTMLButtonElement>(
         "h2 button[data-resource-kind='file'], h3 button[data-resource-kind='file']"
       )
+      expect(mocks.openFilePreview).not.toHaveBeenCalled()
 
       // One open per click, each for its own link.
       fireEvent.click(page)
@@ -157,6 +159,7 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
         line: undefined,
       })
     })
+    expect(mocks.openFilePreview).toHaveBeenCalledTimes(1)
   })
 
   it("resolves a reference link through its relative definition", async () => {
@@ -173,6 +176,7 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
         line: undefined,
       })
     })
+    expect(mocks.openFilePreview).toHaveBeenCalledTimes(1)
   })
 
   it("keeps a reference link on the definition it resolves to", async () => {
@@ -193,6 +197,7 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
         line: undefined,
       })
     })
+    expect(mocks.openFilePreview).toHaveBeenCalledTimes(1)
   })
 
   it("leaves a scheme-less web address alone rather than guess it is a file", async () => {
@@ -226,6 +231,7 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
         line: undefined,
       })
     })
+    expect(mocks.openFilePreview).toHaveBeenCalledTimes(1)
   })
 
   it("restores relative links in the reasoning panel too", async () => {
@@ -245,5 +251,6 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
         line: undefined,
       })
     })
+    expect(mocks.openFilePreview).toHaveBeenCalledTimes(1)
   })
 })

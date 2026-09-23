@@ -308,6 +308,32 @@ describe("FileReferenceActions", () => {
     expect(mocks.toastSuccess).not.toHaveBeenCalled()
   })
 
+  it("downloads from the folder the way the opener resolves it", async () => {
+    // A click on `./a.md` under `/repo/../site` opens `/site/a.md`; the
+    // download has to fetch that same file, so it is rooted the same way.
+    mocks.folderPath = "/repo/../site"
+    renderActions("./a.md")
+    openMenu()
+
+    fireEvent.click(item("Download file"))
+    await waitFor(() => {
+      expect(mocks.downloadWorkspaceFile).toHaveBeenCalledWith(
+        "/site",
+        "a.md",
+        "a.md"
+      )
+    })
+  })
+
+  it("offers no relative path or download for a `../` file outside the folder", () => {
+    renderActions("../site/a.md")
+    openMenu()
+
+    expect(item("Copy relative path")).toHaveAttribute("data-disabled")
+    expect(item("Download file")).toHaveAttribute("data-disabled")
+    expect(item("Copy absolute path")).not.toHaveAttribute("data-disabled")
+  })
+
   /** The remote-desktop path writes through a save dialog, so where the file
    * landed is the one outcome the user cannot see for themselves. */
   it("names the saved path when the download went through a save dialog", async () => {
