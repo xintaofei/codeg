@@ -48,6 +48,22 @@ pub fn codeg_pets_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME).join(PETS_DIR_NAME))
 }
 
+/// Path of the memory graph database.
+///
+/// Resolution order matches `codeg_pets_root()`, so a server deployment keeps
+/// its memory inside the mounted data directory and its backups pick it up.
+pub fn codeg_memory_db_path() -> PathBuf {
+    if let Some(custom) = std::env::var_os("CODEG_HOME").filter(|s| !s.is_empty()) {
+        return PathBuf::from(custom).join("memory.db");
+    }
+    if let Some(data) = std::env::var_os("CODEG_DATA_DIR").filter(|s| !s.is_empty()) {
+        return PathBuf::from(data).join("memory.db");
+    }
+    dirs::home_dir()
+        .map(|h| h.join(CODEG_DIR_NAME).join("memory.db"))
+        .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME).join("memory.db"))
+}
+
 /// Root directory for built-in browser profiles (WebView2 user-data folders
 /// on Windows, WebKitGTK data directories on Linux; macOS keeps profiles in
 /// WebKit's own store and never reads this).

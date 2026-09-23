@@ -226,6 +226,58 @@ pub struct BrokerTaskCompleteRequest {
     pub summary: Option<String>,
 }
 
+/// Report the verdict (+ optional notes) for the pipeline step attempt
+/// driving the parent session. Backs the `pipeline_verdict` MCP tool, gated by
+/// the `pipeline` companion feature group. The listener validates the token
+/// and returns a rejecting ack when no pipeline engine is attached.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerPipelineVerdictRequest {
+    pub token: String,
+    pub verdict: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+/// One `to`/`rel` link attached to a `memory_write` call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryLinkArg {
+    pub to: i32,
+    pub rel: String,
+}
+
+/// Write a memory entry. Backs the `memory_write` MCP tool, gated by the
+/// `memory` companion feature group. Rejected when no memory backend is
+/// attached, like [`BrokerPipelineVerdictRequest`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerMemoryWriteRequest {
+    pub token: String,
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    #[serde(default)]
+    pub links: Vec<MemoryLinkArg>,
+    #[serde(default)]
+    pub user_requested: bool,
+}
+
+/// Search the memory graph. Backs the `memory_search` MCP tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerMemorySearchRequest {
+    pub token: String,
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+/// Link two memory entries. Backs the `memory_link` MCP tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerMemoryLinkRequest {
+    pub token: String,
+    pub from_id: i32,
+    pub to_id: i32,
+    pub rel: String,
+}
+
 /// Create an automation (scheduled or manual) from the chat the caller is in.
 /// Backs the `create_automation` MCP tool. Authenticated by the per-launch
 /// `token`; the listener resolves the caller's conversation + working directory
@@ -350,6 +402,10 @@ pub enum BrokerMessage {
     TaskComplete(BrokerTaskCompleteRequest),
     CreateAutomation(BrokerCreateAutomationRequest),
     CreateWorkTask(BrokerCreateWorkTaskRequest),
+    PipelineVerdict(BrokerPipelineVerdictRequest),
+    MemoryWrite(BrokerMemoryWriteRequest),
+    MemorySearch(BrokerMemorySearchRequest),
+    MemoryLink(BrokerMemoryLinkRequest),
     BrowserTabs(BrokerBrowserTabsRequest),
     BrowserSnapshot(BrokerBrowserSnapshotRequest),
     BrowserAct(BrokerBrowserActRequest),
@@ -538,6 +594,38 @@ pub async fn client_task_complete_round_trip(
     req: &BrokerTaskCompleteRequest,
 ) -> io::Result<BrokerResponse> {
     message_round_trip(socket_path, &BrokerMessage::TaskComplete(req.clone())).await
+}
+
+/// Dispatch a `pipeline_verdict` report and read back the `{ recorded }` ack.
+pub async fn client_pipeline_verdict_round_trip(
+    socket_path: &str,
+    req: &BrokerPipelineVerdictRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::PipelineVerdict(req.clone())).await
+}
+
+/// Dispatch a `memory_write` request and read back the `{ ok, id?, note? }` ack.
+pub async fn client_memory_write_round_trip(
+    socket_path: &str,
+    req: &BrokerMemoryWriteRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::MemoryWrite(req.clone())).await
+}
+
+/// Dispatch a `memory_search` request and read back the search result.
+pub async fn client_memory_search_round_trip(
+    socket_path: &str,
+    req: &BrokerMemorySearchRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::MemorySearch(req.clone())).await
+}
+
+/// Dispatch a `memory_link` request and read back the `{ ok, note? }` ack.
+pub async fn client_memory_link_round_trip(
+    socket_path: &str,
+    req: &BrokerMemoryLinkRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::MemoryLink(req.clone())).await
 }
 
 /// Dispatch a `create_automation` request and read back the serialized

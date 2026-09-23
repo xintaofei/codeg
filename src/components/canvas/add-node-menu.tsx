@@ -14,6 +14,7 @@ import {
   Sparkles,
   SquareTerminal,
   StickyNote,
+  Workflow,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { AgentIcon } from "@/components/agent-icon"
@@ -31,6 +32,7 @@ import { useWorkspaceFileTabs } from "@/contexts/workspace-context"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { useFileTree } from "@/hooks/use-file-tree"
 import type { CreateCanvasNodeInput } from "@/lib/api"
+import { pipelinePresets, pipelineSave } from "@/lib/api"
 import { formatConversationTitle } from "@/lib/conversation-title"
 import { getAgentLabel } from "@/lib/custom-agents"
 import { rankFileMatches } from "@/lib/file-search-match"
@@ -46,6 +48,8 @@ import {
   DETAIL_CARD_WIDTH,
   FILE_CARD_HEIGHT,
   FILE_CARD_WIDTH,
+  PIPELINE_CARD_HEIGHT,
+  PIPELINE_CARD_WIDTH,
   TERMINAL_CARD_HEIGHT,
   TERMINAL_CARD_WIDTH,
   basePathName,
@@ -91,6 +95,7 @@ export function AddNodeMenu({
   side = "bottom",
 }: AddNodeMenuProps) {
   const t = useTranslations("Canvas")
+  const tPipeline = useTranslations("Pipeline")
   const { screenToFlowPosition } = useReactFlow()
   const folders = useAppWorkspaceStore((s) => s.folders)
   const folderGroups = useAppWorkspaceStore((s) => s.folderGroups)
@@ -336,6 +341,44 @@ export function AddNodeMenu({
         <DropdownMenuItem onSelect={() => createRegion({ kind: "custom" })}>
           <Sparkles className="text-muted-foreground" />
           {t("addCustomRegion")}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onSelect={() => {
+            const { x, y } = dropPoint(
+              PIPELINE_CARD_WIDTH,
+              PIPELINE_CARD_HEIGHT
+            )
+            // A pipeline card edits a SAVED pipeline, and the server rejects a
+            // card without one. Start every new card from the duet preset so
+            // it opens on a working chain the user can then re-assign.
+            void (async () => {
+              try {
+                const presets = await pipelinePresets()
+                const duet =
+                  presets.find((p) => p.preset_key === "duet") ?? presets[0]
+                if (!duet) return
+                const created = await pipelineSave({
+                  name: tPipeline("canvasAddPipeline"),
+                  folder_id: null,
+                  graph: duet.graph,
+                  isolation: duet.isolation ?? "worktree_per_run",
+                })
+                onCreate({
+                  kind: "pipeline",
+                  pipelineId: created.id,
+                  x,
+                  y,
+                  width: PIPELINE_CARD_WIDTH,
+                  height: PIPELINE_CARD_HEIGHT,
+                })
+              } catch (e) {
+                console.error("[AddNodeMenu] failed to create a pipeline:", e)
+              }
+            })()
+          }}
+        >
+          <Workflow className="text-muted-foreground" />
+          {tPipeline("canvasAddPipeline")}
         </DropdownMenuItem>
         <DropdownMenuItem
           onSelect={() => {

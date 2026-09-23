@@ -115,7 +115,7 @@ pub const CONFIG_SYNC_I18N_KEY_CREDENTIALS_UNREADABLE: &str =
 /// would let anyone who can write to the share undo the setting.
 pub const CONFIG_SYNC_I18N_KEY_NOT_ENCRYPTED: &str = "configSync.error.notEncrypted";
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppErrorCode {
     InvalidInput,

@@ -74,6 +74,12 @@ export const TERMINAL_CARD_HEIGHT = 300
 export const TERMINAL_CARD_MIN_WIDTH = 260
 export const TERMINAL_CARD_MIN_HEIGHT = 140
 
+/** Default footprint of a pipeline card. */
+export const PIPELINE_CARD_WIDTH = 580
+export const PIPELINE_CARD_HEIGHT = 380
+export const PIPELINE_CARD_MIN_WIDTH = 380
+export const PIPELINE_CARD_MIN_HEIGHT = 260
+
 /** The live-conversation cards' drag handle (their title bar). Fed to
  *  ReactFlow's per-node `dragHandle`, which is what lets the rest of the card be
  *  an ordinary document: selectable text, clickable composer, scrollable
@@ -746,6 +752,14 @@ export interface TerminalNodeData {
   [key: string]: unknown
 }
 
+/** Pipeline node on the canvas. Hosts an inner pipeline runner / inspector. */
+export interface PipelineNodeData {
+  dbNode: CanvasNode
+  pipelineId: number | null
+  label: string
+  [key: string]: unknown
+}
+
 /** The PTY id a terminal card owns. Derived from the row id so the same card
  *  re-attaches to the same shell after its host view unmounts (leaving the
  *  canvas route) — and so two windows showing one board share one terminal
@@ -809,6 +823,7 @@ export interface CanvasFlowNode {
     | "note"
     | "file"
     | "terminal"
+    | "pipeline"
   position: { x: number; y: number }
   parentId?: string
   data:
@@ -817,6 +832,7 @@ export interface CanvasFlowNode {
     | NoteNodeData
     | FileNodeData
     | TerminalNodeData
+    | PipelineNodeData
   width?: number
   height?: number
   draggable?: boolean
@@ -978,6 +994,31 @@ export function deriveFlowGraph(input: DeriveFlowInput): DeriveFlowResult {
                 workingDir: path,
                 label,
               } satisfies TerminalNodeData),
+      })
+      continue
+    }
+
+    if (dbNode.kind === "pipeline") {
+      const width =
+        liveSize?.width ??
+        (dbNode.width > 0 ? dbNode.width : PIPELINE_CARD_WIDTH)
+      const height =
+        liveSize?.height ??
+        (dbNode.height > 0 ? dbNode.height : PIPELINE_CARD_HEIGHT)
+      renderedSizes.set(dbNode.id, { width, height })
+      const label = dbNode.title?.trim() || "Pipeline"
+      topNodes.push({
+        id: rfId,
+        type: "pipeline",
+        position,
+        width,
+        height,
+        dragHandle: DRAG_HANDLE_SELECTOR,
+        data: {
+          dbNode,
+          pipelineId: dbNode.pipeline_id ?? null,
+          label,
+        } satisfies PipelineNodeData,
       })
       continue
     }

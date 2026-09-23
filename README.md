@@ -105,6 +105,12 @@ And when an agent spawns sub-agents of its own — Claude Code, Codex, Grok and 
 ![Delegating a task to sub-agents from a single Codeg conversation](./docs/images/collaboration-light.gif#gh-light-mode-only)
 ![Delegating a task to sub-agents from a single Codeg conversation](./docs/images/collaboration-dark.gif#gh-dark-mode-only)
 
+## 🔁 Agent Pipelines
+
+Compose agents into structured, multi-step execution chains with automated review and test loops. Choose **Duet** to have a coder write code and a reviewer verify it, or **Team** to run planning, coding, reviewing, and testing in sequence. When a reviewer or test step requests changes, the pipeline routes findings back to the coder for a new iteration, up to a round limit you configure.
+
+Each pipeline run executes in its own isolated Git worktree so your working tree stays clean. Inspect the interactive **Chat + code** diff panel to leave line-by-line notes for the next iteration or apply changes directly via squash or merge commit when you're satisfied. Optional local SQLite or external MCP memory lets agents recall architecture decisions, bug fixes, and project conventions across runs. → [Agent Pipelines](docs/agent-pipelines.md)
+
 ## ✅ To-dos
 
 Not every job needs you watching it. Write one down — a title, a description, the agent to run it with — and Codeg hands it **its own copy of the code**: a git worktree beside your project, on its own branch. Several run at once without touching each other, or the tree you're working in. Schedule one for tonight, or let a folder work through its queue on its own, up to a concurrency limit you set.
@@ -154,6 +160,7 @@ Step away from your desk, not your work. The native iOS and Android clients conn
 
 - **[Conversation Aggregation](https://docs.codeg.app/guide/aggregation)** — import sessions from every supported agent into one unified, searchable workspace, and pick any of them up where you left off
 - **[Multi-Agent Collaboration](https://docs.codeg.app/guide/multi-agent)** — `@`-mention any agent to delegate: sub-agents of different types run as their own sessions, in parallel, inside a single task
+- **[Agent Pipelines](docs/agent-pipelines.md)** — orchestrate agents in multi-step chains (Duet, Team, Custom) with automated review loops, worktree isolation, line notes, and persistent memory
 - **[To-dos](https://docs.codeg.app/guide/tasks)** — write down what needs doing and agents work through the queue, each task in its own worktree, landing on your branch only after you've reviewed it
 - **[Custom Agents](https://docs.codeg.app/guide/custom-agents)** — register any other ACP-compatible agent from the public registry or its distribution JSON; Codeg installs it, records its history, and treats it like a built-in
 - **[The Workspace](https://docs.codeg.app/guide/workspace)** — the full engineering loop next to the agent: file tree, editor and diff, git changes, commit, an embedded terminal, and [several folders linked into one workspace](https://docs.codeg.app/guide/workspace#work-across-several-folders)

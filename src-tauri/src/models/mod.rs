@@ -5,6 +5,7 @@ pub mod canvas;
 pub mod chat_channel;
 pub mod conversation;
 pub mod folder;
+pub mod memory;
 pub mod message;
 pub mod model_provider;
 pub mod pet;
@@ -13,6 +14,8 @@ pub mod remote_workspace_connection;
 pub mod system;
 pub mod token_usage;
 pub mod work_task;
+
+pub mod pipeline;
 
 pub use agent::AgentType;
 pub use automation::{
@@ -32,10 +35,15 @@ pub use folder::{
     FolderCommandInfo, FolderDetail, FolderGroupDetail, FolderHistoryEntry, OpenedTab,
     OpenedTabsSnapshot, SaveTabsOutcome, SidebarEntryKind, SidebarLayoutEntry,
 };
+pub use memory::{
+    ExternalMcpMapping, MemoryBackendKind, MemoryKind, MemoryKindDraft, MemoryMode, MemoryRel,
+    MemoryScope, MemorySettings,
+};
 pub use message::{
     AgentExecutionStats, AgentToolCall, ContentBlock, ImageData, MessageRole, MessageTurn,
     TurnRole, TurnUsage, UnifiedMessage,
 };
+pub use pipeline::*;
 pub use quick_message::QuickMessageInfo;
 pub use remote_workspace_connection::{
     RemoteWorkspaceConnectionInfo, RemoteWorkspaceHeader, ToHeaderMap,

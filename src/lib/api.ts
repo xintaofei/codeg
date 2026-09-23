@@ -187,6 +187,18 @@ import type {
   TokenUsageReport,
   TokenUsageSyncResult,
   TokenUsageSyncStatus,
+  MemoryChange,
+  MemoryHit,
+  MemoryKind,
+  MemoryKindDraft,
+  MemorySettings,
+  Pipeline,
+  PipelineChange,
+  PipelineDiff,
+  PipelineDraft,
+  PipelineGraph,
+  PipelineRun,
+  PipelineRunRequest,
 } from "./types"
 
 export async function listConversations(params?: {
@@ -2958,6 +2970,9 @@ export interface CreateCanvasNodeInput {
   folderGroupId?: number
   agentType?: string
   conversationId?: number
+  /** pipeline → the saved pipeline this card edits and runs. Required for
+   *  that kind, rejected for the rest. */
+  pipelineId?: number
   title?: string
   content?: string
   /** file → the document's absolute path; terminal → its working directory.
@@ -3504,6 +3519,152 @@ export async function tokenUsageSync(
   mode: "incremental" | "full" = "incremental"
 ): Promise<TokenUsageSyncResult> {
   return getTransport().call("token_usage_sync", { mode })
+}
+
+// Agent pipelines
+
+export const PIPELINE_CHANGED_EVENT = "pipeline://changed"
+export const MEMORY_CHANGED_EVENT = "memory://changed"
+
+export async function pipelineList(folderId?: number): Promise<Pipeline[]> {
+  return getTransport().call("pipeline_list", { folderId: folderId ?? null })
+}
+
+export async function pipelineGet(id: number): Promise<Pipeline> {
+  return getTransport().call("pipeline_get", { id })
+}
+
+export async function pipelineSave(
+  draft: PipelineDraft,
+  id?: number
+): Promise<Pipeline> {
+  return getTransport().call("pipeline_save", { id: id ?? null, draft })
+}
+
+export async function pipelineDelete(id: number): Promise<void> {
+  return getTransport().call("pipeline_delete", { id })
+}
+
+export async function pipelinePresets(): Promise<Pipeline[]> {
+  return getTransport().call("pipeline_presets", {})
+}
+
+/** Store the user's version of a built-in chain, or pass `null` to drop back
+ *  to the shipped one. Returns the preset list as it now stands. */
+export async function pipelineSavePreset(
+  key: string,
+  graph: PipelineGraph | null
+): Promise<Pipeline[]> {
+  return getTransport().call("pipeline_save_preset", { key, graph })
+}
+
+export async function pipelineRun(
+  req: PipelineRunRequest
+): Promise<PipelineRun> {
+  return getTransport().call("pipeline_run", { request: req })
+}
+
+export async function pipelineCancel(runId: number): Promise<void> {
+  return getTransport().call("pipeline_cancel", { runId })
+}
+
+export async function pipelineRunStatus(runId: number): Promise<PipelineRun> {
+  return getTransport().call("pipeline_run_status", { runId })
+}
+
+export async function pipelineRuns(
+  folderId: number,
+  limit = 20
+): Promise<PipelineRun[]> {
+  return getTransport().call("pipeline_runs", { folderId, limit })
+}
+
+export async function pipelineRequestChanges(
+  runId: number,
+  notes: string
+): Promise<void> {
+  return getTransport().call("pipeline_request_changes", { runId, notes })
+}
+
+export async function pipelineStopManual(runId: number): Promise<void> {
+  return getTransport().call("pipeline_stop_manual", { runId })
+}
+
+export async function pipelineRunDiff(runId: number): Promise<PipelineDiff> {
+  return getTransport().call("pipeline_run_diff", { runId })
+}
+
+export async function pipelineRunApply(
+  runId: number,
+  strategy: "squash" | "no_ff"
+): Promise<void> {
+  return getTransport().call("pipeline_run_apply", { runId, strategy })
+}
+
+export async function subscribePipelineChanged(
+  handler: (change: PipelineChange) => void
+): Promise<() => void> {
+  return getTransport().subscribe<PipelineChange>(
+    PIPELINE_CHANGED_EVENT,
+    handler
+  )
+}
+
+// Memory
+
+export async function memorySettingsGet(): Promise<MemorySettings> {
+  return getTransport().call("memory_settings_get", {})
+}
+
+export async function memorySettingsSet(
+  settings: MemorySettings
+): Promise<MemorySettings> {
+  return getTransport().call("memory_settings_set", { settings })
+}
+
+export async function memoryKindList(): Promise<MemoryKind[]> {
+  return getTransport().call("memory_kind_list", {})
+}
+
+export async function memoryKindCreate(
+  draft: MemoryKindDraft
+): Promise<MemoryKind> {
+  return getTransport().call("memory_kind_create", { draft })
+}
+
+export async function memoryKindUpdate(
+  id: number,
+  draft: MemoryKindDraft
+): Promise<MemoryKind> {
+  return getTransport().call("memory_kind_update", { id, draft })
+}
+
+export async function memoryKindSetEnabled(
+  id: number,
+  enabled: boolean
+): Promise<MemoryKind> {
+  return getTransport().call("memory_kind_set_enabled", { id, enabled })
+}
+
+export async function memoryKindDelete(id: number): Promise<void> {
+  return getTransport().call("memory_kind_delete", { id })
+}
+
+export async function memorySearch(
+  query: string,
+  limit = 20
+): Promise<MemoryHit[]> {
+  return getTransport().call("memory_search", { query, limit })
+}
+
+export async function memoryNodeDelete(id: number): Promise<void> {
+  return getTransport().call("memory_node_delete", { id })
+}
+
+export async function subscribeMemoryChanged(
+  handler: (change: MemoryChange) => void
+): Promise<() => void> {
+  return getTransport().subscribe<MemoryChange>(MEMORY_CHANGED_EVENT, handler)
 }
 
 // Automations

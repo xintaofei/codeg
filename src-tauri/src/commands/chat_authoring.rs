@@ -232,6 +232,7 @@ impl ChatAuthoringAccess for DbChatAuthoring {
         };
         let config = AutomationConfig {
             action: spec.action,
+            pipeline_id: None,
             prompt_blocks,
             display_text: spec.prompt.clone(),
             mode_id: None,

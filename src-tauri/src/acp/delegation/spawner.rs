@@ -36,6 +36,8 @@ pub enum SpawnerError {
     Spawn(String),
     #[error("send prompt failed: {0}")]
     Send(String),
+    #[error("send prompt failed: {message} (conversation {conversation_id})")]
+    SendWithConversation { message: String, conversation_id: i32 },
     #[error("disconnect failed: {0}")]
     Disconnect(String),
     #[error("cancel failed: {0}")]

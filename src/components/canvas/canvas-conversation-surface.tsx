@@ -13,6 +13,7 @@ import { toast } from "sonner"
 import { AgentSelector } from "@/components/chat/agent-selector"
 import { ConversationShell } from "@/components/chat/conversation-shell"
 import type { ConversationFolderPickerOverride } from "@/components/chat/conversation-context-bar"
+import type { ComposerInjectContent } from "@/components/chat/message-input"
 import { MessageListView } from "@/components/message/message-list-view"
 import { useAcpActions } from "@/contexts/acp-connections-context"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
@@ -265,6 +266,34 @@ export function CanvasConversationSurface({
   )
   const [sendSignal, setSendSignal] = useState(0)
   const [createError, setCreateError] = useState<string | null>(null)
+  const [injectContent, setInjectContent] =
+    useState<ComposerInjectContent | null>(null)
+  const [pipelineRunId, setPipelineRunId] = useState<number | null>(null)
+
+  useEffect(() => {
+    const handlePipelineRunStarted = (event: Event) => {
+      const customEvent = event as CustomEvent<{
+        runId: number
+        tabId?: string | null
+        contextKey?: string | null
+      }>
+      if (!customEvent.detail) return
+      const {
+        runId,
+        tabId: eventTabId,
+        contextKey: eventContextKey,
+      } = customEvent.detail
+      if (eventTabId === contextKey || eventContextKey === contextKey) {
+        setPipelineRunId(runId)
+      }
+    }
+
+    window.addEventListener("pipelineRunStarted", handlePipelineRunStarted)
+    return () => {
+      window.removeEventListener("pipelineRunStarted", handlePipelineRunStarted)
+    }
+  }, [contextKey])
+
   const creatingRef = useRef(false)
   // Mirrors `creatingRef` as state, purely so the card can refuse to be thrown
   // away mid-creation: the row is already being written and the prompt is
@@ -526,7 +555,9 @@ export function CanvasConversationSurface({
       // would leave the user looking at a message that was never delivered and
       // never rolled back.
       const alreadyPersisted = dbConversationIdRef.current != null
-      if (!alreadyPersisted && (creatingRef.current || !draftTarget)) return
+      if (!alreadyPersisted && (creatingRef.current || !draftTarget)) {
+        return false
+      }
 
       const optimisticTurn = buildOptimisticUserTurn(
         draft,
@@ -623,6 +654,11 @@ export function CanvasConversationSurface({
           })
         } catch (e) {
           console.error("[canvas] create conversation:", e)
+          // Inject the draft text back into the composer so the user can retry
+          const draftText = draft.displayText.trim()
+          if (draftText) {
+            setInjectContent({ text: draftText, mode: "append" })
+          }
           // Restore the pre-send state whole: no ghost turn stuck in
           // awaiting_persist, and the error visible rather than silent.
           removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
@@ -647,6 +683,7 @@ export function CanvasConversationSurface({
       refreshConversations,
       removeOptimisticTurn,
       setDbConversationId,
+      setInjectContent,
       setExternalId,
       setSyncState,
       sharedT,
@@ -677,6 +714,10 @@ export function CanvasConversationSurface({
       acpActions.answerPlanApproval(contextKey, approvalId, answer),
     [acpActions, contextKey]
   )
+
+  const handleInjectConsumed = useCallback(() => {
+    setInjectContent(null)
+  }, [])
 
   /** Stop one AIR async task. `false` (the adapter declined) is surfaced —
    *  a successful stop announces itself by the row leaving the strip, so
@@ -734,6 +775,7 @@ export function CanvasConversationSurface({
           added here later. */}
       <div className="nowheel flex min-h-0 flex-1 flex-col">
         <ConversationShell
+          pipelineRunId={pipelineRunId}
           status={connStatus}
           promptCapabilities={conn.promptCapabilities}
           defaultPath={workingDir}
@@ -772,6 +814,8 @@ export function CanvasConversationSurface({
           attachmentTabId={contextKey}
           folderPickerOverride={folderPickerOverride}
           isActive={isActive}
+          injectContent={injectContent}
+          onInjectConsumed={handleInjectConsumed}
         >
           {isDraft && onAgentTypeChange && (
             <div className="flex shrink-0 justify-center border-b border-border/60 px-3 py-2">

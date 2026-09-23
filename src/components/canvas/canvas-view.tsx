@@ -80,6 +80,7 @@ import {
 import {
   applyMovesTo,
   beginContentWrite,
+  getMutationEpoch,
   hasContentWriteInFlight,
   useCanvasStore,
 } from "@/stores/canvas-store"
@@ -130,6 +131,7 @@ import {
 } from "./nodes/conversation-detail-node"
 import { FileNode } from "./nodes/file-node"
 import { NoteNode } from "./nodes/note-node"
+import { PipelineNode } from "./nodes/pipeline-node"
 import { RegionNode } from "./nodes/region-node"
 import { TerminalNode } from "./nodes/terminal-node"
 import { useCanvasMarqueeTextGuard } from "./use-canvas-marquee-text-guard"
@@ -146,6 +148,7 @@ const NODE_TYPES = {
   note: NoteNode,
   file: FileNode,
   terminal: TerminalNode,
+  pipeline: PipelineNode,
 } as unknown as NodeTypes
 
 /** How long a pan/zoom must be quiet before the viewport is written to disk.
@@ -539,10 +542,11 @@ function CanvasFlow() {
       const endWrite =
         patch.content !== undefined ? beginContentWrite(nodeId) : null
       try {
+        const epoch = getMutationEpoch()
         const res = await canvasUpdateNode(nodeId, patch)
         useCanvasStore
           .getState()
-          .applyResponse(res.revision, (nodes) =>
+          .applyResponse(res.revision, epoch, (nodes) =>
             nodes.set(res.value.id, res.value)
           )
       } catch (e) {
@@ -602,10 +606,11 @@ function CanvasFlow() {
   const commitDeleteNode = useCallback(
     async (nodeId: number) => {
       try {
+        const epoch = getMutationEpoch()
         const res = await canvasDeleteNode(nodeId)
         useCanvasStore
           .getState()
-          .applyResponse(res.revision, (nodes) => nodes.delete(nodeId))
+          .applyResponse(res.revision, epoch, (nodes) => nodes.delete(nodeId))
         forgetNodes([nodeId])
       } catch (e) {
         toast.error(toErrorMessage(e))
@@ -641,10 +646,11 @@ function CanvasFlow() {
 
   const createNode = useCallback(async (input: CreateCanvasNodeInput) => {
     try {
+      const epoch = getMutationEpoch()
       const res = await canvasCreateNode(input)
       useCanvasStore
         .getState()
-        .applyResponse(res.revision, (nodes) =>
+        .applyResponse(res.revision, epoch, (nodes) =>
           nodes.set(res.value.id, res.value)
         )
       return res.value
@@ -689,12 +695,15 @@ function CanvasFlow() {
   const moveNodes = useCallback(async (moves: CanvasNodeMovePayload[]) => {
     if (moves.length === 0) return
     try {
+      const epoch = getMutationEpoch()
       const res = await canvasMoveNodes(moves)
       // res.value is what the backend actually wrote (clamped, ghosts
       // dropped) — mirroring the broadcast payload exactly.
       useCanvasStore
         .getState()
-        .applyResponse(res.revision, (nodes) => applyMovesTo(nodes, res.value))
+        .applyResponse(res.revision, epoch, (nodes) =>
+          applyMovesTo(nodes, res.value)
+        )
     } catch (e) {
       toast.error(toErrorMessage(e))
     }
@@ -918,17 +927,22 @@ function CanvasFlow() {
       const x = rect ? rect.x + rect.width + 32 : 0
       const y = rect ? rect.y : 0
       try {
+        const epoch = getMutationEpoch()
         const res = await canvasDetachMember(regionDbId, conversationId, x, y)
-        useCanvasStore.getState().applyResponse(res.revision, (nodes) => {
-          const region = nodes.get(regionDbId)
-          if (region && region.kind === "custom") {
-            nodes.set(regionDbId, {
-              ...region,
-              member_ids: region.member_ids.filter((m) => m !== conversationId),
-            })
-          }
-          nodes.set(res.value.id, res.value)
-        })
+        useCanvasStore
+          .getState()
+          .applyResponse(res.revision, epoch, (nodes) => {
+            const region = nodes.get(regionDbId)
+            if (region && region.kind === "custom") {
+              nodes.set(regionDbId, {
+                ...region,
+                member_ids: region.member_ids.filter(
+                  (m) => m !== conversationId
+                ),
+              })
+            }
+            nodes.set(res.value.id, res.value)
+          })
         if (opts?.expand) setCardDetail(res.value.id, true)
         setSelectedIds(new Set([regionNodeId(res.value.id)]))
       } catch (e) {
@@ -1549,8 +1563,9 @@ function CanvasFlow() {
    *  gestures (box-select, card into region, card onto card). */
   const groupIntoRegion = useCallback(
     async (input: GroupIntoRegionInput) => {
+      const epoch = getMutationEpoch()
       const res = await canvasGroupIntoRegion(input)
-      useCanvasStore.getState().applyResponse(res.revision, (nodes) => {
+      useCanvasStore.getState().applyResponse(res.revision, epoch, (nodes) => {
         for (const id of res.value.deletedIds) nodes.delete(id)
         nodes.set(res.value.node.id, res.value.node)
       })
@@ -1570,24 +1585,27 @@ function CanvasFlow() {
         // A loose card just moved (already batched); a member card leaves its
         // region for the spot it was dropped on.
         if (source.kind !== "member") return
+        const epoch = getMutationEpoch()
         const res = await canvasDetachMember(
           source.regionDbId,
           source.conversationId,
           hint.x,
           hint.y
         )
-        useCanvasStore.getState().applyResponse(res.revision, (nodes) => {
-          const region = nodes.get(source.regionDbId)
-          if (region && region.kind === "custom") {
-            nodes.set(source.regionDbId, {
-              ...region,
-              member_ids: region.member_ids.filter(
-                (m) => m !== source.conversationId
-              ),
-            })
-          }
-          nodes.set(res.value.id, res.value)
-        })
+        useCanvasStore
+          .getState()
+          .applyResponse(res.revision, epoch, (nodes) => {
+            const region = nodes.get(source.regionDbId)
+            if (region && region.kind === "custom") {
+              nodes.set(source.regionDbId, {
+                ...region,
+                member_ids: region.member_ids.filter(
+                  (m) => m !== source.conversationId
+                ),
+              })
+            }
+            nodes.set(res.value.id, res.value)
+          })
         return
       }
       if (hint.type === "region") {
@@ -1813,8 +1831,9 @@ function CanvasFlow() {
     for (const draftId of selection.draftIds) dismissDraft(draftId)
     if (selection.deletableIds.length === 0) return
     try {
+      const epoch = getMutationEpoch()
       const res = await canvasDeleteNodes(selection.deletableIds)
-      useCanvasStore.getState().applyResponse(res.revision, (nodes) => {
+      useCanvasStore.getState().applyResponse(res.revision, epoch, (nodes) => {
         for (const id of res.value) nodes.delete(id)
       })
       forgetNodes(res.value)

@@ -213,6 +213,25 @@ describe("AutomationsPage (master-detail)", () => {
     expect(screen.getByText("深度求索 Flash")).toBeInTheDocument()
   })
 
+  it("displays Run pipeline action label for automations with action='run_pipeline'", () => {
+    automations = [
+      {
+        ...FIXTURE,
+        config: {
+          action: "run_pipeline",
+          pipeline_id: 1,
+          prompt_blocks: [{ type: "text", text: "do the thing" }],
+          display_text: "do the thing",
+          config_values: {},
+        },
+      },
+    ]
+    renderPage()
+    expect(
+      screen.getByText(enMessages.Pipeline.automationAction)
+    ).toBeInTheDocument()
+  })
+
   it("keeps the header switch and surfaces Run now + Edit under the title", () => {
     renderPage()
     // The detail title row exposes only the enable toggle...

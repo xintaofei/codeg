@@ -4,6 +4,7 @@ import { memo, useEffect, useRef, useState } from "react"
 import { NodeResizer, type Node, type NodeProps } from "@xyflow/react"
 import { useTranslations } from "next-intl"
 import { cn } from "@/lib/utils"
+import { useCanvasStore } from "@/stores/canvas-store"
 import type { NoteNodeData } from "../canvas-model"
 import { ColorWash } from "../canvas-swatches"
 import { useCanvasView } from "../canvas-view-context"
@@ -84,7 +85,10 @@ export const NoteNode = memo(function NoteNode({
   useEffect(
     () => () => {
       const pending = pendingRef.current
-      if (pending) void pending.patch(pending.nodeId, { content: pending.text })
+      if (pending) {
+        if (!useCanvasStore.getState().nodes.has(pending.nodeId)) return
+        void pending.patch(pending.nodeId, { content: pending.text })
+      }
     },
     []
   )

@@ -419,6 +419,60 @@ impl AutomationEngine {
         Ok(())
     }
 
+
+    /// Start a saved pipeline for a `RunPipeline` automation.
+    async fn run_pipeline(
+        &self,
+        auto: &AutomationInfo,
+        cfg: &AutomationConfig,
+        run_id: i32,
+    ) -> Result<(), String> {
+        let pipeline_id = cfg
+            .pipeline_id
+            .ok_or_else(|| "automation has no pipeline selected".to_string())?;
+        let engine = crate::pipeline::engine::engine()
+            .ok_or_else(|| "pipeline engine is not running".to_string())?;
+
+        let display_text = if cfg.display_text.trim().is_empty() {
+            auto.name.clone()
+        } else {
+            cfg.display_text.clone()
+        };
+
+        let info = engine
+            .start(crate::models::PipelineRunRequest {
+                folder_id: auto
+                    .root_folder_id
+                    .ok_or_else(|| "automation has no target folder".to_string())?,
+                pipeline_id: Some(pipeline_id),
+                graph: None,
+                isolation: Some(crate::models::PipelineIsolation::WorktreePerRun),
+                prompt_blocks: cfg.prompt_blocks.clone(),
+                display_text,
+                parent_conversation_id: None,
+            })
+            .await?;
+
+        let settled = automation_service::settle_run(
+            &self.db.conn,
+            run_id,
+            AutomationRunStatus::Succeeded,
+            None,
+            None,
+            Some(format!("started pipeline run #{}", info.id)),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        if settled {
+            self.emit(AutomationChange::RunSettled {
+                automation_id: auto.id,
+                run_id,
+                status: "succeeded".to_string(),
+            });
+        }
+        Ok(())
+    }
+
     /// Replay the captured composer snapshot through the existing launch chain.
     async fn launch(&self, auto: &AutomationInfo, run_id: i32) -> Result<(), String> {
         let cfg: AutomationConfig =
@@ -427,6 +481,11 @@ impl AutomationEngine {
         // no worktree, no spawn; the work-task engine owns execution.
         if cfg.action == crate::models::AutomationAction::EnqueueTask {
             return self.enqueue_task(auto, &cfg, run_id).await;
+        }
+        // Pipeline automations hand the whole run to the pipeline engine: it
+        // creates its own worktree, conversations and steps.
+        if cfg.action == crate::models::AutomationAction::RunPipeline {
+            return self.run_pipeline(auto, &cfg, run_id).await;
         }
         let agent_type = parse_agent_type(&auto.agent_type)?;
         let blocks = cfg
@@ -1142,6 +1201,31 @@ fn short_suffix(run_id: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pipeline_action_round_trips_through_the_config_blob() {
+        let cfg = AutomationConfig {
+            action: crate::models::AutomationAction::RunPipeline,
+            pipeline_id: Some(7),
+            display_text: "nightly triage".into(),
+            ..Default::default()
+        };
+        let raw = serde_json::to_value(&cfg).expect("serialize");
+        assert_eq!(raw["action"], "run_pipeline");
+        let back: AutomationConfig = serde_json::from_value(raw).expect("deserialize");
+        assert_eq!(back.action, crate::models::AutomationAction::RunPipeline);
+        assert_eq!(back.pipeline_id, Some(7));
+    }
+
+    // Rows written before pipelines existed carry neither key and must keep
+    // firing as plain sessions.
+    #[test]
+    fn legacy_config_without_pipeline_keys_still_loads() {
+        let raw = serde_json::json!({ "prompt_blocks": [], "display_text": "hi" });
+        let cfg: AutomationConfig = serde_json::from_value(raw).expect("deserialize");
+        assert_eq!(cfg.action, crate::models::AutomationAction::LaunchSession);
+        assert_eq!(cfg.pipeline_id, None);
+    }
 
     #[test]
     fn classify_stop_reason_maps_outcomes() {

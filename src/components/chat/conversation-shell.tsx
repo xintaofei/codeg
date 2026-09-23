@@ -1,6 +1,15 @@
 import type { ConversationFolderPickerOverride } from "@/components/chat/conversation-context-bar"
-import { useMemo, type ReactNode } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
 import { useTranslations } from "next-intl"
+import { toast } from "sonner"
+import { toErrorMessage } from "@/lib/app-error"
 import type {
   AgentType,
   ConnectionStatus,
@@ -16,7 +25,19 @@ import type {
   SessionFailureRecord,
   SessionModeInfo,
   AvailableCommandInfo,
+  PipelineDiff,
+  PipelineRun,
 } from "@/lib/types"
+import {
+  pipelineCancel,
+  pipelineRequestChanges,
+  pipelineRunApply,
+  pipelineRunDiff,
+  pipelineStopManual,
+} from "@/lib/api"
+import { PipelineRunCard } from "@/components/chat/pipeline-run-card"
+import { PipelineDiffPanel } from "@/components/chat/pipeline-diff-panel"
+import { usePipelineRun } from "@/hooks/use-pipeline-run"
 import type { SessionFailureAction } from "@/lib/session-failures"
 import { SessionFailureBanner } from "@/components/chat/session-failure-banner"
 import { AsyncTaskStrip } from "@/components/chat/async-task-strip"
@@ -41,6 +62,8 @@ interface ConversationShellProps {
   agentName?: string
   error: string | null
   claudeApiRetry: ClaudeApiRetryState | null
+  /** Pipeline run ID for this conversation to display progress. */
+  pipelineRunId?: number | null
   /** AIR typed session failures for this connection (active + resolved; the
    *  banner splits them itself). Omit/empty renders nothing. */
   sessionFailures?: SessionFailureRecord[]
@@ -151,6 +174,7 @@ interface ConversationShellProps {
    *  once the composer has taken it. */
   injectContent?: ComposerInjectContent | null
   onInjectConsumed?: () => void
+  onPipelineRun?: (run: PipelineRun) => void
 }
 
 export function ConversationShell({
@@ -215,8 +239,151 @@ export function ConversationShell({
   topBanner,
   injectContent,
   onInjectConsumed,
+  pipelineRunId,
+  onPipelineRun,
 }: ConversationShellProps) {
   const tAcp = useTranslations("Folder.chat.acpConnections")
+  const tPipeline = useTranslations("Pipeline")
+  const [internalPipelineRunId, setInternalPipelineRunId] = useState<
+    number | null
+  >(null)
+
+  useEffect(() => {
+    const handlePipelineRunStarted = (event: Event) => {
+      const customEvent = event as CustomEvent<{
+        run?: PipelineRun
+        runId: number
+        tabId?: string | null
+        contextKey?: string | null
+      }>
+      if (!customEvent.detail) return
+      const { run, runId, tabId: eventTabId, contextKey } = customEvent.detail
+      if (
+        !attachmentTabId ||
+        eventTabId === attachmentTabId ||
+        contextKey === attachmentTabId
+      ) {
+        setInternalPipelineRunId(runId)
+        if (run && onPipelineRun) {
+          onPipelineRun(run)
+        }
+      }
+    }
+
+    window.addEventListener("pipelineRunStarted", handlePipelineRunStarted)
+    return () => {
+      window.removeEventListener("pipelineRunStarted", handlePipelineRunStarted)
+    }
+  }, [attachmentTabId, onPipelineRun])
+
+  const effectivePipelineRunId =
+    pipelineRunId !== undefined ? pipelineRunId : internalPipelineRunId
+  const pipelineRun = usePipelineRun(effectivePipelineRunId ?? null)
+  const [diff, setDiff] = useState<PipelineDiff | null>(null)
+  const [isSubmittingDiff, setIsSubmittingDiff] = useState(false)
+  const autoOpenedAttemptIdRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!pipelineRun) {
+      setDiff(null)
+      autoOpenedAttemptIdRef.current = null
+      return
+    }
+
+    const attemptWithVerdict = [...pipelineRun.attempts]
+      .reverse()
+      .find((a) => a.verdict !== null)
+
+    if (
+      attemptWithVerdict?.verdict === "changes_requested" &&
+      autoOpenedAttemptIdRef.current !== attemptWithVerdict.id
+    ) {
+      autoOpenedAttemptIdRef.current = attemptWithVerdict.id
+      void (async () => {
+        try {
+          const fetchedDiff = await pipelineRunDiff(pipelineRun.id)
+          setDiff(fetchedDiff)
+        } catch (err) {
+          console.error(
+            "[ConversationShell] failed to load pipeline diff:",
+            err
+          )
+        }
+      })()
+    }
+  }, [pipelineRun])
+
+  const handleOpenCode = useCallback(async (runId: number) => {
+    try {
+      const fetchedDiff = await pipelineRunDiff(runId)
+      setDiff(fetchedDiff)
+    } catch (err) {
+      console.error("[ConversationShell] failed to load pipeline diff:", err)
+      toast.error(toErrorMessage(err))
+    }
+  }, [])
+
+  const handleRequestChanges = useCallback(
+    async (notes: string) => {
+      if (!pipelineRun) return
+      try {
+        setIsSubmittingDiff(true)
+        await pipelineRequestChanges(pipelineRun.id, notes)
+      } catch (err) {
+        console.error("[ConversationShell] failed to request changes:", err)
+        toast.error(toErrorMessage(err))
+      } finally {
+        setIsSubmittingDiff(false)
+      }
+    },
+    [pipelineRun]
+  )
+
+  const handleStopManual = useCallback(async () => {
+    if (!pipelineRun) return
+    try {
+      setIsSubmittingDiff(true)
+      await pipelineStopManual(pipelineRun.id)
+      setDiff(null)
+    } catch (err) {
+      console.error("[ConversationShell] failed to stop for manual fix:", err)
+      toast.error(toErrorMessage(err))
+    } finally {
+      setIsSubmittingDiff(false)
+    }
+  }, [pipelineRun])
+
+  const handleApply = useCallback(
+    async (
+      targetRunIdOrStrategy?: number | "squash" | "no_ff",
+      strategy: "squash" | "no_ff" = "squash"
+    ) => {
+      const actualRunId =
+        typeof targetRunIdOrStrategy === "number"
+          ? targetRunIdOrStrategy
+          : pipelineRun?.id
+      const actualStrategy =
+        typeof targetRunIdOrStrategy === "string"
+          ? targetRunIdOrStrategy
+          : strategy
+      if (!actualRunId) return
+      try {
+        setIsSubmittingDiff(true)
+        await pipelineRunApply(actualRunId, actualStrategy)
+        toast.success(tPipeline("applied"))
+        setDiff(null)
+      } catch (err) {
+        console.error(
+          "[ConversationShell] failed to apply pipeline changes:",
+          err
+        )
+        toast.error(toErrorMessage(err))
+      } finally {
+        setIsSubmittingDiff(false)
+      }
+    },
+    [pipelineRun, tPipeline]
+  )
   const retryLineText = useMemo(() => {
     const retry = claudeApiRetry
     if (!retry) return null
@@ -316,6 +483,39 @@ export function ConversationShell({
           shrinks the message list instead of covering it, while staying aligned
           to the input width. */}
       <div>
+        {pipelineRun && (
+          <div className="mx-auto w-full max-w-3xl px-4 pb-2">
+            <PipelineRunCard
+              run={pipelineRun}
+              onStop={pipelineCancel}
+              onOpenCode={handleOpenCode}
+              onApply={handleApply}
+              onOpenConversation={(conversationId) => {
+                window.dispatchEvent(
+                  new CustomEvent("openConversation", {
+                    detail: { conversationId },
+                  })
+                )
+              }}
+            />
+          </div>
+        )}
+        {diff && (
+          <div
+            className="mx-auto w-full max-w-3xl px-4 pb-2"
+            data-testid="pipeline-diff-wrapper"
+          >
+            <PipelineDiffPanel
+              diff={diff}
+              runId={pipelineRun?.id}
+              onRequestChanges={handleRequestChanges}
+              onStopManual={handleStopManual}
+              onApply={handleApply}
+              onClose={() => setDiff(null)}
+              isSubmitting={isSubmittingDiff}
+            />
+          </div>
+        )}
         {pendingAskQuestion && pendingAskQuestion.questions.length > 0 && (
           <div className="mx-auto w-full max-w-3xl px-4">
             <AskQuestionCard

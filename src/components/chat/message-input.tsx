@@ -64,7 +64,21 @@ import type {
   PromptInputBlock,
   SessionConfigOptionInfo,
   SessionModeInfo,
+  PipelineModeKey,
+  PipelineGraph,
+  PipelineRole,
+  PipelineIsolation,
+  PipelineRun,
 } from "@/lib/types"
+import { useTabStore } from "@/contexts/tab-context"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import {
+  pipelineList,
+  pipelinePresets,
+  pipelineRun,
+  pipelineSave,
+  pipelineSavePreset,
+} from "@/lib/api"
 import {
   ATTACH_FILE_TO_SESSION_EVENT,
   ATTACH_PAGE_TO_SESSION_EVENT,
@@ -111,6 +125,12 @@ import {
   saveMessageInputDraftV2,
 } from "@/lib/message-input-draft"
 import { rankByTextMatch } from "@/lib/fuzzy-text-match"
+import { PipelineModeSwitch } from "@/components/chat/composer/pipeline-mode-switch"
+import {
+  addRoleStep,
+  applyStepPatch,
+  removeStep,
+} from "@/lib/pipeline-graph-edit"
 import {
   RichComposer,
   type RichComposerHandle,
@@ -179,7 +199,7 @@ export interface ComposerInjectContent {
 }
 
 interface MessageInputProps {
-  onSend: (draft: PromptDraft, modeId?: string | null) => void
+  onSend: (draft: PromptDraft, modeId?: string | null) => void | boolean
   placeholder?: string
   defaultPath?: string
   disabled?: boolean
@@ -266,6 +286,7 @@ interface MessageInputProps {
   getSentHistory?: () => string[]
   injectContent?: ComposerInjectContent | null
   onInjectConsumed?: () => void
+  onPipelineRun?: (run: PipelineRun) => void
   /**
    * Give the composer box the roomier floor, for the welcome (new-conversation)
    * input; active and historical conversations keep the compact default. Owned
@@ -361,6 +382,26 @@ function modelPickerGroups(
   return modelListGroups(option)
 }
 
+/** What the composer is currently editing: either an override of a built-in
+ *  chain, or one of the user's own pipelines. They save through different
+ *  calls, which is the only reason the two are distinguished here. */
+type ActiveChain =
+  | {
+      kind: "preset"
+      presetKey: "duet" | "team"
+      graph: PipelineGraph
+      edited: boolean
+    }
+  | {
+      kind: "custom"
+      id: number
+      name: string
+      folderId: number | null
+      isolation: PipelineIsolation
+      graph: PipelineGraph
+      edited: boolean
+    }
+
 export function MessageInput({
   onSend,
   placeholder,
@@ -401,6 +442,7 @@ export function MessageInput({
   injectContent,
   onInjectConsumed,
   getSentHistory,
+  onPipelineRun,
   tall = false,
 }: MessageInputProps) {
   const t = useTranslations("Folder.chat.messageInput")
@@ -409,6 +451,151 @@ export function MessageInput({
   // upload / attachment toasts — read as a single coherent group when
   // scanning the file. Same namespace, no extra runtime cost.
   const tAttach = useTranslations("Folder.chat.messageInput")
+  const tabs = useTabStore((s) => s.tabs)
+  const activeTabId = useTabStore((s) => s.activeTabId)
+  const allFolders = useAppWorkspaceStore((s) => s.allFolders)
+  const effectiveFolderId = useMemo(() => {
+    if (folderPickerOverride?.folderId != null) {
+      return folderPickerOverride.folderId
+    }
+    const lookupId = attachmentTabId ?? activeTabId
+    const ownTab = tabs.find((x) => x.id === lookupId)
+    if (ownTab?.folderId != null) {
+      return ownTab.folderId
+    }
+    if (defaultPath) {
+      const matched = allFolders.find((f) => f.path === defaultPath)
+      if (matched) return matched.id
+    }
+    return null
+  }, [
+    folderPickerOverride?.folderId,
+    attachmentTabId,
+    activeTabId,
+    tabs,
+    defaultPath,
+    allFolders,
+  ])
+  const [pipelineMode, setPipelineMode] = useState<PipelineModeKey>("single")
+  // The chain the send path would run, loaded here as well so the role chips
+  // can show it AND edit it. Without this, picking a pipeline mode said
+  // nothing about which agent writes and which one reviews, and there was
+  // nowhere to change it outside the canvas.
+  const [activeChain, setActiveChain] = useState<ActiveChain | null>(null)
+  const [chainRevision, setChainRevision] = useState(0)
+  useEffect(() => {
+    if (pipelineMode === "single") {
+      setActiveChain(null)
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        if (pipelineMode === "duet" || pipelineMode === "team") {
+          const presets = await pipelinePresets()
+          const found = presets.find((p) => p.preset_key === pipelineMode)
+          if (cancelled || !found) return
+          setActiveChain({
+            kind: "preset",
+            presetKey: pipelineMode,
+            graph: found.graph,
+            // A built-in that has never been overridden comes back with id 0.
+            edited: found.id !== 0,
+          })
+          return
+        }
+        if (effectiveFolderId == null) return
+        const list = await pipelineList(effectiveFolderId)
+        if (cancelled) return
+        // Same pick as the send path, so the chips cannot describe one chain
+        // while another one runs.
+        const custom = list.find((p) => !p.preset_key) ?? list[0]
+        if (!custom) {
+          setActiveChain(null)
+          return
+        }
+        setActiveChain({
+          kind: "custom",
+          id: custom.id,
+          name: custom.name,
+          folderId: custom.folder_id ?? null,
+          isolation: custom.isolation ?? "worktree_per_run",
+          graph: custom.graph,
+          edited: false,
+        })
+      } catch (e) {
+        console.error("[MessageInput] failed to load the chain:", e)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [pipelineMode, effectiveFolderId, chainRevision])
+
+  /** Persist an edited chain and show it immediately — there is no Save button
+   *  here on purpose, so the chip has to reflect the new state at once. */
+  const persistChain = useCallback(
+    (next: PipelineGraph) => {
+      const chain = activeChain
+      if (!chain) return
+      setActiveChain({ ...chain, graph: next })
+      const write =
+        chain.kind === "preset"
+          ? pipelineSavePreset(chain.presetKey, next)
+          : pipelineSave(
+              {
+                name: chain.name,
+                folder_id: chain.folderId,
+                graph: next,
+                isolation: chain.isolation,
+              },
+              chain.id
+            )
+      void write
+        .then(() => setChainRevision((r) => r + 1))
+        .catch((e: unknown) => {
+          console.error("[MessageInput] failed to save the chain:", e)
+          toast.error(String(e))
+          // Re-read rather than keep a value the backend rejected.
+          setChainRevision((r) => r + 1)
+        })
+    },
+    [activeChain]
+  )
+
+  const handleStepChange = useCallback(
+    (stepId: string, patch: { agentType?: string; model?: string }) => {
+      if (!activeChain) return
+      persistChain(applyStepPatch(activeChain.graph, stepId, patch))
+    },
+    [activeChain, persistChain]
+  )
+
+  const handleAddStep = useCallback(
+    (role: PipelineRole) => {
+      if (!activeChain) return
+      persistChain(addRoleStep(activeChain.graph, role))
+    },
+    [activeChain, persistChain]
+  )
+
+  const handleDeleteStep = useCallback(
+    (stepId: string) => {
+      if (!activeChain) return
+      persistChain(removeStep(activeChain.graph, stepId))
+    },
+    [activeChain, persistChain]
+  )
+
+  const handleResetPreset = useCallback(() => {
+    if (activeChain?.kind !== "preset") return
+    void pipelineSavePreset(activeChain.presetKey, null)
+      .then(() => setChainRevision((r) => r + 1))
+      .catch((e: unknown) => {
+        console.error("[MessageInput] failed to reset the preset:", e)
+        toast.error(String(e))
+      })
+  }, [activeChain])
   // The `$` prefix autocomplete is Codex-only: Codex advertises very few
   // native slash commands, so we augment the dropdown with the agent's
   // skills read from disk. Other agents already surface their full command
@@ -609,12 +796,8 @@ export function MessageInput({
   }, [writeDraftNow])
 
   useEffect(() => {
-    return () => {
-      if (draftSaveTimerRef.current != null && typeof window !== "undefined") {
-        window.clearTimeout(draftSaveTimerRef.current)
-      }
-    }
-  }, [])
+    return () => flushDraftSave()
+  }, [flushDraftSave])
 
   // One-time hydration once the editor is ready: a queue-edit payload, else a v2
   // draft document (or a legacy v1 Markdown draft migrated forward). Guarded so
@@ -898,9 +1081,23 @@ export function MessageInput({
     () => vocabulary.modes(modes ?? []),
     [modes, vocabulary]
   )
-  const availableConfigOptions = useMemo(
+  const allConfigOptions = useMemo(
     () => vocabulary.configOptions(configOptions ?? []),
     [configOptions, vocabulary]
+  )
+  // In a pipeline mode the model belongs to each STEP, so the session-wide
+  // model (and the reasoning effort that hangs off it) would be a second knob
+  // for the same thing, pointing at a session the run does not use. Everything
+  // else here is about the run as a whole — the edit-permission mode above all,
+  // which matters MORE when several agents write — so it stays.
+  const availableConfigOptions = useMemo(
+    () =>
+      pipelineMode === "single"
+        ? allConfigOptions
+        : allConfigOptions.filter(
+            (o) => !/^(model|effort|reasoning|thinking)/i.test(o.id)
+          ),
+    [allConfigOptions, pipelineMode]
   )
   const hasConfigOptions = availableConfigOptions.length > 0
   const hasModes = availableModes.length > 0
@@ -1558,7 +1755,87 @@ export function MessageInput({
       return
     }
 
-    onSend(draft, showModeSelector ? effectiveModeId : null)
+    // Pipeline mode: Duet/Team/Custom → pipelineRun instead of onSend
+    if (pipelineMode !== "single" && effectiveFolderId != null) {
+      const folderId = effectiveFolderId
+      void (async () => {
+        try {
+          let targetGraph: PipelineGraph | undefined
+          let targetIsolation: PipelineIsolation = "worktree_per_run"
+
+          if (pipelineMode === "duet" || pipelineMode === "team") {
+            const presets = await pipelinePresets()
+            const found = presets.find(
+              (p) => p.preset_key === pipelineMode || p.name === pipelineMode
+            )
+            if (found) {
+              targetGraph = found.graph
+              targetIsolation = found.isolation ?? "worktree_per_run"
+            }
+          } else if (pipelineMode === "custom") {
+            try {
+              const list = await pipelineList(folderId)
+              const custom = list.find((p) => !p.preset_key) ?? list[0]
+              if (custom) {
+                targetGraph = custom.graph
+                targetIsolation = custom.isolation ?? "worktree_per_run"
+              } else {
+                const presets = await pipelinePresets()
+                const found = presets[0]
+                if (found) {
+                  targetGraph = found.graph
+                  targetIsolation = found.isolation ?? "worktree_per_run"
+                }
+              }
+            } catch {
+              const presets = await pipelinePresets()
+              const found = presets[0]
+              if (found) {
+                targetGraph = found.graph
+                targetIsolation = found.isolation ?? "worktree_per_run"
+              }
+            }
+          }
+
+          const run = await pipelineRun({
+            folderId,
+            graph: targetGraph,
+            promptBlocks: draft.blocks,
+            displayText: draft.displayText,
+            parentConversationId: undefined,
+            isolation: targetIsolation,
+          })
+          if (onPipelineRun) {
+            onPipelineRun(run)
+          }
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(
+              new CustomEvent("pipelineRunStarted", {
+                detail: {
+                  run,
+                  runId: run.id,
+                  tabId: attachmentTabId,
+                  contextKey: attachmentTabId,
+                  folderId,
+                },
+              })
+            )
+          }
+          if (effectiveDraftStorageKey) {
+            clearMessageInputDraftV2(effectiveDraftStorageKey)
+          }
+          resetComposer()
+        } catch (err) {
+          console.error("[MessageInput] pipelineRun failed:", err)
+          toast.error(toErrorMessage(err))
+        }
+      })()
+      return
+    }
+
+    const accepted =
+      onSend(draft, showModeSelector ? effectiveModeId : null) !== false
+    if (!accepted) return
     if (effectiveDraftStorageKey) {
       clearMessageInputDraftV2(effectiveDraftStorageKey)
     }
@@ -1577,6 +1854,10 @@ export function MessageInput({
     showModeSelector,
     effectiveDraftStorageKey,
     resetComposer,
+    pipelineMode,
+    effectiveFolderId,
+    onPipelineRun,
+    attachmentTabId,
   ])
 
   // Mid-turn send over the session's live-feedback channel: a native push
@@ -2192,6 +2473,28 @@ export function MessageInput({
                     onRemove={attach.removeAttachment}
                   />
                 }
+              />
+              <PipelineModeSwitch
+                folderId={effectiveFolderId ?? undefined}
+                mode={pipelineMode}
+                onModeChange={setPipelineMode}
+                graph={activeChain?.graph ?? null}
+                onStepChange={activeChain ? handleStepChange : undefined}
+                onAddStep={
+                  pipelineMode === "custom" && activeChain
+                    ? handleAddStep
+                    : undefined
+                }
+                onDeleteStep={
+                  pipelineMode === "custom" && activeChain
+                    ? handleDeleteStep
+                    : undefined
+                }
+                onResetPreset={
+                  activeChain?.kind === "preset" ? handleResetPreset : undefined
+                }
+                presetEdited={activeChain?.edited ?? false}
+                className="px-2 pt-2"
               />
               <RichComposer
                 ref={editorRef}

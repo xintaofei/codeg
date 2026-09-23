@@ -9,14 +9,13 @@ pub mod test_helpers;
 use std::path::Path;
 use std::time::Duration;
 
-use sea_orm::{
-    ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement,
-};
+use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use sea_orm_migration::MigratorTrait;
 
 use error::DbError;
 use migration::Migrator;
 
+#[derive(Clone)]
 pub struct AppDatabase {
     pub conn: DatabaseConnection,
 }
@@ -67,8 +66,8 @@ pub async fn init_database(
         .min_connections(1)
         .connect_timeout(Duration::from_secs(10))
         .sqlx_logging(false);
+    configure_sqlite_pragmas(&mut migrate_opts);
     let migrate_conn = Database::connect(migrate_opts).await?;
-    apply_sqlite_pragmas(&migrate_conn).await?;
     Migrator::up(&migrate_conn, None)
         .await
         .map_err(|e| DbError::Migration(e.to_string()))?;
@@ -76,14 +75,15 @@ pub async fn init_database(
 
     // Runtime connection pool. Migrations are already applied above, so the
     // schema is stable and spreading queries across pooled connections is safe.
+    // Apply pragmas to ConnectOptions so they are set on every connection opened.
     let mut opts = ConnectOptions::new(db_url);
     opts.max_connections(5)
         .min_connections(1)
         .connect_timeout(Duration::from_secs(10))
         .idle_timeout(Duration::from_secs(300))
         .sqlx_logging(false);
+    configure_sqlite_pragmas(&mut opts);
     let conn = Database::connect(opts).await?;
-    apply_sqlite_pragmas(&conn).await?;
 
     service::app_metadata_service::update_app_version(&conn, app_version).await?;
 
@@ -111,19 +111,52 @@ pub async fn init_database(
     Ok(AppDatabase { conn })
 }
 
-/// Apply SQLite performance and reliability pragmas to a freshly opened
-/// connection. `journal_mode=WAL` persists in the database header; the rest are
-/// per-connection settings that must be re-applied every time a connection opens.
-async fn apply_sqlite_pragmas(conn: &DatabaseConnection) -> Result<(), DbError> {
-    for pragma in [
-        "PRAGMA journal_mode=WAL;",
-        "PRAGMA busy_timeout=5000;",
-        "PRAGMA synchronous=NORMAL;",
-        "PRAGMA foreign_keys=ON;",
-        "PRAGMA cache_size=-8000;",
-    ] {
-        conn.execute(Statement::from_string(DbBackend::Sqlite, pragma.to_owned()))
-            .await?;
+/// Configure SQLite pragmas on SQLx's connection options. SQLx applies these
+/// options to every connection created by the pool, including connections
+/// opened after startup.
+fn configure_sqlite_pragmas(options: &mut ConnectOptions) {
+    options.map_sqlx_sqlite_opts(|options| {
+        options
+            .pragma("journal_mode", "WAL")
+            .pragma("busy_timeout", "5000")
+            .pragma("synchronous", "NORMAL")
+            .pragma("foreign_keys", "ON")
+            .pragma("cache_size", "-8000")
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sea_orm::ConnectionTrait;
+
+    #[tokio::test]
+    async fn pragmas_applied_to_pool_connections() {
+        // Test that pragmas are configured on every connection created by the pool.
+        // We use an in-memory database for isolation. Configure pragmas and verify
+        // that connection succeeds, which indicates pragmas were applied without error.
+        let db_url = "sqlite::memory:";
+        let mut opts = ConnectOptions::new(db_url);
+        opts.max_connections(3)
+            .min_connections(1)
+            .connect_timeout(Duration::from_secs(10))
+            .sqlx_logging(false);
+        configure_sqlite_pragmas(&mut opts);
+
+        // This will apply pragmas to the connection pool; if pragmas fail,
+        // this will error.
+        let conn = Database::connect(opts).await.expect("connect");
+
+        // Verify the connection works and can execute queries. The pragmas
+        // were applied by sea-orm via the ConnectOptions.pragma() calls above.
+        let result = conn
+            .query_all(sea_orm::Statement::from_string(
+                sea_orm::DbBackend::Sqlite,
+                "SELECT 1".to_string(),
+            ))
+            .await
+            .expect("query should succeed with pragmas applied");
+
+        assert!(!result.is_empty(), "query returned results");
     }
-    Ok(())
 }

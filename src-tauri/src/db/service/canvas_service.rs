@@ -232,6 +232,7 @@ pub struct NewCanvasNode {
     pub folder_group_id: Option<i32>,
     pub agent_type: Option<String>,
     pub conversation_id: Option<i32>,
+    pub pipeline_id: Option<i32>,
     pub title: Option<String>,
     pub content: Option<String>,
     /// Required for `file` / `terminal`, rejected for every other kind.
@@ -280,6 +281,7 @@ pub async fn create_node(
     let mut folder_group_id = None;
     let mut agent_type = None;
     let mut conversation_id = None;
+    let mut pipeline_id = None;
     let mut path = None;
     match input.kind {
         CanvasNodeKind::Folder => {
@@ -333,6 +335,12 @@ pub async fn create_node(
         // `detach_member` so every entry passes the liveness check.
         CanvasNodeKind::Custom => {}
         CanvasNodeKind::Note => {}
+        CanvasNodeKind::Pipeline => {
+            let id = input
+                .pipeline_id
+                .ok_or_else(|| DbError::Validation("pipeline node needs pipeline_id".into()))?;
+            pipeline_id = Some(id);
+        }
         // Both bind a place on disk. Existence is deliberately NOT checked:
         // like the folder / conversation bindings above the reference is SOFT,
         // and a card whose file was moved has to survive as a visible
@@ -358,6 +366,7 @@ pub async fn create_node(
         id: NotSet,
         kind: Set(input.kind),
         folder_id: Set(folder_id),
+        pipeline_id: Set(pipeline_id),
         folder_group_id: Set(folder_group_id),
         agent_type: Set(agent_type),
         conversation_id: Set(conversation_id),
@@ -576,6 +585,7 @@ pub async fn group_into_region(
                 id: NotSet,
                 kind: Set(CanvasNodeKind::Custom),
                 folder_id: Set(None),
+                pipeline_id: Set(None),
                 folder_group_id: Set(None),
                 agent_type: Set(None),
                 conversation_id: Set(None),
@@ -803,7 +813,8 @@ pub async fn detach_member(
         CanvasNodeKind::Conversation
         | CanvasNodeKind::Note
         | CanvasNodeKind::File
-        | CanvasNodeKind::Terminal => {
+        | CanvasNodeKind::Terminal
+        | CanvasNodeKind::Pipeline => {
             return Err(DbError::Validation(format!(
                 "canvas node {region_id} is not a region"
             )));
@@ -817,6 +828,7 @@ pub async fn detach_member(
         id: NotSet,
         kind: Set(CanvasNodeKind::Conversation),
         folder_id: Set(None),
+        pipeline_id: Set(None),
         folder_group_id: Set(None),
         agent_type: Set(None),
         conversation_id: Set(Some(conversation_id)),
@@ -987,6 +999,7 @@ mod tests {
             folder_group_id: None,
             agent_type: None,
             conversation_id: None,
+            pipeline_id: None,
             title: None,
             content: None,
             path: path.map(str::to_string),
@@ -1099,5 +1112,25 @@ mod tests {
             .await
             .expect_err("a file card is not a region to detach from");
         assert!(matches!(err, DbError::Validation(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn pipeline_node_requires_pipeline_id() {
+        let db = fresh_in_memory_db().await;
+
+        // Without pipeline_id, it should fail
+        let err = create_node(&db.conn, new_node(CanvasNodeKind::Pipeline, None))
+            .await
+            .expect_err("pipeline node without pipeline_id should fail");
+        assert!(matches!(err, DbError::Validation(_)), "got {err:?}");
+
+        // With pipeline_id, it should succeed
+        let mut node = new_node(CanvasNodeKind::Pipeline, None);
+        node.pipeline_id = Some(1);
+        let (pipeline, _) = create_node(&db.conn, node)
+            .await
+            .expect("create pipeline node with pipeline_id");
+        assert_eq!(pipeline.pipeline_id, Some(1));
+        assert_eq!(pipeline.kind, CanvasNodeKind::Pipeline);
     }
 }

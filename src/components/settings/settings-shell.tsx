@@ -11,6 +11,7 @@ import {
   Bot,
   BookOpenText,
   Boxes,
+  Brain,
   Bubbles,
   Compass,
   FileSpreadsheet,
@@ -51,6 +52,7 @@ interface SettingsNavItem {
     | "mcp"
     | "skills"
     | "skill_packs"
+    | "memory"
     | "collaboration"
     | "browser"
     | "quick_messages"
@@ -88,6 +90,11 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     href: "/settings/skill-packs",
     labelKey: "skill_packs",
     icon: Boxes,
+  },
+  {
+    href: "/settings/memory",
+    labelKey: "memory",
+    icon: Brain,
   },
   {
     href: "/settings/collaboration",

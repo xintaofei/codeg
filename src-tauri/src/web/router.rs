@@ -24,7 +24,9 @@ pub fn build_router(
     static_dir: std::path::PathBuf,
     shutdown_signal: Arc<ShutdownSignal>,
 ) -> Router {
-    let cors = CorsLayer::new()
+    // CORS for public endpoints only (office-watch-proxy iframe and static downloads).
+    // Other endpoints are same-origin (web client on the same origin).
+    let public_cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
@@ -1468,6 +1470,82 @@ pub fn build_router(
             "/automation_cancel_run",
             post(handlers::automation::automation_cancel_run),
         )
+        // ─── Pipelines ───
+        .route("/pipeline_list", post(handlers::pipeline::pipeline_list))
+        .route("/pipeline_get", post(handlers::pipeline::pipeline_get))
+        .route("/pipeline_save", post(handlers::pipeline::pipeline_save))
+        .route(
+            "/pipeline_delete",
+            post(handlers::pipeline::pipeline_delete),
+        )
+        .route(
+            "/pipeline_presets",
+            post(handlers::pipeline::pipeline_presets),
+        )
+        .route(
+            "/pipeline_save_preset",
+            post(handlers::pipeline::pipeline_save_preset),
+        )
+        .route("/pipeline_run", post(handlers::pipeline::pipeline_run))
+        .route(
+            "/pipeline_cancel",
+            post(handlers::pipeline::pipeline_cancel),
+        )
+        .route(
+            "/pipeline_run_status",
+            post(handlers::pipeline::pipeline_run_status),
+        )
+        .route("/pipeline_runs", post(handlers::pipeline::pipeline_runs))
+        .route(
+            "/pipeline_request_changes",
+            post(handlers::pipeline::pipeline_request_changes),
+        )
+        .route(
+            "/pipeline_stop_manual",
+            post(handlers::pipeline::pipeline_stop_manual),
+        )
+        .route(
+            "/pipeline_run_diff",
+            post(handlers::pipeline::pipeline_run_diff),
+        )
+        .route(
+            "/pipeline_run_apply",
+            post(handlers::pipeline::pipeline_run_apply),
+        )
+        // ─── Memory ───
+        .route(
+            "/memory_settings_get",
+            post(handlers::memory::get_memory_settings),
+        )
+        .route(
+            "/memory_settings_set",
+            post(handlers::memory::set_memory_settings),
+        )
+        .route(
+            "/memory_kind_list",
+            post(handlers::memory::list_memory_kinds),
+        )
+        .route(
+            "/memory_kind_create",
+            post(handlers::memory::create_memory_kind),
+        )
+        .route(
+            "/memory_kind_update",
+            post(handlers::memory::update_memory_kind),
+        )
+        .route(
+            "/memory_kind_set_enabled",
+            post(handlers::memory::set_enabled_memory_kind),
+        )
+        .route(
+            "/memory_kind_delete",
+            post(handlers::memory::delete_memory_kind),
+        )
+        .route("/memory_search", post(handlers::memory::search_memory))
+        .route(
+            "/memory_node_delete",
+            post(handlers::memory::delete_memory_node),
+        )
         // ─── Token usage dashboard ───
         .route(
             "/token_usage_report",
@@ -1766,7 +1844,7 @@ pub fn build_router(
             auth::require_token(req, next, token.clone())
         }));
 
-    // Public endpoints — no token required.
+    // Public endpoints — no token required. CORS enabled for office-watch-proxy iframe.
     // The login page needs to read the user's preferred language before
     // authenticating so it can render in their chosen locale.
     let public_api = Router::new()
@@ -1798,7 +1876,8 @@ pub fn build_router(
         .route(
             "/office-watch-proxy/{port}/{*rest}",
             any(handlers::office_watch_proxy::proxy),
-        );
+        )
+        .layer(public_cors);
 
     // Wrap every API request in an `http` span (method, path, request id) so a
     // single request's logs — including auth rejections — are correlatable in
@@ -1870,7 +1949,6 @@ pub fn build_router(
         .merge(ws_route)
         .fallback_service(fallback)
         .layer(html_rewrite)
-        .layer(cors)
         .layer(Extension(state))
         .layer(Extension(shutdown_signal))
         // Compress API JSON and static text assets. Allowlist predicate —

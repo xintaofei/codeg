@@ -105,6 +105,12 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 ![在单个 Codeg 会话中将任务委派给子智能体](../images/collaboration-light.gif#gh-light-mode-only)
 ![在单个 Codeg 会话中将任务委派给子智能体](../images/collaboration-dark.gif#gh-dark-mode-only)
 
+## 🔁 智能体流水线
+
+将多个智能体编排为结构化的多步骤执行链，内置自动化的代码审阅与测试反馈闭环。选择 **双人结对** 让编码者写代码、审阅者核验，或选择 **团队协作** 依次执行规划、编码、审阅与测试。当审阅或测试步骤提出修改意见时，流水线会将具体问题打回给编码者开启新一轮修复，直到达到设定的轮次上限。
+
+每次流水线运行都在独立的 Git 工作树中进行，绝不污染你当前的工作目录。通过 **聊天 + 代码** 差异面板逐行添加批注并直接交给编码者，满意后一键 Squash 或合并提交应用变更。可选的本地 SQLite 或外部 MCP 记忆系统还能让智能体在多次运行间持久化记录架构决策、历史缺陷与项目偏好。→ [智能体流水线](../agent-pipelines.md)
+
 ## ✅ 待办任务
 
 不是每件事都得你盯着做完。写下来就行——标题、说明、用哪个智能体跑——Codeg 会给它**一份独立的代码副本**：项目旁边的一个 git 工作树，跑在自己的分支上。几个任务同时开工也互不干扰，更不会碰你手头那份代码。可以约在今晚开始，也可以让某个文件夹自己按并发上限一件件处理下去。
@@ -154,6 +160,7 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 
 - **[会话聚合](https://docs.codeg.app/zh/guide/aggregation)** — 把所有受支持智能体的会话导入统一、可搜索的工作区，并从上次中断处继续
 - **[多智能体协作](https://docs.codeg.app/zh/guide/multi-agent)** — `@` 提及任意智能体即可委派：不同类型的子智能体各自作为独立会话，在同一个任务内并行运行
+- **[智能体流水线](../agent-pipelines.md)** — 将智能体编排为多步骤流水线（双人结对、团队协作、自定义），支持自动化审阅闭环、工作树隔离、代码行批注与持久化记忆
 - **[待办任务](https://docs.codeg.app/zh/guide/tasks)** — 把要做的事写下来，智能体一件件做完；每个任务在自己的工作树里跑，只有你验收之后才会合进你的分支
 - **[自定义智能体](https://docs.codeg.app/zh/guide/custom-agents)** — 从公开注册表或 distribution JSON 注册任何其它兼容 ACP 的智能体；Codeg 负责安装、记录历史，并像内置智能体一样对待它
 - **[工作区](https://docs.codeg.app/zh/guide/workspace)** — 智能体旁边就是完整的工程闭环：文件树、编辑器与 diff、Git 变更、提交、内置终端，以及[挂进同一个工作区的多个文件夹](https://docs.codeg.app/zh/guide/workspace#work-across-several-folders)

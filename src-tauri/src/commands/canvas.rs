@@ -104,6 +104,9 @@ pub struct CreateCanvasNode {
     pub agent_type: Option<String>,
     #[serde(default)]
     pub conversation_id: Option<i32>,
+    /// Required for `pipeline`: the saved pipeline the card edits and runs.
+    #[serde(default)]
+    pub pipeline_id: Option<i32>,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
@@ -283,6 +286,7 @@ pub async fn canvas_create_node_core(
             folder_group_id: input.folder_group_id,
             agent_type: input.agent_type,
             conversation_id: input.conversation_id,
+            pipeline_id: input.pipeline_id,
             title: input.title,
             content: input.content,
             path: input.path,
@@ -758,6 +762,7 @@ mod tests {
             folder_group_id: None,
             agent_type: None,
             conversation_id: None,
+            pipeline_id: None,
             title: None,
             content: None,
             path: None,
@@ -894,6 +899,7 @@ mod tests {
             &db,
             CreateCanvasNode {
                 conversation_id: Some(conv),
+                pipeline_id: None,
                 ..region_input(CanvasNodeKind::Conversation)
             },
         )
@@ -933,6 +939,7 @@ mod tests {
             &db,
             CreateCanvasNode {
                 conversation_id: Some(conv),
+                pipeline_id: None,
                 ..region_input(CanvasNodeKind::Conversation)
             },
         )
@@ -1273,6 +1280,7 @@ mod tests {
             &db,
             CreateCanvasNode {
                 conversation_id: Some(conv),
+                pipeline_id: None,
                 grid_columns: Some(4),
                 ..region_input(CanvasNodeKind::Conversation)
             },
@@ -1360,6 +1368,7 @@ mod tests {
             &db,
             CreateCanvasNode {
                 conversation_id: Some(dragged),
+                pipeline_id: None,
                 ..region_input(CanvasNodeKind::Conversation)
             },
         )
@@ -1535,6 +1544,7 @@ mod tests {
             &db,
             CreateCanvasNode {
                 conversation_id: Some(stranded),
+                pipeline_id: None,
                 ..region_input(CanvasNodeKind::Conversation)
             },
         )
@@ -1624,6 +1634,7 @@ mod broadcast_tests {
                 folder_group_id: None,
                 agent_type: None,
                 conversation_id: Some(conv),
+                pipeline_id: None,
                 title: None,
                 content: None,
                 path: None,
@@ -1666,6 +1677,7 @@ mod broadcast_tests {
             folder_group_id: None,
             agent_type: None,
             conversation_id: Some(conversation_id),
+            pipeline_id: None,
             title: None,
             content: None,
             path: None,
@@ -1697,6 +1709,7 @@ mod broadcast_tests {
             CreateCanvasNode {
                 kind: CanvasNodeKind::Custom,
                 conversation_id: None,
+                pipeline_id: None,
                 width: 480.0,
                 height: 320.0,
                 ..pin_input(first)
@@ -1780,6 +1793,7 @@ mod broadcast_tests {
             CreateCanvasNode {
                 kind: CanvasNodeKind::Note,
                 conversation_id: None,
+                pipeline_id: None,
                 ..pin_input(conv)
             },
         )

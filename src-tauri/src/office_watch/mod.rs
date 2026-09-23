@@ -620,7 +620,7 @@ pub fn validate_watch_cap(port: u16, cap: &str) -> bool {
 
 /// Length-aware constant-time byte comparison (no early return on first
 /// mismatch). The caps are 122-bit random so this is belt-and-suspenders.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }

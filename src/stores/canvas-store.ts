@@ -41,9 +41,12 @@ interface CanvasStoreState {
    * Apply a mutation response's payload. `mutate` runs against a copy of the
    * node map only when `revision > lastRevision` (the matching event is still
    * on its way); a response arriving after its event is dropped whole.
+   * `epoch` is `getMutationEpoch()` captured before the request: a response
+   * that crosses a `reset()` belongs to the old scope and is dropped too.
    */
   applyResponse: (
     revision: number,
+    epoch: number,
     mutate: (nodes: Map<number, CanvasNode>) => void
   ) => void
   /** Fetch a fresh snapshot (initial hydrate, gap repair, WS reconnect).
@@ -113,6 +116,13 @@ const RETRY_DELAY_MS = 3000
 /** Fetch generation, bumped by reset(): a snapshot from a pre-reset fetch must
  *  neither write into the new scope nor clobber its dedup handle. */
 let fetchEpoch = 0
+/** Mutation generation, bumped by reset(): a command response issued before
+ *  the reset must not write into the new scope. */
+let mutationEpoch = 0
+
+export function getMutationEpoch(): number {
+  return mutationEpoch
+}
 
 export const useCanvasStore = create<CanvasStoreState>((set, get) => ({
   nodes: new Map(),
@@ -146,7 +156,8 @@ export const useCanvasStore = create<CanvasStoreState>((set, get) => ({
     })
   },
 
-  applyResponse: (revision, mutate) => {
+  applyResponse: (revision, epoch, mutate) => {
+    if (epoch !== mutationEpoch) return
     if (revision <= get().lastRevision) return
     const next = new Map(get().nodes)
     mutate(next)
@@ -189,6 +200,7 @@ export const useCanvasStore = create<CanvasStoreState>((set, get) => ({
     // results: they can neither write into the new scope nor clobber its
     // dedup handle (see the epoch guard in refetch).
     fetchEpoch++
+    mutationEpoch++
     refetchInFlight = null
     gapHighWater = 0
     if (retryTimer) {

@@ -305,17 +305,18 @@ impl MigrationTrait for Migration {
             .drop_table(
                 Table::drop()
                     .table(FolderOpenedConversation::Table)
+                    .if_exists()
                     .to_owned(),
             )
             .await?;
         manager
-            .drop_table(Table::drop().table(Conversation::Table).to_owned())
+            .drop_table(Table::drop().table(Conversation::Table).if_exists().to_owned())
             .await?;
         manager
-            .drop_table(Table::drop().table(Folder::Table).to_owned())
+            .drop_table(Table::drop().table(Folder::Table).if_exists().to_owned())
             .await?;
         manager
-            .drop_table(Table::drop().table(AppMetadata::Table).to_owned())
+            .drop_table(Table::drop().table(AppMetadata::Table).if_exists().to_owned())
             .await
     }
 }
