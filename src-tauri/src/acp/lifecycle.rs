@@ -269,6 +269,13 @@ pub(crate) async fn handle_event(
                 "end_turn" => Some(ConversationStatus::PendingReview),
                 "refusal" | "max_tokens" | "max_turn_requests" | "unknown" | "empty"
                 | "auth_required" | "rejected" => Some(ConversationStatus::Cancelled),
+                // `busy`: nothing acknowledged the prompt. The client requeues,
+                // so the row stays InProgress. `deferred`: the follow went
+                // quiet after the absorb notice and this loop stopped
+                // reading. PendingReview is the non-failure settle — not
+                // Cancelled, and not a stuck InProgress.
+                "busy" => None,
+                "deferred" => Some(ConversationStatus::PendingReview),
                 // `cancelled` and any future reason: don't write here.
                 _ => None,
             };
@@ -431,6 +438,15 @@ async fn forward_turn_complete_to_broker(
         tracing::info!(
             "[delegation][lifecycle] conversation {conversation_id} has \
              delegation_call_id but no parent_tool_use_id; dropping"
+        );
+        return;
+    }
+    // The prompt was absorbed, not completed. Completing the delegation
+    // here fails a child that is still running.
+    if matches!(stop_reason, "busy" | "deferred") {
+        tracing::info!(
+            "[delegation][lifecycle] conversation {conversation_id} absorbed a \
+             mid-turn prompt (stop_reason={stop_reason}); leaving the delegation pending"
         );
         return;
     }
@@ -2275,6 +2291,60 @@ mod tests {
             ConversationStatus::InProgress,
             "TurnComplete{{cancelled}} must not overwrite the row — user-cancel path owns it"
         );
+    }
+
+    #[tokio::test]
+    async fn handle_event_does_not_wedge_status_on_absorbed_prompt() {
+        // `busy` (prompt lost, client requeues) must not flip the row.
+        // `deferred` is the notice-only quiet settle: the follow stopped
+        // reading, so InProgress would stick. PendingReview is the
+        // non-failure status; Cancelled is the wedge this must not write.
+        let cases = [
+            ("busy", ConversationStatus::InProgress),
+            ("deferred", ConversationStatus::PendingReview),
+        ];
+        for (stop_reason, expect) in cases {
+            let db = test_helpers::fresh_in_memory_db().await;
+            let folder_id =
+                test_helpers::seed_folder(&db, &format!("/tmp/turn-absorb-{stop_reason}")).await;
+            let conv =
+                conversation_service::create(&db.conn, folder_id, AgentType::Hermes, None, None)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                read_row_status(&db, conv.id).await,
+                ConversationStatus::InProgress
+            );
+
+            let mgr = ConnectionManager::new();
+            {
+                let mut map = mgr.connections.lock().await;
+                map.insert(
+                    "c1".to_string(),
+                    fake_connection_with_state("c1", Some(conv.id)),
+                );
+            }
+            let env = EventEnvelope {
+                seq: 1,
+                connection_id: "c1".to_string(),
+                payload: AcpEvent::TurnComplete {
+                    session_id: "ext-1".into(),
+                    stop_reason: stop_reason.into(),
+                    agent_type: "hermes".into(),
+                },
+            };
+            handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+            assert_eq!(
+                read_row_status(&db, conv.id).await,
+                expect,
+                "stop_reason={stop_reason}"
+            );
+            assert_ne!(
+                read_row_status(&db, conv.id).await,
+                ConversationStatus::Cancelled,
+                "stop_reason={stop_reason} must not cancel the row"
+            );
+        }
     }
 
     #[tokio::test]

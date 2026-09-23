@@ -2911,6 +2911,11 @@ impl TaskEngine {
     }
 
     async fn on_turn_complete(self: &Arc<Self>, conn_id: &str, stop_reason: &str) {
+        // Same rule as lifecycle: an absorb is not a failed generation and
+        // must not disconnect the session the agent is still using.
+        if matches!(stop_reason, "busy" | "deferred") {
+            return;
+        }
         let entry = { self.index.lock().await.get(conn_id).copied() };
         let Some((task_id, run_seq)) = entry else {
             return; // not a task run

@@ -104,6 +104,7 @@ import {
   notifyDesktop,
   withDesktopNotificationsSuppressed,
 } from "@/lib/desktop-notification"
+import { shouldNotifyTurnComplete } from "@/lib/busy-prompt"
 import {
   playEventSound,
   primeNotificationSoundOutput,
@@ -4704,7 +4705,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             const nc = echo
               ? null
               : storeRef.current.connections.get(contextKey)
-            if (nc) {
+            if (nc && shouldNotifyTurnComplete(e.stop_reason)) {
               const agentLabel = getAgentLabel(nc.agentType)
               const fn = folderNameRef.current
               const title = fn ? `${fn} - Codeg` : "Codeg"

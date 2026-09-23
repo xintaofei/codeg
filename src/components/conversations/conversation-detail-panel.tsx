@@ -94,6 +94,7 @@ import {
   shouldQueueDirectSend,
   shouldRejectDuplicateCreate,
 } from "@/lib/queue-flush"
+import { planBusyAbsorb } from "@/lib/busy-prompt"
 import { TurnBusyError, isNoActiveTurnRejection } from "@/lib/turn-busy"
 import { toErrorMessage } from "@/lib/app-error"
 import {
@@ -305,6 +306,8 @@ const ConversationTabView = memo(function ConversationTabView({
     setLiveMessage,
     setPendingCleanup,
     setSyncState,
+    rememberSubmittedPrompt,
+    takeSubmittedPrompt,
   } = useConversationRuntimeActions()
   const acpActions = useAcpActions()
   // Stable store handle, for event-time status reads that must not go through
@@ -761,10 +764,67 @@ const ConversationTabView = memo(function ConversationTabView({
   // sink writes the runtime store from the connection dispatch, not a React
   // effect — see registerLiveMessageSink.)
   const prevConnStatusRef = useRef(connStatus)
+  // Set by the absorb handler below when this turn_complete is `busy` or
+  // `deferred`. The handler already rolled the turn back; this effect must
+  // not also promote it. Cleared here even when prompting never painted
+  // (a sub-2ms ack), so the flag cannot swallow the next real completion.
+  const busyPromptHandledRef = useRef(false)
+  // Declared up here so the absorb handler can stamp it. The queue flush
+  // below reads the same ref.
+  const lastFlushBounceAtRef = useRef(0)
+  useAcpEvent(
+    useCallback(
+      (envelope: EventEnvelope) => {
+        if (envelope.type !== "turn_complete") return
+        if (envelope.connection_id !== conn.connectionId) return
+        const session = getRuntimeSession(effectiveConversationId)
+        const plan = planBusyAbsorb({
+          stopReason: envelope.stop_reason,
+          submitted: takeSubmittedPrompt(effectiveConversationId),
+          optimisticTurns: session?.optimisticTurns,
+        })
+        if (plan.action === "ignore") return
+        // Subscribers run after the reducer has flushed the stream into the
+        // live message. Drop that — an absorb ack is not the reply — before
+        // any promotion.
+        setLiveMessage(effectiveConversationId, null, false)
+        if (plan.action === "requeue") {
+          mqRequeueFront(plan.draft, plan.modeId)
+          for (const turn of session?.optimisticTurns ?? []) {
+            removeOptimisticTurn(effectiveConversationId, turn.id)
+          }
+          setSyncState(effectiveConversationId, "idle")
+          // The agent is still in the turn this prompt bounced off. Without
+          // the backoff the flush sends again on the same connected edge.
+          lastFlushBounceAtRef.current = Date.now()
+          toast.info(tCmp("steerQueuedInstead"))
+        } else {
+          // The agent kept the text. Promote the user turn once and do not
+          // send it a second time.
+          completeTurn(effectiveConversationId)
+        }
+        busyPromptHandledRef.current = true
+      },
+      [
+        conn.connectionId,
+        effectiveConversationId,
+        setLiveMessage,
+        mqRequeueFront,
+        removeOptimisticTurn,
+        setSyncState,
+        completeTurn,
+        takeSubmittedPrompt,
+        tCmp,
+      ]
+    )
+  )
   useEffect(() => {
     const wasPrompting = prevConnStatusRef.current === "prompting"
     prevConnStatusRef.current = connStatus
+    const absorbed = busyPromptHandledRef.current
+    if (absorbed) busyPromptHandledRef.current = false
     if (!wasPrompting || connStatus === "prompting") return
+    if (absorbed) return
 
     // Turn completed — promote liveMessage + optimisticTurns to localTurns.
     // Don't pass conn.liveMessage: this panel no longer subscribes to it (the
@@ -802,11 +862,6 @@ const ConversationTabView = memo(function ConversationTabView({
       opts?: { fromQueueFlush?: boolean }
     ) => void
   >(() => {})
-  // Timestamp of the last send that bounced with TurnBusyError. The flush below
-  // backs off after a bounce so repeated busy rejections (backend still running
-  // another turn while this client believes it is idle) don't spin one failed
-  // send per round-trip.
-  const lastFlushBounceAtRef = useRef(0)
   // Whether a queued row's click-to-insert (`handleQueueSteer`) is mid-flight.
   // The row STAYS in the queue for the whole round-trip — it only leaves once
   // the backend confirms delivery — so without this the turn-end edge would
@@ -1105,6 +1160,11 @@ const ConversationTabView = memo(function ConversationTabView({
         optimisticTurn,
         optimisticTurn.id
       )
+      rememberSubmittedPrompt(
+        effectiveConversationId,
+        draft,
+        selectedModeIdArg ?? null
+      )
       setSendSignal((prev) => prev + 1)
       setSyncState(effectiveConversationId, "awaiting_persist")
       setHasSentMessage(true)
@@ -1116,6 +1176,9 @@ const ConversationTabView = memo(function ConversationTabView({
       // turn completes, identical to enqueuing while already prompting. Stamp
       // the bounce so the flush backs off instead of immediately retrying.
       const onTurnInProgress = () => {
+        // This send never became a turn, so a later absorb must not requeue
+        // the same draft again. The queue path below owns it.
+        takeSubmittedPrompt(effectiveConversationId)
         lastFlushBounceAtRef.current = Date.now()
         removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
         // FIFO: the auto-flush draft WAS the queue head → return it to the
@@ -1135,6 +1198,7 @@ const ConversationTabView = memo(function ConversationTabView({
       // isn't blocked forever. The draft is NOT re-queued (unlike the busy
       // bounce): a deterministic failure would retry — and toast — forever.
       const onSendFailed = () => {
+        takeSubmittedPrompt(effectiveConversationId)
         removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
       }
 
@@ -1273,6 +1337,7 @@ const ConversationTabView = memo(function ConversationTabView({
           //   4. re-seed the draft text — message-input clears it synchronously on
           //      send, so without this the user's prompt is lost on failure,
           //   5. surface the error on the welcome banner so it isn't silent.
+          takeSubmittedPrompt(effectiveConversationId)
           removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
           setSyncState(effectiveConversationId, "idle")
           setHasSentMessage(false)
@@ -1293,6 +1358,8 @@ const ConversationTabView = memo(function ConversationTabView({
     },
     [
       appendOptimisticTurn,
+      rememberSubmittedPrompt,
+      takeSubmittedPrompt,
       removeOptimisticTurn,
       mqEnqueue,
       mqRequeueFront,

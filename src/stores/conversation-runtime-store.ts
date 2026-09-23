@@ -14,6 +14,7 @@ import type {
   DbConversationDetail,
   MessageTurn,
   PlanEntryInfo,
+  PromptDraft,
   SessionStats,
   ToolCallStatus,
   TurnUsage,
@@ -273,6 +274,15 @@ export interface ConversationRuntimeSession {
 
   // Cleanup
   pendingCleanup: boolean
+
+  // The prompt most recently handed to the agent, including resource blocks
+  // and the mode of that send. A `busy` absorb requeues this instead of
+  // rebuilding from the optimistic bubble, which only kept images and text.
+  // Optional so session fixtures written before the field still type-check.
+  lastSubmittedPrompt?: {
+    draft: PromptDraft
+    modeId: string | null
+  } | null
 }
 
 interface ConversationRuntimeState {
@@ -479,6 +489,11 @@ type Action =
       error: string | null
     }
   | { type: "REMOVE_CONVERSATION"; conversationId: number }
+  | {
+      type: "SET_SUBMITTED_PROMPT"
+      conversationId: number
+      submitted: { draft: PromptDraft; modeId: string | null } | null
+    }
   | { type: "RESET" }
 
 function createEmptySession(
@@ -510,6 +525,7 @@ function createEmptySession(
     olderTurnsPrependEpoch: 0,
     pendingOutOfTurnContent: false,
     pendingCleanup: false,
+    lastSubmittedPrompt: null,
   }
 }
 
@@ -2201,6 +2217,7 @@ function reducer(
         // reply is already persisted.
         lastTurnOwned: current.syncState === "awaiting_persist",
         pendingBackgroundSettlements: remainingSettlements,
+        lastSubmittedPrompt: null,
       }))
     }
 
@@ -2646,6 +2663,12 @@ function reducer(
         pendingCleanup: action.pendingCleanup,
       }))
 
+    case "SET_SUBMITTED_PROMPT":
+      return updateSessionInState(state, action.conversationId, (current) => ({
+        ...current,
+        lastSubmittedPrompt: action.submitted,
+      }))
+
     case "SET_LIVE_OWNS_ACTIVE_TURN": {
       const current = state.byConversationId.get(action.conversationId)
       // No-op (don't materialize a session) when clearing an absent one with
@@ -2774,6 +2797,14 @@ export interface RuntimeActions {
     kickoffText?: string | null
   ) => void
   removeConversation: (conversationId: number) => void
+  rememberSubmittedPrompt: (
+    conversationId: number,
+    draft: PromptDraft,
+    modeId: string | null
+  ) => void
+  takeSubmittedPrompt: (
+    conversationId: number
+  ) => { draft: PromptDraft; modeId: string | null } | null
   reset: () => void
 }
 
@@ -4269,6 +4300,24 @@ export const useConversationRuntimeStore = create<ConversationRuntimeStore>()((
         value,
         kickoffText,
       }),
+    rememberSubmittedPrompt: (conversationId, draft, modeId) =>
+      dispatch({
+        type: "SET_SUBMITTED_PROMPT",
+        conversationId,
+        submitted: { draft, modeId },
+      }),
+    takeSubmittedPrompt: (conversationId) => {
+      const submitted =
+        get().byConversationId.get(conversationId)?.lastSubmittedPrompt ?? null
+      if (submitted) {
+        dispatch({
+          type: "SET_SUBMITTED_PROMPT",
+          conversationId,
+          submitted: null,
+        })
+      }
+      return submitted
+    },
     removeConversation: (conversationId) => {
       // Invalidate any outstanding fetch for this conversation so a
       // late-arriving response can't resurrect the session with stale
