@@ -1812,8 +1812,11 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // regenerated from the 0.155.1 binary. This is the removal case
             // `types.ts` calls a *ghost* (a stored per-conversation override
             // naming a slug the catalog no longer lists), which is handled
-            // there and needs nothing here. No new fields on `ModelInfo`, so
-            // `BOOL_FIELDS` is unchanged.
+            // there and needs nothing here. No new fields on `ModelInfo`; the
+            // re-probe against the 0.155.1 binary did turn up two strict
+            // booleans `BOOL_FIELDS` had never covered
+            // (`node_repl_auto_review_required` / `node_repl_disabled`, both
+            // already in 0.154), which it now does.
             //
             // (i) Three fixes that arrive free. A root turn that fails or is
             // interrupted now closes ALL child sessions rather than only the one

@@ -68,7 +68,7 @@ struct EnumSpec {
 
 // Authoritative value sets + nullability, extracted from the codex binary itself
 // by feeding it candidate catalogs and reading the full `unknown variant …,
-// expected …` / `invalid type: null, expected …` errors (re-probed on 0.154.0,
+// expected …` / `invalid type: null, expected …` errors (re-probed on 0.155.1,
 // unchanged since 0.147 — treat these as version-specific and re-probe when
 // codex moves).
 fn enum_spec_for(key: &str) -> Option<EnumSpec> {
@@ -104,6 +104,13 @@ fn enum_spec_for(key: &str) -> Option<EnumSpec> {
 /// `supports_experimental_context = "yes"` earns `invalid type: string "yes",
 /// expected a boolean` and takes the WHOLE catalog down with it — probed
 /// against the 0.154.0 binary, same as the rest of this list.
+///
+/// `node_repl_auto_review_required` / `node_repl_disabled` ship as booleans on
+/// every entry and are just as strict: a string earns the same `expected a
+/// boolean` rejection, and so does a `null` — probed against the 0.155.1
+/// binary, which also re-confirmed every other entry here. The editor offers
+/// no control for either, so only an imported or hand-edited override can
+/// carry one, which is exactly the input this list exists to catch.
 const BOOL_FIELDS: &[&str] = &[
     "use_responses_lite",
     "supported_in_api",
@@ -116,6 +123,8 @@ const BOOL_FIELDS: &[&str] = &[
     "include_apps_usage_instructions",
     "include_plugin_usage_instructions",
     "include_skills_usage_instructions",
+    "node_repl_auto_review_required",
+    "node_repl_disabled",
 ];
 
 /// Whether a custom `overrides` entry is safe to write. A single value codex
@@ -920,6 +929,8 @@ mod tests {
                         "supports_reasoning_summary_parameter".into(),
                         Value::Bool(false),
                     ),
+                    ("node_repl_disabled".into(), Value::String("true".into())),
+                    ("node_repl_auto_review_required".into(), Value::Null),
                 ]),
             }],
             ..Default::default()
@@ -928,6 +939,12 @@ mod tests {
         let x = find(&cat, "gw/b").expect("present");
         assert_eq!(x.get("use_responses_lite").unwrap(), &Value::Bool(true));
         assert_eq!(x.get("supports_search_tool").unwrap(), &Value::Bool(true));
+        // The node_repl pair keeps gpt-5.6-sol's own `false`s.
+        assert_eq!(x.get("node_repl_disabled").unwrap(), &Value::Bool(false));
+        assert_eq!(
+            x.get("node_repl_auto_review_required").unwrap(),
+            &Value::Bool(false)
+        );
         // A real boolean still lands.
         assert_eq!(
             x.get("supports_reasoning_summary_parameter").unwrap(),
