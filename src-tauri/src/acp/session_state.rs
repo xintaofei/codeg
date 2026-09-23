@@ -1377,6 +1377,22 @@ impl SessionState {
                         .insert(record.id.clone(), record.clone());
                 }
             }
+            AcpEvent::SessionNotice { .. } => {
+                // Deliberately keeps NOTHING. Unlike its `SessionFailure`
+                // neighbour a notice is not a record: the RFD gives it no id to
+                // merge on, no revision to reject and no history position, and
+                // says outright that an agent must not rely on one being
+                // received or seen. So there is nothing for the snapshot to
+                // carry — a client that attaches mid-session has not missed
+                // state, it has missed an event, and re-raising a past toast on
+                // every attach would be worse than silence.
+                //
+                // The frontend's own mirror of `warning`/`error` notices into
+                // `session_failures` is a CLIENT-side presentation choice and
+                // stays there on purpose: mirroring here too would make the
+                // synthetic records outlive the window that raised them and
+                // come back on every snapshot.
+            }
             AcpEvent::AsyncTask { delta } => {
                 // The SAME merge the frontend reducer applies, so a client
                 // seeded from the snapshot and one that watched every delta

@@ -7,7 +7,8 @@ use sacp::schema::{
     BlobResourceContents, CancelNotification, ClientCapabilities, ContentBlock, ContentChunk,
     CreateTerminalRequest, CreateTerminalResponse, ElicitationCapabilities,
     ElicitationFormCapabilities, EmbeddedResource, EmbeddedResourceResource,
-    FileSystemCapabilities, ImageContent, InitializeRequest, KillTerminalRequest,
+    FileSystemCapabilities, ImageContent, InitializeRequest, InitializeResponse,
+    KillTerminalRequest,
     KillTerminalResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
     NewSessionResponse, PermissionOptionKind, Plan, PlanEntryPriority, PlanEntryStatus,
     PromptRequest, ProtocolVersion, ReadTextFileRequest, ReadTextFileResponse,
@@ -54,8 +55,8 @@ use crate::acp::types::{
     PermissionOptionInfo, PlanEntryInfo, PromptCapabilitiesInfo, PromptInputBlock,
     SessionConfigBooleanInfo, SessionConfigKindInfo, SessionConfigOptionInfo,
     SessionConfigSelectGroupInfo, SessionConfigSelectInfo, SessionConfigSelectOptionInfo,
-    SessionFailureRecord, SessionModeInfo, SessionModeStateInfo, ToolCallImageInfo,
-    UserMessageBlock,
+    SessionFailureRecord, SessionModeInfo, SessionModeStateInfo, SessionNotice,
+    ToolCallImageInfo, UserMessageBlock,
 };
 use crate::logging::throttle::LeadingEdgeThrottle;
 use crate::models::agent::AgentType;
@@ -4446,6 +4447,113 @@ fn build_client_capabilities(
     client_capabilities
 }
 
+/// The `clientCapabilities.session` block, for the agents that implement its
+/// members — or `None`, which is the byte-for-byte status quo.
+///
+/// This exists SEPARATELY from [`build_client_capabilities`] because it cannot
+/// go through it: `session` is a typed sibling field on `ClientCapabilities`,
+/// and codeg's pinned `agent-client-protocol-schema` 0.11.7 has no such field
+/// (nor `Notice` / `CompactionUpdate` on `SessionUpdate`). Unlike every `_meta`
+/// opt-in above it therefore cannot be smuggled through
+/// `ClientCapabilities.meta` — the block has to be grafted onto the serialized
+/// request, which is what [`send_initialize`] does.
+///
+/// That is a presentation limit of the pinned struct, NOT of the wire. Both
+/// members are read straight off the raw capabilities object by the adapters
+/// (`clientSupportsNotices`: `typeof session.notices === "object" && !== null
+/// && !Array.isArray`; codex's `clientSupportsCompaction`:
+/// `session.compaction != null`), and both were probed live over stdio against
+/// 0.81.0 and 1.13.0: the handshake is accepted and the `initialize` RESPONSE
+/// is byte-identical to the same run with the block withheld. The upstream
+/// Rust types exist too (schema 1.9.1 behind `unstable_session_notices` /
+/// `unstable_session_compaction`, runtime `agent-client-protocol` 2.2.0), so
+/// the sacp migration turns this back into a typed field and retires the two
+/// raw readers — the same fate `air_async_task_delta` is waiting for.
+///
+/// Only the two agents that BUILT these get it, per the rule the `_meta`
+/// opt-ins above follow: advertise nothing an agent hasn't implemented.
+///
+/// ⚠️ Both members REPLACE a surface codeg already consumes, so neither may be
+/// advertised without its consumer:
+/// * `notices` outranks the AIR advisory lane (claude publishes its model
+///   fallback advisory only `if (!supportsNotices && supportsAirSessionFailures)`;
+///   codex's readme-dev states the same precedence). The consumer mirrors
+///   `warning`/`error` notices back into `SessionFailureRecord` so the banner
+///   is unchanged — see `session_notice`.
+/// * `compaction` makes both adapters STOP sending the `_meta.contextCompaction`
+///   synthetic tool call that `<ContextCompactionCard>` renders from. The
+///   consumer translates `compaction_update` back into that exact shape, so
+///   the card, the timeline's `"compaction"` render kind and every history
+///   parser keep working unchanged — see `session_compaction_event`.
+///
+/// One accepted loss, recorded because it is silent: with `notices` on, claude
+/// DROPS its `informational` frames at `level === "info"`
+/// (`if (message.level === "info") break;`). Those are plain transcript text
+/// today. Upstream's reason is that they only show in Claude Code's own
+/// transcript mode; `warning`, `notice` and `suggestion` all still arrive.
+fn client_session_capabilities(agent_type: AgentType) -> Option<serde_json::Value> {
+    matches!(agent_type, AgentType::ClaudeCode | AgentType::Codex).then(|| {
+        serde_json::json!({
+            "notices": {},
+            "compaction": {},
+        })
+    })
+}
+
+/// Send `initialize` UNTYPED so the request can carry a `clientCapabilities
+/// .session` block the pinned schema cannot express (see
+/// [`client_session_capabilities`]).
+///
+/// Same in-tree pattern as [`send_new_session_capturing_models`] /
+/// [`send_load_session`]: `UntypedMessage::new` serializes the very same
+/// `InitializeRequest`, and the response is parsed into the very same
+/// `InitializeResponse`. The ONLY wire difference is the grafted `session`
+/// object — and for every agent outside `client_session_capabilities` there is
+/// no difference at all, because the graft is skipped and the serialized bytes
+/// are exactly what the typed send produced. Literal method string because the
+/// schema's method-name constant is `pub(crate)`.
+///
+/// A `serde` failure here is an internal error rather than an agent error: the
+/// caller's ladder distinguishes those by `sacp::Error`, and both of these
+/// arise entirely on codeg's side of the wire.
+async fn send_initialize(
+    cx: &ConnectionTo<Agent>,
+    agent_type: AgentType,
+    req: InitializeRequest,
+) -> Result<InitializeResponse, sacp::Error> {
+    let Some(session) = client_session_capabilities(agent_type) else {
+        // Nothing to graft: send the typed request as-is, through the same
+        // untyped envelope so both paths share one code path below.
+        let untyped_req = UntypedMessage::new("initialize", req).map_err(|e| {
+            sacp::util::internal_error(format!("Failed to build initialize request: {e}"))
+        })?;
+        let raw = cx.send_request_to(Agent, untyped_req).block_task().await?;
+        return serde_json::from_value(raw).map_err(|e| {
+            sacp::util::internal_error(format!("Failed to parse initialize response: {e}"))
+        });
+    };
+    let mut payload = serde_json::to_value(&req).map_err(|e| {
+        sacp::util::internal_error(format!("Failed to serialize initialize request: {e}"))
+    })?;
+    // `clientCapabilities` is always present — `InitializeRequest` holds it as
+    // a non-optional struct — but graft defensively rather than index, so a
+    // schema change that makes it optional degrades to "capability withheld"
+    // instead of panicking on a live connection.
+    if let Some(caps) = payload
+        .get_mut("clientCapabilities")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        caps.insert("session".to_string(), session);
+    }
+    let untyped_req = UntypedMessage::new("initialize", payload).map_err(|e| {
+        sacp::util::internal_error(format!("Failed to build initialize request: {e}"))
+    })?;
+    let raw = cx.send_request_to(Agent, untyped_req).block_task().await?;
+    serde_json::from_value(raw).map_err(|e| {
+        sacp::util::internal_error(format!("Failed to parse initialize response: {e}"))
+    })
+}
+
 fn build_new_session_request(
     agent_type: AgentType,
     cwd: &Path,
@@ -5690,7 +5798,7 @@ async fn run_connection(
             let init_started = std::time::Instant::now();
             let init_resp = match tokio::time::timeout(
                 std::time::Duration::from_secs(60),
-                cx.send_request_to(Agent, init_request).block_task(),
+                send_initialize(&cx, agent_type, init_request),
             )
             .await
             {
@@ -6148,6 +6256,24 @@ async fn run_connection(
                                 // but drop HERE, so it isn't counted as an
                                 // update codeg failed to read.
                                 if air_async_task_delta(&dispatch).is_some() {
+                                    continue;
+                                }
+                                // A notice is a live event with no history
+                                // position — the RFD says outright that it is
+                                // "not part of session history" and that
+                                // repeated notices stay independent. Replaying
+                                // one would raise a toast for something that
+                                // already happened, so drop it on the same
+                                // terms as the task deltas above.
+                                if session_notice(&dispatch).is_some() {
+                                    continue;
+                                }
+                                // Compaction, by contrast, IS history: codex
+                                // 1.13.0 replays each persisted compaction as
+                                // one completed update in its history position,
+                                // which is exactly where the divider belongs.
+                                if let Some(event) = session_compaction_event(&dispatch) {
+                                    emit_with_state(&st, &h, event).await;
                                     continue;
                                 }
                                 let _ = MatchDispatch::new(dispatch)
@@ -9795,6 +9921,13 @@ async fn run_conversation_loop<'a>(
                             // as inside one.
                             if let Some(delta) = air_async_task_delta(&dispatch) {
                                 emit_with_state(&st, &h, AcpEvent::AsyncTask { delta }).await;
+                            } else if let Some(notice) = session_notice(&dispatch) {
+                                // Advisories land outside a turn as readily as
+                                // inside one (a config warning at startup, a
+                                // model reroute between prompts).
+                                emit_with_state(&st, &h, AcpEvent::SessionNotice { notice }).await;
+                            } else if let Some(event) = session_compaction_event(&dispatch) {
+                                emit_with_state(&st, &h, event).await;
                             } else {
                             let drift = &mut config_drift_to_reassert;
                             let _ = MatchDispatch::new(dispatch)
@@ -10114,6 +10247,34 @@ async fn run_conversation_loop<'a>(
                                             AcpEvent::AsyncTask { delta },
                                         )
                                         .await;
+                                    } else if let Some(notice) = session_notice(&dispatch) {
+                                        // Deliberately does NOT set
+                                        // `saw_agent_output`. A notice is an
+                                        // adapter-composed advisory, not
+                                        // something the model said — upstream
+                                        // draws the same line, which is why
+                                        // claude records `Turn.noticeTexts` so
+                                        // its own result-text fallback can skip
+                                        // a result that merely repeats one. A
+                                        // turn whose only output was "a hook
+                                        // blocked this" IS an empty turn.
+                                        emit_with_state(
+                                            &st,
+                                            &h,
+                                            AcpEvent::SessionNotice { notice },
+                                        )
+                                        .await;
+                                    } else if let Some(event) =
+                                        session_compaction_event(&dispatch)
+                                    {
+                                        // Compaction, unlike a notice, IS this
+                                        // turn's work: an auto-compaction is
+                                        // the whole visible result of the turn
+                                        // that tripped the context limit, and a
+                                        // `/compact` turn produces nothing else
+                                        // at all.
+                                        probe.saw_agent_output = true;
+                                        emit_with_state(&st, &h, event).await;
                                     } else if let Err(e) = MatchDispatch::new(dispatch)
                                         .if_notification(
                                             async |notif: SessionNotification| {
@@ -14289,6 +14450,172 @@ fn air_task_usage(value: Option<&serde_json::Value>) -> Option<AsyncTaskUsage> {
         tool_uses: n("toolUses")?,
         duration_ms: n("durationMs")?,
     })
+}
+
+/// Read one ACP Session Notice out of a raw `session/update` dispatch.
+///
+/// Runs BEFORE `MatchDispatch` for the same reason — and by the same mechanism
+/// — as [`air_async_task_delta`]: the pinned `SessionUpdate` is an
+/// internally-tagged enum with no catch-all arm, so a `notice` variant cannot
+/// deserialize, and `if_notification` hard-errors on unparseable params rather
+/// than falling through to `.otherwise()`. Reading it here is the only way to
+/// see it at all. Method-checked as well as shape-checked, because claiming a
+/// dispatch before the typed pipeline is destructive.
+///
+/// `title` is REQUIRED and non-empty per the RFD; a notice without one is
+/// dropped rather than surfaced, since the consumer would have nothing to show
+/// but an empty toast. `description` is optional, and blank is treated as
+/// absent so a whitespace-only detail cannot open an empty second line.
+///
+/// Deliberately NOT gated on `agent_type`, matching [`air_async_task_delta`]:
+/// only the two agents `client_session_capabilities` advertises to should send
+/// these, but if another does, showing the advisory beats dropping it — the
+/// vocabulary is the RFD's, not any one adapter's.
+fn session_notice(dispatch: &Dispatch) -> Option<SessionNotice> {
+    let Dispatch::Notification(msg) = dispatch else {
+        return None;
+    };
+    if msg.method() != "session/update" {
+        return None;
+    }
+    let update = msg.params.get("update")?;
+    if update.get("sessionUpdate").and_then(|v| v.as_str())? != "notice" {
+        return None;
+    }
+    let title = air_task_str(update.get("title"))?;
+    Some(SessionNotice {
+        severity: air_task_str(update.get("severity")).unwrap_or_else(|| "info".to_string()),
+        title,
+        description: air_task_str(update.get("description")),
+    })
+}
+
+/// Translate an ACP compaction frame into the `_meta.contextCompaction`
+/// synthetic tool call codeg already renders compaction from.
+///
+/// Same pre-dispatch seam and the same reason as [`session_notice`]. The
+/// TRANSLATION, rather than a new event, is the point: `<ContextCompactionCard>`
+/// reads `_meta.contextCompaction` and the timeline hoists it to the
+/// `"compaction"` render kind, and four history parsers
+/// (`parsers::{claude,pi,opencode,deepseek}`) synthesize that exact shape from
+/// their logs. Advertising `session.compaction` makes both adapters STOP
+/// sending the legacy call, so anything other than translating it back would
+/// mean rebuilding the card on a second channel and keeping two renderings of
+/// one thing in step. This is the same trick the grok bridge plays for
+/// `auto_compact_completed` (see `grok_ext_session_update_event`).
+///
+/// Field mapping:
+/// * `compactionId` → the tool-call id. Stable across the frame pair, which is
+///   what lets `in_progress` and its terminal frame share one card.
+/// * `status` → `in_progress` | `completed` | `failed` | `cancelled`. An
+///   unknown status is passed through verbatim rather than guessed at; the card
+///   treats anything non-terminal as running.
+/// * `_meta` → forwarded WHOLE. claude fills the reserved
+///   `{version, trigger, preTokens, postTokens, durationMs, error}` block that
+///   the card's full label needs; codex sends none, so a bare `{version: 1}`
+///   stands in — which is exactly what its legacy call carried too, so codex
+///   loses nothing by the move and gains the failed/cancelled states and the
+///   history-position replay it had no way to express before.
+/// * `summary` / `compaction_summary_chunk` → `raw_output`. The card is a
+///   one-line divider that reads only `status` and `_meta`, so this is inert
+///   there; parking it keeps the retained summary — the one thing the legacy
+///   presentation could never carry — instead of dropping it, and leaves a
+///   later expandable surface something to render.
+///
+/// Every frame is a `ToolCallUpdate`, including the opening one, because the
+/// frontend reducer UPSERTS: an update naming an id it has not seen creates the
+/// block (the `existingIndex === -1` arm in `acp-connections-context`, which is
+/// why that action carries a `fallback_title` at all). That keeps this reader
+/// stateless, and it is also what makes the terminal-only orders work — codex
+/// replays a persisted compaction as a lone `completed`, and claude's `settle`
+/// notes the opening status can be missed on replay or a terminal-only runtime.
+fn session_compaction_event(dispatch: &Dispatch) -> Option<AcpEvent> {
+    let Dispatch::Notification(msg) = dispatch else {
+        return None;
+    };
+    if msg.method() != "session/update" {
+        return None;
+    }
+    let update = msg.params.get("update")?;
+    let kind = update.get("sessionUpdate").and_then(|v| v.as_str())?;
+    let compaction_id = air_task_str(update.get("compactionId"))?;
+    match kind {
+        "compaction_update" => {
+            let status = air_task_str(update.get("status"))?;
+            let mut meta = update
+                .get("_meta")
+                .and_then(|m| m.as_object().cloned())
+                .unwrap_or_default();
+            // The card keys off `contextCompaction` specifically; the adapters
+            // nest their reserved fields under it on the legacy call, and
+            // claude repeats that exact block here. Anything else the frame
+            // carried rides along untouched.
+            meta.entry("contextCompaction")
+                .or_insert_with(|| serde_json::json!({"version": 1}));
+            // `error` is a sibling of `status` on the wire but a member of the
+            // card's payload, so fold it in where the card looks for it.
+            if let Some(error) = air_task_str(update.get("error")) {
+                if let Some(payload) = meta
+                    .get_mut("contextCompaction")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    payload
+                        .entry("error")
+                        .or_insert_with(|| serde_json::Value::String(error));
+                }
+            }
+            Some(AcpEvent::ToolCallUpdate {
+                tool_call_id: compaction_id,
+                title: Some(CONTEXT_COMPACTION_TITLE.to_string()),
+                status: Some(status),
+                content: None,
+                raw_input: None,
+                raw_output: compaction_summary_text(update.get("summary")),
+                raw_output_append: None,
+                locations: None,
+                meta: Some(serde_json::Value::Object(meta)),
+                images: None,
+            })
+        }
+        // Streamed continuation of the same compaction's retained summary.
+        // Appended, not replaced — each chunk is a fragment, exactly like the
+        // terminal-output bridge's deltas.
+        "compaction_summary_chunk" => Some(AcpEvent::ToolCallUpdate {
+            tool_call_id: compaction_id,
+            title: None,
+            status: None,
+            content: None,
+            raw_input: None,
+            raw_output: Some(compaction_summary_text(update.get("content"))?),
+            raw_output_append: Some(true),
+            locations: None,
+            meta: None,
+            images: None,
+        }),
+        _ => None,
+    }
+}
+
+/// Title the synthetic compaction call carries, matching the one the grok
+/// bridge and both adapters' legacy calls use.
+const CONTEXT_COMPACTION_TITLE: &str = "Context compaction";
+
+/// Flatten an ACP summary payload — a `ContentBlock` or an array of them — to
+/// its text. Non-text blocks (an image in a summary would be novel) are
+/// skipped rather than stringified into JSON noise.
+fn compaction_summary_text(value: Option<&serde_json::Value>) -> Option<String> {
+    let value = value?;
+    let mut out = String::new();
+    let mut push = |block: &serde_json::Value| {
+        if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+            out.push_str(text);
+        }
+    };
+    match value {
+        serde_json::Value::Array(blocks) => blocks.iter().for_each(&mut push),
+        block => push(block),
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// Convert a SessionUpdate into AcpEvent(s) and emit to frontend.
@@ -19108,6 +19435,256 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    /// Every severity the RFD defines has to survive the raw read, and an
+    /// unknown one has to survive it TOO — grading happens in the consumer,
+    /// which degrades an unrecognized level to `info` rather than dropping it.
+    #[test]
+    fn a_notice_is_read_at_every_severity() {
+        for severity in ["info", "warning", "error", "_vendor_specific"] {
+            let notice = session_notice(&async_task_notif(serde_json::json!({
+                "sessionUpdate": "notice",
+                "severity": severity,
+                "title": "Model fallback",
+                "description": "Switched to Sonnet.",
+            })))
+            .expect("notice");
+            assert_eq!(notice.severity, severity);
+            assert_eq!(notice.title, "Model fallback");
+            assert_eq!(notice.description.as_deref(), Some("Switched to Sonnet."));
+        }
+    }
+
+    /// `title` is required and non-empty per the RFD. Without it there is
+    /// nothing to show, and a toast with an empty body is worse than silence.
+    #[test]
+    fn a_notice_without_a_usable_title_is_dropped() {
+        for title in [serde_json::json!(""), serde_json::json!("   "), serde_json::Value::Null] {
+            assert!(
+                session_notice(&async_task_notif(serde_json::json!({
+                    "sessionUpdate": "notice",
+                    "severity": "warning",
+                    "title": title,
+                })))
+                .is_none(),
+                "blank title must not produce a notice"
+            );
+        }
+        // A blank description is absence, not an empty second line.
+        let notice = session_notice(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "notice",
+            "severity": "warning",
+            "title": "Fast mode turned off",
+            "description": "  ",
+        })))
+        .expect("notice");
+        assert_eq!(notice.description, None);
+        // Severity is the one field with a sane default: a notice that reached
+        // us without one is still worth showing.
+        let notice = session_notice(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "notice",
+            "title": "Context compacted",
+        })))
+        .expect("notice");
+        assert_eq!(notice.severity, "info");
+    }
+
+    /// Claiming a dispatch before the typed pipeline is destructive, so both
+    /// readers have to be exact about what they claim.
+    #[test]
+    fn the_session_readers_claim_only_their_own_frames() {
+        assert!(session_notice(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "agent_message_chunk",
+            "title": "not a notice",
+        })))
+        .is_none());
+        assert!(session_compaction_event(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "agent_message_chunk",
+            "compactionId": "cmp_1",
+        })))
+        .is_none());
+        // Neither rides anything but `session/update` — an extension method
+        // that happens to nest the same shape must not be swallowed.
+        let other_method = Dispatch::Notification(
+            UntypedMessage::new(
+                "_x.ai/session/update",
+                serde_json::json!({
+                    "sessionId": "s",
+                    "update": {"sessionUpdate": "notice", "severity": "error", "title": "nope"},
+                }),
+            )
+            .unwrap(),
+        );
+        assert!(session_notice(&other_method).is_none());
+        assert!(session_compaction_event(&other_method).is_none());
+    }
+
+    /// The whole point of the translation: claude's reserved `_meta` block is
+    /// what the card's full label (counts, duration, trigger) is built from, so
+    /// it has to arrive on the synthetic call untouched.
+    #[test]
+    fn a_claude_compaction_update_keeps_its_reserved_meta() {
+        let event = session_compaction_event(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "compaction_update",
+            "compactionId": "cmp_1",
+            "status": "completed",
+            "_meta": {"contextCompaction": {
+                "version": 1, "trigger": "automatic",
+                "preTokens": 180000, "postTokens": 42000, "durationMs": 3200,
+            }},
+        })))
+        .expect("compaction event");
+        match event {
+            AcpEvent::ToolCallUpdate {
+                tool_call_id,
+                status,
+                title,
+                meta,
+                ..
+            } => {
+                assert_eq!(tool_call_id, "cmp_1");
+                assert_eq!(status.as_deref(), Some("completed"));
+                assert_eq!(title.as_deref(), Some(CONTEXT_COMPACTION_TITLE));
+                let payload = meta
+                    .as_ref()
+                    .and_then(|m| m.get("contextCompaction"))
+                    .expect("card payload");
+                assert_eq!(payload.get("trigger").and_then(|v| v.as_str()), Some("automatic"));
+                assert_eq!(payload.get("preTokens").and_then(|v| v.as_u64()), Some(180000));
+                assert_eq!(payload.get("postTokens").and_then(|v| v.as_u64()), Some(42000));
+                assert_eq!(payload.get("durationMs").and_then(|v| v.as_u64()), Some(3200));
+            }
+            other => panic!("expected a ToolCallUpdate, got {other:?}"),
+        }
+    }
+
+    /// codex sends no `_meta` at all (its legacy call carried none either), so
+    /// the card must still be recognizable — recognition is by the
+    /// `contextCompaction` key, not by anything inside it.
+    #[test]
+    fn a_codex_compaction_update_is_still_recognizable_without_meta() {
+        for status in ["in_progress", "completed", "failed", "cancelled"] {
+            let event = session_compaction_event(&async_task_notif(serde_json::json!({
+                "sessionUpdate": "compaction_update",
+                "compactionId": "item_7",
+                "status": status,
+            })))
+            .expect("compaction event");
+            match event {
+                AcpEvent::ToolCallUpdate { status: got, meta, .. } => {
+                    assert_eq!(got.as_deref(), Some(status));
+                    assert!(
+                        meta.as_ref()
+                            .and_then(|m| m.get("contextCompaction"))
+                            .is_some(),
+                        "the card keys off this marker"
+                    );
+                }
+                other => panic!("expected a ToolCallUpdate, got {other:?}"),
+            }
+        }
+    }
+
+    /// A failed compaction's reason is a SIBLING of `status` on the wire but a
+    /// member of the card's payload, so it has to be folded in where the card
+    /// looks — otherwise the divider says "failed" with no reason.
+    #[test]
+    fn a_failed_compaction_carries_its_error_into_the_card_payload() {
+        let event = session_compaction_event(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "compaction_update",
+            "compactionId": "cmp_2",
+            "status": "failed",
+            "error": "Codex ended the turn before compaction completed.",
+        })))
+        .expect("compaction event");
+        let AcpEvent::ToolCallUpdate { meta, .. } = event else {
+            panic!("expected a ToolCallUpdate");
+        };
+        assert_eq!(
+            meta.as_ref()
+                .and_then(|m| m.get("contextCompaction"))
+                .and_then(|p| p.get("error"))
+                .and_then(|v| v.as_str()),
+            Some("Codex ended the turn before compaction completed.")
+        );
+    }
+
+    /// The retained summary is the one thing the legacy presentation could
+    /// never carry. It is parked on `raw_output` — inert for today's one-line
+    /// divider, but not dropped — and the streamed chunks APPEND.
+    #[test]
+    fn a_compaction_summary_is_parked_on_raw_output_and_chunks_append() {
+        let event = session_compaction_event(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "compaction_update",
+            "compactionId": "cmp_3",
+            "status": "completed",
+            "summary": [{"type": "text", "text": "We refactored the parser."}],
+        })))
+        .expect("compaction event");
+        let AcpEvent::ToolCallUpdate {
+            raw_output,
+            raw_output_append,
+            ..
+        } = event
+        else {
+            panic!("expected a ToolCallUpdate");
+        };
+        assert_eq!(raw_output.as_deref(), Some("We refactored the parser."));
+        assert_eq!(raw_output_append, None, "the settled summary REPLACES");
+
+        let chunk = session_compaction_event(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "compaction_summary_chunk",
+            "compactionId": "cmp_3",
+            "content": {"type": "text", "text": " Then the tests."},
+        })))
+        .expect("summary chunk");
+        let AcpEvent::ToolCallUpdate {
+            tool_call_id,
+            status,
+            raw_output,
+            raw_output_append,
+            ..
+        } = chunk
+        else {
+            panic!("expected a ToolCallUpdate");
+        };
+        assert_eq!(tool_call_id, "cmp_3");
+        assert_eq!(status, None, "a summary chunk must not touch the status");
+        assert_eq!(raw_output.as_deref(), Some(" Then the tests."));
+        assert_eq!(raw_output_append, Some(true), "chunks append");
+    }
+
+    /// `session` is grafted onto the request for the two agents that built
+    /// these, and for NOBODY else — an initialize regression is a connection
+    /// that cannot open at all, so the withheld case must be byte-identical to
+    /// the typed send.
+    #[test]
+    fn the_session_capability_block_reaches_only_its_two_agents() {
+        for agent in [AgentType::ClaudeCode, AgentType::Codex] {
+            let caps = client_session_capabilities(agent).expect("advertised");
+            // Both members must be OBJECTS: claude tests
+            // `typeof notices === "object" && !== null && !Array.isArray`, and
+            // codex's compaction gate is `!= null`.
+            assert!(caps.get("notices").is_some_and(|v| v.is_object()), "{agent:?}");
+            assert!(caps.get("compaction").is_some_and(|v| v.is_object()), "{agent:?}");
+        }
+        for agent in [
+            AgentType::Gemini,
+            AgentType::Pi,
+            AgentType::Grok,
+            AgentType::DeepSeek,
+            AgentType::OpenCode,
+            // A custom agent wrapping either adapter is deliberately NOT
+            // advertised to: the id it resolves through is the user's, so
+            // codeg cannot know what binary is behind it.
+            AgentType::Custom("my-agent"),
+        ] {
+            assert!(
+                client_session_capabilities(agent).is_none(),
+                "{agent:?} never implemented these; advertising would be a lie"
+            );
+        }
     }
 
     /// The spawn frame is the only one carrying the task's identity, so every

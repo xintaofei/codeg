@@ -920,33 +920,43 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // the four invalidate a reason recorded elsewhere, which is why they
             // are written down rather than skipped.
             //
-            // (p) `compaction_update` (#1134), the release headline and the one
-            // item that is OUT OF REACH at this schema pin rather than merely
-            // declined. `clientSupportsCompactionUpdates` gates on
+            // (p) `compaction_update` (#1134), the release headline.
+            // `clientSupportsCompactionUpdates` gates on
             // `clientCapabilities.session.compaction` being an object — a real
             // typed field, NOT an `_meta` key, so unlike every other opt-in on
-            // this list it cannot be smuggled through `ClientCapabilities.meta`.
+            // this list it cannot be smuggled through `ClientCapabilities.meta`:
             // codeg's pinned `agent-client-protocol-schema` 0.11.7 has no
             // `session` field on `ClientCapabilities` at all, and no
-            // `CompactionUpdate` / `CompactionSummaryChunk` on `SessionUpdate`;
-            // both arrived later behind `unstable_session_compaction` (they are
-            // in 1.7.0). Opting in would therefore mean hand-serializing a
-            // capability the typed struct cannot express AND a raw pre-dispatch
-            // reader for two notification variants — and then it repeats the
-            // `nativeSubagentSessions` trade exactly: with the capability on,
+            // `CompactionUpdate` / `CompactionSummaryChunk` on `SessionUpdate`
+            // (both arrived later behind `unstable_session_compaction`).
+            //
+            // ⚠️ THIS ENTRY USED TO CALL THAT "out of reach at this schema pin".
+            // It is not, and the correction is worth stating because the same
+            // wrong inference was drawn twice more below. The pin limits what
+            // the TYPED STRUCTS can say, not what codeg can put on the wire:
+            // `session/new` and `session/load` already go out as
+            // `UntypedMessage`s, and `air_async_task_delta` already reads three
+            // variants this very `SessionUpdate` cannot deserialize. Opting in
+            // costs exactly those two established moves — an untyped
+            // `initialize` that grafts the capability on
+            // (`send_initialize` + `client_session_capabilities`) and a raw
+            // pre-dispatch reader (`session_compaction_event`) — and codeg now
+            // does both.
+            //
+            // The `nativeSubagentSessions` trade does NOT repeat here, which is
+            // what makes this one worth taking. True: with the capability on,
             // `ContextCompactionLifecycle` returns before its `tool_call`
             // branch, so the `_meta.contextCompaction` call that
-            // `<ContextCompactionCard>` renders from simply stops being sent,
-            // and codeg would have to rebuild the card on the raw channel to
-            // stand still. What it buys is real — the retained summary text, as
-            // `summary` plus streaming `compaction_summary_chunk`s, which the
-            // legacy presentation never carries (`recordSummary` early-returns
-            // unless the presentation is `compaction_update`) — but the gap it
-            // closes is already covered on the history side: `parsers::claude`
-            // routes the persisted continuation message
-            // (`CONTEXT_CONTINUATION_PREFIX`) to a System role, and the live
-            // `user_message_chunk` that carries it is not rendered at all. Worth
-            // revisiting when the sacp/schema migration lands, not before.
+            // `<ContextCompactionCard>` renders from stops being sent. But
+            // unlike a subagent capsule, that call carries no information the
+            // new frames lack — `compaction_update` repeats the same `_meta`
+            // block — so the reader translates it straight back into the legacy
+            // shape and the card, the timeline's `"compaction"` render kind and
+            // all four history parsers keep working untouched. What it buys on
+            // top: the retained summary text (`summary` plus streaming
+            // `compaction_summary_chunk`s, which the legacy presentation never
+            // carries — `recordSummary` early-returns unless the presentation
+            // is `compaction_update`), and real `failed`/`cancelled` states.
             //
             // (q) The file-change report went native (#1138), and with it the
             // COST half of the "agentFileChangeReport stays out" record in
@@ -1189,7 +1199,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // uncorrelated hooks the abandoned work keeps emitting until a new
             // turn's dispatch calls `resume()`. codeg renders compaction from
             // the legacy `_meta.contextCompaction` tool call (the
-            // `compaction_update` presentation is still out of reach, see (p)),
+            // the `compaction_update` presentation too, see (p)),
             // and that call is exactly what used to be left `in_progress`
             // forever when a `/compact` was interrupted. A free fix.
             //
@@ -1206,32 +1216,40 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // first turn after a resume were inflated by the entire prior
             // session. Nothing to do beyond the bump.
             //
-            // (aa) Session Notices (#1155) is the release headline and, like
-            // `compaction_update` in (p), is OUT OF REACH at this schema pin
-            // rather than declined: `clientSupportsNotices` gates on
-            // `clientCapabilities.session.notices` being an object — a typed
-            // field, not an `_meta` key — and codeg's pinned
-            // `agent-client-protocol-schema` 0.11.7 has no `session` field on
-            // `ClientCapabilities` and no `Notice` variant on `SessionUpdate`.
-            // Both exist upstream now (schema 1.9.1, `unstable_session_notices`;
-            // runtime `agent-client-protocol` 2.2.0), so this is one more thing
-            // the sacp migration buys rather than a standing gap. Worth writing
-            // down BEFORE that migration, because advertising it is not a pure
-            // win and the trade has to be made deliberately:
+            // (aa) Session Notices (#1155), the release headline, and taken —
+            // by the same two moves as `compaction_update` in (p), which see
+            // for why the "out of reach at this schema pin" reading this entry
+            // originally carried was wrong. `clientSupportsNotices` gates on
+            // `clientCapabilities.session.notices` being an object, so
+            // `client_session_capabilities` grafts it onto an untyped
+            // `initialize` and `session_notice` reads the variant the pinned
+            // `SessionUpdate` cannot. Probed live over stdio against 0.81.0:
+            // the handshake is accepted and the `initialize` RESPONSE is
+            // byte-identical to the same run with the block withheld.
+            //
+            // Advertising is not a pure win, and both halves of the trade are
+            // paid for rather than absorbed:
             //
             // * It takes over the AIR lane. The model-fallback advisory is
             //   `if (!supportsNotices && supportsAirSessionFailures(...))`, so
-            //   turning notices on silently stops feeding codeg's existing
-            //   `SessionFailure` banner. codex-acp says the same in its
+            //   turning notices on stops feeding codeg's existing
+            //   `SessionFailure` banner; codex-acp says the same in its
             //   readme-dev ("notices take precedence over AIR advisory
-            //   records"). The notice consumer has to ship in the same change.
+            //   records"). PAID: `sessionFailureFromNotice` mirrors
+            //   `warning`/`error` notices back into that table, so the banner
+            //   keeps its rows. Only ADVISORY-class records move — the real
+            //   failures that carry `retry`/`login` actions never went through
+            //   this lane (the extension doc: a `warning` "may still succeed
+            //   and normally has no actions"), so no button is lost.
             // * It DROPS `informational` frames at `level === "info"` outright
             //   (`if (message.level === "info") break;`). Those are plain
-            //   transcript text today. Everything else that becomes a notice —
-            //   model fallback, Auto-mode fallback, Fast mode turned off, hook
-            //   block reasons, "Task stopped by user" — is currently a
-            //   `**bold label:** …` agent message, which is the presentation
-            //   worth replacing.
+            //   transcript text today. ACCEPTED: upstream's reason is that
+            //   they only show in Claude Code's own transcript mode, and
+            //   `warning`, `notice` and `suggestion` all still arrive.
+            //   Everything else that becomes a notice — model fallback,
+            //   Auto-mode fallback, Fast mode turned off, hook block reasons,
+            //   "Task stopped by user" — is currently a `**bold label:** …`
+            //   agent message, which is the presentation worth replacing.
             distribution: AgentDistribution::Npx {
                 version: "0.81.0",
                 package: "@agentclientprotocol/claude-agent-acp@0.81.0",
@@ -1728,15 +1746,34 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // both. `engines` is still absent, so the 20.0.0 floor stays.
             //
             // (f) Session Notices (#532) and ACP session compaction (#515) are
-            // both out of reach at the pinned schema for exactly the reason the
-            // claude entry's (aa) and (p) give — `clientCapabilities.session
-            // .notices` / `.compaction` are typed fields, not `_meta` keys. What
-            // codex adds to the claude-side note is the LIST: with notices on,
-            // config warnings, deprecation notices, plain warnings, model
-            // rerouting and the legacy `thread/compacted` advisory all leave the
-            // channels codeg reads today (assistant/thought text, or the AIR
-            // `sessionFailure` record) for `notice` updates. Same conclusion,
-            // same reason to do it together with the migration.
+            // both TAKEN, by the same two moves the claude entry's (aa) and (p)
+            // describe — `clientCapabilities.session.notices` / `.compaction`
+            // are typed fields the pinned struct cannot say, so they are
+            // grafted onto an untyped `initialize` and read back before the
+            // typed pipeline. Probed live over stdio against 1.13.0 alongside
+            // claude: handshake accepted, `initialize` response byte-identical
+            // to the withheld run.
+            //
+            // What codex adds to the claude-side note is the LIST of what
+            // moves: with notices on, config warnings, deprecation notices,
+            // plain warnings, model rerouting and the legacy `thread/compacted`
+            // advisory all leave the channels codeg reads today for `notice`
+            // updates. Two of those are a straight UPGRADE rather than a
+            // trade, because their current channel is not a surface at all:
+            // `modelRerouted` is a THOUGHT chunk today (it pollutes reasoning
+            // with "Model rerouted from X to Y"), and a deprecation notice
+            // reaches a client only through AIR. The rest land in the banner
+            // mirror, same as claude's.
+            //
+            // Compaction is where codex gains most. Its legacy call carries
+            // none of the reserved fields (the card's full label was only ever
+            // reachable on claude), it cannot express a failed or interrupted
+            // compaction at all, and `thread/compacted` "cannot distinguish
+            // multiple compactions within one turn" (upstream's own words).
+            // `compaction_update` fixes all three and adds history-position
+            // replay — and `session_compaction_event` translates it back into
+            // the legacy `_meta.contextCompaction` shape, so none of that costs
+            // the card a line.
             //
             // (g) **codeg now reads codex's terminal output channel** (#528 is
             // what made this legible, but the channel itself is older). codex
@@ -2425,14 +2462,21 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             //   `resource_not_found` copy — a stale workspace id stops looking
             //   like an agent crash.
             //
-            // The fifth, context compaction, is the one codeg cannot take on
-            // the wire: `compaction_update` / `compaction_summary_chunk` are
-            // gated behind a `clientCapabilities.session.compaction` that the
-            // pinned `agent-client-protocol-schema` (0.11) can neither
-            // advertise nor deserialize, so the agent correctly stays silent.
-            // Compaction still HAPPENS (auto at the window limit, or `/compact`)
-            // and still lands in the log, so `parsers::deepseek` renders it
-            // from there — see its `compaction/*` arm.
+            // The fifth, context compaction, stays off for DEEPSEEK
+            // specifically — and the reason is no longer "the pinned schema
+            // can neither advertise nor deserialize it", which is what this
+            // entry used to say (see the claude entry's (p) for the correction:
+            // `client_session_capabilities` grafts the capability onto an
+            // untyped `initialize` and `session_compaction_event` reads the
+            // variants back). It stays off because
+            // `client_session_capabilities` only advertises to the two agents
+            // that BUILT these — the same "advertise nothing an agent hasn't
+            // implemented" rule every other opt-in follows. Nothing here
+            // reports deepseek-acp implementing the RFD; if a release does, it
+            // joins that match arm and needs no other change.
+            // Meanwhile compaction still HAPPENS (auto at the window limit, or
+            // `/compact`) and still lands in the log, so `parsers::deepseek`
+            // renders it from there — see its `compaction/*` arm.
             //
             // What `parsers::deepseek` did have to learn is the log's two new
             // shapes: `image` content blocks (bytes live in the content-
