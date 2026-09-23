@@ -26,6 +26,7 @@ import {
   type AdaptedContentPart,
   type AdaptedMessage,
   type MessageTurnAdapter,
+  type ToolCallState,
   type UserImageDisplay,
   type UserResourceDisplay,
 } from "@/lib/adapters/ai-elements-adapter"
@@ -214,6 +215,9 @@ export type ThreadRenderItem =
       /** The retained summary, when the backend claimed one for this call
        *  (see `contextCompactionSummary`). */
       summary?: string | null
+      /** The call's lifecycle, so a `/compact` still running reads as
+       *  compacting and its summary streams. */
+      state?: ToolCallState
     }
 
 /**
@@ -528,9 +532,10 @@ function isEmptyTurnItem(item: ThreadRenderItem): boolean {
  * carries a truthy `_meta` (`contextCompaction` as the boolean marker or the
  * 1.3.0+ versioned object), so a non-null return is unambiguous.
  */
-function compactionOnlyPart(group: ResolvedMessageGroup): {
+export function compactionOnlyPart(group: ResolvedMessageGroup): {
   meta: Record<string, unknown> | null
   summary: string | null
+  state: ToolCallState
 } | null {
   if (group.role !== "assistant") return null
   if (group.resources.length > 0 || group.images.length > 0) return null
@@ -545,6 +550,7 @@ function compactionOnlyPart(group: ResolvedMessageGroup): {
   return {
     meta: only.meta ?? null,
     summary: contextCompactionSummary(only.meta, only.output),
+    state: only.state,
   }
 }
 
@@ -1205,6 +1211,7 @@ export function MessageListView({
           kind: "compaction" as const,
           meta: compaction.meta,
           summary: compaction.summary,
+          state: compaction.state,
         }
       }
       return {
@@ -1393,7 +1400,11 @@ export function MessageListView({
           // Chrome-less centered divider between turns (no avatar / stats footer).
           return (
             <div className="px-1 py-2">
-              <ContextCompactionCard meta={item.meta} summary={item.summary} />
+              <ContextCompactionCard
+                state={item.state}
+                meta={item.meta}
+                summary={item.summary}
+              />
             </div>
           )
         default:

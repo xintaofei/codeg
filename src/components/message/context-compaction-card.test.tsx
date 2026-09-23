@@ -163,16 +163,31 @@ describe("ContextCompactionCard", () => {
     ).not.toBeInTheDocument()
   })
 
-  it("lets a summary be read while it is still streaming in", () => {
+  // An unterminated `**` is the tell: streaming mode completes it into bold,
+  // static mode prints the asterisks.
+  it("renders a summary that is still arriving in streaming mode", () => {
     renderCard({
       state: "input-available",
       meta: { contextCompaction: { version: 1 } },
-      summary: "Partial summ",
+      summary: "We kept **the pars",
     })
     expect(screen.getByText("Compacting context…")).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: /Summary/ }))
-    expect(screen.getByTestId("context-compaction-summary")).toHaveTextContent(
-      "Partial summ"
+    const body = screen.getByTestId("context-compaction-summary")
+    expect(body.querySelector('[data-streamdown="strong"]')).toHaveTextContent(
+      "the pars"
     )
+  })
+
+  it("renders a settled summary as static markdown", () => {
+    renderCard({
+      state: "output-available",
+      meta: { contextCompaction: { version: 1 } },
+      summary: "We kept **the pars",
+    })
+    fireEvent.click(screen.getByRole("button", { name: /Summary/ }))
+    const body = screen.getByTestId("context-compaction-summary")
+    expect(body.querySelector('[data-streamdown="strong"]')).toBeNull()
+    expect(body).toHaveTextContent("We kept **the pars")
   })
 })
