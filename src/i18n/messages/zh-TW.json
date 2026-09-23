@@ -3837,6 +3837,7 @@
         "compacted": "上下文已壓縮",
         "compactedTokens": "上下文已壓縮 · {before} → {after} tokens",
         "failed": "上下文壓縮失敗",
+        "summary": "摘要",
         "triggerManual": "手動觸發",
         "triggerAutomatic": "自動觸發"
       },

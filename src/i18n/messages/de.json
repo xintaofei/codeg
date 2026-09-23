@@ -3837,6 +3837,7 @@
         "compacted": "Kontext komprimiert",
         "compactedTokens": "Kontext komprimiert · {before} → {after} Tokens",
         "failed": "Kontextkomprimierung fehlgeschlagen",
+        "summary": "Zusammenfassung",
         "triggerManual": "Manuell ausgelöst",
         "triggerAutomatic": "Automatisch ausgelöst"
       },

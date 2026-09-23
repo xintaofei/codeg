@@ -3837,6 +3837,7 @@
         "compacted": "Context compacted",
         "compactedTokens": "Context compacted · {before} → {after} tokens",
         "failed": "Context compaction failed",
+        "summary": "Summary",
         "triggerManual": "Manually triggered",
         "triggerAutomatic": "Automatically triggered"
       },

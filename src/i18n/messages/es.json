@@ -3837,6 +3837,7 @@
         "compacted": "Contexto compactado",
         "compactedTokens": "Contexto compactado · {before} → {after} tokens",
         "failed": "Error al compactar el contexto",
+        "summary": "Resumen",
         "triggerManual": "Activada manualmente",
         "triggerAutomatic": "Activada automáticamente"
       },

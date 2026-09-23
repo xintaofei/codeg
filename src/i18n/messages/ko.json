@@ -3837,6 +3837,7 @@
         "compacted": "컨텍스트 압축 완료",
         "compactedTokens": "컨텍스트 압축 완료 · {before} → {after} 토큰",
         "failed": "컨텍스트 압축 실패",
+        "summary": "요약",
         "triggerManual": "수동 실행",
         "triggerAutomatic": "자동 실행"
       },

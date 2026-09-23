@@ -14516,11 +14516,14 @@ fn session_notice(dispatch: &Dispatch) -> Option<SessionNotice> {
 ///   stands in — which is exactly what its legacy call carried too, so codex
 ///   loses nothing by the move and gains the failed/cancelled states and the
 ///   history-position replay it had no way to express before.
-/// * `summary` / `compaction_summary_chunk` → `raw_output`. The card is a
-///   one-line divider that reads only `status` and `_meta`, so this is inert
-///   there; parking it keeps the retained summary — the one thing the legacy
-///   presentation could never carry — instead of dropping it, and leaves a
-///   later expandable surface something to render.
+/// * `summary` / `compaction_summary_chunk` → `raw_output`, the channel that
+///   already streams (chunks append) and already survives snapshot and
+///   promotion. It is the retained summary — the one thing the legacy
+///   presentation could never carry — and the card expands to show it. Every
+///   `compaction_update` also stamps [`COMPACTION_SUMMARY_META_KEY`], because
+///   `raw_output` on its own proves nothing: claude's LEGACY call parks its
+///   metadata object there (`rawOutput: metadata` in `finish`), so without an
+///   explicit claim an older adapter's counts would render as a "summary".
 ///
 /// Every frame is a `ToolCallUpdate`, including the opening one, because the
 /// frontend reducer UPSERTS: an update naming an id it has not seen creates the
@@ -14552,6 +14555,10 @@ fn session_compaction_event(dispatch: &Dispatch) -> Option<AcpEvent> {
             // carried rides along untouched.
             meta.entry("contextCompaction")
                 .or_insert_with(|| serde_json::json!({"version": 1}));
+            meta.insert(
+                COMPACTION_SUMMARY_META_KEY.to_string(),
+                serde_json::Value::Bool(true),
+            );
             // `error` is a sibling of `status` on the wire but a member of the
             // card's payload, so fold it in where the card looks for it.
             if let Some(error) = air_task_str(update.get("error")) {
@@ -14599,6 +14606,14 @@ fn session_compaction_event(dispatch: &Dispatch) -> Option<AcpEvent> {
 /// Title the synthetic compaction call carries, matching the one the grok
 /// bridge and both adapters' legacy calls use.
 const CONTEXT_COMPACTION_TITLE: &str = "Context compaction";
+
+/// `_meta` key claiming that a compaction call's `raw_output` IS its retained
+/// summary. Only [`session_compaction_event`] sets it, so it marks exactly the
+/// calls translated from the ACP compaction lifecycle. Codeg-namespaced (like
+/// `codeg.delegation`) rather than nested in `contextCompaction`, whose members
+/// are the adapters' reserved vocabulary. The frontend twin is
+/// `COMPACTION_SUMMARY_META_KEY` in `src/lib/context-compaction.ts`.
+const COMPACTION_SUMMARY_META_KEY: &str = "codeg.compactionSummary";
 
 /// Flatten an ACP summary payload — a `ContentBlock` or an array of them — to
 /// its text. Non-text blocks (an image in a summary would be novel) are
@@ -19661,10 +19676,12 @@ mod tests {
     }
 
     /// The retained summary is the one thing the legacy presentation could
-    /// never carry. It is parked on `raw_output` — inert for today's one-line
-    /// divider, but not dropped — and the streamed chunks APPEND.
+    /// never carry. It rides `raw_output` — the streamed chunks APPEND — and
+    /// every translated update claims that channel with the codeg marker the
+    /// card expands on, because a bare `raw_output` is exactly what a legacy
+    /// call fills with its metadata object.
     #[test]
-    fn a_compaction_summary_is_parked_on_raw_output_and_chunks_append() {
+    fn a_compaction_summary_is_carried_on_raw_output_and_claimed_by_the_marker() {
         let event = session_compaction_event(&async_task_notif(serde_json::json!({
             "sessionUpdate": "compaction_update",
             "compactionId": "cmp_3",
@@ -19675,6 +19692,7 @@ mod tests {
         let AcpEvent::ToolCallUpdate {
             raw_output,
             raw_output_append,
+            meta,
             ..
         } = event
         else {
@@ -19682,6 +19700,30 @@ mod tests {
         };
         assert_eq!(raw_output.as_deref(), Some("We refactored the parser."));
         assert_eq!(raw_output_append, None, "the settled summary REPLACES");
+        assert_eq!(
+            meta.as_ref().and_then(|m| m.get(COMPACTION_SUMMARY_META_KEY)),
+            Some(&serde_json::Value::Bool(true))
+        );
+
+        // The opening frame carries no summary yet, but it is the frame that
+        // opens the card, so it has to make the claim too.
+        let opening = session_compaction_event(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "compaction_update",
+            "compactionId": "cmp_3",
+            "status": "in_progress",
+        })))
+        .expect("opening frame");
+        let AcpEvent::ToolCallUpdate {
+            raw_output, meta, ..
+        } = opening
+        else {
+            panic!("expected a ToolCallUpdate");
+        };
+        assert_eq!(raw_output, None);
+        assert_eq!(
+            meta.as_ref().and_then(|m| m.get(COMPACTION_SUMMARY_META_KEY)),
+            Some(&serde_json::Value::Bool(true))
+        );
 
         let chunk = session_compaction_event(&async_task_notif(serde_json::json!({
             "sessionUpdate": "compaction_summary_chunk",
@@ -19694,6 +19736,7 @@ mod tests {
             status,
             raw_output,
             raw_output_append,
+            meta,
             ..
         } = chunk
         else {
@@ -19703,6 +19746,8 @@ mod tests {
         assert_eq!(status, None, "a summary chunk must not touch the status");
         assert_eq!(raw_output.as_deref(), Some(" Then the tests."));
         assert_eq!(raw_output_append, Some(true), "chunks append");
+        // `_meta` is replace-on-update, and the lifecycle frames own it.
+        assert_eq!(meta, None, "a summary chunk must not touch the meta");
     }
 
     /// `session` is grafted onto the request for the two agents that built
