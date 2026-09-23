@@ -20266,7 +20266,7 @@ mod tests {
             }
         }
         let waker = std::task::Waker::noop();
-        let mut cx = std::task::Context::from_waker(&waker);
+        let mut cx = std::task::Context::from_waker(waker);
         let mut fut = Box::pin(PollBomb { polls: 0 });
         assert!(std::future::Future::poll(fut.as_mut(), &mut cx).is_ready());
         abandon_prompt_response(false, fut);
