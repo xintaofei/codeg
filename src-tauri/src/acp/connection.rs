@@ -9741,7 +9741,8 @@ fn turn_failure_error_event(
 /// `end_turn` is the unread absorb; a slower silent turn stays `"empty"`.
 const SYNTHETIC_BUSY_TURN_MAX: std::time::Duration = std::time::Duration::from_millis(500);
 /// `select` can read the prompt response before the notice that is already
-/// queued. Wait this long before requeueing a fast empty `end_turn`.
+/// queued. Wait this long before settling a fast `end_turn` whose notice
+/// flag is still clear, including when a live chunk was already noted.
 const ABSORB_NOTICE_RACE: std::time::Duration = std::time::Duration::from_millis(250);
 /// Quiet period after the last update of a followed absorb. The reply streams
 /// on the same session, with no second `session/prompt` to own it.
@@ -9816,6 +9817,38 @@ fn busy_prompt_disposition(
     None
 }
 
+/// Fast non-steering `end_turn` whose absorb notice is still unread.
+/// `saw_agent_output` does not clear this — that chunk is the live turn,
+/// and the notice may already be sitting in the update channel. Callers
+/// arm [`ABSORB_NOTICE_RACE`] instead of `finish_turn_reason`. `None` from
+/// [`busy_prompt_disposition`] still means the eventual settle is `end_turn`
+/// when the notice never arrives.
+fn end_turn_needs_absorb_notice_race(
+    native_steering_available: bool,
+    elapsed: std::time::Duration,
+    raw_reason: &str,
+    probe: &TurnOutputProbe,
+) -> bool {
+    !native_steering_available
+        && raw_reason == "end_turn"
+        && probe.saw_agent_output
+        && !probe.saw_busy_absorb_notice
+        && elapsed <= SYNTHETIC_BUSY_TURN_MAX
+}
+
+fn permission_queue_blocked(queue: &PermissionQueue) -> bool {
+    queue.showing.is_some()
+        || !queue.waiting.is_empty()
+        || queue.detached.iter().any(|tx| !tx.is_closed())
+}
+
+async fn session_absorb_blocked(state: &Arc<RwLock<SessionState>>) -> bool {
+    let session = state.read().await;
+    session.pending_permission.is_some()
+        || session.pending_question.is_some()
+        || session.pending_plan_approval.is_some()
+}
+
 /// A permission, question, or plan approval is outstanding. The absorb quiet
 /// timer must not run across that wait: firing it cancels the card.
 async fn absorb_follow_blocked(
@@ -9823,19 +9856,40 @@ async fn absorb_follow_blocked(
     perms: &PendingPermissions,
 ) -> bool {
     // Permission-queue mutex before the session lock. See `PermissionQueue`.
-    let queue_blocked = {
-        let queue = perms.lock().await;
-        queue.showing.is_some()
-            || !queue.waiting.is_empty()
-            || queue.detached.iter().any(|tx| !tx.is_closed())
-    };
-    if queue_blocked {
+    let queue = perms.lock().await;
+    absorb_follow_blocked_locked(&queue, state).await
+}
+
+/// Same check while the caller already holds the queue lock, so a settle can
+/// re-check and emit `TurnComplete` without letting `admit_permission` in.
+async fn absorb_follow_blocked_locked(
+    queue: &PermissionQueue,
+    state: &Arc<RwLock<SessionState>>,
+) -> bool {
+    if permission_queue_blocked(queue) {
         return true;
     }
-    let session = state.read().await;
-    session.pending_permission.is_some()
-        || session.pending_question.is_some()
-        || session.pending_plan_approval.is_some()
+    // The lock stays held across this read (queue mutex before session).
+    let session_blocked = session_absorb_blocked(state).await;
+    session_blocked || permission_queue_blocked(queue)
+}
+
+/// Start or restart an absorb follow. `quiet` is [`ABSORB_NOTICE_RACE`]
+/// until the notice (or, on a lost prompt, real output) shows up, then
+/// [`ABSORB_FOLLOW_QUIET`].
+async fn arm_absorb_follow(
+    mut idle: std::pin::Pin<&mut tokio::time::Sleep>,
+    armed: &mut bool,
+    following: &mut bool,
+    quiet: std::time::Duration,
+    state: &Arc<RwLock<SessionState>>,
+    perms: &PendingPermissions,
+) {
+    *following = true;
+    idle.as_mut().reset(tokio::time::Instant::now() + quiet);
+    *armed = true;
+    let blocked = absorb_follow_blocked(state, perms).await;
+    sync_absorb_quiet_deadline(idle, blocked, armed);
 }
 
 /// Arm the quiet deadline, or push it out of reach while a card is up.
@@ -9876,8 +9930,12 @@ where
 /// Neither is `end_turn` or `empty`. `deferred` is the notice-only quiet
 /// settle: lifecycle moves the row to `pending_review` so `in_progress` does
 /// not stick after this loop stops reading. `busy` leaves the row alone.
+///
+/// `queue` is already held from the blocked check. The drain and
+/// `TurnComplete` stay inside it so `admit_permission` cannot publish a card
+/// that this settle then cancels.
 async fn emit_absorbed_prompt_turn(
-    perms: &PendingPermissions,
+    queue: &mut PermissionQueue,
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
     agent_type: AgentType,
@@ -9888,8 +9946,8 @@ async fn emit_absorbed_prompt_turn(
         "[ACP] mid-turn prompt absorbed without native steering; \
          settling as {stop_reason} (not end_turn/empty) session={session_id}"
     );
-    drain_permissions_then_emit(
-        perms,
+    drain_permissions_locked(queue, state, emitter).await;
+    emit_with_state(
         state,
         emitter,
         AcpEvent::TurnComplete {
@@ -10246,6 +10304,11 @@ async fn run_conversation_loop<'a>(
                 // empty and the client should requeue).
                 let mut following_absorb = false;
                 let mut absorb_quiet_armed = false;
+                // Set when a fast `end_turn` armed [`ABSORB_NOTICE_RACE`]
+                // after output was already noted. A trailing update must not
+                // stretch that wait into [`ABSORB_FOLLOW_QUIET`]; only the
+                // notice does.
+                let mut absorb_race_for_notice = false;
                 let absorb_idle = tokio::time::sleep(ABSORB_QUIET_DISARMED);
                 tokio::pin!(absorb_idle);
                 // Disabled until an absorb starts the follow. A sleep armed at
@@ -10257,7 +10320,13 @@ async fn run_conversation_loop<'a>(
                 absorb_blocker_poll
                     .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
+                    // `biased`, and `read_update` is the first arm, so a
+                    // session update already queued is applied before the
+                    // prompt response or the absorb quiet timer. A fast
+                    // `end_turn` must not settle while the Hermes notice
+                    // is still unread.
                     tokio::select! {
+                        biased;
                         update = session.read_update() => {
                             let update = match update {
                                 Ok(u) => u,
@@ -10392,25 +10461,47 @@ async fn run_conversation_loop<'a>(
                                     let raw_reason_str = stop_reason_to_str(reason);
                                     // Same absorb as the prompt-response arm:
                                     // follow the live turn instead of settling.
+                                    let elapsed = turn_started.elapsed();
                                     if let Some(disposition) = busy_prompt_disposition(
                                         native_steering,
-                                        turn_started.elapsed(),
+                                        elapsed,
                                         raw_reason_str,
                                         &probe,
                                     ) {
-                                        following_absorb = true;
                                         let quiet = match disposition {
                                             BusyPromptDisposition::Lost => ABSORB_NOTICE_RACE,
                                             BusyPromptDisposition::Accepted => ABSORB_FOLLOW_QUIET,
                                         };
-                                        absorb_idle.as_mut().reset(tokio::time::Instant::now() + quiet);
-                                        absorb_quiet_armed = true;
-                                        let blocked = absorb_follow_blocked(state, perms).await;
-                                        sync_absorb_quiet_deadline(
+                                        arm_absorb_follow(
                                             absorb_idle.as_mut(),
-                                            blocked,
                                             &mut absorb_quiet_armed,
-                                        );
+                                            &mut following_absorb,
+                                            quiet,
+                                            state,
+                                            perms,
+                                        )
+                                        .await;
+                                        continue;
+                                    }
+                                    // Notice flag still clear, including when a
+                                    // live chunk was already noted. Do not
+                                    // finish while that notice may be queued.
+                                    if end_turn_needs_absorb_notice_race(
+                                        native_steering,
+                                        elapsed,
+                                        raw_reason_str,
+                                        &probe,
+                                    ) {
+                                        absorb_race_for_notice = true;
+                                        arm_absorb_follow(
+                                            absorb_idle.as_mut(),
+                                            &mut absorb_quiet_armed,
+                                            &mut following_absorb,
+                                            ABSORB_NOTICE_RACE,
+                                            state,
+                                            perms,
+                                        )
+                                        .await;
                                         continue;
                                     }
                                     // Pure: resolves the reason and (for an
@@ -10492,8 +10583,11 @@ async fn run_conversation_loop<'a>(
                             }
                             // Push the quiet deadline out. A card that is up
                             // disarms it instead — the wait is not quiet.
+                            // The notice-race arm already saw output; only the
+                            // notice upgrades that 250ms wait into a follow.
                             if following_absorb
-                                && (probe.saw_agent_output || probe.saw_busy_absorb_notice)
+                                && (probe.saw_busy_absorb_notice
+                                    || (probe.saw_agent_output && !absorb_race_for_notice))
                             {
                                 let blocked = absorb_follow_blocked(state, perms).await;
                                 if blocked {
@@ -10688,31 +10782,61 @@ async fn run_conversation_loop<'a>(
                                 .as_ref()
                                 .is_none_or(|record| record.severity != "error")
                             {
+                                let elapsed = turn_started.elapsed();
                                 if let Some(disposition) = busy_prompt_disposition(
                                     native_steering,
-                                    turn_started.elapsed(),
+                                    elapsed,
                                     raw_reason_str,
                                     &probe,
                                 ) {
                                     // Consumed. Polling the future again panics.
                                     prompt_pending = false;
-                                    following_absorb = true;
                                     let quiet = match disposition {
                                         BusyPromptDisposition::Lost => ABSORB_NOTICE_RACE,
                                         BusyPromptDisposition::Accepted => ABSORB_FOLLOW_QUIET,
                                     };
-                                    absorb_idle.as_mut().reset(tokio::time::Instant::now() + quiet);
-                                    absorb_quiet_armed = true;
-                                    let blocked = absorb_follow_blocked(state, perms).await;
-                                    sync_absorb_quiet_deadline(
+                                    arm_absorb_follow(
                                         absorb_idle.as_mut(),
-                                        blocked,
                                         &mut absorb_quiet_armed,
-                                    );
+                                        &mut following_absorb,
+                                        quiet,
+                                        state,
+                                        perms,
+                                    )
+                                    .await;
                                     tracing::info!(
                                         "[ACP] session/prompt absorbed without native steering \
                                          ({disposition:?}); following the live turn instead of \
                                          synthesizing end_turn session={}",
+                                        sid.0
+                                    );
+                                    continue;
+                                }
+                                // Fast `end_turn`, notice not applied yet.
+                                // `saw_agent_output` is the live turn, not
+                                // proof this prompt finished.
+                                if end_turn_needs_absorb_notice_race(
+                                    native_steering,
+                                    elapsed,
+                                    raw_reason_str,
+                                    &probe,
+                                ) {
+                                    prompt_pending = false;
+                                    absorb_race_for_notice = true;
+                                    arm_absorb_follow(
+                                        absorb_idle.as_mut(),
+                                        &mut absorb_quiet_armed,
+                                        &mut following_absorb,
+                                        ABSORB_NOTICE_RACE,
+                                        state,
+                                        perms,
+                                    )
+                                    .await;
+                                    tracing::info!(
+                                        "[ACP] fast end_turn before the absorb notice on a \
+                                         non-steering session; waiting {:?} before settling \
+                                         session={}",
+                                        ABSORB_NOTICE_RACE,
                                         sid.0
                                     );
                                     continue;
@@ -10792,9 +10916,16 @@ async fn run_conversation_loop<'a>(
                         }
                         // Quiet after the absorb ack. A card that is up is
                         // not a finished turn — disarm and keep reading.
+                        // The queue lock is held from this check through
+                        // `TurnComplete`: `admit_permission` runs on sacp's
+                        // task, and releasing it before the emit publishes a
+                        // card the drain then cancels.
                         _ = &mut absorb_idle, if following_absorb => {
-                            let blocked = absorb_follow_blocked(state, perms).await;
-                            if blocked {
+                            let mut queue = perms.lock().await;
+                            if absorb_follow_blocked_locked(&queue, state).await
+                                || permission_queue_blocked(&queue)
+                            {
+                                drop(queue);
                                 sync_absorb_quiet_deadline(
                                     absorb_idle.as_mut(),
                                     true,
@@ -10824,8 +10955,10 @@ async fn run_conversation_loop<'a>(
                                     current_session_model_id(state).await,
                                 )
                                 .await;
-                                drain_permissions_then_emit(
-                                    perms,
+                                // `queue` is still the lock from the blocked
+                                // check above, re-checked before this settle.
+                                drain_permissions_locked(&mut queue, state, emitter).await;
+                                emit_with_state(
                                     state,
                                     emitter,
                                     AcpEvent::TurnComplete {
@@ -10835,6 +10968,7 @@ async fn run_conversation_loop<'a>(
                                     },
                                 )
                                 .await;
+                                drop(queue);
                                 if reason_str != "end_turn" {
                                     if let Some(inj) = delegation_injection {
                                         inj.broker.cancel_by_parent_turn(conn_id).await;
@@ -10842,7 +10976,7 @@ async fn run_conversation_loop<'a>(
                                 }
                             } else if probe.saw_busy_absorb_notice {
                                 emit_absorbed_prompt_turn(
-                                    perms,
+                                    &mut queue,
                                     state,
                                     emitter,
                                     agent_type,
@@ -10850,9 +10984,10 @@ async fn run_conversation_loop<'a>(
                                     "deferred",
                                 )
                                 .await;
+                                drop(queue);
                             } else {
                                 emit_absorbed_prompt_turn(
-                                    perms,
+                                    &mut queue,
                                     state,
                                     emitter,
                                     agent_type,
@@ -10860,6 +10995,7 @@ async fn run_conversation_loop<'a>(
                                     "busy",
                                 )
                                 .await;
+                                drop(queue);
                             }
                             break;
                         }
@@ -20066,12 +20202,30 @@ mod tests {
         );
 
         // Output without the notice is still a real turn, however fast.
+        // The caller waits out ABSORB_NOTICE_RACE before settling it, so a
+        // notice queued behind that response is not dropped.
         let mut only_output = TurnOutputProbe::new(0);
         only_output.saw_agent_output = true;
         assert_eq!(
             busy_prompt_disposition(false, fast, "end_turn", &only_output),
             None
         );
+        assert!(end_turn_needs_absorb_notice_race(
+            false,
+            fast,
+            "end_turn",
+            &only_output
+        ));
+        assert!(
+            !end_turn_needs_absorb_notice_race(false, slow, "end_turn", &only_output),
+            "a slow turn with output and no notice still settles as end_turn"
+        );
+        assert!(!end_turn_needs_absorb_notice_race(
+            true,
+            fast,
+            "end_turn",
+            &only_output
+        ));
 
         // Native steering keeps today's settlement, including a fast end_turn.
         assert_eq!(
@@ -20318,6 +20472,199 @@ mod tests {
                     )
                     .await;
                     driver.await.expect("absorb driver");
+                    Ok(())
+                })
+                .await
+        };
+
+        let (agent_result, client_result) = tokio::join!(agent, client);
+        agent_result.expect("agent connection");
+        client_result.expect("client connection");
+    }
+
+    /// Live chunk already noted, then the Hermes notice and `end_turn` sit
+    /// in the queue together. Selecting the response first must not settle
+    /// the turn or render the notice — that is the #590 drop.
+    #[tokio::test(start_paused = true)]
+    async fn absorb_notice_queued_with_end_turn_keeps_the_turn_open() {
+        let chunk_seen = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let agent_done = Arc::new(tokio::sync::Notify::new());
+        let (client_ch, agent_ch) = sacp::Channel::duplex();
+        let chunk_seen_for_agent = Arc::clone(&chunk_seen);
+        let release_for_agent = Arc::clone(&release);
+        let done_for_agent = Arc::clone(&agent_done);
+
+        let agent = async move {
+            Agent
+                .builder()
+                .name("absorb-race-agent")
+                .on_receive_request(
+                    {
+                        let chunk_seen = chunk_seen_for_agent;
+                        let release = release_for_agent;
+                        async move |req: PromptRequest,
+                                    responder: Responder<sacp::schema::PromptResponse>,
+                                    cx: ConnectionTo<Client>| {
+                            let sid = req.session_id.clone();
+                            let chunk = |text: &str| {
+                                SessionUpdate::AgentMessageChunk(ContentChunk::new(text.into()))
+                            };
+                            cx.send_notification_to(
+                                Client,
+                                SessionNotification::new(sid.clone(), chunk("LIVE-CHUNK")),
+                            )?;
+                            chunk_seen.notified().await;
+                            // No await between these: the notice and the
+                            // prompt response are both pending before the
+                            // turn loop selects again.
+                            cx.send_notification_to(
+                                Client,
+                                SessionNotification::new(
+                                    sid.clone(),
+                                    chunk("Redirected the active turn with your correction."),
+                                ),
+                            )?;
+                            responder
+                                .respond(sacp::schema::PromptResponse::new(StopReason::EndTurn))?;
+                            cx.send_notification_to(
+                                Client,
+                                SessionNotification::new(sid, chunk("MARKER-STILL-FOLLOWING")),
+                            )?;
+                            release.notified().await;
+                            Ok(())
+                        }
+                    },
+                    on_receive_request!(),
+                )
+                .connect_with(agent_ch, async move |_cx| {
+                    done_for_agent.notified().await;
+                    Ok(())
+                })
+                .await
+        };
+
+        let client = async move {
+            Client
+                .builder()
+                .name("absorb-race-client")
+                .connect_with(client_ch, async move |cx| {
+                    let mut session = cx.attach_session(
+                        NewSessionResponse::new(SessionId::new("absorb-race-session")),
+                        Default::default(),
+                    )?;
+                    let state = Arc::new(RwLock::new(SessionState::new(
+                        "conn-absorb-race".into(),
+                        AgentType::Hermes,
+                        None,
+                        "test".into(),
+                        None,
+                    )));
+                    let perms: PendingPermissions =
+                        Arc::new(tokio::sync::Mutex::new(PermissionQueue::default()));
+                    let (cmd_tx, mut cmd_rx) = mpsc::channel(4);
+                    cmd_tx
+                        .send(ConnectionCommand::Prompt {
+                            blocks: vec![PromptInputBlock::Text {
+                                text: "fix the launch".into(),
+                            }],
+                            user_message: None,
+                        })
+                        .await
+                        .expect("prompt enqueued");
+                    let stderr = Arc::new(StderrTail::new());
+                    let ledger = background_watch::PromptLedger::shared();
+                    let terminal_runtime =
+                        Arc::new(TerminalRuntime::with_base_env(BTreeMap::new()));
+                    let emitter = EventEmitter::Noop;
+                    let drive_state = Arc::clone(&state);
+                    let drive_chunk_seen = Arc::clone(&chunk_seen);
+                    let drive_release = Arc::clone(&release);
+                    let drive_done = Arc::clone(&agent_done);
+                    let driver = tokio::spawn(async move {
+                        for _ in 0..400 {
+                            if saw_content(&*drive_state.read().await, "LIVE-CHUNK") {
+                                break;
+                            }
+                            tokio::task::yield_now().await;
+                        }
+                        assert!(
+                            saw_content(&*drive_state.read().await, "LIVE-CHUNK"),
+                            "the live chunk must be noted before the notice is queued"
+                        );
+                        drive_chunk_seen.notify_one();
+                        for _ in 0..400 {
+                            let snap = drive_state.read().await;
+                            if saw_content(&snap, "MARKER-STILL-FOLLOWING")
+                                || !turn_complete_reasons(&snap).is_empty()
+                            {
+                                break;
+                            }
+                            drop(snap);
+                            tokio::task::yield_now().await;
+                        }
+                        {
+                            let snap = drive_state.read().await;
+                            assert!(
+                                turn_complete_reasons(&snap).is_empty(),
+                                "end_turn selected while the absorb notice is still queued \
+                                 must not settle the turn: {:?}",
+                                turn_complete_reasons(&snap)
+                            );
+                            assert!(
+                                !saw_content(
+                                    &snap,
+                                    "Redirected the active turn with your correction."
+                                ),
+                                "the absorb notice must not be rendered"
+                            );
+                            assert!(
+                                saw_content(&snap, "MARKER-STILL-FOLLOWING"),
+                                "updates queued with the notice must still be read"
+                            );
+                        }
+                        tokio::time::advance(
+                            ABSORB_NOTICE_RACE + std::time::Duration::from_millis(50),
+                        )
+                        .await;
+                        for _ in 0..20 {
+                            tokio::task::yield_now().await;
+                        }
+                        assert!(
+                            turn_complete_reasons(&*drive_state.read().await).is_empty(),
+                            "seeing the queued notice must follow the live turn past the race wait"
+                        );
+                        tokio::time::advance(
+                            ABSORB_FOLLOW_QUIET + std::time::Duration::from_millis(50),
+                        )
+                        .await;
+                        assert_eq!(
+                            turn_complete_reasons(&*drive_state.read().await),
+                            vec!["end_turn".to_string()],
+                            "quiet after the followed live chunk settles as end_turn"
+                        );
+                        drop(cmd_tx);
+                        drive_release.notify_one();
+                        drive_done.notify_one();
+                    });
+
+                    let _ = run_conversation_loop(
+                        &mut session,
+                        "conn-absorb-race",
+                        &emitter,
+                        &state,
+                        AgentType::Hermes,
+                        &perms,
+                        &mut cmd_rx,
+                        terminal_runtime,
+                        "/tmp",
+                        false,
+                        ledger.as_ref(),
+                        None,
+                        &stderr,
+                    )
+                    .await;
+                    driver.await.expect("absorb race driver");
                     Ok(())
                 })
                 .await
