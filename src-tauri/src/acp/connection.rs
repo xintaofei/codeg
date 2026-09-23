@@ -19456,6 +19456,56 @@ mod tests {
         }
     }
 
+    /// Frames captured byte-for-byte off the live adapters over stdio, with the
+    /// same `clientCapabilities.session` block `send_initialize` grafts on.
+    ///
+    /// * claude-agent-acp 0.81.0: a project `UserPromptSubmit` hook exiting 2
+    ///   blocks the prompt before any model call (the turn reported 0 tokens),
+    ///   and the SDK's `informational` frame arrives as this notice.
+    /// * codex-acp 1.13.0 (codex 0.155.1): a throwaway `CODEX_HOME` whose
+    ///   `model` is not in the catalog, logged in with a dummy API key — the
+    ///   fallback-metadata warning fires at turn start, then the 401 produces
+    ///   the transport-fallback warning (a multi-line title, kept verbatim).
+    #[test]
+    fn notices_captured_live_from_both_adapters_are_read_verbatim() {
+        let from_wire = |line: &str| {
+            let frame: serde_json::Value = serde_json::from_str(line).expect("captured frame");
+            Dispatch::Notification(
+                UntypedMessage::new(
+                    frame["method"].as_str().expect("method"),
+                    frame["params"].clone(),
+                )
+                .unwrap(),
+            )
+        };
+
+        let claude = session_notice(&from_wire(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"f11ac967-067f-480a-8acc-a3c689b40bb3","update":{"sessionUpdate":"notice","severity":"warning","title":"UserPromptSubmit operation blocked by hook:","description":"[echo 'Blocked by the codeg probe hook: prompts are not allowed in this folder.' >&2; exit 2]: Blocked by the codeg probe hook: prompts are not allowed in this folder.\n\n\nOriginal prompt: say hi"}}}"#,
+        ))
+        .expect("claude notice");
+        assert_eq!(claude.severity, "warning");
+        assert_eq!(claude.title, "UserPromptSubmit operation blocked by hook:");
+        assert!(claude
+            .description
+            .as_deref()
+            .is_some_and(|d| d.ends_with("\n\n\nOriginal prompt: say hi")));
+
+        let codex = session_notice(&from_wire(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a0cc1b-7aa2-78e3-8e55-c9ab3b7f506e","update":{"sessionUpdate":"notice","severity":"warning","title":"Model metadata for `codeg-probe-unknown-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}}"#,
+        ))
+        .expect("codex notice");
+        assert_eq!(codex.severity, "warning");
+        assert!(codex.title.starts_with("Model metadata for `codeg-probe-unknown-model`"));
+        assert_eq!(codex.description, None);
+
+        let codex_multiline = session_notice(&from_wire(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a0cc1b-7aa2-78e3-8e55-c9ab3b7f506e","update":{"sessionUpdate":"notice","severity":"warning","title":"Falling back from WebSockets to HTTPS transport. unexpected status 401 Unauthorized: {\n  \"error\": {\n    \"me, url: wss://api.openai.com/v1/responses, cf-ray: a3f623f1398b2eaf-LAX, request id: req_350561679b9e4cf6895346dd25919bd9, auth error: 401, auth error code: invalid_api_key"}}}"#,
+        ))
+        .expect("codex transport notice");
+        assert!(codex_multiline.title.starts_with("Falling back from WebSockets"));
+        assert!(codex_multiline.title.contains('\n'));
+    }
+
     /// `title` is required and non-empty per the RFD. Without it there is
     /// nothing to show, and a toast with an empty body is worse than silence.
     #[test]
