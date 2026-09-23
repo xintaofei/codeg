@@ -6846,6 +6846,11 @@ fn codeg_ask_auto_allow_option(req: &RequestPermissionRequest) -> Option<String>
 /// the outcome for every other tool, and the deliberate fallback whenever the
 /// auto-allow cannot be taken (the ask feature is off, or the agent offered no
 /// allow-once option).
+// `result_large_err`: agent-client-protocol 2.x's `Responder` is past clippy's
+// size limit, but this `Err` is the responder handed back once per permission
+// request, not an error bubbled through `?` — boxing it would only add an
+// allocation.
+#[allow(clippy::result_large_err)]
 async fn try_auto_allow_codeg_ask(
     access: &Option<(
         Arc<dyn crate::acp::question::SessionQuestionAccess>,
@@ -6899,6 +6904,8 @@ async fn try_auto_allow_codeg_ask(
 /// A bridged select still parks an abort handle on `perms`, so every permission
 /// drain reclaims it exactly as it reclaimed the approval card this replaces —
 /// see [`PermissionQueue::detached`] for why that matters for pi specifically.
+// Same `Err` hand-back as `try_auto_allow_codeg_ask`; see its allow note.
+#[allow(clippy::result_large_err)]
 async fn try_bridge_pi_select_ask(
     access: &Option<(
         Arc<dyn crate::acp::question::SessionQuestionAccess>,
