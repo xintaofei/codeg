@@ -269,12 +269,13 @@ pub(crate) async fn handle_event(
                 "end_turn" => Some(ConversationStatus::PendingReview),
                 "refusal" | "max_tokens" | "max_turn_requests" | "unknown" | "empty"
                 | "auth_required" | "rejected" => Some(ConversationStatus::Cancelled),
-                // A non-steering agent absorbed the prompt into a turn it was
-                // already running (`busy` = nothing acknowledged it, the
-                // client requeues; `deferred` = the agent kept it). Neither
-                // is a finished turn — writing pending_review or cancelled
-                // here is what wedged the row.
-                "busy" | "deferred" => None,
+                // `busy`: nothing acknowledged the prompt. The client requeues,
+                // so the row stays InProgress. `deferred`: the follow went
+                // quiet after the absorb notice and this loop stopped
+                // reading. PendingReview is the non-failure settle — not
+                // Cancelled, and not a stuck InProgress.
+                "busy" => None,
+                "deferred" => Some(ConversationStatus::PendingReview),
                 // `cancelled` and any future reason: don't write here.
                 _ => None,
             };
@@ -2294,10 +2295,15 @@ mod tests {
 
     #[tokio::test]
     async fn handle_event_does_not_wedge_status_on_absorbed_prompt() {
-        // steering=false mid-turn send settles as `busy` (prompt lost) or
-        // `deferred` (agent kept it). Neither may flip the row to
-        // pending_review or cancelled — that is the #590 wedge.
-        for stop_reason in ["busy", "deferred"] {
+        // `busy` (prompt lost, client requeues) must not flip the row.
+        // `deferred` is the notice-only quiet settle: the follow stopped
+        // reading, so InProgress would stick. PendingReview is the
+        // non-failure status; Cancelled is the wedge this must not write.
+        let cases = [
+            ("busy", ConversationStatus::InProgress),
+            ("deferred", ConversationStatus::PendingReview),
+        ];
+        for (stop_reason, expect) in cases {
             let db = test_helpers::fresh_in_memory_db().await;
             let folder_id =
                 test_helpers::seed_folder(&db, &format!("/tmp/turn-absorb-{stop_reason}")).await;
@@ -2330,8 +2336,13 @@ mod tests {
             handle_event(&db.conn, &mgr, &env, None).await.unwrap();
             assert_eq!(
                 read_row_status(&db, conv.id).await,
-                ConversationStatus::InProgress,
-                "stop_reason={stop_reason} must leave the row sendable"
+                expect,
+                "stop_reason={stop_reason}"
+            );
+            assert_ne!(
+                read_row_status(&db, conv.id).await,
+                ConversationStatus::Cancelled,
+                "stop_reason={stop_reason} must not cancel the row"
             );
         }
     }

@@ -19,9 +19,54 @@ export function busyPromptStop(stopReason: string): BusyPromptStop | null {
   return null
 }
 
+/** Desktop "turn complete" and the chat-channel completion post. Absorb
+ *  settlements are not a turn ending. */
+export function shouldNotifyTurnComplete(stopReason: string): boolean {
+  return busyPromptStop(stopReason) == null
+}
+
+export interface SubmittedPrompt {
+  draft: PromptDraft
+  modeId: string | null
+}
+
+export type BusyAbsorbPlan =
+  | { action: "requeue"; draft: PromptDraft; modeId: string | null }
+  | { action: "keep" }
+  | { action: "ignore" }
+
+/**
+ * One `turn_complete` for a non-steering absorb.
+ *
+ * `requeue` uses the draft that was actually sent (resource blocks and the
+ * mode from that send). The optimistic bubble is only a fallback: it stored
+ * images and display text.
+ */
+export function planBusyAbsorb(input: {
+  stopReason: string
+  submitted: SubmittedPrompt | null
+  optimisticTurns?: { role: string; blocks: ContentBlock[] }[]
+}): BusyAbsorbPlan {
+  const disposition = busyPromptStop(input.stopReason)
+  if (disposition === "keep") return { action: "keep" }
+  if (disposition !== "requeue") return { action: "ignore" }
+  if (input.submitted) {
+    return {
+      action: "requeue",
+      draft: input.submitted.draft,
+      modeId: input.submitted.modeId,
+    }
+  }
+  for (const turn of [...(input.optimisticTurns ?? [])].reverse()) {
+    const draft = draftFromOptimisticUserTurn(turn)
+    if (draft) return { action: "requeue", draft, modeId: null }
+  }
+  return { action: "ignore" }
+}
+
 /** Rebuild a composer draft from the optimistic user turn a busy absorb
- *  rolled back. Text and images round-trip; other block kinds are not part
- *  of a prompt draft. */
+ *  rolled back. The bubble only kept images and display text, so a caller
+ *  that still has the submitted `PromptDraft` should requeue that instead. */
 export function draftFromOptimisticUserTurn(turn: {
   role: string
   blocks: ContentBlock[]

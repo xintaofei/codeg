@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest"
 
-import { busyPromptStop, draftFromOptimisticUserTurn } from "@/lib/busy-prompt"
+import {
+  busyPromptStop,
+  draftFromOptimisticUserTurn,
+  planBusyAbsorb,
+  shouldNotifyTurnComplete,
+} from "@/lib/busy-prompt"
 
 describe("busyPromptStop", () => {
   it("requeues a lost prompt and keeps one the agent accepted", () => {
@@ -13,6 +18,96 @@ describe("busyPromptStop", () => {
     expect(busyPromptStop("empty")).toBeNull()
     expect(busyPromptStop("cancelled")).toBeNull()
     expect(busyPromptStop("rejected")).toBeNull()
+  })
+})
+
+describe("shouldNotifyTurnComplete", () => {
+  it("stays quiet for an absorb and fires for a real stop", () => {
+    expect(shouldNotifyTurnComplete("busy")).toBe(false)
+    expect(shouldNotifyTurnComplete("deferred")).toBe(false)
+    expect(shouldNotifyTurnComplete("end_turn")).toBe(true)
+    expect(shouldNotifyTurnComplete("refusal")).toBe(true)
+    expect(shouldNotifyTurnComplete("cancelled")).toBe(true)
+    expect(shouldNotifyTurnComplete("empty")).toBe(true)
+  })
+})
+
+describe("planBusyAbsorb", () => {
+  const resourceDraft = {
+    blocks: [
+      { type: "text" as const, text: "fix the launch" },
+      {
+        type: "resource" as const,
+        uri: "file:///tmp/main.rs",
+        mime_type: "text/x-rust",
+        text: "fn main() {}",
+      },
+      {
+        type: "resource_link" as const,
+        uri: "file:///tmp/Cargo.toml",
+        name: "Cargo.toml",
+      },
+    ],
+    displayText: "fix the launch",
+  }
+
+  it("requeues the submitted draft and its mode once", () => {
+    expect(
+      planBusyAbsorb({
+        stopReason: "busy",
+        submitted: { draft: resourceDraft, modeId: "plan" },
+        optimisticTurns: [
+          {
+            role: "user",
+            blocks: [{ type: "text", text: "fix the launch" }],
+          },
+        ],
+      })
+    ).toEqual({
+      action: "requeue",
+      draft: resourceDraft,
+      modeId: "plan",
+    })
+  })
+
+  it("keeps a deferred prompt without promoting a second send", () => {
+    expect(
+      planBusyAbsorb({
+        stopReason: "deferred",
+        submitted: { draft: resourceDraft, modeId: "plan" },
+      })
+    ).toEqual({ action: "keep" })
+  })
+
+  it("ignores a real turn end", () => {
+    expect(
+      planBusyAbsorb({
+        stopReason: "end_turn",
+        submitted: { draft: resourceDraft, modeId: "plan" },
+      })
+    ).toEqual({ action: "ignore" })
+  })
+
+  it("falls back to the optimistic bubble when the send was not remembered", () => {
+    expect(
+      planBusyAbsorb({
+        stopReason: "busy",
+        submitted: null,
+        optimisticTurns: [
+          {
+            role: "user",
+            blocks: [{ type: "text", text: "fix the launch" }],
+          },
+        ],
+      })
+    ).toEqual({
+      action: "requeue",
+      draft: {
+        blocks: [{ type: "text", text: "fix the launch" }],
+        displayText: "fix the launch",
+      },
+      modeId: null,
+    })
   })
 })
 

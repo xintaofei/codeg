@@ -745,6 +745,12 @@ impl AutomationEngine {
             return; // not an automation run
         };
 
+        // A non-steering absorb is not this run's outcome. Failing and
+        // disconnecting here drops a session whose agent still holds the turn.
+        if matches!(stop_reason.as_str(), "busy" | "deferred") {
+            return;
+        }
+
         let (status, status_str) = classify_stop_reason(stop_reason);
         let summary = self.capture_summary(&conn_id).await;
         let error = if status == AutomationRunStatus::Failed {

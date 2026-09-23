@@ -94,7 +94,7 @@ import {
   shouldQueueDirectSend,
   shouldRejectDuplicateCreate,
 } from "@/lib/queue-flush"
-import { busyPromptStop, draftFromOptimisticUserTurn } from "@/lib/busy-prompt"
+import { planBusyAbsorb } from "@/lib/busy-prompt"
 import { TurnBusyError, isNoActiveTurnRejection } from "@/lib/turn-busy"
 import { toErrorMessage } from "@/lib/app-error"
 import {
@@ -306,6 +306,8 @@ const ConversationTabView = memo(function ConversationTabView({
     setLiveMessage,
     setPendingCleanup,
     setSyncState,
+    rememberSubmittedPrompt,
+    takeSubmittedPrompt,
   } = useConversationRuntimeActions()
   const acpActions = useAcpActions()
   // Stable store handle, for event-time status reads that must not go through
@@ -775,22 +777,20 @@ const ConversationTabView = memo(function ConversationTabView({
       (envelope: EventEnvelope) => {
         if (envelope.type !== "turn_complete") return
         if (envelope.connection_id !== conn.connectionId) return
-        const disposition = busyPromptStop(envelope.stop_reason)
-        if (!disposition) return
+        const session = getRuntimeSession(effectiveConversationId)
+        const plan = planBusyAbsorb({
+          stopReason: envelope.stop_reason,
+          submitted: takeSubmittedPrompt(effectiveConversationId),
+          optimisticTurns: session?.optimisticTurns,
+        })
+        if (plan.action === "ignore") return
         // Subscribers run after the reducer has flushed the stream into the
         // live message. Drop that — an absorb ack is not the reply — before
         // any promotion.
         setLiveMessage(effectiveConversationId, null, false)
-        if (disposition === "requeue") {
-          const optimistic =
-            getRuntimeSession(effectiveConversationId)?.optimisticTurns ?? []
-          // requeueFront inserts at the head, so walk back-to-front to keep
-          // the order the user sent them in.
-          for (const turn of [...optimistic].reverse()) {
-            const draft = draftFromOptimisticUserTurn(turn)
-            if (draft) {
-              mqRequeueFront(draft, selectedModeIdRef.current)
-            }
+        if (plan.action === "requeue") {
+          mqRequeueFront(plan.draft, plan.modeId)
+          for (const turn of session?.optimisticTurns ?? []) {
             removeOptimisticTurn(effectiveConversationId, turn.id)
           }
           setSyncState(effectiveConversationId, "idle")
@@ -799,8 +799,8 @@ const ConversationTabView = memo(function ConversationTabView({
           lastFlushBounceAtRef.current = Date.now()
           toast.info(tCmp("steerQueuedInstead"))
         } else {
-          // The agent kept the text. Promote the user turn and do not send
-          // it a second time.
+          // The agent kept the text. Promote the user turn once and do not
+          // send it a second time.
           completeTurn(effectiveConversationId)
         }
         busyPromptHandledRef.current = true
@@ -813,6 +813,7 @@ const ConversationTabView = memo(function ConversationTabView({
         removeOptimisticTurn,
         setSyncState,
         completeTurn,
+        takeSubmittedPrompt,
         tCmp,
       ]
     )
@@ -1159,6 +1160,11 @@ const ConversationTabView = memo(function ConversationTabView({
         optimisticTurn,
         optimisticTurn.id
       )
+      rememberSubmittedPrompt(
+        effectiveConversationId,
+        draft,
+        selectedModeIdArg ?? null
+      )
       setSendSignal((prev) => prev + 1)
       setSyncState(effectiveConversationId, "awaiting_persist")
       setHasSentMessage(true)
@@ -1170,6 +1176,9 @@ const ConversationTabView = memo(function ConversationTabView({
       // turn completes, identical to enqueuing while already prompting. Stamp
       // the bounce so the flush backs off instead of immediately retrying.
       const onTurnInProgress = () => {
+        // This send never became a turn, so a later absorb must not requeue
+        // the same draft again. The queue path below owns it.
+        takeSubmittedPrompt(effectiveConversationId)
         lastFlushBounceAtRef.current = Date.now()
         removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
         // FIFO: the auto-flush draft WAS the queue head → return it to the
@@ -1189,6 +1198,7 @@ const ConversationTabView = memo(function ConversationTabView({
       // isn't blocked forever. The draft is NOT re-queued (unlike the busy
       // bounce): a deterministic failure would retry — and toast — forever.
       const onSendFailed = () => {
+        takeSubmittedPrompt(effectiveConversationId)
         removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
       }
 
@@ -1327,6 +1337,7 @@ const ConversationTabView = memo(function ConversationTabView({
           //   4. re-seed the draft text — message-input clears it synchronously on
           //      send, so without this the user's prompt is lost on failure,
           //   5. surface the error on the welcome banner so it isn't silent.
+          takeSubmittedPrompt(effectiveConversationId)
           removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
           setSyncState(effectiveConversationId, "idle")
           setHasSentMessage(false)
@@ -1347,6 +1358,8 @@ const ConversationTabView = memo(function ConversationTabView({
     },
     [
       appendOptimisticTurn,
+      rememberSubmittedPrompt,
+      takeSubmittedPrompt,
       removeOptimisticTurn,
       mqEnqueue,
       mqRequeueFront,

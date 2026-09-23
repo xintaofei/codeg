@@ -602,6 +602,12 @@ async fn handle_acp_envelope(
             agent_type,
             ..
         } => {
+            // Absorb settlements are not a finished task. Posting "Turn
+            // Complete" and flushing the buffer would also retry a kickoff
+            // into a turn the agent is still running.
+            if matches!(stop_reason.as_str(), "busy" | "deferred") {
+                return;
+            }
             let mut guard = bridge.lock().await;
             if let Some(session) = guard.get_mut(connection_id) {
                 let target = session.target.clone();
