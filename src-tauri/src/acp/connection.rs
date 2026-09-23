@@ -3,15 +3,16 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use sacp::schema::{
-    BlobResourceContents, CancelNotification, ClientCapabilities, ContentBlock, ContentChunk,
+use agent_client_protocol::schema::v1::{
+    BlobResourceContents, CancelNotification, ClientCapabilities, ClientSessionCapabilities,
+    CompactionCapabilities, ContentBlock, ContentChunk,
     CreateTerminalRequest, CreateTerminalResponse, ElicitationCapabilities,
     ElicitationFormCapabilities, EmbeddedResource, EmbeddedResourceResource,
-    FileSystemCapabilities, ImageContent, InitializeRequest, InitializeResponse,
+    FileSystemCapabilities, ImageContent, InitializeRequest,
     KillTerminalRequest,
     KillTerminalResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
-    NewSessionResponse, PermissionOptionKind, Plan, PlanEntryPriority, PlanEntryStatus,
-    PromptRequest, ProtocolVersion, ReadTextFileRequest, ReadTextFileResponse,
+    NewSessionResponse, NoticeCapabilities, PermissionOptionKind, Plan, PlanEntryPriority, PlanEntryStatus,
+    PromptRequest, ReadTextFileRequest, ReadTextFileResponse,
     ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, ResourceLink, ResumeSessionRequest,
     ResumeSessionResponse, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
@@ -23,13 +24,15 @@ use sacp::schema::{
     ToolCallContent, ToolCallLocation, ToolKind, WaitForTerminalExitRequest,
     WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
-use sacp::schema::{HttpHeader, McpServer, McpServerHttp, McpServerSse, McpServerStdio};
-use sacp::util::MatchDispatch;
-use sacp::{
+use agent_client_protocol::schema::v1::{HttpHeader, McpServer, McpServerHttp, McpServerSse, McpServerStdio};
+use agent_client_protocol::schema::ProtocolVersion;
+use agent_client_protocol::util::MatchDispatch;
+use agent_client_protocol::{
     on_receive_notification, on_receive_request, Agent, Client, ConnectionTo, Dispatch,
     HandleDispatchFrom, Handled, JsonRpcRequest, Responder, Role, SessionMessage, UntypedMessage,
 };
-use sacp_tokio::AcpAgent;
+use crate::acp::agent_process::AcpAgent;
+use crate::acp::agent_session::AgentSession;
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::acp::agent_mentions::append_agent_routes;
@@ -254,7 +257,7 @@ pub(crate) fn cursor_force_enabled(value: Option<&str>) -> bool {
 /// `CURSOR_API_BASE_URL` inherited from this process's environment (e.g. a dev
 /// shell export). cursor-agent would otherwise validate that leaked key and
 /// refuse to fall back to the login credential. An empty value tells the spawn
-/// layer (vendored sacp-tokio) to `env_remove` the inherited var.
+/// layer (`acp::agent_process`) to `env_remove` the inherited var.
 ///
 /// Gated on the explicit `CURSOR_AUTH_MODE` knob (written by the Cursor panel),
 /// so legacy rows and operator-provided container env are left untouched. In
@@ -279,8 +282,8 @@ fn apply_cursor_env_policy(merged: &mut Vec<(String, String)>, runtime_env: &BTr
 /// `GROK_AUTH_MODE=subscription` by the Grok settings panel), scrub any
 /// `XAI_API_KEY` inherited from this process's environment so the CLI falls back
 /// to the browser-login credential in `~/.grok/auth.json` rather than a leaked
-/// shell/container export. An empty value tells the spawn layer (vendored
-/// sacp-tokio) to `env_remove` the inherited var. In api_key mode the key is
+/// shell/container export. An empty value tells the spawn layer
+/// (`acp::agent_process`) to `env_remove` the inherited var. In api_key mode the key is
 /// present and non-empty, so nothing is cleared; legacy/no-mode rows are left
 /// untouched.
 fn apply_grok_env_policy(merged: &mut Vec<(String, String)>, runtime_env: &BTreeMap<String, String>) {
@@ -353,7 +356,7 @@ fn antigravity_env_vars_for_method(method: &str) -> &'static [&'static str] {
 /// Once the panel has recorded a method, the panel OWNS all four credential
 /// vars: a value survives into the child only if the chosen method reads it AND
 /// the panel actually stored one. Everything else is cleared — an empty value
-/// tells the spawn layer (vendored sacp-tokio) to `env_remove` the inherited
+/// tells the spawn layer (`acp::agent_process`) to `env_remove` the inherited
 /// one.
 ///
 /// UNCONDITIONALLY, unlike Cursor's version, which skips a key the caller's own
@@ -587,7 +590,7 @@ fn antigravity_acp_dir_with_inherited(
         Some(value) if value.is_empty() => None,
         // Overridden. NOT trimmed: the spawn layer's "is this var removed" test
         // is an exact empty-string check
-        // (`vendor/sacp-tokio/src/acp_agent.rs`), so a whitespace-only value
+        // (`acp/agent_process.rs`), so a whitespace-only value
         // reaches the child verbatim and trimming here would name a directory
         // it never opens.
         Some(value) => Some(std::ffi::OsString::from(value)),
@@ -1238,7 +1241,7 @@ pub enum ConnectionCommand {
     Disconnect,
 }
 
-/// Sentinel string embedded in a `sacp::Error` when the Initialize
+/// Sentinel string embedded in a `agent_client_protocol::Error` when the Initialize
 /// handshake times out. Converted back to `AcpError::InitializeTimeout`
 /// by the outer `.map_err(...)` in `run_connection`.
 const INIT_TIMEOUT_SENTINEL: &str = "__codeg_init_timeout__";
@@ -1247,13 +1250,13 @@ const INIT_TIMEOUT_SENTINEL: &str = "__codeg_init_timeout__";
 /// MCP servers to a *custom* agent, so the outer `.map_err(...)` can raise
 /// `AcpError::McpRejectedByAgent` and point the user at the `supports_mcp`
 /// switch. Same trick as [`INIT_TIMEOUT_SENTINEL`] — the inner future is typed
-/// to `sacp::Error`, which has nowhere to carry a codeg error kind.
+/// to `agent_client_protocol::Error`, which has nowhere to carry a codeg error kind.
 const MCP_SUSPECT_SENTINEL: &str = "__codeg_mcp_suspect__";
 
 /// Sentinel appended to a `session/new` failure the agent answered with ACP's
 /// `authRequired`, so the outer `.map_err(...)` can raise
 /// `AcpError::AgentAuthRequired`. Same trick as [`INIT_TIMEOUT_SENTINEL`]: the
-/// typed error code does not survive the `sacp::Error` the inner future is
+/// typed error code does not survive the `agent_client_protocol::Error` the inner future is
 /// typed to, and this is the one classification that has to be made while it
 /// is still there — the wire text alone is the agent's own wording, which for
 /// cursor-agent names a command that does not exist.
@@ -1266,13 +1269,13 @@ const AUTH_REQUIRED_SENTINEL: &str = "__codeg_auth_required__";
 /// the MCP tag below is only a hint, and running both would leave a message
 /// carrying two markers and the weaker reading.
 fn tag_new_session_failure(
-    err: sacp::Error,
+    err: agent_client_protocol::Error,
     agent_type: AgentType,
     mcp_servers: &[McpServer],
-) -> sacp::Error {
-    if matches!(err.code, sacp::schema::ErrorCode::AuthRequired) {
+) -> agent_client_protocol::Error {
+    if matches!(err.code, agent_client_protocol::schema::v1::ErrorCode::AuthRequired) {
         tracing::warn!("[ACP][{agent_type}] session/new refused with authRequired: {err}");
-        return sacp::util::internal_error(format!("{err}{AUTH_REQUIRED_SENTINEL}"));
+        return agent_client_protocol::util::internal_error(format!("{err}{AUTH_REQUIRED_SENTINEL}"));
     }
     tag_mcp_suspect(err, agent_type, mcp_servers)
 }
@@ -1287,10 +1290,10 @@ fn tag_new_session_failure(
 /// knows nothing about — the case this hint is for. An empty list rules MCP out
 /// entirely, since then nothing was forwarded to reject.
 fn tag_mcp_suspect(
-    err: sacp::Error,
+    err: agent_client_protocol::Error,
     agent_type: AgentType,
     mcp_servers: &[McpServer],
-) -> sacp::Error {
+) -> agent_client_protocol::Error {
     if mcp_servers.is_empty() || !matches!(agent_type, AgentType::Custom(_)) {
         return err;
     }
@@ -1309,7 +1312,7 @@ fn tag_mcp_suspect(
         mcp_servers.len(),
         err
     );
-    sacp::util::internal_error(format!("{err}{MCP_SUSPECT_SENTINEL}"))
+    agent_client_protocol::util::internal_error(format!("{err}{MCP_SUSPECT_SENTINEL}"))
 }
 
 /// RAII guard that removes the `AgentConnection` entry from the manager
@@ -1376,7 +1379,7 @@ pub struct AgentConnection {
     /// `config_fingerprint`.
     pub last_observed_fingerprint: String,
     /// OS process id of the spawned agent subprocess, published by the
-    /// vendored `sacp-tokio` `on_spawn` callback. `0` until the process has
+    /// `acp::agent_process` `on_spawn` callback. `0` until the process has
     /// launched (or if the pid was never observed). Used only as a shutdown
     /// backstop: `disconnect_all` kills this pid's whole process tree
     /// synchronously after the graceful-disconnect grace window, so agents
@@ -1737,15 +1740,15 @@ fn agent_debug_callback(
     agent_name: String,
     stderr_tail: Arc<StderrTail>,
     stdio_debug_enabled: bool,
-) -> impl Fn(&str, sacp_tokio::LineDirection) + Send + Sync + 'static {
+) -> impl Fn(&str, agent_client_protocol::LineDirection) + Send + Sync + 'static {
     move |line, dir| {
         let (tag, enabled) = match dir {
-            sacp_tokio::LineDirection::Stderr => {
+            agent_client_protocol::LineDirection::Stderr => {
                 stderr_tail.push(line);
                 ("stderr", true)
             }
-            sacp_tokio::LineDirection::Stdout => ("stdout", stdio_debug_enabled),
-            sacp_tokio::LineDirection::Stdin => ("stdin", stdio_debug_enabled),
+            agent_client_protocol::LineDirection::Stdout => ("stdout", stdio_debug_enabled),
+            agent_client_protocol::LineDirection::Stdin => ("stdin", stdio_debug_enabled),
         };
         if !enabled {
             return;
@@ -2054,9 +2057,9 @@ async fn build_agent(
             }
             let env_key_list: Vec<&str> = merged_env.iter().map(|(k, _)| k.as_str()).collect();
             if !merged_env.is_empty() {
-                let env_vars: Vec<sacp::schema::EnvVariable> = merged_env
+                let env_vars: Vec<agent_client_protocol::schema::v1::EnvVariable> = merged_env
                     .iter()
-                    .map(|(k, v)| sacp::schema::EnvVariable::new(k, v))
+                    .map(|(k, v)| agent_client_protocol::schema::v1::EnvVariable::new(k, v))
                     .collect();
                 server = server.env(env_vars);
             }
@@ -2094,7 +2097,7 @@ async fn build_agent(
             let agent_name = meta.name.to_string();
             let tail = Arc::clone(stderr_tail);
             Ok(
-                AcpAgent::new(sacp::schema::McpServer::Stdio(server)).with_debug(
+                AcpAgent::new(agent_client_protocol::schema::v1::McpServer::Stdio(server)).with_debug(
                     agent_debug_callback(agent_name, tail, stdio_debug_enabled),
                 ),
             )
@@ -2549,7 +2552,7 @@ enum PendingPermission {
 
 /// What [`PermissionQueue`] needs from a parked responder. Abstracted into a
 /// trait ONLY so the queue stays a pure state machine that unit tests can drive:
-/// sacp's `Responder` has private fields and no public constructor, so a real
+/// the ACP runtime's `Responder` has private fields and no public constructor, so a real
 /// [`PendingPermission`] cannot be built outside a live ACP connection.
 trait PermissionResponder {
     /// Resolve with the user's chosen option id.
@@ -2632,7 +2635,7 @@ struct ResolvedPermission {
 ///
 /// So: queue instead of overwrite — one card at a time, FIFO, nothing lost.
 /// Splitting the responder map from the queue would leave a real interleaving
-/// (the request handler runs on sacp's dispatch task, `Cancel` on the
+/// (the request handler runs on the ACP runtime's dispatch task, `Cancel` on the
 /// conversation task, so they interleave at every `.await`):
 ///
 /// ```text
@@ -2925,8 +2928,8 @@ async fn drain_permissions(
 /// The two must be atomic whenever `follow_up` is `TurnComplete`, because
 /// `SessionState::apply_event` nulls `pending_permission` on that event
 /// unconditionally. With a plain drain followed by a separate emit, an
-/// `admit_permission` landing in the gap (the request handler runs on sacp's
-/// dispatch task, this on the conversation task) would publish its card and set
+/// `admit_permission` landing in the gap (the request handler runs on the ACP
+/// runtime's dispatch task, this on the conversation task) would publish its card and set
 /// `showing`, and then `TurnComplete` would silently un-display it on every
 /// client — leaving a live responder behind an id nobody can answer, and wedging
 /// every LATER permission behind it for the life of the connection. That is the
@@ -3270,7 +3273,7 @@ const GROK_INCOMPATIBLE_AGENT_ERROR_CODE: &str = "grok_model_switch_incompatible
 /// Grok's own `x.ai/sessionConfig` still lists every model regardless of type, so
 /// the composer offers them all and we detect this specific rejection to handle
 /// it gracefully rather than leaking a raw JSON-RPC error.
-fn is_grok_incompatible_agent_switch(e: &sacp::Error) -> bool {
+fn is_grok_incompatible_agent_switch(e: &agent_client_protocol::Error) -> bool {
     e.data
         .as_ref()
         .and_then(|d| d.get("code"))
@@ -3572,7 +3575,7 @@ fn synthesize_grok_config_options(
 }
 
 /// Emit an already-mapped `SessionConfigOptionInfo` list (used by the Grok path,
-/// which synthesizes `Info` directly rather than mapping sacp `SessionConfigOption`s).
+/// which synthesizes `Info` directly rather than mapping schema `SessionConfigOption`s).
 async fn emit_session_config_options_info(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
@@ -3587,10 +3590,9 @@ async fn emit_session_config_options_info(
 }
 
 /// Switch Grok's active model — and, optionally, its reasoning effort — via the
-/// standard ACP `session/set_model`. Sent as an `UntypedMessage` for the same
-/// reason as `session/resume` / `session/set_config_option`: sacp 11.0.0's typed
-/// request is gated behind the `unstable_session_model` feature (not enabled),
-/// and the orphan rule blocks a local `JsonRpcRequest` impl.
+/// `session/set_model`, a method the stable ACP schema no longer carries (the
+/// unstable session-model API was dropped in favour of config options), so it
+/// goes out as an `UntypedMessage` — grok still implements it.
 ///
 /// Reasoning effort IS live-settable (verified against grok 0.2.99): a
 /// `reasoning_effort` value carried in the request's `_meta.reasoningEffort`
@@ -3604,14 +3606,14 @@ async fn set_grok_model(
     session_id: &SessionId,
     model_id: String,
     reasoning_effort: Option<String>,
-) -> Result<(), sacp::Error> {
+) -> Result<(), agent_client_protocol::Error> {
     let params = build_grok_set_model_params(
         session_id.0.as_ref(),
         &model_id,
         reasoning_effort.as_deref(),
     );
     let untyped_req = UntypedMessage::new("session/set_model", params).map_err(|e| {
-        sacp::util::internal_error(format!("Failed to build set_model request: {e}"))
+        agent_client_protocol::util::internal_error(format!("Failed to build set_model request: {e}"))
     })?;
     cx.send_request_to(Agent, untyped_req).block_task().await?;
     Ok(())
@@ -3946,7 +3948,7 @@ async fn set_grok_config_option(
     emitter: &EventEmitter,
     config_id: String,
     value_id: String,
-) -> Result<(), sacp::Error> {
+) -> Result<(), agent_client_protocol::Error> {
     // Resolve the `set_model` args for whichever selector changed. A model pick
     // is the model itself (no effort override); an effort pick re-sends the
     // current model carrying the new `_meta.reasoningEffort`. Any other id is a
@@ -4034,11 +4036,11 @@ async fn emit_grok_incompatible_agent_switch(
 
 /// Emit the composer's session config-option selectors. For Grok this reads the
 /// synthesized `x.ai/sessionConfig` (parity path); for every other agent it runs
-/// the standard preference-application + sacp-mapping pipeline unchanged.
+/// the standard preference-application + schema-mapping pipeline unchanged.
 #[allow(clippy::too_many_arguments)]
 async fn apply_and_emit_session_config_options(
     cx: &ConnectionTo<Agent>,
-    session: &mut sacp::ActiveSession<'_, Agent>,
+    session: &mut AgentSession,
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
     agent_type: AgentType,
@@ -4111,7 +4113,7 @@ async fn apply_and_emit_session_config_options(
 /// [`normalize_grok_image_blocks`] settles that separately at dispatch.
 fn effective_prompt_capabilities(
     agent_type: AgentType,
-    capabilities: &sacp::schema::PromptCapabilities,
+    capabilities: &agent_client_protocol::schema::v1::PromptCapabilities,
 ) -> PromptCapabilitiesInfo {
     PromptCapabilitiesInfo {
         image: capabilities.image || agent_type == AgentType::Grok,
@@ -4123,7 +4125,7 @@ fn effective_prompt_capabilities(
 async fn emit_prompt_capabilities(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
-    capabilities: &sacp::schema::PromptCapabilities,
+    capabilities: &agent_client_protocol::schema::v1::PromptCapabilities,
     agent_type: AgentType,
 ) {
     emit_with_state(
@@ -4474,114 +4476,41 @@ fn build_client_capabilities(
     if !meta.is_empty() {
         client_capabilities = client_capabilities.meta(meta);
     }
-    client_capabilities
-}
-
-/// The `clientCapabilities.session` block, for the agents that implement its
-/// members — or `None`, which is the byte-for-byte status quo.
-///
-/// This exists SEPARATELY from [`build_client_capabilities`] because it cannot
-/// go through it: `session` is a typed sibling field on `ClientCapabilities`,
-/// and codeg's pinned `agent-client-protocol-schema` 0.11.7 has no such field
-/// (nor `Notice` / `CompactionUpdate` on `SessionUpdate`). Unlike every `_meta`
-/// opt-in above it therefore cannot be smuggled through
-/// `ClientCapabilities.meta` — the block has to be grafted onto the serialized
-/// request, which is what [`send_initialize`] does.
-///
-/// That is a presentation limit of the pinned struct, NOT of the wire. Both
-/// members are read straight off the raw capabilities object by the adapters
-/// (`clientSupportsNotices`: `typeof session.notices === "object" && !== null
-/// && !Array.isArray`; codex's `clientSupportsCompaction`:
-/// `session.compaction != null`), and both were probed live over stdio against
-/// 0.81.0 and 1.13.0: the handshake is accepted and the `initialize` RESPONSE
-/// is byte-identical to the same run with the block withheld. The upstream
-/// Rust types exist too (schema 1.9.1 behind `unstable_session_notices` /
-/// `unstable_session_compaction`, runtime `agent-client-protocol` 2.2.0), so
-/// the sacp migration turns this back into a typed field and retires the two
-/// raw readers — the same fate `air_async_task_delta` is waiting for.
-///
-/// Only the two agents that BUILT these get it, per the rule the `_meta`
-/// opt-ins above follow: advertise nothing an agent hasn't implemented.
-///
-/// ⚠️ Both members REPLACE a surface codeg already consumes, so neither may be
-/// advertised without its consumer:
-/// * `notices` outranks the AIR advisory lane (claude publishes its model
-///   fallback advisory only `if (!supportsNotices && supportsAirSessionFailures)`;
-///   codex's readme-dev states the same precedence). The consumer mirrors
-///   `warning`/`error` notices back into `SessionFailureRecord` so the banner
-///   is unchanged — see `session_notice`.
-/// * `compaction` makes both adapters STOP sending the `_meta.contextCompaction`
-///   synthetic tool call that `<ContextCompactionCard>` renders from. The
-///   consumer translates `compaction_update` back into that exact shape, so
-///   the card, the timeline's `"compaction"` render kind and every history
-///   parser keep working unchanged — see `session_compaction_event`.
-///
-/// One accepted loss, recorded because it is silent: with `notices` on, claude
-/// DROPS its `informational` frames at `level === "info"`
-/// (`if (message.level === "info") break;`). Those are plain transcript text
-/// today. Upstream's reason is that they only show in Claude Code's own
-/// transcript mode; `warning`, `notice` and `suggestion` all still arrive.
-fn client_session_capabilities(agent_type: AgentType) -> Option<serde_json::Value> {
-    matches!(agent_type, AgentType::ClaudeCode | AgentType::Codex).then(|| {
-        serde_json::json!({
-            "notices": {},
-            "compaction": {},
-        })
-    })
-}
-
-/// Send `initialize` UNTYPED so the request can carry a `clientCapabilities
-/// .session` block the pinned schema cannot express (see
-/// [`client_session_capabilities`]).
-///
-/// Same in-tree pattern as [`send_new_session_capturing_models`] /
-/// [`send_load_session`]: `UntypedMessage::new` serializes the very same
-/// `InitializeRequest`, and the response is parsed into the very same
-/// `InitializeResponse`. The ONLY wire difference is the grafted `session`
-/// object — and for every agent outside `client_session_capabilities` there is
-/// no difference at all, because the graft is skipped and the serialized bytes
-/// are exactly what the typed send produced. Literal method string because the
-/// schema's method-name constant is `pub(crate)`.
-///
-/// A `serde` failure here is an internal error rather than an agent error: the
-/// caller's ladder distinguishes those by `sacp::Error`, and both of these
-/// arise entirely on codeg's side of the wire.
-async fn send_initialize(
-    cx: &ConnectionTo<Agent>,
-    agent_type: AgentType,
-    req: InitializeRequest,
-) -> Result<InitializeResponse, sacp::Error> {
-    let Some(session) = client_session_capabilities(agent_type) else {
-        // Nothing to graft: send the typed request as-is, through the same
-        // untyped envelope so both paths share one code path below.
-        let untyped_req = UntypedMessage::new("initialize", req).map_err(|e| {
-            sacp::util::internal_error(format!("Failed to build initialize request: {e}"))
-        })?;
-        let raw = cx.send_request_to(Agent, untyped_req).block_task().await?;
-        return serde_json::from_value(raw).map_err(|e| {
-            sacp::util::internal_error(format!("Failed to parse initialize response: {e}"))
-        });
-    };
-    let mut payload = serde_json::to_value(&req).map_err(|e| {
-        sacp::util::internal_error(format!("Failed to serialize initialize request: {e}"))
-    })?;
-    // `clientCapabilities` is always present — `InitializeRequest` holds it as
-    // a non-optional struct — but graft defensively rather than index, so a
-    // schema change that makes it optional degrades to "capability withheld"
-    // instead of panicking on a live connection.
-    if let Some(caps) = payload
-        .get_mut("clientCapabilities")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        caps.insert("session".to_string(), session);
+    // `clientCapabilities.session`: the Session Notices and Session
+    // Compaction RFDs, advertised to the two agents that BUILT them
+    // (claude-agent-acp 0.81.0, codex-acp 1.13.0). Both read the members off
+    // the raw object (`clientSupportsNotices`: `typeof session.notices ===
+    // "object"`; codex's `clientSupportsCompaction`: `session.compaction !=
+    // null`), which is exactly what the empty capability structs serialize to.
+    //
+    // ⚠️ Both members REPLACE a surface codeg already consumes, so neither may
+    // be advertised without its consumer:
+    // * `notices` outranks the AIR advisory lane (claude publishes its model
+    //   fallback advisory only `if (!supportsNotices &&
+    //   supportsAirSessionFailures)`; codex's readme-dev states the same
+    //   precedence). The consumer mirrors `warning`/`error` notices back into
+    //   `SessionFailureRecord` so the banner is unchanged — see
+    //   `session_notice`.
+    // * `compaction` makes both adapters STOP sending the
+    //   `_meta.contextCompaction` synthetic tool call that
+    //   `<ContextCompactionCard>` renders from. The consumer translates
+    //   `compaction_update` back into that exact shape, so the card, the
+    //   timeline's `"compaction"` render kind and every history parser keep
+    //   working unchanged — see `session_compaction_event`.
+    //
+    // One accepted loss, recorded because it is silent: with `notices` on,
+    // claude DROPS its `informational` frames at `level === "info"` (`if
+    // (message.level === "info") break;`). Those were plain transcript text.
+    // Upstream's reason is that they only show in Claude Code's own transcript
+    // mode; `warning`, `notice` and `suggestion` all still arrive.
+    if matches!(agent_type, AgentType::ClaudeCode | AgentType::Codex) {
+        client_capabilities = client_capabilities.session(
+            ClientSessionCapabilities::new()
+                .notices(NoticeCapabilities::new())
+                .compaction(CompactionCapabilities::new()),
+        );
     }
-    let untyped_req = UntypedMessage::new("initialize", payload).map_err(|e| {
-        sacp::util::internal_error(format!("Failed to build initialize request: {e}"))
-    })?;
-    let raw = cx.send_request_to(Agent, untyped_req).block_task().await?;
-    serde_json::from_value(raw).map_err(|e| {
-        sacp::util::internal_error(format!("Failed to parse initialize response: {e}"))
-    })
+    client_capabilities
 }
 
 fn build_new_session_request(
@@ -4639,19 +4568,19 @@ fn build_resume_session_request(
 /// Wire-level half of `session/resume`: send the request and deserialize the
 /// reply into `ResumeSessionResponse`.
 ///
-/// `sacp` 11.0.0 ships no `JsonRpcRequest` impl for `ResumeSessionRequest`, and
-/// the orphan rule blocks codeg from adding one, so we send via `UntypedMessage`
-/// — the same in-tree pattern `set_session_config_option_inner` already uses for
-/// `session/set_config_option`. On a JSON-RPC error the agent returns,
-/// `block_task()` yields `Err(sacp::Error)` with `.code` / `.to_string()`
+/// Untyped for the same reason as `session/new`: the raw reply is inspected
+/// before it is deserialized (the top-level `models`, which the typed response
+/// has no field for, and `strip_unknown_config_options`). Same in-tree pattern
+/// `set_session_config_option_inner` uses for `session/set_config_option`. On a JSON-RPC error the agent returns,
+/// `block_task()` yields `Err(agent_client_protocol::Error)` with `.code` / `.to_string()`
 /// intact, so the caller's error ladder reads identically to the
 /// `session/load` arm.
 async fn send_resume_session(
     cx: &ConnectionTo<Agent>,
     req: ResumeSessionRequest,
-) -> Result<(ResumeSessionResponse, Option<serde_json::Value>), sacp::Error> {
+) -> Result<(ResumeSessionResponse, Option<serde_json::Value>), agent_client_protocol::Error> {
     let untyped_req = UntypedMessage::new("session/resume", req).map_err(|e| {
-        sacp::util::internal_error(format!("Failed to build resume request: {e}"))
+        agent_client_protocol::util::internal_error(format!("Failed to build resume request: {e}"))
     })?;
 
     let mut raw_response = cx.send_request_to(Agent, untyped_req).block_task().await?;
@@ -4661,7 +4590,7 @@ async fn send_resume_session(
     let models = raw_response.get("models").cloned();
     strip_unknown_config_options(&mut raw_response, "session/resume");
     let resp = serde_json::from_value(raw_response).map_err(|e| {
-        sacp::util::internal_error(format!("Failed to parse resume response: {e}"))
+        agent_client_protocol::util::internal_error(format!("Failed to parse resume response: {e}"))
     })?;
     Ok((resp, models))
 }
@@ -4670,25 +4599,25 @@ async fn send_resume_session(
 /// deserialized.
 ///
 /// Two things need the raw JSON. For Grok, the top-level `models` (per-model
-/// reasoning-effort data) is dropped by the typed `NewSessionResponse` because
-/// the `unstable_session_model` feature is off, so it is captured here and
+/// reasoning-effort data) is dropped by the typed `NewSessionResponse`, which
+/// has no field for it (the stable schema carries no session-model API), so it
+/// is captured here and
 /// returned; every other agent gets `None`. For *all* agents,
 /// [`strip_unknown_config_options`] runs first so an option kind newer than
 /// codeg's schema pin cannot fail the whole response.
 ///
 /// The request bytes are identical to the typed send — `UntypedMessage::new`
-/// serializes the very same `NewSessionRequest` — and `attach_session` only
-/// consumes `session_id` / `modes` / `meta` off the result. Literal method
-/// string because the schema's `SESSION_NEW_METHOD_NAME` is `pub(crate)` and
-/// sacp ships no `JsonRpcRequest` for a raw new-session; this mirrors the
-/// `session/resume` / `session/fork` untyped sends.
+/// serializes the very same `NewSessionRequest` — and `AgentSession::attach`
+/// only consumes `session_id` / `modes` off the result. Literal method string
+/// because the schema's `SESSION_NEW_METHOD_NAME` is `pub(crate)`; this mirrors
+/// the `session/resume` / `session/fork` untyped sends.
 async fn send_new_session_capturing_models(
     cx: &ConnectionTo<Agent>,
     agent_type: AgentType,
     req: NewSessionRequest,
-) -> Result<(NewSessionResponse, Option<serde_json::Value>), sacp::Error> {
+) -> Result<(NewSessionResponse, Option<serde_json::Value>), agent_client_protocol::Error> {
     let untyped_req = UntypedMessage::new("session/new", req).map_err(|e| {
-        sacp::util::internal_error(format!("Failed to build new_session request: {e}"))
+        agent_client_protocol::util::internal_error(format!("Failed to build new_session request: {e}"))
     })?;
     let mut raw_response = cx.send_request_to(Agent, untyped_req).block_task().await?;
     let models = (agent_type == AgentType::Grok)
@@ -4696,7 +4625,7 @@ async fn send_new_session_capturing_models(
         .flatten();
     strip_unknown_config_options(&mut raw_response, "session/new");
     let resp = serde_json::from_value(raw_response).map_err(|e| {
-        sacp::util::internal_error(format!("Failed to parse new_session response: {e}"))
+        agent_client_protocol::util::internal_error(format!("Failed to parse new_session response: {e}"))
     })?;
     Ok((resp, models))
 }
@@ -4704,19 +4633,19 @@ async fn send_new_session_capturing_models(
 /// Send `session/load` UNTYPED for the same reason as
 /// [`send_new_session_capturing_models`]: the raw response must pass through
 /// [`strip_unknown_config_options`] before the typed parse. Request bytes and
-/// the `Err(sacp::Error)` a JSON-RPC failure yields (`.code` / `.to_string()`
+/// the `Err(agent_client_protocol::Error)` a JSON-RPC failure yields (`.code` / `.to_string()`
 /// intact) are unchanged, so the caller's error ladder reads identically.
 async fn send_load_session(
     cx: &ConnectionTo<Agent>,
     req: LoadSessionRequest,
-) -> Result<LoadSessionResponse, sacp::Error> {
+) -> Result<LoadSessionResponse, agent_client_protocol::Error> {
     let untyped_req = UntypedMessage::new("session/load", req).map_err(|e| {
-        sacp::util::internal_error(format!("Failed to build load_session request: {e}"))
+        agent_client_protocol::util::internal_error(format!("Failed to build load_session request: {e}"))
     })?;
     let mut raw_response = cx.send_request_to(Agent, untyped_req).block_task().await?;
     strip_unknown_config_options(&mut raw_response, "session/load");
     serde_json::from_value(raw_response).map_err(|e| {
-        sacp::util::internal_error(format!("Failed to parse load_session response: {e}"))
+        agent_client_protocol::util::internal_error(format!("Failed to parse load_session response: {e}"))
     })
 }
 
@@ -5293,9 +5222,9 @@ fn canonical_spec_to_mcp_server(name: &str, spec: &serde_json::Value) -> Result<
                 }
             }
             if let Some(env_obj) = obj.get("env").and_then(serde_json::Value::as_object) {
-                let env_vars: Vec<sacp::schema::EnvVariable> = env_obj
+                let env_vars: Vec<agent_client_protocol::schema::v1::EnvVariable> = env_obj
                     .iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| sacp::schema::EnvVariable::new(k, s)))
+                    .filter_map(|(k, v)| v.as_str().map(|s| agent_client_protocol::schema::v1::EnvVariable::new(k, s)))
                     .collect();
                 if !env_vars.is_empty() {
                     server = server.env(env_vars);
@@ -5476,7 +5405,7 @@ async fn run_connection(
         .builder()
         .name("codeg")
         // First in the chain on purpose: it has to claim a null-`sessionId`
-        // notification before sacp can park it for retry. See the type docs.
+        // notification before the runtime can park it for retry. See the type docs.
         .with_handler(DropNullSessionIdNotifications)
         .on_receive_request(
             {
@@ -5608,7 +5537,7 @@ async fn run_connection(
                         return refuse_unadvertised_channel(responder, "terminal/wait_for_exit");
                     }
                     // `terminal/wait_for_exit` blocks until the command exits,
-                    // and sacp awaits request handlers INSIDE its single
+                    // and the ACP runtime awaits request handlers INSIDE its single
                     // dispatch loop ("the loop awaits the handler to completion
                     // before processing the next message"). Answering inline
                     // therefore freezes the ENTIRE connection for a command
@@ -5617,7 +5546,7 @@ async fn run_connection(
                     // the turn forever, with every later session/update stuck
                     // unprocessed in the transport queue.
                     //
-                    // Answer from a spawned task instead — sacp's own sanctioned
+                    // Answer from a spawned task instead — the runtime's own sanctioned
                     // escape hatch. `cx.spawn` rather than `tokio::spawn` so the
                     // wait is connection-scoped and torn down with it.
                     let runtime = runtime.clone();
@@ -5805,30 +5734,30 @@ async fn run_connection(
             },
             on_receive_notification!(),
         )
-        .connect_with(agent, async move |cx| -> Result<(), sacp::Error> {
+        .connect_with(agent, async move |cx| -> Result<(), agent_client_protocol::Error> {
             let state = state_outer;
             let agent_name_for_log = registry::get_agent_meta(agent_type).name;
 
-            let init_request = InitializeRequest::new(ProtocolVersion::LATEST)
+            let init_request = InitializeRequest::new(ProtocolVersion::V1)
                 .client_capabilities(build_client_capabilities(agent_type, host_tools));
             // Bound the Initialize handshake so an outdated / incompatible
             // cached binary that never responds can't leave the frontend
             // stuck on "Connecting...". A healthy agent answers in <1s; we
             // give 60s headroom for cold process startup on slow machines.
             //
-            // We cannot carry a structured error code through sacp's Error
+            // We cannot carry a structured error code through the ACP Error
             // type, so we tag the timeout with `INIT_TIMEOUT_SENTINEL` and
             // convert it back to `AcpError::InitializeTimeout` in the
             // outer `.map_err(...)` below. The outer layer attaches a
             // stable `code` to the frontend event so it can be localized.
             tracing::info!(
                 "[ACP][{agent_name_for_log}] Sending Initialize (protocol={}, timeout=60s)",
-                ProtocolVersion::LATEST
+                ProtocolVersion::V1
             );
             let init_started = std::time::Instant::now();
             let init_resp = match tokio::time::timeout(
                 std::time::Duration::from_secs(60),
-                send_initialize(&cx, agent_type, init_request),
+                cx.send_request_to(Agent, init_request).block_task(),
             )
             .await
             {
@@ -5854,7 +5783,7 @@ async fn run_connection(
                          JSON-RPC trace, re-launch with CODEG_ACP_DEBUG=1.",
                         init_started.elapsed()
                     );
-                    return Err(sacp::util::internal_error(INIT_TIMEOUT_SENTINEL));
+                    return Err(agent_client_protocol::util::internal_error(INIT_TIMEOUT_SENTINEL));
                 }
             };
             emit_prompt_capabilities(
@@ -6101,7 +6030,7 @@ async fn run_connection(
                             // on resume; absent ⇒ empty specs ⇒ flat fallback.
                             let grok_model_specs = (agent_type == AgentType::Grok)
                                 .then(|| parse_grok_model_specs(grok_models_raw.as_ref()));
-                            let mut session = cx.attach_session(new_resp, Default::default())?;
+                            let mut session = AgentSession::attach(&cx, new_resp)?;
 
                             // No drain: session/resume does not replay history,
                             // so there is nothing to discard. Any buffered
@@ -6220,7 +6149,7 @@ async fn run_connection(
                     );
                     send_load_session(&cx, load_req).await
                 } else {
-                    Err(sacp::Error::method_not_found()
+                    Err(agent_client_protocol::Error::method_not_found()
                         .data("agent does not advertise the loadSession capability"))
                 };
 
@@ -6236,7 +6165,7 @@ async fn run_connection(
                         } else {
                             None
                         };
-                        let mut session = cx.attach_session(new_resp, Default::default())?;
+                        let mut session = AgentSession::attach(&cx, new_resp)?;
 
                         // Drain historical replay notifications from session/load,
                         // but forward AvailableCommandsUpdate to the frontend.
@@ -6540,10 +6469,10 @@ async fn run_connection(
                         };
                         let grok_model_specs = (agent_type == AgentType::Grok)
                             .then(|| parse_grok_model_specs(grok_models_raw.as_ref()));
-                        // Read BEFORE `attach_session` consumes the response.
+                        // Read BEFORE `AgentSession::attach` consumes the response.
                         state.write().await.pi_startup_banner =
                             pi_startup_banner(agent_type, new_resp.meta.as_ref());
-                        let mut session = cx.attach_session(new_resp, Default::default())?;
+                        let mut session = AgentSession::attach(&cx, new_resp)?;
                         // Same conversation, new agent session: link the fresh
                         // transcript to the one the failed load was for, so the
                         // turns codeg already recorded keep rendering.
@@ -6640,10 +6569,10 @@ async fn run_connection(
                 };
                 let grok_model_specs = (agent_type == AgentType::Grok)
                     .then(|| parse_grok_model_specs(grok_models_raw.as_ref()));
-                // Read BEFORE `attach_session` consumes the response.
+                // Read BEFORE `AgentSession::attach` consumes the response.
                 state.write().await.pi_startup_banner =
                     pi_startup_banner(agent_type, new_resp.meta.as_ref());
-                let mut session = cx.attach_session(new_resp, Default::default())?;
+                let mut session = AgentSession::attach(&cx, new_resp)?;
                 record_transcript_header(agent_type, &sid, &cwd.to_string_lossy());
                 emit_with_state(
                     &state,
@@ -6729,7 +6658,7 @@ async fn run_connection(
 /// (`_x.ai/ask_user_question`) and BLOCKS on the reply — it does NOT go through
 /// the codeg-mcp ask tool. Transparent over the raw params object
 /// (`{sessionId, toolCallId, questions, mode}`); the fields codeg needs are read
-/// by [`crate::acp::question::parse_grok_ext_questions`]. sacp routes typed
+/// by [`crate::acp::question::parse_grok_ext_questions`]. The runtime routes typed
 /// handlers on the RAW wire method, so the derive keeps the leading `_`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonRpcRequest)]
 #[request(method = "_x.ai/ask_user_question", response = serde_json::Value)]
@@ -6741,7 +6670,7 @@ struct GrokAskUserQuestionRequest(serde_json::Value);
 /// BLOCKS on the reply — the agent won't leave plan mode until the user acts.
 /// Transparent over the raw params object (`{sessionId, toolCallId, planContent}`);
 /// the fields codeg needs are read by
-/// [`crate::acp::plan_approval::parse_grok_exit_plan_request`]. sacp routes typed
+/// [`crate::acp::plan_approval::parse_grok_exit_plan_request`]. The runtime routes typed
 /// handlers on the RAW wire method, so the derive keeps the leading `_`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonRpcRequest)]
 #[request(method = "_x.ai/exit_plan_mode", response = serde_json::Value)]
@@ -6750,12 +6679,12 @@ struct GrokExitPlanModeRequest(serde_json::Value);
 
 /// Every codex `elicitation/create` request — `request_user_input` (Plan
 /// mode), generic MCP-server forms, MCP tool-call approvals, message-only
-/// confirms — arrives here once codeg advertises `elicitation.form`. sacp
-/// 11.0.0 ships no `JsonRpcRequest`/`JsonRpcResponse` impl for the schema's
-/// elicitation types (and no feature to enable them), so — like the grok bridge
-/// — take the raw params object and reply with a raw JSON value (the serialized
-/// `CreateElicitationResponse`). sacp has no built-in elicitation handling, so
-/// this custom method handler fills the gap with no dispatch conflict.
+/// confirms — arrives here once codeg advertises `elicitation.form`. Like the
+/// grok bridge, this takes the raw params object and replies with a raw JSON
+/// value (the serialized `CreateElicitationResponse`): the form schemas codex
+/// sends carry `_meta` markers (`codex.isSecret`, …) that `question.rs` reads
+/// straight off the raw JSON. The runtime has no built-in elicitation handling,
+/// so this handler claims the method with no dispatch conflict.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonRpcRequest)]
 #[request(method = "elicitation/create", response = serde_json::Value)]
 #[serde(transparent)]
@@ -7711,10 +7640,10 @@ async fn handle_permission_request(
     .await;
 }
 
-fn respond_terminal_request<T: sacp::JsonRpcResponse>(
+fn respond_terminal_request<T: agent_client_protocol::JsonRpcResponse>(
     responder: Responder<T>,
     result: Result<T, TerminalRuntimeError>,
-) -> Result<(), sacp::Error> {
+) -> Result<(), agent_client_protocol::Error> {
     match result {
         Ok(response) => responder.respond(response),
         Err(error) => responder.respond_with_error(error.into_rpc_error()),
@@ -7729,10 +7658,10 @@ fn respond_terminal_request<T: sacp::JsonRpcResponse>(
 /// the bug. `method_not_found` is the honest wire answer: as far as this
 /// connection is concerned the method does not exist, which is what the agent
 /// was told on Initialize.
-fn refuse_unadvertised_channel<T: sacp::JsonRpcResponse>(
+fn refuse_unadvertised_channel<T: agent_client_protocol::JsonRpcResponse>(
     responder: Responder<T>,
     method: &str,
-) -> Result<(), sacp::Error> {
+) -> Result<(), agent_client_protocol::Error> {
     tracing::warn!(
         "[ACP] refusing {method}: {HOST_TOOLS_ENV}=agent, so this channel was never \
          advertised — the agent must use its own (sandboxable) tools"
@@ -7743,16 +7672,16 @@ fn refuse_unadvertised_channel<T: sacp::JsonRpcResponse>(
 /// The error [`refuse_unadvertised_channel`] answers with. Split out because a
 /// `Responder` cannot be built outside a live connection, so this is the part
 /// of the refusal a unit test can pin; the wiring itself is covered end-to-end.
-fn unadvertised_channel_error(method: &str) -> sacp::Error {
-    sacp::Error::method_not_found().data(format!(
+fn unadvertised_channel_error(method: &str) -> agent_client_protocol::Error {
+    agent_client_protocol::Error::method_not_found().data(format!(
         "codeg does not host {method} for this agent ({HOST_TOOLS_ENV}=agent)"
     ))
 }
 
-fn respond_file_system_request<T: sacp::JsonRpcResponse>(
+fn respond_file_system_request<T: agent_client_protocol::JsonRpcResponse>(
     responder: Responder<T>,
     result: Result<T, FileSystemRuntimeError>,
-) -> Result<(), sacp::Error> {
+) -> Result<(), agent_client_protocol::Error> {
     match result {
         Ok(response) => responder.respond(response),
         Err(error) => responder.respond_with_error(error.into_rpc_error()),
@@ -7760,11 +7689,11 @@ fn respond_file_system_request<T: sacp::JsonRpcResponse>(
 }
 
 async fn set_session_mode(
-    session: &mut sacp::ActiveSession<'_, Agent>,
+    session: &mut AgentSession,
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
     mode_id: String,
-) -> Result<(), sacp::Error> {
+) -> Result<(), agent_client_protocol::Error> {
     let req = SetSessionModeRequest::new(session.session_id().clone(), mode_id.clone());
     session
         .connection()
@@ -7785,7 +7714,7 @@ async fn set_session_config_option(
     emitter: &EventEmitter,
     config_id: String,
     value_id: String,
-) -> Result<(), sacp::Error> {
+) -> Result<(), agent_client_protocol::Error> {
     // An explicit set means someone has taken ownership of this option — the
     // user in the composer, or the post-establishment re-assert (already
     // drained). Either way the establishment-time value stops being the one to
@@ -7991,17 +7920,17 @@ async fn set_session_config_option_inner(
     session_id: &SessionId,
     config_id: String,
     value: SessionConfigOptionValue,
-) -> Result<Vec<SessionConfigOption>, sacp::Error> {
+) -> Result<Vec<SessionConfigOption>, agent_client_protocol::Error> {
     let req = SetSessionConfigOptionRequest::new(session_id.clone(), config_id, value);
     let untyped_req = UntypedMessage::new("session/set_config_option", req).map_err(|e| {
-        sacp::util::internal_error(format!("Failed to build config option request: {e}"))
+        agent_client_protocol::util::internal_error(format!("Failed to build config option request: {e}"))
     })?;
 
     let mut raw_response = cx.send_request_to(Agent, untyped_req).block_task().await?;
     strip_unknown_config_options(&mut raw_response, "session/set_config_option");
     let response: SetSessionConfigOptionResponse =
         serde_json::from_value(raw_response).map_err(|e| {
-            sacp::util::internal_error(format!("Failed to parse config option response: {e}"))
+            agent_client_protocol::util::internal_error(format!("Failed to parse config option response: {e}"))
         })?;
 
     Ok(response.config_options)
@@ -8024,14 +7953,14 @@ async fn set_session_config_option_inner(
 /// interrupt is safe depends on how the adapter delivers the control.
 ///
 /// Sent via `UntypedMessage` because `_codex/…` is a codex-private extension
-/// method with no sacp typed variant — the same escape hatch used for
+/// method with no typed variant in the schema — the same escape hatch used for
 /// `session/set_config_option` and `session/fork`.
 async fn send_goal_control(
     cx: &ConnectionTo<Agent>,
     session_id: &SessionId,
     action: GoalControlAction,
     method: &str,
-) -> Result<(), sacp::Error> {
+) -> Result<(), agent_client_protocol::Error> {
     // `method` is the connection's stored `goal_control_method`: the
     // advertised provider-neutral `_session/goal` (claude 0.66+/codex 1.2+)
     // or the legacy `_codex/session/goal_control` default. Both take the
@@ -8041,7 +7970,7 @@ async fn send_goal_control(
         "action": action,
     });
     let untyped_req = UntypedMessage::new(method, params).map_err(|e| {
-        sacp::util::internal_error(format!("Failed to build goal_control request: {e}"))
+        agent_client_protocol::util::internal_error(format!("Failed to build goal_control request: {e}"))
     })?;
     cx.send_request_to(Agent, untyped_req).block_task().await?;
     Ok(())
@@ -8069,7 +7998,7 @@ async fn send_goal_control(
 #[allow(clippy::too_many_arguments)]
 async fn apply_preferred_session_options(
     cx: &ConnectionTo<Agent>,
-    session: &mut sacp::ActiveSession<'_, Agent>,
+    session: &mut AgentSession,
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
     preferred_mode_id: Option<&str>,
@@ -9003,7 +8932,7 @@ fn live_mode_for_fork(
 
 /// Result when the conversation loop exits due to a fork request.
 struct ForkExitInfo {
-    fork_response: sacp::schema::ForkSessionResponse,
+    fork_response: agent_client_protocol::schema::v1::ForkSessionResponse,
     /// Raw top-level `models` from the fork response (Grok per-model effort data),
     /// captured before the typed deserialize drops it. `None` when absent.
     fork_models_raw: Option<serde_json::Value>,
@@ -9014,7 +8943,7 @@ struct ForkExitInfo {
     /// (`connection.rs`, `if let Some(mode_state) = modes`), so
     /// `current_mode` survives a transition into one and would hand an
     /// ancestor's mode to a child that does advertise modes. The parent's
-    /// `ActiveSession` is the only capability answer that can't go stale.
+    /// `AgentSession` is the only capability answer that can't go stale.
     /// Its `current_mode_id` is NOT used — codeg tracks mode changes through
     /// events, and the attach-time snapshot never sees them.
     inherited_mode_id: Option<String>,
@@ -9031,7 +8960,7 @@ struct ForkExitInfo {
 /// `ForkSessionResponse` alone is not enough to prompt on.
 #[allow(clippy::too_many_arguments)]
 async fn handle_fork_or_exit(
-    loop_result: Result<Option<ForkExitInfo>, sacp::Error>,
+    loop_result: Result<Option<ForkExitInfo>, agent_client_protocol::Error>,
     conn_id: &str,
     emitter: &EventEmitter,
     state: &Arc<RwLock<SessionState>>,
@@ -9058,7 +8987,7 @@ async fn handle_fork_or_exit(
     // the SAME connection-scoped stderr buffer — the agent process is unchanged
     // across a fork, so its stderr history stays relevant.
     stderr_tail: &Arc<StderrTail>,
-) -> Result<(), sacp::Error> {
+) -> Result<(), agent_client_protocol::Error> {
     let fork_info = match loop_result {
         Ok(Some(info)) => info,
         Ok(None) => return Ok(()),
@@ -9195,7 +9124,7 @@ async fn handle_fork_or_exit(
     // the fork was re-established above, a resume) response.
     let grok_model_specs =
         (agent_type == AgentType::Grok).then(|| parse_grok_model_specs(models_raw.as_ref()));
-    let mut session = cx.attach_session(new_resp, Default::default())?;
+    let mut session = AgentSession::attach(&cx, new_resp)?;
 
     // A fork is a new session id, hence a new transcript file. Its history
     // starts empty and accumulates from the fork point — the pre-fork turns
@@ -9316,10 +9245,10 @@ fn stop_reason_to_str(reason: StopReason) -> &'static str {
 /// "Authentication required" (silent stop), and any other error (emit
 /// "starting new" then fall through to `session/new`).
 fn classify_session_load_failure(
-    code: sacp::schema::ErrorCode,
+    code: agent_client_protocol::schema::v1::ErrorCode,
     message: &str,
 ) -> Option<&'static str> {
-    if matches!(code, sacp::schema::ErrorCode::ResourceNotFound) {
+    if matches!(code, agent_client_protocol::schema::v1::ErrorCode::ResourceNotFound) {
         return Some("resource_not_found");
     }
     // codex-acp on an archived rollout: the -32603 body reads
@@ -9390,7 +9319,7 @@ const SESSION_GONE_MARKERS: &[&str] =
 ///  - [`SESSION_GONE_MARKERS`] — the agent answered to say its session or
 ///    process is gone. Keeping the connection would leave an entry whose every
 ///    future prompt fails the same way.
-///  - sacp's own synthesized "response to … never received" — the response
+///  - the ACP runtime's own synthesized "response to … never received" — the response
 ///    channel was dropped (`SentRequest::block_task`), i.e. no answer arrived
 ///    at all and the transport actor, not the turn, is what died.
 ///
@@ -9399,15 +9328,15 @@ const SESSION_GONE_MARKERS: &[&str] =
 /// read an agent-controlled string (`Display` renders `data` too), so without
 /// the early return a sign-out prompt that happened to quote one of the markers
 /// would start tearing connections down.
-fn prompt_rejection_is_terminal(e: &sacp::Error) -> bool {
-    if matches!(e.code, sacp::schema::ErrorCode::AuthRequired) {
+fn prompt_rejection_is_terminal(e: &agent_client_protocol::Error) -> bool {
+    if matches!(e.code, agent_client_protocol::schema::v1::ErrorCode::AuthRequired) {
         return false;
     }
-    if matches!(e.code, sacp::schema::ErrorCode::ResourceNotFound) {
+    if matches!(e.code, agent_client_protocol::schema::v1::ErrorCode::ResourceNotFound) {
         return true;
     }
     let text = e.to_string();
-    // Both halves of sacp's own sentence, so an agent quoting "never received"
+    // Both halves of the runtime's own sentence, so an agent quoting "never received"
     // about its own upstream doesn't read as a dead transport.
     if text.contains("response to ") && text.contains("never received") {
         return true;
@@ -9873,8 +9802,8 @@ fn turn_failure_error_event(
 /// Returns `Ok(None)` on normal exit (disconnect / channel closed) or
 /// `Ok(Some(ForkExitInfo))` when the loop should be restarted on a forked session.
 #[allow(clippy::too_many_arguments)]
-async fn run_conversation_loop<'a>(
-    session: &mut sacp::ActiveSession<'a, Agent>,
+async fn run_conversation_loop(
+    session: &mut AgentSession,
     conn_id: &str,
     emitter: &EventEmitter,
     state: &Arc<RwLock<SessionState>>,
@@ -9895,7 +9824,7 @@ async fn run_conversation_loop<'a>(
     // Connection-scoped (like `prompt_ledger`): the agent's stderr ring buffer,
     // read at turn end to explain a silent `EndTurn`.
     stderr_tail: &Arc<StderrTail>,
-) -> Result<Option<ForkExitInfo>, sacp::Error> {
+) -> Result<Option<ForkExitInfo>, agent_client_protocol::Error> {
     // Session-scoped cache for diffing cumulative `raw_output` snapshots
     // into incremental deltas. Shared across the idle loop and the active
     // turn loop so tool calls that span turns stay consistent.
@@ -10479,7 +10408,7 @@ async fn run_conversation_loop<'a>(
                                 Err(e) if !prompt_rejection_is_terminal(&e) => {
                                     let auth_required = matches!(
                                         e.code,
-                                        sacp::schema::ErrorCode::AuthRequired
+                                        agent_client_protocol::schema::v1::ErrorCode::AuthRequired
                                     );
                                     // Synthesized like `empty`: no `StopReason`
                                     // ever arrives for a rejected prompt, so the
@@ -10803,7 +10732,7 @@ async fn run_conversation_loop<'a>(
                                     // once this outcome arrives (Fork's
                                     // protocol/persistence split). Awaiting
                                     // inline matches SetMode/SetConfigOption:
-                                    // sacp pumps I/O on its own task, so the
+                                    // the runtime pumps I/O on its own task, so the
                                     // round-trip only defers other queued
                                     // commands, not session updates. A dead
                                     // receiver is fine — the reply is then
@@ -10843,7 +10772,7 @@ async fn run_conversation_loop<'a>(
                                     // Mid-turn is the COMMON case: a background
                                     // task is usually launched by the turn that
                                     // is still running. Awaited inline like
-                                    // Steer above — sacp pumps I/O on its own
+                                    // Steer above — the runtime pumps I/O on its own
                                     // task, so this defers other queued
                                     // commands, not the turn's updates.
                                     let _ = reply.send(
@@ -12891,7 +12820,7 @@ fn hoist_request_permission_meta(
 /// True when an `initialize` response advertises the ACP steering extension —
 /// the TOP-LEVEL `_meta.steering.supported` flag, a sibling of
 /// `agentCapabilities` (NOT `agentCapabilities._meta`, which belongs to other
-/// conventions such as sacp's symposium capability ext). Both claude-agent-acp
+/// conventions such as the ACP runtime's symposium capability ext). Both claude-agent-acp
 /// (0.61+) and codex-acp (1.1.6+) advertise here; whether codeg actually
 /// steers natively additionally requires the
 /// `registry::steering_prompt_required_min_version` policy plus the runtime
@@ -13127,7 +13056,7 @@ fn version_at_least(version: &str, min: &str) -> bool {
 /// the pinned npx package (see `commands::acp::acp_get_agent_status_core`) —
 /// report an `agent_info.version` at or above the registry minimum? Fail
 /// closed on a missing `agent_info` or an unparseable version.
-fn steering_version_ok(agent_info: Option<&sacp::schema::Implementation>, min: &str) -> bool {
+fn steering_version_ok(agent_info: Option<&agent_client_protocol::schema::v1::Implementation>, min: &str) -> bool {
     agent_info.is_some_and(|info| version_at_least(&info.version, min))
 }
 
@@ -13140,7 +13069,7 @@ fn steering_version_ok(agent_info: Option<&sacp::schema::Implementation>, min: &
 fn synthesize_native_steering(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
-    agent_info: Option<&sacp::schema::Implementation>,
+    agent_info: Option<&agent_client_protocol::schema::v1::Implementation>,
 ) -> bool {
     init_advertises_steering(meta)
         && registry::steering_prompt_required_min_version(agent_type)
@@ -13161,7 +13090,7 @@ fn synthesize_native_steering(
 /// [`crate::acp::question::CodexUserInputShape`]).
 fn codex_user_input_shape(
     agent_type: AgentType,
-    agent_info: Option<&sacp::schema::Implementation>,
+    agent_info: Option<&agent_client_protocol::schema::v1::Implementation>,
 ) -> Option<crate::acp::question::CodexUserInputShape> {
     use crate::acp::question::CodexUserInputShape;
     if agent_type != AgentType::Codex {
@@ -14183,17 +14112,22 @@ fn grok_ext_notification_is_alert(dispatch: &Dispatch, agent_type: AgentType) ->
 }
 
 /// Claims — and drops — an agent notification whose `sessionId` is present but
-/// `null`, before sacp's session router can choke on it.
+/// `null`, before the ACP runtime's session routing can trip on it.
 ///
-/// sacp routes an inbound message to the session it names, and decides a
-/// message is session-bound by FIELD PRESENCE alone (`Dispatch::has_session_id`
-/// → `params.get("sessionId").is_some()`). A `"sessionId": null` therefore
-/// looks session-bound, gets parked in the retry queue, and is replayed into
-/// `ActiveSessionHandler` the moment `attach_session` registers it — where
-/// `Dispatch::get_session_id` deserializes it into a `SessionId` and fails with
-/// `invalid type: null, expected a string`. A handler `Err` brings the whole
-/// connection down, so the user sees `ACP protocol error: Invalid params:
+/// The runtime decides a message is session-bound by FIELD PRESENCE alone
+/// (`Dispatch::has_session_id` → `params.get("sessionId").is_some()`), and parks
+/// every session-bound message nobody claims in a retry queue that is replayed
+/// into each newly added dynamic handler. A `"sessionId": null` therefore looks
+/// session-bound and gets parked. Under `sacp` 11 the replay went into the
+/// runtime's own session handler, whose `get_session_id` fails on the null with
+/// `invalid type: null, expected a string` — and a handler `Err` brought the
+/// whole connection down, so the user saw `ACP protocol error: Invalid params:
 /// "invalid type: null, expected a string"` instead of a session (issue #794).
+/// The 2.x runtime logs a handler error instead of dying on it, and codeg's own
+/// `AgentSession` router simply matches no session on a null id — but nothing
+/// would ever claim the frame either, so without this guard it would sit in the
+/// retry queue for the connection's lifetime and be replayed into every handler
+/// registered after it.
 ///
 /// grok 1.0.40 is what made this reachable: it narrates `session/new` progress
 /// on `_x.ai/session/setup`, and its first five phases (`auth`,
@@ -14201,7 +14135,7 @@ fn grok_ext_notification_is_alert(dispatch: &Dispatch, agent_type: AgentType) ->
 /// BEFORE the session id exists, so they carry `null`. 1.0.34 (the previous
 /// pin) sent no such notification at all. The guard is deliberately NOT gated
 /// on grok: no ACP notification legitimately carries a null session id, and
-/// every agent's connection dies the same way if one does.
+/// any agent that sent one would hit the same path.
 ///
 /// This has to sit in the BUILDER chain, not among the session handlers: the
 /// static chain is the only thing that runs before a message can be parked for
@@ -14219,7 +14153,7 @@ impl<Counterpart: Role> HandleDispatchFrom<Counterpart> for DropNullSessionIdNot
         &mut self,
         message: Dispatch,
         _connection: ConnectionTo<Counterpart>,
-    ) -> Result<Handled<Dispatch>, sacp::Error> {
+    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
         if let Dispatch::Notification(notification) = &message {
             if has_null_session_id(notification) {
                 tracing::debug!(
@@ -14260,7 +14194,7 @@ fn has_null_session_id(notification: &UntypedMessage) -> bool {
 /// [`handle_auth_status_update`]). Only `authStatus` is modelled; the payload is
 /// kept as a raw value so a new `kind` or an added field can never turn a
 /// well-formed push into a deserialization failure.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sacp::JsonRpcNotification)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, agent_client_protocol::JsonRpcNotification)]
 #[notification(method = "_auth/status_update")]
 #[serde(rename_all = "camelCase")]
 struct AuthStatusUpdateNotification {
@@ -14286,15 +14220,13 @@ struct AuthStatusUpdateNotification {
 /// identity at all (probe failed, timed out, unparseable), and reserves
 /// `kind: "none"` for a known signed-OUT state.
 ///
-/// A handler is registered rather than letting it fall through because falling
-/// through is not free. sacp walks the handler chain, finds no claimant (the
-/// per-session `ActiveSessionHandler` only matches frames carrying its own
-/// `sessionId`, and this one carries none), and then does two things for every
-/// such notification: logs `Rejecting message with error, no handler` at INFO,
-/// and calls `Dispatch::respond_with_error`, which for a NOTIFICATION means
-/// `send_error_notification` — codeg writes a bare JSON-RPC error object back to
-/// an agent that never asked a question. Claiming the frame here is what keeps
-/// the bump from introducing that.
+/// A handler is registered rather than letting the frame fall through. Under
+/// `sacp` 11 falling through was not free: with no claimant (the per-session
+/// router only matches frames carrying its own `sessionId`, and this one carries
+/// none) it logged `Rejecting message with error, no handler` at INFO and wrote
+/// a bare JSON-RPC error object back to an agent that never asked a question.
+/// The 2.x runtime just drops an unclaimed notification at debug level, so the
+/// claim is now what keeps the payload's shape recorded against a real reader.
 ///
 /// Nothing consumes the payload yet, and that is a deliberate stop: the status
 /// describes the AGENT-owned login only (on codex, routing codeg itself
@@ -14450,9 +14382,9 @@ fn fix_usage_update_nulls(mut dispatch: Dispatch) -> Dispatch {
 /// not an optimization — it is the only way to see it at all.
 /// `MatchDispatch::if_notification` matches on the METHOD first and then hard-
 /// errors when the params don't parse, so it never reaches `.otherwise()`; and
-/// `agent-client-protocol-schema` 0.11.7's `SessionUpdate` is an
-/// internally-tagged enum with no catch-all arm, so these three variants cannot
-/// deserialize. Left alone they would land on the dropped-update path, which
+/// the v1 `SessionUpdate` (schema 1.9) is still an internally-tagged enum with
+/// no catch-all arm — only the draft v2 enum gained `Other` — so these three
+/// variants cannot deserialize. Left alone they would land on the dropped-update path, which
 /// also feeds the empty-turn diagnosis — a turn that only ran background work
 /// would be reported as an agent that said nothing. Same raw-rewrite seam as
 /// [`fix_usage_update_nulls`].
@@ -14473,7 +14405,7 @@ fn air_async_task_delta(dispatch: &Dispatch) -> Option<AsyncTaskDelta> {
     // destructive — nothing downstream gets a second look at it — so a future
     // extension method that happens to nest an `update.sessionUpdate` must not
     // be swallowed here. (Session scoping is already settled upstream: this
-    // dispatch came off an `ActiveSession` read, which only yields frames whose
+    // dispatch came off an `AgentSession` read, which only yields frames whose
     // session id matches.)
     if msg.method() != "session/update" {
         return None;
@@ -14524,13 +14456,17 @@ fn air_task_usage(value: Option<&serde_json::Value>) -> Option<AsyncTaskUsage> {
 
 /// Read one ACP Session Notice out of a raw `session/update` dispatch.
 ///
-/// Runs BEFORE `MatchDispatch` for the same reason — and by the same mechanism
-/// — as [`air_async_task_delta`]: the pinned `SessionUpdate` is an
-/// internally-tagged enum with no catch-all arm, so a `notice` variant cannot
-/// deserialize, and `if_notification` hard-errors on unparseable params rather
-/// than falling through to `.otherwise()`. Reading it here is the only way to
-/// see it at all. Method-checked as well as shape-checked, because claiming a
-/// dispatch before the typed pipeline is destructive.
+/// Runs BEFORE `MatchDispatch`, at the same seam as [`air_async_task_delta`].
+/// Unlike those AIR frames a notice DOES deserialize as a typed
+/// `SessionUpdate::Notice` since schema 1.9 (`unstable_session_notices`), so the
+/// raw read is a choice rather than the only way in: the three seams that call
+/// it — the `session/load` replay drain, the idle loop and the in-turn loop —
+/// each settle a notice differently (dropped on replay, never counted as turn
+/// output), and claiming it ahead of the typed pipeline keeps that policy in
+/// one visible place per seam. It is also what keeps a notice with a blank
+/// title out, which the typed struct would accept. Method-checked as well as
+/// shape-checked, because claiming a dispatch before the typed pipeline is
+/// destructive.
 ///
 /// `title` is REQUIRED and non-empty per the RFD; a notice without one is
 /// dropped rather than surfaced, since the consumer would have nothing to show
@@ -14538,9 +14474,9 @@ fn air_task_usage(value: Option<&serde_json::Value>) -> Option<AsyncTaskUsage> {
 /// absent so a whitespace-only detail cannot open an empty second line.
 ///
 /// Deliberately NOT gated on `agent_type`, matching [`air_async_task_delta`]:
-/// only the two agents `client_session_capabilities` advertises to should send
-/// these, but if another does, showing the advisory beats dropping it — the
-/// vocabulary is the RFD's, not any one adapter's.
+/// only the two agents `build_client_capabilities` advertises `session.notices`
+/// to should send these, but if another does, showing the advisory beats
+/// dropping it — the vocabulary is the RFD's, not any one adapter's.
 fn session_notice(dispatch: &Dispatch) -> Option<SessionNotice> {
     let Dispatch::Notification(msg) = dispatch else {
         return None;
@@ -15475,7 +15411,7 @@ async fn emit_conversation_update(
                 .filter(|cmd| seen.insert(cmd.name.clone()))
                 .map(|cmd| {
                     let input_hint = cmd.input.as_ref().map(|input| match input {
-                        sacp::schema::AvailableCommandInput::Unstructured(u) => u.hint.clone(),
+                        agent_client_protocol::schema::v1::AvailableCommandInput::Unstructured(u) => u.hint.clone(),
                         _ => String::new(),
                     });
                     AvailableCommandInfo {
@@ -15638,7 +15574,7 @@ async fn emit_conversation_update(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sacp::schema::{Diff, SessionConfigId};
+    use agent_client_protocol::schema::v1::{Diff, SessionConfigId};
 
     /// Unwrap a select selector. The Grok synthesizers below only ever build
     /// selects, so any other kind is a test failure rather than a branch to
@@ -15656,7 +15592,7 @@ mod tests {
     //
     // The queue is what stops N concurrent `session/request_permission`s from
     // collapsing into the single card slot and stranding the losers' responders
-    // forever. Driven here through a stub responder because sacp's `Responder`
+    // forever. Driven here through a stub responder because the runtime's `Responder`
     // has private fields and no public constructor.
 
     /// How a stubbed responder was settled. `Ord` so the drain assertions can
@@ -15952,9 +15888,9 @@ mod tests {
 
     #[test]
     fn grok_ask_ext_request_routes_and_parses_captured_wire_shape() {
-        use sacp::JsonRpcMessage;
+        use agent_client_protocol::JsonRpcMessage;
         // Routing: the derive matches ONLY the underscore-prefixed ext method
-        // (sacp routes typed handlers on the raw wire method — verified against
+        // (the runtime routes typed handlers on the raw wire method — verified against
         // grok 0.2.101, where the missing underscore made codeg answer "unhandled"
         // and grok fall back to inert rendering).
         assert!(GrokAskUserQuestionRequest::matches_method(
@@ -16999,7 +16935,7 @@ mod tests {
     #[test]
     fn codex_user_input_shape_reads_the_running_adapter_version() {
         use crate::acp::question::CodexUserInputShape::{QuestionInDescription, QuestionInTitle};
-        use sacp::schema::Implementation;
+        use agent_client_protocol::schema::v1::Implementation;
         let at = |v: &str| {
             codex_user_input_shape(AgentType::Codex, Some(&Implementation::new("codex-acp", v)))
         };
@@ -17032,7 +16968,7 @@ mod tests {
 
     #[test]
     fn synthesize_native_steering_requires_all_three_gates() {
-        use sacp::schema::Implementation;
+        use agent_client_protocol::schema::v1::Implementation;
         let advertised = meta_map(serde_json::json!({"steering": {"supported": true}}));
         let proven = Implementation::new("claude-agent-acp", "0.65.0");
         let stale = Implementation::new("claude-agent-acp", "0.64.1");
@@ -17224,13 +17160,13 @@ mod tests {
     /// name, and the options are allow-once / reject.
     fn claude_mcp_permission_request(
         tool_name: &str,
-        options: Vec<sacp::schema::PermissionOption>,
+        options: Vec<agent_client_protocol::schema::v1::PermissionOption>,
     ) -> RequestPermissionRequest {
         RequestPermissionRequest::new(
             SessionId::new("sess-1"),
-            sacp::schema::ToolCallUpdate::new(
+            agent_client_protocol::schema::v1::ToolCallUpdate::new(
                 "toolu_01",
-                sacp::schema::ToolCallUpdateFields::new()
+                agent_client_protocol::schema::v1::ToolCallUpdateFields::new()
                     .title(tool_name.to_string())
                     .kind(ToolKind::Other)
                     .raw_input(serde_json::json!({ "questions": [] })),
@@ -17242,14 +17178,14 @@ mod tests {
         })))
     }
 
-    fn claude_permission_options() -> Vec<sacp::schema::PermissionOption> {
+    fn claude_permission_options() -> Vec<agent_client_protocol::schema::v1::PermissionOption> {
         vec![
-            sacp::schema::PermissionOption::new(
+            agent_client_protocol::schema::v1::PermissionOption::new(
                 "allow-once",
                 "Yes",
                 PermissionOptionKind::AllowOnce,
             ),
-            sacp::schema::PermissionOption::new("reject", "No", PermissionOptionKind::RejectOnce),
+            agent_client_protocol::schema::v1::PermissionOption::new("reject", "No", PermissionOptionKind::RejectOnce),
         ]
     }
 
@@ -17296,12 +17232,12 @@ mod tests {
         let always_only = claude_mcp_permission_request(
             "mcp__codeg-mcp__ask_user_question",
             vec![
-                sacp::schema::PermissionOption::new(
+                agent_client_protocol::schema::v1::PermissionOption::new(
                     "allow-with-updates",
                     "Yes, and don't ask again",
                     PermissionOptionKind::AllowAlways,
                 ),
-                sacp::schema::PermissionOption::new(
+                agent_client_protocol::schema::v1::PermissionOption::new(
                     "reject",
                     "No",
                     PermissionOptionKind::RejectOnce,
@@ -17371,7 +17307,7 @@ mod tests {
     fn classify_load_failure_resource_not_found_maps_to_code() {
         assert_eq!(
             classify_session_load_failure(
-                sacp::schema::ErrorCode::ResourceNotFound,
+                agent_client_protocol::schema::v1::ErrorCode::ResourceNotFound,
                 "session abc not found",
             ),
             Some("resource_not_found"),
@@ -17380,7 +17316,7 @@ mod tests {
         // would otherwise match the crash/ended family.
         assert_eq!(
             classify_session_load_failure(
-                sacp::schema::ErrorCode::ResourceNotFound,
+                agent_client_protocol::schema::v1::ErrorCode::ResourceNotFound,
                 "process exited with code 1",
             ),
             Some("resource_not_found"),
@@ -17392,21 +17328,21 @@ mod tests {
         // The reported Claude 0.58.1 case: native CLI exits 1, wrapped as -32603.
         assert_eq!(
             classify_session_load_failure(
-                sacp::schema::ErrorCode::InternalError,
+                agent_client_protocol::schema::v1::ErrorCode::InternalError,
                 "Internal error: { \"details\": \"Claude Code process exited with code 1\" }",
             ),
             Some("session_unavailable"),
         );
         assert_eq!(
             classify_session_load_failure(
-                sacp::schema::ErrorCode::InternalError,
+                agent_client_protocol::schema::v1::ErrorCode::InternalError,
                 "The Claude Agent session has ended. Please start a new session.",
             ),
             Some("session_unavailable"),
         );
         assert_eq!(
             classify_session_load_failure(
-                sacp::schema::ErrorCode::InternalError,
+                agent_client_protocol::schema::v1::ErrorCode::InternalError,
                 "Session not found",
             ),
             Some("session_unavailable"),
@@ -17422,7 +17358,7 @@ mod tests {
              019bf0c4-4d1a-7c3e-9f21-6a0e5b8d2c47 is archived. Run `codex \
              unarchive 019bf0c4-4d1a-7c3e-9f21-6a0e5b8d2c47` to restore it.\"\n}";
         assert_eq!(
-            classify_session_load_failure(sacp::schema::ErrorCode::InternalError, archived),
+            classify_session_load_failure(agent_client_protocol::schema::v1::ErrorCode::InternalError, archived),
             Some("session_archived"),
         );
 
@@ -17431,7 +17367,7 @@ mod tests {
         // the user no way back.
         assert_eq!(
             classify_session_load_failure(
-                sacp::schema::ErrorCode::InternalError,
+                agent_client_protocol::schema::v1::ErrorCode::InternalError,
                 "Session not found: session abc is archived.",
             ),
             Some("session_archived"),
@@ -17465,7 +17401,7 @@ mod tests {
              01a0626c-c601-78f1-a13d-2b26dd168501 already has an active \
              writer\"\n}";
         assert_eq!(
-            classify_session_load_failure(sacp::schema::ErrorCode::InternalError, busy),
+            classify_session_load_failure(agent_client_protocol::schema::v1::ErrorCode::InternalError, busy),
             Some("session_busy"),
         );
 
@@ -17488,14 +17424,14 @@ mod tests {
         // must fall through to the existing session/new + silent-stop paths.
         assert_eq!(
             classify_session_load_failure(
-                sacp::schema::ErrorCode::MethodNotFound,
+                agent_client_protocol::schema::v1::ErrorCode::MethodNotFound,
                 "Method not found",
             ),
             None,
         );
         assert_eq!(
             classify_session_load_failure(
-                sacp::schema::ErrorCode::AuthRequired,
+                agent_client_protocol::schema::v1::ErrorCode::AuthRequired,
                 "Authentication required",
             ),
             None,
@@ -17504,7 +17440,7 @@ mod tests {
         // session/new fallback.
         assert_eq!(
             classify_session_load_failure(
-                sacp::schema::ErrorCode::InternalError,
+                agent_client_protocol::schema::v1::ErrorCode::InternalError,
                 "some unrelated transient failure",
             ),
             None,
@@ -18657,7 +18593,7 @@ mod tests {
             "terminal/release",
         ] {
             let error = unadvertised_channel_error(method);
-            assert_eq!(error.code, sacp::Error::method_not_found().code);
+            assert_eq!(error.code, agent_client_protocol::Error::method_not_found().code);
             let text = error.to_string();
             // The knob has to be named: a bare "Method not found" on a channel
             // that worked yesterday reads as a codeg bug, not as a setting.
@@ -18775,8 +18711,8 @@ mod tests {
     /// The five `_x.ai/session/setup` frames grok 1.0.40 emits BEFORE the
     /// session id exists, captured verbatim off `grok agent stdio` during
     /// `session/new`. Each carries `"sessionId": null`, which is what killed the
-    /// connection in #794 — sacp treats the present-but-null field as
-    /// session-bound and then fails to parse it into a `SessionId`.
+    /// connection in #794 — the runtime treats the present-but-null field as
+    /// session-bound, and `sacp` 11 then failed to parse it into a `SessionId`.
     #[test]
     fn null_session_id_is_recognized_on_grok_setup_frames() {
         for phase in [
@@ -19577,7 +19513,7 @@ mod tests {
     }
 
     /// Frames captured byte-for-byte off the live adapters over stdio, with the
-    /// same `clientCapabilities.session` block `send_initialize` grafts on.
+    /// same `clientCapabilities.session` block `build_client_capabilities` sends.
     ///
     /// * claude-agent-acp 0.81.0: a project `UserPromptSubmit` hook exiting 2
     ///   blocks the prompt before any model call (the turn reported 0 tokens),
@@ -19855,19 +19791,25 @@ mod tests {
         assert_eq!(meta, None, "a summary chunk must not touch the meta");
     }
 
-    /// `session` is grafted onto the request for the two agents that built
-    /// these, and for NOBODY else — an initialize regression is a connection
-    /// that cannot open at all, so the withheld case must be byte-identical to
-    /// the typed send.
+    /// `session` reaches the two agents that built these, and NOBODY else.
+    /// Both members must serialize as OBJECTS: claude tests `typeof notices ===
+    /// "object" && !== null && !Array.isArray`, and codex's compaction gate is
+    /// `!= null` — so an empty struct serializing to `null`, or being skipped,
+    /// would silently withhold the capability.
     #[test]
     fn the_session_capability_block_reaches_only_its_two_agents() {
+        let session_of = |agent| {
+            serde_json::to_value(build_client_capabilities(agent, HostToolsPolicy::Default))
+                .unwrap()
+                .get("session")
+                .cloned()
+        };
         for agent in [AgentType::ClaudeCode, AgentType::Codex] {
-            let caps = client_session_capabilities(agent).expect("advertised");
-            // Both members must be OBJECTS: claude tests
-            // `typeof notices === "object" && !== null && !Array.isArray`, and
-            // codex's compaction gate is `!= null`.
-            assert!(caps.get("notices").is_some_and(|v| v.is_object()), "{agent:?}");
-            assert!(caps.get("compaction").is_some_and(|v| v.is_object()), "{agent:?}");
+            assert_eq!(
+                session_of(agent),
+                Some(serde_json::json!({"compaction": {}, "notices": {}})),
+                "{agent:?}"
+            );
         }
         for agent in [
             AgentType::Gemini,
@@ -19880,8 +19822,9 @@ mod tests {
             // codeg cannot know what binary is behind it.
             AgentType::Custom("my-agent"),
         ] {
-            assert!(
-                client_session_capabilities(agent).is_none(),
+            assert_eq!(
+                session_of(agent),
+                None,
                 "{agent:?} never implemented these; advertising would be a lie"
             );
         }
@@ -20009,10 +19952,10 @@ mod tests {
     }
 
     /// The `_auth/status_update` payload codex-acp 1.9+ pushes, unchanged. The
-    /// only contract that matters is that it DESERIALIZES — sacp answers an
-    /// unclaimed notification with a `method_not_found` error notification
-    /// written back to the agent, and a strict struct here would put codeg back
-    /// on that path the first time OpenAI adds a field.
+    /// only contract that matters is that it DESERIALIZES — a strict struct here
+    /// would make the typed handler fail on the first field OpenAI adds, and the
+    /// runtime answers a failing handler by logging `Handler errored` and dropping
+    /// the frame.
     #[test]
     fn auth_status_update_deserializes_every_observed_kind() {
         for payload in [
@@ -20339,7 +20282,7 @@ mod tests {
 
     #[test]
     fn note_update_splits_agent_output_from_metadata() {
-        use sacp::schema::{ContentChunk, Plan};
+        use agent_client_protocol::schema::v1::{ContentChunk, Plan};
 
         let mut probe = TurnOutputProbe::new(0);
         probe.note_update(
@@ -20612,7 +20555,7 @@ mod tests {
     /// implement `session/load`.
     #[test]
     fn a_session_load_never_sent_falls_back_without_alarming_the_user() {
-        let e = sacp::Error::method_not_found()
+        let e = agent_client_protocol::Error::method_not_found()
             .data("agent does not advertise the loadSession capability");
         let text = e.to_string();
         assert_eq!(classify_session_load_failure(e.code, &text), None);
@@ -20628,7 +20571,7 @@ mod tests {
     /// composer until a full agent respawn finished).
     #[test]
     fn an_unsupported_slash_command_costs_the_turn_not_the_connection() {
-        let e = sacp::Error::internal_error().data(serde_json::json!({
+        let e = agent_client_protocol::Error::internal_error().data(serde_json::json!({
             "details": "Slash command not supported in ACP integration: \
                         The command \"/mcp\" is not supported in this mode.",
         }));
@@ -20646,18 +20589,18 @@ mod tests {
     #[test]
     fn an_agent_that_answers_at_all_keeps_its_connection() {
         for e in [
-            sacp::Error::internal_error().data(serde_json::json!({
+            agent_client_protocol::Error::internal_error().data(serde_json::json!({
                 "service": "session",
                 "errorName": "APIError",
             })),
-            sacp::Error::auth_required().data("Please sign in"),
-            sacp::Error::invalid_params().data("unknown model"),
+            agent_client_protocol::Error::auth_required().data("Please sign in"),
+            agent_client_protocol::Error::invalid_params().data("unknown model"),
             // The message checks read an agent-controlled string, so a
             // rejection that merely QUOTES one of the terminal markers about
             // something else must not be mistaken for a dead session.
-            sacp::Error::auth_required()
+            agent_client_protocol::Error::auth_required()
                 .data("the helper process exited; sign in again to restart it"),
-            sacp::Error::internal_error()
+            agent_client_protocol::Error::internal_error()
                 .data("upstream response never received by the provider, retry"),
         ] {
             assert!(!prompt_rejection_is_terminal(&e), "{e}");
@@ -20671,16 +20614,16 @@ mod tests {
     fn a_rejection_that_reports_a_dead_session_still_tears_the_connection_down() {
         // The agent has no record of the id codeg just prompted on.
         assert!(prompt_rejection_is_terminal(
-            &sacp::Error::resource_not_found(None)
+            &agent_client_protocol::Error::resource_not_found(None)
         ));
         // The agent answered to say its session/process is gone.
         for marker in SESSION_GONE_MARKERS {
-            let e = sacp::Error::internal_error().data(format!("Claude Code {marker} — sorry"));
+            let e = agent_client_protocol::Error::internal_error().data(format!("Claude Code {marker} — sorry"));
             assert!(prompt_rejection_is_terminal(&e), "{e}");
         }
-        // sacp's own synthesized error: the response channel was dropped, so
+        // The runtime's own synthesized error: the response channel was dropped, so
         // no answer ever arrived and the transport is what died.
-        let dropped = sacp::util::internal_error(
+        let dropped = agent_client_protocol::util::internal_error(
             "response to `session/prompt` never received: channel closed",
         );
         assert!(prompt_rejection_is_terminal(&dropped), "{dropped}");
@@ -20765,13 +20708,13 @@ mod tests {
                 opt.name.clone(),
                 match &opt.kind {
                     SessionConfigKindInfo::Select(sel) => {
-                        SessionConfigKind::Select(sacp::schema::SessionConfigSelect::new(
+                        SessionConfigKind::Select(agent_client_protocol::schema::v1::SessionConfigSelect::new(
                             sel.current_value.clone(),
-                            sacp::schema::SessionConfigSelectOptions::Ungrouped(Vec::new()),
+                            agent_client_protocol::schema::v1::SessionConfigSelectOptions::Ungrouped(Vec::new()),
                         ))
                     }
                     SessionConfigKindInfo::Boolean(b) => {
-                        SessionConfigKind::Boolean(sacp::schema::SessionConfigBoolean::new(b.current_value))
+                        SessionConfigKind::Boolean(agent_client_protocol::schema::v1::SessionConfigBoolean::new(b.current_value))
                     }
                 },
             );
@@ -20947,7 +20890,7 @@ mod tests {
         let servers = vec![stdio_server("codeg")];
 
         let tagged = tag_mcp_suspect(
-            sacp::util::internal_error("session/new failed: unknown field `mcpServers`"),
+            agent_client_protocol::util::internal_error("session/new failed: unknown field `mcpServers`"),
             AgentType::Custom("my-agent"),
             &servers,
         );
@@ -20958,7 +20901,7 @@ mod tests {
 
         // Nothing was forwarded, so MCP cannot be the cause.
         let empty = tag_mcp_suspect(
-            sacp::util::internal_error("session/new failed: boom"),
+            agent_client_protocol::util::internal_error("session/new failed: boom"),
             AgentType::Custom("my-agent"),
             &[],
         );
@@ -20970,7 +20913,7 @@ mod tests {
         // A built-in's flag is a verified repository constant, and the user has
         // no switch to flip — blaming MCP would misdirect them.
         let builtin = tag_mcp_suspect(
-            sacp::util::internal_error("session/new failed: boom"),
+            agent_client_protocol::util::internal_error("session/new failed: boom"),
             AgentType::ClaudeCode,
             &servers,
         );
@@ -20986,7 +20929,7 @@ mod tests {
     #[test]
     fn mcp_suspect_sentinel_translates_to_code_and_is_stripped() {
         let raw = tag_mcp_suspect(
-            sacp::util::internal_error("Unsupported parameter: mcpServers"),
+            agent_client_protocol::util::internal_error("Unsupported parameter: mcpServers"),
             AgentType::Custom("my-agent"),
             &[stdio_server("codeg")],
         )
@@ -21015,7 +20958,7 @@ mod tests {
     fn auth_required_beats_the_mcp_hint_and_carries_its_own_code() {
         // The shape cursor-agent really answers with (wire capture from the
         // report): code -32000, with its advice in `data`.
-        let refusal = sacp::Error::auth_required().data(serde_json::json!({
+        let refusal = agent_client_protocol::Error::auth_required().data(serde_json::json!({
             "message": "Authentication required. Please run 'agent login' first, \
                         then call authenticate() with methodId 'cursor_login'."
         }));
@@ -21048,7 +20991,7 @@ mod tests {
     #[test]
     fn a_non_auth_refusal_still_takes_the_mcp_path() {
         let tagged = tag_new_session_failure(
-            sacp::util::internal_error("session/new failed: unknown field `mcpServers`"),
+            agent_client_protocol::util::internal_error("session/new failed: unknown field `mcpServers`"),
             AgentType::Custom("my-agent"),
             &[stdio_server("codeg")],
         )
@@ -21174,7 +21117,7 @@ mod tests {
         // Exact shape Grok returns when switching to a model whose agentType
         // differs from the established conversation's (captured from a live
         // `session/set_model` probe against grok 0.2.94).
-        let err = sacp::Error::new(-32600, "Cannot switch to model ...").data(serde_json::json!({
+        let err = agent_client_protocol::Error::new(-32600, "Cannot switch to model ...").data(serde_json::json!({
             "code": "MODEL_SWITCH_INCOMPATIBLE_AGENT",
             "activeAgentType": "grok-build-plan",
             "requiredAgentType": "cursor",
@@ -21185,10 +21128,10 @@ mod tests {
 
         // A different data.code, or no data at all, must NOT be swallowed —
         // those fall through to the generic error path.
-        let other = sacp::Error::new(-32603, "boom")
+        let other = agent_client_protocol::Error::new(-32603, "boom")
             .data(serde_json::json!({ "code": "SOMETHING_ELSE" }));
         assert!(!is_grok_incompatible_agent_switch(&other));
-        assert!(!is_grok_incompatible_agent_switch(&sacp::Error::internal_error()));
+        assert!(!is_grok_incompatible_agent_switch(&agent_client_protocol::Error::internal_error()));
     }
 
     #[test]
@@ -21953,7 +21896,7 @@ mod tests {
         let content = Some("hello world\nsecond line".to_string());
         assert_eq!(
             opencode_live_tool_output(&content, &raw).as_deref(),
-            Some(r#"{"content":"hello world\nsecond line","start_line":1}"#)
+            Some(r#"{"start_line":1,"content":"hello world\nsecond line"}"#)
         );
     }
 
@@ -22163,7 +22106,7 @@ mod tests {
         .await;
         assert_eq!(
             raw_output.as_deref(),
-            Some(r#"{"metadata":{"truncated":false},"output":"hi"}"#)
+            Some(r#"{"output":"hi","metadata":{"truncated":false}}"#)
         );
     }
 
@@ -22788,7 +22731,7 @@ mod tests {
         .await;
         assert_eq!(
             raw_output.as_deref(),
-            Some(r#"{"exit_code":0,"formatted_output":"src/a.rs"}"#),
+            Some(r#"{"formatted_output":"src/a.rs","exit_code":0}"#),
             "a command with no self-hosted terminal keeps the envelope the card parses"
         );
         assert!(cb.hosted_terminal_calls.is_empty());
@@ -23237,7 +23180,7 @@ mod tests {
         .await;
         assert_eq!(
             raw_output.as_deref(),
-            Some(r#"{"content":[{"text":"ok","type":"text"}]}"#),
+            Some(r#"{"content":[{"type":"text","text":"ok"}]}"#),
             "non-pi agents keep the existing json_value_to_text behavior"
         );
     }
@@ -25561,7 +25504,7 @@ mod tests {
     /// failing test, not every agent silently getting "method not found".
     #[test]
     fn untyped_session_method_names_match_the_schema() {
-        use sacp::schema::AGENT_METHOD_NAMES;
+        use agent_client_protocol::schema::v1::AGENT_METHOD_NAMES;
         assert_eq!(AGENT_METHOD_NAMES.session_new, "session/new");
         assert_eq!(AGENT_METHOD_NAMES.session_load, "session/load");
         assert_eq!(
@@ -25826,7 +25769,7 @@ mod tests {
 
         let modes = SessionModeState::new(
             "default".to_string(),
-            vec![sacp::schema::SessionMode::new(
+            vec![agent_client_protocol::schema::v1::SessionMode::new(
                 "bypassPermissions",
                 "Bypass",
             )],

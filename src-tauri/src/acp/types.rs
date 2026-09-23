@@ -60,7 +60,7 @@ pub struct EventEnvelope {
 /// One ACP Session Notice — fire-and-forget advisory text for the user, from
 /// the [Session Notices RFD](https://agentclientprotocol.com/rfds/session-notices)
 /// (claude-agent-acp 0.81+/codex-acp 1.13+, published only because
-/// `client_session_capabilities` advertises `clientCapabilities.session.notices`).
+/// `build_client_capabilities` advertises `clientCapabilities.session.notices`).
 ///
 /// **A notice is an event, not a record.** It carries no id, no revision and no
 /// lifecycle; it is never replayed from history, and two identical notices are
@@ -601,7 +601,7 @@ pub enum AcpEvent {
     /// `SessionFailureRecord` so the banner keeps the role the AIR advisory
     /// lane used to fill.
     ///
-    /// Reaches codeg from the two adapters `client_session_capabilities`
+    /// Reaches codeg from the two adapters `build_client_capabilities`
     /// advertises `session.notices` to: claude-agent-acp (0.81+) and codex-acp
     /// (1.13+). Dropped on the replay seam — a notice has no history position.
     SessionNotice { notice: SessionNotice },

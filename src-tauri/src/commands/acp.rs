@@ -9799,7 +9799,7 @@ fn apply_cline_launch_env(config_json: Option<&str>, merged: &mut BTreeMap<Strin
     //     freezes a selector these three are entitled to use.
     //
     // Both are cleared by writing an EMPTY value, which the spawn layer turns
-    // into `env_remove` (see the codeg convention in vendor/sacp-tokio) — so
+    // into `env_remove` (see the codeg convention in `acp::agent_process`) — so
     // this strips an inherited value rather than merely declining to add one.
     // Removal, not `""`, is what the agent needs: `??` does not fall through on
     // an empty string, so an actually-empty `CLINE_PROVIDER` would become the

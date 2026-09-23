@@ -4,7 +4,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sacp::schema::{
+use agent_client_protocol::schema::v1::{
     CreateTerminalRequest, CreateTerminalResponse, KillTerminalRequest, KillTerminalResponse,
     ReleaseTerminalRequest, ReleaseTerminalResponse, TerminalExitStatus, TerminalOutputRequest,
     TerminalOutputResponse, WaitForTerminalExitRequest, WaitForTerminalExitResponse,
@@ -54,10 +54,10 @@ pub enum TerminalRuntimeError {
 }
 
 impl TerminalRuntimeError {
-    pub fn into_rpc_error(self) -> sacp::Error {
+    pub fn into_rpc_error(self) -> agent_client_protocol::Error {
         match self {
-            Self::InvalidParams(message) => sacp::Error::invalid_params().data(message),
-            Self::Internal(message) => sacp::util::internal_error(message),
+            Self::InvalidParams(message) => agent_client_protocol::Error::invalid_params().data(message),
+            Self::Internal(message) => agent_client_protocol::util::internal_error(message),
         }
     }
 }
@@ -1114,7 +1114,7 @@ mod shell_config_tests {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use sacp::schema::{EnvVariable, SessionId, TerminalId, WaitForTerminalExitRequest};
+    use agent_client_protocol::schema::v1::{EnvVariable, SessionId, TerminalId, WaitForTerminalExitRequest};
 
     /// Regression: when an ACP agent calls `terminal/create` (e.g. to run
     /// `git push`), the runtime's base env — populated by the connection

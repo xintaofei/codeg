@@ -925,10 +925,10 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `clientCapabilities.session.compaction` being an object — a real
             // typed field, NOT an `_meta` key, so unlike every other opt-in on
             // this list it cannot be smuggled through `ClientCapabilities.meta`:
-            // codeg's pinned `agent-client-protocol-schema` 0.11.7 has no
-            // `session` field on `ClientCapabilities` at all, and no
+            // the `agent-client-protocol-schema` 0.11.7 codeg pinned at the
+            // time had no `session` field on `ClientCapabilities` at all, and no
             // `CompactionUpdate` / `CompactionSummaryChunk` on `SessionUpdate`
-            // (both arrived later behind `unstable_session_compaction`).
+            // (both arrived in schema 1.9 behind `unstable_session_compaction`).
             //
             // ⚠️ THIS ENTRY USED TO CALL THAT "out of reach at this schema pin".
             // It is not, and the correction is worth stating because the same
@@ -937,11 +937,13 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `session/new` and `session/load` already go out as
             // `UntypedMessage`s, and `air_async_task_delta` already reads three
             // variants this very `SessionUpdate` cannot deserialize. Opting in
-            // costs exactly those two established moves — an untyped
-            // `initialize` that grafts the capability on
-            // (`send_initialize` + `client_session_capabilities`) and a raw
-            // pre-dispatch reader (`session_compaction_event`) — and codeg now
-            // does both.
+            // cost exactly those two established moves — an untyped
+            // `initialize` that grafted the capability on, and a raw
+            // pre-dispatch reader (`session_compaction_event`). The move to the
+            // official `agent-client-protocol` 2.2 runtime (schema 1.9.1) has
+            // since made the capability a typed `ClientSessionCapabilities`
+            // member, set in `build_client_capabilities`; the reader stays raw
+            // by choice (see its doc).
             //
             // The `nativeSubagentSessions` trade does NOT repeat here, which is
             // what makes this one worth taking. True: with the capability on,
@@ -1225,9 +1227,10 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // for why the "out of reach at this schema pin" reading this entry
             // originally carried was wrong. `clientSupportsNotices` gates on
             // `clientCapabilities.session.notices` being an object, so
-            // `client_session_capabilities` grafts it onto an untyped
-            // `initialize` and `session_notice` reads the variant the pinned
-            // `SessionUpdate` cannot. Probed live over stdio against 0.81.0:
+            // `build_client_capabilities` advertises it (grafted onto an untyped
+            // `initialize` until schema 1.9.1 made it a typed member) and
+            // `session_notice` reads the variant ahead of the typed pipeline.
+            // Probed live over stdio against 0.81.0:
             // the handshake is accepted and the `initialize` RESPONSE is
             // byte-identical to the same run with the block withheld.
             //
@@ -2289,7 +2292,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `--registry=https://registry.npmjs.org` (bypasses lagging mirrors)
             // for every npx agent — so no per-agent launch env is needed here.
             // (It couldn't live here anyway: the launch env is serialized as
-            // leading `KEY=value` argv and sacp's `parse_env_var` only accepts
+            // leading `KEY=value` argv and the spawn layer's `parse_env_var` only accepts
             // `[A-Za-z0-9_]` env names, which npm's `@scope:registry` key is not.)
             //
             // 1.0.0 changed ONE thing that reaches codeg without any code change
@@ -2477,12 +2480,11 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // specifically — and the reason is no longer "the pinned schema
             // can neither advertise nor deserialize it", which is what this
             // entry used to say (see the claude entry's (p) for the correction:
-            // `client_session_capabilities` grafts the capability onto an
-            // untyped `initialize` and `session_compaction_event` reads the
-            // variants back). It stays off because
-            // `client_session_capabilities` only advertises to the two agents
-            // that BUILT these — the same "advertise nothing an agent hasn't
-            // implemented" rule every other opt-in follows. Nothing here
+            // `build_client_capabilities` advertises the capability and
+            // `session_compaction_event` reads the variants back). It stays off
+            // because `build_client_capabilities` only advertises it to the two
+            // agents that BUILT these — the same "advertise nothing an agent
+            // hasn't implemented" rule every other opt-in follows. Nothing here
             // reports deepseek-acp implementing the RFD; if a release does, it
             // joins that match arm and needs no other change.
             // Meanwhile compaction still HAPPENS (auto at the window limit, or

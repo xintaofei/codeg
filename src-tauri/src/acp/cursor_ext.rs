@@ -2,7 +2,7 @@
 //!
 //! Cursor's CLI (`cursor-agent acp`) sends these as JSON-RPC **requests with
 //! ids**, even when https://cursor.com/docs/cli/acp calls some of them
-//! notifications. sacp's default for an unregistered method is `-32601 Method
+//! notifications. The ACP runtime's default for an unregistered method is `-32601 Method
 //! not found`, which is what codeg used to send — and what made a live Cursor
 //! turn show a red banner on every `Task` spawn / todo update.
 //!
@@ -16,10 +16,10 @@
 //!
 //! Adding a new `cursor/…` method: one `#[request(method = …)]` newtype here,
 //! one `.on_receive_request` in `connection.rs`, a reply builder in this
-//! module. sacp routes on the raw wire method, so the derive string must match
+//! module. The runtime routes on the raw wire method, so the derive string must match
 //! Cursor's docs byte-for-byte.
 
-use sacp::JsonRpcRequest;
+use agent_client_protocol::JsonRpcRequest;
 use serde_json::{json, Value};
 
 use crate::acp::plan_approval::{
@@ -396,7 +396,7 @@ mod tests {
     use super::*;
     // `matches_method` lives on the `JsonRpcMessage` supertrait, not on the
     // `JsonRpcRequest` the derive is named after.
-    use sacp::JsonRpcMessage;
+    use agent_client_protocol::JsonRpcMessage;
 
     fn answered(question: &str, selected: &[&str]) -> crate::acp::question::QuestionAnsweredItem {
         crate::acp::question::QuestionAnsweredItem {

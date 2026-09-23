@@ -1,11 +1,13 @@
 //! ACP `session/fork` support via raw JSON-RPC messages.
 //!
-//! The `sacp` crate does not yet provide typed request/response types for
-//! `session/fork`, so we use `UntypedMessage` (the same pattern used for
-//! `session/set_config_option` in connection.rs).
+//! Sent untyped even though the schema now types `session/fork` (behind
+//! `unstable_session_fork`): the raw reply is inspected before it is
+//! deserialized — the top-level `models`, which the typed response has no field
+//! for — the same pattern `session/new` and `session/resume` use in
+//! connection.rs.
 
-use sacp::schema::{ForkSessionRequest, ForkSessionResponse, SessionId};
-use sacp::{Agent, ConnectionTo, UntypedMessage};
+use agent_client_protocol::schema::v1::{ForkSessionRequest, ForkSessionResponse, SessionId};
+use agent_client_protocol::{Agent, ConnectionTo, UntypedMessage};
 
 use crate::acp::error::AcpError;
 use crate::models::agent::AgentType;

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use sacp::schema::{
+use agent_client_protocol::schema::v1::{
     ReadTextFileRequest, ReadTextFileResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
 use tokio::sync::Semaphore;
@@ -28,10 +28,10 @@ pub enum FileSystemRuntimeError {
 }
 
 impl FileSystemRuntimeError {
-    pub fn into_rpc_error(self) -> sacp::Error {
+    pub fn into_rpc_error(self) -> agent_client_protocol::Error {
         match self {
-            Self::InvalidParams(message) => sacp::Error::invalid_params().data(message),
-            Self::Internal(message) => sacp::util::internal_error(message),
+            Self::InvalidParams(message) => agent_client_protocol::Error::invalid_params().data(message),
+            Self::Internal(message) => agent_client_protocol::util::internal_error(message),
         }
     }
 }
@@ -528,7 +528,7 @@ pub(crate) fn child_home_dir(runtime_env: &BTreeMap<String, String>) -> Option<P
 ///   highest precedence, so this REPLACES the parent's value in the child.
 /// * blank in `runtime_env` — the vendored spawn layer treats an empty value as
 ///   `env_remove` ("an empty value means ensure this var is ABSENT from the
-///   child", `vendor/sacp-tokio/src/acp_agent.rs`). The child therefore does NOT
+///   child", `acp/agent_process.rs`). The child therefore does NOT
 ///   inherit our value; the agent falls back to its own default. Reading through
 ///   to our process env here would point the root at a profile the child never
 ///   opens, re-breaking the writes this change exists to allow.

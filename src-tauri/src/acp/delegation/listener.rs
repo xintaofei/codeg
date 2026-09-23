@@ -3266,7 +3266,7 @@ mod tests {
         assert_eq!(acted.outcome["tabId"], "t1");
         assert_eq!(
             browser.calls.lock().await.as_slice(),
-            &[r#"act t1 g.4.2 Object {"kind": String("type"), "submit": Bool(true), "text": String("Ada")}"#
+            &[r#"act t1 g.4.2 Object {"kind": String("type"), "text": String("Ada"), "submit": Bool(true)}"#
                 .to_string()]
         );
     }

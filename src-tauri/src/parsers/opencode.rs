@@ -1988,7 +1988,7 @@ mod tests {
         // The `<path>`/`<content>` envelope and the `N: ` prefixes are gone.
         assert_eq!(
             read.output_preview.as_deref(),
-            Some(r#"{"content":"export const A = 1","start_line":1}"#)
+            Some(r#"{"start_line":1,"content":"export const A = 1"}"#)
         );
     }
 

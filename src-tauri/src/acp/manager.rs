@@ -2740,8 +2740,8 @@ impl ConnectionManager {
     /// trees as a shutdown backstop.
     ///
     /// The graceful path (send `Disconnect` → the connection driver thread
-    /// breaks its command loop → `run_connection` unwinds → the vendored
-    /// `sacp-tokio` `ChildGuard::drop` runs `kill_tree`) is enough on its own
+    /// breaks its command loop → `run_connection` unwinds →
+    /// `acp::agent_process`'s `ChildGuard::drop` runs `kill_tree`) is enough on its own
     /// *when it gets to run*. It doesn't at process exit: `run_connection` is
     /// driven on a dedicated `std::thread` (see `spawn_agent`), and when Tauri's
     /// `ExitRequested` handler returns the process terminates those threads

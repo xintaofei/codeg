@@ -766,7 +766,7 @@ impl SessionState {
                     // The AIR task table is keyed to the session we just left.
                     // Its rows can never settle here again: the adapter
                     // publishes their terminal frames on the OLD session id, and
-                    // `ActiveSessionHandler` stops routing that id to this
+                    // `AgentSession`'s router stops routing that id to this
                     // connection the moment we attach to the new one. Keeping
                     // them would leave the strip showing tasks that can never
                     // finish and — because a live row exempts this connection
@@ -1439,7 +1439,7 @@ impl SessionState {
 
     /// Whether this connection has launched background work (async sub-agent /
     /// background shell task) that hasn't settled yet — the idle sweeps must
-    /// not reap it (disconnecting drops the `sacp` connection, which
+    /// not reap it (disconnecting drops the ACP connection, which
     /// terminates the agent CLI process, which kills the background work).
     ///
     /// Bounded by `background_keepalive_max_age()`: the exemption requires a
@@ -2654,7 +2654,7 @@ mod tests {
 
     /// A fork attaches to a NEW session id on the same process. The old
     /// session's task rows can never settle here again — their terminal frames
-    /// are published on the id `ActiveSessionHandler` has stopped routing to
+    /// are published on the id the `AgentSession` router has stopped routing to
     /// this connection — so they must go, or the strip shows work that never
     /// finishes and the keep-alive pins the CLI open.
     #[test]

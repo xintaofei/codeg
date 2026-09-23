@@ -784,7 +784,7 @@ async fn spawn_agent(
         // the port and the attempt both linger with nothing able to reach them.
         .kill_on_drop(true);
     for (key, value) in &env {
-        // Mirrors the spawn layer's convention (vendored sacp-tokio): an empty
+        // Mirrors the spawn layer's convention (`acp::agent_process`): an empty
         // value means "do not let the child inherit this one".
         if value.is_empty() {
             command.env_remove(key);
