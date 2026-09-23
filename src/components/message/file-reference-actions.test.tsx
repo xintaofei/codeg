@@ -323,6 +323,7 @@ describe("FileReferenceActions", () => {
         "a.md"
       )
     })
+    expect(mocks.downloadWorkspaceFile).toHaveBeenCalledTimes(1)
   })
 
   it("offers no relative path or download for a `../` file outside the folder", () => {

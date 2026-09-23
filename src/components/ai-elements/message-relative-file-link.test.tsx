@@ -93,6 +93,7 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
       })
       expect(container.textContent).not.toContain("[blocked]")
 
+      expect(mocks.openFilePreview).not.toHaveBeenCalled()
       fireEvent.click(fileBadgeButton(container))
       await waitFor(() => {
         expect(mocks.openFilePreview).toHaveBeenCalledWith(opened, { line })
@@ -153,6 +154,7 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
       expect(fileBadgeButton(container)).toBeTruthy()
     })
 
+    expect(mocks.openFilePreview).not.toHaveBeenCalled()
     fireEvent.click(fileBadgeButton(container))
     await waitFor(() => {
       expect(mocks.openFilePreview).toHaveBeenCalledWith("src/a.ts", {
@@ -170,6 +172,7 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
       expect(fileBadgeButton(container)).toBeTruthy()
     })
 
+    expect(mocks.openFilePreview).not.toHaveBeenCalled()
     fireEvent.click(fileBadgeButton(container))
     await waitFor(() => {
       expect(mocks.openFilePreview).toHaveBeenCalledWith("index.html", {
@@ -191,6 +194,7 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
       expect(fileBadgeButton(container)).toBeTruthy()
     })
 
+    expect(mocks.openFilePreview).not.toHaveBeenCalled()
     fireEvent.click(fileBadgeButton(container))
     await waitFor(() => {
       expect(mocks.openFilePreview).toHaveBeenCalledWith("/docs/a.md", {
@@ -225,6 +229,7 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
       expect(fileBadgeButton(container)).toBeTruthy()
     })
 
+    expect(mocks.openFilePreview).not.toHaveBeenCalled()
     fireEvent.click(fileBadgeButton(container))
     await waitFor(() => {
       expect(mocks.openFilePreview).toHaveBeenCalledWith("/abs/a.md", {
@@ -245,6 +250,7 @@ describe("MessageResponse — relative local file links (real Streamdown)", () =
     })
     expect(container.textContent).not.toContain("[blocked]")
 
+    expect(mocks.openFilePreview).not.toHaveBeenCalled()
     fireEvent.click(fileBadgeButton(container))
     await waitFor(() => {
       expect(mocks.openFilePreview).toHaveBeenCalledWith("index.html", {
