@@ -65,6 +65,13 @@ export function SearchCommandDialog({
   const { revealInFileTree } = useAuxPanelContext()
 
   const [activeTab, setActiveTab] = useState<SearchTab>("conversations")
+  // The search box owns the keyboard: the dialog opens with the cursor in it,
+  // and switching tabs leaves it there, so typing always searches.
+  const inputRef = useRef<HTMLInputElement>(null)
+  const switchTab = useCallback((tab: SearchTab) => {
+    setActiveTab(tab)
+    inputRef.current?.focus()
+  }, [])
   const [query, setQuery] = useState("")
   const [agentFilter, setAgentFilter] = useState<AgentType | null>(null)
   const [results, setResults] = useState<DbConversationSummary[]>([])
@@ -198,7 +205,8 @@ export function SearchCommandDialog({
       {/* Tabs */}
       <div className="flex items-center gap-0 border-b px-3">
         <button
-          onClick={() => setActiveTab("conversations")}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => switchTab("conversations")}
           className={cn(
             "relative h-9 px-3 text-sm font-medium transition-colors",
             activeTab === "conversations"
@@ -212,7 +220,8 @@ export function SearchCommandDialog({
           )}
         </button>
         <button
-          onClick={() => setActiveTab("files")}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => switchTab("files")}
           className={cn(
             "relative h-9 px-3 text-sm font-medium transition-colors",
             activeTab === "files"
@@ -228,6 +237,8 @@ export function SearchCommandDialog({
       </div>
 
       <CommandInput
+        ref={inputRef}
+        autoFocus
         placeholder={placeholder}
         value={query}
         onValueChange={setQuery}
