@@ -6,6 +6,8 @@ import {
   STORAGE_KEY_CUSTOM_STYLE_SUSPENDED,
   STORAGE_KEY_CUSTOM_THEME,
   STORAGE_KEY_CUSTOM_THEME_ENABLED,
+  STORAGE_KEY_EDITOR_FONT,
+  STORAGE_KEY_EDITOR_FONT_STACK,
   STORAGE_KEY_THEME_COLOR,
   STORAGE_KEY_ZOOM_LEVEL,
 } from "./appearance-script"
@@ -39,6 +41,49 @@ beforeEach(() => {
     "matchMedia",
     vi.fn().mockReturnValue({ matches: false }) as unknown as typeof matchMedia
   )
+})
+
+describe("APPEARANCE_INIT_SCRIPT — conversation code font", () => {
+  it("writes the stored editor stack onto --font-code before paint", () => {
+    localStorage.setItem(STORAGE_KEY_EDITOR_FONT, "jetbrains-mono")
+    localStorage.setItem(
+      STORAGE_KEY_EDITOR_FONT_STACK,
+      '"JetBrains Mono Variable", ui-monospace, sans-serif'
+    )
+
+    runInitScript()
+
+    expect(document.documentElement.style.getPropertyValue("--font-code")).toBe(
+      '"JetBrains Mono Variable", ui-monospace, sans-serif'
+    )
+  })
+
+  it("leaves --font-code unset when the user has not chosen an editor font", () => {
+    localStorage.setItem(
+      STORAGE_KEY_EDITOR_FONT_STACK,
+      '"JetBrains Mono Variable", ui-monospace, sans-serif'
+    )
+
+    runInitScript()
+
+    expect(document.documentElement.style.getPropertyValue("--font-code")).toBe(
+      ""
+    )
+  })
+
+  it("rejects a stack that could break out of the declaration", () => {
+    localStorage.setItem(STORAGE_KEY_EDITOR_FONT, "custom")
+    localStorage.setItem(
+      STORAGE_KEY_EDITOR_FONT_STACK,
+      "Maple Mono; } body { display:none }"
+    )
+
+    runInitScript()
+
+    expect(document.documentElement.style.getPropertyValue("--font-code")).toBe(
+      ""
+    )
+  })
 })
 
 describe("APPEARANCE_INIT_SCRIPT — custom theme tokens", () => {

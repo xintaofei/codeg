@@ -251,6 +251,7 @@ const LINE_NUMBER_CLASSES = cn(
   "before:text-right",
   "before:text-muted-foreground/50",
   "before:font-mono",
+  "codeg-code-font",
   "before:select-none"
 )
 
@@ -287,7 +288,7 @@ const CodeBlockBody = memo(
       >
         <code
           className={cn(
-            "font-mono text-sm",
+            "codeg-code-font font-mono text-sm",
             showLineNumbers && "[counter-increment:line_0] [counter-reset:line]"
           )}
         >

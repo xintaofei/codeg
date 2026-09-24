@@ -19,14 +19,15 @@ export const STORAGE_KEY_ZOOM_LEVEL = "codeg-zoom-level"
 export const STORAGE_KEY_WELCOME_QUICK_ACTIONS = "codeg-welcome-quick-actions"
 
 // 字体偏好（界面 / 编辑器 / 终端）。
-// 只有界面字体需要 *_STACK（已解析的 CSS font-family 栈），供 inline 脚本零依赖地
-// 预水合写入 --font-sans；编辑器/终端字体只走各自的 Monaco/xterm 选项，水合后才挂载，
-// 无需预水合，也不写任何全局 CSS 变量。*_FONT 存 id、*_CUSTOM 存自定义族名供回显。
+// *_STACK 是已解析的 CSS font-family 栈，供 inline 脚本零依赖地预水合：
+// 界面字体写 --font-sans，编辑器字体写 --font-code（会话代码块）。
+// 终端字体只走 xterm，不写全局 CSS 变量。*_FONT 存 id、*_CUSTOM 存自定义族名供回显。
 export const STORAGE_KEY_UI_FONT = "codeg-ui-font"
 export const STORAGE_KEY_UI_FONT_CUSTOM = "codeg-ui-font-custom"
 export const STORAGE_KEY_UI_FONT_STACK = "codeg-ui-font-stack"
 export const STORAGE_KEY_EDITOR_FONT = "codeg-editor-font"
 export const STORAGE_KEY_EDITOR_FONT_CUSTOM = "codeg-editor-font-custom"
+export const STORAGE_KEY_EDITOR_FONT_STACK = "codeg-editor-font-stack"
 export const STORAGE_KEY_EDITOR_FONT_SIZE = "codeg-editor-font-size"
 export const STORAGE_KEY_EDITOR_LIGATURES = "codeg-editor-ligatures"
 export const STORAGE_KEY_EDITOR_WORD_WRAP = "codeg-editor-word-wrap"
@@ -112,6 +113,14 @@ const SCRIPT = `
     var uiFontStack = localStorage.getItem("${STORAGE_KEY_UI_FONT_STACK}");
     if (uiFontId && uiFontStack && uiFontStack.length < 512 && !/[;{}<>]/.test(uiFontStack)) {
       document.documentElement.style.setProperty("--font-sans", uiFontStack);
+    }
+
+    // 会话代码块：预水合 --font-code。stack 只是显式选择的缓存；没有编辑器字体 id
+    // 时跳过，落到 CSS 里与默认编辑器栈相同的回退。空/超长/含越界字符同样跳过。
+    var editorFontId = localStorage.getItem("${STORAGE_KEY_EDITOR_FONT}");
+    var editorFontStack = localStorage.getItem("${STORAGE_KEY_EDITOR_FONT_STACK}");
+    if (editorFontId && editorFontStack && editorFontStack.length < 512 && !/[;{}<>]/.test(editorFontStack)) {
+      document.documentElement.style.setProperty("--font-code", editorFontStack);
     }
 
     // Workspace 背景：预水合仅处理首帧就存在的结构性表面。启用时给 <html> 打
