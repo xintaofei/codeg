@@ -36,6 +36,7 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
   onCloneRepository,
   onImportSessions,
   onNewFolderGroup,
+  suppressed = false,
   topGap = false,
 }: {
   section: SidebarSectionKey
@@ -74,6 +75,13 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
    * preserve the memo.
    */
   onNewFolderGroup?: () => void
+  /**
+   * True for the in-list copy while its floating overlay is showing. The
+   * overlay is the accessible control, so the scrolled-past row is made inert
+   * and hidden from the accessibility tree to avoid a duplicate tab stop
+   * during virtua's buffer window.
+   */
+  suppressed?: boolean
   /**
    * Adds breathing room above the header so the "Folders" section reads as
    * visually separated from the "Pinned" section above it. Implemented as
@@ -135,7 +143,12 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
     "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
   )
   return (
-    <div className={cn(topGap && "pt-[0.75rem]")}>
+    <div
+      data-sidebar-section={section}
+      inert={suppressed || undefined}
+      aria-hidden={suppressed || undefined}
+      className={cn(topGap && "pt-[0.75rem]")}
+    >
       <div className="group/header relative h-[2rem]">
         <button
           type="button"

@@ -106,6 +106,7 @@ import {
   applyLayoutMove,
   buildDragSlots,
   buildOwnerHeaderIndex,
+  buildOwnerSectionIndex,
   buildRows,
   buildSidebarLayout,
   EMPTY_SIDEBAR_LAYOUT,
@@ -113,14 +114,17 @@ import {
   layoutToEntries,
   locateEntry,
   reconcileLayout,
-  computeStickyState,
+  computeLayeredStickyState,
   flatIndexOfConversation,
   folderHeaderFlatIndices,
   formatRelative,
   groupByFolderWithReuse,
   headerIndexForFolder,
+  headerIndexForSection,
   mergeChildrenById,
   nextHeaderAfter,
+  resolveStickyHeaderIndices,
+  sectionHeaderFlatIndices,
   pointerYToTargetIndex,
   RECENT_PAGE_SIZE,
   reuseSelected,
@@ -1102,13 +1106,17 @@ export function SidebarConversationList({
   const [dragLayout, setDragLayout] = useState<SidebarLayout | null>(null)
   const pendingLayoutRef = useRef<SidebarLayout | null>(null)
 
-  // Floating sticky folder header. `stickyFolderId` is the ONLY new render
-  // state and changes solely when the scroll crosses into a different folder —
-  // never on a status event or the per-minute `now` tick — so the card/header
-  // memo budget is untouched. The per-frame handoff translateY is written
-  // straight to the overlay node (no re-render); see `recomputeSticky`.
+  // Floating sticky headers. These two ids are the only scroll-driven render
+  // state and change solely when the scroll crosses into a different section
+  // or folder — never on a status event or the per-minute `now` tick — so the
+  // card/header memo budget is untouched. The per-frame handoff translateY is
+  // written straight to the overlay nodes (no re-render); see `recomputeSticky`.
   const [stickyFolderId, setStickyFolderId] = useState<number | null>(null)
+  const [stickySection, setStickySection] = useState<SidebarSectionKey | null>(
+    null
+  )
   const overlayRef = useRef<HTMLDivElement>(null)
+  const sectionOverlayRef = useRef<HTMLDivElement>(null)
   const stickyRafRef = useRef<number | null>(null)
   // Read by the imperative scroll path without re-subscribing virtua's listener.
   const draggingRef = useRef<SidebarEntry | null>(dragging)
@@ -1580,10 +1588,19 @@ export function SidebarConversationList({
   // they have zero effect on the card/header memo path.
   const ownerHeaderIndex = useMemo(() => buildOwnerHeaderIndex(rows), [rows])
   const headerFlatIndices = useMemo(() => folderHeaderFlatIndices(rows), [rows])
+  const ownerSectionIndex = useMemo(() => buildOwnerSectionIndex(rows), [rows])
+  const sectionFlatIndices = useMemo(
+    () => sectionHeaderFlatIndices(rows),
+    [rows]
+  )
   const ownerHeaderIndexRef = useRef(ownerHeaderIndex)
   ownerHeaderIndexRef.current = ownerHeaderIndex
   const headerFlatIndicesRef = useRef(headerFlatIndices)
   headerFlatIndicesRef.current = headerFlatIndices
+  const ownerSectionIndexRef = useRef(ownerSectionIndex)
+  ownerSectionIndexRef.current = ownerSectionIndex
+  const sectionFlatIndicesRef = useRef(sectionFlatIndices)
+  sectionFlatIndicesRef.current = sectionFlatIndices
 
   useImperativeHandle(ref, () => ({
     scrollToActive() {
@@ -1885,48 +1902,91 @@ export function SidebarConversationList({
     }
   }, [rows, conversationExpanded, loading, ensureChildrenLoaded])
 
-  // ── Sticky folder header overlay ──────────────────────────────────────────
-  // Resolve the folder currently scrolled through and the iOS handoff offset
-  // from the live virtua geometry. Imperative + ref-only so its identity stays
-  // stable (passing it to `<Virtualizer onScroll>` must not re-subscribe the
-  // listener) and so it never participates in the memoized render path.
+  // ── Sticky section + folder header overlays ───────────────────────────────
+  // Resolve the section and folder currently scrolled through and the iOS
+  // handoff offsets from the live virtua geometry. Imperative + ref-only so
+  // its identity stays stable (passing it to `<Virtualizer onScroll>` must not
+  // re-subscribe the listener) and so it never participates in the memoized
+  // render path.
   const recomputeSticky = useCallback(() => {
     const handle = virtualizerRef.current
     const currentRows = rowsRef.current
-    const headers = headerFlatIndicesRef.current
-    if (
-      !handle ||
-      draggingRef.current !== null ||
-      currentRows.length === 0 ||
-      headers.length === 0
-    ) {
+    if (!handle || draggingRef.current !== null || currentRows.length === 0) {
       setStickyFolderId((prev) => (prev === null ? prev : null))
+      setStickySection((prev) => (prev === null ? prev : null))
       return
     }
+    const clampIndex = (index: number) =>
+      Math.max(0, Math.min(currentRows.length - 1, index))
     const scrollOffset = handle.scrollOffset
-    const topIndex = Math.max(
-      0,
-      Math.min(currentRows.length - 1, handle.findItemIndex(scrollOffset))
+    const topIndex = clampIndex(handle.findItemIndex(scrollOffset))
+    const sectionIndex = ownerSectionIndexRef.current[topIndex] ?? -1
+    const sectionGeom =
+      sectionIndex >= 0
+        ? {
+            headerOffset: handle.getItemOffset(sectionIndex),
+            headerHeight: handle.getItemSize(sectionIndex) || 32,
+          }
+        : null
+    // Folder stick line is the bottom of the section overlay. Zero when that
+    // overlay is hidden, which keeps the folder rule identical to the
+    // single-level behavior.
+    const sectionVisible =
+      sectionGeom != null && scrollOffset > sectionGeom.headerOffset
+    const stickLine = sectionVisible ? sectionGeom.headerHeight : 0
+    const stickIndex = clampIndex(
+      handle.findItemIndex(scrollOffset + stickLine)
     )
-    const activeHeaderIndex = ownerHeaderIndexRef.current[topIndex]
-    if (activeHeaderIndex < 0) {
-      setStickyFolderId((prev) => (prev === null ? prev : null))
-      return
-    }
-    const nextHeaderIndex = nextHeaderAfter(headers, activeHeaderIndex)
-    const { visible, translateY } = computeStickyState({
-      scrollOffset,
-      activeHeaderOffset: handle.getItemOffset(activeHeaderIndex),
-      nextHeaderOffset:
-        nextHeaderIndex == null ? null : handle.getItemOffset(nextHeaderIndex),
-      headerHeight: handle.getItemSize(activeHeaderIndex) || 32,
+    const { folderIndex } = resolveStickyHeaderIndices({
+      rows: currentRows,
+      ownerSectionIndex: ownerSectionIndexRef.current,
+      ownerFolderIndex: ownerHeaderIndexRef.current,
+      topIndex,
+      stickIndex,
     })
-    if (overlayRef.current) {
-      overlayRef.current.style.transform = `translateY(${translateY}px)`
+    const folderGeom =
+      folderIndex >= 0
+        ? {
+            headerOffset: handle.getItemOffset(folderIndex),
+            headerHeight: handle.getItemSize(folderIndex) || 32,
+          }
+        : null
+    const nextSectionIndex =
+      sectionIndex >= 0
+        ? nextHeaderAfter(sectionFlatIndicesRef.current, sectionIndex)
+        : null
+    const nextFolderIndex =
+      folderIndex >= 0
+        ? nextHeaderAfter(headerFlatIndicesRef.current, folderIndex)
+        : null
+    const sticky = computeLayeredStickyState({
+      scrollOffset,
+      section: sectionGeom,
+      folder: folderGeom,
+      nextSectionOffset:
+        nextSectionIndex == null
+          ? null
+          : handle.getItemOffset(nextSectionIndex),
+      nextFolderOffset:
+        nextFolderIndex == null ? null : handle.getItemOffset(nextFolderIndex),
+    })
+    if (sectionOverlayRef.current) {
+      sectionOverlayRef.current.style.transform = `translateY(${sticky.section.translateY}px)`
     }
-    const activeRow = currentRows[activeHeaderIndex]
+    if (overlayRef.current) {
+      overlayRef.current.style.transform = `translateY(${sticky.folder.translateY}px)`
+    }
+    const sectionRow = sectionIndex >= 0 ? currentRows[sectionIndex] : undefined
+    const nextSection =
+      sticky.section.visible && sectionRow?.kind === "section"
+        ? sectionRow.section
+        : null
+    setStickySection((prev) => (prev === nextSection ? prev : nextSection))
+    const folderRow = folderIndex >= 0 ? currentRows[folderIndex] : undefined
     const nextFolderId =
-      visible && activeRow.kind === "folder" ? activeRow.folderId : null
+      sticky.folder.visible && folderRow?.kind === "folder"
+        ? folderRow.folderId
+        : null
     setStickyFolderId((prev) => (prev === nextFolderId ? prev : nextFolderId))
   }, [])
 
@@ -1961,6 +2021,24 @@ export function SidebarConversationList({
     [toggleFolder]
   )
 
+  // Same as the folder overlay: collapsing from the stuck header would
+  // otherwise leave the viewport parked where that section's rows just were.
+  const handleSectionOverlayToggle = useCallback(
+    (section: SidebarSectionKey) => {
+      toggleSection(section)
+      requestAnimationFrame(() => {
+        const idx = headerIndexForSection(rowsRef.current, section)
+        if (idx >= 0) {
+          virtualizerRef.current?.scrollToIndex(idx, {
+            align: "start",
+            smooth: false,
+          })
+        }
+      })
+    },
+    [toggleSection]
+  )
+
   // Recompute on anything that shifts geometry without firing a scroll event:
   // expand/collapse, reorder, data refresh, drag start/end, viewport ready, and
   // the overlay flip itself (so the freshly-mounted overlay node gets its
@@ -1973,6 +2051,7 @@ export function SidebarConversationList({
     viewportEl,
     dragging,
     stickyFolderId,
+    stickySection,
     recomputeSticky,
   ])
 
@@ -2728,55 +2807,63 @@ export function SidebarConversationList({
     )
   }
 
+  const sectionIsExpanded = (section: SidebarSectionKey) => {
+    switch (section) {
+      case "pinned":
+        return pinnedExpanded
+      case "folders":
+        return foldersExpanded
+      case "chats":
+        return chatsExpanded
+      case "recent":
+        return recentExpanded
+    }
+  }
+
+  // Shared by the in-list row and the floating overlay so the stuck header
+  // carries the same actions. Callbacks are stable, so the header memo holds.
+  const sectionHeaderElement = (
+    section: SidebarSectionKey,
+    opts?: {
+      suppressed?: boolean
+      onToggle?: (section: SidebarSectionKey) => void
+    }
+  ) => (
+    <SidebarSectionHeader
+      section={section}
+      expanded={sectionIsExpanded(section)}
+      onToggle={opts?.onToggle ?? toggleSection}
+      suppressed={opts?.suppressed}
+      // Chats starts a folderless chat. Recent starts a conversation in the
+      // active folder — the section spans folders and chats alike.
+      onNewChat={
+        section === "chats"
+          ? openChatModeTab
+          : section === "recent"
+            ? handleNewConversation
+            : undefined
+      }
+      onOpenFolder={section === "folders" ? handleOpenFolderAction : undefined}
+      onCloneRepository={
+        section === "folders" ? handleOpenCloneDialog : undefined
+      }
+      onImportSessions={
+        section === "folders" ? handleOpenImportWindow : undefined
+      }
+      onNewFolderGroup={section === "folders" ? openNewGroupDialog : undefined}
+      // Top gap separates a section from whatever sits above it (the previous
+      // section, or the fixed New chat / Search region). The overlay keeps it
+      // so its measured height matches the in-list row it stands in for.
+      topGap
+    />
+  )
+
   const renderRow = (row: SidebarRow) => {
     if (row.kind === "section") {
       // Section headers are not folder-scoped, so they skip themeWrap.
-      return (
-        <SidebarSectionHeader
-          section={row.section}
-          expanded={row.expanded}
-          onToggle={toggleSection}
-          // The chats section gets an always-visible New-chat button (its primary
-          // entry point, reachable even when empty). `openChatModeTab` is a stable
-          // context callback, so the memo holds. Recent gets the same
-          // affordance, but starting a conversation in the ACTIVE FOLDER — the
-          // section spans folders and chats alike, and the folder is where a
-          // "continue where I left off" list lands you.
-          onNewChat={
-            row.section === "chats"
-              ? openChatModeTab
-              : row.section === "recent"
-                ? handleNewConversation
-                : undefined
-          }
-          // The folders section gets two right-edge hover actions mirroring the
-          // top-of-page NewFolderDropdown: Open Folder and Clone Repository.
-          // Both handlers are stable, so the memo holds.
-          onOpenFolder={
-            row.section === "folders" ? handleOpenFolderAction : undefined
-          }
-          onCloneRepository={
-            row.section === "folders" ? handleOpenCloneDialog : undefined
-          }
-          // Global "Import local sessions" entry (no folder anchor) — opens
-          // the same picker window as the folder context-menu item. Stable
-          // callback, so the memo holds.
-          onImportSessions={
-            row.section === "folders" ? handleOpenImportWindow : undefined
-          }
-          // "New group" — the one action in this cluster that organises the
-          // list rather than adding to it. Stable callback, so the memo holds.
-          onNewFolderGroup={
-            row.section === "folders" ? openNewGroupDialog : undefined
-          }
-          // Every section header carries a top gap: it separates "Folders" from
-          // the "Pinned" section above it, and — now that a fixed New chat /
-          // Search region sits above the scrolled list — gives the first section
-          // (Pinned, or Folders when nothing is pinned) the same breathing room
-          // below that region instead of butting right up against it.
-          topGap
-        />
-      )
+      return sectionHeaderElement(row.section, {
+        suppressed: stickySection === row.section,
+      })
     }
     if (row.kind === "folder-group") {
       const group = folderGroups.find((g) => g.id === row.groupId)
@@ -3235,20 +3322,22 @@ export function SidebarConversationList({
                 )}
               </ScrollArea>
               {/*
-                Floating sticky folder header. Rendered AFTER ScrollArea so any
+                Floating sticky headers. Rendered AFTER ScrollArea so any
                 `[data-folder-id]` lookup still resolves the real in-list header
                 first (the real one stays mounted within virtua's buffer while
-                this overlay also shows). It is a real, accessible control: once
-                scrolled past, the in-list header is unmounted by virtua, so the
-                overlay is the keyboard/AT path to toggle/act on that folder.
-                `grip:false` — reordering is driven from the in-list header,
-                whose geometry the custom drag gesture relies on. `bg-sidebar`
-                is what occludes the rows scrolling beneath it — plain app-theme
-                sidebar, exactly the colour those rows are painted on.
+                the overlay also shows). Each is a real, accessible control:
+                once scrolled past, the in-list header is unmounted by virtua,
+                so the overlay is the keyboard/AT path. The folder overlay sits
+                under the section overlay (same z-10; the section is the later
+                sibling, so a folder sliding up during a handoff tucks under
+                it). `grip:false` — reordering is driven from the in-list
+                header. `bg-sidebar` occludes the rows scrolling beneath —
+                plain app-theme sidebar, the colour those rows are painted on.
               */}
               {stickyFolderId !== null && (
                 <div
                   ref={overlayRef}
+                  data-sticky-overlay="folder"
                   className={cn(
                     "pointer-events-none absolute left-0 right-0 top-0 z-10",
                     "px-1.5 [--conv-rail-axis:0.875rem]"
@@ -3260,6 +3349,23 @@ export function SidebarConversationList({
                       dragging: false,
                       grip: false,
                       onToggle: handleOverlayToggle,
+                    })}
+                  </div>
+                </div>
+              )}
+              {stickySection !== null && (
+                <div
+                  ref={sectionOverlayRef}
+                  data-sticky-overlay="section"
+                  className={cn(
+                    "pointer-events-none absolute left-0 right-0 top-0 z-10",
+                    "px-1.5 [--conv-rail-axis:0.875rem]"
+                  )}
+                  style={{ willChange: "transform" }}
+                >
+                  <div className="pointer-events-auto bg-sidebar">
+                    {sectionHeaderElement(stickySection, {
+                      onToggle: handleSectionOverlayToggle,
                     })}
                   </div>
                 </div>
