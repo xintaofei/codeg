@@ -2,6 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 
@@ -18,6 +19,10 @@ use crate::web::event_bridge::EventEmitter;
 /// to cover a screenful of `ls -R` or a compile log, not a whole session: this
 /// is a "pick the pane back up where you left it" buffer, not a transcript.
 const SCROLLBACK_MAX_CHARS: usize = 128 * 1024;
+const COMPLETED_MAX_COUNT: usize = 64;
+const COMPLETED_TTL: Duration = Duration::from_secs(10 * 60);
+const CANCELLED_SPAWN_TTL: Duration = Duration::from_secs(30);
+const CANCELLED_SPAWN_MAX_COUNT: usize = 128;
 
 /// Recent output of one terminal, kept so a viewer that mounts after the spawn
 /// (or re-mounts after its host view was unmounted — a canvas terminal card
@@ -64,6 +69,7 @@ struct TerminalInstance {
     _child: Box<dyn portable_pty::Child + Send>,
     title: String,
     owner_window_label: String,
+    generation: String,
     /// Shared with this terminal's reader thread — the thread appends, viewers
     /// read. Held behind its own lock rather than the map's so a chunk of
     /// output never waits on a write / resize / list call.
@@ -74,6 +80,96 @@ struct TerminalInstance {
 
 pub struct TerminalManager {
     terminals: Arc<Mutex<HashMap<String, TerminalInstance>>>,
+    completed: Arc<Mutex<CompletedTerminals>>,
+    cancelled_spawns: Arc<Mutex<HashMap<String, Instant>>>,
+    spawning: Arc<Mutex<HashMap<String, String>>>,
+}
+
+/// Kept through the whole spawn call, including its fallible setup steps.
+/// A second request with the same id must never start a second OS child.
+struct SpawnReservation {
+    id: String,
+    spawning: Arc<Mutex<HashMap<String, String>>>,
+}
+
+impl Drop for SpawnReservation {
+    fn drop(&mut self) {
+        self.spawning
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.id);
+    }
+}
+
+struct CompletedTerminal {
+    scrollback: Arc<Mutex<Scrollback>>,
+    owner_window_label: String,
+    generation: String,
+    child: Box<dyn portable_pty::Child + Send>,
+    exit_code: Option<u32>,
+    finished_at: Instant,
+}
+
+#[derive(Default)]
+struct CompletedTerminals {
+    entries: HashMap<String, CompletedTerminal>,
+    order: VecDeque<String>,
+}
+
+impl CompletedTerminals {
+    fn prune(&mut self) {
+        let now = Instant::now();
+        while let Some(id) = self.order.front() {
+            if self.order.len() <= COMPLETED_MAX_COUNT
+                && self
+                    .entries
+                    .get(id)
+                    .is_some_and(|entry| now.duration_since(entry.finished_at) < COMPLETED_TTL)
+            {
+                break;
+            }
+            let id = self.order.pop_front().expect("front exists");
+            self.remove(&id);
+        }
+    }
+
+    fn insert(&mut self, id: String, mut instance: TerminalInstance, exit_code: Option<u32>) {
+        cleanup_temp_files(&mut instance.temp_files);
+        self.remove(&id);
+        self.order.push_back(id.clone());
+        self.entries.insert(
+            id,
+            CompletedTerminal {
+                scrollback: instance.scrollback.clone(),
+                owner_window_label: instance.owner_window_label.clone(),
+                generation: instance.generation.clone(),
+                child: instance._child,
+                exit_code,
+                finished_at: Instant::now(),
+            },
+        );
+        self.prune();
+    }
+
+    fn remove(&mut self, id: &str) -> bool {
+        let removed = self.entries.remove(id);
+        if let Some(mut entry) = removed {
+            if entry.exit_code.is_none() {
+                let _ = entry.child.kill();
+                let _ = entry.child.wait();
+            }
+            self.order.retain(|entry_id| entry_id != id);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn lock_completed(
+    completed: &Mutex<CompletedTerminals>,
+) -> std::sync::MutexGuard<'_, CompletedTerminals> {
+    completed.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 /// Lock the terminal table, ignoring the poison flag.
@@ -291,6 +387,9 @@ impl TerminalManager {
     pub fn new() -> Self {
         Self {
             terminals: Arc::new(Mutex::new(HashMap::new())),
+            completed: Arc::new(Mutex::new(CompletedTerminals::default())),
+            cancelled_spawns: Arc::new(Mutex::new(HashMap::new())),
+            spawning: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -298,6 +397,9 @@ impl TerminalManager {
     pub fn clone_ref(&self) -> Self {
         Self {
             terminals: self.terminals.clone(),
+            completed: self.completed.clone(),
+            cancelled_spawns: self.cancelled_spawns.clone(),
+            spawning: self.spawning.clone(),
         }
     }
 
@@ -307,16 +409,35 @@ impl TerminalManager {
         opts: SpawnOptions,
         emitter: EventEmitter,
     ) -> Result<String, TerminalError> {
-        // Reject duplicate IDs to prevent orphaning an existing PTY process.
-        {
+        // Reserve the ID before any fallible OS work. The guard releases it
+        // on every error path, and insertion happens before the guard drops.
+        let _reservation = {
             let terminals = lock_terminals(&self.terminals);
-            if terminals.contains_key(&opts.terminal_id) {
+            let mut spawning = self.spawning.lock().unwrap_or_else(|p| p.into_inner());
+            if terminals.contains_key(&opts.terminal_id) || spawning.contains_key(&opts.terminal_id)
+            {
                 return Err(TerminalError::SpawnFailed(format!(
                     "terminal id '{}' already exists",
                     opts.terminal_id
                 )));
             }
-        }
+            // Usually an explicit tab close is followed by a still-pending
+            // spawn request. Reject before starting the child when possible.
+            let mut pending = self
+                .cancelled_spawns
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if pending.remove(&opts.terminal_id).is_some() {
+                return Err(TerminalError::SpawnFailed(
+                    "terminal launch was cancelled".to_string(),
+                ));
+            }
+            spawning.insert(opts.terminal_id.clone(), opts.owner_window_label.clone());
+            SpawnReservation {
+                id: opts.terminal_id.clone(),
+                spawning: self.spawning.clone(),
+            }
+        };
 
         let pty_system = native_pty_system();
 
@@ -365,6 +486,7 @@ impl TerminalManager {
             .map_err(|e| TerminalError::SpawnFailed(e.to_string()))?;
 
         let terminal_id = opts.terminal_id;
+        let generation = uuid::Uuid::new_v4().to_string();
         // Boundary-, length-, and NUL-safe prefix for the PTY thread names; see
         // `thread_name_prefix`. `terminal_id` is caller-supplied.
         let short_id = thread_name_prefix(&terminal_id);
@@ -379,11 +501,33 @@ impl TerminalManager {
             _child: child,
             title: "Terminal".to_string(),
             owner_window_label: opts.owner_window_label,
+            generation: generation.clone(),
             scrollback: scrollback.clone(),
             temp_files: opts.temp_files,
         };
 
-        lock_terminals(&self.terminals).insert(terminal_id.clone(), instance);
+        {
+            // A completed terminal may be explicitly restarted by another
+            // feature (canvas cards). Its old scrollback must not mask the new PTY.
+            let mut terminals = lock_terminals(&self.terminals);
+            let cancelled = {
+                let mut pending = self
+                    .cancelled_spawns
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                pending.remove(&terminal_id).is_some()
+            };
+            if cancelled {
+                drop(terminals);
+                let mut instance = instance;
+                terminate_terminal(&mut instance);
+                return Err(TerminalError::SpawnFailed(
+                    "terminal launch was cancelled".to_string(),
+                ));
+            }
+            lock_completed(&self.completed).remove(&terminal_id);
+            terminals.insert(terminal_id.clone(), instance);
+        }
 
         // Named writer thread
         std::thread::Builder::new()
@@ -396,6 +540,7 @@ impl TerminalManager {
         // Named reader thread — emits per-terminal events
         let id_for_reader = terminal_id.clone();
         let terminals_ref = self.terminals.clone();
+        let completed_ref = self.completed.clone();
         // The watch that notices a dev server announcing itself in this
         // terminal's output. Built here because this is where the owning
         // window is known; it probes and emits on threads of its own, so the
@@ -407,8 +552,10 @@ impl TerminalManager {
                 read_loop(
                     reader,
                     id_for_reader,
+                    generation,
                     &emitter,
                     &terminals_ref,
+                    &completed_ref,
                     &scrollback,
                     &watch,
                 );
@@ -447,45 +594,109 @@ impl TerminalManager {
         Ok(())
     }
 
-    /// Recent output of a live terminal, for a viewer attaching to a PTY that
-    /// was spawned before it mounted.
+    /// Recent output of a live or recently completed PTY, for a viewer that
+    /// mounts after it spawned or reconnects after losing events.
     ///
-    /// Never an error: "no such terminal" is the answer that tells the caller
-    /// to spawn one instead, and a caller that has to distinguish that from a
-    /// transport failure would have to parse the error string to do it. Note
+    /// Never an error: an unknown id returns `exists: false`. A canvas card
+    /// may spawn then, while a restored panel tab must never replay its old
+    /// command. Note
     /// the map lock is taken only to find the instance — the buffer has its own,
     /// so a large scrollback is never copied while output is blocked.
     pub fn snapshot(&self, terminal_id: &str) -> TerminalSnapshot {
-        let buffer = {
+        // The active→completed transfer happens under the active map lock, so
+        // a snapshot never mistakes an exiting PTY for a missing one.
+        let (buffer, alive, exit_code, generation) = {
             let terminals = lock_terminals(&self.terminals);
-            match terminals.get(terminal_id) {
-                Some(instance) => instance.scrollback.clone(),
-                None => {
-                    return TerminalSnapshot {
-                        alive: false,
-                        data: String::new(),
-                        seq: 0,
+            if let Some(instance) = terminals.get(terminal_id) {
+                (
+                    Some(instance.scrollback.clone()),
+                    true,
+                    None,
+                    Some(instance.generation.clone()),
+                )
+            } else {
+                let mut completed = lock_completed(&self.completed);
+                completed.prune();
+                match completed.entries.get_mut(terminal_id) {
+                    Some(entry) => {
+                        if entry.exit_code.is_none() {
+                            entry.exit_code = entry
+                                .child
+                                .try_wait()
+                                .ok()
+                                .flatten()
+                                .map(|status| status.exit_code());
+                        }
+                        (
+                            Some(entry.scrollback.clone()),
+                            false,
+                            entry.exit_code,
+                            Some(entry.generation.clone()),
+                        )
                     }
+                    None => (None, false, None, None),
                 }
             }
+        };
+        let Some(buffer) = buffer else {
+            return TerminalSnapshot {
+                exists: false,
+                alive: false,
+                data: String::new(),
+                seq: 0,
+                exit_code: None,
+                generation: None,
+            };
         };
         let (data, seq) = buffer
             .lock()
             .map(|s| s.read())
             .unwrap_or_else(|_| (String::new(), 0));
         TerminalSnapshot {
-            alive: true,
+            exists: true,
+            alive,
             data,
             seq,
+            exit_code,
+            generation,
         }
     }
 
     pub fn kill(&self, terminal_id: &str) -> Result<(), TerminalError> {
-        let mut instance = lock_terminals(&self.terminals)
-            .remove(terminal_id)
-            .ok_or_else(|| TerminalError::NotFound(terminal_id.to_string()))?;
-        terminate_terminal(&mut instance);
-        Ok(())
+        let mut terminals = lock_terminals(&self.terminals);
+        if let Some(mut instance) = terminals.remove(terminal_id) {
+            lock_completed(&self.completed).remove(terminal_id);
+            drop(terminals);
+            terminate_terminal(&mut instance);
+            return Ok(());
+        }
+        if lock_completed(&self.completed).remove(terminal_id) {
+            return Ok(());
+        }
+        // A close can overtake an in-flight spawn request (or arrive just
+        // before it). Remember only random terminal IDs, for a short bounded
+        // interval. The later insert consumes this reservation atomically under
+        // the terminal map lock; ordinary view unmount never calls kill.
+        if uuid::Uuid::parse_str(terminal_id).is_ok() {
+            let mut pending = self
+                .cancelled_spawns
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let now = Instant::now();
+            pending.retain(|_, time| now.duration_since(*time) < CANCELLED_SPAWN_TTL);
+            if pending.len() >= CANCELLED_SPAWN_MAX_COUNT {
+                if let Some(oldest) = pending
+                    .iter()
+                    .min_by_key(|(_, time)| *time)
+                    .map(|(id, _)| id.clone())
+                {
+                    pending.remove(&oldest);
+                }
+            }
+            pending.insert(terminal_id.to_string(), now);
+            return Ok(());
+        }
+        Err(TerminalError::NotFound(terminal_id.to_string()))
     }
 
     /// THE liveness gate. Drops terminals whose child has exited and returns
@@ -500,37 +711,48 @@ impl TerminalManager {
     /// `TerminalInstance` releases the PTY but not the credential store and
     /// helper script on disk — only [`terminate_terminal`] did that, and it is
     /// not on this path.
-    fn reap_exited(terminals: &mut HashMap<String, TerminalInstance>) -> Vec<String> {
-        let mut exited_terminal_ids: Vec<String> = Vec::new();
+    fn reap_exited(
+        terminals: &mut HashMap<String, TerminalInstance>,
+        completed: &Mutex<CompletedTerminals>,
+    ) -> Vec<(String, String)> {
+        let mut exited_terminal_ids: Vec<(String, String, Option<u32>)> = Vec::new();
 
         // Windows ConPTY may not always surface EOF promptly; reconcile exited
         // child processes here so frontend running-state can recover reliably.
         for (id, instance) in terminals.iter_mut() {
             match instance._child.try_wait() {
-                Ok(Some(_)) => exited_terminal_ids.push(id.clone()),
+                Ok(Some(status)) => exited_terminal_ids.push((
+                    id.clone(),
+                    instance.generation.clone(),
+                    Some(status.exit_code()),
+                )),
                 Ok(None) => {}
                 Err(err) => {
                     tracing::error!(
                         "[TERM] failed to query child status for terminal {}: {}",
-                        id, err
+                        id,
+                        err
                     );
-                    exited_terminal_ids.push(id.clone());
+                    exited_terminal_ids.push((id.clone(), instance.generation.clone(), None));
                 }
             }
         }
 
-        for terminal_id in &exited_terminal_ids {
-            if let Some(mut instance) = terminals.remove(terminal_id) {
-                cleanup_temp_files(&mut instance.temp_files);
+        for (terminal_id, _, exit_code) in &exited_terminal_ids {
+            if let Some(instance) = terminals.remove(terminal_id) {
+                lock_completed(completed).insert(terminal_id.clone(), instance, *exit_code);
             }
         }
 
         exited_terminal_ids
+            .into_iter()
+            .map(|(id, generation, _)| (id, generation))
+            .collect()
     }
 
     pub fn list_with_exit_check(&self, emitter: Option<&EventEmitter>) -> Vec<TerminalInfo> {
         let mut terminals = lock_terminals(&self.terminals);
-        let exited_terminal_ids = Self::reap_exited(&mut terminals);
+        let exited_terminal_ids = Self::reap_exited(&mut terminals, &self.completed);
 
         let infos = terminals
             .iter()
@@ -543,8 +765,8 @@ impl TerminalManager {
         drop(terminals);
 
         if let Some(emitter) = emitter {
-            for terminal_id in exited_terminal_ids {
-                emit_terminal_exit_event(emitter, &terminal_id);
+            for (terminal_id, generation) in exited_terminal_ids {
+                emit_terminal_exit_event(emitter, &terminal_id, &generation);
             }
         }
 
@@ -562,7 +784,7 @@ impl TerminalManager {
         emitter: Option<&EventEmitter>,
     ) -> usize {
         let mut terminals = lock_terminals(&self.terminals);
-        let exited_terminal_ids = Self::reap_exited(&mut terminals);
+        let exited_terminal_ids = Self::reap_exited(&mut terminals, &self.completed);
 
         let live = terminals
             .values()
@@ -572,8 +794,8 @@ impl TerminalManager {
         drop(terminals);
 
         if let Some(emitter) = emitter {
-            for terminal_id in exited_terminal_ids {
-                emit_terminal_exit_event(emitter, &terminal_id);
+            for (terminal_id, generation) in exited_terminal_ids {
+                emit_terminal_exit_event(emitter, &terminal_id, &generation);
             }
         }
 
@@ -600,10 +822,32 @@ impl TerminalManager {
                     removed.push(instance);
                 }
             }
+            let spawning = self.spawning.lock().unwrap_or_else(|p| p.into_inner());
+            let mut pending = self
+                .cancelled_spawns
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            for (id, owner) in spawning.iter() {
+                if owner == owner_window_label {
+                    pending.insert(id.clone(), Instant::now());
+                }
+            }
             removed
         };
 
         let killed = instances.len();
+        {
+            let mut completed = lock_completed(&self.completed);
+            let ids: Vec<_> = completed
+                .entries
+                .iter()
+                .filter(|(_, item)| item.owner_window_label == owner_window_label)
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in ids {
+                completed.remove(&id);
+            }
+        }
         for instance in &mut instances {
             terminate_terminal(instance);
         }
@@ -615,9 +859,24 @@ impl TerminalManager {
     pub fn kill_all(&self) -> usize {
         let mut instances: Vec<TerminalInstance> = {
             let mut terminals = lock_terminals(&self.terminals);
+            let spawning = self.spawning.lock().unwrap_or_else(|p| p.into_inner());
+            let mut pending = self
+                .cancelled_spawns
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            for id in spawning.keys() {
+                pending.insert(id.clone(), Instant::now());
+            }
             terminals.drain().map(|(_, inst)| inst).collect()
         };
         let killed = instances.len();
+        {
+            let mut completed = lock_completed(&self.completed);
+            let ids: Vec<_> = completed.entries.keys().cloned().collect();
+            for id in ids {
+                completed.remove(&id);
+            }
+        }
         for instance in &mut instances {
             terminate_terminal(instance);
         }
@@ -654,11 +913,14 @@ fn write_loop(mut writer: Box<dyn Write + Send>, rx: mpsc::Receiver<Vec<u8>>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_loop(
     mut reader: Box<dyn Read + Send>,
     terminal_id: String,
+    generation: String,
     emitter: &EventEmitter,
     terminals: &Arc<Mutex<HashMap<String, TerminalInstance>>>,
+    completed: &Arc<Mutex<CompletedTerminals>>,
     scrollback: &Arc<Mutex<Scrollback>>,
     watch: &ServiceWatch,
 ) {
@@ -693,6 +955,7 @@ fn read_loop(
                     terminal_id: terminal_id.clone(),
                     data,
                     seq,
+                    generation: generation.clone(),
                 };
                 crate::web::event_bridge::emit_event(emitter, &output_event, event.clone());
             }
@@ -704,19 +967,41 @@ fn read_loop(
     // like the scrollback lock above: this runs on the long-lived `pty-reader-*`
     // thread, and refusing the removal would leak the entry and its temp files
     // for the rest of the process.
-    if let Some(mut instance) = lock_terminals(terminals).remove(&terminal_id) {
-        cleanup_temp_files(&mut instance.temp_files);
-    }
-
-    emit_terminal_exit_event(emitter, &terminal_id);
+    finish_terminal_reader(&terminal_id, terminals, completed, scrollback);
+    emit_terminal_exit_event(emitter, &terminal_id, &generation);
 }
 
-fn emit_terminal_exit_event(emitter: &EventEmitter, terminal_id: &str) {
+/// A previous reader can finish after a same-ID canvas terminal has restarted.
+/// Only the reader of the current process may transfer that row to completed.
+fn finish_terminal_reader(
+    terminal_id: &str,
+    terminals: &Mutex<HashMap<String, TerminalInstance>>,
+    completed: &Mutex<CompletedTerminals>,
+    scrollback: &Arc<Mutex<Scrollback>>,
+) {
+    let mut terminals = lock_terminals(terminals);
+    if terminals
+        .get(terminal_id)
+        .is_some_and(|instance| Arc::ptr_eq(&instance.scrollback, scrollback))
+    {
+        let mut instance = terminals.remove(terminal_id).expect("matching terminal");
+        let exit_code = instance
+            ._child
+            .try_wait()
+            .ok()
+            .flatten()
+            .map(|status| status.exit_code());
+        lock_completed(completed).insert(terminal_id.to_string(), instance, exit_code);
+    }
+}
+
+fn emit_terminal_exit_event(emitter: &EventEmitter, terminal_id: &str, generation: &str) {
     let exit_event = format!("terminal://exit/{}", terminal_id);
     let event = TerminalEvent {
         terminal_id: terminal_id.to_string(),
         data: String::new(),
         seq: 0,
+        generation: generation.to_string(),
     };
     crate::web::event_bridge::emit_event(emitter, &exit_event, event.clone());
 }
@@ -739,9 +1024,9 @@ fn thread_name_prefix(terminal_id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{thread_name_prefix, Scrollback, SCROLLBACK_MAX_CHARS};
     #[cfg(not(target_os = "windows"))]
     use super::{Arc, EventEmitter, SpawnOptions, TerminalManager};
-    use super::{thread_name_prefix, Scrollback, SCROLLBACK_MAX_CHARS};
 
     #[test]
     fn scrollback_seq_counts_every_chunk_and_never_rewinds() {
@@ -796,6 +1081,208 @@ mod tests {
         assert!(!snapshot.alive);
         assert!(snapshot.data.is_empty());
         assert_eq!(snapshot.seq, 0);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn finished_terminal_keeps_final_output_and_exit_status_until_explicit_close() {
+        use crate::web::event_bridge::WebEventBroadcaster;
+        use std::time::{Duration, Instant};
+
+        let manager = TerminalManager::new();
+        let emitter = EventEmitter::test_web_only(Arc::new(WebEventBroadcaster::new()));
+        manager
+            .spawn_with_id(
+                SpawnOptions {
+                    terminal_id: "finished-output".to_string(),
+                    working_dir: std::env::temp_dir().to_string_lossy().to_string(),
+                    owner_window_label: "main".to_string(),
+                    shell: Some("/bin/sh".to_string()),
+                    initial_command: Some("printf 'last-output-marker\\n'; exit 7".to_string()),
+                    extra_env: None,
+                    temp_files: vec![],
+                },
+                emitter,
+            )
+            .expect("spawn");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let completed = loop {
+            // list can observe child exit before reader EOF. Neither order may
+            // throw away the final bytes needed by a reloaded pane.
+            let _ = manager.list_with_exit_check(None);
+            let snapshot = manager.snapshot("finished-output");
+            if !snapshot.alive && snapshot.exists && snapshot.data.contains("last-output-marker") {
+                break snapshot;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "last output vanished: {snapshot:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(completed.exit_code, Some(7));
+        manager.kill("finished-output").expect("explicit close");
+        let removed = manager.snapshot("finished-output");
+        assert!(!removed.exists);
+        assert!(removed.data.is_empty());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn reader_eof_first_preserves_status_and_stale_reader_cannot_remove_new_pty() {
+        use crate::web::event_bridge::WebEventBroadcaster;
+        use std::time::{Duration, Instant};
+
+        let manager = TerminalManager::new();
+        let emitter = EventEmitter::test_web_only(Arc::new(WebEventBroadcaster::new()));
+        let opts = |command: &str| SpawnOptions {
+            terminal_id: "reused-id".to_string(),
+            working_dir: std::env::temp_dir().to_string_lossy().to_string(),
+            owner_window_label: "main".to_string(),
+            shell: Some("/bin/sh".to_string()),
+            initial_command: Some(command.to_string()),
+            extra_env: None,
+            temp_files: vec![],
+        };
+
+        manager
+            .spawn_with_id(
+                opts("printf 'eof-first-marker\\n'; exit 9"),
+                emitter.clone(),
+            )
+            .expect("first spawn");
+        let old_scrollback = super::lock_terminals(&manager.terminals)
+            .get("reused-id")
+            .expect("first terminal")
+            .scrollback
+            .clone();
+
+        // Do not call list: the reader must be the one to move it to completed.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let snapshot = manager.snapshot("reused-id");
+            if !snapshot.alive
+                && snapshot.exists
+                && snapshot.data.contains("eof-first-marker")
+                && snapshot.exit_code == Some(9)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "EOF-first status missing: {snapshot:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        manager
+            .spawn_with_id(opts("sleep 30"), emitter)
+            .expect("new process with reused id");
+        let new_generation = manager.snapshot("reused-id").generation;
+        super::finish_terminal_reader(
+            "reused-id",
+            &manager.terminals,
+            &manager.completed,
+            &old_scrollback,
+        );
+        let current = manager.snapshot("reused-id");
+        assert!(current.alive, "old reader removed new PTY");
+        assert_eq!(current.generation, new_generation);
+        assert!(!Arc::ptr_eq(
+            &old_scrollback,
+            &super::lock_terminals(&manager.terminals)
+                .get("reused-id")
+                .expect("new terminal")
+                .scrollback
+        ));
+        manager.kill("reused-id").expect("cleanup");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn explicit_close_before_spawn_cancels_only_that_uuid_once() {
+        let manager = TerminalManager::new();
+        let id = uuid::Uuid::new_v4().to_string();
+        let opts = |id: &str| SpawnOptions {
+            terminal_id: id.to_string(),
+            working_dir: std::env::temp_dir().to_string_lossy().to_string(),
+            owner_window_label: "main".to_string(),
+            shell: Some("/bin/sh".to_string()),
+            initial_command: Some("sleep 30".to_string()),
+            extra_env: None,
+            temp_files: vec![],
+        };
+        manager.kill(&id).expect("close overtakes spawn");
+        assert!(manager
+            .spawn_with_id(opts(&id), EventEmitter::Noop)
+            .is_err());
+        assert!(!manager.snapshot(&id).exists);
+        // Reservation is consumed. An intentional later new tab may use the ID.
+        manager
+            .spawn_with_id(opts(&id), EventEmitter::Noop)
+            .expect("new launch");
+        manager.kill(&id).expect("close live process");
+
+        // Canvas cards use deterministic, non-UUID IDs. Their missing kill
+        // must not reserve the ID and prevent the existing restart behavior.
+        assert!(manager.kill("canvas-term-42").is_err());
+        manager
+            .spawn_with_id(opts("canvas-term-42"), EventEmitter::Noop)
+            .expect("canvas restart");
+        manager.kill("canvas-term-42").expect("canvas cleanup");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn concurrent_same_id_spawn_creates_one_child() {
+        use std::sync::Barrier;
+        use std::time::{Duration, Instant};
+
+        let manager = Arc::new(TerminalManager::new());
+        let id = uuid::Uuid::new_v4().to_string();
+        let output = std::env::temp_dir().join(format!("codeg-749-spawn-{}", uuid::Uuid::new_v4()));
+        let gate = Arc::new(Barrier::new(3));
+        let mut threads = Vec::new();
+        for _ in 0..2 {
+            let manager = manager.clone();
+            let id = id.clone();
+            let output = output.clone();
+            let gate = gate.clone();
+            threads.push(std::thread::spawn(move || {
+                gate.wait();
+                manager.spawn_with_id(
+                    SpawnOptions {
+                        terminal_id: id,
+                        working_dir: std::env::temp_dir().to_string_lossy().to_string(),
+                        owner_window_label: "main".to_string(),
+                        shell: Some("/bin/sh".to_string()),
+                        initial_command: Some(format!(
+                            "printf 'started\\n' >> '{}'; sleep 30",
+                            output.display()
+                        )),
+                        extra_env: None,
+                        temp_files: vec![],
+                    },
+                    EventEmitter::Noop,
+                )
+            }));
+        }
+        gate.wait();
+        let results: Vec<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().expect("join"))
+            .collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !output.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let text = std::fs::read_to_string(&output).expect("spawn marker");
+        assert_eq!(text.lines().count(), 1, "command was run twice");
+        manager.kill(&id).expect("the winning child is reachable");
+        let _ = std::fs::remove_file(output);
     }
 
     #[test]

@@ -2276,6 +2276,9 @@
       "closeAll": "모두 닫기",
       "hideTerminal": "터미널 숨기기 ({shortcut})",
       "openFolderFirst": "먼저 폴더를 여세요",
+      "processExited": "프로세스가 종료되었습니다",
+      "processExitedWithCode": "프로세스가 종료되었습니다(코드 {code})",
+      "unavailable": "터미널 세션을 사용할 수 없습니다. 세션이 종료되었거나 백엔드가 다시 시작되었을 수 있습니다.",
       "keybar": {
         "label": "터미널 가상 키",
         "show": "가상 키 표시",

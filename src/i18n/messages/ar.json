@@ -2276,6 +2276,9 @@
       "closeAll": "إغلاق الكل",
       "hideTerminal": "إخفاء الطرفية ({shortcut})",
       "openFolderFirst": "افتح مجلدا أولا",
+      "processExited": "انتهت العملية",
+      "processExitedWithCode": "انتهت العملية (الرمز {code})",
+      "unavailable": "جلسة الطرفية غير متاحة. ربما انتهت أو أُعيد تشغيل الخادم.",
       "keybar": {
         "label": "مفاتيح الطرفية الافتراضية",
         "show": "إظهار المفاتيح الافتراضية",

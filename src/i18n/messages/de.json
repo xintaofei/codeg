@@ -2276,6 +2276,9 @@
       "closeAll": "Alle schließen",
       "hideTerminal": "Terminal ausblenden ({shortcut})",
       "openFolderFirst": "Öffnen Sie zuerst einen Ordner",
+      "processExited": "Prozess beendet",
+      "processExitedWithCode": "Prozess beendet (Code {code})",
+      "unavailable": "Terminalsitzung nicht verfügbar. Sie wurde möglicherweise beendet oder das Backend neu gestartet.",
       "keybar": {
         "label": "Virtuelle Terminaltasten",
         "show": "Virtuelle Tasten anzeigen",

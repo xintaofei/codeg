@@ -2276,6 +2276,9 @@
       "closeAll": "Fechar tudo",
       "hideTerminal": "Ocultar terminal ({shortcut})",
       "openFolderFirst": "Abra primeiro uma pasta",
+      "processExited": "Processo encerrado",
+      "processExitedWithCode": "Processo encerrado (código {code})",
+      "unavailable": "Sessão do terminal indisponível. Ela pode ter terminado ou o servidor pode ter reiniciado.",
       "keybar": {
         "label": "Teclas virtuais do terminal",
         "show": "Mostrar teclas virtuais",

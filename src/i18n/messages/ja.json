@@ -2276,6 +2276,9 @@
       "closeAll": "すべて閉じる",
       "hideTerminal": "ターミナルを隠す ({shortcut})",
       "openFolderFirst": "先にフォルダを開いてください",
+      "processExited": "プロセスが終了しました",
+      "processExitedWithCode": "プロセスが終了しました（コード {code}）",
+      "unavailable": "ターミナルセッションを利用できません。終了したか、バックエンドが再起動した可能性があります。",
       "keybar": {
         "label": "仮想ターミナルキー",
         "show": "仮想キーを表示",

@@ -2276,6 +2276,9 @@
       "closeAll": "Cerrar todo",
       "hideTerminal": "Ocultar terminal ({shortcut})",
       "openFolderFirst": "Abre primero una carpeta",
+      "processExited": "Proceso finalizado",
+      "processExitedWithCode": "Proceso finalizado (código {code})",
+      "unavailable": "La sesión de terminal no está disponible. Puede haber terminado o el servidor se ha reiniciado.",
       "keybar": {
         "label": "Teclas virtuales del terminal",
         "show": "Mostrar teclas virtuales",

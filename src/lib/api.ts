@@ -4727,9 +4727,9 @@ export async function terminalResize(
 
 /**
  * Recent output of an already-running terminal, for a viewer attaching to a
- * PTY it did not spawn (a canvas terminal card coming back from another
- * route). `alive: false` is the settled answer "nothing to attach to" — spawn
- * instead; it is never an error, so callers don't have to parse one.
+ * PTY it did not spawn (a canvas terminal card or restored panel tab).
+ * `alive: false, exists: true` carries retained final output; `exists: false`
+ * means no session is known. Older backends omit `exists`.
  *
  * Subscribe to `terminal://output/<id>` BEFORE calling this, and drop the
  * events whose `seq` is at or below the returned `seq` — that overlap is

@@ -2276,6 +2276,9 @@
       "closeAll": "關閉所有",
       "hideTerminal": "隱藏終端（{shortcut}）",
       "openFolderFirst": "請先開啟一個資料夾",
+      "processExited": "程序已結束",
+      "processExitedWithCode": "程序已結束（代碼 {code}）",
+      "unavailable": "終端工作階段無法使用。它可能已結束，或後端已重新啟動。",
       "keybar": {
         "label": "終端虛擬鍵",
         "show": "顯示虛擬鍵",

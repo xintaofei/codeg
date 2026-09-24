@@ -2276,6 +2276,9 @@
       "closeAll": "关闭所有",
       "hideTerminal": "隐藏终端（{shortcut}）",
       "openFolderFirst": "请先打开一个文件夹",
+      "processExited": "进程已退出",
+      "processExitedWithCode": "进程已退出（代码 {code}）",
+      "unavailable": "终端会话不可用；它可能已结束，或后端已重启。",
       "keybar": {
         "label": "终端虚拟键",
         "show": "显示虚拟键",

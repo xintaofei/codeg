@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { subscribe } from "@/lib/platform"
+import { useTranslations } from "next-intl"
+import { onTransportReady, subscribe } from "@/lib/platform"
 import {
   terminalSpawn,
   terminalSnapshot,
@@ -35,7 +36,7 @@ import {
   useOpenUrlTarget,
 } from "@/hooks/use-open-url-target"
 import { detectPlatform } from "@/hooks/use-platform"
-import type { TerminalEvent } from "@/lib/types"
+import type { TerminalEvent, TerminalSnapshot } from "@/lib/types"
 import type { ITerminalAddon, Terminal as XTermTerminal } from "@xterm/xterm"
 
 function computeTerminalFontSize(base: number, zoomLevel: number): number {
@@ -91,8 +92,8 @@ interface TerminalViewProps {
   /**
    * 重新接管一个可能已经存在的 PTY，而不是「必然新建」。
    *
-   * 终端面板的 tab 与它的 xterm 同生共死，所以那条路径永远是新建；而画布上的
-   * 终端卡片不是——整个画布路由在切到别的页面时会真卸载，PTY 却应该继续跑
+   * 终端面板刷新时会恢复同一个 PTY；画布终端卡片切换路由时也要继续运行。
+   * 画布路由在切到别的页面时会真卸载，PTY 却应该继续跑
    * （`pnpm dev` 不该因为用户瞄了一眼待办看板就被杀掉）。此模式下先问后端要
    * 快照：拿到就把最近输出重放进新开的 xterm 并跳过 spawn，没拿到才新建。
    *
@@ -100,6 +101,12 @@ interface TerminalViewProps {
    * 不属于这一次挂载。
    */
   attach?: boolean
+  /** Restored panel tabs never re-run an old command when the backend has no PTY. */
+  spawnOnMissing?: boolean
+  /** Panel tabs retain finished output; canvas cards keep their spawn fallback. */
+  reuseCompleted?: boolean
+  onSpawned?: (terminalId: string) => void
+  onProcessRestored?: (terminalId: string) => void
   /**
    * 让字号无视应用缩放（`useZoomLevel`）。画布用自己的一套缩放，卡片内容一律
    * 以「board units」绘制，再乘一次应用缩放就会和它所在的盒子对不上。
@@ -117,6 +124,10 @@ export function TerminalView({
   isVisible,
   keybarVisible = false,
   attach = false,
+  spawnOnMissing = true,
+  reuseCompleted = false,
+  onSpawned,
+  onProcessRestored,
   ignoreAppZoom = false,
   onProcessExited,
 }: TerminalViewProps) {
@@ -127,6 +138,8 @@ export function TerminalView({
   const isActiveRef = useRef(isActive)
   const isVisibleRef = useRef(isVisible)
   const onProcessExitedRef = useRef(onProcessExited)
+  const onSpawnedRef = useRef(onSpawned)
+  const onProcessRestoredRef = useRef(onProcessRestored)
   // Link clicks route through the app's link decision (built-in browser vs
   // system browser, ⌘/Ctrl inverts). xterm's default handler is a bare
   // `window.open`, which the desktop webview turns into a dead click.
@@ -146,6 +159,10 @@ export function TerminalView({
   const terminalLigaturesRef = useRef(terminalLigatures)
   const ligaturesAddonRef = useRef<DisposableAddon | null>(null)
   const [loading, setLoading] = useState(true)
+  const t = useTranslations("Folder.terminal")
+  // Locale changes affect future status text, not ownership of the live PTY.
+  const tRef = useRef(t)
+  tRef.current = t
 
   // ---- 移动端虚拟键栏（CTRL/ALT 闩锁 + 软键盘跟随）----
   // modsRef 是编码真值（xterm.onData 闭包里读它不会过期）；modsUi 只驱动按钮
@@ -238,7 +255,9 @@ export function TerminalView({
 
   useEffect(() => {
     onProcessExitedRef.current = onProcessExited
-  }, [onProcessExited])
+    onSpawnedRef.current = onSpawned
+    onProcessRestoredRef.current = onProcessRestored
+  }, [onProcessExited, onSpawned, onProcessRestored])
 
   useEffect(() => {
     openUrlTargetRef.current = openUrlTarget
@@ -302,7 +321,7 @@ export function TerminalView({
       // send is dropped, not retried — re-sending an ambiguous write could
       // duplicate already-delivered bytes, worse than a drop in a shell. See
       // lib/terminal/write-queue.ts.
-      const writeQueue = createWriteQueue((d) => terminalWrite(terminalId, d))
+      let writeQueue = createWriteQueue((d) => terminalWrite(terminalId, d))
       // 暴露给键栏按键——必须走这条队列，否则与软键盘输入抢着发会乱序。
       writeQueueRef.current = writeQueue
 
@@ -396,6 +415,33 @@ export function TerminalView({
       // 往返，中间到的 chunk 既可能已经在快照里（重复），也可能不在（丢失）。
       // 两者靠 seq 区分——见下面的 writeEvent 与 `TerminalEvent.seq`。
       let replayBuffer: TerminalEvent[] | null = attach ? [] : null
+      let exitWhileBuffering: TerminalEvent | null = null
+      let currentGeneration: string | null = null
+      let exitShown = false
+      let unlistenReconnect: (() => void) | null = null
+      let reconnectGeneration = 0
+
+      const showExit = (code?: number | null) => {
+        if (exitShown) return
+        exitShown = true
+        writeQueue.dispose()
+        onProcessExitedRef.current?.(terminalId)
+        const message =
+          code == null
+            ? tRef.current("processExited")
+            : tRef.current("processExitedWithCode", { code })
+        term.write(`\r\n\x1b[90m[${message}]\x1b[0m\r\n`)
+      }
+
+      const showUnavailable = (confirmedMissing: boolean) => {
+        if (exitShown) return
+        exitShown = true
+        if (confirmedMissing) {
+          writeQueue.dispose()
+          onProcessExitedRef.current?.(terminalId)
+        }
+        term.write(`\r\n\x1b[90m[${tRef.current("unavailable")}]\x1b[0m\r\n`)
+      }
 
       // 已被快照画进这块屏幕的最高游标。缓冲**不足以**当闸门：事件走的通道
       // （Tauri IPC / WebSocket）和快照那次请求-响应之间没有任何顺序保证，
@@ -410,6 +456,12 @@ export function TerminalView({
       const writeEvent = (event: TerminalEvent) => {
         // seq 为 0/缺失 = 后端没能给出可比较的游标（旧后端、锁中毒）。此时
         // 宁可重复也不能丢：多打一行远比吞掉一行输出容易发现和容忍。
+        if (
+          currentGeneration &&
+          event.generation &&
+          event.generation !== currentGeneration
+        )
+          return
         const seq = event.seq ?? 0
         if (seq > 0 && seq <= snapshotSeqFloor) return
         term.write(event.data)
@@ -435,16 +487,28 @@ export function TerminalView({
           snapshotSeqFloor = snapshotSeq
         }
         for (const event of buffered) writeEvent(event)
+        if (exitWhileBuffering) {
+          const exit = exitWhileBuffering
+          exitWhileBuffering = null
+          if (
+            !currentGeneration ||
+            !exit.generation ||
+            exit.generation === currentGeneration
+          )
+            showExit()
+        }
       }
 
       const unlistenExit = await subscribe<TerminalEvent>(
         `terminal://exit/${terminalId}`,
-        () => {
-          // PTY is gone — stop the input pump (the reliable terminal-gone
-          // signal; the queue's error-string match is only a fast-path).
-          writeQueue.dispose()
-          onProcessExitedRef.current?.(terminalId)
-          term.write("\r\n\x1b[90m[Process exited]\x1b[0m\r\n")
+        (event) => {
+          if (replayBuffer) exitWhileBuffering = event
+          else if (
+            !currentGeneration ||
+            !event.generation ||
+            event.generation === currentGeneration
+          )
+            showExit()
         }
       )
 
@@ -460,9 +524,34 @@ export function TerminalView({
       }
 
       /** 把快照写进这个全新的 xterm，并放行不在快照里的那段缓冲输出。 */
-      const applySnapshot = (snapshot: { data: string; seq: number }) => {
+      const applySnapshot = (snapshot: {
+        data: string
+        seq: number
+        alive: boolean
+        exit_code?: number | null
+        generation?: string | null
+      }) => {
+        if (snapshot.alive && exitShown) {
+          writeQueue.dispose()
+          writeQueue = createWriteQueue((d) => terminalWrite(terminalId, d))
+          writeQueueRef.current = writeQueue
+          onProcessRestoredRef.current?.(terminalId)
+          exitShown = false
+        }
+        currentGeneration = snapshot.generation ?? null
         if (snapshot.data) term.write(snapshot.data)
+        const pendingExit = exitWhileBuffering
+        exitWhileBuffering = null
         flushReplay(snapshot.seq)
+        if (
+          !snapshot.alive ||
+          (pendingExit &&
+            (!currentGeneration ||
+              !pendingExit.generation ||
+              pendingExit.generation === currentGeneration))
+        ) {
+          showExit(snapshot.exit_code)
+        }
         setLoading(false)
       }
 
@@ -475,52 +564,141 @@ export function TerminalView({
         onResizeDisposable.dispose()
         unlisten()
         unlistenExit()
+        unlistenReconnect?.()
         term.dispose()
       }
 
-      // attach 模式：先看这个 id 上有没有活着的 PTY。有就把最近输出重放进这个
-      // 全新的 xterm 并跳过 spawn（spawn 会因 id 重复而失败，而那个失败恰好长得
-      // 像「终端起不来」——实际上进程好好的，只是屏幕是空的）。
+      // Web and remote-desktop event sockets can miss chunks while offline.
+      // Their ready notification fires after the server subscribes, so buffer
+      // live chunks, redraw from one backend snapshot, then apply only events
+      // newer than that snapshot's sequence.
+      let bootstrapping = true
+      let readyDuringStartup = false
+      const syncFromBackend = () => {
+        if (cancelled) return
+        const generation = ++reconnectGeneration
+        replayBuffer = []
+        exitWhileBuffering = null
+        void terminalSnapshot(terminalId)
+          .then((snapshot) => {
+            if (cancelled || generation !== reconnectGeneration) return
+            if (!snapshot.alive && !snapshot.exists) {
+              flushReplay(null)
+              showUnavailable(true)
+              return
+            }
+            term.reset()
+            snapshotSeqFloor = 0
+            applySnapshot(snapshot)
+          })
+          .catch(() => {
+            if (cancelled || generation !== reconnectGeneration) return
+            // A transient HTTP failure is not proof that the PTY exited.
+            flushReplay(null)
+          })
+      }
+      unlistenReconnect = onTransportReady(() => {
+        // If the first server ready lands while the startup snapshot is still
+        // in flight, let that snapshot finish, then resample. The ready event
+        // cannot be missed between the probe and listener registration.
+        if (bootstrapping) {
+          readyDuringStartup = true
+          return
+        }
+        syncFromBackend()
+      })
+
+      // A restored tab only knows an ID. A reload can beat a terminal_spawn
+      // request still in flight, so probe for a short bounded interval before
+      // declaring it unavailable; never replay its original command.
+      const readSnapshot = async (
+        retryMissing: boolean,
+        accept: (snapshot: TerminalSnapshot) => boolean = (snapshot) =>
+          !!(snapshot.alive || snapshot.exists)
+      ) => {
+        const deadline = Date.now() + 10_000
+        do {
+          const snapshot = await terminalSnapshot(terminalId).catch(() => null)
+          if (cancelled) return null
+          if (snapshot && accept(snapshot)) return snapshot
+          if (!retryMissing) return snapshot
+          await new Promise((resolve) => setTimeout(resolve, 150))
+        } while (!cancelled && Date.now() < deadline)
+        return null
+      }
+
       let attached = false
+      let confirmedMissing = false
+      let previousCompleted: TerminalSnapshot | null = null
       if (attach) {
-        const snapshot = await terminalSnapshot(terminalId).catch(() => null)
+        const snapshot = await readSnapshot(!spawnOnMissing)
         if (cancelled) {
           teardown()
           return
         }
-        if (snapshot?.alive) {
+        confirmedMissing =
+          snapshot != null && !snapshot.alive && !snapshot.exists
+        if (snapshot?.exists && !snapshot.alive) previousCompleted = snapshot
+        if (snapshot?.alive || (reuseCompleted && snapshot?.exists)) {
           attached = true
           applySnapshot(snapshot)
         }
-        // 没活着时**不**在这里放行缓冲：spawn 还有一次往返，而那段窗口里到达的
-        // 输出可能属于「别的窗口刚 spawn 成功的那个 PTY」。现在写进屏幕，等下面
-        // 的重试快照再把同一段重放一遍，就会重复且顺序错乱（控制序列尤其致命）。
-        // 缓冲一直留到 spawn 有了结果为止。
+        // Keep buffering through spawn: a competing mount may win the ID and
+        // its first output may otherwise be replayed twice.
       }
 
-      // Spawn the terminal AFTER subscribing to events
-      if (!attached) {
+      if (!attached && !spawnOnMissing) {
+        flushReplay(null)
+        showUnavailable(confirmedMissing)
+        setLoading(false)
+      }
+
+      // A new panel tab and canvas card can spawn. Restored panel tabs cannot.
+      if (!attached && spawnOnMissing) {
         try {
           await terminalSpawn(workingDir, shell, initialCommand, terminalId)
-          // spawn 成功 ⇒ 这个 id 上此前没有 PTY，缓冲里只可能是我们刚起的这个
-          // 进程的头几个字节，没有任何东西需要去重。
-          flushReplay(null)
-        } catch (err) {
-          // 在 attach 模式下，「这个 id 已存在」不是失败而是竞态：两个窗口（或
-          // StrictMode 的双跑 effect）同时看到「没活着」并同时 spawn，只有一个
-          // 会赢。输者此刻其实有一个健康的终端可以接管——再问一次快照，拿到就
-          // 当作 attach 走完，而不是在一个正常运行的 shell 上打红字并把卡片
-          // 切到「已退出」。只有再问也没有时才是真失败。
-          const retry = attach
+          // This handshake gives buffered output its PTY generation. A delayed
+          // event from a previous process with this same id must not leak in.
+          const launched = attach
             ? await terminalSnapshot(terminalId).catch(() => null)
             : null
           if (cancelled) {
             teardown()
             return
           }
-          if (retry?.alive) {
+          if (launched?.alive || launched?.exists) applySnapshot(launched)
+          else flushReplay(null)
+          onSpawnedRef.current?.(terminalId)
+        } catch (err) {
+          // A second mount can lose to the first while its PTY is still in
+          // openpty/spawn and absent from snapshots. Wait only for that known
+          // duplicate race; a genuine launch error should surface promptly.
+          const duplicateId = String(err).includes("already exists")
+          // A canvas may have deliberately ignored a completed PTY before
+          // spawning. That old tombstone can remain visible while another
+          // mount is still spawning this ID. A completed retry needs either
+          // a confirmed empty snapshot before spawning or a new generation;
+          // an initial snapshot request failure proves neither.
+          const isNewProcess = (candidate: TerminalSnapshot) =>
+            !!(
+              candidate.alive ||
+              (candidate.exists &&
+                (confirmedMissing ||
+                  (previousCompleted?.generation &&
+                    candidate.generation &&
+                    candidate.generation !== previousCompleted.generation)))
+            )
+          const retry = attach
+            ? await readSnapshot(duplicateId, isNewProcess)
+            : null
+          if (cancelled) {
+            teardown()
+            return
+          }
+          if (retry && isNewProcess(retry)) {
             attached = true
             applySnapshot(retry)
+            onSpawnedRef.current?.(terminalId)
           } else {
             flushReplay(null)
             onProcessExitedRef.current?.(terminalId)
@@ -542,6 +720,9 @@ export function TerminalView({
         teardown()
         return
       }
+
+      bootstrapping = false
+      if (readyDuringStartup) syncFromBackend()
 
       const fitIfReady = () => {
         const el = containerRef.current
@@ -576,6 +757,7 @@ export function TerminalView({
         onResizeDisposable.dispose()
         unlisten()
         unlistenExit()
+        unlistenReconnect?.()
         resizeObserver.disconnect()
         term.dispose()
         fitAddonRef.current = null
@@ -595,7 +777,15 @@ export function TerminalView({
       // menu must not outlive it and open the old terminal's link.
       setLinkClick(null)
     }
-  }, [terminalId, workingDir, shell, initialCommand, attach])
+  }, [
+    terminalId,
+    workingDir,
+    shell,
+    initialCommand,
+    attach,
+    spawnOnMissing,
+    reuseCompleted,
+  ])
 
   // Refit and focus when becoming active or panel becomes visible
   useEffect(() => {
