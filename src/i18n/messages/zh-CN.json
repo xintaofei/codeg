@@ -409,6 +409,10 @@
         "title": "打开搜索",
         "description": "打开或关闭会话搜索面板"
       },
+      "find_in_conversation": {
+        "title": "在会话中查找",
+        "description": "在当前会话的消息中查找文本"
+      },
       "toggle_sidebar": {
         "title": "切换左侧边栏",
         "description": "显示或隐藏会话列表侧边栏"
@@ -3444,7 +3448,13 @@
         "completedAt": "完成时间",
         "jumpToPreviousUserMessage": "跳转到上一条用户消息",
         "showMore": "展开",
-        "showLess": "收起"
+        "showLess": "收起",
+        "findPlaceholder": "在会话中查找",
+        "findMatchOf": "{index} / {count}",
+        "findNoResults": "无匹配",
+        "findPrev": "上一个",
+        "findNext": "下一个",
+        "findClose": "关闭查找"
       },
       "liveTurnStats": {
         "thinking": "思考中...",

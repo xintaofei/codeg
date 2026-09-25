@@ -108,6 +108,40 @@ describe("numbered tab shortcuts", () => {
   })
 })
 
+describe("find in conversation", () => {
+  it("defaults to Ctrl/Cmd+F and stays clear of Ctrl/Cmd+Shift+F", () => {
+    const ids = SHORTCUT_DEFINITIONS.map((definition) => definition.id)
+    expect(ids).toContain("find_in_conversation")
+    expect(DEFAULT_SHORTCUTS.find_in_conversation).toBe("mod+f")
+    expect(
+      matchShortcutEvent(
+        keyEvent("f", { metaKey: true }),
+        DEFAULT_SHORTCUTS.find_in_conversation
+      )
+    ).toBe(true)
+    expect(
+      matchShortcutEvent(
+        keyEvent("F", { ctrlKey: true, shiftKey: true }),
+        DEFAULT_SHORTCUTS.find_in_conversation
+      )
+    ).toBe(false)
+  })
+
+  it("arrives unbound on a profile that already put Ctrl/Cmd+F elsewhere", () => {
+    localStorage.setItem(
+      SHORTCUTS_STORAGE_KEY,
+      JSON.stringify({ toggle_sidebar: "mod+f" })
+    )
+    try {
+      const settings = readShortcutSettings()
+      expect(settings.toggle_sidebar).toBe("mod+f")
+      expect(settings.find_in_conversation).toBe("")
+    } finally {
+      localStorage.clear()
+    }
+  })
+})
+
 describe("reopen last closed tab", () => {
   it("defaults to Ctrl/Cmd+Shift+T", () => {
     const ids = SHORTCUT_DEFINITIONS.map((definition) => definition.id)

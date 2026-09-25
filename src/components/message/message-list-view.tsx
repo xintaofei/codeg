@@ -80,6 +80,25 @@ import {
   type MessageNavEntry,
 } from "@/components/message/conversation-message-nav"
 import type { MessageScrollContextValue } from "@/components/message/message-scroll-context"
+import {
+  estimateMatchCount,
+  findMatchAt,
+  findNeedle,
+  FindInChatBar,
+  measuredCount,
+  NO_MEASURED_ROWS,
+  resolveFindCursor,
+  totalMatches,
+  transcriptOwnsKeystroke,
+  useFindHighlights,
+  type FindCursor,
+  type FindRow,
+  type MeasuredRows,
+} from "@/components/message/find-in-chat"
+import { useOptionalWorkspaceView } from "@/contexts/workspace-context"
+import { useOptionalWorkbenchRoute } from "@/contexts/workbench-route-context"
+import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
+import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
 import { extractSessionFilesGrouped } from "@/lib/session-files"
 import { useModelLabels } from "@/hooks/use-model-labels"
 import { usePageHandoffName } from "@/lib/browser/use-page-handoff-name"
@@ -1369,7 +1388,11 @@ export function MessageListView({
               ? userTurnHeader(item.group)
               : null
           return (
-            <div style={pt > 0 ? { paddingTop: pt } : undefined}>
+            // `data-find-key`: the row find-in-chat measures and paints.
+            <div
+              style={pt > 0 ? { paddingTop: pt } : undefined}
+              data-find-key={item.key}
+            >
               {phaseLabel ? (
                 <div className="flex items-center gap-2 px-1 pb-3 pt-1">
                   <span aria-hidden="true" className="h-px flex-1 bg-border" />
@@ -1477,7 +1500,8 @@ export function MessageListView({
 
   // --- Message navigator panel ------------------------------------------------
   // Lifted scroll handle so the panel (which lives in the overlay stack, outside
-  // the MessageScrollProvider subtree) can drive scrollToIndex.
+  // the MessageScrollProvider subtree) can drive scrollToIndex — and find in
+  // chat below, likewise.
   const scrollApiRef = useRef<MessageScrollContextValue | null>(null)
   // Collapse state is owned here (not in the panel) so the expensive per-file
   // `navEntries` is computed only while the panel is open.
@@ -1485,7 +1509,9 @@ export function MessageListView({
 
   // Positioning box for the text-selection bubble. It is the transcript's outer
   // (non-scrolling) frame, so the bubble is clipped to the message area and
-  // never overlaps the composer or the tab strip.
+  // never overlaps the composer or the tab strip. Find in chat searches the
+  // rows under it and marks it `data-transcript` (see
+  // `transcriptOwnsKeystroke`).
   const selectionBoxRef = useRef<HTMLDivElement | null>(null)
 
   // Cheap user-message tally for the collapsed chip — counts user turns without
@@ -1545,6 +1571,156 @@ export function MessageListView({
     }
     return entries.length > 0 ? entries : EMPTY_NAV_ENTRIES
   }, [showMessageNav, navExpanded, timelineTurns, threadItems])
+
+  // --- Find in chat -----------------------------------------------------------
+  // ⌘F / Ctrl+F (`find_in_conversation`) opens a find bar over the transcript.
+  // It searches the message prose of the LOADED window only — the navigator's
+  // accepted degradation; paging in older history extends what's findable.
+  // The counter, stepping and highlights share one source: a mounted row's
+  // matches are measured from what it renders (`useFindHighlights`), and a row
+  // the virtualizer has not mounted stands in with an estimate from its message
+  // text until it is.
+  const [findOpen, setFindOpen] = useState(false)
+  const [findQuery, setFindQuery] = useState("")
+  const [findFocusToken, setFindFocusToken] = useState(0)
+  const [findCursor, setFindCursor] = useState<FindCursor | null>(null)
+  const [findMeasured, setFindMeasured] =
+    useState<MeasuredRows>(NO_MEASURED_ROWS)
+
+  // New query → back to the first match. Adjusted during render (the React
+  // pattern for state derived from other state) — an effect here would paint
+  // a stale match first.
+  const [prevFindQuery, setPrevFindQuery] = useState(findQuery)
+  if (prevFindQuery !== findQuery) {
+    setPrevFindQuery(findQuery)
+    setFindCursor(null)
+  }
+
+  const closeFind = useCallback(() => {
+    setFindOpen(false)
+    setFindQuery("")
+  }, [])
+
+  const findNeedleText = findOpen ? findNeedle(findQuery) : ""
+  const findRows = useMemo<FindRow[]>(() => {
+    if (!findNeedleText) return []
+    const rows: FindRow[] = []
+    threadItems.forEach((item, threadIndex) => {
+      if (item.kind !== "turn") return
+      const count =
+        measuredCount(findMeasured, findNeedleText, fold.epoch, item) ??
+        estimateMatchCount(
+          item,
+          // The fold `CompletedTurnContent` shows this reply with: the current
+          // round's is owned here, any other starts open only mid-reply.
+          item.isLastAssistantRun && fold.armed
+            ? fold.roundOpen
+            : !item.isResponseComplete,
+          findNeedleText
+        )
+      if (count > 0) rows.push({ key: item.key, threadIndex, count })
+    })
+    return rows
+  }, [
+    findNeedleText,
+    threadItems,
+    findMeasured,
+    fold.epoch,
+    fold.armed,
+    fold.roundOpen,
+  ])
+  const findMatchCount = totalMatches(findRows)
+  const activeFindMatch = resolveFindCursor(findRows, findCursor, (key) => {
+    const index = threadItems.findIndex((item) => item.key === key)
+    return index === -1 ? undefined : index
+  })
+  const activeFindKey = activeFindMatch?.key ?? null
+  const activeFindThreadIndex = activeFindMatch?.threadIndex ?? null
+
+  useFindHighlights(selectionBoxRef, {
+    enabled: findOpen && isActive,
+    needle: findNeedleText,
+    epoch: fold.epoch,
+    items: threadItems,
+    activeKey: activeFindKey,
+    activeOcc: activeFindMatch?.occ ?? 1,
+    setMeasured: setFindMeasured,
+  })
+
+  const stepFind = (dir: 1 | -1) => {
+    if (!activeFindMatch || findMatchCount === 0) return
+    const next = findMatchAt(
+      findRows,
+      (activeFindMatch.index + dir + findMatchCount) % findMatchCount
+    )
+    if (next) {
+      setFindCursor({
+        key: next.key,
+        occ: next.occ,
+        threadIndex: next.threadIndex,
+        dir,
+      })
+    }
+  }
+
+  // Bring the active match's row into the virtualizer's range when it is not
+  // mounted. A mounted row needs nothing here: `useFindHighlights` scrolls the
+  // match itself into view, which centring the row would miss in a reply
+  // taller than the viewport.
+  useEffect(() => {
+    if (activeFindKey === null || activeFindThreadIndex === null) return
+    const mounted = Array.from(
+      selectionBoxRef.current?.querySelectorAll<HTMLElement>(
+        "[data-find-key]"
+      ) ?? []
+    ).some((row) => row.dataset.findKey === activeFindKey)
+    if (!mounted) {
+      scrollApiRef.current?.scrollToIndex(activeFindThreadIndex, {
+        align: "center",
+      })
+    }
+  }, [activeFindKey, activeFindThreadIndex])
+
+  // Who owns the chord. The built-in browser binds the same ⌘F on its own view
+  // (find in page) and the file column has finders of its own, so it is the
+  // conversation's only while the conversation column is the active pane —
+  // the pane the tab chords route to (see `workspace-chrome-controller`) — and
+  // there only for the transcript the keyboard is in. Surfaces outside the
+  // workspace columns (canvas cards, windows with no workspace) skip the pane
+  // half.
+  const { shortcuts } = useShortcutSettings()
+  const findShortcut = shortcuts.find_in_conversation
+  const workspaceView = useOptionalWorkspaceView()
+  const workbenchRoute = useOptionalWorkbenchRoute()
+  const filesPaneHasKeyboard =
+    workbenchRoute?.isConversations !== false &&
+    workspaceView?.mode === "fusion" &&
+    (workspaceView.activePane === "files" || workspaceView.filesMaximized)
+
+  // Scoped to the active transcript so background tabs never take the chord.
+  useEffect(() => {
+    if (!isActive) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Claimed by a handler nearer the focus — the browser view's own ⌘F,
+      // for one: React dispatches at the document before this listener runs.
+      if (e.defaultPrevented) return
+      const closing = findOpen && e.key === "Escape"
+      if (!closing && !(findShortcut && matchShortcutEvent(e, findShortcut))) {
+        return
+      }
+      if (filesPaneHasKeyboard) return
+      if (!transcriptOwnsKeystroke(e.target, selectionBoxRef.current)) return
+      e.preventDefault()
+      if (closing) {
+        closeFind()
+        return
+      }
+      setFindOpen(true)
+      setFindFocusToken((n) => n + 1)
+    }
+    document.addEventListener("keydown", onKeyDown)
+    return () => document.removeEventListener("keydown", onKeyDown)
+  }, [isActive, findOpen, findShortcut, filesPaneHasKeyboard, closeFind])
 
   const hasRenderableContent = threadItems.length > 0 || Boolean(liveMessage)
 
@@ -1628,6 +1804,7 @@ export function MessageListView({
       <div
         ref={selectionBoxRef}
         className="relative flex h-full min-h-0 flex-col"
+        data-transcript=""
       >
         <MessageThread
           className="flex-1 min-h-0"
@@ -1669,6 +1846,18 @@ export function MessageListView({
               )}
               {t("loadBackgroundActivity")}
             </Button>
+          )}
+          {findOpen && (
+            <FindInChatBar
+              query={findQuery}
+              onQueryChange={setFindQuery}
+              count={findMatchCount}
+              index={activeFindMatch?.index ?? 0}
+              focusToken={findFocusToken}
+              onNext={() => stepFind(1)}
+              onPrev={() => stepFind(-1)}
+              onClose={closeFind}
+            />
           )}
         </MessageThread>
         {liveMessage && connStatus === "prompting" && (

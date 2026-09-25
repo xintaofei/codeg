@@ -53,6 +53,20 @@ function hasVisibleAnswer(answer: AdaptedContentPart[]): boolean {
 }
 
 /**
+ * Whether a reply offers the fold at all — see the rule's rationale where
+ * `CompletedTurnContent` applies it. Exported so find-in-chat can tell what a
+ * reply the virtualizer has not mounted would show.
+ */
+export function isFoldableReply(
+  split: SplitAssistantTurnParts,
+  completed: boolean
+): boolean {
+  return (
+    split.progress.length > 0 && (!completed || hasVisibleAnswer(split.answer))
+  )
+}
+
+/**
  * Manual fold overrides for turns OUTSIDE the current round, keyed by the
  * group's `parts` array and stamped with the fold epoch.
  *
@@ -208,8 +222,7 @@ export const CompletedTurnContent = memo(function CompletedTurnContent({
   // has not been written yet, so applying it would withhold the toggle for the
   // whole stream and hand it over one beat before the turn ends. Folding a live
   // reply is then an explicit choice; the round settling re-applies the rule.
-  const foldable =
-    split.progress.length > 0 && (!completed || hasVisibleAnswer(split.answer))
+  const foldable = isFoldableReply(split, completed)
 
   const label = !completed
     ? t("working")

@@ -409,6 +409,10 @@
         "title": "Abrir búsqueda",
         "description": "Muestra u oculta el panel de búsqueda de conversaciones"
       },
+      "find_in_conversation": {
+        "title": "Buscar en la conversación",
+        "description": "Busca texto en los mensajes de la conversación abierta"
+      },
       "toggle_sidebar": {
         "title": "Alternar barra lateral izquierda",
         "description": "Muestra u oculta la barra lateral de lista de conversaciones"
@@ -3444,7 +3448,13 @@
         "completedAt": "Completado a las",
         "jumpToPreviousUserMessage": "Ir al mensaje del usuario",
         "showMore": "Mostrar más",
-        "showLess": "Mostrar menos"
+        "showLess": "Mostrar menos",
+        "findPlaceholder": "Buscar en la conversación",
+        "findMatchOf": "{index} de {count}",
+        "findNoResults": "Sin coincidencias",
+        "findPrev": "Anterior",
+        "findNext": "Siguiente",
+        "findClose": "Cerrar búsqueda"
       },
       "liveTurnStats": {
         "thinking": "Pensando...",

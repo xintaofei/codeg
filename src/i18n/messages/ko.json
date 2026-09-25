@@ -409,6 +409,10 @@
         "title": "검색 열기",
         "description": "대화 검색 패널을 표시하거나 숨깁니다"
       },
+      "find_in_conversation": {
+        "title": "대화에서 찾기",
+        "description": "열려 있는 대화의 메시지에서 텍스트를 찾습니다"
+      },
       "toggle_sidebar": {
         "title": "왼쪽 사이드바 전환",
         "description": "대화 목록 사이드바를 표시하거나 숨깁니다"
@@ -3444,7 +3448,13 @@
         "completedAt": "완료 시각",
         "jumpToPreviousUserMessage": "이전 사용자 메시지로 이동",
         "showMore": "더보기",
-        "showLess": "접기"
+        "showLess": "접기",
+        "findPlaceholder": "대화에서 찾기",
+        "findMatchOf": "{index} / {count}",
+        "findNoResults": "일치 항목 없음",
+        "findPrev": "이전 찾기",
+        "findNext": "다음 찾기",
+        "findClose": "찾기 닫기"
       },
       "liveTurnStats": {
         "thinking": "생각 중...",

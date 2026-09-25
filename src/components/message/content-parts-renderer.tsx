@@ -2250,15 +2250,20 @@ const TextPart = memo(function TextPart({
   isUser?: boolean
   isStreaming?: boolean
 }) {
+  // `data-find-text` marks message prose for find-in-chat, which searches only
+  // inside these (never tool cards, stats or other chrome).
   if (isUser) {
     return (
-      <div className="break-words text-sm">
+      <div className="break-words text-sm" data-find-text="">
         <PlainTextWithBadges text={text} />
       </div>
     )
   }
   return (
-    <div className='break-words text-sm prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside [&_[data-streamdown="code-block-body"]]:max-h-96 [&_[data-streamdown="code-block-body"]]:overflow-auto'>
+    <div
+      className='break-words text-sm prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside [&_[data-streamdown="code-block-body"]]:max-h-96 [&_[data-streamdown="code-block-body"]]:overflow-auto'
+      data-find-text=""
+    >
       <MessageResponse
         mode={isStreaming ? "streaming" : "static"}
         parseIncompleteMarkdown={isStreaming}

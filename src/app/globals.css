@@ -2988,3 +2988,8 @@ div.monaco-diff-editor.side-by-side .editor.modified {
     transform: translateX(300%);
   }
 }
+
+/* Find-in-chat's ::highlight() layers are injected at runtime by
+   useFindHighlights (src/components/message/find-in-chat.tsx): Lightning CSS,
+   which processes this file at build time, does not recognise the
+   pseudo-element, so the stylesheet never carries them. */
