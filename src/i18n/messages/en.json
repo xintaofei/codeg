@@ -2164,6 +2164,7 @@
         "contextWindow": "Context Window",
         "usedMax": "Used / Max",
         "tokenUsage": "Token Usage",
+        "tokenUnitShort": "tok",
         "input": "Input",
         "output": "Output",
         "cacheRead": "Cache Read",
