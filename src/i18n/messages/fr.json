@@ -723,11 +723,13 @@
     "configManagement": "Gestion de configuration",
     "envVars": "Variables d'environnement",
     "adapterChannel": {
-      "label": "Version de l'adaptateur",
-      "description": "Installer et Mettre à niveau utilisent la version examinée et épinglée par codeg. Avec Dernière, c'est la version npm la plus récente du paquet qui est installée ; si cette installation échoue, codeg revient à la version épinglée et l'indique dans le journal d'installation.",
+      "label": "Mises à jour",
+      "description": "Choisissez comment mettre à jour les versions de l’agent. Les modèles et commandes viennent de l’agent connecté.",
       "pinned": "Épinglée (recommandée)",
       "latest": "Dernière (non examinée)",
-      "latestWarning": "Les versions les plus récentes ne sont pas examinées et peuvent casser cet agent dans codeg ; il arrive même qu'une version soit connue pour être défectueuse. Le statut de version affiche ce qui est réellement installé."
+      "latestWarning": "Les versions les plus récentes ne sont pas examinées et peuvent casser cet agent dans codeg ; il arrive même qu'une version soit connue pour être défectueuse. Le statut de version affiche ce qui est réellement installé.",
+      "automatic": "Automatique (dernière)",
+      "automaticDescription": "Maintenir cet agent et ses environnements compatibles à jour pour les nouvelles connexions. Les discussions en cours conservent leur version."
     },
     "hostTools": {
       "label": "Laisser l'agent gérer les fichiers et les commandes",
@@ -1502,7 +1504,8 @@
       "upgradeAvailable": "{versionText}. Mise à niveau disponible.",
       "remoteUnavailable": "{versionText}. La version distante est actuellement indisponible.",
       "latest": "{versionText}. Déjà à jour.",
-      "latestChannel": "{versionText}. Le canal Dernière est actif ; Mettre à niveau installe la version la plus récente."
+      "latestChannel": "{versionText}. Le canal Dernière est actif ; Mettre à niveau installe la version la plus récente.",
+      "automaticChannel": "{versionText}. Maintenir cet agent et ses environnements compatibles à jour pour les nouvelles connexions. Les discussions en cours conservent leur version."
     },
     "adapter": {
       "label": "Adaptateur ACP",

@@ -723,11 +723,13 @@
     "configManagement": "Config Management",
     "envVars": "Environment Variables",
     "adapterChannel": {
-      "label": "Adapter version",
-      "description": "Install and Upgrade use the version codeg has reviewed and pinned. Latest switches them to the package's newest npm release at that moment; if installing it fails, codeg falls back to the pinned version and notes it in the install log.",
+      "label": "Updates",
+      "description": "Choose how agent versions are updated. Models and controls come from the connected agent.",
       "pinned": "Pinned (recommended)",
       "latest": "Latest (unreviewed)",
-      "latestWarning": "Newest releases are unreviewed and can break this agent in codeg, and occasionally a release is known broken. Version Status shows what is actually installed."
+      "latestWarning": "Newest releases are unreviewed and can break this agent in codeg, and occasionally a release is known broken. Version Status shows what is actually installed.",
+      "automatic": "Automatic (latest)",
+      "automaticDescription": "Keep this agent and its supported runtimes up to date for new connections. Running chats keep their current version."
     },
     "hostTools": {
       "label": "Let the agent handle files and commands",
@@ -1502,7 +1504,8 @@
       "upgradeAvailable": "{versionText}. Upgrade available.",
       "remoteUnavailable": "{versionText}. Remote version is currently unavailable.",
       "latest": "{versionText}. Already latest.",
-      "latestChannel": "{versionText}. Latest channel is on; Upgrade installs the newest release."
+      "latestChannel": "{versionText}. Latest channel is on; Upgrade installs the newest release.",
+      "automaticChannel": "{versionText}. Keep this agent and its supported runtimes up to date for new connections. Running chats keep their current version."
     },
     "adapter": {
       "label": "ACP adapter",

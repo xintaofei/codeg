@@ -554,14 +554,14 @@ export function setHostToolsAgentMode(
  * Per-agent `env_json` key that opts an npx agent into installing the
  * package's `latest` npm dist-tag instead of the maintainer-reviewed pin.
  * Same storage as pi's runtime override and the host-tools knob above. The
- * backend reads it at install/upgrade time only: a launch always runs whatever
- * is installed, nothing polls npm in the background, and a failed latest
- * install falls back to the pinned version with a note in the install log.
+ * The manual `latest` channel resolves at Install/Upgrade time. `automatic`
+ * opts every distribution into managed release checks on new connections;
+ * running sessions keep their existing process and model choices.
  */
 const ADAPTER_CHANNEL_ENV = "CODEG_ADAPTER_CHANNEL"
 const ADAPTER_CHANNEL_LATEST = "latest"
 
-export type AdapterChannel = "pinned" | "latest"
+export type AdapterChannel = "pinned" | "latest" | "automatic"
 
 /**
  * Which adapter channel an env draft selects. Anything other than the exact
@@ -569,18 +569,16 @@ export type AdapterChannel = "pinned" | "latest"
  * (`adapter_channel_is_latest`), which treats the pin as the only default.
  */
 export function adapterChannelFromEnvText(envText: string): AdapterChannel {
-  return parseEnvText(envText)[ADAPTER_CHANNEL_ENV]?.trim() ===
-    ADAPTER_CHANNEL_LATEST
-    ? "latest"
-    : "pinned"
+  return adapterChannelFromEnv(parseEnvText(envText))
 }
 
 /** [`adapterChannelFromEnvText`] over the saved env map the backend reports. */
 export function adapterChannelFromEnv(
   env: Record<string, string>
 ): AdapterChannel {
-  return env[ADAPTER_CHANNEL_ENV]?.trim() === ADAPTER_CHANNEL_LATEST
-    ? "latest"
+  const value = env[ADAPTER_CHANNEL_ENV]?.trim()
+  return value === "automatic" || value === ADAPTER_CHANNEL_LATEST
+    ? value
     : "pinned"
 }
 
@@ -595,8 +593,7 @@ export function setAdapterChannel(
   channel: AdapterChannel
 ): string {
   return patchEnvText(envText, {
-    [ADAPTER_CHANNEL_ENV]:
-      channel === "latest" ? ADAPTER_CHANNEL_LATEST : undefined,
+    [ADAPTER_CHANNEL_ENV]: channel === "pinned" ? undefined : channel,
   })
 }
 
@@ -4075,6 +4072,25 @@ export function buildVersionCheck(
   // Manual definitions stop here: installed is the whole story, and the
   // registry-comparison branches below would only manufacture "upgrade
   // available" noise against a user-typed version.
+  if (adapterChannelFromEnv(agent.env) === "automatic") {
+    return {
+      check_id: "version_status",
+      label: acpText("version.statusLabel", "Version Status"),
+      status: "pass",
+      message: acpText(
+        "version.automaticChannel",
+        "{versionText}. Automatic updates apply to new connections.",
+        { versionText }
+      ),
+      fixes: withCustomInstall([
+        {
+          label: acpText("actions.uninstall", "Uninstall"),
+          kind: uninstallAction,
+          payload: agent.agent_type,
+        },
+      ]),
+    }
+  }
   if (manualSource) {
     return {
       check_id: "version_status",
@@ -4932,6 +4948,21 @@ export function AcpAgentSettings() {
     [reseedAgentDraft]
   )
 
+  const pinCustomVersion = useCallback(
+    async (agent: AcpAgentInfo, version?: string) => {
+      if (!version?.trim() || adapterChannelFromEnv(agent.env) !== "automatic")
+        return
+      await persistEnv(
+        agent.agent_type,
+        agent.enabled,
+        setAdapterChannel(buildAgentDraft(agent).envText, "pinned"),
+        agent.model_provider_id,
+        { [ADAPTER_CHANNEL_ENV]: undefined }
+      )
+    },
+    [persistEnv]
+  )
+
   const runBinaryAction = useCallback(
     async (
       agent: AcpAgentInfo,
@@ -4967,6 +4998,7 @@ export function AcpAgentSettings() {
           taskId,
           versionOverride ?? null
         )
+        await pinCustomVersion(agent, versionOverride)
         await runPreflight(agent.agent_type)
         const detectedVersion = await acpDetectAgentLocalVersion(
           agent.agent_type
@@ -5031,7 +5063,7 @@ export function AcpAgentSettings() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [runPreflight, t, installStream.start]
+    [runPreflight, t, installStream.start, pinCustomVersion]
   )
 
   const runNpxAction = useCallback(
@@ -5070,6 +5102,7 @@ export function AcpAgentSettings() {
           cleanFirst,
           versionOverride ?? null
         )
+        await pinCustomVersion(agent, versionOverride)
         setAgents((prev) =>
           prev.map((item) =>
             item.agent_type === agent.agent_type
@@ -5144,7 +5177,7 @@ export function AcpAgentSettings() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [runPreflight, t, installStream.start]
+    [runPreflight, t, installStream.start, pinCustomVersion]
   )
 
   /**
@@ -8071,11 +8104,11 @@ export function AcpAgentSettings() {
                   </div>
                   {/*
                     Same contract as the host-tools switch above: backed by the
-                    `envText` draft, persisted by the one Save button. Npx
-                    agents only — a binary or uvx install has no npm dist-tag
-                    to track.
+                    `envText` draft, persisted by the one Save button.
+                    Automatic covers every distribution; manual npm Latest
+                    remains available only for npx agents.
                   */}
-                  {selectedAgent.distribution_type === "npx" && (
+                  {
                     <div className="flex items-start justify-between gap-3 rounded-md border bg-muted/10 p-3">
                       <div className="min-w-0 space-y-1">
                         <label className="text-xs font-medium">
@@ -8084,10 +8117,16 @@ export function AcpAgentSettings() {
                         <p className="text-2xs text-muted-foreground">
                           {t("adapterChannel.description")}
                         </p>
-                        {adapterChannelFromEnvText(selectedDraft.envText) ===
-                          "latest" && (
+                        {adapterChannelFromEnvText(selectedDraft.envText) !==
+                          "pinned" && (
                           <p className="text-2xs text-yellow-600 dark:text-yellow-400">
                             {t("adapterChannel.latestWarning")}
+                          </p>
+                        )}
+                        {adapterChannelFromEnvText(selectedDraft.envText) ===
+                          "automatic" && (
+                          <p className="text-2xs text-muted-foreground">
+                            {t("adapterChannel.automaticDescription")}
                           </p>
                         )}
                       </div>
@@ -8098,7 +8137,11 @@ export function AcpAgentSettings() {
                             ...current,
                             envText: setAdapterChannel(
                               current.envText,
-                              value === "latest" ? "latest" : "pinned"
+                              value === "automatic"
+                                ? "automatic"
+                                : value === "latest"
+                                  ? "latest"
+                                  : "pinned"
                             ),
                           }))
                         }}
@@ -8114,13 +8157,18 @@ export function AcpAgentSettings() {
                           <SelectItem value="pinned">
                             {t("adapterChannel.pinned")}
                           </SelectItem>
-                          <SelectItem value="latest">
-                            {t("adapterChannel.latest")}
+                          {selectedAgent.distribution_type === "npx" && (
+                            <SelectItem value="latest">
+                              {t("adapterChannel.latest")}
+                            </SelectItem>
+                          )}
+                          <SelectItem value="automatic">
+                            {t("adapterChannel.automatic")}
                           </SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
-                  )}
+                  }
                   <div className="flex justify-end">
                     <Button
                       size="sm"

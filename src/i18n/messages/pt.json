@@ -723,11 +723,13 @@
     "configManagement": "Gerenciamento de configuração",
     "envVars": "Variáveis de ambiente",
     "adapterChannel": {
-      "label": "Versão do adaptador",
-      "description": "Instalar e Atualizar usam a versão que o codeg revisou e fixou. Com Mais recente, passa a ser instalada a versão de npm mais nova do pacote naquele momento; se essa instalação falhar, o codeg volta para a versão fixada e registra isso no log de instalação.",
+      "label": "Atualizações",
+      "description": "Escolha como atualizar as versões do agente. Os modelos e controles vêm do agente conectado.",
       "pinned": "Fixada (recomendada)",
       "latest": "Mais recente (não revisada)",
-      "latestWarning": "As versões mais novas não são revisadas e podem quebrar este agente no codeg; às vezes uma versão é até sabidamente defeituosa. O status da versão mostra o que foi realmente instalado."
+      "latestWarning": "As versões mais novas não são revisadas e podem quebrar este agente no codeg; às vezes uma versão é até sabidamente defeituosa. O status da versão mostra o que foi realmente instalado.",
+      "automatic": "Automático (mais recente)",
+      "automaticDescription": "Mantenha este agente e seus ambientes compatíveis atualizados para novas conexões. As conversas em andamento mantêm sua versão."
     },
     "hostTools": {
       "label": "Deixar o agente cuidar de arquivos e comandos",
@@ -1502,7 +1504,8 @@
       "upgradeAvailable": "{versionText}. Atualização disponível.",
       "remoteUnavailable": "{versionText}. A versão remota está indisponível no momento.",
       "latest": "{versionText}. Já está na versão mais recente.",
-      "latestChannel": "{versionText}. Canal de versão mais recente ativo; Atualizar instala a versão mais nova."
+      "latestChannel": "{versionText}. Canal de versão mais recente ativo; Atualizar instala a versão mais nova.",
+      "automaticChannel": "{versionText}. Mantenha este agente e seus ambientes compatíveis atualizados para novas conexões. As conversas em andamento mantêm sua versão."
     },
     "adapter": {
       "label": "Adaptador ACP",

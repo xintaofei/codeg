@@ -723,11 +723,13 @@
     "configManagement": "配置管理",
     "envVars": "環境變數",
     "adapterChannel": {
-      "label": "轉接器版本",
-      "description": "安裝與升級預設使用 codeg 審查並固定的版本。選擇最新版後會改為安裝該套件當時最新的 npm 版本；若最新版安裝失敗，codeg 會回退到固定版本，並在安裝日誌中說明。",
+      "label": "更新",
+      "description": "選擇代理版本的更新方式。模型和控制項由連線的代理提供。",
       "pinned": "固定版本（建議）",
       "latest": "最新版（未經審查）",
-      "latestWarning": "最新版本未經審查，可能破壞該 Agent 在 codeg 中的使用，偶爾甚至是已知損壞的版本。實際安裝的版本以版本狀態為準。"
+      "latestWarning": "最新版本未經審查，可能破壞該 Agent 在 codeg 中的使用，偶爾甚至是已知損壞的版本。實際安裝的版本以版本狀態為準。",
+      "automatic": "自動更新（最新版本）",
+      "automaticDescription": "為新連線更新此代理及其支援的執行階段。執行中的聊天保留目前版本。"
     },
     "hostTools": {
       "label": "由 Agent 自行處理檔案與指令",
@@ -1502,7 +1504,8 @@
       "upgradeAvailable": "{versionText}。發現可升級版本。",
       "remoteUnavailable": "{versionText}。遠端版本暫不可用。",
       "latest": "{versionText}。已是最新版本。",
-      "latestChannel": "{versionText}。已啟用最新版通道；升級會安裝最新版本。"
+      "latestChannel": "{versionText}。已啟用最新版通道；升級會安裝最新版本。",
+      "automaticChannel": "{versionText}. 為新連線更新此代理及其支援的執行階段。執行中的聊天保留目前版本。"
     },
     "adapter": {
       "label": "ACP 轉接器",

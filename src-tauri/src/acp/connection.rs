@@ -1797,6 +1797,10 @@ async fn build_agent(
     }
     let meta = registry::get_agent_meta(agent_type);
     debug_assert_eq!(meta.agent_type, agent_type);
+    // Explicit Automatic mode stages exact releases in separate caches. Every
+    // caller reaches this boundary, including web sessions and extra accounts.
+    // Existing agent processes are never replaced or reconnected here.
+    let managed = crate::acp::managed_updates::resolve(agent_type, runtime_env).await;
 
     let agent = match meta.distribution {
         AgentDistribution::Npx { cmd, args, env, .. } => {
@@ -1805,8 +1809,10 @@ async fn build_agent(
             // resolvable, rather than letting pi-acp die mid-connection on a raw
             // ENOENT that surfaces as an opaque protocol error.
             if agent_type == AgentType::Pi {
-                if let Some(message) = pi_launch_preflight(runtime_env) {
-                    return Err(AcpError::SdkNotInstalled(message));
+                if managed.is_none() {
+                    if let Some(message) = pi_launch_preflight(runtime_env) {
+                        return Err(AcpError::SdkNotInstalled(message));
+                    }
                 }
                 // NOTE: codeg deliberately does NOT touch pi's `trust.json` here.
                 // It used to mark this workspace trusted on every launch, which
@@ -1859,16 +1865,21 @@ async fn build_agent(
             for (k, v) in &merged_env {
                 parts.push(format!("{k}={v}"));
             }
-            parts.push(
-                crate::commands::acp::resolve_npx_command(cmd)
-                    .await
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| {
-                        crate::process::normalized_program(cmd)
-                            .to_string_lossy()
-                            .to_string()
-                    }),
-            );
+            if let Some(crate::acp::managed_updates::Launch::Npx { program, args }) = &managed {
+                parts.push(program.to_string_lossy().into_owned());
+                parts.extend(args.iter().cloned());
+            } else {
+                parts.push(
+                    crate::commands::acp::resolve_npx_command(cmd)
+                        .await
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| {
+                            crate::process::normalized_program(cmd)
+                                .to_string_lossy()
+                                .to_string()
+                        }),
+                );
+            }
             // Grok's root-level launch flags go BEFORE its `agent stdio`
             // subcommand (which rejects them):
             //  - `--no-auto-update`: codeg owns the pinned version, so suppress the
@@ -1948,7 +1959,7 @@ async fn build_agent(
                     ))
                 })?;
 
-            // Session-page connect must never trigger a download. Use
+            // Outside explicit Automatic mode, connect never downloads. Use
             // the best cached version available (tolerates users on
             // older-but-still-working binaries); return SdkNotInstalled
             // only when nothing is cached, so the frontend can prompt
@@ -1964,8 +1975,11 @@ async fn build_agent(
             // verbatim by the frontend catch block in
             // `src/contexts/acp-connections-context.tsx` to surface a
             // localized install prompt. Do not change the wording.
-            let cached =
-                crate::acp::binary_cache::find_best_cached_binary_for_agent(agent_type, cmd)?;
+            let cached = match &managed {
+                Some(crate::acp::managed_updates::Launch::Binary { path, version }) =>
+                    Some((path.clone(), version.clone())),
+                _ => crate::acp::binary_cache::find_best_cached_binary_for_agent(agent_type, cmd)?,
+            };
             let binary_path = match cached {
                 Some((path, cached_version)) => {
                     if cached_version == registry_version {
@@ -2128,7 +2142,10 @@ async fn build_agent(
                 parts.push(uvx_path.to_string_lossy().to_string());
                 parts.extend(crate::commands::acp::uvx_python_args(python));
                 parts.push("--from".into());
-                parts.push(package.to_string());
+                parts.push(match &managed {
+                    Some(crate::acp::managed_updates::Launch::Uvx { package }) => package.clone(),
+                    _ => package.to_string(),
+                });
                 parts.push(cmd.to_string());
                 for a in args {
                     parts.push((*a).into());

@@ -723,11 +723,13 @@
     "configManagement": "Konfigurationsverwaltung",
     "envVars": "Umgebungsvariablen",
     "adapterChannel": {
-      "label": "Adapter-Version",
-      "description": "Installieren und Aktualisieren verwenden die von codeg geprüfte und angepinnte Version. Mit Neueste wird stattdessen die jeweils neueste npm-Version des Pakets installiert; schlägt das fehl, fällt codeg auf die angepinnte Version zurück und vermerkt es im Installationsprotokoll.",
+      "label": "Updates",
+      "description": "Wähle, wie Agentenversionen aktualisiert werden. Modelle und Optionen kommen vom verbundenen Agenten.",
       "pinned": "Angepinnt (empfohlen)",
       "latest": "Neueste (ungeprüft)",
-      "latestWarning": "Die neuesten Versionen sind ungeprüft und können diesen Agenten in codeg beschädigen; gelegentlich ist eine Version sogar bekanntermaßen defekt. Der Versionsstatus zeigt, was tatsächlich installiert ist."
+      "latestWarning": "Die neuesten Versionen sind ungeprüft und können diesen Agenten in codeg beschädigen; gelegentlich ist eine Version sogar bekanntermaßen defekt. Der Versionsstatus zeigt, was tatsächlich installiert ist.",
+      "automatic": "Automatisch (neueste)",
+      "automaticDescription": "Diesen Agenten und seine unterstützten Laufzeitumgebungen für neue Verbindungen aktuell halten. Laufende Chats behalten ihre Version."
     },
     "hostTools": {
       "label": "Dateien und Befehle vom Agenten selbst ausführen lassen",
@@ -1502,7 +1504,8 @@
       "upgradeAvailable": "{versionText}. Upgrade verfügbar.",
       "remoteUnavailable": "{versionText}. Remote-Version ist derzeit nicht verfügbar.",
       "latest": "{versionText}. Bereits aktuell.",
-      "latestChannel": "{versionText}. Neueste-Kanal ist aktiv; Aktualisieren installiert die neueste Version."
+      "latestChannel": "{versionText}. Neueste-Kanal ist aktiv; Aktualisieren installiert die neueste Version.",
+      "automaticChannel": "{versionText}. Diesen Agenten und seine unterstützten Laufzeitumgebungen für neue Verbindungen aktuell halten. Laufende Chats behalten ihre Version."
     },
     "adapter": {
       "label": "ACP-Adapter",

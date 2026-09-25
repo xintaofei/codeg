@@ -851,6 +851,26 @@ describe("buildVersionCheck", () => {
     expect(check?.fixes.some((fix) => fix.kind === "uninstall_npx")).toBe(true)
   })
 
+  it.each(["npx", "binary", "uvx"])(
+    "supports Automatic for %s without claiming a completed release check",
+    (distribution_type) => {
+      const check = buildVersionCheck(
+        makeAgent({
+          distribution_type,
+          installed_version: "1.0.0",
+          registry_version: "2.0.0",
+          env: { CODEG_ADAPTER_CHANNEL: "automatic" },
+        })
+      )
+      expect(check?.status).toBe("pass")
+      expect(check?.message).toContain("Automatic updates")
+      expect(check?.message).not.toContain("Already latest")
+      expect(check?.fixes.some((fix) => fix.kind.startsWith("upgrade"))).toBe(
+        false
+      )
+    }
+  )
+
   // The pinned default's pass state is byte-for-byte what it was before the
   // channel existed.
   it("leaves the pinned default's pass state unchanged", () => {
@@ -1837,6 +1857,19 @@ describe("host-tools toggle — hand the fs/terminal channels back to the agent"
 
 describe("adapter-channel control — opt into the latest adapter release", () => {
   const KEY = "CODEG_ADAPTER_CHANNEL"
+
+  it("round-trips automatic without changing runtime overrides or account isolation", () => {
+    const original =
+      "CLAUDE_CONFIG_DIR=/profiles/second\nCLAUDE_CODE_EXECUTABLE=/custom/claude"
+    const automatic = setAdapterChannel(original, "automatic")
+    expect(adapterChannelFromEnvText(automatic)).toBe("automatic")
+    expect(adapterChannelFromEnv({ [KEY]: "automatic" })).toBe("automatic")
+    expect(automatic).toContain("CLAUDE_CONFIG_DIR=/profiles/second")
+    expect(automatic).toContain("CLAUDE_CODE_EXECUTABLE=/custom/claude")
+    expect(
+      adapterChannelFromEnvText(setAdapterChannel(automatic, "pinned"))
+    ).toBe("pinned")
+  })
 
   it("defaults to pinned for an agent that has never touched the control", () => {
     expect(adapterChannelFromEnvText("")).toBe("pinned")

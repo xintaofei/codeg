@@ -723,11 +723,13 @@
     "configManagement": "Gestión de configuración",
     "envVars": "Variables de entorno",
     "adapterChannel": {
-      "label": "Versión del adaptador",
-      "description": "Instalar y Actualizar usan la versión que codeg ha revisado y fijado. Con Última pasan a instalar la versión de npm más reciente del paquete en ese momento; si esa instalación falla, codeg vuelve a la versión fijada y lo indica en el registro de instalación.",
+      "label": "Actualizaciones",
+      "description": "Elige cómo actualizar las versiones del agente. El agente conectado proporciona los modelos y controles.",
       "pinned": "Fijada (recomendada)",
       "latest": "Última (sin revisar)",
-      "latestWarning": "Las versiones más recientes no están revisadas y pueden romper este agente en codeg; en ocasiones incluso se sabe que una versión está rota. El estado de versión muestra lo que quedó instalado realmente."
+      "latestWarning": "Las versiones más recientes no están revisadas y pueden romper este agente en codeg; en ocasiones incluso se sabe que una versión está rota. El estado de versión muestra lo que quedó instalado realmente.",
+      "automatic": "Automático (última)",
+      "automaticDescription": "Mantén actualizados este agente y sus entornos compatibles para nuevas conexiones. Los chats en curso conservan su versión."
     },
     "hostTools": {
       "label": "Dejar que el agente gestione archivos y comandos",
@@ -1502,7 +1504,8 @@
       "upgradeAvailable": "{versionText}. Hay actualización disponible.",
       "remoteUnavailable": "{versionText}. La versión remota no está disponible por ahora.",
       "latest": "{versionText}. Ya está en la última versión.",
-      "latestChannel": "{versionText}. Canal de última versión activado; Actualizar instala la versión más reciente."
+      "latestChannel": "{versionText}. Canal de última versión activado; Actualizar instala la versión más reciente.",
+      "automaticChannel": "{versionText}. Mantén actualizados este agente y sus entornos compatibles para nuevas conexiones. Los chats en curso conservan su versión."
     },
     "adapter": {
       "label": "Adaptador ACP",

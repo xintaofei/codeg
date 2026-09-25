@@ -23,6 +23,7 @@ pub mod host_tools_policy;
 pub mod idle_sweep;
 pub mod internal_bus;
 pub mod lifecycle;
+pub mod managed_updates;
 pub mod manager;
 pub mod opencode_catalog;
 pub mod opencode_plugins;

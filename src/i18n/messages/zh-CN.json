@@ -723,11 +723,13 @@
     "configManagement": "配置管理",
     "envVars": "环境变量",
     "adapterChannel": {
-      "label": "适配器版本",
-      "description": "安装与升级默认使用 codeg 审查并固定的版本。选择最新版后会改为安装该包当时最新的 npm 版本；若最新版安装失败，codeg 会回退到固定版本，并在安装日志中说明。",
+      "label": "更新",
+      "description": "选择智能体版本的更新方式。模型和控件由连接的智能体提供。",
       "pinned": "固定版本（推荐）",
       "latest": "最新版（未经审查）",
-      "latestWarning": "最新版本未经审查，可能破坏该 Agent 在 codeg 中的使用，偶尔甚至是已知损坏的版本。实际安装的版本以版本状态为准。"
+      "latestWarning": "最新版本未经审查，可能破坏该 Agent 在 codeg 中的使用，偶尔甚至是已知损坏的版本。实际安装的版本以版本状态为准。",
+      "automatic": "自动更新（最新版本）",
+      "automaticDescription": "为新连接更新此智能体及其支持的运行时。正在运行的聊天保留当前版本。"
     },
     "hostTools": {
       "label": "由 Agent 自行处理文件与命令",
@@ -1502,7 +1504,8 @@
       "upgradeAvailable": "{versionText}。发现可升级版本。",
       "remoteUnavailable": "{versionText}。远程版本暂不可用。",
       "latest": "{versionText}。已是最新版本。",
-      "latestChannel": "{versionText}。已启用最新版通道；升级会安装最新版本。"
+      "latestChannel": "{versionText}。已启用最新版通道；升级会安装最新版本。",
+      "automaticChannel": "{versionText}. 为新连接更新此智能体及其支持的运行时。正在运行的聊天保留当前版本。"
     },
     "adapter": {
       "label": "ACP 适配器",
