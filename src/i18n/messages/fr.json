@@ -1552,7 +1552,8 @@
         "medium": "Moyen",
         "high": "Élevé",
         "minimal": "Minimal",
-        "xhigh": "Très élevé"
+        "xhigh": "Très élevé",
+        "max": "Maximum"
       },
       "apiKeyLabel": "Clé API",
       "apiKeyHint": "Enregistrée dans ~/.pi/agent/auth.json pour le fournisseur sélectionné.",
@@ -1566,7 +1567,9 @@
       "modeCustom": "pi personnalisé",
       "modeCustomHint": "Exécutez votre propre build, installation ou wrapper de pi.",
       "commandLabel": "Commande ou chemin pi",
-      "commandHint": "Un chemin absolu, un nom de commande dans le PATH, ou un script wrapper (par ex. ./pi-test.sh d'un monorepo).",
+      "commandHint": "Utilisez un chemin absolu ou un nom de commande dans PATH.",
+      "relativeCommandPath": "Utilisez un chemin absolu pour la commande Pi ou un nom de commande dans PATH.",
+      "relativeAgentDir": "Utilisez un répertoire agent Pi absolu ou ~/... ; un chemin relatif dépend du dossier de travail.",
       "commandNotFound": "Commande introuvable",
       "validate": "Valider",
       "advanced": "Avancé",
@@ -1607,7 +1610,9 @@
       "levelsEmptyError": "Choisissez au moins un niveau — sans aucun, pi retombe sur Off.",
       "wireValuesTitle": "Avancé : valeurs envoyées au fournisseur",
       "wireValuesHint": "Laissez vide pour envoyer le nom du niveau tel quel. Renseignez-le si votre endpoint attend autre chose — les backends façon Google veulent LOW / HIGH.",
-      "defaultLevelUnlisted": "Ce niveau n'est pas dans la liste ci-dessus — pi le ramènerait plus bas."
+      "defaultLevelUnlisted": "Ce niveau n'est pas dans la liste ci-dessus — pi le ramènerait plus bas.",
+      "capabilitiesUnverified": "Pi ne répertorie pas encore ce modèle. Enregistrez sa clé API, puis vérifiez les niveaux de réflexion disponibles.",
+      "runtimeTooOld": "pi-acp 0.0.34 nécessite Pi 0.81.0 ou une version ultérieure. Mettez Pi à jour avant de démarrer une session."
     },
     "addCustomAgent": "Ajouter un agent personnalisé",
     "addCustomAgentHint": "Enregistrez n'importe quel agent compatible ACP. Choisissez-en un dans le registre ACP public ou collez ses informations de registre.",

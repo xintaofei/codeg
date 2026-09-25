@@ -1552,7 +1552,8 @@
         "medium": "中",
         "high": "高",
         "minimal": "极低",
-        "xhigh": "极高"
+        "xhigh": "极高",
+        "max": "最高"
       },
       "apiKeyLabel": "API Key",
       "apiKeyHint": "为所选提供方写入 ~/.pi/agent/auth.json。",
@@ -1566,7 +1567,9 @@
       "modeCustom": "自定义 pi",
       "modeCustomHint": "运行你自己的 pi 构建、安装或包装脚本。",
       "commandLabel": "pi 命令或路径",
-      "commandHint": "绝对路径、PATH 上的命令名，或包装脚本（如 monorepo 的 ./pi-test.sh）。",
+      "commandHint": "请使用绝对路径或 PATH 中的命令名。",
+      "relativeCommandPath": "请使用 Pi 命令的绝对路径或 PATH 中的命令名。",
+      "relativeAgentDir": "请使用 Pi agent 目录的绝对路径或 ~/...；相对目录会因工作区不同而变化。",
       "commandNotFound": "未找到命令",
       "validate": "验证",
       "advanced": "高级",
@@ -1607,7 +1610,9 @@
       "levelsEmptyError": "至少选一个档位——一个都不选时 pi 只会退回 Off。",
       "wireValuesTitle": "高级：发给供应商的值",
       "wireValuesHint": "留空表示原样发送档位名。接入点需要别的写法时才填——Google 系需要 LOW / HIGH。",
-      "defaultLevelUnlisted": "该档位不在上面的可选列表里——pi 会把它压下来。"
+      "defaultLevelUnlisted": "该档位不在上面的可选列表里——pi 会把它压下来。",
+      "capabilitiesUnverified": "Pi 尚未列出此模型。保存其 API 密钥后，再确认可用的思考级别。",
+      "runtimeTooOld": "pi-acp 0.0.34 需要 Pi 0.81.0 或更新版本。请先更新 Pi，再启动会话。"
     },
     "addCustomAgent": "添加自定义智能体",
     "addCustomAgentHint": "接入任意兼容 ACP 的智能体。可从公开 ACP 注册表中选择，或直接粘贴其注册表信息。",

@@ -920,6 +920,10 @@ pub fn build_router(
             post(handlers::acp::acp_load_pi_config),
         )
         .route(
+            "/acp_list_pi_model_capabilities",
+            post(handlers::acp::acp_list_pi_model_capabilities),
+        )
+        .route(
             "/acp_load_deepseek_model_catalog",
             post(handlers::acp::acp_load_deepseek_model_catalog),
         )

@@ -1552,7 +1552,8 @@
         "medium": "Medium",
         "high": "High",
         "minimal": "Minimal",
-        "xhigh": "Extra high"
+        "xhigh": "Extra high",
+        "max": "Max"
       },
       "apiKeyLabel": "API Key",
       "apiKeyHint": "Stored in ~/.pi/agent/auth.json for the selected provider.",
@@ -1566,7 +1567,9 @@
       "modeCustom": "Custom pi",
       "modeCustomHint": "Run your own pi build, install, or wrapper.",
       "commandLabel": "pi command or path",
-      "commandHint": "An absolute path, a command name on PATH, or a wrapper script (e.g. a monorepo ./pi-test.sh).",
+      "commandHint": "Use an absolute path or a command name on PATH.",
+      "relativeCommandPath": "Use an absolute Pi command path or a command name on PATH.",
+      "relativeAgentDir": "Use an absolute Pi agent directory or ~/...; relative directories differ between workspaces.",
       "commandNotFound": "Command not found",
       "validate": "Validate",
       "advanced": "Advanced",
@@ -1607,7 +1610,9 @@
       "levelsEmptyError": "Pick at least one level — with none, pi falls back to Off.",
       "wireValuesTitle": "Advanced: values sent to the provider",
       "wireValuesHint": "Leave blank to send the level name as-is. Set one when your endpoint expects something else — Google-style backends want LOW / HIGH.",
-      "defaultLevelUnlisted": "This level isn't in the available list above — pi would clamp it."
+      "defaultLevelUnlisted": "This level isn't in the available list above — pi would clamp it.",
+      "capabilitiesUnverified": "Pi has not listed this model yet. Save its API key, then verify available thinking levels.",
+      "runtimeTooOld": "pi-acp 0.0.34 requires Pi 0.81.0 or newer. Update this Pi runtime before starting a session."
     },
     "addCustomAgent": "Add custom agent",
     "addCustomAgentHint": "Register any ACP-compatible agent. Pick one from the public ACP registry, or paste its registry information.",

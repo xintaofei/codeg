@@ -1428,35 +1428,70 @@ fn codex_app_server_log_dir() -> Option<String> {
     Some(dir.to_string_lossy().into_owned())
 }
 
-/// Pi runs through pi-acp, which spawns the actual `pi` binary at runtime. If
-/// `pi` (or the BYO-pi `PI_ACP_PI_COMMAND` override) isn't resolvable, pi-acp
-/// dies mid-connection with a raw ENOENT. This preflight resolves the effective
-/// command up front against the same `PATH` the child inherits and returns a
-/// clear message when it can't be found; `None` means launch may proceed.
+/// pi-acp 0.0.34 requires Pi >=0.81.0. Resolve the same default/BYO command
+/// used by the adapter and ask that runtime for its version before connection.
+/// Unknown versions are allowed for compatibility; the adapter remains the
+/// authority when a custom build does not report a parseable semver.
 ///
-/// The message contains the literal substring "is not installed", which the
-/// frontend matches to show the localized SDK-missing prompt with an "Open Agent
-/// Settings" action (see `src/contexts/acp-connections-context.tsx`). Do not
-/// change that substring.
-fn pi_launch_preflight(runtime_env: &BTreeMap<String, String>) -> Option<String> {
+/// The message contains "is not installed" so the frontend displays the
+/// existing actionable SDK/install prompt instead of a protocol error.
+async fn pi_launch_preflight(runtime_env: &BTreeMap<String, String>) -> Option<String> {
+    use std::process::Stdio;
+
     let custom = runtime_env
         .get("PI_ACP_PI_COMMAND")
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
     let command = custom.unwrap_or("pi");
-    if crate::commands::acp::resolve_pi_command_path(command).is_some() {
-        return None;
+    let Some(program) =
+        crate::commands::acp::resolve_pi_command_path_with_env(command, runtime_env)
+    else {
+        return Some(match custom {
+            Some(cmd) => format!(
+                "Pi is not installed: the custom pi command \"{cmd}\" was not found. \
+                 Update it in Agent Settings → Pi → Runtime."
+            ),
+            None => "Pi is not installed. Install it with: \
+                     npm install -g @earendil-works/pi-coding-agent \
+                     (or set a custom pi command in Agent Settings → Pi → Runtime)."
+                .to_string(),
+        });
+    };
+
+    let mut probe = crate::process::tokio_command(program);
+    probe
+        .arg("--version")
+        .envs(runtime_env)
+        .current_dir(std::env::temp_dir())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let probe_result =
+        tokio::time::timeout(std::time::Duration::from_secs(4), probe.output()).await;
+    let version = match probe_result {
+        Ok(Ok(output)) if output.status.success() => {
+            let first = String::from_utf8_lossy(&output.stdout);
+            first
+                .lines()
+                .next()
+                .and_then(|line| semver::Version::parse(line.trim()).ok())
+        }
+        _ => None,
+    };
+    if version
+        .as_ref()
+        .is_some_and(|version| version < &semver::Version::new(0, 81, 0))
+    {
+        let found = version.unwrap();
+        return Some(format!(
+            "Pi is not installed at a compatible version (found {found}). \
+             pi-acp 0.0.34 requires Pi 0.81.0 or newer. Update Pi with \
+             npm install -g @earendil-works/pi-coding-agent, or choose a newer \
+             custom command in Agent Settings → Pi → Runtime."
+        ));
     }
-    Some(match custom {
-        Some(cmd) => format!(
-            "Pi is not installed: the custom pi command \"{cmd}\" was not found. \
-             Update it in Agent Settings → Pi → Runtime."
-        ),
-        None => "Pi is not installed. Install it with: \
-                 npm install -g @earendil-works/pi-coding-agent \
-                 (or set a custom pi command in Agent Settings → Pi → Runtime)."
-            .to_string(),
-    })
+    None
 }
 
 /// Transcript directory for an agent that codeg must record itself, or `None`
@@ -1805,7 +1840,7 @@ async fn build_agent(
             // resolvable, rather than letting pi-acp die mid-connection on a raw
             // ENOENT that surfaces as an opaque protocol error.
             if agent_type == AgentType::Pi {
-                if let Some(message) = pi_launch_preflight(runtime_env) {
+                if let Some(message) = pi_launch_preflight(runtime_env).await {
                     return Err(AcpError::SdkNotInstalled(message));
                 }
                 // NOTE: codeg deliberately does NOT touch pi's `trust.json` here.
@@ -19220,22 +19255,113 @@ mod tests {
         assert!(serialize_tool_call_content(&content, false).is_none());
     }
 
-    #[test]
-    fn pi_preflight_flags_missing_custom_command() {
+    #[tokio::test]
+    async fn pi_preflight_flags_missing_custom_command() {
         let mut env = BTreeMap::new();
         env.insert(
             "PI_ACP_PI_COMMAND".to_string(),
             "/nonexistent/definitely-not-pi-xyz".to_string(),
         );
-        let msg =
-            pi_launch_preflight(&env).expect("an unresolvable custom pi command must be flagged");
+        let msg = pi_launch_preflight(&env)
+            .await
+            .expect("an unresolvable custom pi command must be flagged");
         // Frontend invariant: routes to the localized SDK-missing install prompt.
         assert!(msg.contains("is not installed"), "got: {msg}");
         assert!(msg.contains("definitely-not-pi-xyz"), "got: {msg}");
     }
 
-    #[test]
-    fn pi_preflight_accepts_resolvable_custom_command() {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pi_preflight_rejects_a_resolvable_old_custom_runtime() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("old pi");
+        std::fs::write(&script, "#!/bin/sh\necho 0.80.9\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut env = BTreeMap::new();
+        env.insert(
+            "PI_ACP_PI_COMMAND".into(),
+            script.to_string_lossy().into_owned(),
+        );
+        let message = pi_launch_preflight(&env)
+            .await
+            .expect("pi-acp 0.0.34 cannot launch old Pi");
+        assert!(message.contains("is not installed"));
+        assert!(message.contains("0.81.0"));
+        assert!(message.contains("Agent Settings"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pi_preflight_probes_the_default_command_on_the_launch_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("pi");
+        std::fs::write(&script, "#!/bin/sh\necho 0.80.9\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut env = BTreeMap::new();
+        env.insert("PATH".into(), temp.path().to_string_lossy().into_owned());
+        let message = pi_launch_preflight(&env).await.expect("default Pi is too old");
+        assert!(message.contains("0.81.0"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pi_preflight_accepts_minimum_and_unknown_custom_versions() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("custom pi");
+        let mut env = BTreeMap::new();
+        env.insert(
+            "PI_ACP_PI_COMMAND".into(),
+            script.to_string_lossy().into_owned(),
+        );
+        for version in ["0.81.0", "custom-build"] {
+            std::fs::write(&script, format!("#!/bin/sh\necho {version}\n")).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(pi_launch_preflight(&env).await.is_none(), "version {version}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pi_preflight_bounds_a_hung_version_probe() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("hung pi");
+        std::fs::write(&script, "#!/bin/sh\nwhile :; do :; done\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut env = BTreeMap::new();
+        env.insert(
+            "PI_ACP_PI_COMMAND".into(),
+            script.to_string_lossy().into_owned(),
+        );
+        let start = std::time::Instant::now();
+        assert!(pi_launch_preflight(&env).await.is_none());
+        assert!(start.elapsed() < std::time::Duration::from_secs(8));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn pi_preflight_reads_a_cmd_runtime_under_a_path_with_spaces() {
+        let temp = tempfile::tempdir().unwrap();
+        let command_dir = temp.path().join("Pi runtime with spaces");
+        std::fs::create_dir(&command_dir).unwrap();
+        let script = command_dir.join("pi.cmd");
+        std::fs::write(&script, "@echo off\r\necho 0.80.9\r\n").unwrap();
+        let mut env = BTreeMap::new();
+        env.insert(
+            "PI_ACP_PI_COMMAND".into(),
+            script.to_string_lossy().into_owned(),
+        );
+        let message = pi_launch_preflight(&env)
+            .await
+            .expect("old Windows Pi must be rejected");
+        assert!(message.contains("0.81.0"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn pi_preflight_accepts_resolvable_custom_command() {
         // A binary we know exists and is executable on this platform — proves the
         // preflight clears (returns None) for a resolvable PI_ACP_PI_COMMAND.
         let existing = if cfg!(windows) {
@@ -19245,7 +19371,7 @@ mod tests {
         };
         let mut env = BTreeMap::new();
         env.insert("PI_ACP_PI_COMMAND".to_string(), existing.to_string());
-        assert!(pi_launch_preflight(&env).is_none());
+        assert!(pi_launch_preflight(&env).await.is_none());
     }
 
     #[test]

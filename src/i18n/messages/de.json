@@ -1552,7 +1552,8 @@
         "medium": "Mittel",
         "high": "Hoch",
         "minimal": "Minimal",
-        "xhigh": "Sehr hoch"
+        "xhigh": "Sehr hoch",
+        "max": "Maximum"
       },
       "apiKeyLabel": "API-Schlüssel",
       "apiKeyHint": "Wird in ~/.pi/agent/auth.json für den ausgewählten Anbieter gespeichert.",
@@ -1566,7 +1567,9 @@
       "modeCustom": "Eigenes pi",
       "modeCustomHint": "Führe deinen eigenen pi-Build, deine Installation oder einen Wrapper aus.",
       "commandLabel": "pi-Befehl oder -Pfad",
-      "commandHint": "Ein absoluter Pfad, ein Befehlsname im PATH oder ein Wrapper-Skript (z. B. ./pi-test.sh eines Monorepos).",
+      "commandHint": "Verwende einen absoluten Pfad oder einen Befehlsnamen aus PATH.",
+      "relativeCommandPath": "Verwende einen absoluten Pi-Befehlspfad oder einen Befehlsnamen aus PATH.",
+      "relativeAgentDir": "Verwende ein absolutes Pi-Agent-Verzeichnis oder ~/...; relative Pfade hängen vom Arbeitsverzeichnis ab.",
       "commandNotFound": "Befehl nicht gefunden",
       "validate": "Prüfen",
       "advanced": "Erweitert",
@@ -1607,7 +1610,9 @@
       "levelsEmptyError": "Wähle mindestens eine Stufe — ohne eine fällt pi auf Off zurück.",
       "wireValuesTitle": "Erweitert: an den Anbieter gesendete Werte",
       "wireValuesHint": "Leer lassen, um den Stufennamen unverändert zu senden. Setze einen Wert, wenn dein Endpunkt etwas anderes erwartet — Google-artige Backends erwarten LOW / HIGH.",
-      "defaultLevelUnlisted": "Diese Stufe steht nicht in der Liste oben — pi würde sie begrenzen."
+      "defaultLevelUnlisted": "Diese Stufe steht nicht in der Liste oben — pi würde sie begrenzen.",
+      "capabilitiesUnverified": "Pi hat dieses Modell noch nicht aufgelistet. Speichere den API-Schlüssel und prüfe dann die verfügbaren Denkstufen.",
+      "runtimeTooOld": "pi-acp 0.0.34 benötigt Pi 0.81.0 oder neuer. Aktualisiere Pi, bevor du eine Sitzung startest."
     },
     "addCustomAgent": "Eigenen Agenten hinzufügen",
     "addCustomAgentHint": "Registriere jeden ACP-kompatiblen Agenten. Wähle einen aus der öffentlichen ACP-Registry oder füge seine Registry-Informationen ein.",

@@ -1552,7 +1552,8 @@
         "medium": "Médio",
         "high": "Alto",
         "minimal": "Mínimo",
-        "xhigh": "Muito alto"
+        "xhigh": "Muito alto",
+        "max": "Máximo"
       },
       "apiKeyLabel": "Chave de API",
       "apiKeyHint": "Gravada em ~/.pi/agent/auth.json para o provedor selecionado.",
@@ -1566,7 +1567,9 @@
       "modeCustom": "pi personalizado",
       "modeCustomHint": "Execute sua própria build, instalação ou wrapper do pi.",
       "commandLabel": "Comando ou caminho do pi",
-      "commandHint": "Um caminho absoluto, um nome de comando no PATH ou um script wrapper (ex.: ./pi-test.sh de um monorepo).",
+      "commandHint": "Use um caminho absoluto ou um nome de comando no PATH.",
+      "relativeCommandPath": "Use um caminho absoluto para o comando Pi ou um nome de comando no PATH.",
+      "relativeAgentDir": "Use um diretório do agente Pi absoluto ou ~/...; caminhos relativos dependem do diretório de trabalho.",
       "commandNotFound": "Comando não encontrado",
       "validate": "Validar",
       "advanced": "Avançado",
@@ -1607,7 +1610,9 @@
       "levelsEmptyError": "Escolha pelo menos um nível — sem nenhum, o pi volta para Off.",
       "wireValuesTitle": "Avançado: valores enviados ao fornecedor",
       "wireValuesHint": "Deixe em branco para enviar o nome do nível tal como está. Defina quando o seu endpoint esperar outra coisa — backends ao estilo Google querem LOW / HIGH.",
-      "defaultLevelUnlisted": "Este nível não está na lista acima — o pi iria reduzi-lo."
+      "defaultLevelUnlisted": "Este nível não está na lista acima — o pi iria reduzi-lo.",
+      "capabilitiesUnverified": "O Pi ainda não listou este modelo. Salve a chave de API e verifique os níveis de raciocínio disponíveis.",
+      "runtimeTooOld": "O pi-acp 0.0.34 requer Pi 0.81.0 ou mais recente. Atualize o Pi antes de iniciar uma sessão."
     },
     "addCustomAgent": "Adicionar agente personalizado",
     "addCustomAgentHint": "Registre qualquer agente compatível com ACP. Escolha um no registro público do ACP ou cole as informações de registro dele.",

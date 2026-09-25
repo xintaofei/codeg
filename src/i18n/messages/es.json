@@ -1552,7 +1552,8 @@
         "medium": "Medio",
         "high": "Alto",
         "minimal": "Mínimo",
-        "xhigh": "Muy alto"
+        "xhigh": "Muy alto",
+        "max": "Máximo"
       },
       "apiKeyLabel": "Clave API",
       "apiKeyHint": "Se guarda en ~/.pi/agent/auth.json para el proveedor seleccionado.",
@@ -1566,7 +1567,9 @@
       "modeCustom": "pi personalizado",
       "modeCustomHint": "Ejecuta tu propia compilación, instalación o envoltorio de pi.",
       "commandLabel": "Comando o ruta de pi",
-      "commandHint": "Una ruta absoluta, un nombre de comando en el PATH o un script envoltorio (p. ej. ./pi-test.sh de un monorepo).",
+      "commandHint": "Use una ruta absoluta o un nombre de comando en PATH.",
+      "relativeCommandPath": "Use una ruta absoluta para el comando Pi o un nombre de comando en PATH.",
+      "relativeAgentDir": "Use un directorio de agente Pi absoluto o ~/...; las rutas relativas dependen del directorio de trabajo.",
       "commandNotFound": "Comando no encontrado",
       "validate": "Validar",
       "advanced": "Avanzado",
@@ -1607,7 +1610,9 @@
       "levelsEmptyError": "Elige al menos un nivel: sin ninguno, pi vuelve a Off.",
       "wireValuesTitle": "Avanzado: valores enviados al proveedor",
       "wireValuesHint": "Déjalo vacío para enviar el nombre del nivel tal cual. Defínelo cuando tu endpoint espere otra cosa: los backends al estilo de Google quieren LOW / HIGH.",
-      "defaultLevelUnlisted": "Este nivel no está en la lista de arriba: pi lo reduciría."
+      "defaultLevelUnlisted": "Este nivel no está en la lista de arriba: pi lo reduciría.",
+      "capabilitiesUnverified": "Pi todavía no ha incluido este modelo. Guarda su clave de API y comprueba los niveles de razonamiento disponibles.",
+      "runtimeTooOld": "pi-acp 0.0.34 requiere Pi 0.81.0 o posterior. Actualiza Pi antes de iniciar una sesión."
     },
     "addCustomAgent": "Añadir agente personalizado",
     "addCustomAgentHint": "Registra cualquier agente compatible con ACP. Elige uno del registro público de ACP o pega su información de registro.",

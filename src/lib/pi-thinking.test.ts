@@ -56,7 +56,7 @@ describe("reasoningToMap", () => {
       })
       // minimal/low/medium/high are omitted: absent already means "offered,
       // sent verbatim". off and xhigh cannot be left to the default.
-    ).toEqual({ off: "none", xhigh: "xhigh" })
+    ).toEqual({ off: "none", xhigh: "xhigh", max: null })
   })
 
   it("pins every unchecked level to null and omits the checked ones", () => {
@@ -65,6 +65,7 @@ describe("reasoningToMap", () => {
       minimal: null,
       medium: null,
       xhigh: null,
+      max: null,
     })
   })
 
@@ -174,5 +175,40 @@ describe("toggleLevel", () => {
 
   it("removes an active level", () => {
     expect(toggleLevel(["low", "high"], "low")).toEqual(["high"])
+  })
+})
+
+describe("Pi max thinking capability", () => {
+  it("only offers max when the selected model explicitly declares it", () => {
+    expect(levelsFromMap(undefined)).not.toContain("max")
+    expect(levelsFromMap({ max: null })).not.toContain("max")
+    expect(levelsFromMap({ max: "max" })).toContain("max")
+    expect(levelsFromMap({ minimal: null })).not.toContain("minimal")
+  })
+
+  it("persists max as an explicit Pi wire value and reopens it", () => {
+    const reasoning: PiModelReasoning = {
+      enabled: true,
+      levels: ["off", "minimal", "max"],
+      wireValues: {},
+    }
+    const map = reasoningToMap(reasoning)
+    expect(map).toEqual({
+      off: "none",
+      low: null,
+      medium: null,
+      high: null,
+      xhigh: null,
+      max: "max",
+    })
+    expect(reasoningFromModel(true, map)).toEqual(reasoning)
+  })
+
+  it("retains a custom max wire value and canonical toggle order", () => {
+    expect(reasoningFromModel(true, { max: "ultra" })).toMatchObject({
+      levels: ["off", "minimal", "low", "medium", "high", "max"],
+      wireValues: { max: "ultra" },
+    })
+    expect(toggleLevel(["low"], "max")).toEqual(["low", "max"])
   })
 })

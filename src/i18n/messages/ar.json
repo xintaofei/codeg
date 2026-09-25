@@ -1552,7 +1552,8 @@
         "medium": "متوسط",
         "high": "مرتفع",
         "minimal": "الحد الأدنى",
-        "xhigh": "مرتفع جدًا"
+        "xhigh": "مرتفع جدًا",
+        "max": "أقصى"
       },
       "apiKeyLabel": "مفتاح API",
       "apiKeyHint": "يُحفظ في ~/.pi/agent/auth.json للمزوّد المحدد.",
@@ -1566,7 +1567,9 @@
       "modeCustom": "pi مخصّص",
       "modeCustomHint": "شغّل بناء pi أو تثبيته أو غلافه الخاص بك.",
       "commandLabel": "أمر pi أو مساره",
-      "commandHint": "مسار مطلق، أو اسم أمر في PATH، أو نص غلاف (مثل ./pi-test.sh في monorepo).",
+      "commandHint": "استخدم مساراً مطلقاً أو اسم أمر في PATH.",
+      "relativeCommandPath": "استخدم مساراً مطلقاً لأمر Pi أو اسم أمر في PATH.",
+      "relativeAgentDir": "استخدم مساراً مطلقاً لمجلد وكيل Pi أو ~/...؛ تختلف المسارات النسبية حسب مجلد العمل.",
       "commandNotFound": "الأمر غير موجود",
       "validate": "تحقّق",
       "advanced": "متقدّم",
@@ -1607,7 +1610,9 @@
       "levelsEmptyError": "اختر مستوى واحدًا على الأقل — بدون أي مستوى يعود pi إلى Off.",
       "wireValuesTitle": "متقدم: القيم المرسلة إلى المزوّد",
       "wireValuesHint": "اتركه فارغًا لإرسال اسم المستوى كما هو. اضبطه عندما تتوقع نقطة النهاية صيغة أخرى — الواجهات على نمط Google تحتاج LOW / HIGH.",
-      "defaultLevelUnlisted": "هذا المستوى ليس ضمن القائمة أعلاه — سيخفّضه pi."
+      "defaultLevelUnlisted": "هذا المستوى ليس ضمن القائمة أعلاه — سيخفّضه pi.",
+      "capabilitiesUnverified": "لم يعرض Pi هذا النموذج بعد. احفظ مفتاح API الخاص به، ثم تحقق من مستويات التفكير المتاحة.",
+      "runtimeTooOld": "يتطلب pi-acp 0.0.34 إصدار Pi 0.81.0 أو أحدث. حدّث Pi قبل بدء جلسة."
     },
     "addCustomAgent": "إضافة وكيل مخصص",
     "addCustomAgentHint": "سجّل أي وكيل متوافق مع ACP. اختر واحدًا من سجل ACP العام، أو الصق معلومات السجل الخاصة به.",

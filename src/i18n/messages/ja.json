@@ -1552,7 +1552,8 @@
         "medium": "中",
         "high": "高",
         "minimal": "最小",
-        "xhigh": "最高"
+        "xhigh": "最高",
+        "max": "最大"
       },
       "apiKeyLabel": "API キー",
       "apiKeyHint": "選択したプロバイダーの ~/.pi/agent/auth.json に保存されます。",
@@ -1566,7 +1567,9 @@
       "modeCustom": "カスタム pi",
       "modeCustomHint": "自分の pi ビルド・インストール・ラッパーを実行します。",
       "commandLabel": "pi コマンドまたはパス",
-      "commandHint": "絶対パス、PATH 上のコマンド名、またはラッパースクリプト（例: monorepo の ./pi-test.sh）。",
+      "commandHint": "絶対パスまたは PATH 上のコマンド名を指定してください。",
+      "relativeCommandPath": "Pi コマンドの絶対パス、または PATH 上のコマンド名を指定してください。",
+      "relativeAgentDir": "Pi エージェントディレクトリの絶対パスまたは ~/... を指定してください。相対パスは作業場所によって変わります。",
       "commandNotFound": "コマンドが見つかりません",
       "validate": "検証",
       "advanced": "詳細設定",
@@ -1607,7 +1610,9 @@
       "levelsEmptyError": "レベルを 1 つ以上選んでください。1 つも選ばないと pi は Off に戻ります。",
       "wireValuesTitle": "詳細: プロバイダーに送る値",
       "wireValuesHint": "空欄ならレベル名をそのまま送信します。エンドポイントが別の表記を求める場合のみ設定してください（Google 系は LOW / HIGH）。",
-      "defaultLevelUnlisted": "このレベルは上の選択リストにありません。pi が丸めてしまいます。"
+      "defaultLevelUnlisted": "このレベルは上の選択リストにありません。pi が丸めてしまいます。",
+      "capabilitiesUnverified": "Pi はまだこのモデルを一覧に表示していません。API キーを保存してから、利用可能な思考レベルを確認してください。",
+      "runtimeTooOld": "pi-acp 0.0.34 には Pi 0.81.0 以降が必要です。セッションを開始する前に Pi を更新してください。"
     },
     "addCustomAgent": "カスタムエージェントを追加",
     "addCustomAgentHint": "ACP 対応のエージェントを追加できます。公開 ACP レジストリから選ぶか、レジストリ情報を貼り付けてください。",

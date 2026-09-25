@@ -835,6 +835,18 @@ export async function loadPiConfig(): Promise<{
   return getTransport().call("acp_load_pi_config", {})
 }
 
+/** Built-in Pi model capabilities from the same runtime used by pi-acp. */
+export interface PiModelCapability {
+  provider: string
+  id: string
+  reasoning: boolean
+  thinkingLevelMap: Record<string, string | null>
+}
+
+export async function listPiModelCapabilities(): Promise<PiModelCapability[]> {
+  return getTransport().call("acp_list_pi_model_capabilities", {})
+}
+
 /**
  * Read the DeepSeek Harness model catalog — `llm-deepseek.models` in
  * `$DSH_HOME/settings.yaml` — for the settings panel. A missing document is
