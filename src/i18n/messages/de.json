@@ -2108,15 +2108,22 @@
       "dialogTitle": "Suchen",
       "dialogTitleWithFolder": "Suchen — {name}",
       "tabConversations": "Konversationen",
+      "tabMessages": "Nachrichten",
       "tabFiles": "Dateien",
       "placeholder": "Konversationen suchen...",
+      "messagePlaceholder": "Nachrichteninhalte durchsuchen...",
       "filePlaceholder": "Dateien oder Verzeichnisse suchen...",
       "allAgents": "Alle",
       "searching": "Suche...",
       "typeToSearch": "Tippen, um Konversationen zu suchen",
+      "typeToSearchMessages": "Tippen, um Nachrichteninhalte zu durchsuchen",
       "typeToSearchFiles": "Tippen, um Dateien oder Verzeichnisse zu suchen",
       "noResults": "Keine Ergebnisse gefunden.",
-      "untitledConversation": "Unbenannte Konversation"
+      "untitledConversation": "Unbenannte Konversation",
+      "messagesHeading": "Passende Nachrichten",
+      "roleUser": "Benutzer",
+      "roleAssistant": "Assistent",
+      "roleSystem": "System"
     },
     "folderTitleBar": {
       "showSidebar": "Seitenleiste anzeigen",

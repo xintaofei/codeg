@@ -2108,15 +2108,22 @@
       "dialogTitle": "بحث",
       "dialogTitleWithFolder": "بحث — {name}",
       "tabConversations": "المحادثات",
+      "tabMessages": "الرسائل",
       "tabFiles": "الملفات",
       "placeholder": "البحث في المحادثات...",
+      "messagePlaceholder": "البحث في محتوى الرسائل...",
       "filePlaceholder": "البحث في الملفات أو المجلدات...",
       "allAgents": "الكل",
       "searching": "جارٍ البحث...",
       "typeToSearch": "اكتب للبحث في المحادثات",
+      "typeToSearchMessages": "اكتب للبحث في محتوى الرسائل",
       "typeToSearchFiles": "اكتب للبحث في الملفات أو المجلدات",
       "noResults": "لم يتم العثور على نتائج.",
-      "untitledConversation": "محادثة بدون عنوان"
+      "untitledConversation": "محادثة بدون عنوان",
+      "messagesHeading": "الرسائل المطابقة",
+      "roleUser": "المستخدم",
+      "roleAssistant": "المساعد",
+      "roleSystem": "النظام"
     },
     "folderTitleBar": {
       "showSidebar": "إظهار الشريط الجانبي",

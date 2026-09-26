@@ -94,6 +94,7 @@ mod tauri_app {
         experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
         folder_links, office_tools as office_tools_commands, open_in,
         folders, logging as logging_commands, mcp as mcp_commands,
+        message_search as message_search_commands,
         model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
         question as question_commands, quick_messages as quick_messages_commands,
         remote_proxy as remote_proxy_commands,
@@ -828,6 +829,15 @@ mod tauri_app {
                     });
                 }
 
+                // Keep the ⌘K message search index current: backfill shortly
+                // after start, then re-index changed conversations every minute.
+                {
+                    let db_for_index = app.state::<db::AppDatabase>().conn.clone();
+                    tauri::async_runtime::spawn(message_search_commands::run_message_indexer(
+                        db_for_index,
+                    ));
+                }
+
                 // Label worktree folders registered before aliases were seeded at
                 // creation with the branch they have checked out, so the sidebar
                 // names them by branch rather than by their (long, derived)
@@ -1534,6 +1544,7 @@ mod tauri_app {
                 conversations::update_conversation_title,
                 conversations::update_conversation_pinned,
                 conversations::delete_conversation,
+                message_search_commands::message_search,
                 folders::load_folder_history,
                 folders::get_folder,
                 folders::list_open_folder_details,

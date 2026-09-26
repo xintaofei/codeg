@@ -2108,15 +2108,22 @@
       "dialogTitle": "搜尋",
       "dialogTitleWithFolder": "搜尋 — {name}",
       "tabConversations": "會話",
+      "tabMessages": "訊息",
       "tabFiles": "檔案",
       "placeholder": "搜尋會話...",
+      "messagePlaceholder": "搜尋訊息內容...",
       "filePlaceholder": "搜尋檔案或目錄...",
       "allAgents": "全部",
       "searching": "搜尋中...",
       "typeToSearch": "輸入關鍵字搜尋會話",
+      "typeToSearchMessages": "輸入關鍵字搜尋訊息內容",
       "typeToSearchFiles": "輸入關鍵字搜尋檔案或目錄",
       "noResults": "找不到結果。",
-      "untitledConversation": "未命名會話"
+      "untitledConversation": "未命名會話",
+      "messagesHeading": "符合的訊息",
+      "roleUser": "使用者",
+      "roleAssistant": "助手",
+      "roleSystem": "系統"
     },
     "folderTitleBar": {
       "showSidebar": "顯示側邊欄",

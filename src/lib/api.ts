@@ -3391,6 +3391,29 @@ export async function deleteConversation(
   return getTransport().call("delete_conversation", { conversationId })
 }
 
+/** One message-content search hit (⌘K "Messages" tab). */
+export interface MessageSearchHit {
+  conversation_id: number
+  folder_id: number
+  agent_type: AgentType
+  title: string | null
+  /** Position of the matching turn in the conversation. */
+  turn_idx: number
+  role: "user" | "assistant" | "system"
+  /** Excerpt around the match, matched terms wrapped in `[[mark]]…[[/mark]]`. */
+  snippet: string
+  /** BM25 rank; lower is better. Hits arrive best first. */
+  rank: number
+}
+
+/** Full-text search over the messages of every conversation. */
+export async function searchMessages(
+  query: string,
+  limit?: number
+): Promise<MessageSearchHit[]> {
+  return getTransport().call("message_search", { query, limit })
+}
+
 // Folder command management
 
 export async function listFolderCommands(

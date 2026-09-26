@@ -556,6 +556,12 @@ async fn async_main() -> ExitCode {
         });
     }
 
+    // Message search indexer (mirrors lib.rs setup): backfills shortly after
+    // start, then re-indexes changed conversations every minute.
+    tokio::spawn(codeg_lib::commands::message_search::run_message_indexer(
+        state.db.conn.clone(),
+    ));
+
     // Label worktree folders registered before aliases were seeded at creation
     // with the branch they have checked out (mirrors lib.rs setup). Background;
     // changed folders are broadcast, so a browser that already fetched its

@@ -2108,15 +2108,22 @@
       "dialogTitle": "검색",
       "dialogTitleWithFolder": "검색 — {name}",
       "tabConversations": "대화",
+      "tabMessages": "메시지",
       "tabFiles": "파일",
       "placeholder": "대화 검색...",
+      "messagePlaceholder": "메시지 내용 검색...",
       "filePlaceholder": "파일 또는 디렉토리 검색...",
       "allAgents": "전체",
       "searching": "검색 중...",
       "typeToSearch": "입력하여 대화를 검색하세요",
+      "typeToSearchMessages": "입력하여 메시지 내용을 검색하세요",
       "typeToSearchFiles": "입력하여 파일 또는 디렉토리를 검색하세요",
       "noResults": "검색 결과가 없습니다.",
-      "untitledConversation": "제목 없는 대화"
+      "untitledConversation": "제목 없는 대화",
+      "messagesHeading": "일치하는 메시지",
+      "roleUser": "사용자",
+      "roleAssistant": "어시스턴트",
+      "roleSystem": "시스템"
     },
     "folderTitleBar": {
       "showSidebar": "사이드바 표시",

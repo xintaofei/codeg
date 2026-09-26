@@ -130,6 +130,10 @@ pub fn build_router(
             post(handlers::conversations::get_folder_conversation_turns),
         )
         .route(
+            "/message_search",
+            post(handlers::message_search::message_search),
+        )
+        .route(
             "/list_opened_tabs",
             post(handlers::conversations::list_opened_tabs),
         )
