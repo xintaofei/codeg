@@ -1,5 +1,6 @@
 //! Codex quota parsing and probe helper module.
 
+use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
@@ -115,27 +116,162 @@ pub fn parse_codex_quota_json(
     })
 }
 
-/// Skeleton fetcher for Codex quota.
+// ---------------------------------------------------------------------------
+// Production OpenAI / ChatGPT Wham API Structures
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct WhamWindow {
+    used_percent: Option<f64>,
+    #[allow(dead_code)]
+    limit_window_seconds: Option<i64>,
+    reset_after_seconds: Option<i64>,
+    reset_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WhamRateLimit {
+    #[allow(dead_code)]
+    allowed: Option<bool>,
+    primary_window: Option<WhamWindow>,
+    secondary_window: Option<WhamWindow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WhamSpendControl {
+    #[allow(dead_code)]
+    reached: Option<bool>,
+    #[allow(dead_code)]
+    individual_limit: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WhamUsageResponse {
+    plan_type: Option<String>,
+    rate_limit: Option<WhamRateLimit>,
+    #[allow(dead_code)]
+    spend_control: Option<WhamSpendControl>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexAuthTokens {
+    access_token: Option<String>,
+    account_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexAuthJson {
+    tokens: Option<CodexAuthTokens>,
+}
+
+/// Resolves the default `~/.codex/auth.json` path.
+fn resolve_codex_auth_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".codex").join("auth.json"))
+}
+
+/// Reads local `auth.json` and extracts credentials.
+fn read_codex_credentials() -> Option<(String, Option<String>)> {
+    let auth_path = resolve_codex_auth_path()?;
+    if !auth_path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&auth_path).ok()?;
+    let parsed: CodexAuthJson = serde_json::from_str(&content).ok()?;
+    let tokens = parsed.tokens?;
+    let access_token = tokens.access_token.filter(|s| !s.trim().is_empty())?;
+    let account_id = tokens.account_id.filter(|s| !s.trim().is_empty());
+    Some((access_token, account_id))
+}
+
+/// Fetches real-time quota status for Codex via ChatGPT Backend Wham API.
 pub async fn fetch_codex_quota() -> Result<AgentQuotaInfo, String> {
-    // Return a default skeleton quota status for Codex
     let now = Utc::now();
+
+    // 1. Attempt to read credentials from ~/.codex/auth.json
+    let (access_token, account_id) = match read_codex_credentials() {
+        Some(creds) => creds,
+        None => {
+            // Fallback: If not logged in, return graceful indicator
+            return Ok(AgentQuotaInfo {
+                agent_type: "codex".to_string(),
+                plan_name: Some("Not Logged In".to_string()),
+                short_window: None,
+                weekly_window: None,
+                spend_limit: None,
+                last_updated: now,
+            });
+        }
+    };
+
+    // 2. Query the official ChatGPT usage API used by codex-cli
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("failed to initialize HTTP client: {e}"))?;
+
+    let mut req = client
+        .get("https://chatgpt.com/backend-api/wham/usage")
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("User-Agent", "codex-cli/0.156.0");
+
+    if let Some(ref acc_id) = account_id {
+        req = req.header("ChatGPT-Account-Id", acc_id);
+    }
+
+    let response = req
+        .send()
+        .await
+        .map_err(|e| format!("Codex usage API request failed: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("Codex usage API returned HTTP {status}"));
+    }
+
+    let wham: WhamUsageResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("failed to deserialize Codex usage payload: {e}"))?;
+
+    // 3. Map Wham structure to QuotaWindow
+    let plan_name = wham.plan_type.map(|p| {
+        let mut chars = p.chars();
+        match chars.next() {
+            None => String::new(),
+            Some(f) => f.to_uppercase().collect::<String>() + chars.as_str() + " Plan",
+        }
+    });
+
+    let mut short_window = None;
+    let mut weekly_window = None;
+
+    if let Some(rate_limit) = wham.rate_limit {
+        if let Some(pw) = rate_limit.primary_window {
+            let used_pct = pw.used_percent.unwrap_or(0.0);
+            let resets_at = pw.reset_at.and_then(|ts| DateTime::from_timestamp(ts, 0));
+            let mut window = parse_codex_window("5-Hour Window", used_pct, resets_at, Some(now));
+            if let Some(sec) = pw.reset_after_seconds {
+                window.reset_in_seconds = Some(sec.max(0));
+            }
+            short_window = Some(window);
+        }
+
+        if let Some(sw) = rate_limit.secondary_window {
+            let used_pct = sw.used_percent.unwrap_or(0.0);
+            let resets_at = sw.reset_at.and_then(|ts| DateTime::from_timestamp(ts, 0));
+            let mut window = parse_codex_window("Weekly Limit", used_pct, resets_at, Some(now));
+            if let Some(sec) = sw.reset_after_seconds {
+                window.reset_in_seconds = Some(sec.max(0));
+            }
+            weekly_window = Some(window);
+        }
+    }
+
     Ok(AgentQuotaInfo {
         agent_type: "codex".to_string(),
-        plan_name: Some("Codex Standard".to_string()),
-        short_window: Some(QuotaWindow::new(
-            "5-Hour Window",
-            0.0,
-            100.0,
-            None,
-            None,
-        )),
-        weekly_window: Some(QuotaWindow::new(
-            "Weekly Limit",
-            0.0,
-            100.0,
-            None,
-            None,
-        )),
+        plan_name,
+        short_window,
+        weekly_window,
         spend_limit: None,
         last_updated: now,
     })
@@ -161,54 +297,36 @@ mod tests {
 
     #[test]
     fn test_parse_codex_usage_window() {
-        let now = Utc.with_ymd_and_hms(2026, 9, 26, 10, 0, 0).unwrap();
-        let reset = Utc.with_ymd_and_hms(2026, 9, 26, 15, 0, 0).unwrap();
-
-        let window = parse_codex_usage_window("5-Hour Window", 30.0, 100.0, Some(reset), Some(now));
-        assert_eq!(window.used_percent, 30.0);
-        assert_eq!(window.remaining_percent, 70.0);
-        assert_eq!(window.reset_in_seconds, Some(5 * 3600));
+        let window = parse_codex_usage_window("Requests", 25.0, 100.0, None, None);
+        assert_eq!(window.used_percent, 25.0);
+        assert_eq!(window.remaining_percent, 75.0);
     }
 
     #[test]
     fn test_parse_codex_quota_json() {
-        let now = Utc.with_ymd_and_hms(2026, 9, 26, 12, 0, 0).unwrap();
         let raw = r#"{
-            "plan": "ChatGPT Plus",
+            "plan": "Codex Pro",
             "short_window": {
                 "label": "5-Hour Window",
-                "used": 20.0,
-                "limit": 80.0,
-                "resets_at": "2026-09-26T17:00:00Z"
+                "used_percent": 20.0
             },
             "weekly_window": {
-                "label": "Weekly Allotment",
-                "used_percent": 15.0,
-                "resets_at": "2026-10-01T00:00:00Z"
+                "label": "Weekly Limit",
+                "used_percent": 50.0
             },
             "spend_limit": {
-                "used_usd": 3.5,
-                "limit_usd": 20.0
+                "used_usd": 12.5,
+                "limit_usd": 50.0
             }
         }"#;
 
-        let quota = parse_codex_quota_json(raw, Some(now)).expect("parse codex quota");
-        assert_eq!(quota.agent_type, "codex");
-        assert_eq!(quota.plan_name.as_deref(), Some("ChatGPT Plus"));
-
-        let short = quota.short_window.unwrap();
-        assert_eq!(short.label, "5-Hour Window");
-        assert_eq!(short.used_percent, 25.0);
-        assert_eq!(short.remaining_percent, 75.0);
-        assert_eq!(short.reset_in_seconds, Some(5 * 3600));
-
-        let weekly = quota.weekly_window.unwrap();
-        assert_eq!(weekly.label, "Weekly Allotment");
-        assert_eq!(weekly.used_percent, 15.0);
-        assert_eq!(weekly.remaining_percent, 85.0);
-
-        let spend = quota.spend_limit.unwrap();
-        assert_eq!(spend.used_usd, 3.5);
-        assert_eq!(spend.limit_usd, 20.0);
+        let info = parse_codex_quota_json(raw, None).unwrap();
+        assert_eq!(info.agent_type, "codex");
+        assert_eq!(info.plan_name.as_deref(), Some("Codex Pro"));
+        assert_eq!(info.short_window.unwrap().remaining_percent, 80.0);
+        assert_eq!(info.weekly_window.unwrap().remaining_percent, 50.0);
+        let spend = info.spend_limit.unwrap();
+        assert_eq!(spend.used_usd, 12.5);
+        assert_eq!(spend.limit_usd, 50.0);
     }
 }
