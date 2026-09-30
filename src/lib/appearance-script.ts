@@ -141,6 +141,15 @@ const SCRIPT = `
       document.documentElement.style.backgroundColor = "";
     }
 
+    if (storedMode === "dark" || storedMode === "light") {
+      try {
+        var metaThemes = document.querySelectorAll('meta[name="theme-color"]');
+        for (var m = 0; m < metaThemes.length; m++) {
+          metaThemes[m].setAttribute("content", isDark ? "#09090b" : "#ffffff");
+        }
+      } catch (e) {}
+    }
+
     // ── 自定义样式 ──────────────────────────────────────────────────────
     // 必须排在 isDark 之后：token 覆盖分明暗两套，挑哪一套取决于它。
     //
