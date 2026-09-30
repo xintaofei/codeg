@@ -16,14 +16,22 @@ pub struct TerminalEvent {
     /// `0` on the exit event, which carries no output.
     #[serde(default)]
     pub seq: u64,
+    /// Distinguishes a restarted PTY that reused the same terminal id.
+    pub generation: String,
 }
 
-/// Recent output of a live terminal plus the cursor it was read at — the
-/// re-attach payload behind `terminal_snapshot`.
+/// Recent output of a live or recently completed terminal plus its cursor —
+/// the re-attach payload behind `terminal_snapshot`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalSnapshot {
-    /// False when no terminal with that id is running: the caller should spawn
-    /// one rather than attach. `data` is then empty.
+    /// Whether a live or recently completed PTY with this id is known.
+    pub exists: bool,
+    /// Exit status retained with the completed output, if the child reported it.
+    pub exit_code: Option<u32>,
+    /// Same token carried by output/exit events for this PTY generation.
+    pub generation: Option<String>,
+    /// False for a completed PTY or an unknown id. Use `exists` to distinguish
+    /// retained final output from a missing session.
     pub alive: bool,
     /// Recent PTY output, oldest chunk possibly trimmed by the scrollback cap.
     /// Raw terminal bytes (escape sequences included) — written straight back

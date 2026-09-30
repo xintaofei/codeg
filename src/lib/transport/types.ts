@@ -126,6 +126,8 @@ export interface Transport {
    * Tauri) leave this undefined.
    */
   onReconnect?(callback: () => void): UnsubscribeFn
+  /** Fires after every server __ready__, including the first after offline startup. */
+  onReady?(callback: () => void): UnsubscribeFn
 
   /**
    * Resolves when the server-side broadcaster receiver is currently
